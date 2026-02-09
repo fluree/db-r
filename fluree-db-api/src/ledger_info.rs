@@ -475,14 +475,13 @@ async fn build_commit_jsonld<S: Storage>(
     let mut obj = json!({
         "@context": "https://ns.flur.ee/db/v1",
         "type": ["Commit"],
-        "v": commit.v,
         "address": commit_address,
         "ledger_id": alias,
     });
 
-    // Add content-address IRI if available
+    // Add content-address IRI if available (now ContentId)
     if let Some(id) = &commit.id {
-        obj["id"] = json!(id);
+        obj["id"] = json!(id.to_string());
     }
 
     // Add timestamp if available
@@ -492,53 +491,21 @@ async fn build_commit_jsonld<S: Storage>(
 
     // NOTE: `t` is NOT on commit itself in Clojure - it's inside `data`
 
-    // Previous commit reference
+    // Previous commit reference (CommitRef now has only `id: ContentId`)
     if let Some(prev_ref) = &commit.previous_ref {
-        let mut prev_obj = json!({
+        let prev_obj = json!({
             "type": ["Commit"],
-            "address": &prev_ref.address,
+            "id": prev_ref.id.to_string(),
         });
-        if let Some(prev_id) = &prev_ref.id {
-            prev_obj["id"] = json!(prev_id);
-        }
         obj["previous"] = prev_obj;
     }
 
-    // Data block - embedded DB metadata (t goes HERE, not on commit)
-    if let Some(data) = &commit.data {
-        let mut data_obj = json!({
-            "type": ["DB"],
-            "t": commit.t,
-            "flakes": data.flakes,
-            "size": data.size,
-        });
-        if let Some(data_id) = &data.id {
-            data_obj["id"] = json!(data_id);
-        }
-        if let Some(data_addr) = &data.address {
-            data_obj["address"] = json!(data_addr);
-        }
-        // Add data.previous reference if available
-        if let Some(prev_data) = &data.previous {
-            let mut prev_data_obj = json!({
-                "type": ["DB"],
-            });
-            if let Some(prev_id) = &prev_data.id {
-                prev_data_obj["id"] = json!(prev_id);
-            }
-            if let Some(prev_addr) = &prev_data.address {
-                prev_data_obj["address"] = json!(prev_addr);
-            }
-            data_obj["previous"] = prev_data_obj;
-        }
-        obj["data"] = data_obj;
-    } else {
-        // Even without CommitData struct, still include data block with t
-        obj["data"] = json!({
-            "type": ["DB"],
-            "t": commit.t,
-        });
-    }
+    // Data block - embedded DB metadata (t goes HERE, not on commit).
+    // CommitData has been removed; we always include a minimal data block with t.
+    obj["data"] = json!({
+        "type": ["DB"],
+        "t": commit.t,
+    });
 
     // NS block
     obj["ns"] = json!([{"id": alias}]);
@@ -546,15 +513,13 @@ async fn build_commit_jsonld<S: Storage>(
     // Index block (if indexed at this commit)
     let mut index_id_out: Option<String> = None;
     if let Some(index) = &commit.index {
+        let index_id_str = index.id.to_string();
         let mut index_obj = json!({
             "type": ["Index"],
-            "address": &index.address,
-            "v": index.v,
+            "id": &index_id_str,
         });
-        if let Some(index_id) = &index.id {
-            index_obj["id"] = json!(index_id);
-            index_id_out = Some(index_id.clone());
-        }
+        index_id_out = Some(index_id_str);
+
         // Add index.data with the indexed t
         if let Some(index_t) = index.t {
             index_obj["data"] = json!({
@@ -610,7 +575,7 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
             "db:t": record.index_t
         });
     }
-    if let Some(ref ctx_addr) = record.default_context_address {
+    if let Some(ref ctx_addr) = record.default_context {
         obj["db:defaultContext"] = json!({ "@id": ctx_addr });
     }
 
@@ -1129,14 +1094,14 @@ mod tests {
     #[test]
     fn test_ns_record_to_jsonld() {
         let record = NsRecord {
-            address: "mydb:main".to_string(),
+            ledger_id: "mydb:main".to_string(),
             name: "mydb:main".to_string(),
             branch: "main".to_string(),
-            commit_address: Some("fluree:file://mydb/main/commit/abc.json".to_string()),
+            commit_address: Some("fluree:file://mydb/main/commit/abc.fcv2".to_string()),
             commit_t: 42,
             index_address: Some("fluree:file://mydb/main/index/def.json".to_string()),
             index_t: 40,
-            default_context_address: None,
+            default_context: None,
             retracted: false,
         };
 
@@ -1150,7 +1115,7 @@ mod tests {
         assert_eq!(json["db:status"], "ready");
         assert_eq!(
             json["db:ledgerCommit"]["@id"],
-            "fluree:file://mydb/main/commit/abc.json"
+            "fluree:file://mydb/main/commit/abc.fcv2"
         );
         assert_eq!(json["db:ledgerIndex"]["db:t"], 40);
     }
@@ -1158,14 +1123,14 @@ mod tests {
     #[test]
     fn test_ns_record_to_jsonld_retracted() {
         let record = NsRecord {
-            address: "mydb:main".to_string(),
+            ledger_id: "mydb:main".to_string(),
             name: "mydb:main".to_string(),
             branch: "main".to_string(),
             commit_address: Some("commit-addr".to_string()),
             commit_t: 10,
             index_address: None,
             index_t: 0,
-            default_context_address: None,
+            default_context: None,
             retracted: true,
         };
 

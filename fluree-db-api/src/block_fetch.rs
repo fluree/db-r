@@ -240,7 +240,7 @@ pub struct FetchedBlock {
 ///
 /// # Examples
 /// ```ignore
-/// parse_address_context("fluree:file://books:main/commit/abc.json")
+/// parse_address_context("fluree:file://books:main/commit/abc.fcv2")
 ///     // => LedgerCommit { ledger_id: "books:main" }
 ///
 /// parse_address_context("fluree:file://books/main/index/abc.json")
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn test_parse_commit_address() {
-        let addr = "fluree:file://books:main/commit/abc123.json";
+        let addr = "fluree:file://books:main/commit/abc123.fcv2";
         let ctx = parse_address_context(addr);
         assert_eq!(
             ctx,
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn test_parse_commit_canonical_layout() {
-        let addr = "fluree:file://books/main/commit/abc123.json";
+        let addr = "fluree:file://books/main/commit/abc123.fcv2";
         let ctx = parse_address_context(addr);
         assert_eq!(
             ctx,
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn test_parse_empty_alias() {
-        let addr = "fluree:file:///commit/abc.json";
+        let addr = "fluree:file:///commit/abc.fcv2";
         let ctx = parse_address_context(addr);
         assert_eq!(ctx, AddressContext::Unknown);
     }

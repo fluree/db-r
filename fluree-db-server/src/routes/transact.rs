@@ -1132,7 +1132,7 @@ async fn execute_transaction(
         tx_id,
         commit: CommitInfo {
             address: result.receipt.address,
-            hash: result.receipt.commit_id,
+            hash: result.receipt.commit_id.to_string(),
         },
     }))
 }
@@ -1263,7 +1263,7 @@ async fn execute_turtle_transaction(
         tx_id,
         commit: CommitInfo {
             address: result.receipt.address,
-            hash: result.receipt.commit_id,
+            hash: result.receipt.commit_id.to_string(),
         },
     }))
 }
@@ -1435,7 +1435,7 @@ async fn execute_sparql_update_request(
         tx_id,
         commit: CommitInfo {
             address: result.receipt.address,
-            hash: result.receipt.commit_id,
+            hash: result.receipt.commit_id.to_string(),
         },
     }))
 }

@@ -77,7 +77,9 @@ impl MemoryNameService {
     pub fn create_ledger(&self, ledger_id: &str) -> Result<()> {
         let (ledger_name, branch) = parse_address(ledger_id)?;
         let record = NsRecord::new(ledger_name, branch);
-        self.records.write().insert(record.address.clone(), record);
+        self.records
+            .write()
+            .insert(record.ledger_id.clone(), record);
         Ok(())
     }
 
@@ -741,10 +743,10 @@ impl ConfigPublisher for MemoryNameService {
         // Apply the update to config_values
         self.config_values.write().insert(key.clone(), new.clone());
 
-        // Sync default_context to NsRecord.default_context_address
+        // Sync default_context to NsRecord.default_context
         let new_default_context = new.payload.as_ref().and_then(|p| p.default_context.clone());
         if let Some(record) = self.records.write().get_mut(&key) {
-            record.default_context_address = new_default_context;
+            record.default_context = new_default_context;
         }
 
         Ok(ConfigCasResult::Updated)

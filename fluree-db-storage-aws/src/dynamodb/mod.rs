@@ -185,20 +185,20 @@ impl DynamoDbNameService {
             .unwrap_or(0);
 
         let config = Self::find_item_by_sk(items, SK_CONFIG);
-        let default_context_address = config
+        let default_context = config
             .and_then(|c| c.get(ATTR_DEFAULT_CONTEXT_ADDRESS))
             .and_then(|v| v.as_s().ok())
             .cloned();
 
         Some(NsRecord {
-            address: pk.to_string(),
+            ledger_id: pk.to_string(),
             name,
             branch,
             commit_address,
             commit_t,
             index_address,
             index_t,
-            default_context_address,
+            default_context,
             retracted,
         })
     }
@@ -1953,14 +1953,14 @@ mod tests {
         ];
 
         let record = DynamoDbNameService::items_to_ns_record(pk, &items).unwrap();
-        assert_eq!(record.address, "mydb:main");
+        assert_eq!(record.ledger_id, "mydb:main");
         assert_eq!(record.name, "mydb");
         assert_eq!(record.branch, "main");
         assert_eq!(record.commit_address, Some("commit-abc".to_string()));
         assert_eq!(record.commit_t, 10);
         assert_eq!(record.index_address, Some("index-xyz".to_string()));
         assert_eq!(record.index_t, 5);
-        assert_eq!(record.default_context_address, Some("ctx-addr".to_string()));
+        assert_eq!(record.default_context, Some("ctx-addr".to_string()));
         assert!(!record.retracted);
     }
 
@@ -1979,7 +1979,7 @@ mod tests {
         assert_eq!(record.commit_t, 0);
         assert_eq!(record.index_address, None);
         assert_eq!(record.index_t, 0);
-        assert_eq!(record.default_context_address, None);
+        assert_eq!(record.default_context, None);
     }
 
     #[test]

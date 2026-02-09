@@ -511,14 +511,14 @@ mod tests {
     #[test]
     fn test_ledger_event_id() {
         let record = NsRecord {
-            address: "test:main".to_string(),
+            ledger_id: "test:main".to_string(),
             name: "test".to_string(),
             branch: "main".to_string(),
             commit_address: Some("commit-addr".to_string()),
             commit_t: 42,
             index_address: Some("index-addr".to_string()),
             index_t: 40,
-            default_context_address: None,
+            default_context: None,
             retracted: false,
         };
         let id = ledger_event_id("test:main", &record);

@@ -21,7 +21,10 @@ mod inner {
     use crate::namespace::NamespaceRegistry;
     use crate::parse::trig_meta::{parse_trig_phase1, resolve_trig_meta, RawObject, RawTerm};
     use crate::value_convert::convert_string_literal;
-    use fluree_db_core::{ContentAddressedWrite, ContentKind, Flake, FlakeMeta, FlakeValue, Sid};
+    use fluree_db_core::{
+        ContentAddressedWrite, ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid,
+        CODEC_FLUREE_COMMIT,
+    };
     use fluree_db_novelty::CommitRef;
     use std::collections::HashMap;
 
@@ -70,10 +73,10 @@ mod inner {
 
     /// Result of importing a single TTL chunk.
     pub struct ImportCommitResult {
-        /// Storage address of the committed blob.
+        /// Storage address of the committed blob (legacy, for transition).
         pub address: String,
-        /// Content ID (e.g. "sha256:abcd...").
-        pub commit_id: String,
+        /// Content identifier (CIDv1).
+        pub commit_id: ContentId,
         /// Transaction number.
         pub t: i64,
         /// Number of flakes in this commit.
@@ -147,12 +150,10 @@ mod inner {
 
             let envelope = CommitV2Envelope {
                 t: new_t,
-                v: 2,
                 previous_ref: state.previous_ref.clone(),
                 namespace_delta: ns_delta,
                 txn: None,
                 time: Some(state.import_time.clone()),
-                data: None, // DB stats not maintained during import
                 index: None,
                 txn_signature: None,
                 txn_meta: Vec::new(),
@@ -167,7 +168,8 @@ mod inner {
             let _span = tracing::info_span!("import_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
-        let commit_id = format!("sha256:{}", &result.content_hash_hex);
+        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
+            .expect("valid SHA-256 hex from commit writer");
         let blob_bytes = result.bytes.len();
 
         // 5. Store
@@ -193,13 +195,11 @@ mod inner {
 
         // 8. Advance state
         state.t = new_t;
-        state.previous_ref = Some(
-            CommitRef::new(&write_res.address).with_id(format!("fluree:commit:{}", commit_id)),
-        );
+        state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
 
         Ok(ImportCommitResult {
             address: write_res.address,
-            commit_id,
+            commit_id: commit_cid,
             t: new_t,
             flake_count: op_count,
             blob_bytes,
@@ -347,12 +347,10 @@ mod inner {
 
         let envelope = CommitV2Envelope {
             t: new_t,
-            v: 2,
             previous_ref: state.previous_ref.clone(),
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),
-            data: None,
             index: None,
             txn_signature: None,
             txn_meta,
@@ -365,7 +363,8 @@ mod inner {
                 tracing::info_span!("import_trig_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
-        let commit_id = format!("sha256:{}", &result.content_hash_hex);
+        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
+            .expect("valid SHA-256 hex from commit writer");
         let blob_bytes = result.bytes.len();
 
         // 8. Store
@@ -392,13 +391,11 @@ mod inner {
 
         // 9. Advance state
         state.t = new_t;
-        state.previous_ref = Some(
-            CommitRef::new(&write_res.address).with_id(format!("fluree:commit:{}", commit_id)),
-        );
+        state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
 
         Ok(ImportCommitResult {
             address: write_res.address,
-            commit_id,
+            commit_id: commit_cid,
             t: new_t,
             flake_count: op_count,
             blob_bytes,
@@ -573,12 +570,10 @@ mod inner {
 
         let envelope = CommitV2Envelope {
             t: new_t,
-            v: 2,
             previous_ref: state.previous_ref.clone(),
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),
-            data: None,
             index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
@@ -586,7 +581,8 @@ mod inner {
         };
 
         let result = parsed.writer.finish(&envelope)?;
-        let commit_id = format!("sha256:{}", &result.content_hash_hex);
+        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
+            .expect("valid SHA-256 hex from commit writer");
         let blob_bytes = result.bytes.len();
 
         let write_res = storage
@@ -607,13 +603,11 @@ mod inner {
         );
 
         state.t = new_t;
-        state.previous_ref = Some(
-            CommitRef::new(&write_res.address).with_id(format!("fluree:commit:{}", commit_id)),
-        );
+        state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
 
         Ok(ImportCommitResult {
             address: write_res.address,
-            commit_id,
+            commit_id: commit_cid,
             t: new_t,
             flake_count: parsed.op_count,
             blob_bytes,

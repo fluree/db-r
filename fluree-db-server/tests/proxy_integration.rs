@@ -286,7 +286,7 @@ async fn test_storage_proxy_block_endpoint() {
     // Try to fetch a block - should return 404 for non-existent address
     // (but the endpoint is working)
     let block_body = serde_json::json!({
-        "address": "fluree:file://proxy:test/commit/nonexistent.json"
+        "address": "fluree:file://proxy:test/commit/nonexistent.fcv2"
     });
     let resp = app
         .oneshot(
@@ -607,7 +607,7 @@ async fn test_storage_proxy_block_authorization() {
 
     // Try to fetch a block from unauthorized ledger
     let block_body = serde_json::json!({
-        "address": "fluree:file://block:test/commit/test.json"
+        "address": "fluree:file://block:test/commit/test.fcv2"
     });
     let resp = app
         .oneshot(

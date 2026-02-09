@@ -156,7 +156,7 @@ async fn localstack_s3_and_dynamodb_smoke() {
         .expect("publish_ledger_init should succeed");
 
     // Publish commit head
-    let commit_addr = "fluree:s3://mydb/main/commit/1.json";
+    let commit_addr = "fluree:s3://mydb/main/commit/1.fcv2";
     aws.publish_commit(alias, commit_addr, 1)
         .await
         .expect("publish_commit should succeed");
@@ -290,7 +290,7 @@ async fn nameservice_ledger_lifecycle() {
 
     // Lookup returns record with unborn head/index
     let rec = ns.lookup(alias).await.unwrap().expect("exists after init");
-    assert_eq!(rec.address, alias, "address should be the full alias");
+    assert_eq!(rec.ledger_id, alias, "ledger_id should be the full alias");
     assert_eq!(
         rec.name, "lifecycle-test",
         "name is the ledger-name-only part"
@@ -336,7 +336,7 @@ async fn nameservice_ledger_lifecycle() {
     // ── all_records() ──────────────────────────────────────────────────────
     let recs = ns.all_records().await.unwrap();
     assert!(
-        recs.iter().any(|r| r.address == alias),
+        recs.iter().any(|r| r.ledger_id == alias),
         "all_records should contain our ledger"
     );
 
@@ -691,7 +691,7 @@ async fn nameservice_graph_source_publisher() {
     ns.publish_ledger_init("ledger-test:main").await.unwrap();
     let any = ns.lookup_any("ledger-test:main").await.unwrap();
     match any {
-        NsLookupResult::Ledger(ref r) => assert_eq!(r.address, "ledger-test:main"),
+        NsLookupResult::Ledger(ref r) => assert_eq!(r.ledger_id, "ledger-test:main"),
         _ => panic!("expected Ledger, got {any:?}"),
     }
 

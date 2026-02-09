@@ -292,6 +292,203 @@ pub trait Storage: StorageRead + ContentAddressedWrite {}
 impl<T: StorageRead + ContentAddressedWrite> Storage for T {}
 
 // ============================================================================
+// ContentStore Trait (CID-first storage abstraction)
+// ============================================================================
+
+use crate::content_id::ContentId;
+
+/// Content-addressed store operating on `ContentId` (CIDv1).
+///
+/// This trait is the CID-first replacement for the address-string-based
+/// `Storage` traits above. The API is purely `id → bytes`: physical
+/// layout (ledger namespacing, codec subdirectories, etc.) is the
+/// implementation's concern, configured at construction time.
+///
+/// During the migration period, [`StorageContentStore`] provides a bridge
+/// from existing `S: Storage` implementations to this trait.
+#[async_trait]
+pub trait ContentStore: Debug + Send + Sync {
+    /// Check if an object exists by CID.
+    async fn has(&self, id: &ContentId) -> Result<bool>;
+
+    /// Retrieve object bytes by CID.
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>>;
+
+    /// Store bytes, computing CID from kind + bytes. Returns the CID.
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId>;
+
+    /// Store bytes with a caller-provided CID (for imports/replication).
+    ///
+    /// Implementations MUST call `id.verify(bytes)` and reject mismatches.
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()>;
+
+    /// Resolve a CID to a local filesystem path, if available.
+    ///
+    /// Returns `Some(path)` for storage backends where data is already on
+    /// the local filesystem (e.g., `FileContentStore`). Returns `None` for
+    /// remote or in-memory backends.
+    fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
+        let _ = id;
+        None
+    }
+}
+
+// ============================================================================
+// MemoryContentStore (CID-first in-memory store)
+// ============================================================================
+
+/// In-memory content store for testing, keyed by `ContentId`.
+///
+/// This is the CID-first counterpart to [`MemoryStorage`].
+#[derive(Debug, Clone)]
+pub struct MemoryContentStore {
+    data: Arc<RwLock<std::collections::HashMap<ContentId, Vec<u8>>>>,
+}
+
+impl Default for MemoryContentStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryContentStore {
+    /// Create a new empty in-memory content store.
+    pub fn new() -> Self {
+        Self {
+            data: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+}
+
+#[async_trait]
+impl ContentStore for MemoryContentStore {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        Ok(self.data.read().expect("RwLock poisoned").contains_key(id))
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        self.data
+            .read()
+            .expect("RwLock poisoned")
+            .get(id)
+            .cloned()
+            .ok_or_else(|| crate::error::Error::not_found(id.to_string()))
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        let id = ContentId::new(kind, bytes);
+        self.data
+            .write()
+            .expect("RwLock poisoned")
+            .insert(id.clone(), bytes.to_vec());
+        Ok(id)
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        if !id.verify(bytes) {
+            return Err(crate::error::Error::storage(format!(
+                "CID verification failed: provided CID {} does not match bytes",
+                id
+            )));
+        }
+        self.data
+            .write()
+            .expect("RwLock poisoned")
+            .insert(id.clone(), bytes.to_vec());
+        Ok(())
+    }
+}
+
+// ============================================================================
+// StorageContentStore (bridge adapter: existing Storage → ContentStore)
+// ============================================================================
+
+/// Bridge adapter that wraps an existing `S: Storage` to provide `ContentStore`.
+///
+/// This is the critical piece for incremental migration: code that already has
+/// `S: Storage` can obtain a `ContentStore` without rewriting storage
+/// implementations.
+///
+/// The adapter is constructed with a ledger scope (`ledger_id`) and a
+/// storage method name (e.g., `"file"`, `"memory"`, `"s3"`), which together
+/// determine the layout rule for mapping CIDs to legacy address strings.
+#[derive(Debug, Clone)]
+pub struct StorageContentStore<S: Storage> {
+    storage: S,
+    ledger_id: String,
+    method: String,
+}
+
+impl<S: Storage> StorageContentStore<S> {
+    /// Create a new bridge adapter.
+    ///
+    /// # Arguments
+    ///
+    /// * `storage` - The underlying legacy storage implementation
+    /// * `ledger_id` - Ledger identifier (e.g., `"mydb:main"`)
+    /// * `method` - Storage method name for address generation (e.g., `"file"`, `"memory"`)
+    pub fn new(storage: S, ledger_id: impl Into<String>, method: impl Into<String>) -> Self {
+        Self {
+            storage,
+            ledger_id: ledger_id.into(),
+            method: method.into(),
+        }
+    }
+
+    /// Map a CID to a legacy address string using the existing layout.
+    fn cid_to_address(&self, id: &ContentId) -> Result<String> {
+        let kind = id.content_kind().ok_or_else(|| {
+            crate::error::Error::storage(format!("unknown codec {} in CID {}", id.codec(), id))
+        })?;
+        let hex_digest = id.digest_hex();
+        Ok(content_address(
+            &self.method,
+            kind,
+            &self.ledger_id,
+            &hex_digest,
+        ))
+    }
+}
+
+#[async_trait]
+impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        let address = self.cid_to_address(id)?;
+        self.storage.exists(&address).await
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        let address = self.cid_to_address(id)?;
+        self.storage.read_bytes(&address).await
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        let id = ContentId::new(kind, bytes);
+        let hex_digest = id.digest_hex();
+        self.storage
+            .content_write_bytes_with_hash(kind, &self.ledger_id, &hex_digest, bytes)
+            .await?;
+        Ok(id)
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        if !id.verify(bytes) {
+            return Err(crate::error::Error::storage(format!(
+                "CID verification failed: provided CID {} does not match bytes",
+                id
+            )));
+        }
+        let address = self.cid_to_address(id)?;
+        self.storage.write_bytes(&address, bytes).await
+    }
+
+    fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
+        let address = self.cid_to_address(id).ok()?;
+        self.storage.resolve_local_path(&address)
+    }
+}
+
+// ============================================================================
 // Helper Functions (Public for use by other storage implementations)
 // ============================================================================
 
@@ -315,13 +512,13 @@ pub fn alias_prefix_for_path(alias: &str) -> String {
 /// Build a storage path for content-addressed data.
 ///
 /// This determines the directory structure for different content types:
-/// - Commits: `{alias}/commit/{hash}.json`
+/// - Commits: `{alias}/commit/{hash}.fcv2`
 /// - Index nodes: `{alias}/index/{ordering}/{hash}.json`
 /// - etc.
 pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
     let prefix = alias_prefix_for_path(alias);
     match kind {
-        ContentKind::Commit => format!("{}/commit/{}.json", prefix, hash_hex),
+        ContentKind::Commit => format!("{}/commit/{}.fcv2", prefix, hash_hex),
         ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
         ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
@@ -348,7 +545,7 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
 ///
 /// # Returns
 ///
-/// A Fluree address like `fluree:file://mydb/main/commit/{hash}.json`
+/// A Fluree address like `fluree:file://mydb/main/commit/{hash}.fcv2`
 pub fn content_address(method: &str, kind: ContentKind, alias: &str, hash_hex: &str) -> String {
     let path = content_path(kind, alias, hash_hex);
     format!("fluree:{}://{}", method, path)
@@ -855,10 +1052,107 @@ mod tests {
             .unwrap();
 
         assert!(res.address.starts_with("fluree:memory://mydb/main/commit/"));
-        assert!(res.address.ends_with(".json"));
+        assert!(res.address.ends_with(".fcv2"));
         assert_eq!(res.size_bytes, bytes.len());
 
         let roundtrip = storage.read_bytes(&res.address).await.unwrap();
         assert_eq!(roundtrip, bytes);
+    }
+
+    // ========================================================================
+    // ContentStore tests (CID-first)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_memory_content_store_put_get() {
+        let store = MemoryContentStore::new();
+        let data = b"content store test";
+
+        let id = store.put(ContentKind::Commit, data).await.unwrap();
+        assert!(store.has(&id).await.unwrap());
+
+        let retrieved = store.get(&id).await.unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn test_memory_content_store_not_found() {
+        let store = MemoryContentStore::new();
+        let fake_id = ContentId::new(ContentKind::Commit, b"nonexistent");
+        assert!(!store.has(&fake_id).await.unwrap());
+        assert!(store.get(&fake_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_content_store_put_with_id() {
+        let store = MemoryContentStore::new();
+        let data = b"verified content";
+        let id = ContentId::new(ContentKind::Txn, data);
+
+        // Correct bytes should succeed
+        store.put_with_id(&id, data).await.unwrap();
+        assert_eq!(store.get(&id).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn test_memory_content_store_put_with_id_rejects_mismatch() {
+        let store = MemoryContentStore::new();
+        let id = ContentId::new(ContentKind::Txn, b"original");
+
+        // Wrong bytes should be rejected
+        let result = store.put_with_id(&id, b"tampered").await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("CID verification failed"));
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_roundtrip() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage.clone(), "mydb:main", "memory");
+
+        let data = b"bridge test data";
+        let id = store.put(ContentKind::Commit, data).await.unwrap();
+
+        // Should be retrievable via ContentStore
+        assert!(store.has(&id).await.unwrap());
+        let retrieved = store.get(&id).await.unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_put_with_id() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage, "mydb:main", "memory");
+
+        let data = b"bridge put_with_id test";
+        let id = ContentId::new(ContentKind::IndexRoot, data);
+
+        store.put_with_id(&id, data).await.unwrap();
+        assert_eq!(store.get(&id).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_put_with_id_rejects_mismatch() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage, "mydb:main", "memory");
+
+        let id = ContentId::new(ContentKind::IndexRoot, b"real data");
+        let result = store.put_with_id(&id, b"fake data").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_cid_matches_content_id_new() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage, "test:main", "memory");
+
+        let data = b"cid consistency check";
+        let id_from_store = store.put(ContentKind::Commit, data).await.unwrap();
+        let id_from_new = ContentId::new(ContentKind::Commit, data);
+
+        assert_eq!(id_from_store, id_from_new);
     }
 }

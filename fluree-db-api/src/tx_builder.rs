@@ -22,7 +22,7 @@ use crate::{
     ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse,
     TrackedTransactionInput, Tracker, TrackingOptions,
 };
-use fluree_db_core::ContentAddressedWrite;
+use fluree_db_core::{ContentAddressedWrite, ContentId, ContentKind};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::Publisher;
 use fluree_db_transact::{
@@ -716,7 +716,7 @@ where
                 (
                     fluree_db_transact::CommitReceipt {
                         address: String::new(),
-                        commit_id: String::new(),
+                        commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
                     },
@@ -862,7 +862,7 @@ where
             return Ok(TransactResultRef {
                 receipt: fluree_db_transact::CommitReceipt {
                     address: String::new(),
-                    commit_id: String::new(),
+                    commit_id: ContentId::new(ContentKind::Commit, &[]),
                     t: base.t(),
                     flake_count: 0,
                 },

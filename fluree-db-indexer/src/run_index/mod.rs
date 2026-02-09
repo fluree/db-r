@@ -75,6 +75,40 @@ use std::io;
 use std::path::Path;
 
 // ============================================================================
+// Address derivation helper (transition period)
+// ============================================================================
+
+/// Derive a commit address from a template address by replacing the hash portion.
+///
+/// During the transition from address-based to CID-based storage, chain walking
+/// needs to convert ContentId digest hashes back into storage addresses. This
+/// function takes an existing address as a template (to preserve the storage
+/// scheme, ledger prefix, and kind directory) and replaces only the filename
+/// hash portion.
+///
+/// Example: `fluree:file:///data/ledger/commit/OLD_HASH.fcv2` + new hash
+///        → `fluree:file:///data/ledger/commit/NEW_HASH.fcv2`
+///
+/// Preserves the template's file extension (e.g. `.fcv2`, `.json`).
+pub(crate) fn derive_commit_address_from_template(
+    template_addr: &str,
+    new_hash_hex: &str,
+) -> String {
+    // Extract the extension from the template (everything after last '.')
+    let filename = template_addr.rsplit('/').next().unwrap_or(template_addr);
+    let ext = filename
+        .rfind('.')
+        .map(|dot| &filename[dot..])
+        .unwrap_or(".fcv2");
+
+    if let Some(last_slash) = template_addr.rfind('/') {
+        format!("{}/{}{}", &template_addr[..last_slash], new_hash_hex, ext)
+    } else {
+        format!("{}{}", new_hash_hex, ext)
+    }
+}
+
+// ============================================================================
 // generate_runs: top-level pipeline
 // ============================================================================
 
@@ -211,7 +245,11 @@ pub async fn generate_runs<S: StorageRead>(
                 .await
                 .map_err(|e| RunGenError::Storage(format!("read {}: {}", addr, e)))?;
             let envelope = read_commit_envelope(&bytes)?;
-            current = envelope.previous_address().map(String::from);
+            // Derive the previous commit's address from its CID using
+            // the current address as a template (same storage scheme + ledger prefix).
+            current = envelope
+                .previous_id()
+                .map(|cid| derive_commit_address_from_template(&addr, &cid.digest_hex()));
             addrs.push(addr);
         }
 

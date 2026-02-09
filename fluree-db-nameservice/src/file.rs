@@ -441,14 +441,14 @@ impl FileNameService {
 
         // Convert to NsRecord
         let mut record = NsRecord {
-            address: core_alias::format_alias(ledger_name, branch),
+            ledger_id: core_alias::format_alias(ledger_name, branch),
             name: main.ledger.id.clone(),
             branch: main.branch,
             commit_address: main.commit.map(|c| c.id),
             commit_t: main.t,
             index_address: main.index.as_ref().map(|i| i.id.clone()),
             index_t: main.index.as_ref().map(|i| i.t).unwrap_or(0),
-            default_context_address: main.default_context.map(|c| c.id),
+            default_context: main.default_context.map(|c| c.id),
             retracted: main.status == "retracted",
         };
 
@@ -563,7 +563,7 @@ impl FileNameService {
     fn record_to_file(&self, record: &NsRecord) -> NsFileV2 {
         NsFileV2 {
             context: ns_context(),
-            id: record.address.clone(),
+            id: record.ledger_id.clone(),
             record_type: vec!["db:LedgerSource".to_string()],
             ledger: LedgerRef {
                 id: record.name.clone(),
@@ -584,7 +584,7 @@ impl FileNameService {
                 "ready".to_string()
             },
             default_context: record
-                .default_context_address
+                .default_context
                 .as_ref()
                 .map(|a| AddressRef { id: a.clone() }),
             // v2 extension fields (not set by record_to_file - preserved by swap_json_locked)
@@ -852,14 +852,14 @@ impl Publisher for FileNameService {
                 file
             } else {
                 let record = NsRecord {
-                    address: core_alias::format_alias(&ledger_name, &branch),
+                    ledger_id: core_alias::format_alias(&ledger_name, &branch),
                     name: ledger_name.clone(),
                     branch: branch.clone(),
                     commit_address: Some(commit_addr.to_string()),
                     commit_t,
                     index_address: None,
                     index_t: 0,
-                    default_context_address: None,
+                    default_context: None,
                     retracted: false,
                 };
                 did_update = true;

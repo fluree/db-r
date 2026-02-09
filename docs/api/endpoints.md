@@ -359,13 +359,13 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 ```json
 {
   "ledger": "mydb:main",
-  "head_address": "fluree:file://mydb:main/commit/abc123.json",
+  "head_address": "fluree:file://mydb:main/commit/abc123.fcv2",
   "head_t": 42,
   "commits": ["<base64>", "<base64>"],
   "blobs": { "fluree:file://mydb:main/txn/def456.json": "<base64>" },
   "newest_t": 42,
   "oldest_t": 41,
-  "next_cursor": "fluree:file://mydb:main/commit/prev789.json",
+  "next_cursor": "fluree:file://mydb:main/commit/prev789.fcv2",
   "count": 2,
   "effective_limit": 100
 }

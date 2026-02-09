@@ -25,6 +25,8 @@ smallvec = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+cid = { workspace = true }
+multihash = { workspace = true }
 tokio = { workspace = true, features = ["fs"], optional = true }
 xxhash-rust = { workspace = true }
 moka = { workspace = true, optional = true }
@@ -41,3 +43,4 @@ ciborium = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true }
+postcard = { workspace = true }

@@ -26,7 +26,6 @@
 //! ```
 
 use crate::error::{LedgerError, Result};
-use fluree_db_core::storage::extract_hash_from_address;
 use fluree_db_core::{Db, Flake, FlakeMeta, FlakeValue, IndexType, OverlayProvider, Sid, Storage};
 use fluree_db_nameservice::NameService;
 use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
@@ -109,7 +108,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
             let addr = record.index_address.as_ref().unwrap();
             (Db::load(storage.clone(), addr).await?, record.index_t)
         } else {
-            (Db::genesis(storage.clone(), &record.address), 0)
+            (Db::genesis(storage.clone(), &record.ledger_id), 0)
         };
 
         // Build novelty from commits between index_t and target_t.
@@ -124,7 +123,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                     commit_addr,
                     index_t,
                     target_t,
-                    &record.address,
+                    &record.ledger_id,
                 )
                 .await?;
 
@@ -207,10 +206,11 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                 continue;
             }
 
-            // Derive a commit subject SID for txn-meta flakes.
-            // Commit blobs are written without `commit.id`, so we derive from the CAS address.
-            let commit_subject =
-                extract_hash_from_address(&commit.address).map(|hex| Sid::new(FLUREE_COMMIT, hex));
+            // Derive a commit subject SID for txn-meta flakes from the CID's digest hex.
+            let commit_subject = commit
+                .id
+                .as_ref()
+                .map(|cid| Sid::new(FLUREE_COMMIT, cid.digest_hex()));
 
             // Derive user-provided txn-meta entries as flakes in the txn-meta named graph.
             // These are stored in the commit envelope (not in commit.flakes) and must be
@@ -465,7 +465,7 @@ mod tests {
         ns.publish_commit("test:main", "commit-5", 5).await.unwrap();
 
         // Store the commit as v2 binary
-        let commit = fluree_db_novelty::Commit::new("commit-5", 5, vec![make_flake(1, 1, 100, 5)]);
+        let commit = fluree_db_novelty::Commit::new(5, vec![make_flake(1, 1, 100, 5)]);
         let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
         storage.insert("commit-5", blob.bytes);
 
@@ -484,7 +484,7 @@ mod tests {
         ns.publish_commit("test:main", "commit-5", 5).await.unwrap();
 
         // Store the commit as v2 binary
-        let commit = fluree_db_novelty::Commit::new("commit-5", 5, vec![make_flake(1, 1, 100, 5)]);
+        let commit = fluree_db_novelty::Commit::new(5, vec![make_flake(1, 1, 100, 5)]);
         let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
         storage.insert("commit-5", blob.bytes);
 

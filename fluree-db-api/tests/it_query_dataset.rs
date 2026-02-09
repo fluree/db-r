@@ -1316,10 +1316,8 @@ async fn dataset_time_travel_at_commit_sha() {
         .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract just the SHA part (everything after "fluree:commit:sha256:")
-    let sha_prefix = commit_id
-        .strip_prefix("fluree:commit:sha256:")
-        .expect("commit ID should start with fluree:commit:sha256:");
+    // Extract the SHA-256 hex digest from the ContentId
+    let sha_prefix = commit_id.digest_hex();
 
     // Commit 2: Bob
     let insert2 = json!({
@@ -1330,7 +1328,7 @@ async fn dataset_time_travel_at_commit_sha() {
 
     // Dataset pinned at commit1 SHA should only see Alice (t=1).
     let spec = DatasetSpec::new().with_default(
-        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.to_string())),
+        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.clone())),
     );
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
@@ -1367,11 +1365,9 @@ async fn dataset_time_travel_at_commit_sha_short_prefix() {
         .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract just the first 10 chars of the SHA (after 'b' prefix) for prefix matching
-    let sha_full = commit_id
-        .strip_prefix("fluree:commit:sha256:")
-        .expect("commit ID should start with fluree:commit:sha256:");
-    // Use just the first 10 characters (including 'b') as a prefix
+    // Extract the SHA-256 hex digest from the ContentId
+    let sha_full = commit_id.digest_hex();
+    // Use just the first 10 characters as a prefix
     let sha_prefix = &sha_full[..10.min(sha_full.len())];
 
     // Commit 2: Bob
@@ -1420,10 +1416,8 @@ async fn dataset_time_travel_alias_syntax_sha() {
         .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract just the SHA part (including 'b' prefix)
-    let sha_prefix = commit_id
-        .strip_prefix("fluree:commit:sha256:")
-        .expect("commit ID should start with fluree:commit:sha256:");
+    // Extract the SHA-256 hex digest from the ContentId
+    let sha_prefix = commit_id.digest_hex();
 
     // Commit 2: Bob
     let insert2 = json!({

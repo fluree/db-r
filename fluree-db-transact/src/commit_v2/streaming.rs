@@ -255,18 +255,15 @@ mod tests {
     use super::*;
     use fluree_db_core::{FlakeMeta, FlakeValue, Sid};
     use fluree_db_novelty::commit_v2::read_commit;
-    use fluree_db_novelty::{CommitData, CommitRef};
     use std::collections::HashMap;
 
     fn make_envelope(t: i64) -> CommitV2Envelope {
         CommitV2Envelope {
             t,
-            v: 2,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
-            data: None,
             index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
@@ -485,25 +482,21 @@ mod tests {
 
     #[test]
     fn test_streaming_envelope_fields() {
+        use fluree_db_core::{ContentId, ContentKind};
+        use fluree_db_novelty::CommitRef;
+
         let mut writer = StreamingCommitWriter::new(true).unwrap();
         writer
             .push_flake(&make_flake("x", "v", FlakeValue::Long(1), "integer", 5))
             .unwrap();
 
+        let prev_cid = ContentId::new(ContentKind::Commit, b"prev-commit-bytes");
         let envelope = CommitV2Envelope {
             t: 5,
-            v: 2,
-            previous_ref: Some(CommitRef::new("prev-addr").with_id("fluree:commit:sha256:abc")),
+            previous_ref: Some(CommitRef::new(prev_cid.clone())),
             namespace_delta: HashMap::from([(200, "ex:".to_string())]),
             txn: None,
             time: Some("2024-01-01T00:00:00Z".into()),
-            data: Some(CommitData {
-                id: None,
-                address: None,
-                flakes: 100,
-                size: 5000,
-                previous: None,
-            }),
             index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
@@ -514,9 +507,8 @@ mod tests {
         let decoded = read_commit(&result.bytes).unwrap();
 
         assert_eq!(decoded.t, 5);
-        assert_eq!(decoded.previous_ref.as_ref().unwrap().address, "prev-addr");
+        assert_eq!(decoded.previous_ref.as_ref().unwrap().id, prev_cid);
         assert_eq!(decoded.namespace_delta.get(&200), Some(&"ex:".to_string()));
         assert_eq!(decoded.time.as_deref(), Some("2024-01-01T00:00:00Z"));
-        assert_eq!(decoded.data.as_ref().unwrap().flakes, 100);
     }
 }

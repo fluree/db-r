@@ -10,16 +10,16 @@
 //! use fluree_db_core::address::{parse_fluree_address, extract_identifier};
 //!
 //! // Standard address (no identifier)
-//! let parsed = parse_fluree_address("fluree:s3://mydb/main/commit/abc.json").unwrap();
+//! let parsed = parse_fluree_address("fluree:s3://mydb/main/commit/abc.fcv2").unwrap();
 //! assert_eq!(parsed.identifier, None);
 //! assert_eq!(parsed.method, "s3");
-//! assert_eq!(parsed.path, "mydb/main/commit/abc.json");
+//! assert_eq!(parsed.path, "mydb/main/commit/abc.fcv2");
 //!
 //! // Address with identifier
-//! let parsed = parse_fluree_address("fluree:commit-store:s3://mydb/main/commit/abc.json").unwrap();
+//! let parsed = parse_fluree_address("fluree:commit-store:s3://mydb/main/commit/abc.fcv2").unwrap();
 //! assert_eq!(parsed.identifier, Some("commit-store"));
 //! assert_eq!(parsed.method, "s3");
-//! assert_eq!(parsed.path, "mydb/main/commit/abc.json");
+//! assert_eq!(parsed.path, "mydb/main/commit/abc.fcv2");
 //!
 //! // Extract just the identifier for routing
 //! assert_eq!(extract_identifier("fluree:myid:s3://path"), Some("myid"));
@@ -141,10 +141,10 @@ mod tests {
 
     #[test]
     fn test_parse_simple_s3_address() {
-        let parsed = parse_fluree_address("fluree:s3://mydb/main/commit/abc.json").unwrap();
+        let parsed = parse_fluree_address("fluree:s3://mydb/main/commit/abc.fcv2").unwrap();
         assert_eq!(parsed.identifier, None);
         assert_eq!(parsed.method, "s3");
-        assert_eq!(parsed.path, "mydb/main/commit/abc.json");
+        assert_eq!(parsed.path, "mydb/main/commit/abc.fcv2");
     }
 
     #[test]
@@ -166,10 +166,10 @@ mod tests {
     #[test]
     fn test_parse_address_with_identifier() {
         let parsed =
-            parse_fluree_address("fluree:commit-storage:s3://mydb/commit/abc.json").unwrap();
+            parse_fluree_address("fluree:commit-storage:s3://mydb/commit/abc.fcv2").unwrap();
         assert_eq!(parsed.identifier, Some("commit-storage"));
         assert_eq!(parsed.method, "s3");
-        assert_eq!(parsed.path, "mydb/commit/abc.json");
+        assert_eq!(parsed.path, "mydb/commit/abc.fcv2");
     }
 
     #[test]

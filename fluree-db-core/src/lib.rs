@@ -29,6 +29,7 @@ pub mod address_path;
 pub mod alias;
 pub mod coerce;
 pub mod comparator;
+pub mod content_id;
 pub mod datatypes;
 pub mod db;
 pub mod dict_novelty;
@@ -65,6 +66,11 @@ pub use alias::{
 };
 pub use coerce::{coerce_json_value, coerce_value, CoercionError, CoercionResult};
 pub use comparator::IndexType;
+pub use content_id::{
+    CommitId, ContentId, IndexRootId, TxnId, CODEC_FLUREE_COMMIT, CODEC_FLUREE_DICT_BLOB,
+    CODEC_FLUREE_GARBAGE, CODEC_FLUREE_INDEX_BRANCH, CODEC_FLUREE_INDEX_LEAF,
+    CODEC_FLUREE_INDEX_ROOT, CODEC_FLUREE_TXN,
+};
 pub use datatypes::dt_compatible;
 pub use db::{Db, DbMetadata};
 pub use dict_novelty::DictNovelty;
@@ -102,11 +108,14 @@ pub use storage::{
     sha256_hex,
     ContentAddressedWrite,
     ContentKind,
+    ContentStore,
     ContentWriteResult,
     DictKind,
+    MemoryContentStore,
     MemoryStorage,
     ReadHint,
     Storage,
+    StorageContentStore,
     StorageRead,
     StorageWrite,
 };
@@ -132,10 +141,12 @@ pub use value_id::{ObjKey, ObjKeyError, ObjKind, ObjPair, ValueTypeTag};
 /// }
 /// ```
 pub mod prelude {
+    pub use crate::content_id::ContentId;
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub use crate::storage::FileStorage;
     pub use crate::storage::{
-        ContentAddressedWrite, ContentKind, ContentWriteResult, DictKind, MemoryStorage, ReadHint,
-        Storage, StorageRead, StorageWrite,
+        ContentAddressedWrite, ContentKind, ContentStore, ContentWriteResult, DictKind,
+        MemoryContentStore, MemoryStorage, ReadHint, Storage, StorageContentStore, StorageRead,
+        StorageWrite,
     };
 }

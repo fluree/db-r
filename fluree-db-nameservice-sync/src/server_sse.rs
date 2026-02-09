@@ -118,14 +118,14 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
 fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
     let (ledger_name, branch) = split_address_or_fallback(&record.address, &record.branch);
     NsRecord {
-        address: record.address.clone(),
+        ledger_id: record.address.clone(),
         name: ledger_name,
         branch,
         commit_address: record.commit_address,
         commit_t: record.commit_t,
         index_address: record.index_address,
         index_t: record.index_t,
-        default_context_address: None,
+        default_context: None,
         retracted: record.retracted,
     }
 }
@@ -187,7 +187,7 @@ mod tests {
         match parse_server_sse_event(&event).unwrap() {
             Some(RemoteEvent::LedgerUpdated(record)) => {
                 assert_eq!(record.commit_t, 5);
-                assert_eq!(record.address, "mydb:main");
+                assert_eq!(record.ledger_id, "mydb:main");
                 assert_eq!(record.name, "mydb");
                 assert_eq!(record.branch, "main");
             }

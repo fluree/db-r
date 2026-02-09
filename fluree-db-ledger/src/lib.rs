@@ -33,7 +33,7 @@ pub use error::{LedgerError, Result};
 pub use historical::HistoricalLedgerView;
 pub use staged::LedgerView;
 
-use fluree_db_core::{Db, DictNovelty, Storage};
+use fluree_db_core::{ContentId, Db, DictNovelty, Storage};
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
 use futures::StreamExt;
@@ -90,8 +90,14 @@ pub struct LedgerState<S> {
     /// Tracks novel dictionary entries introduced since the last index build.
     /// Populated during commit, read during queries, reset at index application.
     pub dict_novelty: Arc<DictNovelty>,
-    /// Current head commit address
+    /// Current head commit address (storage location)
     pub head_commit: Option<String>,
+    /// Content identifier of the head commit (identity).
+    ///
+    /// Set during commit (from the computed CID) and during ledger load
+    /// (derived from the commit blob hash). Consumers that need commit
+    /// identity should prefer this over `head_commit`.
+    pub head_commit_id: Option<ContentId>,
     /// Nameservice record (if loaded via nameservice)
     pub ns_record: Option<NsRecord>,
     /// Type-erased binary index store (concrete type: `Arc<BinaryIndexStore>`).
@@ -124,23 +130,23 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
                 (loaded, dn)
             }
             None => (
-                Db::genesis(storage.clone(), &record.address),
+                Db::genesis(storage.clone(), &record.ledger_id),
                 DictNovelty::new_genesis(),
             ),
         };
 
         // Load novelty from commits since index_t
-        let novelty = match &record.commit_address {
+        let (novelty, head_commit_id) = match &record.commit_address {
             Some(addr) if record.commit_t > db.t => {
-                let (novelty, ns_delta) =
-                    Self::load_novelty(storage, addr, db.t, &record.address).await?;
+                let (novelty, ns_delta, head_id) =
+                    Self::load_novelty(storage, addr, db.t, &record.ledger_id).await?;
                 // Apply namespace deltas from commits
                 for (code, prefix) in ns_delta {
                     db.namespace_codes.insert(code, prefix);
                 }
-                novelty
+                (novelty, head_id)
             }
-            _ => Novelty::new(db.t),
+            _ => (Novelty::new(db.t), None),
         };
 
         Ok(Self {
@@ -148,6 +154,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
             novelty: Arc::new(novelty),
             dict_novelty: Arc::new(dict_novelty),
             head_commit: record.commit_address.clone(),
+            head_commit_id,
             ns_record: Some(record),
             binary_store: None,
         })
@@ -155,24 +162,33 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
 
     /// Load novelty from commits since a given index_t
     ///
-    /// Returns the novelty overlay and a merged map of namespace deltas
-    /// from all loaded commits.
+    /// Returns the novelty overlay, a merged map of namespace deltas
+    /// from all loaded commits, and the head commit's ContentId (if available).
     async fn load_novelty(
         storage: S,
         head_address: &str,
         index_t: i64,
         ledger_id: &str,
-    ) -> Result<(Novelty, std::collections::HashMap<u16, String>)> {
+    ) -> Result<(
+        Novelty,
+        std::collections::HashMap<u16, String>,
+        Option<ContentId>,
+    )> {
         use std::collections::HashMap;
 
         let mut novelty = Novelty::new(index_t);
         let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
+        let mut head_commit_id: Option<ContentId> = None;
 
         let stream = trace_commits(storage, head_address.to_string(), index_t);
         futures::pin_mut!(stream);
 
         while let Some(result) = stream.next().await {
             let commit = result?;
+            // First commit in the stream is the HEAD (newest → oldest order)
+            if head_commit_id.is_none() {
+                head_commit_id = commit.id.clone();
+            }
             let meta_flakes = generate_commit_flakes(&commit, ledger_id, commit.t);
             let mut all_flakes = commit.flakes;
             all_flakes.extend(meta_flakes);
@@ -187,7 +203,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
             }
         }
 
-        Ok((novelty, merged_ns_delta))
+        Ok((novelty, merged_ns_delta, head_commit_id))
     }
 
     /// Create a new ledger state from components
@@ -199,6 +215,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
             novelty: Arc::new(novelty),
             dict_novelty: Arc::new(dict_novelty),
             head_commit: None,
+            head_commit_id: None,
             ns_record: None,
             binary_store: None,
         }
@@ -518,7 +535,7 @@ mod tests {
         ns.publish_commit("test:main", "commit-1", 1).await.unwrap();
 
         // Store the commit as v2 binary
-        let commit = fluree_db_novelty::Commit::new("commit-1", 1, vec![make_flake(1, 1, 100, 1)]);
+        let commit = fluree_db_novelty::Commit::new(1, vec![make_flake(1, 1, 100, 1)]);
         let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
         storage.insert("commit-1", blob.bytes);
 
@@ -528,7 +545,8 @@ mod tests {
         assert_eq!(state.ledger_id(), "test:main");
         assert_eq!(state.index_t(), 0); // Genesis
         assert_eq!(state.t(), 1); // From commit
-        assert_eq!(state.novelty.len(), 1);
+                                  // 1 data flake + 3 commit metadata flakes (db#address, db#alias, db#t)
+        assert_eq!(state.novelty.len(), 4);
     }
 
     #[tokio::test]

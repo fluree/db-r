@@ -150,13 +150,11 @@ where
 
             // Check if this commit's ID matches the prefix
             if let Some(commit_id) = &commit.id {
-                // commit_id format: "fluree:commit:sha256:<hex>"
-                let commit_sha = commit_id
-                    .strip_prefix("fluree:commit:sha256:")
-                    .unwrap_or(commit_id);
+                // commit_id is now a ContentId; use digest_hex() to get the SHA-256 hex
+                let commit_sha = commit_id.digest_hex();
 
                 if commit_sha.starts_with(sha_normalized) {
-                    matching_commits.push((commit_id.clone(), commit.t));
+                    matching_commits.push((commit_id.to_string(), commit.t));
 
                     // If we have an exact match (full SHA), we're done
                     if commit_sha == sha_normalized {

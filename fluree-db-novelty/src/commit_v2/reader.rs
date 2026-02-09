@@ -2,6 +2,10 @@
 //!
 //! No NamespaceRegistry needed — Sids are reconstructed directly from
 //! (namespace_code, name) pairs stored in the binary format.
+//!
+//! The v2 reader produces CID-based types (`ContentId`, `CommitRef`, `IndexRef`).
+//! String-based references in the v2 on-disk format are converted to `ContentId`
+//! during decode.
 
 use super::error::CommitV2Error;
 use super::format::{
@@ -11,12 +15,14 @@ use super::format::{
 use super::op_codec::{decode_op, ReadDicts};
 use super::string_dict::StringDict;
 use crate::{Commit, CommitEnvelope};
+use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
 use sha2::{Digest, Sha256};
 
 /// Read a v2 commit blob and return a full `Commit` (with flakes).
 ///
-/// No NamespaceRegistry is needed — Sids are reconstructed directly from
-/// the (namespace_code, name) pairs stored in the binary format.
+/// The commit's `id` is derived from the v2 blob hash (SHA-256 of
+/// everything before the trailing hash). This CID uses `CODEC_FLUREE_COMMIT`
+/// and matches the hash that was used to construct the storage address.
 pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
     let blob_len = bytes.len();
 
@@ -48,7 +54,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
     };
 
     // 4. Verify hash: SHA-256(bytes[0..hash_offset]) == bytes[hash_offset..hash_offset+32]
-    {
+    let actual_hash: [u8; 32] = {
         let _span = tracing::debug_span!("v2_read_verify_hash", blob_len).entered();
         let expected_hash: [u8; 32] = bytes[hash_offset..hash_offset + HASH_LEN]
             .try_into()
@@ -60,9 +66,13 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
                 actual: actual_hash,
             });
         }
-    }
+        actual_hash
+    };
 
-    // 5. Parse signature block (if present)
+    // 5. Derive ContentId from the v2 hash
+    let commit_id = ContentId::from_sha256_digest(CODEC_FLUREE_COMMIT, &actual_hash);
+
+    // 6. Parse signature block (if present)
     let commit_signatures = if has_sig_block {
         let sig_block_start = hash_offset + HASH_LEN;
         let sig_block_data = &bytes[sig_block_start..sig_block_start + sig_block_len];
@@ -71,7 +81,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         Vec::new()
     };
 
-    // 4. Decode binary envelope
+    // 7. Decode binary envelope
     let envelope_start = HEADER_LEN;
     let envelope_end = envelope_start + header.envelope_len as usize;
     if envelope_end > blob_len {
@@ -82,11 +92,11 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
     }
     let envelope = super::envelope::decode_envelope(&bytes[envelope_start..envelope_end])?;
 
-    // 6. Parse footer
+    // 8. Parse footer
     let footer_start = hash_offset - FOOTER_LEN;
     let footer = CommitV2Footer::read_from(&bytes[footer_start..hash_offset])?;
 
-    // 7. Validate ops section bounds
+    // 9. Validate ops section bounds
     let ops_start = envelope_end;
     let ops_end = ops_start + footer.ops_section_len as usize;
     if ops_end > footer_start {
@@ -95,7 +105,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         ));
     }
 
-    // 8. Load dictionaries (with bounds validation against ops_end..footer_start)
+    // 10. Load dictionaries
     let dicts = load_dicts(bytes, &footer, ops_end, footer_start)?;
     let ops_bytes = &bytes[ops_start..ops_end];
     let ops_decompressed;
@@ -114,7 +124,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         ops_bytes
     };
 
-    // 9. Decode ops into flakes
+    // 11. Decode ops into flakes
     let flakes = {
         let _span = tracing::debug_span!(
             "v2_decode_ops",
@@ -139,16 +149,13 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         "v2 commit read"
     );
 
-    // 10. Assemble Commit
+    // 12. Assemble Commit with CID-based types
     Ok(Commit {
-        address: String::new(), // Injected at read time by load_commit()
-        id: None,               // Injected at read time by load_commit()
+        id: Some(commit_id),
         t: header.t,
-        v: envelope.v,
         time: envelope.time,
         flakes,
         previous_ref: envelope.previous_ref,
-        data: envelope.data,
         index: envelope.index,
         txn: envelope.txn,
         namespace_delta: envelope.namespace_delta,
@@ -188,7 +195,6 @@ pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Erro
 
     Ok(CommitEnvelope {
         t: header.t,
-        v: env.v,
         previous_ref: env.previous_ref,
         index: env.index,
         namespace_delta: env.namespace_delta,

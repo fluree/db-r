@@ -54,7 +54,7 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                         // Diff ledgers
                         let mut current_ledgers: HashMap<String, NsRecord> = HashMap::new();
                         for record in snapshot.ledgers {
-                            let key = record.address.clone();
+                            let key = record.ledger_id.clone();
                             if record.retracted {
                                 if prev_ledgers.contains_key(&key) {
                                     yield RemoteEvent::LedgerRetracted { address: key.clone() };
@@ -196,7 +196,7 @@ mod tests {
 
     fn make_record(ledger_name: &str, commit_t: i64) -> NsRecord {
         NsRecord {
-            address: format!("{}:main", ledger_name),
+            ledger_id: format!("{}:main", ledger_name),
             name: ledger_name.to_string(),
             branch: "main".to_string(),
             commit_address: Some(format!("commit-{}", commit_t)),
@@ -204,7 +204,7 @@ mod tests {
             index_address: None,
             index_t: 0,
             retracted: false,
-            default_context_address: None,
+            default_context: None,
         }
     }
 

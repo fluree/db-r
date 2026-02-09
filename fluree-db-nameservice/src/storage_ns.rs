@@ -419,14 +419,14 @@ where
 
         // Convert to NsRecord
         let mut record = NsRecord {
-            address: core_alias::format_alias(ledger_name, branch),
+            ledger_id: core_alias::format_alias(ledger_name, branch),
             name: main.ledger.id.clone(),
             branch: main.branch,
             commit_address: main.commit.map(|c| c.id),
             commit_t: main.t,
             index_address: main.index.as_ref().map(|i| i.id.clone()),
             index_t: main.index.as_ref().map(|i| i.t).unwrap_or(0),
-            default_context_address: main.default_context.map(|c| c.id),
+            default_context: main.default_context.map(|c| c.id),
             retracted: main.status == "retracted",
         };
 

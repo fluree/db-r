@@ -474,15 +474,16 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
             .map_err(|e| CliError::Config(format!("failed to decode local commit {addr}: {e}")))?;
         commits.push(fluree_db_api::Base64Bytes(bytes));
 
-        if let Some(txn_addr) = commit.txn.as_deref() {
-            if !blobs.contains_key(txn_addr) {
-                let txn_bytes = fluree.storage().read_bytes(txn_addr).await.map_err(|e| {
+        if let Some(txn_cid) = &commit.txn {
+            let txn_addr = txn_cid.to_string();
+            if let std::collections::hash_map::Entry::Vacant(e) = blobs.entry(txn_addr.clone()) {
+                let txn_bytes = fluree.storage().read_bytes(&txn_addr).await.map_err(|e| {
                     CliError::Config(format!(
                         "commit references txn blob '{}' but it is not readable locally: {}",
                         txn_addr, e
                     ))
                 })?;
-                blobs.insert(txn_addr.to_string(), fluree_db_api::Base64Bytes(txn_bytes));
+                e.insert(fluree_db_api::Base64Bytes(txn_bytes));
             }
         }
     }

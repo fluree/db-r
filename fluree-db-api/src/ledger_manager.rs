@@ -73,8 +73,10 @@ pub struct LedgerSnapshot<S> {
     pub dict_novelty: Arc<fluree_db_core::DictNovelty>,
     /// Current transaction t value
     pub t: i64,
-    /// Current head commit address
+    /// Current head commit address (storage location)
     pub head_commit: Option<String>,
+    /// Content identifier of the head commit (identity)
+    pub head_commit_id: Option<fluree_db_core::ContentId>,
     /// Nameservice record (if loaded via nameservice)
     pub ns_record: Option<NsRecord>,
     /// Binary columnar index store (v2 only).
@@ -96,6 +98,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
             dict_novelty: Arc::clone(&state.dict_novelty),
             t: state.t(),
             head_commit: state.head_commit.clone(),
+            head_commit_id: state.head_commit_id.clone(),
             ns_record: state.ns_record.clone(),
             binary_store: None,
         }
@@ -116,7 +119,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     /// Returns the canonical form (e.g., "mydb:main") suitable for cache keys.
     /// This is the primary identifier for ledger lookups.
     pub fn address(&self) -> Option<&str> {
-        self.ns_record.as_ref().map(|r| r.address.as_str())
+        self.ns_record.as_ref().map(|r| r.ledger_id.as_str())
     }
 
     /// Get index_t from the underlying Db
@@ -135,6 +138,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
             novelty: self.novelty,
             dict_novelty,
             head_commit: self.head_commit,
+            head_commit_id: self.head_commit_id,
             ns_record: self.ns_record,
             binary_store: self.binary_store.map(|store| TypeErasedStore(store)),
         }
@@ -1315,14 +1319,14 @@ mod tests {
         index_addr: Option<&str>,
     ) -> NsRecord {
         NsRecord {
-            address: "test:main".to_string(),
+            ledger_id: "test:main".to_string(),
             name: "test:main".to_string(),
             branch: "main".to_string(),
             commit_address: commit_addr.map(String::from),
             commit_t,
             index_address: index_addr.map(String::from),
             index_t,
-            default_context_address: None,
+            default_context: None,
             retracted: false,
         }
     }

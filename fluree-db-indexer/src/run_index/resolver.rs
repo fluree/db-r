@@ -334,19 +334,18 @@ impl CommitResolver {
 
         // ledger:previous (ID) -- ref to previous commit
         if let Some(prev_ref) = &envelope.previous_ref {
-            if let Some(prev_id) = &prev_ref.id {
-                // prev_id is like "fluree:commit:sha256:<hex>"
-                let prev_s_id = dicts
-                    .subjects
-                    .get_or_insert(prev_id, fluree_vocab::namespaces::FLUREE_COMMIT)?;
-                push(
-                    commit_s_id,
-                    p_previous,
-                    ObjKind::REF_ID,
-                    ObjKey::encode_sid64(prev_s_id),
-                    DatatypeDictId::ID.as_u16(),
-                )?;
-            }
+            // Use CID digest hex as the subject name in FLUREE_COMMIT namespace
+            let prev_digest = prev_ref.id.digest_hex();
+            let prev_s_id = dicts
+                .subjects
+                .get_or_insert(&prev_digest, fluree_vocab::namespaces::FLUREE_COMMIT)?;
+            push(
+                commit_s_id,
+                p_previous,
+                ObjKind::REF_ID,
+                ObjKey::encode_sid64(prev_s_id),
+                DatatypeDictId::ID.as_u16(),
+            )?;
         }
 
         // ledger:author (STRING) -- transaction signer DID
@@ -362,10 +361,11 @@ impl CommitResolver {
             )?;
         }
 
-        // ledger:txn (STRING) -- transaction storage address
-        if let Some(txn_addr) = &envelope.txn {
+        // ledger:txn (STRING) -- transaction CID string
+        if let Some(txn_id) = &envelope.txn {
             let p_txn = dicts.predicates.get_or_insert_parts(fluree::DB, db::TXN);
-            let txn_str_id = dicts.strings.get_or_insert(txn_addr)?;
+            let txn_str = txn_id.to_string();
+            let txn_str_id = dicts.strings.get_or_insert(&txn_str)?;
             push(
                 commit_s_id,
                 p_txn,
@@ -893,7 +893,7 @@ impl std::error::Error for ResolverError {}
 
 /// Extract the hex hash from a commit storage address.
 ///
-/// Addresses look like `fluree:file://ledger/commit/<64-hex>.json`.
+/// Addresses look like `fluree:file://ledger/commit/<64-hex>.fcv2`.
 /// Returns the hex portion (without `sha256:` prefix) or `None` if unparseable.
 fn extract_commit_hex(address: &str) -> Option<&str> {
     // Strip the scheme: "fluree:file://..." -> path after "://"
@@ -906,9 +906,13 @@ fn extract_commit_hex(address: &str) -> Option<&str> {
         return None;
     };
 
-    // Last path segment, strip ".json" suffix
+    // Last path segment, strip any file extension
     let filename = path.rsplit('/').next()?;
-    let hex = filename.strip_suffix(".json")?;
+    let dot = filename.rfind('.')?;
+    if dot == 0 {
+        return None;
+    }
+    let hex = &filename[..dot];
 
     // Validate: must be 64 hex chars (SHA-256)
     if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -956,12 +960,10 @@ mod tests {
 
         let envelope = CommitV2Envelope {
             t,
-            v: 0,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
-            data: None,
             index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
@@ -1320,6 +1322,14 @@ mod tests {
 
     #[test]
     fn test_extract_commit_hex() {
+        // .fcv2 extension (new canonical)
+        assert_eq!(
+            super::extract_commit_hex(
+                "fluree:file://test/main/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.fcv2"
+            ),
+            Some("abc123def456abc123def456abc123def456abc123def456abc123def456abcd")
+        );
+        // .json extension (legacy)
         assert_eq!(
             super::extract_commit_hex(
                 "fluree:file://test/main/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.json"
@@ -1328,14 +1338,16 @@ mod tests {
         );
         assert_eq!(
             super::extract_commit_hex(
-                "fluree:s3://bucket/ledger/commit/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.json"
+                "fluree:s3://bucket/ledger/commit/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.fcv2"
             ),
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         );
+        // Too short to be a valid SHA-256 hex
         assert_eq!(
-            super::extract_commit_hex("fluree:file://test/commit/abc.json"),
+            super::extract_commit_hex("fluree:file://test/commit/abc.fcv2"),
             None
         );
+        // No extension
         assert_eq!(
             super::extract_commit_hex(
                 "fluree:file://test/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
@@ -1357,6 +1369,7 @@ mod tests {
 
     #[test]
     fn test_emit_txn_meta() {
+        use fluree_db_core::{ContentId, ContentKind};
         use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
         use fluree_db_novelty::CommitRef;
 
@@ -1376,17 +1389,18 @@ mod tests {
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
         let prev_hex = "0000000000000000000000000000000000000000000000000000000000000000";
-        let commit_address = format!("fluree:file://test/main/commit/{}.json", hex);
+        let commit_address = format!("fluree:file://test/main/commit/{}.fcv2", hex);
         let prev_commit_id = format!("fluree:commit:sha256:{}", prev_hex);
 
         let envelope = CommitV2Envelope {
             t: 42,
-            v: 2,
-            previous_ref: Some(CommitRef::new("prev-addr").with_id(prev_commit_id.clone())),
+            previous_ref: Some(CommitRef::new(ContentId::new(
+                ContentKind::Commit,
+                prev_commit_id.as_bytes(),
+            ))),
             namespace_delta: HashMap::new(),
             txn: None,
             time: Some("2025-06-15T12:00:00Z".into()),
-            data: None,
             index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
@@ -1508,16 +1522,14 @@ mod tests {
         let mut writer = RunWriter::new(config);
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
-        let commit_address = format!("fluree:file://test/main/commit/{}.json", hex);
+        let commit_address = format!("fluree:file://test/main/commit/{}.fcv2", hex);
 
         let envelope = CommitV2Envelope {
             t: 1,
-            v: 2,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
-            data: None,
             index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
@@ -1569,16 +1581,14 @@ mod tests {
         let mut writer = RunWriter::new(config);
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
-        let commit_address = format!("fluree:file://test/main/commit/{}.json", hex);
+        let commit_address = format!("fluree:file://test/main/commit/{}.fcv2", hex);
 
         let envelope = CommitV2Envelope {
             t: 5,
-            v: 2,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
-            data: None,
             index: None,
             txn_signature: None,
             txn_meta: vec![

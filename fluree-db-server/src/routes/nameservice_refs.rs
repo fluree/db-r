@@ -222,7 +222,7 @@ pub async fn snapshot(
         // Scoped access: filter ledgers to authorized set, no graph sources
         let ledgers = all_ledgers
             .into_iter()
-            .filter(|r| principal.is_authorized_for_ledger(&r.address))
+            .filter(|r| principal.is_authorized_for_ledger(&r.ledger_id))
             .collect();
 
         Ok(Json(SnapshotResponse {

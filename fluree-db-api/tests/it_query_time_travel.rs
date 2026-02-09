@@ -45,7 +45,7 @@ async fn seed_time_travel_ledger(
         "@graph": [{"@id":"test:person1","@type":"Person","name":"Alice","age":30}]
     });
     let out1 = fluree.insert(ledger0, &tx1).await.expect("insert t=1");
-    let commit_id_t1 = out1.receipt.commit_id.clone();
+    let commit_hex_t1 = out1.receipt.commit_id.digest_hex();
     let ledger1 = out1.ledger;
     let time_t1 = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     iso_by_t.insert(1, time_t1);
@@ -81,7 +81,7 @@ async fn seed_time_travel_ledger(
     let time_t3 = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     iso_by_t.insert(3, time_t3);
 
-    (ledger3, commit_id_t1, iso_by_t)
+    (ledger3, commit_hex_t1, iso_by_t)
 }
 
 async fn query_names_at(
@@ -123,7 +123,7 @@ async fn time_travel_query_connection_at_t_iso_and_sha() {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/time-travel-test";
 
-    let (ledger3, commit_id_t1, iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let (ledger3, commit_hex_t1, iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
     let iso_t1 = iso_by_t.get(&1).expect("iso for t=1").clone();
 
     // @t:
@@ -153,17 +153,10 @@ async fn time_travel_query_connection_at_t_iso_and_sha() {
         normalize_rows_array(&json!([["Alice"], ["Bob"], ["Carol"]]))
     );
 
-    // @sha:
-    // Accept either `fluree:commit:sha256:<hex>` or `sha256:<hex>` depending on commit-id formatting.
-    let full_hash = commit_id_t1
-        .strip_prefix("fluree:commit:sha256:")
-        .or_else(|| commit_id_t1.strip_prefix("sha256:"))
-        .unwrap_or(commit_id_t1.as_str());
-    let sha_7 = &full_hash[..std::cmp::min(7, full_hash.len())];
-    // Clojure uses base32 (52 chars). Rust currently uses hex (64 chars). Either way,
-    // we just want to prove full-length prefixes resolve correctly.
-    let sha_52 = &full_hash[..std::cmp::min(52, full_hash.len())];
-    let sha_6 = &full_hash[..std::cmp::min(6, full_hash.len())];
+    // @sha: — uses hex SHA-256 digest from the ContentId
+    let sha_7 = &commit_hex_t1[..7];
+    let sha_52 = &commit_hex_t1[..52];
+    let sha_6 = &commit_hex_t1[..6];
 
     assert_eq!(
         query_names_at(&fluree, &ledger3.db, &format!("{alias}@sha:{sha_7}")).await,
@@ -184,7 +177,7 @@ async fn time_travel_invalid_format_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/time-travel-invalid";
-    let (ledger3, _commit_id_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let (ledger3, _commit_hex_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
 
     let q = json!({
         "@context": ctx_test(),
@@ -211,7 +204,7 @@ async fn time_travel_missing_value_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/time-travel-missing";
-    let (_ledger3, _commit_id_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let (_ledger3, _commit_hex_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
 
     for (spec, expect) in [
         ("@t:", "Missing value after '@t:'"),
@@ -234,7 +227,7 @@ async fn time_travel_nonexistent_sha_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/time-travel-no-sha";
-    let (_ledger3, _commit_id_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let (_ledger3, _commit_hex_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
 
     let q = json!({
         "@context": ctx_test(),
@@ -256,7 +249,7 @@ async fn time_travel_iso_too_early_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/time-travel-iso-too-early";
-    let (ledger3, _commit_id_t1, iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let (ledger3, _commit_hex_t1, iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
     let iso_t1 = iso_by_t.get(&1).expect("iso for t=1").clone();
 
     // Compute a time before the first commit.
@@ -289,7 +282,7 @@ async fn time_travel_iso_between_commits_resolves_to_previous_commit() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/time-travel-iso-between";
-    let (ledger3, _commit_id_t1, iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let (ledger3, _commit_hex_t1, iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
 
     let iso1 = iso_by_t.get(&1).expect("iso for t=1");
     let iso2 = iso_by_t.get(&2).expect("iso for t=2");
@@ -340,7 +333,7 @@ async fn time_travel_sha_prefix_too_short_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/time-travel-sha-too-short";
-    let (_ledger3, _commit_id_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let (_ledger3, _commit_hex_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
 
     let q = json!({
         "@context": ctx_test(),

@@ -57,7 +57,7 @@ use tokio::sync::broadcast;
 
 /// Nameservice record containing ledger metadata
 ///
-/// This struct preserves the distinction between the address (canonical ledger:branch)
+/// This struct preserves the distinction between the ledger_id (canonical ledger:branch)
 /// and the ledger name (without branch suffix).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NsRecord {
@@ -65,7 +65,7 @@ pub struct NsRecord {
     ///
     /// This is the primary cache key and the fully-qualified identifier.
     /// Use this for cache lookups and as the canonical form.
-    pub address: String,
+    pub ledger_id: String,
 
     /// Ledger name without branch suffix (e.g., "mydb")
     pub name: String,
@@ -73,20 +73,20 @@ pub struct NsRecord {
     /// Branch name (e.g., "main")
     pub branch: String,
 
-    /// Latest commit address
+    /// Latest commit address (storage address or CID string)
     pub commit_address: Option<String>,
 
     /// Transaction time of latest commit
     pub commit_t: i64,
 
-    /// Latest index address (may lag behind commit)
+    /// Latest index address (storage address or CID string, may lag behind commit)
     pub index_address: Option<String>,
 
     /// Transaction time of latest index
     pub index_t: i64,
 
     /// Default context address for JSON-LD
-    pub default_context_address: Option<String>,
+    pub default_context: Option<String>,
 
     /// Whether this ledger has been retracted
     pub retracted: bool,
@@ -97,17 +97,17 @@ impl NsRecord {
     pub fn new(name: impl Into<String>, branch: impl Into<String>) -> Self {
         let name = name.into();
         let branch = branch.into();
-        let address = format!("{}:{}", name, branch);
+        let ledger_id = format!("{}:{}", name, branch);
 
         Self {
-            address,
+            ledger_id,
             name,
             branch,
             commit_address: None,
             commit_t: 0,
             index_address: None,
             index_t: 0,
-            default_context_address: None,
+            default_context: None,
             retracted: false,
         }
     }
@@ -1015,7 +1015,7 @@ mod tests {
         let record = NsRecord::new("mydb", "main");
         assert_eq!(record.name, "mydb");
         assert_eq!(record.branch, "main");
-        assert_eq!(record.address, "mydb:main");
+        assert_eq!(record.ledger_id, "mydb:main");
         assert_eq!(record.commit_t, 0);
         assert_eq!(record.index_t, 0);
         assert!(!record.retracted);

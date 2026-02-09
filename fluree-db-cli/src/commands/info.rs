@@ -62,7 +62,7 @@ pub async fn run(
 
             println!("Ledger:         {}", record.name);
             println!("Branch:         {}", record.branch);
-            println!("Address:        {}", record.address);
+            println!("Ledger ID:      {}", record.ledger_id);
             println!("Commit t:       {}", record.commit_t);
             println!(
                 "Commit address: {}",

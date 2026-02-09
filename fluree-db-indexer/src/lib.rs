@@ -99,6 +99,11 @@ fn normalize_id_for_comparison(ledger_id: &str) -> String {
 pub struct IndexResult {
     /// Storage address of the index root
     pub root_address: String,
+    /// Content identifier of the index root (derived from SHA-256 of root bytes).
+    ///
+    /// Present when the root hash is available from the storage write result.
+    /// Consumers that need identity should prefer this over `root_address`.
+    pub root_id: Option<fluree_db_core::ContentId>,
     /// Transaction time the index is current through
     pub index_t: i64,
     /// Ledger ID (name:branch format)
@@ -155,8 +160,17 @@ where
     // If index is already current, return it
     if let Some(ref index_addr) = record.index_address {
         if record.index_t >= record.commit_t {
+            // Derive ContentId from the existing index address hash
+            let root_id =
+                fluree_db_core::storage::extract_hash_from_address(index_addr).and_then(|h| {
+                    fluree_db_core::ContentId::from_hex_digest(
+                        fluree_db_core::CODEC_FLUREE_INDEX_ROOT,
+                        &h,
+                    )
+                });
             return Ok(IndexResult {
                 root_address: index_addr.clone(),
+                root_id,
                 index_t: record.index_t,
                 ledger_id: ledger_id.to_string(),
                 stats: IndexStats::default(),
@@ -242,7 +256,9 @@ where
                         .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", addr, e)))?;
                     let envelope = read_commit_envelope(&bytes)
                         .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
-                    current = envelope.previous_address().map(String::from);
+                    current = envelope.previous_id().map(|cid| {
+                        run_index::derive_commit_address_from_template(&addr, &cid.digest_hex())
+                    });
                     addrs.push(addr);
                 }
 
@@ -630,8 +646,15 @@ where
                 .map(|g| g.leaf_count as usize)
                 .sum();
 
+            // Derive ContentId from the root's content hash
+            let root_id = fluree_db_core::ContentId::from_hex_digest(
+                fluree_db_core::CODEC_FLUREE_INDEX_ROOT,
+                &write_result.content_hash,
+            );
+
             Ok(IndexResult {
                 root_address: write_result.address,
+                root_id,
                 index_t: root.index_t,
                 ledger_id: ledger_id.to_string(),
                 stats: IndexStats {

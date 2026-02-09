@@ -44,18 +44,18 @@ struct NsRecordResponse {
 }
 
 impl NsRecordResponse {
-    /// Convert to NsRecord, using the original lookup key as the address
+    /// Convert to NsRecord, using the original lookup key as the ledger_id
     fn into_ns_record(self, lookup_key: &str) -> NsRecord {
         NsRecord {
-            // address is the key used for lookup (may differ from name)
-            address: lookup_key.to_string(),
+            // ledger_id is the key used for lookup (may differ from name)
+            ledger_id: lookup_key.to_string(),
             name: self.ledger_id,
             branch: self.branch,
             commit_address: self.commit_address,
             commit_t: self.commit_t,
             index_address: self.index_address,
             index_t: self.index_t,
-            default_context_address: None, // Not exposed via proxy API
+            default_context: None, // Not exposed via proxy API
             retracted: self.retracted,
         }
     }
@@ -212,23 +212,23 @@ mod tests {
         let response = NsRecordResponse {
             ledger_id: "books:main".to_string(),
             branch: "main".to_string(),
-            commit_address: Some("fluree:file://books:main/commit/abc.json".to_string()),
+            commit_address: Some("fluree:file://books:main/commit/abc.fcv2".to_string()),
             commit_t: 42,
             index_address: Some("fluree:file://books/main/index/def.json".to_string()),
             index_t: 40,
             retracted: false,
         };
 
-        // Use the lookup key as address (simulating lookup("books"))
+        // Use the lookup key as ledger_id (simulating lookup("books"))
         let record = response.into_ns_record("books");
-        // address should be the lookup key, not the alias
-        assert_eq!(record.address, "books");
+        // ledger_id should be the lookup key, not the alias
+        assert_eq!(record.ledger_id, "books");
         assert_eq!(record.name, "books:main");
         assert_eq!(record.branch, "main");
         assert_eq!(record.commit_t, 42);
         assert_eq!(record.index_t, 40);
         assert!(!record.retracted);
-        // default_context_address is not exposed via proxy API
-        assert!(record.default_context_address.is_none());
+        // default_context is not exposed via proxy API
+        assert!(record.default_context.is_none());
     }
 }

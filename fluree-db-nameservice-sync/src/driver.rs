@@ -118,7 +118,7 @@ impl SyncDriver {
         let mut unchanged = Vec::new();
 
         for record in &snapshot.ledgers {
-            let ledger_id = &record.address;
+            let ledger_id = &record.ledger_id;
             let existing = self.tracking.get_tracking(remote, ledger_id).await?;
 
             let new_commit = Some(RefValue {

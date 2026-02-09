@@ -1028,7 +1028,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{Flake, FlakeValue, MemoryStorage, Sid, StorageWrite};
+    use fluree_db_core::{
+        ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid, StorageWrite,
+    };
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::HashMap;
@@ -1064,7 +1066,6 @@ mod tests {
 
             let envelope = CommitV2Envelope {
                 t: commit.t,
-                v: commit.v,
                 previous_ref: commit.previous_ref.clone(),
                 namespace_delta: commit
                     .namespace_delta
@@ -1073,7 +1074,6 @@ mod tests {
                     .collect::<HashMap<_, _>>(),
                 txn: commit.txn.clone(),
                 time: commit.time.clone(),
-                data: commit.data.clone(),
                 index: commit.index.clone(),
                 txn_signature: None,
                 txn_meta: commit.txn_meta.clone(),
@@ -1149,7 +1149,7 @@ mod tests {
             let h = Sha256::digest(&bytes);
             format!("sha256:{}", hex::encode(h))
         };
-        let address = format!("fluree:file://test/commit/{}.json", &hash[7..]);
+        let address = format!("fluree:file://test/commit/{}.fcv2", &hash[7..]);
         storage.write_bytes(&address, &bytes).await.unwrap();
         address
     }
@@ -1174,14 +1174,11 @@ mod tests {
 
         // Setup a commit
         let commit = Commit {
-            address: String::new(),
             id: None,
             t: 1,
-            v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            data: None,
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
@@ -1207,14 +1204,11 @@ mod tests {
 
         // Setup a commit
         let commit = Commit {
-            address: String::new(),
             id: None,
             t: 1,
-            v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            data: None,
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
@@ -1246,14 +1240,11 @@ mod tests {
 
         // Setup first commit and index
         let commit1 = Commit {
-            address: String::new(),
             id: None,
             t: 1,
-            v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            data: None,
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
@@ -1272,14 +1263,14 @@ mod tests {
 
         // Add another commit
         let commit2 = Commit {
-            address: String::new(),
             id: None,
             t: 2,
-            v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:bob", 1, "ex:age", 25, 2)],
-            previous_ref: Some(CommitRef::new(&addr1)),
-            data: None,
+            previous_ref: Some(CommitRef::new(ContentId::new(
+                ContentKind::Commit,
+                addr1.as_bytes(),
+            ))),
             index: None,
             txn: None,
             namespace_delta: HashMap::new(),
@@ -1303,14 +1294,11 @@ mod tests {
 
         // Setup a commit
         let commit = Commit {
-            address: String::new(),
             id: None,
             t: 1,
-            v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            data: None,
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
@@ -1338,14 +1326,11 @@ mod tests {
 
         // Setup a commit
         let commit = Commit {
-            address: String::new(),
             id: None,
             t: 1,
-            v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            data: None,
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
@@ -1377,14 +1362,11 @@ mod tests {
 
         // Setup a commit
         let commit = Commit {
-            address: String::new(),
             id: None,
             t: 1,
-            v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            data: None,
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
@@ -1698,7 +1680,6 @@ mod embedded_tests {
 
         let envelope = CommitV2Envelope {
             t: commit.t,
-            v: commit.v,
             previous_ref: commit.previous_ref.clone(),
             namespace_delta: commit
                 .namespace_delta
@@ -1707,7 +1688,6 @@ mod embedded_tests {
                 .collect::<HashMap<_, _>>(),
             txn: commit.txn.clone(),
             time: commit.time.clone(),
-            data: commit.data.clone(),
             index: commit.index.clone(),
             txn_signature: None,
             txn_meta: Vec::new(),
@@ -1777,7 +1757,7 @@ mod embedded_tests {
         blob[pos..pos + HASH_LEN].copy_from_slice(&hash);
 
         let hash_hex = hex::encode(Sha256::digest(&blob));
-        let address = format!("fluree:file://test/commit/{}.json", &hash_hex[..16]);
+        let address = format!("fluree:file://test/commit/{}.fcv2", &hash_hex[..16]);
         storage.write_bytes(&address, &blob).await.unwrap();
         address
     }
@@ -1834,14 +1814,11 @@ mod embedded_tests {
 
         // Store a commit-v2 blob
         let commit = Commit {
-            address: String::new(),
             id: None,
             t: 1,
-            v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            data: None,
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
@@ -1887,14 +1864,11 @@ mod embedded_tests {
 
         // Store a commit-v2 blob
         let commit = Commit {
-            address: String::new(),
             id: None,
             t: 1,
-            v: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            data: None,
             index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),

@@ -31,8 +31,8 @@ mod error;
 mod stats;
 
 pub use commit::{
-    load_commit, load_commit_envelope, trace_commit_envelopes, trace_commits, Commit, CommitData,
-    CommitEnvelope, CommitRef, IndexRef, TxnMetaEntry, TxnMetaValue, TxnSignature,
+    load_commit, load_commit_by_id, load_commit_envelope, trace_commit_envelopes, trace_commits,
+    Commit, CommitEnvelope, CommitRef, IndexRef, TxnMetaEntry, TxnMetaValue, TxnSignature,
     MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES,
 };
 pub use commit_flakes::generate_commit_flakes;

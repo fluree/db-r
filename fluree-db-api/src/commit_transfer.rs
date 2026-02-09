@@ -23,12 +23,14 @@ use crate::error::{ApiError, Result};
 use crate::policy_builder::build_policy_context_from_opts;
 use crate::{Fluree, IndexConfig, LedgerHandle};
 use base64::Engine as _;
+use fluree_db_core::ContentId;
 use fluree_db_core::storage::extract_hash_from_address;
 use fluree_db_core::storage::sha256_hex;
 use fluree_db_core::{
     range_with_overlay, ContentAddressedWrite, ContentKind, DictNovelty, Flake, IndexType,
 };
 use fluree_db_core::{RangeMatch, RangeOptions, RangeTest, Storage};
+use fluree_db_core::{CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{CasResult, NameService, RefKind, RefPublisher, RefValue};
 use fluree_db_novelty::{generate_commit_flakes, Novelty};
@@ -83,7 +85,7 @@ pub struct PushCommitsRequest {
     pub commits: Vec<Base64Bytes>,
     /// Optional additional blobs referenced by commits (e.g. `commit.txn`).
     ///
-    /// Map key is the referenced address string.
+    /// Map key is a CID string or legacy address string.
     #[serde(default)]
     pub blobs: HashMap<String, Base64Bytes>,
 }
@@ -353,17 +355,15 @@ fn decode_and_validate_commit_chain(
 
         // Chain validation: previous reference must match prior commit (by id if present).
         if let Some(prev_hash_hex) = &prev_hash {
-            let prev_id = format!("fluree:commit:sha256:{}", prev_hash_hex);
             let ok = commit
                 .previous_ref
                 .as_ref()
-                .and_then(|r| r.id.as_ref())
-                .map(|id| id == &prev_id)
+                .map(|r| r.id.digest_hex() == *prev_hash_hex)
                 .unwrap_or(false);
             if !ok {
                 return Err(PushError::Invalid(format!(
-                    "commit chain previous mismatch at commit[{}]: expected previous id '{}'",
-                    idx, prev_id
+                    "commit chain previous mismatch at commit[{}]: expected previous digest '{}'",
+                    idx, prev_hash_hex
                 )));
             }
         }
@@ -395,17 +395,34 @@ fn preflight_strict_next_t_and_prev(
         )));
     }
 
-    let expected_prev = current.address.as_deref();
-    let actual_prev = first
-        .commit
-        .previous_ref
-        .as_ref()
-        .map(|r| r.address.as_str());
+    // Validate previous reference matches current head (transition):
+    // nameservice `RefValue` is still address-based, while commits are CID-based.
+    // Derive the expected previous CID from the current head address hash.
+    let expected_prev_id: Option<ContentId> = match current.address.as_deref() {
+        Some(addr) => {
+            let hex = extract_hash_from_address(addr).ok_or_else(|| {
+                PushError::Internal(format!(
+                    "current head is not a content-addressed commit address: {}",
+                    addr
+                ))
+            })?;
+            ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &hex).ok_or_else(|| {
+                PushError::Internal(format!(
+                    "failed to derive commit CID from current head digest: {}",
+                    hex
+                ))
+            })?
+            .into()
+        }
+        None => None,
+    };
 
-    if expected_prev != actual_prev {
+    let actual_prev_id = first.commit.previous_ref.as_ref().map(|r| r.id.clone());
+
+    if expected_prev_id != actual_prev_id {
         return Err(PushError::Conflict(format!(
             "first commit previous mismatch: expected {:?}, got {:?}",
-            expected_prev, actual_prev
+            expected_prev_id, actual_prev_id
         )));
     }
 
@@ -416,24 +433,17 @@ fn validate_required_blobs(
     decoded: &[PushCommitDecoded],
     provided: &HashMap<String, Base64Bytes>,
 ) -> std::result::Result<(), PushError> {
-    let mut required: HashSet<&str> = HashSet::new();
+    let mut required: HashSet<String> = HashSet::new();
     for c in decoded {
-        if let Some(txn_addr) = c.commit.txn.as_deref() {
-            required.insert(txn_addr);
+        if let Some(txn_cid) = &c.commit.txn {
+            required.insert(txn_cid.to_string());
         }
     }
 
-    for addr in required {
+    for addr in &required {
         if !provided.contains_key(addr) {
             return Err(PushError::Invalid(format!(
                 "missing required blob for referenced address: {}",
-                addr
-            )));
-        }
-        // Also validate address contains a hash (so we can do safe CAS writes).
-        if extract_hash_from_address(addr).is_none() {
-            return Err(PushError::Invalid(format!(
-                "referenced blob address is not content-addressed: {}",
                 addr
             )));
         }
@@ -542,52 +552,73 @@ async fn write_required_blobs<
     provided: &HashMap<String, Base64Bytes>,
     decoded: &[PushCommitDecoded],
 ) -> std::result::Result<(), PushError> {
-    // Build required set (txn addresses only, for now).
-    let mut required: HashSet<&str> = HashSet::new();
+    // Build required set (txn CID strings, for now).
+    let mut required: HashSet<String> = HashSet::new();
     for c in decoded {
-        if let Some(txn_addr) = c.commit.txn.as_deref() {
-            required.insert(txn_addr);
+        if let Some(txn_cid) = &c.commit.txn {
+            required.insert(txn_cid.to_string());
         }
     }
 
-    for addr in required {
-        let Some(expected_hash) = extract_hash_from_address(addr) else {
+    for addr in &required {
+        let txn_id: ContentId = addr.parse().map_err(|e| {
+            PushError::Invalid(format!("invalid txn CID reference '{}': {}", addr, e))
+        })?;
+        if txn_id.codec() != CODEC_FLUREE_TXN {
             return Err(PushError::Invalid(format!(
-                "referenced blob address is not content-addressed: {}",
+                "referenced txn CID has unexpected codec {}: {}",
+                txn_id.codec(),
                 addr
             )));
-        };
+        }
+
         let bytes = provided
             .get(addr)
             .ok_or_else(|| PushError::Invalid(format!("missing required blob: {}", addr)))?
             .0
             .clone();
 
-        // Integrity: verify provided bytes match the referenced hash.
-        let actual_hash = sha256_hex(&bytes);
-        if actual_hash != expected_hash {
+        // Integrity: server MUST re-hash bytes and verify the derived CID.
+        if !txn_id.verify(&bytes) {
             return Err(PushError::Invalid(format!(
-                "blob hash mismatch for '{}': expected {}, got {}",
-                addr, expected_hash, actual_hash
+                "referenced txn CID does not match provided bytes: {}",
+                addr
             )));
         }
 
-        // Write using the hash from the address to ensure deterministic placement.
-        let res = storage
+        // Write using the CID digest to ensure deterministic placement.
+        // (digest hex matches the legacy CAS hash during the transition period)
+        let expected_hash = txn_id.digest_hex();
+        let _res = storage
             .content_write_bytes_with_hash(ContentKind::Txn, ledger_id, &expected_hash, &bytes)
             .await
             .map_err(|e| PushError::Internal(e.to_string()))?;
-
-        // Ensure the storage's canonical address matches the referenced address.
-        if res.address != addr {
-            return Err(PushError::Invalid(format!(
-                "uploaded blob address mismatch: commit references '{}', storage wrote '{}'",
-                addr, res.address
-            )));
-        }
     }
 
     Ok(())
+}
+
+/// Derive the legacy txn blob address from a commit blob address and txn digest hex.
+///
+/// Assumes the current storage layout where commits live under `/commit/<hash>.fcv2`
+/// and txns under `/txn/<hash>.json` for the same ledger prefix and storage method.
+fn txn_address_from_commit_address(commit_address: &str, txn_hash_hex: &str) -> Option<String> {
+    let (prefix, _rest) = commit_address.split_once("/commit/")?;
+    Some(format!("{}/txn/{}.json", prefix, txn_hash_hex))
+}
+
+/// Replace the filename stem (between the last `/` and last `.`) with `new_hash_hex`.
+fn replace_hash_in_address(address: &str, new_hash_hex: &str) -> Option<String> {
+    let slash = address.rfind('/')?;
+    let dot = address.rfind('.')?;
+    if dot <= slash + 1 {
+        return None;
+    }
+    let mut out = String::with_capacity(address.len() - (dot - (slash + 1)) + new_hash_hex.len());
+    out.push_str(&address[..slash + 1]);
+    out.push_str(new_hash_hex);
+    out.push_str(&address[dot..]);
+    Some(out)
 }
 
 async fn write_commit_blobs<S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static>(
@@ -656,6 +687,12 @@ fn apply_pushed_commits_to_state<S: Storage + Clone + 'static>(
     base.novelty = Arc::new(novelty);
     base.dict_novelty = dict_novelty;
     base.head_commit = stored_commits.last().map(|c| c.address.clone());
+    // Derive head_commit_id from the stored commit address hash
+    base.head_commit_id = stored_commits.last().and_then(|c| {
+        fluree_db_core::storage::extract_hash_from_address(&c.address).and_then(|h| {
+            fluree_db_core::ContentId::from_hex_digest(fluree_db_core::CODEC_FLUREE_COMMIT, &h)
+        })
+    });
     if let Some(ref mut r) = base.ns_record {
         if let Some(last) = stored_commits.last() {
             r.commit_address = Some(last.address.clone());
@@ -772,7 +809,7 @@ pub struct ExportCommitsResponse {
     pub newest_t: i64,
     /// Lowest `t` in this page.
     pub oldest_t: i64,
-    /// Cursor for the next page (`previous_ref.address` of oldest commit).
+    /// Cursor for the next page (previous commit's CID or address).
     /// `None` when genesis has been reached.
     pub next_cursor: Option<String>,
     /// Number of commits in this page.
@@ -905,20 +942,47 @@ where
             commits.push(Base64Bytes(raw_bytes));
 
             // Collect referenced txn blob.
-            if let Some(ref txn_addr) = env.txn {
-                if !blobs.contains_key(txn_addr.as_str()) {
-                    let txn_bytes = storage.read_bytes(txn_addr).await.map_err(|e| {
-                        ApiError::internal(format!("failed to read txn blob '{}': {}", txn_addr, e))
+            if let Some(ref txn_cid) = env.txn {
+                let txn_hash_hex = txn_cid.digest_hex();
+                let txn_address =
+                    txn_address_from_commit_address(&current_address, &txn_hash_hex).ok_or_else(
+                        || {
+                            ApiError::internal(format!(
+                                "failed to derive txn address from commit address '{}'",
+                                current_address
+                            ))
+                        },
+                    )?;
+
+                // Response blobs are keyed by CID string (logical identity), but bytes are read from legacy address.
+                let txn_key = txn_cid.to_string();
+                if let std::collections::hash_map::Entry::Vacant(e) = blobs.entry(txn_key.clone())
+                {
+                    let txn_bytes = storage.read_bytes(&txn_address).await.map_err(|e| {
+                        ApiError::internal(format!(
+                            "failed to read txn blob '{}' (addr '{}'): {}",
+                            txn_key, txn_address, e
+                        ))
                     })?;
-                    blobs.insert(txn_addr.clone(), Base64Bytes(txn_bytes));
+                    e.insert(Base64Bytes(txn_bytes));
                 }
             }
 
             // Follow chain backward.
             match env.previous_ref {
                 Some(prev) => {
-                    next_cursor = Some(prev.address.clone());
-                    current_address = prev.address;
+                    let prev_hash_hex = prev.id.digest_hex();
+                    let prev_address =
+                        replace_hash_in_address(&current_address, &prev_hash_hex).ok_or_else(
+                            || {
+                                ApiError::internal(format!(
+                                    "failed to derive previous commit address from '{}'",
+                                    current_address
+                                ))
+                            },
+                        )?;
+                    next_cursor = Some(prev_address.clone());
+                    current_address = prev_address;
                 }
                 None => {
                     // Reached genesis — no more commits.
@@ -996,8 +1060,8 @@ where
         //
         // The CAS hash for a commit blob is the embedded trailing hash (SHA-256 of
         // everything before the hash itself), NOT SHA-256 of the full blob.
-        // We must extract it with `commit_hash_hex_from_bytes` to match the address
-        // that the remote's `previous_ref.address` chain references.
+        // We must extract it with `commit_hash_hex_from_bytes` to match the CID
+        // that the remote's `previous_ref` chain references.
         for b64 in &response.commits {
             let bytes = &b64.0;
             let hash_hex = commit_hash_hex_from_bytes(bytes)

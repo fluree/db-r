@@ -2449,10 +2449,10 @@ where
             None => return Ok(None), // Ledger doesn't exist in nameservice
         };
 
-        // Step C: Use NsRecord.address as the cache key
-        // The address field contains the canonical form (e.g., "testdb:main")
+        // Step C: Use NsRecord.ledger_id as the cache key
+        // The ledger_id field contains the canonical form (e.g., "testdb:main")
         // Note: NsRecord.name field only contains the name without branch, despite docs
-        let canonical_alias = &ns_record.address;
+        let canonical_alias = &ns_record.ledger_id;
 
         // Step D: Delegate to notify with the fresh record
         let result = mgr
@@ -2703,7 +2703,7 @@ mod tests {
         // When routing via identifier, the full address is passed to the storage
         commit_storage
             .write_bytes(
-                "fluree:commit-store:memory://mydb/main/commit/abc.json",
+                "fluree:commit-store:memory://mydb/main/commit/abc.fcv2",
                 b"commit-data",
             )
             .await
@@ -2723,7 +2723,7 @@ mod tests {
 
         // Address with identifier should route to mapped storage
         let bytes = resolver
-            .read_bytes("fluree:commit-store:memory://mydb/main/commit/abc.json")
+            .read_bytes("fluree:commit-store:memory://mydb/main/commit/abc.fcv2")
             .await
             .unwrap();
         assert_eq!(bytes, b"commit-data");

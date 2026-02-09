@@ -933,7 +933,7 @@ where
     let commit_head_address = state
         .previous_ref
         .as_ref()
-        .map(|r| r.address.clone())
+        .map(|r| r.id.to_string())
         .unwrap_or_default();
 
     nameservice

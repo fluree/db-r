@@ -37,25 +37,28 @@ async fn commit_id_has_valid_sha256_format() {
 
     let result = fluree.insert(ledger0, &tx).await.expect("insert");
 
-    // Verify commit ID format: "sha256:" prefix + 64 hex characters
+    // Verify commit ID is a valid ContentId with SHA-256 digest
+    let commit_id_str = result.receipt.commit_id.to_string();
+    let digest_hex = result.receipt.commit_id.digest_hex();
+
+    // CID string should be non-empty
     assert!(
-        result.receipt.commit_id.starts_with("sha256:"),
-        "commit ID should start with 'sha256:' prefix, got: {}",
-        result.receipt.commit_id
+        !commit_id_str.is_empty(),
+        "commit ID string should not be empty"
     );
 
-    let hash_part = result.receipt.commit_id.strip_prefix("sha256:").unwrap();
+    // digest_hex should be 64 hex characters (SHA-256)
     assert_eq!(
-        hash_part.len(),
+        digest_hex.len(),
         64,
-        "SHA-256 hash should be 64 hex characters, got {} chars: {}",
-        hash_part.len(),
-        hash_part
+        "SHA-256 digest should be 64 hex characters, got {} chars: {}",
+        digest_hex.len(),
+        digest_hex
     );
     assert!(
-        hash_part.chars().all(|c| c.is_ascii_hexdigit()),
-        "SHA-256 hash should contain only hex characters, got: {}",
-        hash_part
+        digest_hex.chars().all(|c| c.is_ascii_hexdigit()),
+        "SHA-256 digest should contain only hex characters, got: {}",
+        digest_hex
     );
 
     // Verify address is non-empty and contains the alias
@@ -104,18 +107,18 @@ async fn sequential_commits_produce_unique_hashes() {
         "sequential commits should have different addresses"
     );
 
-    // Both should have valid format
+    // Both should have valid format (ContentId with 64-char hex digest)
     for (i, id) in [&result1.receipt.commit_id, &result2.receipt.commit_id]
         .iter()
         .enumerate()
     {
-        assert!(
-            id.starts_with("sha256:"),
-            "commit {} ID should start with 'sha256:'",
+        let digest = id.digest_hex();
+        assert_eq!(
+            digest.len(),
+            64,
+            "commit {} digest should be 64 hex chars",
             i + 1
         );
-        let hash = id.strip_prefix("sha256:").unwrap();
-        assert_eq!(hash.len(), 64, "commit {} hash should be 64 chars", i + 1);
     }
 }
 
@@ -147,5 +150,5 @@ async fn commit_id_consistent_within_session() {
     );
 
     // Verify the commit ID format is still valid after reload
-    assert!(commit_id.starts_with("sha256:"));
+    assert_eq!(commit_id.digest_hex().len(), 64);
 }

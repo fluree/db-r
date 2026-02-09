@@ -25,8 +25,10 @@ pub fn apply_cancellation(flakes: Vec<Flake>) -> Vec<Flake> {
     //
     // We rely on `Flake`'s `Eq`/`Hash` implementation, which ignores `t` and `op`
     // but includes metadata `m`, so assertion/retraction pairs can be matched by key.
-    let mut assertions: FxHashMap<Flake, ()> = FxHashMap::with_capacity_and_hasher(cap, Default::default());
-    let mut retractions: FxHashMap<Flake, ()> = FxHashMap::with_capacity_and_hasher(cap, Default::default());
+    let mut assertions: FxHashMap<Flake, ()> =
+        FxHashMap::with_capacity_and_hasher(cap, Default::default());
+    let mut retractions: FxHashMap<Flake, ()> =
+        FxHashMap::with_capacity_and_hasher(cap, Default::default());
 
     for flake in flakes {
         if flake.op {
@@ -43,7 +45,10 @@ pub fn apply_cancellation(flakes: Vec<Flake>) -> Vec<Flake> {
     }
 
     // Collect remaining flakes
-    let mut result: Vec<Flake> = assertions.into_keys().chain(retractions.into_keys()).collect();
+    let mut result: Vec<Flake> = assertions
+        .into_keys()
+        .chain(retractions.into_keys())
+        .collect();
 
     // Sort for deterministic output
     result.sort_by(|a, b| IndexType::Spot.compare(a, b));

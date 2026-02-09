@@ -361,14 +361,14 @@ fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String>
         .map_err(|e| format!("invalid ledger ID '{}': {}", record.ledger_id, e))?;
 
     Ok(NsRecord {
-        address: record.ledger_id.clone(),
+        ledger_id: record.ledger_id.clone(),
         name,
         branch,
         commit_address: record.commit_address.clone(),
         commit_t: record.commit_t,
         index_address: record.index_address.clone(),
         index_t: record.index_t,
-        default_context_address: None,
+        default_context: None,
         retracted: record.retracted,
     })
 }

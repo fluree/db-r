@@ -5,7 +5,7 @@
 
 use crate::{ApiError, Result};
 use crate::{TrackedErrorResponse, Tracker, TrackingOptions, TrackingTally};
-use fluree_db_core::{ContentAddressedWrite, Storage};
+use fluree_db_core::{ContentAddressedWrite, ContentId, ContentKind, Storage};
 use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
@@ -758,7 +758,7 @@ where
                 (
                     CommitReceipt {
                         address: String::new(),
-                        commit_id: String::new(),
+                        commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
                     },
@@ -853,7 +853,7 @@ where
                 (
                     CommitReceipt {
                         address: String::new(),
-                        commit_id: String::new(),
+                        commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
                     },
@@ -952,7 +952,7 @@ where
                 (
                     CommitReceipt {
                         address: String::new(),
-                        commit_id: String::new(),
+                        commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
                     },

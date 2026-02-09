@@ -51,7 +51,12 @@ pub async fn run(
 
         let commit = result?;
 
-        let short_hash = abbreviate_hash(&commit.address);
+        let commit_id_str = commit
+            .id
+            .as_ref()
+            .map(|id| id.to_string())
+            .unwrap_or_default();
+        let short_hash = abbreviate_hash(&commit_id_str);
 
         if oneline {
             // Note: commit messages are not currently persisted in the commit
@@ -81,14 +86,17 @@ pub async fn run(
 /// Extract a short commit hash from a content address for display.
 ///
 /// Handles formats like:
-/// - `fluree:file://ledger/main/commit/<hash>.json`
+/// - `fluree:file://ledger/main/commit/<hash>.fcv2`
 /// - `fluree:commit:sha256:<hex>`
 /// - Plain hex strings
 fn abbreviate_hash(address: &str) -> String {
-    // Try to extract hash from path-style addresses (e.g., .../commit/<hash>.json)
+    // Try to extract hash from path-style addresses (e.g., .../commit/<hash>.fcv2)
     if let Some(pos) = address.rfind("/commit/") {
         let after = &address[pos + 8..];
-        let hash = after.trim_end_matches(".json");
+        let hash = after
+            .strip_suffix(".fcv2")
+            .or_else(|| after.strip_suffix(".json"))
+            .unwrap_or(after);
         if hash.len() >= 7 {
             return hash[..7].to_string();
         }
@@ -106,7 +114,10 @@ fn abbreviate_hash(address: &str) -> String {
 
     // Fallback: last path segment or first 7 chars
     if let Some(last) = address.rsplit('/').next() {
-        let clean = last.trim_end_matches(".json");
+        let clean = last
+            .strip_suffix(".fcv2")
+            .or_else(|| last.strip_suffix(".json"))
+            .unwrap_or(last);
         if clean.len() >= 7 {
             return clean[..7].to_string();
         }

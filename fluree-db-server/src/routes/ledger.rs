@@ -426,7 +426,7 @@ async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) ->
         "ledger info retrieved (simplified)"
     );
     Ok(Json(LedgerInfoResponse {
-        ledger: record.address.clone(),
+        ledger: record.ledger_id.clone(),
         t: record.commit_t,
         commit: record.commit_address.clone(),
         index: record.index_address.clone(),

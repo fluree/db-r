@@ -57,6 +57,10 @@ postcard = { version = "1.0", features = ["alloc", "use-std"] }
 sha2 = "0.10"
 hex = "0.4"
 
+# Content identifiers (CIDv1 / multiformats)
+cid = { version = "0.11", default-features = false, features = ["std"] }
+multihash = { version = "0.19", default-features = false, features = ["std"] }
+
 # For unique ID generation
 ulid = "1.1"
 

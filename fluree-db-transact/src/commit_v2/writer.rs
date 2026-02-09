@@ -14,13 +14,13 @@ pub use fluree_db_novelty::commit_v2::{write_commit, CommitWriteResult};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
+    use fluree_db_core::{ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid};
     use fluree_db_novelty::commit_v2::{read_commit, read_commit_envelope, MAGIC};
     use fluree_db_novelty::{Commit, CommitRef, IndexRef};
     use std::collections::HashMap;
 
     fn make_test_commit(flakes: Vec<Flake>, t: i64) -> Commit {
-        Commit::new("", t, flakes)
+        Commit::new(t, flakes)
     }
 
     fn assert_flake_eq(a: &Flake, b: &Flake) {
@@ -263,14 +263,15 @@ mod tests {
             )],
             5,
         );
-        commit.previous_ref = Some(CommitRef::new("prev-addr").with_id("fluree:commit:sha256:abc"));
+        let prev_cid = ContentId::new(ContentKind::Commit, b"prev-commit-bytes");
+        commit.previous_ref = Some(CommitRef::new(prev_cid.clone()));
         commit.namespace_delta = HashMap::from([(200, "ex:".to_string())]);
 
         let result = write_commit(&commit, false, None).unwrap();
         let envelope = read_commit_envelope(&result.bytes).unwrap();
 
         assert_eq!(envelope.t, 5);
-        assert_eq!(envelope.previous_ref.as_ref().unwrap().address, "prev-addr");
+        assert_eq!(envelope.previous_ref.as_ref().unwrap().id, prev_cid);
         assert_eq!(envelope.namespace_delta.get(&200), Some(&"ex:".to_string()));
     }
 
@@ -302,10 +303,11 @@ mod tests {
     #[test]
     fn test_envelope_fields_round_trip() {
         let mut commit = make_test_commit(vec![], 10);
-        commit.v = 2;
         commit.time = Some("2024-01-01T00:00:00Z".into());
-        commit.txn = Some("fluree:file://txn/abc123.json".into());
-        commit.index = Some(IndexRef::new("fluree:file://index/xyz").with_t(8));
+        let txn_cid = ContentId::new(ContentKind::Txn, b"txn-abc123");
+        commit.txn = Some(txn_cid.clone());
+        let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-xyz");
+        commit.index = Some(IndexRef::new(index_cid.clone()).with_t(8));
 
         commit.flakes.push(Flake::new(
             Sid::new(101, "x"),
@@ -321,16 +323,9 @@ mod tests {
         let decoded = read_commit(&result.bytes).unwrap();
 
         assert_eq!(decoded.t, 10);
-        assert_eq!(decoded.v, 2);
         assert_eq!(decoded.time.as_deref(), Some("2024-01-01T00:00:00Z"));
-        assert_eq!(
-            decoded.txn.as_deref(),
-            Some("fluree:file://txn/abc123.json")
-        );
-        assert_eq!(
-            decoded.index.as_ref().unwrap().address,
-            "fluree:file://index/xyz"
-        );
+        assert_eq!(decoded.txn.as_ref(), Some(&txn_cid));
+        assert_eq!(decoded.index.as_ref().unwrap().id, index_cid);
         assert_eq!(decoded.index.as_ref().unwrap().t, Some(8));
     }
 

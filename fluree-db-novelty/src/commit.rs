@@ -15,117 +15,51 @@
 //! monotonic to correctly identify which commits are already indexed.
 //!
 //! For future support of git-like branching semantics, the stop condition
-//! would need to be ancestry-based (e.g., comparing commit addresses or
+//! would need to be ancestry-based (e.g., comparing commit CIDs or
 //! using Merkle ancestry proofs) rather than `t`-based.
 
 use crate::commit_v2::format::CommitSignature;
 use crate::{NoveltyError, Result};
-use fluree_db_core::{Flake, Storage};
+use fluree_db_core::{ContentId, ContentStore, Flake, Storage, CODEC_FLUREE_COMMIT};
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Reference to a commit (for linking previous commits)
 ///
-/// Used in commit chains to reference the previous commit with both
-/// content-address IRI and storage address.
+/// In the CID-based architecture, the content identifier IS the identity.
+/// Storage location is resolved by the `ContentStore` implementation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommitRef {
-    /// Content-address IRI (e.g., "fluree:commit:sha256:...")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-
-    /// Storage address (e.g., "fluree:file://...")
-    pub address: String,
+    /// Content identifier (CIDv1). This IS the identity.
+    pub id: ContentId,
 }
 
 impl CommitRef {
-    /// Create a new commit reference
-    pub fn new(address: impl Into<String>) -> Self {
-        Self {
-            id: None,
-            address: address.into(),
-        }
+    /// Create a new commit reference from a ContentId
+    pub fn new(id: ContentId) -> Self {
+        Self { id }
     }
-
-    /// Create a commit reference with content-address IRI
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
-        self
-    }
-}
-
-/// Embedded DB metadata in a commit
-///
-/// Records the cumulative state of the database at this commit point.
-/// This is NOT the flake count of the commit itself, but the total DB state.
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct CommitData {
-    /// Content-address IRI (legacy / optional).
-    ///
-    /// Historically this could reference a separate DB snapshot subject. The Rust
-    /// pipeline now treats commit metadata as keyed by commit identifiers, so this
-    /// field is typically `None`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-
-    /// Storage address
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-
-    /// Total flake count in the database (cumulative)
-    #[serde(default)]
-    pub flakes: u64,
-
-    /// Total size in bytes (cumulative)
-    #[serde(default)]
-    pub size: u64,
-
-    /// Previous DB reference (if any)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<Box<CommitData>>,
 }
 
 /// Index reference embedded in a commit
 ///
-/// When a commit is created at an index point, this records the index metadata.
+/// When a commit is created at an index point, this records the index CID
+/// and the transaction time the index covers.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IndexRef {
-    /// Content-address IRI (e.g., "fluree:index:sha256:...")
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-
-    /// Storage address
-    pub address: String,
-
-    /// Index version
-    #[serde(default = "default_version")]
-    pub v: i32,
+    /// Content identifier for the index root
+    pub id: ContentId,
 
     /// Transaction time the index covers
     #[serde(skip_serializing_if = "Option::is_none")]
     pub t: Option<i64>,
 }
 
-fn default_version() -> i32 {
-    2
-}
-
 impl IndexRef {
     /// Create a new index reference
-    pub fn new(address: impl Into<String>) -> Self {
-        Self {
-            id: None,
-            address: address.into(),
-            v: 2,
-            t: None,
-        }
-    }
-
-    /// Set the content-address IRI
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
-        self
+    pub fn new(id: ContentId) -> Self {
+        Self { id, t: None }
     }
 
     /// Set the transaction time
@@ -144,7 +78,7 @@ impl IndexRef {
 pub struct TxnSignature {
     /// Verified signer identity (did:key:z6Mk...)
     pub signer: String,
-    /// Content-addressed transaction ID (e.g., "fluree:tx:sha256:...")
+    /// Content-addressed transaction ID.
     /// References the original signed transaction stored in CAS.
     pub txn_id: Option<String>,
 }
@@ -162,7 +96,7 @@ pub const MAX_TXN_META_BYTES: usize = 65536;
 /// A predicate/object pair for user-provided transaction metadata.
 ///
 /// Uses ns_code + name (like Sid) for compact encoding and resolver compatibility.
-/// The subject is implicit — always the commit itself (`fluree:commit:sha256:<hex>`).
+/// The subject is implicit — always the commit itself.
 ///
 /// Stored in the commit envelope for replay-safe persistence, then emitted to
 /// the txn-meta graph (`g_id=1`) during indexing.
@@ -275,17 +209,12 @@ impl TxnMetaValue {
 /// A commit represents a single transaction in the ledger
 #[derive(Clone, Debug)]
 pub struct Commit {
-    /// Content address of this commit (storage address)
-    pub address: String,
-
-    /// Content-address IRI (e.g., "fluree:commit:sha256:...")
-    pub id: Option<String>,
+    /// Content identifier (CIDv1). `None` before the commit is serialized
+    /// and hashed; `Some(cid)` after hashing or when loaded from storage.
+    pub id: Option<ContentId>,
 
     /// Transaction time (monotonically increasing)
     pub t: i64,
-
-    /// Commit version (default 2)
-    pub v: i32,
 
     /// ISO 8601 timestamp of when the commit was created
     pub time: Option<String>,
@@ -293,19 +222,15 @@ pub struct Commit {
     /// Flakes in this commit (assertions and retractions)
     pub flakes: Vec<Flake>,
 
-    /// Previous commit reference with id and address
+    /// Previous commit reference (CID-based)
     pub previous_ref: Option<CommitRef>,
-
-    /// Embedded DB metadata (cumulative state)
-    pub data: Option<CommitData>,
 
     /// Index reference (if indexed at this commit)
     pub index: Option<IndexRef>,
 
-    /// Transaction address (storage address of the original transaction JSON)
-    /// When present, the raw transaction JSON can be loaded from this address.
-    /// Only set when the transaction included a txn payload (Clojure parity).
-    pub txn: Option<String>,
+    /// Transaction blob CID (content-addressed reference to original txn JSON).
+    /// When present, the raw transaction JSON can be loaded from this CID.
+    pub txn: Option<ContentId>,
 
     /// New namespace codes introduced by this commit (code → prefix)
     ///
@@ -345,17 +270,14 @@ pub struct Commit {
 }
 
 impl Commit {
-    /// Create a new commit
-    pub fn new(address: impl Into<String>, t: i64, flakes: Vec<Flake>) -> Self {
+    /// Create a new commit (id is set to `None` until serialized and hashed)
+    pub fn new(t: i64, flakes: Vec<Flake>) -> Self {
         Self {
-            address: address.into(),
             id: None,
             t,
-            v: 2,
             time: None,
             flakes,
             previous_ref: None,
-            data: None,
             index: None,
             txn: None,
             namespace_delta: HashMap::new(),
@@ -366,9 +288,9 @@ impl Commit {
         }
     }
 
-    /// Set the content-address IRI
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.id = Some(id.into());
+    /// Set the content identifier
+    pub fn with_id(mut self, id: ContentId) -> Self {
+        self.id = Some(id);
         self
     }
 
@@ -384,15 +306,9 @@ impl Commit {
         self
     }
 
-    /// Set the embedded DB metadata
-    pub fn with_data(mut self, data: CommitData) -> Self {
-        self.data = Some(data);
-        self
-    }
-
-    /// Set the transaction address (storage address of the original transaction JSON)
-    pub fn with_txn(mut self, txn_addr: impl Into<String>) -> Self {
-        self.txn = Some(txn_addr.into());
+    /// Set the transaction CID
+    pub fn with_txn(mut self, txn_id: ContentId) -> Self {
+        self.txn = Some(txn_id);
         self
     }
 
@@ -414,25 +330,102 @@ impl Commit {
         self
     }
 
-    /// Get the previous commit address (if any)
-    pub fn previous_address(&self) -> Option<&str> {
-        self.previous_ref.as_ref().map(|r| r.address.as_str())
+    /// Get the previous commit CID (if any)
+    pub fn previous_id(&self) -> Option<&ContentId> {
+        self.previous_ref.as_ref().map(|r| &r.id)
     }
 
-    /// Get the previous commit content-address IRI (if any)
-    pub fn previous_id(&self) -> Option<&str> {
-        self.previous_ref.as_ref().and_then(|r| r.id.as_deref())
-    }
-
-    /// Get the index address (if indexed at this commit)
-    pub fn index_address(&self) -> Option<&str> {
-        self.index.as_ref().map(|r| r.address.as_str())
+    /// Get the index CID (if indexed at this commit)
+    pub fn index_id(&self) -> Option<&ContentId> {
+        self.index.as_ref().map(|r| &r.id)
     }
 }
 
-/// Load a single commit from storage
+// =============================================================================
+// V2 backward compatibility helpers
+// =============================================================================
+
+/// Extract the SHA-256 hex hash from a legacy storage address.
 ///
-/// The commit blob must be in v2 binary format (magic header `FLv2`).
+/// Supports formats like `fluree:file:///path/to/HASH.fcv2` (current) and
+/// `fluree:s3://bucket/path/to/HASH.json` (legacy, backward compat).
+fn hash_hex_from_address(address: &str) -> Option<&str> {
+    // Extract path portion after :// if present
+    let path = if let Some(rest) = address.strip_prefix("fluree:") {
+        let pos = rest.find("://")?;
+        &rest[pos + 3..]
+    } else if let Some(pos) = address.find("://") {
+        &address[pos + 3..]
+    } else {
+        return None;
+    };
+
+    let last_segment = path.rsplit('/').next()?;
+    let hash = last_segment
+        .strip_suffix(".fcv2")
+        .or_else(|| last_segment.strip_suffix(".json"))?;
+    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(hash)
+    } else {
+        None
+    }
+}
+
+/// Derive a `ContentId` from a legacy v2 commit address or id string.
+///
+/// Tries the `id` string first (format: `fluree:commit:sha256:HEX`),
+/// then falls back to extracting the hash from the `address`.
+#[cfg(test)]
+fn content_id_from_v2_commit_ref(
+    id_str: Option<&str>,
+    address: &str,
+    codec: u64,
+) -> Option<ContentId> {
+    // Try the id string first: "fluree:commit:sha256:HEX"
+    if let Some(id) = id_str {
+        let hex = id
+            .strip_prefix("fluree:commit:sha256:")
+            .or_else(|| id.strip_prefix("fluree:commit:"))
+            .or_else(|| id.strip_prefix("fluree:index:sha256:"))
+            .or_else(|| id.strip_prefix("fluree:index:"));
+        if let Some(hex) = hex {
+            if let Some(cid) = ContentId::from_hex_digest(codec, hex) {
+                return Some(cid);
+            }
+        }
+    }
+
+    // Fall back to extracting hash from address
+    let hex = hash_hex_from_address(address)?;
+    ContentId::from_hex_digest(codec, hex)
+}
+
+// =============================================================================
+// Loading
+// =============================================================================
+
+/// Load a single commit from a content store by CID.
+pub async fn load_commit_by_id<C: ContentStore>(store: &C, id: &ContentId) -> Result<Commit> {
+    let data = store
+        .get(id)
+        .await
+        .map_err(|e| NoveltyError::storage(format!("Failed to read commit {}: {}", id, e)))?;
+
+    let _span = tracing::debug_span!("load_commit", blob_bytes = data.len()).entered();
+    let mut commit = crate::commit_v2::read_commit(&data)
+        .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?;
+
+    // Set the commit's id from the CID we used to load it
+    commit.id = Some(id.clone());
+
+    Ok(commit)
+}
+
+/// Load a single commit from legacy storage by address string.
+///
+/// This is a backward-compatible entry point for code that still uses
+/// address-based storage. The commit's `id` is derived from the v2
+/// blob hash.
 pub async fn load_commit<S: Storage>(storage: &S, address: &str) -> Result<Commit> {
     let data = storage
         .read_bytes(address)
@@ -443,38 +436,14 @@ pub async fn load_commit<S: Storage>(storage: &S, address: &str) -> Result<Commi
     let mut commit = crate::commit_v2::read_commit(&data)
         .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?;
 
-    // Inject derived metadata that may be omitted from on-disk commit blobs.
-    //
-    // This matches Clojure behavior where `id`/`address` are injected at read time
-    // from the storage address, rather than being self-referential in the blob.
-    commit.address = address.to_string();
+    // Derive id from address hash if not already set
     if commit.id.is_none() {
-        if let Some(hex) = commit_hash_hex_from_address(address) {
-            commit.id = Some(format!("fluree:commit:sha256:{}", hex));
+        if let Some(hex) = hash_hex_from_address(address) {
+            commit.id = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, hex);
         }
     }
 
     Ok(commit)
-}
-
-fn commit_hash_hex_from_address(address: &str) -> Option<&str> {
-    // Extract path portion after :// if present (supports `fluree:*://...` and raw `*://...`)
-    let path = if let Some(rest) = address.strip_prefix("fluree:") {
-        let pos = rest.find("://")?;
-        &rest[pos + 3..]
-    } else if let Some(pos) = address.find("://") {
-        &address[pos + 3..]
-    } else {
-        return None;
-    };
-
-    let commit_part = path.rsplit('/').next()?;
-    let hash = commit_part.strip_suffix(".json")?;
-    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(hash)
-    } else {
-        None
-    }
 }
 
 // =============================================================================
@@ -493,10 +462,7 @@ pub struct CommitEnvelope {
     /// Transaction time (monotonically increasing)
     pub t: i64,
 
-    /// Commit version (default 2)
-    pub v: i32,
-
-    /// Previous commit reference with id and address
+    /// Previous commit reference (CID-based)
     pub previous_ref: Option<CommitRef>,
 
     /// Index reference (if indexed at this commit)
@@ -510,9 +476,9 @@ pub struct CommitEnvelope {
 }
 
 impl CommitEnvelope {
-    /// Get the previous commit address (if any)
-    pub fn previous_address(&self) -> Option<&str> {
-        self.previous_ref.as_ref().map(|r| r.address.as_str())
+    /// Get the previous commit CID (if any)
+    pub fn previous_id(&self) -> Option<&ContentId> {
+        self.previous_ref.as_ref().map(|r| &r.id)
     }
 
     /// Get the index reference (if indexed at this commit)
@@ -520,9 +486,9 @@ impl CommitEnvelope {
         self.index.as_ref()
     }
 
-    /// Get the index address (if indexed at this commit)
-    pub fn index_address(&self) -> Option<&str> {
-        self.index.as_ref().map(|r| r.address.as_str())
+    /// Get the index CID (if indexed at this commit)
+    pub fn index_id(&self) -> Option<&ContentId> {
+        self.index.as_ref().map(|r| &r.id)
     }
 }
 
@@ -580,7 +546,11 @@ pub fn trace_commit_envelopes<S: Storage + Clone + 'static>(
                 return None;
             }
 
-            let next = envelope.previous_address().map(String::from);
+            // Transition: storage is still address-based, but commit chain references are CID-based.
+            // Derive the previous commit's legacy address by swapping the filename stem in-place.
+            let next = envelope
+                .previous_id()
+                .and_then(|cid| replace_hash_in_address(&addr, &cid.digest_hex()));
             Some((Ok((addr, envelope)), next))
         }
     })
@@ -620,16 +590,44 @@ pub fn trace_commits<S: Storage + Clone + 'static>(
                 return None;
             }
 
-            let next = commit.previous_address().map(String::from);
+            // Transition: storage is still address-based, but commit chain references are CID-based.
+            // Derive the previous commit's legacy address by swapping the filename stem in-place.
+            let next = commit
+                .previous_id()
+                .and_then(|cid| replace_hash_in_address(&addr, &cid.digest_hex()));
             Some((Ok(commit), next))
         }
     })
 }
 
+/// Replace the filename stem (between the last `/` and last `.`) with `new_hash_hex`.
+///
+/// Used to derive the previous commit address from the current commit address
+/// during the transition where storage is still legacy-address-based.
+fn replace_hash_in_address(address: &str, new_hash_hex: &str) -> Option<String> {
+    let slash = address.rfind('/')?;
+    let dot = address.rfind('.')?;
+    if dot <= slash + 1 {
+        return None;
+    }
+
+    let mut out = String::with_capacity(address.len() - (dot - (slash + 1)) + new_hash_hex.len());
+    out.push_str(&address[..slash + 1]);
+    out.push_str(new_hash_hex);
+    out.push_str(&address[dot..]);
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{Flake, FlakeValue, Sid};
+    use fluree_db_core::{
+        ContentKind, Flake, FlakeValue, Sid, CODEC_FLUREE_COMMIT, CODEC_FLUREE_INDEX_ROOT,
+    };
+
+    fn make_test_content_id(kind: ContentKind, label: &str) -> ContentId {
+        ContentId::new(kind, label.as_bytes())
+    }
 
     fn make_test_flake(s: i64, p: i64, o: i64, t: i64) -> Flake {
         Flake::new(
@@ -646,25 +644,26 @@ mod tests {
     #[tokio::test]
     async fn test_commit_creation() {
         let flakes = vec![make_test_flake(1, 2, 42, 1)];
-        let commit = Commit::new("commit-1", 1, flakes);
+        let commit = Commit::new(1, flakes);
 
-        assert_eq!(commit.address, "commit-1");
         assert_eq!(commit.t, 1);
         assert_eq!(commit.flakes.len(), 1);
         assert!(commit.previous_ref.is_none());
+        assert!(commit.id.is_none());
     }
 
     #[tokio::test]
     async fn test_commit_chain() {
-        let commit1 = Commit::new("commit-1", 1, vec![]);
-        let commit2 =
-            Commit::new("commit-2", 2, vec![]).with_previous_ref(CommitRef::new("commit-1"));
-        let commit3 =
-            Commit::new("commit-3", 3, vec![]).with_previous_ref(CommitRef::new("commit-2"));
+        let id1 = make_test_content_id(ContentKind::Commit, "commit-1");
+        let id2 = make_test_content_id(ContentKind::Commit, "commit-2");
 
-        assert!(commit1.previous_address().is_none());
-        assert_eq!(commit2.previous_address(), Some("commit-1"));
-        assert_eq!(commit3.previous_address(), Some("commit-2"));
+        let commit1 = Commit::new(1, vec![]);
+        let commit2 = Commit::new(2, vec![]).with_previous_ref(CommitRef::new(id1.clone()));
+        let commit3 = Commit::new(3, vec![]).with_previous_ref(CommitRef::new(id2.clone()));
+
+        assert!(commit1.previous_id().is_none());
+        assert_eq!(commit2.previous_id(), Some(&id1));
+        assert_eq!(commit3.previous_id(), Some(&id2));
     }
 
     // =========================================================================
@@ -673,35 +672,33 @@ mod tests {
 
     #[test]
     fn test_commit_envelope_fields() {
+        let prev_id = make_test_content_id(ContentKind::Commit, "commit-0");
         let envelope = CommitEnvelope {
             t: 5,
-            v: 2,
-            previous_ref: Some(CommitRef::new("commit-0")),
+            previous_ref: Some(CommitRef::new(prev_id.clone())),
             index: None,
             namespace_delta: HashMap::from([(100, "ex:".to_string())]),
             txn_meta: Vec::new(),
         };
 
         assert_eq!(envelope.t, 5);
-        assert_eq!(envelope.v, 2);
-        assert_eq!(envelope.previous_address(), Some("commit-0"));
+        assert_eq!(envelope.previous_id(), Some(&prev_id));
         assert_eq!(envelope.namespace_delta.get(&100), Some(&"ex:".to_string()));
     }
 
     #[test]
     fn test_commit_envelope_index_ref() {
+        let idx_id = make_test_content_id(ContentKind::IndexRoot, "index-1");
         let envelope = CommitEnvelope {
             t: 10,
-            v: 2,
             previous_ref: None,
-            index: Some(IndexRef::new("index-addr").with_t(10)),
+            index: Some(IndexRef::new(idx_id.clone()).with_t(10)),
             namespace_delta: HashMap::new(),
             txn_meta: Vec::new(),
         };
 
         let idx = envelope.index_ref().unwrap();
-        assert_eq!(idx.address, "index-addr");
-        assert_eq!(idx.v, 2);
+        assert_eq!(idx.id, idx_id);
         assert_eq!(idx.t, Some(10));
     }
 
@@ -709,14 +706,72 @@ mod tests {
     fn test_commit_envelope_no_index() {
         let envelope = CommitEnvelope {
             t: 5,
-            v: 2,
             previous_ref: None,
             index: None,
             namespace_delta: HashMap::new(),
             txn_meta: Vec::new(),
         };
         assert!(envelope.index_ref().is_none());
-        assert!(envelope.index_address().is_none());
+        assert!(envelope.index_id().is_none());
+    }
+
+    // =========================================================================
+    // V2 backward compat helpers
+    // =========================================================================
+
+    #[test]
+    fn test_hash_hex_from_address_fcv2() {
+        let hash = "a".repeat(64);
+        let addr = format!("fluree:file:///data/ledger/commit/{}.fcv2", hash);
+        assert_eq!(hash_hex_from_address(&addr), Some(hash.as_str()));
+
+        let s3_addr = format!("fluree:s3://bucket/path/commit/{}.fcv2", hash);
+        assert_eq!(hash_hex_from_address(&s3_addr), Some(hash.as_str()));
+
+        assert_eq!(hash_hex_from_address("not-an-address"), None);
+        assert_eq!(hash_hex_from_address("fluree:file:///short.fcv2"), None);
+    }
+
+    #[test]
+    fn test_hash_hex_from_address_json_backward_compat() {
+        // Backward compat: .json commit addresses should still parse
+        let hash = "a".repeat(64);
+        let addr = format!("fluree:file:///data/ledger/commit/{}.json", hash);
+        assert_eq!(hash_hex_from_address(&addr), Some(hash.as_str()));
+
+        let s3_addr = format!("fluree:s3://bucket/path/commit/{}.json", hash);
+        assert_eq!(hash_hex_from_address(&s3_addr), Some(hash.as_str()));
+
+        assert_eq!(hash_hex_from_address("fluree:file:///short.json"), None);
+    }
+
+    #[test]
+    fn test_content_id_from_v2_commit_ref() {
+        let hash = "a".repeat(64);
+        let id_str = format!("fluree:commit:sha256:{}", hash);
+        let address = format!("fluree:file:///path/commit/{}.fcv2", hash);
+
+        // From id string
+        let cid =
+            content_id_from_v2_commit_ref(Some(&id_str), &address, CODEC_FLUREE_COMMIT).unwrap();
+        assert_eq!(cid.digest_hex(), hash);
+        assert_eq!(cid.codec(), CODEC_FLUREE_COMMIT);
+
+        // From address only (.fcv2)
+        let cid = content_id_from_v2_commit_ref(None, &address, CODEC_FLUREE_COMMIT).unwrap();
+        assert_eq!(cid.digest_hex(), hash);
+
+        // From address only (.json backward compat)
+        let json_address = format!("fluree:file:///path/commit/{}.json", hash);
+        let cid = content_id_from_v2_commit_ref(None, &json_address, CODEC_FLUREE_COMMIT).unwrap();
+        assert_eq!(cid.digest_hex(), hash);
+
+        // Index ref
+        let idx_id_str = format!("fluree:index:sha256:{}", hash);
+        let cid =
+            content_id_from_v2_commit_ref(Some(&idx_id_str), &address, CODEC_FLUREE_INDEX_ROOT)
+                .unwrap();
+        assert_eq!(cid.codec(), CODEC_FLUREE_INDEX_ROOT);
     }
 
     // =========================================================================

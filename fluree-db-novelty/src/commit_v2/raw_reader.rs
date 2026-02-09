@@ -488,12 +488,10 @@ mod tests {
         // Encode envelope (minimal: just v=0, no previous, no namespace_delta)
         let envelope = CommitV2Envelope {
             t,
-            v: 0,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
-            data: None,
             index: None,
             txn_signature: None,
             txn_meta: Vec::new(),

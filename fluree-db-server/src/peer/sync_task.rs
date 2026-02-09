@@ -119,12 +119,12 @@ impl PeerSyncTask {
         let ns = self.fluree.nameservice();
 
         // 1. Ensure ledger exists locally (idempotent)
-        match ns.publish_ledger_init(&record.address).await {
+        match ns.publish_ledger_init(&record.ledger_id).await {
             Ok(()) => {}
             Err(NameServiceError::LedgerAlreadyExists(_)) => {}
             Err(e) => {
                 tracing::warn!(
-                    alias = %record.address,
+                    alias = %record.ledger_id,
                     error = %e,
                     "Failed to init ledger locally"
                 );
@@ -139,26 +139,26 @@ impl PeerSyncTask {
                 t: record.commit_t,
             };
             match ns
-                .fast_forward_commit(&record.address, &commit_ref, 3)
+                .fast_forward_commit(&record.ledger_id, &commit_ref, 3)
                 .await
             {
                 Ok(CasResult::Updated) => {}
                 Ok(CasResult::Conflict { actual }) => {
                     // Local diverged — server is authoritative in Mode B, force-follow.
                     tracing::warn!(
-                        alias = %record.address,
+                        alias = %record.ledger_id,
                         ?actual,
                         remote_t = record.commit_t,
                         "Local commit diverged from server, force-following"
                     );
-                    self.fluree.disconnect_ledger(&record.address).await;
+                    self.fluree.disconnect_ledger(&record.ledger_id).await;
                     if let Some(ref cur) = actual {
                         if cur.t > record.commit_t {
                             // This should never happen in peer Mode B (writes are forwarded),
                             // but if it does, we cannot "force-follow" due to the strict
                             // monotonic guard for commit refs (new.t must be > current.t).
                             tracing::error!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 local_t = cur.t,
                                 remote_t = record.commit_t,
                                 "Local commit_t is ahead of remote; refusing to force-follow"
@@ -168,7 +168,7 @@ impl PeerSyncTask {
                     }
                     let force_result = ns
                         .compare_and_set_ref(
-                            &record.address,
+                            &record.ledger_id,
                             RefKind::CommitHead,
                             actual.as_ref(),
                             &commit_ref,
@@ -178,14 +178,14 @@ impl PeerSyncTask {
                     match force_result {
                         Ok(CasResult::Updated) => {
                             tracing::info!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 commit_t = record.commit_t,
                                 "Force-follow CAS updated local commit head"
                             );
                         }
                         Ok(CasResult::Conflict { actual: new_actual }) => {
                             tracing::warn!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 ?new_actual,
                                 remote_t = record.commit_t,
                                 "Force-follow CAS still conflicted (local may remain divergent)"
@@ -193,7 +193,7 @@ impl PeerSyncTask {
                         }
                         Err(e) => {
                             tracing::warn!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 error = %e,
                                 "Force-follow CAS failed"
                             );
@@ -202,7 +202,7 @@ impl PeerSyncTask {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        alias = %record.address,
+                        alias = %record.ledger_id,
                         error = %e,
                         "Failed to fast-forward commit"
                     );
@@ -218,13 +218,13 @@ impl PeerSyncTask {
                 t: record.index_t,
             };
             let current = ns
-                .get_ref(&record.address, RefKind::IndexHead)
+                .get_ref(&record.ledger_id, RefKind::IndexHead)
                 .await
                 .ok()
                 .flatten();
             let index_result = ns
                 .compare_and_set_ref(
-                    &record.address,
+                    &record.ledger_id,
                     RefKind::IndexHead,
                     current.as_ref(),
                     &index_ref,
@@ -236,7 +236,7 @@ impl PeerSyncTask {
                     if let Some(ref cur) = actual {
                         if cur.t > record.index_t {
                             tracing::warn!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 local_index_t = cur.t,
                                 remote_index_t = record.index_t,
                                 "Local index_t is ahead of remote; index ref not updated"
@@ -246,7 +246,7 @@ impl PeerSyncTask {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        alias = %record.address,
+                        alias = %record.ledger_id,
                         error = %e,
                         "Failed to update index ref"
                     );
@@ -258,7 +258,7 @@ impl PeerSyncTask {
         let changed = self
             .peer_state
             .update_ledger(
-                &record.address,
+                &record.ledger_id,
                 record.commit_t,
                 record.index_t,
                 record.commit_address.clone(),
@@ -268,7 +268,7 @@ impl PeerSyncTask {
 
         if changed {
             tracing::info!(
-                alias = %record.address,
+                alias = %record.ledger_id,
                 commit_t = record.commit_t,
                 index_t = record.index_t,
                 "Remote ledger watermark updated (persisted to local NS)"
@@ -308,7 +308,7 @@ impl PeerSyncTask {
 
         match mgr
             .notify(NsNotify {
-                ledger_id: record.address.clone(),
+                ledger_id: record.ledger_id.clone(),
                 record: Some(record.clone()),
             })
             .await
@@ -325,14 +325,14 @@ impl PeerSyncTask {
                 | NotifyResult::CommitApplied),
             ) => {
                 tracing::info!(
-                    alias = %record.address,
+                    alias = %record.ledger_id,
                     ?result,
                     "Refreshed cached ledger from SSE update"
                 );
             }
             Err(e) => {
                 tracing::warn!(
-                    alias = %record.address,
+                    alias = %record.ledger_id,
                     error = %e,
                     "Failed to refresh cached ledger from SSE update"
                 );
