@@ -434,7 +434,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/{}/transact", self.base_url, ledger);
+        let url = self.op_url("transact", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,

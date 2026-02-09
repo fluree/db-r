@@ -303,6 +303,12 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
         upstream.remote.as_str()
     );
 
+    eprintln!(
+        "  {} push updates remote refs only; it does NOT upload commit/index blocks.\n  {} this only works when the remote can already read your blocks (shared storage backend, or other out-of-band upload).",
+        "note:".cyan().bold(),
+        "note:".cyan().bold(),
+    );
+
     // Proactively fail with a clear message for query-only tokens.
     if let Some(remote_cfg) = config_store
         .get_remote(&upstream.remote)

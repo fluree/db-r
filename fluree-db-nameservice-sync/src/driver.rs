@@ -187,6 +187,8 @@ impl SyncDriver {
             });
         };
 
+        let remote_index = tracking.index_ref.clone();
+
         let Some(remote_commit) = &tracking.commit_ref else {
             return Ok(PullResult::Current {
                 ledger_address: local_alias.to_string(),
@@ -208,14 +210,30 @@ impl SyncDriver {
                     .await
                     .map_err(SyncError::Nameservice)?;
                 match result {
-                    CasResult::Updated => Ok(PullResult::FastForwarded {
-                        ledger_address: local_alias.to_string(),
-                        from: RefValue {
-                            address: None,
-                            t: 0,
-                        },
-                        to: remote_commit.clone(),
-                    }),
+                    CasResult::Updated => {
+                        // Also fast-forward index head if remote provided one.
+                        if let Some(remote_index) = remote_index.as_ref() {
+                            let _ = self
+                                .local
+                                .compare_and_set_ref(
+                                    local_alias,
+                                    RefKind::IndexHead,
+                                    None,
+                                    remote_index,
+                                )
+                                .await
+                                .map_err(SyncError::Nameservice)?;
+                        }
+
+                        Ok(PullResult::FastForwarded {
+                            ledger_address: local_alias.to_string(),
+                            from: RefValue {
+                                address: None,
+                                t: 0,
+                            },
+                            to: remote_commit.clone(),
+                        })
+                    }
                     CasResult::Conflict { actual } => {
                         // Someone else created it concurrently
                         Ok(PullResult::Diverged {
@@ -238,11 +256,20 @@ impl SyncDriver {
                         .await
                         .map_err(SyncError::Nameservice)?;
                     match result {
-                        CasResult::Updated => Ok(PullResult::FastForwarded {
-                            ledger_address: local_alias.to_string(),
-                            from: local_commit.clone(),
-                            to: remote_commit.clone(),
-                        }),
+                        CasResult::Updated => {
+                            // Also fast-forward index head if remote provided one.
+                            if let Some(remote_index) = remote_index.as_ref() {
+                                self.fast_forward_index(local_alias, remote_index, 3)
+                                    .await
+                                    .map_err(SyncError::Nameservice)?;
+                            }
+
+                            Ok(PullResult::FastForwarded {
+                                ledger_address: local_alias.to_string(),
+                                from: local_commit.clone(),
+                                to: remote_commit.clone(),
+                            })
+                        }
                         CasResult::Conflict { actual } => Ok(PullResult::Diverged {
                             ledger_address: local_alias.to_string(),
                             local: actual.unwrap_or(local_commit.clone()),
@@ -252,6 +279,13 @@ impl SyncDriver {
                 } else if remote_commit.t == local_commit.t
                     && remote_commit.address == local_commit.address
                 {
+                    // Commit is current, but index may still be behind (reindex at same t).
+                    if let Some(remote_index) = remote_index.as_ref() {
+                        self.fast_forward_index(local_alias, remote_index, 3)
+                            .await
+                            .map_err(SyncError::Nameservice)?;
+                    }
+
                     Ok(PullResult::Current {
                         ledger_address: local_alias.to_string(),
                     })
@@ -265,6 +299,55 @@ impl SyncDriver {
                 }
             }
         }
+    }
+
+    /// Fast-forward the index head with a retry loop.
+    ///
+    /// Index heads are non-strict monotonic (`new.t >= cur.t`), which allows
+    /// re-index at the same commit `t`. This helper mirrors `fast_forward_commit`
+    /// but uses the `IndexHead` guard.
+    async fn fast_forward_index(
+        &self,
+        ledger_address: &str,
+        new: &RefValue,
+        max_retries: usize,
+    ) -> std::result::Result<CasResult, fluree_db_nameservice::NameServiceError> {
+        for _ in 0..max_retries {
+            let current = self
+                .local
+                .get_ref(ledger_address, RefKind::IndexHead)
+                .await?;
+
+            // If current index is ahead, this is not a fast-forward.
+            if let Some(ref cur) = current {
+                if new.t < cur.t {
+                    return Ok(CasResult::Conflict { actual: current });
+                }
+            }
+
+            match self
+                .local
+                .compare_and_set_ref(ledger_address, RefKind::IndexHead, current.as_ref(), new)
+                .await?
+            {
+                CasResult::Updated => return Ok(CasResult::Updated),
+                CasResult::Conflict { actual } => {
+                    // Another writer advanced the ref — still FF-able?
+                    if let Some(ref a) = actual {
+                        if new.t < a.t {
+                            return Ok(CasResult::Conflict { actual });
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let current = self
+            .local
+            .get_ref(ledger_address, RefKind::IndexHead)
+            .await?;
+        Ok(CasResult::Conflict { actual: current })
     }
 
     /// Push a local ledger address to its upstream remote.
@@ -292,12 +375,19 @@ impl SyncDriver {
             )));
         };
 
+        let local_index = self
+            .local
+            .get_ref(local_alias, RefKind::IndexHead)
+            .await
+            .map_err(SyncError::Nameservice)?;
+
         // Get tracking ref (last known remote state) as CAS expected value
         let tracking = self
             .tracking
             .get_tracking(&upstream.remote, &upstream.remote_alias)
             .await?;
         let expected = tracking.as_ref().and_then(|t| t.commit_ref.as_ref());
+        let expected_index = tracking.as_ref().and_then(|t| t.index_ref.clone());
 
         let result = client
             .push_ref(
@@ -316,6 +406,24 @@ impl SyncDriver {
                 });
                 tracking_record.commit_ref = Some(local_commit.clone());
                 tracking_record.last_fetched = Some(chrono_now());
+
+                // Best-effort push of index head if we have one.
+                if let Some(local_index) = local_index.as_ref() {
+                    if local_index.address.is_some() {
+                        if let Ok(CasResult::Updated) = client
+                            .push_ref(
+                                &upstream.remote_alias,
+                                RefKind::IndexHead,
+                                expected_index.as_ref(),
+                                local_index,
+                            )
+                            .await
+                        {
+                            tracking_record.index_ref = Some(local_index.clone());
+                        }
+                    }
+                }
+
                 self.tracking.set_tracking(&tracking_record).await?;
 
                 Ok(PushResult::Pushed {
