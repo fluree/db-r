@@ -190,7 +190,7 @@ pub fn merge_upper_bound(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CompareOp, FilterValue};
+    use crate::ir::FilterValue;
     use crate::pattern::Term;
     use fluree_db_core::Sid;
 
@@ -207,17 +207,15 @@ mod tests {
         // Triple pattern: ?s :age ?age
         // Filter: ?age > 18 && ?age < 65
         let triples = vec![make_pattern(VarId(0), "age", VarId(1))];
-        let remaining = vec![Pattern::Filter(Expression::And(vec![
-            Expression::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(Expression::Var(VarId(1))),
-                right: Box::new(Expression::Const(FilterValue::Long(18))),
-            },
-            Expression::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(Expression::Var(VarId(1))),
-                right: Box::new(Expression::Const(FilterValue::Long(65))),
-            },
+        let remaining = vec![Pattern::Filter(Expression::and(vec![
+            Expression::gt(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(18)),
+            ),
+            Expression::lt(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(65)),
+            ),
         ]))];
 
         let (bounds, _consumed) = extract_lookahead_bounds_with_consumption(&triples, &remaining);

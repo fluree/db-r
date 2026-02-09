@@ -761,7 +761,7 @@ pub fn build_triple_operators<S: Storage + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CompareOp, Expression, FilterValue, Pattern};
+    use crate::ir::{Expression, FilterValue, Pattern};
     use crate::pattern::Term;
     use fluree_db_core::{FlakeValue, MemoryStorage, PropertyStatData, Sid, StatsView};
 
@@ -788,11 +788,10 @@ mod tests {
     fn test_build_where_operators_with_filter() {
         let patterns = vec![
             Pattern::Triple(make_pattern(VarId(0), "age", VarId(1))),
-            Pattern::Filter(Expression::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(Expression::Var(VarId(1))),
-                right: Box::new(Expression::Const(FilterValue::Long(18))),
-            }),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(18)),
+            )),
         ];
 
         let result = build_where_operators::<MemoryStorage>(&patterns, None);
@@ -815,11 +814,10 @@ mod tests {
 
         let patterns = vec![
             Pattern::Triple(make_pattern(score, "hasScore", score_v)),
-            Pattern::Filter(Expression::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(Expression::Var(score_v)),
-                right: Box::new(Expression::Const(FilterValue::Double(0.4))),
-            }),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(score_v),
+                Expression::Const(FilterValue::Double(0.4)),
+            )),
             Pattern::Triple(TriplePattern::new(
                 Term::Var(score),
                 Term::Sid(Sid::new(100, "refersInstance")),
@@ -888,11 +886,10 @@ mod tests {
                 vars: vec![VarId(0)],
                 rows: vec![vec![Binding::lit(FlakeValue::Long(1), Sid::new(2, "long"))]],
             },
-            Pattern::Filter(Expression::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(1))),
-            }),
+            Pattern::Filter(Expression::eq(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(1)),
+            )),
             Pattern::Triple(TriplePattern::new(
                 Term::Var(VarId(1)),
                 Term::Sid(Sid::new(100, "p")),
@@ -921,17 +918,15 @@ mod tests {
             Pattern::Triple(make_pattern(VarId(0), "age", VarId(1))),
             Pattern::Bind {
                 var: VarId(2),
-                expr: Expression::Arithmetic {
-                    op: crate::ir::ArithmeticOp::Add,
-                    left: Box::new(Expression::Var(VarId(1))),
-                    right: Box::new(Expression::Const(FilterValue::Long(1))),
-                },
+                expr: Expression::add(
+                    Expression::Var(VarId(1)),
+                    Expression::Const(FilterValue::Long(1)),
+                ),
             },
-            Pattern::Filter(Expression::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(Expression::Var(VarId(2))),
-                right: Box::new(Expression::Const(FilterValue::Long(0))),
-            }),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(2)),
+                Expression::Const(FilterValue::Long(0)),
+            )),
         ];
 
         let block = collect_inner_join_block(&patterns, 0);
@@ -950,11 +945,10 @@ mod tests {
     fn test_build_where_operators_filter_before_triple_allowed() {
         // FILTER at position 0 is now allowed with empty seed support
         let patterns = vec![
-            Pattern::Filter(Expression::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(Expression::Const(FilterValue::Long(1))),
-                right: Box::new(Expression::Const(FilterValue::Long(1))),
-            }),
+            Pattern::Filter(Expression::eq(
+                Expression::Const(FilterValue::Long(1)),
+                Expression::Const(FilterValue::Long(1)),
+            )),
             Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
         ];
 

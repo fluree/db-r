@@ -257,8 +257,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         if exprs.len() == 1 {
             Ok(exprs.pop().unwrap())
         } else {
-            // Expression::And takes Vec<Expression>
-            Ok(Expression::And(exprs))
+            Ok(Expression::and(exprs))
         }
     }
 

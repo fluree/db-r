@@ -1238,38 +1238,30 @@ pub(crate) fn lower_filter_expr(
         UnresolvedExpression::Compare { op, left, right } => {
             let lowered_left = lower_filter_expr(left, vars)?;
             let lowered_right = lower_filter_expr(right, vars)?;
-            Ok(Expression::Compare {
-                op: (*op).into(),
-                left: Box::new(lowered_left),
-                right: Box::new(lowered_right),
-            })
+            Ok(Expression::compare(*op, lowered_left, lowered_right))
         }
         UnresolvedExpression::Arithmetic { op, left, right } => {
             let lowered_left = lower_filter_expr(left, vars)?;
             let lowered_right = lower_filter_expr(right, vars)?;
-            Ok(Expression::Arithmetic {
-                op: (*op).into(),
-                left: Box::new(lowered_left),
-                right: Box::new(lowered_right),
-            })
+            Ok(Expression::arithmetic(*op, lowered_left, lowered_right))
         }
         UnresolvedExpression::Negate(inner) => {
             let lowered = lower_filter_expr(inner, vars)?;
-            Ok(Expression::Negate(Box::new(lowered)))
+            Ok(Expression::negate(lowered))
         }
         UnresolvedExpression::And(exprs) => {
             let lowered: Result<Vec<Expression>> =
                 exprs.iter().map(|e| lower_filter_expr(e, vars)).collect();
-            Ok(Expression::And(lowered?))
+            Ok(Expression::and(lowered?))
         }
         UnresolvedExpression::Or(exprs) => {
             let lowered: Result<Vec<Expression>> =
                 exprs.iter().map(|e| lower_filter_expr(e, vars)).collect();
-            Ok(Expression::Or(lowered?))
+            Ok(Expression::or(lowered?))
         }
         UnresolvedExpression::Not(inner) => {
             let lowered = lower_filter_expr(inner, vars)?;
-            Ok(Expression::Not(Box::new(lowered)))
+            Ok(Expression::not(lowered))
         }
         UnresolvedExpression::In {
             expr,
@@ -1279,11 +1271,11 @@ pub(crate) fn lower_filter_expr(
             let lowered_expr = lower_filter_expr(expr, vars)?;
             let lowered_values: Result<Vec<Expression>> =
                 values.iter().map(|v| lower_filter_expr(v, vars)).collect();
-            Ok(Expression::In {
-                expr: Box::new(lowered_expr),
-                values: lowered_values?,
-                negated: *negated,
-            })
+            if *negated {
+                Ok(Expression::not_in_list(lowered_expr, lowered_values?))
+            } else {
+                Ok(Expression::in_list(lowered_expr, lowered_values?))
+            }
         }
         UnresolvedExpression::Call { func, args } => {
             let lowered_args: Result<Vec<Expression>> =

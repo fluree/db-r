@@ -162,11 +162,10 @@ async fn test_filter_first_true() {
     let query = make_query(
         vec![VarId(0), VarId(1)], // SELECT ?s ?n
         vec![
-            Pattern::Filter(Expression::Compare {
-                op: fluree_db_query::ir::CompareOp::Eq,
-                left: Box::new(Expression::Const(FilterValue::Long(1))),
-                right: Box::new(Expression::Const(FilterValue::Long(1))),
-            }),
+            Pattern::Filter(Expression::eq(
+                Expression::Const(FilterValue::Long(1)),
+                Expression::Const(FilterValue::Long(1)),
+            )),
             Pattern::Triple(make_triple_pattern(VarId(0), "name", VarId(1))),
         ],
     );
@@ -188,11 +187,10 @@ async fn test_filter_first_false() {
     let query = make_query(
         vec![VarId(0), VarId(1)], // SELECT ?s ?n
         vec![
-            Pattern::Filter(Expression::Compare {
-                op: fluree_db_query::ir::CompareOp::Eq,
-                left: Box::new(Expression::Const(FilterValue::Long(1))),
-                right: Box::new(Expression::Const(FilterValue::Long(2))),
-            }),
+            Pattern::Filter(Expression::eq(
+                Expression::Const(FilterValue::Long(1)),
+                Expression::Const(FilterValue::Long(2)),
+            )),
             Pattern::Triple(make_triple_pattern(VarId(0), "name", VarId(1))),
         ],
     );
@@ -370,7 +368,6 @@ async fn test_union_is_correlated_via_values_overlap() {
 async fn test_bind_error_does_not_clobber_existing_binding() {
     use fluree_db_query::bind::BindOperator;
     use fluree_db_query::binding::Batch;
-    use fluree_db_query::ir::ArithmeticOp;
 
     let db = make_test_db();
     let vars = VarRegistry::new();
@@ -386,11 +383,10 @@ async fn test_bind_error_does_not_clobber_existing_binding() {
     ));
 
     // Expression uses an unbound var ?y => evaluation yields Unbound
-    let expr = Expression::Arithmetic {
-        op: ArithmeticOp::Add,
-        left: Box::new(Expression::Var(VarId(1))), // ?y (unbound)
-        right: Box::new(Expression::Const(FilterValue::Long(1))),
-    };
+    let expr = Expression::add(
+        Expression::Var(VarId(1)), // ?y (unbound)
+        Expression::Const(FilterValue::Long(1)),
+    );
 
     let mut bind_op = BindOperator::new(seed, VarId(0), expr);
     bind_op.open(&ctx).await.unwrap();

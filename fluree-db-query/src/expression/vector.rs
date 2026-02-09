@@ -83,10 +83,7 @@ where
                 Ok(compute(&a, &b).map(ComparableValue::Double))
             }
         }
-        (None, _) | (_, None) => Ok(None),
-        _ => Err(QueryError::InvalidFilter(format!(
-            "{} requires vector arguments",
-            fn_name
-        ))),
+        // Type mismatch or unbound -> return None (SPARQL-style graceful handling)
+        _ => Ok(None),
     }
 }

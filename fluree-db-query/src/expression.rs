@@ -12,8 +12,9 @@
 //! - `eval`: Core expression evaluation
 //! - `dispatch`: Main function dispatcher
 //! - Category submodules: `string`, `numeric`, `datetime`, `hash`, `uuid`,
-//!   `vector`, `geo`, `types`, `rdf`, `conditional`, `fluree`
+//!   `vector`, `geo`, `types`, `rdf`, `conditional`, `fluree`, `arithmetic`, `logical`
 
+mod arithmetic;
 mod compare;
 mod conditional;
 mod datetime;
@@ -23,6 +24,7 @@ mod fluree;
 mod geo;
 mod hash;
 mod helpers;
+mod logical;
 mod numeric;
 mod rdf;
 mod string;

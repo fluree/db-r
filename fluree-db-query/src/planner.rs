@@ -14,7 +14,7 @@
 //! estimates to compute selectivity scores for each pattern. Lower scores
 //! indicate more selective patterns that should be executed first.
 
-use crate::ir::{Pattern, Query};
+use crate::ir::{CompareOp, Function, Pattern, Query};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::{FlakeValue, StatsView};
@@ -713,41 +713,65 @@ pub fn extract_range_constraints(expr: &Expression) -> Option<Vec<RangeConstrain
     }
 
     match expr {
-        Expression::Compare { op, left, right } => {
-            // Try ?var op const
-            if let (Some(var), Some(val)) = (extract_var(left), extract_const(right)) {
-                return Some(vec![create_constraint(var, *op, val, false)]);
-            }
-            // Try const op ?var (reverse the comparison)
-            if let (Some(val), Some(var)) = (extract_const(left), extract_var(right)) {
-                let reversed_op = reverse_compare_op(*op);
-                return Some(vec![create_constraint(var, reversed_op, val, false)]);
-            }
-            None
-        }
+        Expression::Call { func, args } => match func {
+            // Comparison operators
+            Function::Eq | Function::Lt | Function::Le | Function::Gt | Function::Ge => {
+                if args.len() != 2 {
+                    return None;
+                }
+                let (left, right) = (&args[0], &args[1]);
+                let op = func_to_compare_op(func);
 
-        Expression::And(exprs) => {
-            let mut all_constraints: HashMap<VarId, RangeConstraint> = HashMap::new();
+                // Try ?var op const
+                if let (Some(var), Some(val)) = (extract_var(left), extract_const(right)) {
+                    return Some(vec![create_constraint(var, op, val, false)]);
+                }
+                // Try const op ?var (reverse the comparison)
+                if let (Some(val), Some(var)) = (extract_const(left), extract_var(right)) {
+                    let reversed_op = reverse_compare_op(op);
+                    return Some(vec![create_constraint(var, reversed_op, val, false)]);
+                }
+                None
+            }
 
-            for e in exprs {
-                if let Some(constraints) = extract_range_constraints(e) {
-                    for constraint in constraints {
-                        all_constraints
-                            .entry(constraint.var)
-                            .and_modify(|existing| existing.merge(&constraint))
-                            .or_insert(constraint);
+            Function::And => {
+                let mut all_constraints: HashMap<VarId, RangeConstraint> = HashMap::new();
+
+                for e in args {
+                    if let Some(constraints) = extract_range_constraints(e) {
+                        for constraint in constraints {
+                            all_constraints
+                                .entry(constraint.var)
+                                .and_modify(|existing| existing.merge(&constraint))
+                                .or_insert(constraint);
+                        }
                     }
+                }
+
+                if all_constraints.is_empty() {
+                    None
+                } else {
+                    Some(all_constraints.into_values().collect())
                 }
             }
 
-            if all_constraints.is_empty() {
-                None
-            } else {
-                Some(all_constraints.into_values().collect())
-            }
-        }
+            _ => None,
+        },
 
         _ => None,
+    }
+}
+
+/// Convert a Function comparison operator to CompareOp
+fn func_to_compare_op(func: &Function) -> CompareOp {
+    match func {
+        Function::Eq => CompareOp::Eq,
+        Function::Ne => CompareOp::Ne,
+        Function::Lt => CompareOp::Lt,
+        Function::Le => CompareOp::Le,
+        Function::Gt => CompareOp::Gt,
+        Function::Ge => CompareOp::Ge,
+        _ => panic!("func_to_compare_op called with non-comparison function"),
     }
 }
 
@@ -1226,16 +1250,15 @@ mod tests {
     }
 
     // Range extraction tests
-    use crate::ir::{CompareOp, Expression, FilterValue};
+    use crate::ir::{Expression, FilterValue};
 
     #[test]
     fn test_extract_range_simple_gt() {
         // ?age > 18
-        let expr = Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Const(FilterValue::Long(18))),
-        };
+        let expr = Expression::gt(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(18)),
+        );
 
         let constraints = extract_range_constraints(&expr).expect("should extract");
         assert_eq!(constraints.len(), 1);
@@ -1249,11 +1272,10 @@ mod tests {
     #[test]
     fn test_extract_range_simple_le() {
         // ?age <= 65
-        let expr = Expression::Compare {
-            op: CompareOp::Le,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Const(FilterValue::Long(65))),
-        };
+        let expr = Expression::le(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(65)),
+        );
 
         let constraints = extract_range_constraints(&expr).expect("should extract");
         let c = &constraints[0];
@@ -1265,11 +1287,10 @@ mod tests {
     #[test]
     fn test_extract_range_eq() {
         // ?status = "active"
-        let expr = Expression::Compare {
-            op: CompareOp::Eq,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Const(FilterValue::String("active".to_string()))),
-        };
+        let expr = Expression::eq(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::String("active".to_string())),
+        );
 
         let constraints = extract_range_constraints(&expr).expect("should extract");
         let c = &constraints[0];
@@ -1288,11 +1309,10 @@ mod tests {
     #[test]
     fn test_extract_range_reversed_comparison() {
         // 18 < ?age (means ?age > 18)
-        let expr = Expression::Compare {
-            op: CompareOp::Lt,
-            left: Box::new(Expression::Const(FilterValue::Long(18))),
-            right: Box::new(Expression::Var(VarId(0))),
-        };
+        let expr = Expression::lt(
+            Expression::Const(FilterValue::Long(18)),
+            Expression::Var(VarId(0)),
+        );
 
         let constraints = extract_range_constraints(&expr).expect("should extract");
         let c = &constraints[0];
@@ -1306,17 +1326,15 @@ mod tests {
     #[test]
     fn test_extract_range_and_merges() {
         // ?age >= 18 AND ?age < 65
-        let expr = Expression::And(vec![
-            Expression::Compare {
-                op: CompareOp::Ge,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(18))),
-            },
-            Expression::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(65))),
-            },
+        let expr = Expression::and(vec![
+            Expression::ge(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(18)),
+            ),
+            Expression::lt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(65)),
+            ),
         ]);
 
         let constraints = extract_range_constraints(&expr).expect("should extract");
@@ -1331,17 +1349,15 @@ mod tests {
     #[test]
     fn test_extract_range_and_multiple_vars() {
         // ?age >= 18 AND ?score > 100
-        let expr = Expression::And(vec![
-            Expression::Compare {
-                op: CompareOp::Ge,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(18))),
-            },
-            Expression::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(Expression::Var(VarId(1))),
-                right: Box::new(Expression::Const(FilterValue::Long(100))),
-            },
+        let expr = Expression::and(vec![
+            Expression::ge(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(18)),
+            ),
+            Expression::gt(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(100)),
+            ),
         ]);
 
         let constraints = extract_range_constraints(&expr).expect("should extract");
@@ -1356,17 +1372,15 @@ mod tests {
     #[test]
     fn test_extract_range_or_not_supported() {
         // OR is not range-safe
-        let expr = Expression::Or(vec![
-            Expression::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(1))),
-            },
-            Expression::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(2))),
-            },
+        let expr = Expression::or(vec![
+            Expression::eq(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(1)),
+            ),
+            Expression::eq(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(2)),
+            ),
         ]);
 
         assert!(extract_range_constraints(&expr).is_none());
@@ -1375,11 +1389,10 @@ mod tests {
     #[test]
     fn test_extract_range_double_values() {
         // ?price > 19.99
-        let expr = Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Const(FilterValue::Double(19.99))),
-        };
+        let expr = Expression::gt(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Double(19.99)),
+        );
 
         let constraints = extract_range_constraints(&expr).expect("should extract");
         let c = &constraints[0];
@@ -1535,11 +1548,10 @@ mod tests {
     #[test]
     fn test_extract_object_bounds_for_var_simple() {
         // ?age > 18
-        let filter = Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Const(FilterValue::Long(18))),
-        };
+        let filter = Expression::gt(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(18)),
+        );
 
         // Extract for ?age (VarId(0))
         let bounds =
@@ -1554,17 +1566,15 @@ mod tests {
     #[test]
     fn test_extract_object_bounds_for_var_two_sided() {
         // ?age > 18 AND ?age < 65
-        let filter = Expression::And(vec![
-            Expression::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(18))),
-            },
-            Expression::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(65))),
-            },
+        let filter = Expression::and(vec![
+            Expression::gt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(18)),
+            ),
+            Expression::lt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(65)),
+            ),
         ]);
 
         let bounds =
@@ -1579,11 +1589,10 @@ mod tests {
     #[test]
     fn test_extract_object_bounds_for_var_wrong_var() {
         // ?age > 18 - but we ask for bounds on ?name (VarId(1))
-        let filter = Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Const(FilterValue::Long(18))),
-        };
+        let filter = Expression::gt(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(18)),
+        );
 
         // No bounds for VarId(1)
         assert!(extract_object_bounds_for_var(&filter, VarId(1)).is_none());
@@ -1592,17 +1601,15 @@ mod tests {
     #[test]
     fn test_extract_object_bounds_for_var_unsatisfiable() {
         // ?x > 10 AND ?x < 5 => unsatisfiable, returns None
-        let filter = Expression::And(vec![
-            Expression::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(10))),
-            },
-            Expression::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(5))),
-            },
+        let filter = Expression::and(vec![
+            Expression::gt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(10)),
+            ),
+            Expression::lt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(5)),
+            ),
         ]);
 
         // Unsatisfiable range returns None (no point in pushdown)
@@ -1612,17 +1619,15 @@ mod tests {
     #[test]
     fn test_extract_object_bounds_for_var_not_range_safe() {
         // OR is not range-safe
-        let filter = Expression::Or(vec![
-            Expression::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(18))),
-            },
-            Expression::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(21))),
-            },
+        let filter = Expression::or(vec![
+            Expression::eq(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(18)),
+            ),
+            Expression::eq(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(21)),
+            ),
         ]);
 
         assert!(extract_object_bounds_for_var(&filter, VarId(0)).is_none());

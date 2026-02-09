@@ -12,7 +12,7 @@ use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::execute::{execute, ExecutableQuery};
 use fluree_db_query::groupby::GroupByOperator;
-use fluree_db_query::ir::{CompareOp, Expression, FilterValue, Pattern};
+use fluree_db_query::ir::{Expression, FilterValue, Pattern};
 use fluree_db_query::operator::Operator;
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::{ParsedQuery, SelectMode};
@@ -248,11 +248,10 @@ async fn test_group_by_with_having() {
             input_var: Some(VarId(1)),
             output_var: VarId(1),
         }])
-        .with_having(Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(1))),
-            right: Box::new(Expression::Const(FilterValue::Long(2))),
-        });
+        .with_having(Expression::gt(
+            Expression::Var(VarId(1)),
+            Expression::Const(FilterValue::Long(2)),
+        ));
 
     let executable = ExecutableQuery::new(query, options);
     let results = execute(&db, &vars, &executable).await.unwrap();

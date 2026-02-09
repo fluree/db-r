@@ -3,63 +3,151 @@
 //! This module contains functions for comparing ComparableValues,
 //! including numeric, temporal, and string comparisons.
 
-use crate::ir::CompareOp;
-use fluree_db_core::FlakeValue;
+use crate::binding::RowView;
+use crate::context::ExecutionContext;
+use crate::error::Result;
+use crate::ir::Expression;
+use fluree_db_core::{FlakeValue, Storage};
 use std::cmp::Ordering;
 
+use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-/// Compare two values with the given operator
+/// Evaluate equality comparison
+pub fn eval_eq<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    check_arity(args, 2, "Eq")?;
+    let result = match (
+        args[0].eval_to_comparable(row, ctx)?,
+        args[1].eval_to_comparable(row, ctx)?,
+    ) {
+        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o == Ordering::Equal),
+        _ => false,
+    };
+    Ok(Some(ComparableValue::Bool(result)))
+}
+
+/// Evaluate inequality comparison
+pub fn eval_ne<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    check_arity(args, 2, "Ne")?;
+    let result = match (
+        args[0].eval_to_comparable(row, ctx)?,
+        args[1].eval_to_comparable(row, ctx)?,
+    ) {
+        // Type mismatch (None) means not equal, so true for Ne
+        (Some(l), Some(r)) => cmp_values(&l, &r) != Some(Ordering::Equal),
+        _ => false,
+    };
+    Ok(Some(ComparableValue::Bool(result)))
+}
+
+/// Evaluate less-than comparison
+pub fn eval_lt<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    check_arity(args, 2, "Lt")?;
+    let result = match (
+        args[0].eval_to_comparable(row, ctx)?,
+        args[1].eval_to_comparable(row, ctx)?,
+    ) {
+        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o == Ordering::Less),
+        _ => false,
+    };
+    Ok(Some(ComparableValue::Bool(result)))
+}
+
+/// Evaluate less-than-or-equal comparison
+pub fn eval_le<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    check_arity(args, 2, "Le")?;
+    let result = match (
+        args[0].eval_to_comparable(row, ctx)?,
+        args[1].eval_to_comparable(row, ctx)?,
+    ) {
+        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o != Ordering::Greater),
+        _ => false,
+    };
+    Ok(Some(ComparableValue::Bool(result)))
+}
+
+/// Evaluate greater-than comparison
+pub fn eval_gt<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    check_arity(args, 2, "Gt")?;
+    let result = match (
+        args[0].eval_to_comparable(row, ctx)?,
+        args[1].eval_to_comparable(row, ctx)?,
+    ) {
+        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o == Ordering::Greater),
+        _ => false,
+    };
+    Ok(Some(ComparableValue::Bool(result)))
+}
+
+/// Evaluate greater-than-or-equal comparison
+pub fn eval_ge<S: Storage>(
+    args: &[Expression],
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+) -> Result<Option<ComparableValue>> {
+    check_arity(args, 2, "Ge")?;
+    let result = match (
+        args[0].eval_to_comparable(row, ctx)?,
+        args[1].eval_to_comparable(row, ctx)?,
+    ) {
+        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o != Ordering::Less),
+        _ => false,
+    };
+    Ok(Some(ComparableValue::Bool(result)))
+}
+
+/// Compare two values and return their ordering.
 ///
-/// Delegates to FlakeValue's comparison methods to avoid duplicating logic.
-/// Returns `false` for type mismatches (except `!=` which returns `true`).
-pub fn compare_values(left: &ComparableValue, right: &ComparableValue, op: CompareOp) -> bool {
-    // Convert to FlakeValue and use its comparison methods
+/// Returns `None` for type mismatches (incomparable types).
+/// Delegates to FlakeValue's comparison methods for numeric and temporal types.
+fn cmp_values(left: &ComparableValue, right: &ComparableValue) -> Option<Ordering> {
     let left_fv: FlakeValue = left.into();
     let right_fv: FlakeValue = right.into();
 
     // Try numeric comparison first (handles all numeric cross-type comparisons)
     if let Some(ordering) = left_fv.numeric_cmp(&right_fv) {
-        return apply_ordering(ordering, op);
+        return Some(ordering);
     }
 
     // Try temporal comparison (same-type temporal only)
     if let Some(ordering) = left_fv.temporal_cmp(&right_fv) {
-        return apply_ordering(ordering, op);
+        return Some(ordering);
     }
 
     // Cross-type coercion: when one side is a temporal type and the other
-    // is a string, try to parse the string as that temporal type. This
-    // handles values stored as LEX_ID (string dict) with a temporal
-    // datatype annotation (e.g. gYear values in bulk-imported data).
+    // is a string, try to parse the string as that temporal type.
     if let Some(ordering) = try_coerce_temporal_string_cmp(&left_fv, &right_fv) {
-        return apply_ordering(ordering, op);
+        return Some(ordering);
     }
 
     // Fall back to same-type comparisons for non-numeric, non-temporal types
-    let ordering = match (left, right) {
-        (ComparableValue::String(a), ComparableValue::String(b)) => a.cmp(b),
-        (ComparableValue::Bool(a), ComparableValue::Bool(b)) => a.cmp(b),
-        (ComparableValue::Sid(a), ComparableValue::Sid(b)) => a.cmp(b),
-        // Raw IRIs from VGs compare by string value
-        (ComparableValue::Iri(a), ComparableValue::Iri(b)) => a.cmp(b),
-        // Type mismatch -> always not equal
-        _ => return matches!(op, CompareOp::Ne),
-    };
-
-    apply_ordering(ordering, op)
-}
-
-/// Apply a comparison operator to an ordering result
-#[inline]
-pub fn apply_ordering(ordering: Ordering, op: CompareOp) -> bool {
-    match op {
-        CompareOp::Eq => ordering == Ordering::Equal,
-        CompareOp::Ne => ordering != Ordering::Equal,
-        CompareOp::Lt => ordering == Ordering::Less,
-        CompareOp::Le => ordering != Ordering::Greater,
-        CompareOp::Gt => ordering == Ordering::Greater,
-        CompareOp::Ge => ordering != Ordering::Less,
+    match (left, right) {
+        (ComparableValue::String(a), ComparableValue::String(b)) => Some(a.cmp(b)),
+        (ComparableValue::Bool(a), ComparableValue::Bool(b)) => Some(a.cmp(b)),
+        (ComparableValue::Sid(a), ComparableValue::Sid(b)) => Some(a.cmp(b)),
+        (ComparableValue::Iri(a), ComparableValue::Iri(b)) => Some(a.cmp(b)),
+        // Type mismatch
+        _ => None,
     }
 }
 
@@ -70,7 +158,7 @@ pub fn apply_ordering(ordering: Ordering, op: CompareOp) -> bool {
 /// This handles values stored as LEX_ID (string dict entry) with a temporal
 /// datatype annotation — the index stores the raw string but the FILTER
 /// constant is a properly-typed temporal value.
-pub fn try_coerce_temporal_string_cmp(left: &FlakeValue, right: &FlakeValue) -> Option<Ordering> {
+fn try_coerce_temporal_string_cmp(left: &FlakeValue, right: &FlakeValue) -> Option<Ordering> {
     use fluree_db_core::temporal;
 
     match (left, right) {
@@ -134,39 +222,27 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn test_compare_longs() {
+    fn test_cmp_longs() {
         let a = ComparableValue::Long(10);
         let b = ComparableValue::Long(20);
-        assert!(compare_values(&a, &b, CompareOp::Lt));
-        assert!(compare_values(&b, &a, CompareOp::Gt));
-        assert!(compare_values(&a, &a, CompareOp::Eq));
-        assert!(compare_values(&a, &b, CompareOp::Ne));
+        assert_eq!(cmp_values(&a, &b), Some(Ordering::Less));
+        assert_eq!(cmp_values(&b, &a), Some(Ordering::Greater));
+        assert_eq!(cmp_values(&a, &a), Some(Ordering::Equal));
     }
 
     #[test]
-    fn test_compare_strings() {
+    fn test_cmp_strings() {
         let a = ComparableValue::String(Arc::from("alpha"));
         let b = ComparableValue::String(Arc::from("beta"));
-        assert!(compare_values(&a, &b, CompareOp::Lt));
-        assert!(compare_values(&a, &a, CompareOp::Eq));
+        assert_eq!(cmp_values(&a, &b), Some(Ordering::Less));
+        assert_eq!(cmp_values(&a, &a), Some(Ordering::Equal));
     }
 
     #[test]
     fn test_type_mismatch() {
         let long = ComparableValue::Long(10);
         let string = ComparableValue::String(Arc::from("10"));
-        // Type mismatch: only != is true
-        assert!(!compare_values(&long, &string, CompareOp::Eq));
-        assert!(compare_values(&long, &string, CompareOp::Ne));
-        assert!(!compare_values(&long, &string, CompareOp::Lt));
-    }
-
-    #[test]
-    fn test_apply_ordering() {
-        assert!(apply_ordering(Ordering::Less, CompareOp::Lt));
-        assert!(apply_ordering(Ordering::Less, CompareOp::Le));
-        assert!(!apply_ordering(Ordering::Less, CompareOp::Eq));
-        assert!(apply_ordering(Ordering::Equal, CompareOp::Le));
-        assert!(apply_ordering(Ordering::Equal, CompareOp::Ge));
+        // Type mismatch returns None
+        assert_eq!(cmp_values(&long, &string), None);
     }
 }

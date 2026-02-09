@@ -134,7 +134,6 @@ impl<S: Storage + 'static> Operator<S> for HavingOperator<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::CompareOp;
     use crate::seed::SeedOperator;
     use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
 
@@ -199,11 +198,10 @@ mod tests {
         });
 
         // HAVING ?count > 10
-        let expr = Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(1))), // ?count
-            right: Box::new(Expression::Const(FilterValue::Long(10))),
-        };
+        let expr = Expression::gt(
+            Expression::Var(VarId(1)), // ?count
+            Expression::Const(FilterValue::Long(10)),
+        );
 
         let mut op = HavingOperator::new(child, expr);
         op.open(&ctx).await.unwrap();
@@ -280,11 +278,10 @@ mod tests {
         });
 
         // HAVING ?count > 100 (no rows match)
-        let expr = Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(1))),
-            right: Box::new(Expression::Const(FilterValue::Long(100))),
-        };
+        let expr = Expression::gt(
+            Expression::Var(VarId(1)),
+            Expression::Const(FilterValue::Long(100)),
+        );
 
         let mut op = HavingOperator::new(child, expr);
         op.open(&ctx).await.unwrap();

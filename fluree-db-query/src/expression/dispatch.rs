@@ -9,7 +9,10 @@ use crate::ir::{Expression, Function};
 use fluree_db_core::Storage;
 
 use super::value::ComparableValue;
-use super::{conditional, datetime, fluree, geo, hash, numeric, rdf, string, types, uuid, vector};
+use super::{
+    arithmetic, compare, conditional, datetime, fluree, geo, hash, logical, numeric, rdf, string,
+    types, uuid, vector,
+};
 
 impl Function {
     /// Evaluate this function to its value.
@@ -23,6 +26,28 @@ impl Function {
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         match self {
+            // Comparison operators
+            Function::Eq => compare::eval_eq(args, row, ctx),
+            Function::Ne => compare::eval_ne(args, row, ctx),
+            Function::Lt => compare::eval_lt(args, row, ctx),
+            Function::Le => compare::eval_le(args, row, ctx),
+            Function::Gt => compare::eval_gt(args, row, ctx),
+            Function::Ge => compare::eval_ge(args, row, ctx),
+
+            // Arithmetic operators
+            Function::Add => arithmetic::eval_add(args, row, ctx),
+            Function::Sub => arithmetic::eval_sub(args, row, ctx),
+            Function::Mul => arithmetic::eval_mul(args, row, ctx),
+            Function::Div => arithmetic::eval_div(args, row, ctx),
+            Function::Negate => arithmetic::eval_negate(args, row, ctx),
+
+            // Logical operators
+            Function::And => logical::eval_and(args, row, ctx),
+            Function::Or => logical::eval_or(args, row, ctx),
+            Function::Not => logical::eval_not(args, row, ctx),
+            Function::In => logical::eval_in(args, row, ctx),
+            Function::NotIn => logical::eval_not_in(args, row, ctx),
+
             // String functions
             Function::Str => string::eval_str(args, row, ctx),
             Function::Lang => string::eval_lang(args, row, ctx),
@@ -121,3 +146,4 @@ impl Function {
         Ok(value.is_some_and(Into::into))
     }
 }
+

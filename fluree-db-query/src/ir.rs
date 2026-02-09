@@ -1067,46 +1067,14 @@ impl Pattern {
 /// Filter expression AST
 ///
 /// Represents expressions that can be evaluated against solution bindings.
-/// This is a placeholder that will be expanded in Phase 3 (Filter Implementation).
+/// All operations are represented as function calls for uniform dispatch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
     /// Variable reference
     Var(VarId),
     /// Constant value
     Const(FilterValue),
-    /// Comparison operation
-    Compare {
-        op: CompareOp,
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
-    /// Arithmetic operation (+, -, *, /)
-    Arithmetic {
-        op: ArithmeticOp,
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
-    /// Unary negation (-)
-    Negate(Box<Expression>),
-    /// Logical AND
-    And(Vec<Expression>),
-    /// Logical OR
-    Or(Vec<Expression>),
-    /// Logical NOT
-    Not(Box<Expression>),
-    /// Conditional expression (IF(cond, then, else))
-    If {
-        condition: Box<Expression>,
-        then_expr: Box<Expression>,
-        else_expr: Box<Expression>,
-    },
-    /// IN expression (?x IN (1, 2, 3))
-    In {
-        expr: Box<Expression>,
-        values: Vec<Expression>,
-        negated: bool,
-    },
-    /// Function call
+    /// Function call (includes operators like +, -, =, AND, OR, etc.)
     Call {
         func: Function,
         args: Vec<Expression>,
@@ -1114,36 +1082,155 @@ pub enum Expression {
 }
 
 impl Expression {
+    // =========================================================================
+    // Constructors for common expression types
+    // =========================================================================
+
+    /// Create a comparison expression
+    pub fn compare(op: impl Into<Function>, left: Expression, right: Expression) -> Self {
+        Expression::Call {
+            func: op.into(),
+            args: vec![left, right],
+        }
+    }
+
+    /// Create an equality comparison
+    pub fn eq(left: Expression, right: Expression) -> Self {
+        Self::compare(Function::Eq, left, right)
+    }
+
+    /// Create a not-equal comparison
+    pub fn ne(left: Expression, right: Expression) -> Self {
+        Self::compare(Function::Ne, left, right)
+    }
+
+    /// Create a less-than comparison
+    pub fn lt(left: Expression, right: Expression) -> Self {
+        Self::compare(Function::Lt, left, right)
+    }
+
+    /// Create a less-than-or-equal comparison
+    pub fn le(left: Expression, right: Expression) -> Self {
+        Self::compare(Function::Le, left, right)
+    }
+
+    /// Create a greater-than comparison
+    pub fn gt(left: Expression, right: Expression) -> Self {
+        Self::compare(Function::Gt, left, right)
+    }
+
+    /// Create a greater-than-or-equal comparison
+    pub fn ge(left: Expression, right: Expression) -> Self {
+        Self::compare(Function::Ge, left, right)
+    }
+
+    /// Create an arithmetic expression
+    pub fn arithmetic(op: impl Into<Function>, left: Expression, right: Expression) -> Self {
+        Expression::Call {
+            func: op.into(),
+            args: vec![left, right],
+        }
+    }
+
+    /// Create an addition expression
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(left: Expression, right: Expression) -> Self {
+        Self::arithmetic(Function::Add, left, right)
+    }
+
+    /// Create a subtraction expression
+    #[allow(clippy::should_implement_trait)]
+    pub fn sub(left: Expression, right: Expression) -> Self {
+        Self::arithmetic(Function::Sub, left, right)
+    }
+
+    /// Create a multiplication expression
+    #[allow(clippy::should_implement_trait)]
+    pub fn mul(left: Expression, right: Expression) -> Self {
+        Self::arithmetic(Function::Mul, left, right)
+    }
+
+    /// Create a division expression
+    #[allow(clippy::should_implement_trait)]
+    pub fn div(left: Expression, right: Expression) -> Self {
+        Self::arithmetic(Function::Div, left, right)
+    }
+
+    /// Create a unary negation expression
+    pub fn negate(expr: Expression) -> Self {
+        Expression::Call {
+            func: Function::Negate,
+            args: vec![expr],
+        }
+    }
+
+    /// Create a logical AND expression
+    pub fn and(exprs: Vec<Expression>) -> Self {
+        Expression::Call {
+            func: Function::And,
+            args: exprs,
+        }
+    }
+
+    /// Create a logical OR expression
+    pub fn or(exprs: Vec<Expression>) -> Self {
+        Expression::Call {
+            func: Function::Or,
+            args: exprs,
+        }
+    }
+
+    /// Create a logical NOT expression
+    #[allow(clippy::should_implement_trait)]
+    pub fn not(expr: Expression) -> Self {
+        Expression::Call {
+            func: Function::Not,
+            args: vec![expr],
+        }
+    }
+
+    /// Create an IF expression
+    pub fn if_then_else(condition: Expression, then_expr: Expression, else_expr: Expression) -> Self {
+        Expression::Call {
+            func: Function::If,
+            args: vec![condition, then_expr, else_expr],
+        }
+    }
+
+    /// Create an IN expression
+    pub fn in_list(expr: Expression, values: Vec<Expression>) -> Self {
+        let mut args = vec![expr];
+        args.extend(values);
+        Expression::Call {
+            func: Function::In,
+            args,
+        }
+    }
+
+    /// Create a NOT IN expression
+    pub fn not_in_list(expr: Expression, values: Vec<Expression>) -> Self {
+        let mut args = vec![expr];
+        args.extend(values);
+        Expression::Call {
+            func: Function::NotIn,
+            args,
+        }
+    }
+
+    /// Create a function call expression
+    pub fn call(func: Function, args: Vec<Expression>) -> Self {
+        Expression::Call { func, args }
+    }
+
+    // =========================================================================
+    // Query methods
+    // =========================================================================
+
     /// Get all variables referenced by this expression
     pub fn variables(&self) -> Vec<VarId> {
         match self {
             Expression::Var(v) => vec![*v],
             Expression::Const(_) => vec![],
-            Expression::Compare { left, right, .. }
-            | Expression::Arithmetic { left, right, .. } => {
-                let mut vars = left.variables();
-                vars.extend(right.variables());
-                vars
-            }
-            Expression::Negate(expr) | Expression::Not(expr) => expr.variables(),
-            Expression::And(exprs) | Expression::Or(exprs) => {
-                exprs.iter().flat_map(|e| e.variables()).collect()
-            }
-            Expression::If {
-                condition,
-                then_expr,
-                else_expr,
-            } => {
-                let mut vars = condition.variables();
-                vars.extend(then_expr.variables());
-                vars.extend(else_expr.variables());
-                vars
-            }
-            Expression::In { expr, values, .. } => {
-                let mut vars = expr.variables();
-                vars.extend(values.iter().flat_map(|v| v.variables()));
-                vars
-            }
             Expression::Call { args, .. } => args.iter().flat_map(|a| a.variables()).collect(),
         }
     }
@@ -1197,29 +1284,59 @@ impl Expression {
     /// ```
     pub fn is_range_safe(&self) -> bool {
         match self {
-            Expression::Compare { op, left, right } => {
-                // Not-equal cannot be represented as a single contiguous range.
-                if matches!(op, CompareOp::Ne) {
-                    return false;
+            Expression::Call { func, args } => match func {
+                // Comparison operators (except Ne) are range-safe if var vs const
+                Function::Eq | Function::Lt | Function::Le | Function::Gt | Function::Ge => {
+                    args.len() == 2
+                        && matches!(
+                            (&args[0], &args[1]),
+                            (Expression::Var(_), Expression::Const(_))
+                                | (Expression::Const(_), Expression::Var(_))
+                        )
                 }
-                // Only var vs const comparisons are range-safe
-                matches!(
-                    (left.as_ref(), right.as_ref()),
-                    (Expression::Var(_), Expression::Const(_))
-                        | (Expression::Const(_), Expression::Var(_))
-                )
+                // AND of range-safe expressions is range-safe
+                Function::And => args.iter().all(|e| e.is_range_safe()),
+                // Everything else is NOT range-safe
+                _ => false,
+            },
+            // Var, Const are not range-safe on their own
+            Expression::Var(_) | Expression::Const(_) => false,
+        }
+    }
+
+    /// Check if this is a comparison expression
+    pub fn is_comparison(&self) -> bool {
+        matches!(
+            self,
+            Expression::Call {
+                func: Function::Eq
+                    | Function::Ne
+                    | Function::Lt
+                    | Function::Le
+                    | Function::Gt
+                    | Function::Ge,
+                ..
             }
-            Expression::And(exprs) => exprs.iter().all(|e| e.is_range_safe()),
-            // Arithmetic, Or, Not, If, In, functions are NOT range-safe
-            Expression::Arithmetic { .. }
-            | Expression::Negate(_)
-            | Expression::Or(_)
-            | Expression::Not(_)
-            | Expression::If { .. }
-            | Expression::In { .. }
-            | Expression::Call { .. }
-            | Expression::Var(_)
-            | Expression::Const(_) => false,
+        )
+    }
+
+    /// Get the comparison function if this is a comparison expression
+    pub fn as_comparison(&self) -> Option<(&Function, &[Expression])> {
+        match self {
+            Expression::Call { func, args }
+                if matches!(
+                    func,
+                    Function::Eq
+                        | Function::Ne
+                        | Function::Lt
+                        | Function::Le
+                        | Function::Gt
+                        | Function::Ge
+                ) =>
+            {
+                Some((func, args))
+            }
+            _ => None,
         }
     }
 }
@@ -1285,6 +1402,42 @@ impl From<crate::parse::ast::UnresolvedArithmeticOp> for ArithmeticOp {
     }
 }
 
+impl From<CompareOp> for Function {
+    fn from(op: CompareOp) -> Self {
+        match op {
+            CompareOp::Eq => Function::Eq,
+            CompareOp::Ne => Function::Ne,
+            CompareOp::Lt => Function::Lt,
+            CompareOp::Le => Function::Le,
+            CompareOp::Gt => Function::Gt,
+            CompareOp::Ge => Function::Ge,
+        }
+    }
+}
+
+impl From<ArithmeticOp> for Function {
+    fn from(op: ArithmeticOp) -> Self {
+        match op {
+            ArithmeticOp::Add => Function::Add,
+            ArithmeticOp::Sub => Function::Sub,
+            ArithmeticOp::Mul => Function::Mul,
+            ArithmeticOp::Div => Function::Div,
+        }
+    }
+}
+
+impl From<crate::parse::ast::UnresolvedCompareOp> for Function {
+    fn from(op: crate::parse::ast::UnresolvedCompareOp) -> Self {
+        CompareOp::from(op).into()
+    }
+}
+
+impl From<crate::parse::ast::UnresolvedArithmeticOp> for Function {
+    fn from(op: crate::parse::ast::UnresolvedArithmeticOp) -> Self {
+        ArithmeticOp::from(op).into()
+    }
+}
+
 impl From<&crate::parse::ast::UnresolvedFilterValue> for FilterValue {
     fn from(val: &crate::parse::ast::UnresolvedFilterValue) -> Self {
         use crate::parse::ast::UnresolvedFilterValue;
@@ -1300,7 +1453,53 @@ impl From<&crate::parse::ast::UnresolvedFilterValue> for FilterValue {
 /// Built-in functions
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Function {
-    /// String functions
+    // =========================================================================
+    // Comparison operators
+    // =========================================================================
+    /// Equality (=)
+    Eq,
+    /// Not equal (!=)
+    Ne,
+    /// Less than (<)
+    Lt,
+    /// Less than or equal (<=)
+    Le,
+    /// Greater than (>)
+    Gt,
+    /// Greater than or equal (>=)
+    Ge,
+
+    // =========================================================================
+    // Arithmetic operators
+    // =========================================================================
+    /// Addition (+)
+    Add,
+    /// Subtraction (-)
+    Sub,
+    /// Multiplication (*)
+    Mul,
+    /// Division (/)
+    Div,
+    /// Unary negation (-)
+    Negate,
+
+    // =========================================================================
+    // Logical operators
+    // =========================================================================
+    /// Logical AND
+    And,
+    /// Logical OR
+    Or,
+    /// Logical NOT
+    Not,
+    /// IN expression (?x IN (1, 2, 3))
+    In,
+    /// NOT IN expression (?x NOT IN (1, 2, 3))
+    NotIn,
+
+    // =========================================================================
+    // String functions
+    // =========================================================================
     Strlen,
     Substr,
     Ucase,
@@ -1317,16 +1516,25 @@ pub enum Function {
     StrDt,
     StrLang,
     EncodeForUri,
-    /// Numeric functions
+
+    // =========================================================================
+    // Numeric functions
+    // =========================================================================
     Abs,
     Round,
     Ceil,
     Floor,
     Rand,
-    /// RDF term constructors
+
+    // =========================================================================
+    // RDF term constructors
+    // =========================================================================
     Iri,
     Bnode,
-    /// DateTime functions
+
+    // =========================================================================
+    // DateTime functions
+    // =========================================================================
     Now,
     Year,
     Month,
@@ -1335,40 +1543,68 @@ pub enum Function {
     Minutes,
     Seconds,
     Tz,
-    /// Type functions
+
+    // =========================================================================
+    // Type functions
+    // =========================================================================
     IsIri,
     IsBlank,
     IsLiteral,
     IsNumeric,
-    /// RDF term functions
+
+    // =========================================================================
+    // RDF term functions
+    // =========================================================================
     Lang,
     Datatype,
     LangMatches,
     SameTerm,
-    /// Fluree-specific: transaction time
+
+    // =========================================================================
+    // Fluree-specific functions
+    // =========================================================================
+    /// Transaction time
     T,
-    /// Fluree-specific: operation type for history queries ("assert" or "retract")
+    /// Operation type for history queries ("assert" or "retract")
     Op,
-    /// Hash functions
+
+    // =========================================================================
+    // Hash functions
+    // =========================================================================
     Md5,
     Sha1,
     Sha256,
     Sha384,
     Sha512,
-    /// UUID functions
+
+    // =========================================================================
+    // UUID functions
+    // =========================================================================
     Uuid,
     StrUuid,
-    /// Vector/embedding similarity functions
+
+    // =========================================================================
+    // Vector/embedding similarity functions
+    // =========================================================================
     DotProduct,
     CosineSimilarity,
     EuclideanDistance,
-    /// Geospatial functions
+
+    // =========================================================================
+    // Geospatial functions
+    // =========================================================================
     GeofDistance,
-    /// Other
+
+    // =========================================================================
+    // Conditional functions
+    // =========================================================================
     Bound,
     If,
     Coalesce,
-    /// Custom/unknown function
+
+    // =========================================================================
+    // Custom/unknown function
+    // =========================================================================
     Custom(String),
 }
 
@@ -1438,53 +1674,44 @@ mod tests {
     #[test]
     fn test_filter_expr_single_var() {
         // Single var: ?x > 10
-        let expr = Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Const(FilterValue::Long(10))),
-        };
+        let expr = Expression::gt(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(10)),
+        );
         assert_eq!(expr.single_var(), Some(VarId(0)));
 
         // Two vars: ?x > ?y
-        let expr2 = Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Var(VarId(1))),
-        };
+        let expr2 = Expression::gt(Expression::Var(VarId(0)), Expression::Var(VarId(1)));
         assert_eq!(expr2.single_var(), None);
     }
 
     #[test]
     fn test_filter_expr_is_range_safe() {
         // Range-safe: ?x > 10
-        let expr = Expression::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Const(FilterValue::Long(10))),
-        };
+        let expr = Expression::gt(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(10)),
+        );
         assert!(expr.is_range_safe());
 
         // Range-safe: AND of range-safe
-        let and_expr = Expression::And(vec![
-            Expression::Compare {
-                op: CompareOp::Ge,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(18))),
-            },
-            Expression::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(Expression::Var(VarId(0))),
-                right: Box::new(Expression::Const(FilterValue::Long(65))),
-            },
+        let and_expr = Expression::and(vec![
+            Expression::ge(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(18)),
+            ),
+            Expression::lt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(65)),
+            ),
         ]);
         assert!(and_expr.is_range_safe());
 
         // Not range-safe: OR
-        let or_expr = Expression::Or(vec![Expression::Compare {
-            op: CompareOp::Eq,
-            left: Box::new(Expression::Var(VarId(0))),
-            right: Box::new(Expression::Const(FilterValue::Long(1))),
-        }]);
+        let or_expr = Expression::or(vec![Expression::eq(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(1)),
+        )]);
         assert!(!or_expr.is_range_safe());
     }
 }
