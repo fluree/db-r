@@ -215,10 +215,7 @@ impl CommitResolver {
         };
 
         // 2. g_id=1 (pre-reserved in GlobalDicts::new())
-        let g_id = dicts
-            .graphs
-            .get_or_insert_parts(fluree::LEDGER, "transactions")
-            + 1;
+        let g_id = dicts.graphs.get_or_insert_parts(fluree::LEDGER, "txn-meta") + 1;
         debug_assert_eq!(g_id, 1, "txn-meta graph must be g_id=1");
 
         let t = envelope.t;
@@ -837,13 +834,13 @@ impl CommitResolver {
                 Ok((ObjKind::GEO_POINT, key))
             }
             RawObject::Vector(v) => {
-                let json =
-                    serde_json::to_string(v).map_err(|e| format!("vector serialize: {}", e))?;
-                let id = dicts
-                    .strings
-                    .get_or_insert(&json)
-                    .map_err(|e| format!("string dict write: {}", e))?;
-                Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(id)))
+                let handle = dicts
+                    .vectors
+                    .entry(p_id)
+                    .or_default()
+                    .insert_f64(v)
+                    .map_err(|e| format!("vector arena insert: {}", e))?;
+                Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(handle)))
             }
         }
     }
@@ -1424,7 +1421,7 @@ mod tests {
         // Verify g_id=1 reservation
         let g_id = dicts
             .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "transactions")
+            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "txn-meta")
             + 1;
         assert_eq!(g_id, 1);
 
@@ -1720,7 +1717,7 @@ mod tests {
     #[test]
     fn test_global_dicts_reserves_g_id_1() {
         let dicts = GlobalDicts::new_memory();
-        let g_id = dicts.graphs.get("https://ns.flur.ee/ledger#transactions");
+        let g_id = dicts.graphs.get("https://ns.flur.ee/ledger#txn-meta");
         assert_eq!(
             g_id,
             Some(0),

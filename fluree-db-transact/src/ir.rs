@@ -106,7 +106,7 @@ pub struct Txn {
     ///
     /// Reserved g_ids:
     /// - `0`: default graph
-    /// - `1`: txn-meta graph (`https://ns.flur.ee/ledger#transactions`)
+    /// - `1`: txn-meta graph (`#txn-meta`)
     /// - `2+`: user-defined named graphs
     pub graph_delta: FxHashMap<u32, String>,
 }

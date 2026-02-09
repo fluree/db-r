@@ -15,7 +15,7 @@
 //! ex:alice ex:name "Alice" .
 //!
 //! # Transaction metadata block (special handling)
-//! GRAPH <https://ns.flur.ee/ledger#transactions> {
+//! GRAPH <#txn-meta> {
 //!     fluree:commit:this ex:machine "server-01" ;
 //!                        ex:batchId 42 .
 //! }
@@ -29,7 +29,7 @@
 //!
 //! # Graph Types
 //!
-//! - **txn-meta graph** (`https://ns.flur.ee/ledger#transactions`): Subject must be
+//! - **txn-meta graph** (`#txn-meta`): Subject must be
 //!   `fluree:commit:this`. These triples become commit metadata (stored in envelope).
 //! - **Named graphs**: Any other graph IRI. These triples are stored with the
 //!   allocated g_id for that graph.
@@ -45,8 +45,11 @@ use fluree_db_novelty::{TxnMetaEntry, TxnMetaValue, MAX_TXN_META_BYTES, MAX_TXN_
 use fluree_graph_turtle::{tokenize, Token, TokenKind};
 use rustc_hash::FxHashMap;
 
-/// IRI for the transaction metadata named graph.
-pub const TXN_META_GRAPH_IRI: &str = "https://ns.flur.ee/ledger#transactions";
+/// IRI reference for the transaction metadata named graph.
+///
+/// This is intentionally a **fragment-only** IRI reference so it can be interpreted
+/// in the context of a ledger reference (e.g., `<mydb:main#txn-meta>`).
+pub const TXN_META_GRAPH_IRI: &str = "#txn-meta";
 
 /// Special subject IRI indicating "this commit" (HTTP-based form).
 /// This is the canonical form when `fluree:` prefix is defined as `https://ns.flur.ee/ledger#`.
@@ -1339,7 +1342,7 @@ mod tests {
 
 ex:alice ex:name "Alice" .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:machine "server-01" ;
                        ex:batchId 42 .
 }
@@ -1445,7 +1448,7 @@ GRAPH <http://example.org/orders> {
 @prefix ex: <http://example.org/> .
 @prefix fluree: <https://ns.flur.ee/ledger#> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:machine "server-01" .
 }
 
@@ -1471,7 +1474,7 @@ GRAPH <http://example.org/data> {
         let input = r#"
 @prefix ex: <http://example.org/> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     ex:alice ex:machine "server-01" .
 }
 "#;
@@ -1488,7 +1491,7 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
         let input = r#"
 @prefix ex: <http://example.org/> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     _:b1 ex:machine "server-01" .
 }
 "#;
@@ -1506,7 +1509,7 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
 @prefix ex: <http://example.org/> .
 @prefix fluree: <https://ns.flur.ee/ledger#> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:source _:b1 .
 }
 "#;
@@ -1525,7 +1528,7 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 @prefix fluree: <https://ns.flur.ee/ledger#> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:timestamp "2025-01-15T10:30:00Z"^^xsd:dateTime .
 }
 "#;
@@ -1548,7 +1551,7 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
 @prefix ex: <http://example.org/> .
 @prefix fluree: <https://ns.flur.ee/ledger#> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:description "Mise a jour"@fr .
 }
 "#;
@@ -1571,7 +1574,7 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
 @prefix ex: <http://example.org/> .
 @prefix fluree: <https://ns.flur.ee/ledger#> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:author ex:alice .
 }
 "#;
@@ -1593,7 +1596,7 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
 @prefix ex: <http://example.org/> .
 @prefix fluree: <https://ns.flur.ee/ledger#> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:validated true .
 }
 "#;
@@ -1615,7 +1618,7 @@ PREFIX fluree: <https://ns.flur.ee/ledger#>
 
 ex:alice ex:name "Alice" .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:source "import" .
 }
 "#;
@@ -1631,7 +1634,7 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
         let input = r#"
 @prefix ex: <http://example.org/> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     <https://ns.flur.ee/ledger#commit:this> ex:note "test" .
 }
 "#;
@@ -1648,7 +1651,7 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
         let input = r#"
 @prefix ex: <http://example.org/> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     <fluree:commit:this> ex:note "scheme form" .
 }
 "#;
@@ -1665,7 +1668,7 @@ GRAPH <https://ns.flur.ee/ledger#transactions> {
 @prefix ex: <http://example.org/> .
 @prefix fluree: <https://ns.flur.ee/ledger#> .
 
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:tags "a", "b", "c" .
 }
 "#;

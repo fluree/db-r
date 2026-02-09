@@ -248,11 +248,19 @@ Combine multiple graph sources:
 {
   "from": ["products-search:main", "products-vector:main"],
   "select": ["?product", "?textScore", "?vecScore"],
+  "values": [
+    ["?queryVec"],
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+  ],
   "where": [
     { "@id": "?product", "bm25:matches": "laptop" },
     { "@id": "?product", "bm25:score": "?textScore" },
-    { "@id": "?product", "vector:similar": {...} },
-    { "@id": "?product", "vector:similarity": "?vecScore" }
+    {
+      "idx:graph": "products-vector:main",
+      "idx:vector": "?queryVec",
+      "idx:limit": 100,
+      "idx:result": { "idx:id": "?product", "idx:score": "?vecScore" }
+    }
   ]
 }
 ```

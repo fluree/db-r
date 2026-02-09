@@ -849,10 +849,66 @@ async fn upload_dicts_to_cas<S: Storage>(
         }
     }
 
+    // Per-predicate vector arena shards + manifests
+    let mut vectors = BTreeMap::new();
+    let vec_dir = run_dir.join("vectors");
+    if vec_dir.exists() {
+        for (&p_id, arena) in &dicts.vectors {
+            if arena.is_empty() {
+                continue;
+            }
+            // Upload each shard file
+            let cap = run_index::vector_arena::SHARD_CAPACITY as usize;
+            let total = arena.len() as usize;
+            let num_shards = total.div_ceil(cap);
+            let mut shard_addrs = Vec::with_capacity(num_shards);
+            let mut shard_infos = Vec::with_capacity(num_shards);
+
+            for shard_idx in 0..num_shards {
+                let shard_path = vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
+                let addr = upload_flat(
+                    storage,
+                    ledger_address,
+                    &shard_path,
+                    DictKind::VectorShard { p_id },
+                )
+                .await?;
+                let start_vec = shard_idx * cap;
+                let count = (total - start_vec).min(cap) as u32;
+                shard_infos.push(run_index::vector_arena::ShardInfo {
+                    cas: addr.clone(),
+                    count,
+                });
+                shard_addrs.push(addr);
+            }
+
+            // Write final manifest with real CAS addresses, then upload
+            let manifest_path = vec_dir.join(format!("p_{}.vam", p_id));
+            run_index::vector_arena::write_vector_manifest(&manifest_path, arena, &shard_infos)
+                .map_err(|e| IndexerError::StorageWrite(format!("write vector manifest: {}", e)))?;
+            let manifest_addr = upload_flat(
+                storage,
+                ledger_address,
+                &manifest_path,
+                DictKind::VectorManifest { p_id },
+            )
+            .await?;
+
+            vectors.insert(
+                p_id.to_string(),
+                run_index::VectorDictEntry {
+                    manifest: manifest_addr,
+                    shards: shard_addrs,
+                },
+            );
+        }
+    }
+
     tracing::info!(
         subject_count = dicts.subjects.len(),
         string_count = dicts.strings.len(),
         numbig_count = numbig.len(),
+        vector_count = vectors.len(),
         "dictionary trees built and uploaded to CAS"
     );
 
@@ -865,6 +921,7 @@ async fn upload_dicts_to_cas<S: Storage>(
         string_forward,
         string_reverse,
         numbig,
+        vectors,
     })
 }
 
@@ -1322,6 +1379,94 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         }
     }
 
+    // ---- 4b. Upload per-predicate vector arena shards + manifests ----
+    let mut vectors = BTreeMap::new();
+    let vec_dir = run_dir.join("vectors");
+    if vec_dir.exists() {
+        // Scan for manifest files to discover which predicates have vectors
+        for entry in std::fs::read_dir(&vec_dir)
+            .map_err(|e| IndexerError::StorageRead(format!("read vectors dir: {}", e)))?
+        {
+            let entry = entry
+                .map_err(|e| IndexerError::StorageRead(format!("read vectors entry: {}", e)))?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if let Some(rest) = name_str.strip_prefix("p_") {
+                if let Some(id_str) = rest.strip_suffix(".vam") {
+                    if let Ok(p_id) = id_str.parse::<u32>() {
+                        // Read manifest to find shard count
+                        let manifest_bytes = std::fs::read(entry.path()).map_err(|e| {
+                            IndexerError::StorageRead(format!("read vector manifest: {}", e))
+                        })?;
+                        let manifest =
+                            run_index::vector_arena::read_vector_manifest(&manifest_bytes)
+                                .map_err(|e| {
+                                    IndexerError::StorageRead(format!(
+                                        "parse vector manifest: {}",
+                                        e
+                                    ))
+                                })?;
+
+                        // Upload each shard
+                        let mut shard_addrs = Vec::with_capacity(manifest.shards.len());
+                        let mut shard_infos = Vec::with_capacity(manifest.shards.len());
+                        for (shard_idx, shard_info) in manifest.shards.iter().enumerate() {
+                            let shard_path =
+                                vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
+                            let addr = upload_flat(
+                                storage,
+                                ledger_address,
+                                &shard_path,
+                                DictKind::VectorShard { p_id },
+                            )
+                            .await?;
+                            shard_infos.push(run_index::vector_arena::ShardInfo {
+                                cas: addr.clone(),
+                                count: shard_info.count,
+                            });
+                            shard_addrs.push(addr);
+                        }
+
+                        // Re-write manifest with real CAS addresses, then upload
+                        let final_manifest = run_index::vector_arena::VectorManifest {
+                            shards: shard_infos,
+                            ..manifest
+                        };
+                        let manifest_json =
+                            serde_json::to_vec_pretty(&final_manifest).map_err(|e| {
+                                IndexerError::StorageWrite(format!(
+                                    "serialize vector manifest: {}",
+                                    e
+                                ))
+                            })?;
+                        let final_manifest_path = vec_dir.join(format!("p_{}_final.vam", p_id));
+                        std::fs::write(&final_manifest_path, &manifest_json).map_err(|e| {
+                            IndexerError::StorageWrite(format!(
+                                "write final vector manifest: {}",
+                                e
+                            ))
+                        })?;
+                        let manifest_addr = upload_flat(
+                            storage,
+                            ledger_address,
+                            &final_manifest_path,
+                            DictKind::VectorManifest { p_id },
+                        )
+                        .await?;
+
+                        vectors.insert(
+                            p_id.to_string(),
+                            run_index::VectorDictEntry {
+                                manifest: manifest_addr,
+                                shards: shard_addrs,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ---- 5. Compute subject_id_encoding + watermarks from sids ----
     let overflow_ns: u16 = 0xFFFF;
     let mut needs_wide = false;
@@ -1380,6 +1525,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         subjects = sids.len(),
         strings = string_count,
         numbig_count = numbig.len(),
+        vector_count = vectors.len(),
         ?subject_id_encoding,
         watermarks = subject_watermarks.len(),
         string_watermark,
@@ -1396,6 +1542,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             string_forward,
             string_reverse,
             numbig,
+            vectors,
         },
         subject_id_encoding,
         subject_watermarks,

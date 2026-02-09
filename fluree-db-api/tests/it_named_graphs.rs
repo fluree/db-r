@@ -340,14 +340,13 @@ async fn test_txn_meta_and_named_graph_coexist() {
             let trig = r#"
                 @prefix ex: <http://example.org/> .
                 @prefix schema: <http://schema.org/> .
-                @prefix fluree: <https://ns.flur.ee/ledger#> .
 
                 # Default graph
                 ex:alice schema:name "Alice" .
 
                 # txn-meta graph
-                GRAPH fluree:transactions {
-                    fluree:commit:this ex:batchId "batch-123" .
+                GRAPH <#txn-meta> {
+                    <fluree:commit:this> ex:batchId "batch-123" .
                 }
 
                 # User named graph

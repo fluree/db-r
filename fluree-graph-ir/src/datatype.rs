@@ -49,6 +49,9 @@ impl Datatype {
         // Recognize @json / rdf:JSON specially
         if iri == iri::RDF_JSON || iri == "@json" {
             Datatype::JsonLdJson
+        } else if iri == "@vector" {
+            // Normalize @vector shorthand to full IRI
+            Datatype::Iri(Arc::from(fluree_vocab::fluree::VECTOR))
         } else {
             Datatype::Iri(Arc::from(iri))
         }

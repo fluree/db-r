@@ -558,6 +558,16 @@ Each step must be a simple predicate (`ex:p`), inverse simple predicate (`^ex:p`
 - `(/ ?x ?y)` - Division
 - `(abs ?x)` - Absolute value
 
+### Vector Similarity Functions
+
+Used with `bind` to compute similarity scores between `@vector` values:
+
+- `(dotProduct ?vec1 ?vec2)` - Dot product (inner product)
+- `(cosineSimilarity ?vec1 ?vec2)` - Cosine similarity (-1 to 1)
+- `(euclideanDistance ?vec1 ?vec2)` - Euclidean (L2) distance
+
+Function names are case-insensitive. See [Vector Search](../indexing-and-search/vector-search.md) for usage examples.
+
 ### Type Functions
 
 - `(bound ?var)` - Variable is bound
@@ -829,19 +839,27 @@ Query graph sources using the same syntax:
 
 ```json
 {
-  "@context": {
-    "vector": "http://ns.flur.ee/vector#"
-  },
-  "from": "documents-vector:main",
+  "@context": { "ex": "http://example.org/" },
+  "from": "documents:main",
   "select": ["?document", "?similarity"],
+  "values": [
+    ["?queryVec"],
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+  ],
   "where": [
-    { "@id": "?document", "vector:similar": "machine learning" },
-    { "@id": "?document", "vector:score": "?similarity" }
+    {
+      "idx:graph": "documents-vector:main",
+      "idx:vector": "?queryVec",
+      "idx:limit": 5,
+      "idx:result": { "idx:id": "?document", "idx:score": "?similarity" }
+    }
   ],
   "orderBy": [["desc", "?similarity"]],
   "limit": 5
 }
 ```
+
+Note: `idx:*` keys are **reserved query pattern keys** and are not expanded via `@context` (you do not need to define an `idx` prefix).
 
 ## Complete Examples
 

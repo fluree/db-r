@@ -93,6 +93,8 @@ num-bigdecimal = { package = "bigdecimal", version = "0.4" }
 # may still compile. The main compile-time win is avoiding fluree-db-credential
 # and its full dep tree when the feature is off.
 ed25519-dalek = "2.1"
+criterion = "0.5"
+rand = { workspace = true }
 
 [[test]]
 name = "it_graph_source_r2rml"
@@ -108,3 +110,7 @@ required-features = ["credential"]
 name = "it_storage_s3_testcontainers"
 path = "tests/it_storage_s3_testcontainers.rs"
 required-features = ["aws-testcontainers"]
+
+[[bench]]
+name = "vector_query"
+harness = false

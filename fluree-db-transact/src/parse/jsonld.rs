@@ -979,8 +979,16 @@ fn parse_literal_value_with_meta(
                 );
             }
 
+            // Handle @vector shorthand: "@vector" or full IRI both route
+            // through the standard vector coercion path.
+            let resolved_type = if type_iri == "@vector" {
+                fluree_vocab::fluree::VECTOR
+            } else {
+                type_iri
+            };
+
             // Route all @value types through typed coercion
-            return coerce_value_with_datatype(val, type_iri, ns_registry);
+            return coerce_value_with_datatype(val, resolved_type, ns_registry);
         }
     }
 

@@ -32,6 +32,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{ObjectBounds, Sid, Storage};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::binary_scan::ScanOperator;
@@ -80,16 +81,68 @@ pub struct PropertyJoinOperator {
     output_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
-    /// Collected values per subject, keyed by canonical IRI for cross-ledger correctness.
-    /// Value tuple: (subject_binding, vec of value-vectors per predicate)
+    /// Collected values per subject, keyed by a join-safe subject key.
+    ///
+    /// - Single-ledger: prefer raw encoded subject IDs (no decoding)
+    /// - Dataset/multi-ledger: use canonical IRI strings (cross-ledger safe)
+    ///
+    /// Value tuple: (subject_binding, vec of value-vectors per predicate).
     /// The subject_binding is preserved from the scan to emit the correct type.
-    subject_values: HashMap<Arc<str>, (Binding, Vec<Vec<Binding>>)>,
-    /// Subject IRIs to process (collected after filtering)
-    pending_subjects: Vec<Arc<str>>,
+    subject_values: HashMap<SubjectKey, (Binding, Vec<Vec<Binding>>)>,
+    /// Subjects to process (collected after filtering)
+    pending_subjects: Vec<SubjectKey>,
     /// Current index into pending_subjects
     subject_idx: usize,
     /// Optional object bounds for range filter pushdown (VarId -> ObjectBounds)
     object_bounds: HashMap<VarId, ObjectBounds>,
+}
+
+/// Join-safe subject key for PropertyJoinOperator.
+///
+/// This avoids eagerly decoding subjects to canonical IRI strings in single-ledger mode,
+/// preserving the late-materialization benefits of `Binding::EncodedSid`.
+#[derive(Clone, Debug, Eq)]
+enum SubjectKey {
+    /// Single-ledger: raw subject/ref ID from the binary index (`Binding::EncodedSid`)
+    Id(u64),
+    /// Single-ledger (range/overlay paths): already-materialized SID
+    Sid(Sid),
+    /// Multi-ledger (dataset): canonical IRI string
+    Iri(Arc<str>),
+}
+
+impl PartialEq for SubjectKey {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (SubjectKey::Id(a), SubjectKey::Id(b)) => a == b,
+            (SubjectKey::Sid(a), SubjectKey::Sid(b)) => {
+                a.namespace_code == b.namespace_code && a.name == b.name
+            }
+            (SubjectKey::Iri(a), SubjectKey::Iri(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Hash for SubjectKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // discriminant
+        match self {
+            SubjectKey::Id(v) => {
+                0u8.hash(state);
+                v.hash(state);
+            }
+            SubjectKey::Sid(s) => {
+                1u8.hash(state);
+                s.namespace_code.hash(state);
+                s.name.hash(state);
+            }
+            SubjectKey::Iri(i) => {
+                2u8.hash(state);
+                i.hash(state);
+            }
+        }
+    }
 }
 
 impl PropertyJoinOperator {
@@ -167,6 +220,54 @@ impl PropertyJoinOperator {
         &self.output_schema
     }
 
+    fn subject_key_single(subject: &Binding) -> Option<SubjectKey> {
+        match subject {
+            Binding::EncodedSid { s_id } => Some(SubjectKey::Id(*s_id)),
+            Binding::Sid(sid) => Some(SubjectKey::Sid(sid.clone())),
+            Binding::IriMatch { primary_sid, .. } => Some(SubjectKey::Sid(primary_sid.clone())),
+            Binding::Iri(iri) => Some(SubjectKey::Iri(iri.clone())),
+            _ => None,
+        }
+    }
+
+    fn subject_key_multi<S: Storage + 'static>(
+        ctx: &ExecutionContext<'_, S>,
+        subject: &Binding,
+    ) -> Option<SubjectKey> {
+        match subject {
+            Binding::IriMatch { iri, .. } => Some(SubjectKey::Iri(iri.clone())),
+            Binding::Iri(iri) => Some(SubjectKey::Iri(iri.clone())),
+            Binding::Sid(sid) => {
+                // In dataset mode, use canonical IRI strings as join keys.
+                // Prefer decoding within the active ledger when available.
+                let iri = ctx
+                    .active_ledger_address()
+                    .and_then(|addr| ctx.decode_sid_in_ledger(sid, addr))
+                    .or_else(|| ctx.decode_sid(sid))?;
+                Some(SubjectKey::Iri(Arc::from(iri)))
+            }
+            Binding::EncodedSid { s_id } => {
+                // Resolve to canonical IRI for cross-ledger comparison.
+                ctx.binary_store
+                    .as_ref()
+                    .and_then(|store| store.resolve_subject_iri(*s_id).ok())
+                    .map(|iri| SubjectKey::Iri(Arc::from(iri)))
+            }
+            _ => None,
+        }
+    }
+
+    fn subject_key<S: Storage + 'static>(
+        ctx: &ExecutionContext<'_, S>,
+        subject: &Binding,
+    ) -> Option<SubjectKey> {
+        if ctx.is_multi_ledger() {
+            Self::subject_key_multi(ctx, subject)
+        } else {
+            Self::subject_key_single(subject)
+        }
+    }
+
     /// Generate cartesian product rows for a given subject
     ///
     /// Takes the collected values for each predicate and produces
@@ -236,9 +337,9 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
         self.subject_idx = 0;
 
         // For each predicate, scan and collect (subject -> values) mappings
-        // Key by canonical IRI for cross-ledger correctness.
+        // Key by a join-safe subject key (encoded IDs in single-ledger mode).
         // Value: (subject_binding, vec of value-vectors per predicate)
-        let mut all_subject_values: HashMap<Arc<str>, (Binding, Vec<Vec<Binding>>)> =
+        let mut all_subject_values: HashMap<SubjectKey, (Binding, Vec<Vec<Binding>>)> =
             HashMap::new();
 
         for (pred_idx, (pred_term, obj_var, dt)) in self.predicates.iter().enumerate() {
@@ -274,18 +375,9 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
 
                 if let (Some(subjects), Some(objects)) = (subject_col, object_col) {
                     for (subject, object) in subjects.iter().zip(objects.iter()) {
-                        // Extract canonical IRI for keying, preserving original binding for output
-                        let iri_key: Option<Arc<str>> = match subject {
-                            Binding::IriMatch { iri, .. } => Some(iri.clone()),
-                            Binding::Sid(sid) => {
-                                // Single-ledger mode: decode SID to IRI for keying
-                                ctx.decode_sid(sid).map(Arc::from)
-                            }
-                            _ => None,
-                        };
-
-                        if let Some(iri) = iri_key {
-                            let entry = all_subject_values.entry(iri).or_insert_with(|| {
+                        // Extract join-safe subject key for keying, preserving original binding for output.
+                        if let Some(key) = Self::subject_key(ctx, subject) {
+                            let entry = all_subject_values.entry(key).or_insert_with(|| {
                                 // Initialize with the subject binding and empty vecs for each predicate
                                 (subject.clone(), vec![Vec::new(); self.predicates.len()])
                             });
@@ -304,7 +396,7 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
             .filter(|(_, (_, values))| values.iter().all(|v| !v.is_empty()))
             .collect();
 
-        // Collect subject IRIs for iteration
+        // Collect subjects for iteration
         self.pending_subjects = self.subject_values.keys().cloned().collect();
 
         Ok(())
@@ -322,10 +414,10 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
         let schema_len = self.output_schema.len();
 
         while all_rows.len() < batch_size && self.subject_idx < self.pending_subjects.len() {
-            let subject_iri = &self.pending_subjects[self.subject_idx];
+            let subject_key = &self.pending_subjects[self.subject_idx];
             self.subject_idx += 1;
 
-            if let Some((subject_binding, values_per_pred)) = self.subject_values.get(subject_iri) {
+            if let Some((subject_binding, values_per_pred)) = self.subject_values.get(subject_key) {
                 let rows = Self::generate_rows(schema_len, subject_binding, values_per_pred);
                 all_rows.extend(rows);
             }
@@ -400,6 +492,13 @@ mod tests {
         assert_eq!(schema[0], VarId(0)); // subject
         assert_eq!(schema[1], VarId(1)); // name object
         assert_eq!(schema[2], VarId(2)); // age object
+    }
+
+    #[test]
+    fn test_subject_key_single_prefers_encoded_ids() {
+        // Single-ledger mode should not require IRI decoding for EncodedSid.
+        let key = PropertyJoinOperator::subject_key_single(&Binding::EncodedSid { s_id: 42 });
+        assert!(matches!(key, Some(SubjectKey::Id(42))));
     }
 
     #[test]

@@ -190,6 +190,10 @@ pub enum DictKind {
     StringReverse,
     /// Per-predicate overflow BigInt/BigDecimal arena (NBA1 format).
     NumBig { p_id: u32 },
+    /// Per-predicate vector arena shard (VAS1 format).
+    VectorShard { p_id: u32 },
+    /// Per-predicate vector arena manifest (VAM1 JSON format).
+    VectorManifest { p_id: u32 },
 }
 
 /// File extension for a given [`DictKind`] (used in CAS paths).
@@ -200,6 +204,8 @@ fn dict_kind_extension(dict: DictKind) -> &'static str {
         DictKind::SubjectIndex | DictKind::StringIndex => "idx",
         DictKind::SubjectReverse | DictKind::StringReverse => "rev",
         DictKind::NumBig { .. } => "nba",
+        DictKind::VectorShard { .. } => "vas",
+        DictKind::VectorManifest { .. } => "vam",
     }
 }
 

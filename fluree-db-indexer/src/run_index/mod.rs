@@ -37,6 +37,7 @@ pub mod replay;
 pub mod spot_cursor;
 pub mod streaming_reader;
 pub mod types;
+pub mod vector_arena;
 
 pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
 pub use binary_index_store::BinaryIndexStore;
@@ -48,7 +49,7 @@ pub use index_build::{
 };
 pub use index_root::{
     BinaryGarbageRef, BinaryIndexRootV2, BinaryPrevIndexRef, CasArtifactsConfig, DictAddresses,
-    DictTreeAddresses, GraphAddresses, GraphEntryV2, GraphOrderAddresses,
+    DictTreeAddresses, GraphAddresses, GraphEntryV2, GraphOrderAddresses, VectorDictEntry,
     BINARY_INDEX_ROOT_VERSION_V2,
 };
 pub use lang_remap::build_lang_remap;

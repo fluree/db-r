@@ -10,17 +10,12 @@ use crate::view::{FlureeView, ReasoningModePrecedence};
 use crate::{
     time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
 };
-use fluree_db_core::{DictNovelty, Flake, IndexType, OverlayProvider};
+use fluree_db_core::{DictNovelty, Flake, IndexType, OverlayProvider, Sid};
 use fluree_db_indexer::run_index::{
     BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2,
 };
 use fluree_db_query::rewrite::ReasoningModes;
 use fluree_db_query::BinaryRangeProvider;
-
-/// Reserved IRI for the built-in txn-meta graph (`g_id = 1`).
-///
-/// This is the graph that stores commit/transaction metadata.
-const TXN_META_GRAPH_IRI: &str = "https://ns.flur.ee/ledger#transactions";
 
 // ============================================================================
 // View Loading
@@ -78,6 +73,48 @@ impl GraphIriFilteredOverlay {
 }
 
 impl OverlayProvider for GraphIriFilteredOverlay {
+    fn epoch(&self) -> u64 {
+        self.inner.epoch()
+    }
+
+    fn for_each_overlay_flake(
+        &self,
+        index: IndexType,
+        first: Option<&Flake>,
+        rhs: Option<&Flake>,
+        leftmost: bool,
+        to_t: i64,
+        callback: &mut dyn FnMut(&Flake),
+    ) {
+        self.inner
+            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |flake| {
+                if self.flake_in_target_graph(flake) {
+                    callback(flake);
+                }
+            })
+    }
+}
+
+#[derive(Clone)]
+struct GraphSidFilteredOverlay {
+    inner: Arc<dyn OverlayProvider>,
+    target_graph: Sid,
+}
+
+impl GraphSidFilteredOverlay {
+    fn new(inner: Arc<dyn OverlayProvider>, target_graph: Sid) -> Self {
+        Self {
+            inner,
+            target_graph,
+        }
+    }
+
+    fn flake_in_target_graph(&self, flake: &Flake) -> bool {
+        flake.g.as_ref() == Some(&self.target_graph)
+    }
+}
+
+impl OverlayProvider for GraphSidFilteredOverlay {
     fn epoch(&self) -> u64 {
         self.inner.epoch()
     }
@@ -180,16 +217,13 @@ where
                     view.db = Arc::new(db);
                     Ok(view.with_graph_id(graph_id))
                 } else {
-                    // Overlay-only historical path: filter overlay flakes to txn-meta graph IRI.
+                    // Overlay-only historical path: filter overlay flakes to txn-meta graph.
                     // This enables `ledger#txn-meta` time travel even when we intentionally
                     // don't attach the binary store (overlay replay path).
                     let inner = Arc::clone(&view.overlay);
-                    let ns_codes = view.db.namespace_codes.clone();
-                    view.overlay = Arc::new(GraphIriFilteredOverlay::new(
-                        inner,
-                        ns_codes,
-                        TXN_META_GRAPH_IRI,
-                    ));
+                    let txn_meta_graph =
+                        Sid::new(fluree_vocab::namespaces::FLUREE_LEDGER, "txn-meta");
+                    view.overlay = Arc::new(GraphSidFilteredOverlay::new(inner, txn_meta_graph));
                     Ok(view.with_graph_id(1))
                 }
             }

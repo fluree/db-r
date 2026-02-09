@@ -29,6 +29,18 @@ pub struct DictTreeAddresses {
     pub leaves: Vec<String>,
 }
 
+/// CAS addresses for a per-predicate vector arena (manifest + shards).
+///
+/// Stored explicitly so GC can reach all shard addresses without
+/// parsing manifests during retention walks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VectorDictEntry {
+    /// CAS address of the manifest JSON (VAM1).
+    pub manifest: String,
+    /// CAS addresses of all shard blobs (VAS1), ordered by shard index.
+    pub shards: Vec<String>,
+}
+
 /// CAS addresses for all dictionary artifacts.
 ///
 /// Small-cardinality dictionaries (graphs, datatypes, languages) use a
@@ -51,6 +63,10 @@ pub struct DictAddresses {
     /// compatibility with integer map keys).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub numbig: BTreeMap<String, String>,
+    /// Per-predicate vector arena metadata. Key is `p_id` as string.
+    /// Value contains manifest CAS address + all shard CAS addresses.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vectors: BTreeMap<String, VectorDictEntry>,
 }
 
 /// CAS addresses for a single graph + sort order (one branch + its leaves).
@@ -336,6 +352,12 @@ impl BinaryIndexRootV2 {
             addrs.push(addr.clone());
         }
 
+        // Per-predicate vector arenas (manifest + shards)
+        for entry in d.vectors.values() {
+            addrs.push(entry.manifest.clone());
+            addrs.extend(entry.shards.iter().cloned());
+        }
+
         // Per-graph, per-order branches + leaves
         for graph in &self.graphs {
             for order_addrs in graph.orders.values() {
@@ -378,6 +400,7 @@ mod tests {
                 leaves: vec!["fluree:file://t/main/objects/dicts/str_l0.leaf".into()],
             },
             numbig: BTreeMap::new(),
+            vectors: BTreeMap::new(),
         }
     }
 
@@ -576,6 +599,7 @@ mod tests {
                 leaves: vec!["cas://str_l0".into()],
             },
             numbig,
+            vectors: BTreeMap::new(),
         };
 
         let graph_addrs = vec![GraphAddresses {

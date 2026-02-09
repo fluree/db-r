@@ -216,6 +216,31 @@ Beyond XSD, Fluree supports RDF-specific datatypes:
 
 See [Geospatial](../indexing-and-search/geospatial.md) for complete documentation.
 
+### Vector Data
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/"
+  },
+  "@graph": [
+    {
+      "@id": "ex:doc1",
+      "ex:embedding": {
+        "@value": [0.1, 0.2, 0.3, 0.4],
+        "@type": "@vector"
+      }
+    }
+  ]
+}
+```
+
+**@vector** (full IRI: `https://ns.flur.ee/ledger#vector`, prefix form: `f:vector`) stores numeric arrays as embedding vectors. Values are quantized to IEEE-754 f32 at ingest for compact storage and SIMD-accelerated similarity computation. In Turtle/SPARQL, use `f:vector` with the `^^` typed-literal syntax.
+
+Without this type annotation, plain JSON arrays are decomposed into individual RDF values where duplicates may be removed and ordering is lost.
+
+See [Vector Search](../indexing-and-search/vector-search.md) for complete documentation.
+
 ## Type Coercion and Compatibility
 
 ### Automatic Type Promotion

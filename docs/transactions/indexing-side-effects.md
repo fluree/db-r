@@ -374,9 +374,11 @@ t=100: Transaction with new documents
   - Documents added to BM25 index
 ```
 
-### Vector Search Indexing (Planned)
+### Vector Search Indexing
 
-Vector embeddings will be indexed separately when usearch support is implemented:
+Vector embeddings can be indexed separately for approximate nearest-neighbor (ANN) search via HNSW vector indexes (implemented with `usearch`, feature-gated behind the `vector` feature).
+
+Inline similarity functions (`dotProduct`, `cosineSimilarity`, `euclideanDistance`) do **not** require a separate graph-source index; they compute scores directly during query execution.
 
 ```text
 t=100: Transaction with embeddings
@@ -384,6 +386,8 @@ t=100: Transaction with embeddings
   - Vector indexer triggered
   - Vectors added to vector index
 ```
+
+See [Vector Search](../indexing-and-search/vector-search.md) for details on HNSW vector indexes and query syntax.
 
 ## Best Practices
 

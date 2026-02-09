@@ -56,6 +56,13 @@ pub struct DictOverlay {
     ext_numbig: Vec<FlakeValue>,
     ext_numbig_map: HashMap<String, u32>, // canonical string repr → handle
 
+    // -- Ephemeral Vector extensions --
+    //
+    // Novelty may contain vector values not yet persisted to the binary vector arena.
+    // We assign ephemeral VECTOR_ID handles and force early materialization so these
+    // values never escape the overlay as unresolved EncodedLit.
+    ext_vectors: Vec<Vec<f64>>,
+
     // -- Ephemeral subject/string fallback (range provider path only) --
     //
     // These are populated ONLY when DictNovelty is uninitialized (e.g., the
@@ -71,10 +78,14 @@ pub struct DictOverlay {
     ext_strings: VecBiDict<u32>,
 
     numbig_next_handle: u32,
+    vector_next_handle: u32,
 }
 
 /// Handles above this value are ephemeral NumBig entries from DictOverlay.
 const EPHEMERAL_NUMBIG_BASE: u32 = 0x8000_0000;
+
+/// Handles above this value are ephemeral Vector entries from DictOverlay.
+const EPHEMERAL_VECTOR_BASE: u32 = 0x8000_0000;
 
 /// Base local ID for ephemeral subjects within a namespace.
 ///
@@ -98,9 +109,11 @@ impl DictOverlay {
             ext_lang_tags: VecBiDict::new(base_lang_count + 1),
             ext_numbig: Vec::new(),
             ext_numbig_map: HashMap::new(),
+            ext_vectors: Vec::new(),
             ext_subjects: NsVecBiDict::with_local_base(EPHEMERAL_SUBJECT_LOCAL_BASE),
             ext_strings: VecBiDict::new(base_str_count),
             numbig_next_handle: EPHEMERAL_NUMBIG_BASE,
+            vector_next_handle: EPHEMERAL_VECTOR_BASE,
         }
     }
 
@@ -414,6 +427,14 @@ impl DictOverlay {
         }
     }
 
+    /// Assign an ephemeral Vector handle for a vector value.
+    fn assign_vector_handle(&mut self, vec: &[f64]) -> (ObjKind, ObjKey) {
+        let handle = self.vector_next_handle;
+        self.vector_next_handle += 1;
+        self.ext_vectors.push(vec.to_vec());
+        (ObjKind::VECTOR_ID, ObjKey::encode_u32_id(handle))
+    }
+
     // ========================================================================
     // Value encoding (FlakeValue → ObjKind/ObjKey)
     // ========================================================================
@@ -523,11 +544,7 @@ impl DictOverlay {
 
             FlakeValue::Decimal(_) => Ok(self.assign_numbig_handle(val)),
 
-            FlakeValue::Vector(v) => {
-                let repr = format!("{:?}", v);
-                let str_id = self.assign_string_id(&repr)?;
-                Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(str_id)))
-            }
+            FlakeValue::Vector(v) => Ok(self.assign_vector_handle(v.as_slice())),
 
             FlakeValue::GeoPoint(bits) => Ok((ObjKind::GEO_POINT, ObjKey::from_u64(bits.as_u64()))),
         }
@@ -594,6 +611,18 @@ impl DictOverlay {
                 return Ok(val.clone());
             }
         }
+
+        // VECTOR_ID with ephemeral handle
+        if o_kind == ObjKind::VECTOR_ID.as_u8() {
+            let handle = o_key as u32;
+            if handle >= EPHEMERAL_VECTOR_BASE {
+                let idx = (handle - EPHEMERAL_VECTOR_BASE) as usize;
+                if let Some(v) = self.ext_vectors.get(idx) {
+                    return Ok(FlakeValue::Vector(v.clone()));
+                }
+            }
+        }
+
         // Delegate to store for all persisted entries
         self.store.decode_value(o_kind, o_key, p_id)
     }
@@ -685,6 +714,12 @@ impl DictOverlay {
         if o_kind == ObjKind::NUM_BIG.as_u8() {
             let handle = o_key as u32;
             return handle >= EPHEMERAL_NUMBIG_BASE;
+        }
+
+        // VECTOR_ID with ephemeral handle
+        if o_kind == ObjKind::VECTOR_ID.as_u8() {
+            let handle = o_key as u32;
+            return handle >= EPHEMERAL_VECTOR_BASE;
         }
 
         // All other types can be decoded by the store alone

@@ -243,7 +243,6 @@ Combine full-text search, vector similarity, and graph queries:
 SELECT ?product ?textScore ?vectorScore
 FROM <products:main>
 FROM <products-search:main>  # BM25 graph source
-FROM <products-vector:main>  # Vector graph source
 WHERE {
   # Graph query
   ?product ex:category "electronics" .
@@ -253,14 +252,36 @@ WHERE {
     ?product bm25:matches "wireless" .
     ?product bm25:score ?textScore .
   }
-  
-  # Vector similarity
-  GRAPH <products-vector:main> {
-    ?product vector:similar "bluetooth speaker" .
-    ?product vector:score ?vectorScore .
-  }
 }
 ORDER BY DESC(?textScore + ?vectorScore)
+```
+
+Vector/HNSW graph sources are currently queried via JSON-LD Query using `idx:*` patterns (e.g. `idx:graph`, `idx:vector`, `idx:result`). SPARQL query syntax for HNSW vector indexes is not currently available.
+
+Example (JSON-LD Query):
+
+```json
+{
+  "@context": { "ex": "http://example.org/" },
+  "from": ["products:main", "products-search:main"],
+  "select": ["?product", "?textScore", "?vectorScore"],
+  "values": [
+    ["?queryVec"],
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+  ],
+  "where": [
+    { "@id": "?product", "ex:category": "electronics" },
+    { "@id": "?product", "bm25:matches": "wireless" },
+    { "@id": "?product", "bm25:score": "?textScore" },
+    {
+      "idx:graph": "products-vector:main",
+      "idx:vector": "?queryVec",
+      "idx:limit": 10,
+      "idx:result": { "idx:id": "?product", "idx:score": "?vectorScore" }
+    }
+  ],
+  "orderBy": [["desc", "(?textScore + ?vectorScore)"]]
+}
 ```
 
 ### Data Lake Integration
@@ -290,7 +311,6 @@ Combine semantic and keyword search:
 ```sparql
 SELECT ?document
 FROM <documents-search:main>     # BM25 graph source
-FROM <documents-vector:main>     # Vector graph source
 WHERE {
   {
     # Keyword match
@@ -298,15 +318,10 @@ WHERE {
       ?document bm25:matches "machine learning" .
     }
   }
-  UNION
-  {
-    # Semantic similarity
-    GRAPH <documents-vector:main> {
-      ?document vector:similar "artificial intelligence" .
-    }
-  }
 }
 ```
+
+Semantic similarity via HNSW vector indexes is currently queried via JSON-LD Query using `idx:*` patterns. SPARQL syntax for vector index search is not currently available.
 
 ## Best Practices
 

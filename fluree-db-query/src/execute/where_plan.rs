@@ -298,8 +298,17 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
         return Ok(seed.unwrap_or_else(|| Box::new(EmptyOperator::new())));
     }
 
-    // If no explicit seed, determine if we need an empty seed (first pattern is not a triple)
-    let needs_empty_seed = seed.is_none() && !matches!(patterns.first(), Some(Pattern::Triple(_)));
+    // If no explicit seed, determine if we need an empty seed.
+    //
+    // We only need a synthetic empty seed when the first pattern *requires* an upstream
+    // operator. Triples/VALUES/BIND can build their own empty seed on demand via
+    // `get_or_empty_seed(...)`, and pre-inserting an EmptyOperator would incorrectly
+    // block PropertyJoinOperator selection (because `operator.is_none()` would be false).
+    let needs_empty_seed = seed.is_none()
+        && !matches!(
+            patterns.first(),
+            Some(Pattern::Triple(_)) | Some(Pattern::Values { .. }) | Some(Pattern::Bind { .. })
+        );
 
     // Start with provided seed, else start with empty operator if needed
     let mut operator: Option<BoxedOperator<S>> = if let Some(seed) = seed {
@@ -366,24 +375,25 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
 
                 i = end;
 
-                // Apply any VALUES patterns first (they are inner-join constraints and beneficial
-                // to apply early to reduce intermediate results).
+                // Defer VALUES application: we may want to wrap PropertyJoinOperator
+                // with VALUES (rather than the reverse) so that PropertyJoin can scan
+                // predicates independently without an upstream operator.
                 //
-                // If there is no upstream operator yet, start from an empty seed solution so
-                // VALUES can act as the initial binding source.
-                if !block_values.is_empty() {
-                    for (vars, rows) in block_values {
-                        let child = get_or_empty_seed(operator.take());
-                        operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
-                    }
-                }
-
-                // Start bound vars from upstream + VALUES.
-                let mut bound = bound_vars_from_operator(&operator);
+                // For the hot path (triples-only, no BIND/FILTER), VALUES still goes
+                // first since there's no property-join consideration.
+                let has_values = !block_values.is_empty();
 
                 // Hot path: block is *only* triples (no VALUES/BIND/FILTER).
                 // Avoid any dependency bookkeeping and just do seeded reorder + build.
                 if block_binds.is_empty() && block_filters.is_empty() {
+                    // Apply VALUES first in the hot path (original behavior).
+                    if has_values {
+                        for (vars, rows) in block_values {
+                            let child = get_or_empty_seed(operator.take());
+                            operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
+                        }
+                    }
+                    let bound = bound_vars_from_operator(&operator);
                     let reordered = reorder_patterns_seeded(triples, stats.as_deref(), &bound);
                     operator = Some(build_triple_operators(
                         operator,
@@ -421,6 +431,9 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
                     })
                     .collect();
 
+                // Compute bound vars from whatever upstream exists (may be None if VALUES deferred).
+                let mut bound = bound_vars_from_operator(&operator);
+
                 // Reorder triples using stats-based selectivity when available.
                 //
                 // IMPORTANT: Seed the optimizer with the variables already bound by the current
@@ -428,31 +441,51 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
                 // join with existing bindings (cartesian explosion), matching the Clojure optimizer.
                 let reordered = reorder_patterns_seeded(triples, stats.as_deref(), &bound);
 
+                // If this block contains only BIND/FILTER (no triples) and we have no upstream
+                // operator yet, we still need a concrete seed to attach those operators to.
+                // Use an empty seed (one empty row) to preserve SPARQL-style semantics.
+                if reordered.is_empty()
+                    && operator.is_none()
+                    && (!pending_binds.is_empty() || !pending_filters.is_empty())
+                {
+                    operator = Some(Box::new(EmptyOperator::new()));
+                    bound = bound_vars_from_operator(&operator);
+                }
+
                 // Push down range-safe filters into object bounds (when possible)
                 let filters_for_pushdown: Vec<FilterExpr> =
                     pending_filters.iter().map(|f| f.expr.clone()).collect();
                 let (object_bounds, filter_idxs_consumed) =
                     extract_bounds_from_filters(&reordered, &filters_for_pushdown);
 
-                // If this is a property-join candidate from the start of a block, keep the existing
-                // property-join fast path. We'll apply any remaining filters after the join.
-                // PropertyJoinOperator scans each predicate independently across all subjects.
-                // When we have object bounds (from FILTER pushdown), it is often far better to:
-                // 1) run the bounded scan first to produce a selective subject set, then
-                // 2) join subsequent predicates correlated to that subject set.
+                // PropertyJoinOperator scans each predicate independently across all subjects,
+                // applying per-predicate object bounds during its scan phase. This avoids the
+                // catastrophic nested-loop join overhead when novelty is large (e.g. vector data).
                 //
-                // So: only use the property-join fast path when there are no object bounds.
-                let can_property_join = operator.is_none()
-                    && reordered.len() >= 2
-                    && is_property_join(&reordered)
-                    && object_bounds.is_empty();
+                // When VALUES are present but the triples qualify for property join, we build
+                // PropertyJoinOperator FIRST (without the VALUES upstream), then wrap VALUES
+                // on top. This keeps PropertyJoin's independent scanning while still composing
+                // with the VALUES bindings (cross-join since variables are typically disjoint).
+                let can_property_join =
+                    operator.is_none() && reordered.len() >= 2 && is_property_join(&reordered);
                 if can_property_join {
                     operator = Some(build_triple_operators(
                         operator,
                         &reordered,
                         &object_bounds,
                     )?);
-                    // Apply any BINDs/FILTERs that are ready after property join.
+
+                    // Now apply deferred VALUES on top of PropertyJoinOperator.
+                    // ValuesOperator cross-joins its child rows with the VALUES rows,
+                    // effectively appending the VALUES bindings to each PropertyJoin result.
+                    if has_values {
+                        for (vars, rows) in block_values {
+                            let child = operator.take().unwrap();
+                            operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
+                        }
+                    }
+
+                    // Apply any BINDs/FILTERs that are ready after property join + VALUES.
                     bound = bound_vars_from_operator(&operator);
                     if let Some(child) = operator.take() {
                         let (child, _, _) = apply_ready_binds_and_filters(
@@ -467,6 +500,16 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
                         operator = Some(child);
                     }
                 } else {
+                    // Not a property-join candidate. Apply VALUES first (original behavior)
+                    // then build scan/join chain.
+                    if has_values {
+                        for (vars, rows) in block_values {
+                            let child = get_or_empty_seed(operator.take());
+                            operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
+                        }
+                        bound = bound_vars_from_operator(&operator);
+                    }
+
                     for tp in &reordered {
                         // Build scan/join for this triple with bounds (if any)
                         operator = Some(build_scan_or_join(operator, tp, &object_bounds));
@@ -737,14 +780,10 @@ pub fn build_triple_operators<S: Storage + 'static>(
 
     // Check for property join optimization
     //
-    // IMPORTANT: only apply when there are no object bounds.
-    // If bounds exist (from FILTER pushdown), a correlated plan (bounded scan -> join)
-    // is usually much cheaper than scanning the other predicate(s) globally.
-    if operator.is_none()
-        && triples.len() >= 2
-        && is_property_join(triples)
-        && object_bounds.is_empty()
-    {
+    // PropertyJoinOperator scans each predicate independently and applies per-predicate
+    // object bounds during its scan phase, then intersects subjects. This is far cheaper
+    // than falling back to NestedLoopJoin which does correlated novelty traversals.
+    if operator.is_none() && triples.len() >= 2 && is_property_join(triples) {
         // Use PropertyJoinOperator for multi-property patterns
         let pj = PropertyJoinOperator::new(triples, object_bounds.clone());
         return Ok(Box::new(pj));
@@ -797,6 +836,57 @@ mod tests {
 
         let result = build_where_operators::<MemoryStorage>(&patterns, None);
         assert!(result.is_ok());
+    }
+
+    /// Regression: top-level VALUES must not block PropertyJoinOperator selection.
+    ///
+    /// Previously, we eagerly inserted an EmptyOperator seed whenever the first pattern
+    /// was non-triple. With VALUES at position 0, that made `operator.is_none()` false
+    /// and disabled PropertyJoinOperator, causing a catastrophic fallback to nested-loop
+    /// joins on multi-property patterns (e.g. vector score + date filter).
+    #[test]
+    fn test_values_does_not_block_property_join_schema_order() {
+        use crate::binding::Binding;
+
+        // VALUES ?queryVec { 0 } .
+        // ?article :date ?date .
+        // ?article :vec ?vec .
+        // FILTER(?date >= "2026-01-01")
+        //
+        // We assert schema order to distinguish the plan shape:
+        // - Bad (VALUES first): schema starts with ?queryVec
+        // - Good (PropertyJoin first, then VALUES wrap): schema starts with ?article
+        let patterns = vec![
+            Pattern::Values {
+                vars: vec![VarId(9)],
+                rows: vec![vec![Binding::lit(FlakeValue::Long(0), Sid::new(2, "long"))]],
+            },
+            Pattern::Triple(make_pattern(VarId(0), "date", VarId(1))),
+            Pattern::Triple(make_pattern(VarId(0), "vec", VarId(2))),
+            Pattern::Filter(FilterExpr::Compare {
+                op: CompareOp::Ge,
+                left: Box::new(FilterExpr::Var(VarId(1))),
+                right: Box::new(FilterExpr::Const(FilterValue::String(
+                    "2026-01-01".to_string(),
+                ))),
+            }),
+        ];
+
+        let op = build_where_operators::<MemoryStorage>(&patterns, None).unwrap();
+        let schema = op.schema();
+        assert!(
+            !schema.is_empty(),
+            "schema should be non-empty for VALUES + triples"
+        );
+        assert_eq!(
+            schema[0],
+            VarId(0),
+            "expected plan to start from subject var (?article), not VALUES var"
+        );
+        assert!(
+            schema.contains(&VarId(9)),
+            "expected VALUES var (?queryVec) to appear in schema"
+        );
     }
 
     #[test]
@@ -1046,6 +1136,71 @@ mod tests {
         // EmptyOperator has empty schema
         assert_eq!(op.schema().len(), 0);
         assert_eq!(op.estimated_rows(), Some(1));
+    }
+
+    /// Regression: PropertyJoinOperator must be used even when object bounds are
+    /// non-empty (bounds are applied per-predicate inside the property-join scan).
+    /// Previously, `build_triple_operators` fell back to NestedLoopJoin whenever
+    /// `object_bounds` was non-empty, causing 1000x+ slowdowns on vector queries
+    /// with FILTER clauses.
+    #[test]
+    fn test_property_join_used_with_object_bounds() {
+        use fluree_db_core::ObjectBounds;
+
+        let tp1 = make_pattern(VarId(0), "date", VarId(1));
+        let tp2 = make_pattern(VarId(0), "vec", VarId(2));
+        let triples = vec![tp1, tp2];
+
+        // Non-empty bounds on one of the object variables
+        let mut bounds = HashMap::new();
+        bounds.insert(
+            VarId(1),
+            ObjectBounds {
+                lower: Some((FlakeValue::String("2026-01-01".to_string()), true)),
+                upper: None,
+            },
+        );
+
+        let op = build_triple_operators::<MemoryStorage>(None, &triples, &bounds).unwrap();
+
+        // PropertyJoinOperator schema is [subject, obj1, obj2] in declaration order.
+        // If NestedLoopJoin were used instead, all three vars would still appear but
+        // the operator would be a chain rather than a single PropertyJoinOperator.
+        assert_eq!(
+            op.schema(),
+            &[VarId(0), VarId(1), VarId(2)],
+            "PropertyJoinOperator should be used (schema = [subject, obj1, obj2])"
+        );
+    }
+
+    /// Verify that `build_where_operators` uses PropertyJoinOperator for a multi-property
+    /// pattern with a FILTER that produces object bounds.
+    #[test]
+    fn test_where_operators_property_join_with_filter_bounds() {
+        // Pattern: ?s :date ?date . ?s :vec ?vec . FILTER(?date >= "2026-01-01")
+        // This should use PropertyJoinOperator (with bounds on ?date pushed into its
+        // per-predicate scan) rather than falling back to NestedLoopJoin.
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "date", VarId(1))),
+            Pattern::Triple(make_pattern(VarId(0), "vec", VarId(2))),
+            Pattern::Filter(FilterExpr::Compare {
+                op: CompareOp::Ge,
+                left: Box::new(FilterExpr::Var(VarId(1))),
+                right: Box::new(FilterExpr::Const(FilterValue::String(
+                    "2026-01-01".to_string(),
+                ))),
+            }),
+        ];
+
+        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        assert!(result.is_ok(), "should build successfully");
+
+        let op = result.unwrap();
+        // All three variables should be in the schema
+        let schema = op.schema();
+        assert!(schema.contains(&VarId(0)), "subject var present");
+        assert!(schema.contains(&VarId(1)), "date var present");
+        assert!(schema.contains(&VarId(2)), "vec var present");
     }
 
     #[test]

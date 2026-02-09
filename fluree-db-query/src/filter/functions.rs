@@ -747,6 +747,14 @@ where
     }))
 }
 
+/// Tag for which vector metric is being computed.
+#[derive(Clone, Copy)]
+enum VectorMetric {
+    Dot,
+    Cosine,
+    L2,
+}
+
 /// Evaluate a binary vector function
 fn eval_binary_vector_fn<S: Storage, F>(
     args: &[FilterExpr],
@@ -760,10 +768,21 @@ where
 {
     check_arity(args, 2, fn_name)?;
 
-    // Fast path: most queries bind vectors to variables (e.g. VALUES + ?vec).
-    // Avoid building a ComparableValue sidecar (which would allocate/copy) by
-    // borrowing the underlying Vec directly.
+    let metric = match fn_name {
+        "dotProduct" => VectorMetric::Dot,
+        "cosineSimilarity" => VectorMetric::Cosine,
+        "euclideanDistance" => VectorMetric::L2,
+        _ => VectorMetric::Dot,
+    };
+
+    // Arena-aware fast path: when bindings include EncodedLit VECTOR_ID,
+    // score directly on f32 data from the vector arena — no upcast, no alloc.
     if let (FilterExpr::Var(v1), FilterExpr::Var(v2)) = (&args[0], &args[1]) {
+        if let Some(result) = try_arena_f32_scoring(row, ctx, *v1, *v2, metric)? {
+            return Ok(Some(result));
+        }
+
+        // Standard fast path: borrow f64 vectors directly from Binding::Lit
         let a = match row.get(*v1) {
             Some(Binding::Lit {
                 val: FlakeValue::Vector(v),
@@ -799,6 +818,123 @@ where
             }
         }
         _ => Ok(None),
+    }
+}
+
+/// Try to score two vector bindings using f32 arena data directly.
+///
+/// Returns `Some(ComparableValue::Double(score))` if both vectors could be
+/// resolved via the arena fast path; `None` if the fast path doesn't apply.
+fn try_arena_f32_scoring<S: Storage>(
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_, S>>,
+    v1: crate::var_registry::VarId,
+    v2: crate::var_registry::VarId,
+    metric: VectorMetric,
+) -> Result<Option<ComparableValue>> {
+    use fluree_db_core::value_id::ObjKind;
+
+    let store = match ctx.and_then(|c| c.binary_store.as_ref()) {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+
+    // Extract arena-backed f32 slices from EncodedLit bindings
+    let a_f32 = match row.get(v1) {
+        Some(Binding::EncodedLit {
+            o_kind,
+            o_key,
+            p_id,
+            ..
+        }) if *o_kind == ObjKind::VECTOR_ID.as_u8() => store.get_vector_f32(*p_id, *o_key as u32),
+        _ => None,
+    };
+    let b_f32 = match row.get(v2) {
+        Some(Binding::EncodedLit {
+            o_kind,
+            o_key,
+            p_id,
+            ..
+        }) if *o_kind == ObjKind::VECTOR_ID.as_u8() => store.get_vector_f32(*p_id, *o_key as u32),
+        _ => None,
+    };
+
+    // We need at least one side from the arena. The other can be a FlakeValue::Vector.
+    match (a_f32, b_f32) {
+        (Some(a), Some(b)) => {
+            if a.len() != b.len() {
+                return Ok(None);
+            }
+            let score = compute_f32_metric(a, b, metric, store, row, v1);
+            Ok(Some(ComparableValue::Double(score as f64)))
+        }
+        (Some(arena_slice), None) => {
+            // Other side might be a FlakeValue::Vector (e.g. query constant)
+            if let Some(other_f64) = extract_vector_f64(row, v2) {
+                if arena_slice.len() != other_f64.len() {
+                    return Ok(None);
+                }
+                // Convert query vector to f32 once (negligible for single vector)
+                let other_f32: Vec<f32> = other_f64.iter().map(|&x| x as f32).collect();
+                let score = compute_f32_metric(arena_slice, &other_f32, metric, store, row, v1);
+                return Ok(Some(ComparableValue::Double(score as f64)));
+            }
+            Ok(None)
+        }
+        (None, Some(arena_slice)) => {
+            if let Some(other_f64) = extract_vector_f64(row, v1) {
+                if arena_slice.len() != other_f64.len() {
+                    return Ok(None);
+                }
+                let other_f32: Vec<f32> = other_f64.iter().map(|&x| x as f32).collect();
+                let score = compute_f32_metric(&other_f32, arena_slice, metric, store, row, v2);
+                return Ok(Some(ComparableValue::Double(score as f64)));
+            }
+            Ok(None)
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// Extract a &[f64] from a Binding::Lit vector.
+fn extract_vector_f64<'a>(
+    row: &'a RowView<'a>,
+    var_id: crate::var_registry::VarId,
+) -> Option<&'a [f64]> {
+    match row.get(var_id) {
+        Some(Binding::Lit {
+            val: FlakeValue::Vector(v),
+            ..
+        }) => Some(v.as_slice()),
+        _ => None,
+    }
+}
+
+/// Compute f32 metric with normalization optimization for cosine.
+fn compute_f32_metric(
+    a: &[f32],
+    b: &[f32],
+    metric: VectorMetric,
+    store: &fluree_db_indexer::run_index::BinaryIndexStore,
+    row: &RowView,
+    arena_var: crate::var_registry::VarId,
+) -> f32 {
+    match metric {
+        VectorMetric::Dot => vector_math::dot_f32(a, b),
+        VectorMetric::Cosine => {
+            // Normalization optimization: if all vectors for this predicate are
+            // unit-normalized, cosine(a,b) = dot(a,b) — skip magnitude computation.
+            let normalized = match row.get(arena_var) {
+                Some(Binding::EncodedLit { p_id, .. }) => store.is_vector_normalized(*p_id),
+                _ => false,
+            };
+            if normalized {
+                vector_math::dot_f32(a, b)
+            } else {
+                vector_math::cosine_f32(a, b).unwrap_or(0.0)
+            }
+        }
+        VectorMetric::L2 => vector_math::l2_f32(a, b),
     }
 }
 

@@ -126,7 +126,7 @@ See [BM25](bm25.md) for details.
 
 Similarity search using vector embeddings via HNSW indexes (embedded or remote).
 
-**Important**: Embeddings must be stored with `@type: "f:vector"` to preserve array structure.
+**Important**: Embeddings must be stored with the vector datatype (`@type: "@vector"`, `@type: "f:vector"`, or full IRI `https://ns.flur.ee/ledger#vector`) to preserve array structure.
 
 **Creating Index (Rust API):**
 ```rust
@@ -273,32 +273,45 @@ Query optimizer handles joins efficiently.
 **Semantic Search:**
 ```json
 {
-  "from": "articles-vector:main",
+  "from": "articles:main",
+  "values": [
+    ["?queryVec"],
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+  ],
   "where": [
     {
-      "@id": "?article",
-      "vector:similar": {
-        "embedding": getUserQueryEmbedding("machine learning"),
-        "limit": 10
+      "idx:graph": "articles-vector:main",
+      "idx:vector": "?queryVec",
+      "idx:limit": 10,
+      "idx:result": {
+        "idx:id": "?article",
+        "idx:score": "?vecScore"
       }
     }
-  ]
+  ],
+  "select": ["?article", "?vecScore"],
+  "orderBy": [["desc", "?vecScore"]]
 }
 ```
 
 **Recommendation Engine:**
 ```json
 {
-  "from": "products-vector:main",
+  "from": "products:main",
   "where": [
     {
-      "@id": "?similar",
-      "vector:similar": {
-        "to": "ex:product-123",
-        "limit": 5
-      }
+      "@id": "ex:product-123",
+      "ex:embedding": "?queryVec"
+    },
+    {
+      "idx:graph": "products-vector:main",
+      "idx:vector": "?queryVec",
+      "idx:limit": 5,
+      "idx:result": { "idx:id": "?similar", "idx:score": "?vecScore" }
     }
-  ]
+  ],
+  "select": ["?similar", "?vecScore"],
+  "orderBy": [["desc", "?vecScore"]]
 }
 ```
 
@@ -309,17 +322,19 @@ Combine text and vector search:
 ```json
 {
   "from": ["products-search:main", "products-vector:main"],
+  "values": [
+    ["?queryVec"],
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+  ],
   "where": [
     { "@id": "?product", "bm25:matches": "laptop" },
     { "@id": "?product", "bm25:score": "?textScore" },
-    { 
-      "@id": "?product",
-      "vector:similar": {
-        "embedding": queryEmbedding,
-        "limit": 100
-      }
-    },
-    { "@id": "?product", "vector:similarity": "?vecScore" }
+    {
+      "idx:graph": "products-vector:main",
+      "idx:vector": "?queryVec",
+      "idx:limit": 100,
+      "idx:result": { "idx:id": "?product", "idx:score": "?vecScore" }
+    }
   ],
   "bind": {
     "?finalScore": "(?textScore * 0.6) + (?vecScore * 0.4)"

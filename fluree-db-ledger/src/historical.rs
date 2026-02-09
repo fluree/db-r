@@ -35,8 +35,8 @@ use fluree_vocab::{rdf_names, xsd_names};
 use futures::StreamExt;
 use std::sync::Arc;
 
-/// Reserved txn-meta named graph IRI local name (`https://ns.flur.ee/ledger#transactions`).
-const TXN_META_GRAPH_LOCAL_NAME: &str = "transactions";
+/// Reserved local name for the txn-meta named graph.
+const TXN_META_GRAPH_LOCAL_NAME: &str = "txn-meta";
 
 /// Read-only ledger view for time-bounded historical queries
 ///

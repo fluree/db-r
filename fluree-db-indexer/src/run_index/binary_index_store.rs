@@ -109,6 +109,8 @@ struct DictionarySet {
     language_tags: LanguageTagDict,
     dt_sids: Vec<Sid>,
     numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena>,
+    /// Per-predicate vector arenas (packed f32). Key = p_id.
+    vector_forward: HashMap<u32, super::vector_arena::VectorArena>,
 }
 
 /// Per-graph, per-order branch manifests and leaf directories.
@@ -402,6 +404,49 @@ impl BinaryIndexStore {
             }
         }
 
+        // ---- Load vector arenas ----
+        let vec_dir = run_dir.join("vectors");
+        let mut vector_forward: HashMap<u32, super::vector_arena::VectorArena> = HashMap::new();
+        if vec_dir.exists() && vec_dir.is_dir() {
+            for entry in std::fs::read_dir(&vec_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("p_") && name.ends_with(".vam") {
+                        let p_id_str = &name[2..name.len() - 4];
+                        if let Ok(p_id) = p_id_str.parse::<u32>() {
+                            let manifest_bytes = std::fs::read(&path)?;
+                            let manifest =
+                                super::vector_arena::read_vector_manifest(&manifest_bytes)?;
+
+                            // Load all shards from disk (local reads are fast)
+                            let mut shards = Vec::with_capacity(manifest.shards.len());
+                            for (shard_idx, _) in manifest.shards.iter().enumerate() {
+                                let shard_path =
+                                    vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
+                                let shard = super::vector_arena::read_vector_shard(&shard_path)?;
+                                shards.push(shard);
+                            }
+
+                            let arena =
+                                super::vector_arena::load_arena_from_shards(&manifest, shards)?;
+                            vector_forward.insert(p_id, arena);
+                        }
+                    }
+                }
+            }
+            if !vector_forward.is_empty() {
+                tracing::info!(
+                    predicates = vector_forward.len(),
+                    total_vectors = vector_forward
+                        .values()
+                        .map(|a| a.len() as usize)
+                        .sum::<usize>(),
+                    "loaded vector arenas"
+                );
+            }
+        }
+
         // Log summary of loaded orders
         let mut order_summary = Vec::new();
         for &order in &all_orders {
@@ -448,6 +493,7 @@ impl BinaryIndexStore {
                 language_tags,
                 dt_sids,
                 numbig_forward,
+                vector_forward,
             },
             graph_indexes: GraphIndexes { graphs },
             max_t,
@@ -647,6 +693,39 @@ impl BinaryIndexStore {
             );
         }
 
+        // ---- Load vector arenas (cache-aware) ----
+        let mut vector_forward: HashMap<u32, super::vector_arena::VectorArena> = HashMap::new();
+        for (p_id_str, entry) in &root.dict_addresses.vectors {
+            if let Ok(p_id) = p_id_str.parse::<u32>() {
+                // Fetch and parse manifest (small JSON)
+                let manifest_bytes =
+                    fetch_cached_bytes(storage, &entry.manifest, cache_dir, "vam").await?;
+                let manifest = super::vector_arena::read_vector_manifest(&manifest_bytes)?;
+
+                // Eagerly load all shards (like NumBig does)
+                let mut shards = Vec::with_capacity(entry.shards.len());
+                for shard_addr in &entry.shards {
+                    let shard_bytes =
+                        fetch_cached_bytes(storage, shard_addr, cache_dir, "vas").await?;
+                    let shard = super::vector_arena::read_vector_shard_from_bytes(&shard_bytes)?;
+                    shards.push(shard);
+                }
+
+                let arena = super::vector_arena::load_arena_from_shards(&manifest, shards)?;
+                vector_forward.insert(p_id, arena);
+            }
+        }
+        if !vector_forward.is_empty() {
+            tracing::info!(
+                predicates = vector_forward.len(),
+                total_vectors = vector_forward
+                    .values()
+                    .map(|a| a.len() as usize)
+                    .sum::<usize>(),
+                "loaded vector arenas"
+            );
+        }
+
         // ---- Load per-graph, per-order branch manifests + leaves ----
         let mut graphs: HashMap<u32, GraphIndex> = HashMap::new();
 
@@ -762,6 +841,7 @@ impl BinaryIndexStore {
                 language_tags,
                 dt_sids,
                 numbig_forward,
+                vector_forward,
             },
             graph_indexes: GraphIndexes { graphs },
             max_t: root.index_t,
@@ -1475,6 +1555,27 @@ impl BinaryIndexStore {
         self.dicts.numbig_forward.get(&p_id)
     }
 
+    /// Get the vector arena for a predicate (for arena-direct f32 scoring).
+    pub fn vector_arena(&self, p_id: u32) -> Option<&super::vector_arena::VectorArena> {
+        self.dicts.vector_forward.get(&p_id)
+    }
+
+    /// Get an f32 vector slice directly from the arena (zero-copy hot path).
+    pub fn get_vector_f32(&self, p_id: u32, handle: u32) -> Option<&[f32]> {
+        self.dicts
+            .vector_forward
+            .get(&p_id)
+            .and_then(|arena| arena.get_f32(handle))
+    }
+
+    /// Check whether vectors for a predicate are all unit-normalized.
+    pub fn is_vector_normalized(&self, p_id: u32) -> bool {
+        self.dicts
+            .vector_forward
+            .get(&p_id)
+            .is_some_and(|arena| arena.is_normalized())
+    }
+
     // ========================================================================
     // Row → Flake conversion
     // ========================================================================
@@ -1591,6 +1692,25 @@ impl BinaryIndexStore {
                 io::ErrorKind::InvalidData,
                 format!("NUM_BIG handle {} not found for p_id={}", handle, p_id),
             ));
+        }
+        if o_kind == ObjKind::VECTOR_ID.as_u8() {
+            let handle = o_key as u32;
+            let arena = self.dicts.vector_forward.get(&p_id).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("no vector arena for p_id={}", p_id),
+                )
+            })?;
+            let f32_slice = arena.get_f32(handle).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("VECTOR_ID handle {} not found for p_id={}", handle, p_id),
+                )
+            })?;
+            // Upcast f32→f64 for FlakeValue::Vector. Because f:vector values are
+            // quantized to f32 at ingest, this upcast is lossless.
+            let f64_vec: Vec<f64> = f32_slice.iter().map(|&x| x as f64).collect();
+            return Ok(FlakeValue::Vector(f64_vec));
         }
         if o_kind == ObjKind::G_YEAR.as_u8() {
             let year = ObjKey::from_u64(o_key).decode_g_year();

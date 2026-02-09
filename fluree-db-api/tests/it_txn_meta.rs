@@ -466,7 +466,7 @@ async fn test_trig_txn_meta_basic() {
                 ex:alice ex:name "Alice" .
 
                 # Transaction metadata
-                GRAPH <https://ns.flur.ee/ledger#transactions> {
+                GRAPH <#txn-meta> {
                     fluree:commit:this ex:machine "server-01" ;
                                        ex:batchId 42 .
                 }
