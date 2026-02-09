@@ -110,13 +110,13 @@ async fn oidc_rs256_bearer_allows_read_and_write() {
     let (_tmp, state) = oidc_state(&jwks_url, issuer).await;
     let app = build_router(state);
 
-    // Create ledger (no data auth on /fluree/create)
+    // Create ledger (no data auth on /v1/fluree/create)
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"oidc:test"}"#))
                 .unwrap(),
@@ -147,7 +147,7 @@ async fn oidc_rs256_bearer_allows_read_and_write() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oidc:test/insert")
+                .uri("/v1/fluree/insert/oidc:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::from(insert_body.to_string()))
@@ -166,7 +166,7 @@ async fn oidc_rs256_bearer_allows_read_and_write() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oidc:test/query")
+                .uri("/v1/fluree/query/oidc:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::from(query_body.to_string()))
@@ -200,7 +200,7 @@ async fn oidc_unconfigured_issuer_rejected_with_clear_message() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"oidc2:test"}"#))
                 .unwrap(),
@@ -228,7 +228,7 @@ async fn oidc_unconfigured_issuer_rejected_with_clear_message() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oidc2:test/query")
+                .uri("/v1/fluree/query/oidc2:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::from(query_body.to_string()))
@@ -272,7 +272,7 @@ async fn oidc_kid_miss_refresh_finds_new_key() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"oidc3:test"}"#))
                 .unwrap(),
@@ -300,7 +300,7 @@ async fn oidc_kid_miss_refresh_finds_new_key() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oidc3:test/query")
+                .uri("/v1/fluree/query/oidc3:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token_kid2))
                 .body(Body::from(query_body.to_string()))
@@ -366,7 +366,7 @@ async fn oidc_kid_miss_refresh_finds_new_key() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"oidc3:test"}"#))
                 .unwrap(),
@@ -396,7 +396,7 @@ async fn oidc_kid_miss_refresh_finds_new_key() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oidc3:test/insert")
+                .uri("/v1/fluree/insert/oidc3:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token_kid2_rw))
                 .body(Body::from(insert_body.to_string()))
@@ -419,7 +419,7 @@ async fn oidc_kid_miss_refresh_finds_new_key() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oidc3:test/query")
+                .uri("/v1/fluree/query/oidc3:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token_kid2_rw))
                 .body(Body::from(query_body2.to_string()))
@@ -469,7 +469,7 @@ async fn oidc_unreachable_jwks_at_startup_still_starts() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"oidc4:test"}"#))
                 .unwrap(),
@@ -526,7 +526,7 @@ async fn oidc_embedded_jwk_still_works_alongside_jwks() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"oidc5:test"}"#))
                 .unwrap(),
@@ -556,7 +556,7 @@ async fn oidc_embedded_jwk_still_works_alongside_jwks() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oidc5:test/insert")
+                .uri("/v1/fluree/insert/oidc5:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", jws_token))
                 .body(Body::from(insert_body.to_string()))
@@ -575,7 +575,7 @@ async fn oidc_embedded_jwk_still_works_alongside_jwks() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oidc5:test/query")
+                .uri("/v1/fluree/query/oidc5:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", jws_token))
                 .body(Body::from(query_body.to_string()))
@@ -676,13 +676,13 @@ async fn oidc_rs256_admin_create_ledger() {
     });
     let token = create_rs256_jwt(&claims, kid);
 
-    // POST /fluree/create with RS256 Bearer token should succeed
+    // POST /v1/fluree/create with RS256 Bearer token should succeed
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::from(r#"{"ledger":"admin-oidc:test"}"#))
@@ -693,7 +693,7 @@ async fn oidc_rs256_admin_create_ledger() {
     assert_eq!(
         resp.status(),
         StatusCode::CREATED,
-        "RS256 admin token should allow /fluree/create"
+        "RS256 admin token should allow /v1/fluree/create"
     );
 }
 
@@ -713,12 +713,12 @@ async fn oidc_admin_rejects_without_token() {
     let (_tmp, state) = oidc_admin_state(&jwks_url, issuer).await;
     let app = build_router(state);
 
-    // POST /fluree/create WITHOUT Bearer token should be rejected
+    // POST /v1/fluree/create WITHOUT Bearer token should be rejected
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"admin-oidc2:test"}"#))
                 .unwrap(),
@@ -779,12 +779,12 @@ async fn oidc_events_rejects_without_token() {
     let (_tmp, state) = oidc_events_state(&jwks_url, issuer).await;
     let app = build_router(state);
 
-    // GET /fluree/events WITHOUT Bearer token should be rejected
+    // GET /v1/fluree/events WITHOUT Bearer token should be rejected
     let resp = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/events?all=true")
+                .uri("/v1/fluree/events?all=true")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -825,13 +825,13 @@ async fn oidc_rs256_events_auth_accepted() {
     });
     let token = create_rs256_jwt(&claims, kid);
 
-    // GET /fluree/events?all=true with RS256 Bearer token should pass auth.
+    // GET /v1/fluree/events?all=true with RS256 Bearer token should pass auth.
     // The response should NOT be 401 (auth succeeded). It will be 200 (SSE stream).
     let resp = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/events?all=true")
+                .uri("/v1/fluree/events?all=true")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -900,13 +900,13 @@ async fn oidc_storage_proxy_rejects_without_token() {
     let (_tmp, state) = oidc_storage_proxy_state(&jwks_url, issuer).await;
     let app = build_router(state);
 
-    // POST /fluree/storage/block WITHOUT Bearer token → 401
+    // POST /v1/fluree/storage/block WITHOUT Bearer token → 401
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"address":"abc123"}"#))
                 .unwrap(),
@@ -943,7 +943,7 @@ async fn oidc_rs256_storage_proxy_ns_lookup() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"proxy-oidc:test"}"#))
                 .unwrap(),
@@ -963,12 +963,12 @@ async fn oidc_rs256_storage_proxy_ns_lookup() {
     });
     let token = create_rs256_jwt(&claims, kid);
 
-    // GET /fluree/storage/ns/proxy-oidc:test with RS256 Bearer → should pass auth
+    // GET /v1/fluree/storage/ns/proxy-oidc:test with RS256 Bearer → should pass auth
     let resp = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/proxy-oidc:test")
+                .uri("/v1/fluree/storage/ns/proxy-oidc:test")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -1017,12 +1017,12 @@ async fn oidc_rs256_storage_proxy_block_fetch() {
     });
     let token = create_rs256_jwt(&claims, kid);
 
-    // POST /fluree/storage/block with a bogus address — auth should pass, but 404 on content
+    // POST /v1/fluree/storage/block with a bogus address — auth should pass, but 404 on content
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::from(r#"{"address":"nonexistent-address"}"#))
@@ -1072,12 +1072,12 @@ async fn oidc_storage_proxy_no_storage_scope_rejected() {
     });
     let token = create_rs256_jwt(&claims, kid);
 
-    // POST /fluree/storage/block → 401 (no storage permissions)
+    // POST /v1/fluree/storage/block → 401 (no storage permissions)
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::from(r#"{"address":"any"}"#))

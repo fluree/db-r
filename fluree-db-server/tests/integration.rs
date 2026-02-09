@@ -75,7 +75,7 @@ async fn stats_ok() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/stats")
+                .uri("/v1/fluree/stats")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -103,7 +103,7 @@ async fn create_ledger_then_ledger_info() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -137,7 +137,7 @@ async fn create_ledger_then_ledger_info() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/ledger-info?ledger=test:main")
+                .uri("/v1/fluree/info/test:main")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -165,7 +165,7 @@ async fn insert_then_query_finds_value() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -185,7 +185,7 @@ async fn insert_then_query_finds_value() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/insert")
+                .uri("/v1/fluree/insert")
                 .header("content-type", "application/json")
                 .header("fluree-ledger", "test:main")
                 .body(Body::from(insert_body.to_string()))
@@ -225,7 +225,7 @@ async fn insert_then_query_finds_value() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/query")
+                .uri("/v1/fluree/query")
                 .header("content-type", "application/json")
                 .body(Body::from(query_body.to_string()))
                 .unwrap(),
@@ -242,7 +242,75 @@ async fn insert_then_query_finds_value() {
 }
 
 #[tokio::test]
-async fn update_endpoint_works_same_as_transact() {
+async fn ledger_with_slash_works_via_op_prefixed_routes() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger with `/` in name
+    let ledger = "group/test:main";
+    let create_body = serde_json::json!({ "ledger": ledger });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Insert using `/v1/fluree/insert/<ledger...>`
+    let insert_body = serde_json::json!({
+      "@context": { "ex": "http://example.org/" },
+      "@id": "ex:alice",
+      "ex:name": "Alice"
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert/group/test:main")
+                .header("content-type", "application/json")
+                .body(Body::from(insert_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Query using `/v1/fluree/query/<ledger...>` without a FROM clause
+    let query_body = serde_json::json!({
+      "@context": { "ex": "http://example.org/" },
+      "select": ["?name"],
+      "where": { "@id": "?s", "ex:name": "?name" }
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/group/test:main")
+                .header("content-type", "application/json")
+                .body(Body::from(query_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        json_contains_string(&json, "Alice"),
+        "Expected query response to contain 'Alice', got: {}",
+        json
+    );
+}
+
+#[tokio::test]
+async fn transact_endpoint_accepts_jsonld_transactions() {
     let (_tmp, state) = test_state();
     let app = build_router(state.clone());
 
@@ -253,7 +321,7 @@ async fn update_endpoint_works_same_as_transact() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -262,7 +330,7 @@ async fn update_endpoint_works_same_as_transact() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Use /fluree/update (the primary endpoint, /fluree/transact is legacy)
+    // Use /v1/fluree/transact
     let update_body = serde_json::json!({
         "ledger": "test:update",
         "@context": { "ex": "http://example.org/" },
@@ -276,7 +344,7 @@ async fn update_endpoint_works_same_as_transact() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/update")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -302,7 +370,7 @@ async fn update_endpoint_works_same_as_transact() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/query")
+                .uri("/v1/fluree/query")
                 .header("content-type", "application/json")
                 .body(Body::from(query_body.to_string()))
                 .unwrap(),
@@ -326,7 +394,7 @@ async fn ledger_scoped_insert_upsert_history() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -335,7 +403,7 @@ async fn ledger_scoped_insert_upsert_history() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Ledger-scoped insert via /:ledger/insert
+    // Ledger-scoped insert via /v1/fluree/insert/<ledger...>
     let insert_body = serde_json::json!({
         "@context": { "ex": "http://example.org/" },
         "@id": "ex:carol",
@@ -346,7 +414,7 @@ async fn ledger_scoped_insert_upsert_history() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/scoped:test/insert")
+                .uri("/v1/fluree/insert/scoped:test")
                 .header("content-type", "application/json")
                 .body(Body::from(insert_body.to_string()))
                 .unwrap(),
@@ -361,7 +429,7 @@ async fn ledger_scoped_insert_upsert_history() {
     );
     assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(1));
 
-    // Ledger-scoped upsert via /:ledger/upsert
+    // Ledger-scoped upsert via /v1/fluree/upsert/<ledger...>
     let upsert_body = serde_json::json!({
         "@context": { "ex": "http://example.org/" },
         "@id": "ex:carol",
@@ -372,7 +440,7 @@ async fn ledger_scoped_insert_upsert_history() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/scoped:test/upsert")
+                .uri("/v1/fluree/upsert/scoped:test")
                 .header("content-type", "application/json")
                 .body(Body::from(upsert_body.to_string()))
                 .unwrap(),
@@ -383,7 +451,7 @@ async fn ledger_scoped_insert_upsert_history() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(2));
 
-    // History query via /:ledger/query using explicit "from" + "to" keys
+    // History query via /v1/fluree/query/<ledger...> using explicit "from" + "to" keys
     // This replaces the old /:ledger/history endpoint - history queries now go through unified query interface
     // Note: Array syntax "from": ["ledger@t:1", "ledger@t:latest"] is a UNION query, not history mode
     // Use explicit "to" key for history queries
@@ -399,7 +467,7 @@ async fn ledger_scoped_insert_upsert_history() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/scoped:test/query")
+                .uri("/v1/fluree/query/scoped:test")
                 .header("content-type", "application/json")
                 .body(Body::from(history_body.to_string()))
                 .unwrap(),
@@ -433,7 +501,7 @@ async fn sparql_query_connection_from_clause_finds_value() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -453,7 +521,7 @@ async fn sparql_query_connection_from_clause_finds_value() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/insert")
+                .uri("/v1/fluree/insert")
                 .header("content-type", "application/json")
                 .header("fluree-ledger", "test:main")
                 .body(Body::from(insert_body.to_string()))
@@ -474,7 +542,7 @@ async fn sparql_query_connection_from_clause_finds_value() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/query")
+                .uri("/v1/fluree/query")
                 .header("content-type", "application/sparql-query")
                 .body(Body::from(sparql))
                 .unwrap(),
@@ -503,7 +571,7 @@ async fn sparql_query_ledger_scoped_path_finds_value_without_from() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -523,7 +591,7 @@ async fn sparql_query_ledger_scoped_path_finds_value_without_from() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/insert")
+                .uri("/v1/fluree/insert")
                 .header("content-type", "application/json")
                 .header("fluree-ledger", "test:main")
                 .body(Body::from(insert_body.to_string()))
@@ -543,7 +611,7 @@ async fn sparql_query_ledger_scoped_path_finds_value_without_from() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/test:main/query")
+                .uri("/v1/fluree/query/test:main")
                 .header("content-type", "application/sparql-query")
                 .body(Body::from(sparql))
                 .unwrap(),
@@ -565,7 +633,7 @@ async fn sparql_update_on_query_endpoint_returns_bad_request() {
     let (_tmp, state) = test_state();
     let app = build_router(state);
 
-    // SPARQL UPDATE requests should go to /fluree/transact, not /fluree/query.
+    // SPARQL UPDATE requests should go to /v1/fluree/transact, not /v1/fluree/query.
     // The query endpoint returns 400 Bad Request with a helpful message.
     let sparql_update = r#"
         PREFIX ex: <http://example.org/>
@@ -575,7 +643,7 @@ async fn sparql_update_on_query_endpoint_returns_bad_request() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/query")
+                .uri("/v1/fluree/query")
                 .header("content-type", "application/sparql-update")
                 .body(Body::from(sparql_update))
                 .unwrap(),
@@ -589,8 +657,8 @@ async fn sparql_update_on_query_endpoint_returns_bad_request() {
     let (_, json) = json_body(resp).await;
     let error_msg = json["error"].as_str().unwrap_or("");
     assert!(
-        error_msg.contains("/fluree/transact"),
-        "Expected error to mention /fluree/transact endpoint, got: {}",
+        error_msg.contains("/v1/fluree/transact"),
+        "Expected error to mention /v1/fluree/transact endpoint, got: {}",
         error_msg
     );
 }
@@ -611,7 +679,7 @@ async fn sparql_query_generic_requires_from_clause_even_with_no_header() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/query")
+                .uri("/v1/fluree/query")
                 .header("content-type", "application/sparql-query")
                 .body(Body::from(sparql))
                 .unwrap(),
@@ -639,7 +707,7 @@ async fn soft_drop_blocks_recreate() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -655,7 +723,7 @@ async fn soft_drop_blocks_recreate() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/drop")
+                .uri("/v1/fluree/drop")
                 .header("content-type", "application/json")
                 .body(Body::from(drop_body.to_string()))
                 .unwrap(),
@@ -669,7 +737,7 @@ async fn soft_drop_blocks_recreate() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -693,7 +761,7 @@ async fn query_missing_ledger_is_400() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/query")
+                .uri("/v1/fluree/query")
                 .header("content-type", "application/json")
                 .body(Body::from(query_body.to_string()))
                 .unwrap(),
@@ -716,7 +784,7 @@ async fn query_with_tracking_returns_headers() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -736,7 +804,7 @@ async fn query_with_tracking_returns_headers() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/insert")
+                .uri("/v1/fluree/insert")
                 .header("content-type", "application/json")
                 .header("fluree-ledger", "test:tracking")
                 .body(Body::from(insert_body.to_string()))
@@ -758,7 +826,7 @@ async fn query_with_tracking_returns_headers() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/query")
+                .uri("/v1/fluree/query")
                 .header("content-type", "application/json")
                 .body(Body::from(query_body.to_string()))
                 .unwrap(),
@@ -803,7 +871,7 @@ async fn query_with_max_fuel_returns_fuel_header() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -823,7 +891,7 @@ async fn query_with_max_fuel_returns_fuel_header() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/insert")
+                .uri("/v1/fluree/insert")
                 .header("content-type", "application/json")
                 .header("fluree-ledger", "test:fuel")
                 .body(Body::from(insert_body.to_string()))
@@ -845,7 +913,7 @@ async fn query_with_max_fuel_returns_fuel_header() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/query")
+                .uri("/v1/fluree/query")
                 .header("content-type", "application/json")
                 .body(Body::from(query_body.to_string()))
                 .unwrap(),

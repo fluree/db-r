@@ -147,7 +147,7 @@ A user holding only query-scoped tokens **cannot** clone or pull a ledger. They 
 
 ### Events Endpoint Authentication
 
-Protect the `/fluree/events` SSE endpoint:
+Protect the `/v1/fluree/events` SSE endpoint:
 
 | Flag | Env Var | Default |
 |------|---------|---------|
@@ -249,7 +249,7 @@ export FLUREE_JWKS_ISSUERS="https://issuer1.example.com=https://issuer1.example.
 
 #### Connection-Scoped SPARQL Scope Enforcement
 
-When a Bearer token is present for connection-scoped SPARQL queries (`/fluree/query` with
+When a Bearer token is present for connection-scoped SPARQL queries (`/v1/fluree/query` with
 `Content-Type: application/sparql-query`), the server enforces ledger scope:
 
 - FROM / FROM NAMED clauses are parsed to extract ledger aliases.
@@ -259,7 +259,7 @@ When a Bearer token is present for connection-scoped SPARQL queries (`/fluree/qu
 
 ### Admin Endpoint Authentication
 
-Protect `/fluree/create` and `/fluree/drop` endpoints:
+Protect `/v1/fluree/create` and `/v1/fluree/drop` endpoints:
 
 | Flag | Env Var | Default |
 |------|---------|---------|
@@ -334,7 +334,7 @@ fluree-server \
 
 | Flag | Env Var | Description |
 |------|---------|-------------|
-| `--peer-events-url` | `FLUREE_PEER_EVENTS_URL` | Custom events URL (default: `{tx_server_url}/fluree/events`) |
+| `--peer-events-url` | `FLUREE_PEER_EVENTS_URL` | Custom events URL (default: `{tx_server_url}/v1/fluree/events`) |
 | `--peer-events-token` | `FLUREE_PEER_EVENTS_TOKEN` | Bearer token for events (supports `@filepath`) |
 
 ### Peer Reconnection

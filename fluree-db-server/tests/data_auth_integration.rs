@@ -81,7 +81,7 @@ async fn data_auth_required_blocks_query_without_auth() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"auth:test"}"#))
                 .unwrap(),
@@ -99,7 +99,7 @@ async fn data_auth_required_blocks_query_without_auth() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/auth:test/query")
+                .uri("/v1/fluree/query/auth:test")
                 .header("content-type", "application/json")
                 .body(Body::from(query_body.to_string()))
                 .unwrap(),
@@ -120,7 +120,7 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"ledger":"auth2:test"}"#))
                 .unwrap(),
@@ -144,7 +144,7 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
     });
     let token = create_jws(&claims, &signing_key);
 
-    // Insert via /:ledger/insert
+    // Insert via /v1/fluree/insert/<ledger...>
     let insert_body = serde_json::json!({
       "@context": { "ex": "http://example.org/" },
       "insert": { "@id": "ex:alice", "ex:name": "Alice" }
@@ -154,7 +154,7 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/auth2:test/insert")
+                .uri("/v1/fluree/insert/auth2:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::from(insert_body.to_string()))
@@ -173,7 +173,7 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/auth2:test/query")
+                .uri("/v1/fluree/query/auth2:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::from(query_body.to_string()))
@@ -197,7 +197,7 @@ async fn data_auth_denies_write_outside_scope_as_not_found() {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/fluree/create")
+                    .uri("/v1/fluree/create")
                     .header("content-type", "application/json")
                     .body(Body::from(format!(r#"{{"ledger":"{}"}}"#, ledger)))
                     .unwrap(),
@@ -226,7 +226,7 @@ async fn data_auth_denies_write_outside_scope_as_not_found() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/b:test/insert")
+                .uri("/v1/fluree/insert/b:test")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::from(insert_body.to_string()))

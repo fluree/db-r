@@ -4,6 +4,34 @@ This document defines the wire-level contract between the Fluree CLI and any Flu
 
 For the overall authentication model, see [Authentication](../security/authentication.md).
 
+## Implementer checklist (CLI compatibility)
+
+An implementation is considered **CLI-compatible** if the Fluree CLI can:
+
+- discover how to authenticate,
+- obtain/store a Bearer token, and
+- use that token for data-plane operations (and optionally refresh it).
+
+### Required (for “it works”)
+
+- **Auth discovery**: implement `GET /.well-known/fluree.json`.
+  - Return at least `{ "version": 1 }`.
+  - If you support automated login, include an `auth` object with `type="oidc_device"` and required fields (`issuer`, `client_id`, `exchange_url`).
+  - If you do not support automated login, you may omit `auth` (CLI will use manual token input), or return `auth.type="token"` to be explicit.
+- **Token exchange / refresh** (only for `auth.type="oidc_device"`): implement `POST {exchange_url}`:
+  - `grant_type="urn:ietf:params:oauth:grant-type:token-exchange"` for exchanging an IdP token into a Fluree-scoped token.
+  - `grant_type="refresh_token"` for refreshing without user interaction (optional; CLI will still work without refresh, but requires re-login when tokens expire).
+- **Issue Fluree-scoped JWTs**: the `access_token` you return MUST include the standard Fluree claims used by `fluree-server`:
+  - identity: `fluree.identity` (recommended) and standard `iss/sub/exp/iat`
+  - scopes: `fluree.ledger.read.*`, `fluree.ledger.write.*`, `fluree.events.*` (as applicable)
+  - replication scopes (`fluree.storage.*`) MUST be reserved for operator/service principals only.
+
+### Recommended (for good UX and supportability)
+
+- **Stable error messages**: keep `error` strings stable and human-readable. The CLI may pattern-match on substrings (e.g. `"Bearer token required"`, `"Untrusted issuer"`) to provide hints.
+- **Anti-leak semantics**: for data endpoints, return `404` for out-of-scope ledgers (do not leak existence).
+- **Verified diagnostics**: implement `GET /v1/fluree/whoami` (or an equivalent endpoint) to return `token_present`, `verified`, `auth_method`, identity, and scope summary.
+
 ## Auth discovery
 
 ### `GET /.well-known/fluree.json`
@@ -15,15 +43,40 @@ The CLI fetches this endpoint when a remote is added (`fluree remote add`) to au
 ```json
 {
   "version": 1,
+  "api_base_url": "https://data.example.com/v1/fluree",
   "auth": {
     "type": "oidc_device",
-    "issuer": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123",
+    "issuer": "https://issuer.example.com",
     "client_id": "fluree-cli",
-    "exchange_url": "https://solo.example.com/fluree/auth/exchange",
+    "exchange_url": "https://data.example.com/v1/fluree/auth/exchange",
     "scopes": ["openid", "profile"]
   }
 }
 ```
+
+### `api_base_url`
+
+`api_base_url` tells the CLI where the Fluree HTTP API is mounted.
+It is specifically intended to support implementations that:
+
+- mount the Fluree API under a non-root prefix (e.g. `/v1/fluree`), and/or
+- want discovery served from a different host than the data plane (e.g. `www.example.com` serving discovery that points at `data.example.com`).
+
+**Contract:**
+
+- `api_base_url` MAY be:
+  - an **absolute URL**, e.g. `https://data.example.com/v1/fluree`, or
+  - an **absolute-path reference** (relative to the discovery origin), e.g. `/v1/fluree`.
+- If `api_base_url` is an absolute-path reference, the CLI MUST resolve it against the **origin** (scheme + host + port)
+  of the discovery document URL it fetched (i.e., the URL used for `GET /.well-known/fluree.json`).
+  - Example: discovery fetched from `https://abc123.cloudfront.net/.well-known/fluree.json` and `api_base_url="/v1/fluree"`
+    resolves to `https://abc123.cloudfront.net/v1/fluree`.
+- `api_base_url` SHOULD include the full prefix including `fluree` and SHOULD NOT have a trailing slash.
+- The CLI MUST use the resolved `api_base_url` as the base for subsequent API calls (query/insert/upsert/update/info/exists).
+- If `api_base_url` is absent, the CLI MUST derive it from the configured remote URL:
+  - If the remote URL already ends with `/fluree`, use it as-is.
+  - Otherwise, append `/fluree`.
+  - If you mount a versioned API (for example `/v1/fluree`), you SHOULD include `api_base_url` in discovery to avoid ambiguity.
 
 ### `auth.type` values
 
@@ -55,7 +108,7 @@ After the CLI completes the OIDC device flow with the IdP, it calls the exchange
 **Request:**
 
 ```http
-POST /fluree/auth/exchange HTTP/1.1
+POST /v1/fluree/auth/exchange HTTP/1.1
 Content-Type: application/json
 
 {
@@ -127,7 +180,7 @@ base_url = "https://solo.example.com"
 type = "oidc_device"
 issuer = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123"
 client_id = "fluree-cli"
-exchange_url = "https://solo.example.com/fluree/auth/exchange"
+exchange_url = "https://solo.example.com/v1/fluree/auth/exchange"
 token = "eyJ..."           # cached Fluree Bearer token (written by 'fluree auth login')
 refresh_token = "eyJ..."   # refresh token (written by 'fluree auth login')
 
@@ -190,7 +243,7 @@ Replication commands use `HttpRemoteClient` (from `fluree-db-nameservice-sync`) 
 
 ## Token diagnostic endpoint
 
-### `GET /fluree/whoami`
+### `GET /v1/fluree/whoami`
 
 A verified diagnostic endpoint that performs full cryptographic verification of the Bearer token (if present) using the same code path as data endpoints. This is the recommended way for the CLI or an implementing application to validate a token without side effects.
 
@@ -318,8 +371,8 @@ Implementors MUST return these status codes consistently so the CLI can provide 
 | `POST /fluree/drop` | `200` | `401` | `401` | `403` | `404` |
 | `POST /fluree/query` | `200` | `401` | `401` | `404` (anti-leak) | `404` (anti-leak) |
 | `POST /fluree/transact` | `200` | `401` | `401` | `404` (anti-leak) | `404` (anti-leak) |
-| `POST /fluree/auth/exchange` | `200` | n/a | `401` | `403` | n/a |
-| `GET /fluree/whoami` | `200` | `200` (token_present=false) | `200` (verified=false) | n/a | n/a |
+| `POST /v1/fluree/auth/exchange` | `200` | n/a | `401` | `403` | n/a |
+| `GET /v1/fluree/whoami` | `200` | `200` (token_present=false) | `200` (verified=false) | n/a | n/a |
 
 ### Conformance checklist (error bodies)
 

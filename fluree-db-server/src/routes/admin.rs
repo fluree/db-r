@@ -1,4 +1,4 @@
-//! Admin endpoints: /health, /fluree/stats, /fluree/whoami, /.well-known/fluree.json, /swagger.json
+//! Admin endpoints: /health, /v1/fluree/stats, /v1/fluree/whoami, /.well-known/fluree.json, /swagger.json
 
 use crate::config::{AdminAuthMode, DataAuthMode, EventsAuthMode};
 use crate::error::Result;
@@ -48,7 +48,7 @@ pub struct StatsResponse {
 
 /// Server statistics endpoint
 ///
-/// GET /fluree/stats
+/// GET /v1/fluree/stats
 ///
 /// Returns server statistics including uptime, storage type, and cache info.
 pub async fn stats(
@@ -71,7 +71,7 @@ pub async fn stats(
 
 /// Who-am-I diagnostic endpoint
 ///
-/// GET /fluree/whoami
+/// GET /v1/fluree/whoami
 ///
 /// Verifies the Bearer token (if present) using the same cryptographic
 /// verification paths as data endpoints, then returns a summary of the
@@ -278,6 +278,8 @@ pub async fn discovery(State(state): State<Arc<AppState>>) -> Json<serde_json::V
 
     let mut doc = serde_json::json!({
         "version": 1,
+        // Versioned API base path (resolved against discovery origin by the CLI).
+        "api_base_url": "/v1/fluree",
     });
 
     if any_auth_enabled {
@@ -315,7 +317,7 @@ pub async fn openapi_spec() -> Result<Json<serde_json::Value>> {
                     }
                 }
             },
-            "/fluree/create": {
+            "/v1/fluree/create": {
                 "post": {
                     "summary": "Create a new ledger",
                     "requestBody": {
@@ -336,13 +338,13 @@ pub async fn openapi_spec() -> Result<Json<serde_json::Value>> {
                     }
                 }
             },
-            "/fluree/query": {
+            "/v1/fluree/query": {
                 "post": {
                     "summary": "Execute a query",
                     "description": "Execute FQL or SPARQL queries"
                 }
             },
-            "/fluree/transact": {
+            "/v1/fluree/transact": {
                 "post": {
                     "summary": "Execute a transaction"
                 }

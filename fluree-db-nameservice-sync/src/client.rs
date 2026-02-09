@@ -74,8 +74,15 @@ pub struct HttpRemoteClient {
 
 impl HttpRemoteClient {
     pub fn new(base_url: impl Into<String>, auth_token: Option<String>) -> Self {
+        let raw = base_url.into();
+        let trimmed = raw.trim_end_matches('/').to_string();
+        let normalized = if trimmed.ends_with("/fluree") {
+            trimmed
+        } else {
+            format!("{}/fluree", trimmed)
+        };
         Self {
-            base_url: base_url.into(),
+            base_url: normalized,
             http: reqwest::Client::new(),
             auth_token,
         }
@@ -116,7 +123,9 @@ impl HttpRemoteClient {
 #[async_trait]
 impl RemoteNameserviceClient for HttpRemoteClient {
     async fn lookup(&self, address: &str) -> Result<Option<NsRecord>> {
-        let url = format!("{}/fluree/storage/ns/{}", self.base_url, address);
+        // base_url is the Fluree API base (ends with `/fluree`), so route paths
+        // here should be relative to that prefix.
+        let url = format!("{}/storage/ns/{}", self.base_url, address);
         let resp = self.add_auth(self.http.get(&url)).send().await?;
 
         match resp.status().as_u16() {
@@ -130,7 +139,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
     }
 
     async fn snapshot(&self) -> Result<RemoteSnapshot> {
-        let url = format!("{}/fluree/nameservice/snapshot", self.base_url);
+        let url = format!("{}/nameservice/snapshot", self.base_url);
         let resp = self.add_auth(self.http.get(&url)).send().await?;
 
         if !resp.status().is_success() {
@@ -150,7 +159,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
     ) -> Result<CasResult> {
         let kind_path = Self::kind_path(kind);
         let url = format!(
-            "{}/fluree/nameservice/refs/{}/{}",
+            "{}/nameservice/refs/{}/{}",
             self.base_url, address, kind_path
         );
 
@@ -174,7 +183,7 @@ impl RemoteNameserviceClient for HttpRemoteClient {
     }
 
     async fn init_ledger(&self, address: &str) -> Result<bool> {
-        let url = format!("{}/fluree/nameservice/refs/{}/init", self.base_url, address);
+        let url = format!("{}/nameservice/refs/{}/init", self.base_url, address);
 
         let resp = self.add_auth(self.http.post(&url)).send().await?;
 

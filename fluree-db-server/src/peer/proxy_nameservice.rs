@@ -1,6 +1,6 @@
 //! Proxy nameservice implementation for peer mode
 //!
-//! Fetches nameservice records via the transaction server's `/fluree/storage/ns/{alias}`
+//! Fetches nameservice records via the transaction server's `/v1/fluree/storage/ns/{alias}`
 //! endpoint instead of direct file access. This allows peers to operate without storage
 //! credentials.
 
@@ -87,7 +87,7 @@ impl ProxyNameService {
     /// Build the nameservice lookup endpoint URL
     fn ns_url(&self, alias: &str) -> String {
         format!(
-            "{}/fluree/storage/ns/{}",
+            "{}/v1/fluree/storage/ns/{}",
             self.base_url,
             urlencoding::encode(alias)
         )
@@ -190,7 +190,7 @@ mod tests {
         );
         assert_eq!(
             ns.ns_url("books:main"),
-            "http://localhost:8090/fluree/storage/ns/books%3Amain"
+            "http://localhost:8090/v1/fluree/storage/ns/books%3Amain"
         );
     }
 
@@ -203,7 +203,7 @@ mod tests {
         // Alias without colon doesn't need encoding
         assert_eq!(
             ns.ns_url("books"),
-            "http://localhost:8090/fluree/storage/ns/books"
+            "http://localhost:8090/v1/fluree/storage/ns/books"
         );
     }
 

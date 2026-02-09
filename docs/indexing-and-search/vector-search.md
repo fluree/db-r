@@ -570,23 +570,75 @@ fluree-search-httpd \
 
 Both embedded and remote modes use identical distance metric computation, score normalization, and snapshot serialization -- ensuring identical results regardless of deployment mode.
 
-## Performance
+## Performance and Scaling
 
-### Inline Similarity Functions
+### The importance of binary indexing
 
-- **Best for**: Small to medium datasets (thousands of vectors), ad-hoc similarity queries, prototyping
+Fluree's binary columnar index dramatically accelerates vector queries. Queries against novelty-only (unindexed) data perform a linear scan through the in-memory commit log, while indexed queries read pre-sorted, cache-friendly columnar data. **Ensure background indexing is running** for production workloads -- the difference is substantial.
+
+The following benchmarks use 768-dimensional vectors (typical for transformer embeddings like sentence-transformers or OpenAI `text-embedding-3-small`) on Apple M-series hardware:
+
+#### Novelty-only (no binary index)
+
+| Scenario | Vectors | Query time | Throughput |
+|----------|---------|-----------|------------|
+| Scan all | 1,000 | 9.9 ms | ~101K vec/s |
+| Scan all | 5,000 | 45.1 ms | ~111K vec/s |
+| Filtered + score | 1,000 (75 pass filter) | 13.5 ms | ~5.5K vec/s |
+| Filtered + score | 5,000 (402 pass filter) | 62.1 ms | ~6.5K vec/s |
+
+#### With binary index
+
+| Scenario | Vectors | Query time | Throughput | Speedup vs novelty |
+|----------|---------|-----------|------------|-------------------|
+| Scan all | 1,000 | 1.68 ms | ~595K vec/s | 5.9x |
+| Scan all | 5,000 | 7.69 ms | ~650K vec/s | 5.9x |
+| Filtered + score | 1,000 (75 pass filter) | 533 us | ~141K vec/s | 25x |
+| Filtered + score | 5,000 (402 pass filter) | 2.40 ms | ~168K vec/s | 26x |
+
+Key takeaways:
+
+- **Unfiltered scans** are ~6x faster with the binary index
+- **Filtered queries** (where graph patterns reduce the candidate set before scoring) are ~25x faster -- the index enables efficient predicate-first access that avoids loading irrelevant vectors entirely
+- At 5,000 vectors, a filtered indexed query completes in **2.4 ms** -- well within interactive latency budgets
+
+### Inline similarity functions (flat scan)
+
+- **Best for**: Small to medium datasets, ad-hoc similarity queries, prototyping
 - **Complexity**: O(n) linear scan -- computes similarity against every matching vector
 - **Advantage**: No index setup required, works immediately after insert
 - **SIMD acceleration**: Fluree uses runtime-detected SIMD kernels (SSE2/AVX on x86_64, NEON on ARM) for vectorized dot/cosine/L2 computation
+- **Normalized embedding optimization**: For unit-normalized vectors (most transformer embeddings), cosine similarity reduces to a dot product, avoiding magnitude computation entirely
 
-### HNSW Vector Indexes
+### When to consider HNSW
 
-- **Best for**: Large datasets (millions of vectors), production similarity search
+Inline similarity functions perform a brute-force scan over all candidate vectors. This scales linearly and remains fast for moderate datasets, but at larger scales an HNSW index provides O(log n) approximate nearest-neighbor search.
+
+**Rule of thumb:**
+
+| Vector count (per property) | Recommendation |
+|----------------------------|----------------|
+| < 100K | Flat scan works well, especially with binary indexing. Sub-100ms queries typical. |
+| 100K -- 1M | **Start evaluating HNSW.** Flat scan may still be acceptable depending on latency target and hardware, but HNSW will provide more consistent low-latency results. |
+| 1M -- 10M | HNSW strongly recommended for interactive latency. Flat scan can work if vectors are memory-resident and you can tolerate ~1-2 second queries. |
+| > 10M | HNSW (or other ANN index) is the default recommendation. Flat scan becomes I/O- and cache-bound for low-latency use cases. |
+
+Factors that shift the crossover:
+
+- **Hardware**: Fast NVMe / large RAM pushes the threshold higher; object storage (S3) pulls it lower
+- **Latency target**: A 50 ms budget favors HNSW earlier than a 2-second budget
+- **Filter selectivity**: If graph patterns reduce candidates to a small fraction before scoring, flat scan remains viable at higher counts
+- **Normalized embeddings**: Cosine-as-dot-product is faster, pushing the threshold higher
+- **Binary indexing**: An indexed dataset scans ~6x faster than novelty-only, effectively raising the flat-scan ceiling
+
+### HNSW vector indexes
+
+- **Best for**: Large datasets (100K+ vectors), production similarity search with strict latency requirements
 - **Complexity**: O(log n) approximate nearest neighbor
 - **Space**: ~1.5x embedding size + IRI mapping overhead
 - **Updates**: Incremental via affected-subject tracking
 
-#### Tuning Parameters
+#### Tuning parameters
 
 | Parameter | Effect | Trade-off |
 |-----------|--------|-----------|

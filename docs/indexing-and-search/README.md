@@ -219,10 +219,11 @@ curl -X DELETE "http://localhost:8090/index/bm25/products-search:main"
 
 ### Vector Search
 
-- **Index Build Time**: O(n log n) for HNSW index
-- **Query Time**: O(log n) approximate
+- **Flat scan (inline functions)**: O(n) brute-force, viable up to ~100K vectors with binary indexing; binary index provides ~6x speedup over novelty-only scans and ~25x for filtered queries
+- **HNSW index**: O(log n) approximate nearest neighbor, recommended for 100K+ vectors or strict latency requirements
 - **Space**: ~1.5x embedding size
 - **Updates**: Incremental, O(1) per vector
+- See [Vector Search -- Performance and Scaling](vector-search.md#performance-and-scaling) for benchmark data and guidance on when to adopt HNSW
 
 ### Combined Queries
 

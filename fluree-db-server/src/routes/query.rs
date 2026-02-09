@@ -176,7 +176,7 @@ pub async fn query(
     // SPARQL UPDATE should use the transact endpoint, not query
     if headers.is_sparql_update() || credential.is_sparql_update {
         let error = ServerError::bad_request(
-            "SPARQL UPDATE requests should use the /fluree/transact endpoint, not /fluree/query",
+            "SPARQL UPDATE requests should use the /v1/fluree/transact endpoint, not /v1/fluree/query",
         );
         set_span_error_code(&span, "error:BadRequest");
         tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
@@ -316,7 +316,7 @@ pub async fn query_ledger(
     // SPARQL UPDATE should use the transact endpoint, not query
     if headers.is_sparql_update() || credential.is_sparql_update {
         let error = ServerError::bad_request(
-            "SPARQL UPDATE requests should use the /:ledger/transact endpoint, not /:ledger/query",
+            "SPARQL UPDATE requests should use the /v1/fluree/transact/<ledger...> endpoint, not /v1/fluree/query/<ledger...>",
         );
         set_span_error_code(&span, "error:BadRequest");
         tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
@@ -380,6 +380,22 @@ pub async fn query_ledger(
     force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
     execute_query(&state, &alias, &query_json).await
+}
+
+/// Execute a query with ledger as greedy tail segment.
+///
+/// POST /fluree/query/<ledger...>
+/// GET /fluree/query/<ledger...>
+///
+/// This avoids ambiguity when ledger names contain `/`.
+pub async fn query_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
+    credential: MaybeCredential,
+) -> Result<impl IntoResponse> {
+    query_ledger(State(state), Path(ledger), headers, bearer, credential).await
 }
 
 /// Check if a query requires dataset features (multi-ledger, named graphs, etc.)

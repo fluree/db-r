@@ -2,6 +2,13 @@
 
 Complete reference for all Fluree HTTP API endpoints.
 
+## Base URL / versioning
+
+All endpoints listed below are relative to the server’s **API base URL** (`api_base_url` from `GET /.well-known/fluree.json`).
+
+- Standalone `fluree-server` default: `api_base_url = "/v1/fluree"`
+- Example full URL: `http://localhost:8090/v1/fluree/query/<ledger...>`
+
 ## Discovery and diagnostics
 
 ### GET /.well-known/fluree.json
@@ -12,12 +19,15 @@ See [Auth contract (CLI ↔ Server)](../design/auth-contract.md) for the full sc
 
 Standalone `fluree-server` returns:
 
-- `{"version":1}` when no server auth is enabled
-- `{"version":1,"auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
+- `{"version":1,"api_base_url":"/v1/fluree"}` when no server auth is enabled
+- `{"version":1,"api_base_url":"/v1/fluree","auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
 
 OIDC-capable implementations should return `auth.type="oidc_device"` plus `issuer`, `client_id`, and `exchange_url`.
 
-### GET /fluree/whoami
+Implementations MAY also return `api_base_url` to tell the CLI where the Fluree API is mounted (for example,
+when the API is hosted under `/v1/fluree` or on a separate `data` subdomain).
+
+### GET {api_base_url}/whoami
 
 Diagnostic endpoint for Bearer tokens. Returns a summary of the principal:
 

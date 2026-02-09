@@ -29,7 +29,7 @@ async fn run_add(
     url: &str,
     token: Option<String>,
 ) -> CliResult<()> {
-    let base_url = url.trim_end_matches('/').to_string();
+    let input_url = url.trim_end_matches('/').to_string();
 
     // Load token from file if @filepath
     let auth_token = match token {
@@ -53,35 +53,50 @@ async fn run_add(
         ..Default::default()
     };
 
-    // Attempt auth discovery from /.well-known/fluree.json (non-fatal)
-    if auth.token.is_none() {
-        match discover_auth(&base_url).await {
-            Ok(Some(discovered)) => {
-                auth = discovered;
-                eprintln!(
-                    "  {} auto-discovered OIDC auth from server",
-                    "info:".cyan().bold()
-                );
-                if let Some(ref issuer) = auth.issuer {
-                    eprintln!("  Issuer: {}", issuer);
+    // Attempt discovery from `/.well-known/fluree.json` (non-fatal).
+    //
+    // The discovered `api_base_url` is the Fluree API base (should include the `/fluree`
+    // prefix). We store that as the remote's HTTP base_url, so all other routes are
+    // constructed relative to it (e.g. `{api_base_url}/query/<ledger...>`).
+    let mut discovered_api_base_url: Option<String> = None;
+    match discover_remote(&input_url).await {
+        Ok(Some(discovered)) => {
+            if let Some(api_base_url) = discovered.api_base_url {
+                discovered_api_base_url = Some(api_base_url);
+            }
+            if let Some(discovered_auth) = discovered.auth {
+                if auth.token.is_none() {
+                    auth = discovered_auth;
+                    eprintln!(
+                        "  {} auto-discovered OIDC auth from server",
+                        "info:".cyan().bold()
+                    );
+                    if let Some(ref issuer) = auth.issuer {
+                        eprintln!("  Issuer: {}", issuer);
+                    }
+                    eprintln!(
+                        "  Run `fluree auth login --remote {}` to authenticate",
+                        name
+                    );
                 }
-                eprintln!(
-                    "  Run `fluree auth login --remote {}` to authenticate",
-                    name
-                );
-            }
-            Ok(None) => {
-                // No discovery endpoint or unsupported type — that's fine
-            }
-            Err(msg) => {
-                eprintln!(
-                    "  {} auth discovery failed: {}",
-                    "warn:".yellow().bold(),
-                    msg
-                );
             }
         }
+        Ok(None) => {
+            // No discovery endpoint or not reachable yet — that's fine
+        }
+        Err(msg) => {
+            eprintln!("  {} discovery failed: {}", "warn:".yellow().bold(), msg);
+        }
     }
+
+    // Determine the stored API base URL (always ends with `/fluree`).
+    let base_url = if let Some(api) = discovered_api_base_url {
+        api
+    } else if input_url.ends_with("/fluree") {
+        input_url.clone()
+    } else {
+        format!("{}/fluree", input_url.trim_end_matches('/'))
+    };
 
     let config = RemoteConfig {
         name: RemoteName::new(name),
@@ -99,18 +114,27 @@ async fn run_add(
     Ok(())
 }
 
-/// Attempt to fetch `/.well-known/fluree.json` from the remote and parse
-/// OIDC auth configuration. Returns `Ok(None)` if the endpoint doesn't
-/// exist or the auth type is not supported.
-pub(crate) async fn discover_auth(base_url: &str) -> Result<Option<RemoteAuth>, String> {
-    let discovery_url = format!("{}/.well-known/fluree.json", base_url);
+#[derive(Debug, Default)]
+pub(crate) struct DiscoveredRemote {
+    pub(crate) api_base_url: Option<String>,
+    pub(crate) auth: Option<RemoteAuth>,
+}
+
+/// Attempt to fetch `/.well-known/fluree.json` from the remote origin and parse
+/// discovery configuration. Returns `Ok(None)` if the endpoint doesn't exist
+/// (or if the server isn't reachable yet).
+pub(crate) async fn discover_remote(remote_url: &str) -> Result<Option<DiscoveredRemote>, String> {
+    let base = reqwest::Url::parse(remote_url).map_err(|e| e.to_string())?;
+    let discovery_url = base
+        .join("/.well-known/fluree.json")
+        .map_err(|e| e.to_string())?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let resp = match client.get(&discovery_url).send().await {
+    let resp = match client.get(discovery_url.clone()).send().await {
         Ok(r) => r,
         Err(e) if e.is_connect() || e.is_timeout() => {
             // Server not reachable yet — perfectly normal during setup
@@ -125,52 +149,81 @@ pub(crate) async fn discover_auth(base_url: &str) -> Result<Option<RemoteAuth>, 
 
     let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
 
-    // Parse the discovery payload
-    let auth_obj = match body.get("auth") {
-        Some(a) if a.is_object() => a,
-        _ => return Ok(None),
-    };
+    let mut out = DiscoveredRemote::default();
 
-    let auth_type_str = auth_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-    match auth_type_str {
-        "oidc_device" => {
-            let issuer = auth_obj
-                .get("issuer")
-                .and_then(|v| v.as_str())
-                .ok_or("oidc_device discovery missing 'issuer' field")?
-                .to_string();
-
-            let client_id = auth_obj
-                .get("client_id")
-                .and_then(|v| v.as_str())
-                .ok_or("oidc_device discovery missing 'client_id' field")?
-                .to_string();
-
-            let exchange_url = auth_obj
-                .get("exchange_url")
-                .and_then(|v| v.as_str())
-                .ok_or("oidc_device discovery missing 'exchange_url' field")?
-                .to_string();
-
-            Ok(Some(RemoteAuth {
-                auth_type: Some(RemoteAuthType::OidcDevice),
-                issuer: Some(issuer),
-                client_id: Some(client_id),
-                exchange_url: Some(exchange_url),
-                ..Default::default()
-            }))
-        }
-        "token" | "" => Ok(None), // manual token mode — nothing to auto-configure
-        other => {
+    // api_base_url can be:
+    // - absolute URL: https://data.example.com/v1/fluree
+    // - absolute-path: /v1/fluree (resolved against discovery origin)
+    if let Some(api_base_url) = body.get("api_base_url").and_then(|v| v.as_str()) {
+        let resolved = if api_base_url.starts_with("http://")
+            || api_base_url.starts_with("https://")
+        {
+            reqwest::Url::parse(api_base_url).map_err(|e| e.to_string())?
+        } else if api_base_url.starts_with('/') {
+            discovery_url
+                .join(api_base_url)
+                .map_err(|e| e.to_string())?
+        } else {
             eprintln!(
-                "  {} unknown auth type '{}' in discovery — ignoring",
+                "  {} invalid api_base_url '{}' in discovery — expected absolute URL or absolute-path",
                 "warn:".yellow().bold(),
-                other
+                api_base_url
             );
-            Ok(None)
+            discovery_url.clone()
+        };
+
+        let mut s = resolved.to_string();
+        s = s.trim_end_matches('/').to_string();
+        if !s.is_empty() {
+            out.api_base_url = Some(s);
         }
     }
+
+    // Parse auth configuration (optional)
+    if let Some(auth_obj) = body.get("auth").and_then(|a| a.as_object()) {
+        let auth_type_str = auth_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match auth_type_str {
+            "oidc_device" => {
+                let issuer = auth_obj
+                    .get("issuer")
+                    .and_then(|v| v.as_str())
+                    .ok_or("oidc_device discovery missing 'issuer' field")?
+                    .to_string();
+
+                let client_id = auth_obj
+                    .get("client_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or("oidc_device discovery missing 'client_id' field")?
+                    .to_string();
+
+                let exchange_url = auth_obj
+                    .get("exchange_url")
+                    .and_then(|v| v.as_str())
+                    .ok_or("oidc_device discovery missing 'exchange_url' field")?
+                    .to_string();
+
+                out.auth = Some(RemoteAuth {
+                    auth_type: Some(RemoteAuthType::OidcDevice),
+                    issuer: Some(issuer),
+                    client_id: Some(client_id),
+                    exchange_url: Some(exchange_url),
+                    ..Default::default()
+                });
+            }
+            "token" | "" => {
+                // manual token mode — nothing to auto-configure
+            }
+            other => {
+                eprintln!(
+                    "  {} unknown auth type '{}' in discovery — ignoring",
+                    "warn:".yellow().bold(),
+                    other
+                );
+            }
+        }
+    }
+
+    Ok(Some(out))
 }
 
 async fn run_remove(store: &TomlSyncConfigStore, name: &str) -> CliResult<()> {

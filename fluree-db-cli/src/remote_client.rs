@@ -97,17 +97,27 @@ impl fmt::Display for RemoteLedgerError {
 impl RemoteLedgerClient {
     /// Create a new remote ledger client.
     ///
-    /// `base_url` is the server root (e.g., `http://localhost:8090`).
-    /// Trailing slashes are stripped.
+    /// `base_url` is the Fluree API base (e.g., `http://localhost:8090/fluree`
+    /// or `https://example.com/v1/fluree`). Trailing slashes are stripped.
+    ///
+    /// For backwards compatibility with older configs that stored the server
+    /// root, this method appends `/fluree` if it is missing.
     pub fn new(base_url: &str, auth_token: Option<String>) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .expect("Failed to build HTTP client");
 
+        let trimmed = base_url.trim_end_matches('/');
+        let normalized = if trimmed.ends_with("/fluree") {
+            trimmed.to_string()
+        } else {
+            format!("{}/fluree", trimmed)
+        };
+
         Self {
             client,
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url: normalized,
             token: Arc::new(Mutex::new(auth_token)),
             refresh_config: None,
             refreshed: Arc::new(Mutex::new(None)),
@@ -295,6 +305,14 @@ impl RemoteLedgerClient {
         }
     }
 
+    fn ledger_tail(ledger: &str) -> &str {
+        ledger.trim_start_matches('/')
+    }
+
+    fn op_url(&self, op: &str, ledger: &str) -> String {
+        format!("{}/{}/{}", self.base_url, op, Self::ledger_tail(ledger))
+    }
+
     // =========================================================================
     // Query
     // =========================================================================
@@ -305,7 +323,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/{}/query", self.base_url, ledger);
+        let url = self.op_url("query", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -321,7 +339,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         sparql: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/{}/query", self.base_url, ledger);
+        let url = self.op_url("query", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -341,7 +359,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/{}/insert", self.base_url, ledger);
+        let url = self.op_url("insert", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -357,7 +375,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         turtle: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/{}/insert", self.base_url, ledger);
+        let url = self.op_url("insert", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -377,7 +395,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/{}/upsert", self.base_url, ledger);
+        let url = self.op_url("upsert", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -393,7 +411,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         turtle: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/{}/upsert", self.base_url, ledger);
+        let url = self.op_url("upsert", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -435,7 +453,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         sparql: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/{}/transact", self.base_url, ledger);
+        let url = self.op_url("transact", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -451,14 +469,14 @@ impl RemoteLedgerClient {
 
     /// Get ledger info from the remote server.
     pub async fn ledger_info(&self, ledger: &str) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = format!("{}/fluree/ledger-info?ledger={}", self.base_url, ledger);
+        let url = self.op_url("info", ledger);
         self.send_json(reqwest::Method::GET, &url, "application/json", None)
             .await
     }
 
     /// Check if a ledger exists on the remote server.
     pub async fn ledger_exists(&self, ledger: &str) -> Result<bool, RemoteLedgerError> {
-        let url = format!("{}/fluree/exists?ledger={}", self.base_url, ledger);
+        let url = self.op_url("exists", ledger);
 
         let resp = self
             .build_request(reqwest::Method::GET, &url, "application/json", &None)
@@ -527,7 +545,7 @@ mod tests {
     #[test]
     fn test_client_strips_trailing_slash() {
         let client = RemoteLedgerClient::new("http://localhost:8090/", None);
-        assert_eq!(client.base_url, "http://localhost:8090");
+        assert_eq!(client.base_url, "http://localhost:8090/fluree");
     }
 
     #[test]

@@ -43,12 +43,12 @@ readinessProbe:
 
 ## Statistics Endpoints
 
-### GET /fluree/stats
+### GET /v1/fluree/stats
 
 Server statistics:
 
 ```bash
-curl http://localhost:8090/fluree/stats
+curl http://localhost:8090/v1/fluree/stats
 ```
 
 **Response:**
@@ -72,7 +72,7 @@ curl http://localhost:8090/fluree/stats
 
 ## Diagnostic endpoints
 
-### GET /fluree/whoami
+### GET /v1/fluree/whoami
 
 Diagnostic endpoint for debugging Bearer tokens.
 
@@ -81,7 +81,7 @@ Diagnostic endpoint for debugging Bearer tokens.
 - On verification failure, returns `verified=false` and includes an `error` string. Some unverified decoded fields may be included for debugging.
 
 ```bash
-curl http://localhost:8090/fluree/whoami \
+curl http://localhost:8090/v1/fluree/whoami \
   -H "Authorization: Bearer eyJ..."
 ```
 
@@ -93,19 +93,22 @@ Discovery document used by the CLI when adding a remote (`fluree remote add`) or
 
 Standalone `fluree-server` returns:
 
-- `{"version":1}` when no auth is enabled
-- `{"version":1,"auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
+- `{"version":1,"api_base_url":"/v1/fluree"}` when no auth is enabled
+- `{"version":1,"api_base_url":"/v1/fluree","auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
 
 OIDC-capable implementations can return `auth.type="oidc_device"` plus `issuer`, `client_id`, and `exchange_url`.
 
+Implementations MAY also return `api_base_url` to tell the CLI where the Fluree API is mounted (for example,
+when the API is hosted under `/v1/fluree` or on a separate `data` subdomain).
+
 See [Auth contract (CLI ↔ Server)](../design/auth-contract.md) for the full schema and behavior.
 
-### GET /fluree/ledger-info
+### GET /v1/fluree/info/<ledger...>
 
 Get detailed ledger metadata:
 
 ```bash
-curl "http://localhost:8090/fluree/ledger-info?ledger=mydb:main"
+curl "http://localhost:8090/v1/fluree/info/mydb:main"
 ```
 
 **Optional query params:**

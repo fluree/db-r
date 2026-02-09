@@ -384,6 +384,19 @@ pub async fn transact_ledger(
         .into_response()
 }
 
+/// Execute a transaction with ledger as greedy tail segment.
+///
+/// POST /fluree/update/<ledger...>
+/// POST /fluree/transact/<ledger...>
+pub async fn transact_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    MaybeDataBearer(bearer): MaybeDataBearer,
+    request: Request,
+) -> Response {
+    transact_ledger(State(state), Path(ledger), MaybeDataBearer(bearer), request).await
+}
+
 /// Local implementation of transact_ledger
 async fn transact_ledger_local(
     state: Arc<AppState>,
@@ -789,6 +802,18 @@ pub async fn insert_ledger(
         .into_response()
 }
 
+/// Insert data with ledger as greedy tail segment.
+///
+/// POST /fluree/insert/<ledger...>
+pub async fn insert_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    MaybeDataBearer(bearer): MaybeDataBearer,
+    request: Request,
+) -> Response {
+    insert_ledger(State(state), Path(ledger), MaybeDataBearer(bearer), request).await
+}
+
 /// Local implementation of insert_ledger
 async fn insert_ledger_local(
     state: Arc<AppState>,
@@ -908,6 +933,18 @@ pub async fn upsert_ledger(
     upsert_ledger_local(state, ledger, bearer, request)
         .await
         .into_response()
+}
+
+/// Upsert data with ledger as greedy tail segment.
+///
+/// POST /fluree/upsert/<ledger...>
+pub async fn upsert_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    MaybeDataBearer(bearer): MaybeDataBearer,
+    request: Request,
+) -> Response {
+    upsert_ledger(State(state), Path(ledger), MaybeDataBearer(bearer), request).await
 }
 
 /// Local implementation of upsert_ledger

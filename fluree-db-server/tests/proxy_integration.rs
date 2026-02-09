@@ -163,7 +163,7 @@ async fn test_storage_proxy_endpoints_enabled() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/nonexistent:ledger")
+                .uri("/v1/fluree/storage/ns/nonexistent:ledger")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -186,7 +186,7 @@ async fn test_storage_proxy_requires_token() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/test:main")
+                .uri("/v1/fluree/storage/ns/test:main")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -244,7 +244,7 @@ async fn test_storage_proxy_requires_storage_permissions() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/test:main")
+                .uri("/v1/fluree/storage/ns/test:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -274,7 +274,7 @@ async fn test_storage_proxy_block_endpoint() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -292,7 +292,7 @@ async fn test_storage_proxy_block_endpoint() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::from(block_body.to_string()))
@@ -323,7 +323,7 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -337,7 +337,7 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/ns:test")
+                .uri("/v1/fluree/storage/ns/ns:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -369,7 +369,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -384,7 +384,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -436,7 +436,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/allowed:main")
+                .uri("/v1/fluree/storage/ns/allowed:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -450,7 +450,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/denied:main")
+                .uri("/v1/fluree/storage/ns/denied:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -533,7 +533,7 @@ async fn test_storage_proxy_disabled() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/test:main")
+                .uri("/v1/fluree/storage/ns/test:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -562,7 +562,7 @@ async fn test_storage_proxy_block_authorization() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -616,7 +616,7 @@ async fn test_storage_proxy_block_authorization() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::from(block_body.to_string()))
@@ -648,7 +648,7 @@ async fn test_storage_proxy_rejects_graph_source_addresses() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::from(block_body.to_string()))
@@ -680,7 +680,7 @@ async fn test_storage_proxy_rejects_unknown_address_format() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::from(block_body.to_string()))
@@ -743,7 +743,7 @@ async fn test_storage_proxy_rejects_expired_token() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/test:main")
+                .uri("/v1/fluree/storage/ns/test:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -795,7 +795,7 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -818,7 +818,7 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/update")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -833,7 +833,7 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/flkb:test")
+                .uri("/v1/fluree/storage/ns/flkb:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -856,7 +856,7 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes")
@@ -908,7 +908,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -931,7 +931,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/update")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -946,7 +946,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/octet:test")
+                .uri("/v1/fluree/storage/ns/octet:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -968,7 +968,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/octet-stream")
@@ -1014,7 +1014,7 @@ async fn test_block_content_negotiation_default_accept() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -1037,7 +1037,7 @@ async fn test_block_content_negotiation_default_accept() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/update")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -1052,7 +1052,7 @@ async fn test_block_content_negotiation_default_accept() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/default:test")
+                .uri("/v1/fluree/storage/ns/default:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -1074,7 +1074,7 @@ async fn test_block_content_negotiation_default_accept() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 // No Accept header - should default to octet-stream
@@ -1112,7 +1112,7 @@ async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -1135,7 +1135,7 @@ async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/update")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -1150,7 +1150,7 @@ async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/json:test")
+                .uri("/v1/fluree/storage/ns/json:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -1172,7 +1172,7 @@ async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes+json")
@@ -1268,7 +1268,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -1293,7 +1293,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/transact")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(data.to_string()))
                 .unwrap(),
@@ -1320,7 +1320,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/octet-stream")
@@ -1342,7 +1342,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes")
@@ -1428,7 +1428,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     // Create a ledger via HTTP (to have a valid alias for authorization)
     let client = reqwest::Client::new();
     let create_resp = client
-        .post(format!("{}/fluree/create", server_url))
+        .post(format!("{}/v1/fluree/create", server_url))
         .header("content-type", "application/json")
         .body(r#"{"ledger": "peer:test"}"#)
         .send()
@@ -1442,7 +1442,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
 
     // Create some data + reindex so we have a real leaf to fetch.
     let transact_resp = client
-        .post(format!("{}/fluree/transact", server_url))
+        .post(format!("{}/v1/fluree/transact", server_url))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
@@ -1481,7 +1481,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
 
     let token_for_http = token.clone();
     let root_resp = client
-        .post(format!("{}/fluree/storage/block", server_url))
+        .post(format!("{}/v1/fluree/storage/block", server_url))
         .header("content-type", "application/json")
         .header("Authorization", format!("Bearer {}", token_for_http))
         .header("Accept", "application/octet-stream")
@@ -1579,7 +1579,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
     // Create a ledger via HTTP
     let client = reqwest::Client::new();
     let create_resp = client
-        .post(format!("{}/fluree/create", server_url))
+        .post(format!("{}/v1/fluree/create", server_url))
         .header("content-type", "application/json")
         .body(r#"{"ledger": "raw:test"}"#)
         .send()
@@ -1593,7 +1593,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
 
     // Transact + reindex to create real binary leaves (FLI1).
     let transact_resp = client
-        .post(format!("{}/fluree/transact", server_url))
+        .post(format!("{}/v1/fluree/transact", server_url))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
@@ -1625,7 +1625,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
     // Fetch DB root JSON so we can extract a real leaf address.
     let token_for_http = token.clone();
     let root_resp = client
-        .post(format!("{}/fluree/storage/block", server_url))
+        .post(format!("{}/v1/fluree/storage/block", server_url))
         .header("content-type", "application/json")
         .header("Authorization", format!("Bearer {}", token_for_http))
         .header("Accept", "application/octet-stream")
@@ -1778,7 +1778,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -1842,7 +1842,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/transact")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(setup_data.to_string()))
                 .unwrap(),
@@ -1892,7 +1892,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/octet-stream")
@@ -1918,7 +1918,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes")
@@ -1984,7 +1984,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -2011,7 +2011,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/transact")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(data.to_string()))
                 .unwrap(),
@@ -2039,7 +2039,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/octet-stream")
@@ -2065,7 +2065,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes")

@@ -241,19 +241,29 @@ async fn try_discover_and_login(
 
     eprintln!("No auth type configured; checking server for OIDC discovery...");
 
-    match super::remote::discover_auth(&base_url).await {
-        Ok(Some(discovered_auth)) => {
-            if discovered_auth.auth_type.as_ref() == Some(&RemoteAuthType::OidcDevice) {
-                // Apply discovered OIDC config
-                config.auth = discovered_auth;
-                eprintln!(
-                    "  {} auto-discovered OIDC auth from server",
-                    "info:".cyan().bold()
-                );
+    match super::remote::discover_remote(&base_url).await {
+        Ok(Some(discovered)) => {
+            // If discovery provides an API base URL, store it for subsequent operations.
+            if let Some(api) = discovered.api_base_url {
+                config.endpoint = RemoteEndpoint::Http { base_url: api };
+            }
 
-                // Run the OIDC device flow
-                run_oidc_login(config).await?;
-                Ok(true)
+            // If discovery provides OIDC config, run the device flow.
+            if let Some(discovered_auth) = discovered.auth {
+                if discovered_auth.auth_type.as_ref() == Some(&RemoteAuthType::OidcDevice) {
+                    // Apply discovered OIDC config
+                    config.auth = discovered_auth;
+                    eprintln!(
+                        "  {} auto-discovered OIDC auth from server",
+                        "info:".cyan().bold()
+                    );
+
+                    // Run the OIDC device flow
+                    run_oidc_login(config).await?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
             } else {
                 Ok(false)
             }

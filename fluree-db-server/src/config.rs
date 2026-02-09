@@ -487,7 +487,7 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_TX_SERVER_URL")]
     pub tx_server_url: Option<String>,
 
-    /// Events endpoint URL for peer subscription (defaults to {tx_server_url}/fluree/events)
+    /// Events endpoint URL for peer subscription (defaults to {tx_server_url}/v1/fluree/events)
     #[arg(long, env = "FLUREE_PEER_EVENTS_URL")]
     pub peer_events_url: Option<String>,
 
@@ -882,7 +882,7 @@ impl ServerConfig {
         self.peer_events_url.clone().or_else(|| {
             self.tx_server_url
                 .as_ref()
-                .map(|base| format!("{}/fluree/events", base))
+                .map(|base| format!("{}/v1/fluree/events", base))
         })
     }
 

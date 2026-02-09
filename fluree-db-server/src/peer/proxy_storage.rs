@@ -1,6 +1,6 @@
 //! Proxy storage implementation for peer mode
 //!
-//! Fetches index data via the transaction server's `/fluree/storage/block` endpoint
+//! Fetches index data via the transaction server's `/v1/fluree/storage/block` endpoint
 //! instead of direct storage access. This allows peers to operate without storage
 //! credentials (no S3 access, no filesystem mount).
 //!
@@ -94,7 +94,7 @@ impl ProxyStorage {
 
     /// Build the storage block endpoint URL
     fn block_url(&self) -> String {
-        format!("{}/fluree/storage/block", self.base_url)
+        format!("{}/v1/fluree/storage/block", self.base_url)
     }
 
     /// Fetch with flakes-first content negotiation
@@ -312,7 +312,7 @@ mod tests {
         );
         assert_eq!(
             storage.block_url(),
-            "http://localhost:8090/fluree/storage/block"
+            "http://localhost:8090/v1/fluree/storage/block"
         );
     }
 
@@ -323,6 +323,6 @@ mod tests {
             "test-token".to_string(),
         );
         // Should work but might have double slash - that's okay for URLs
-        assert!(storage.block_url().contains("/fluree/storage/block"));
+        assert!(storage.block_url().contains("/v1/fluree/storage/block"));
     }
 }

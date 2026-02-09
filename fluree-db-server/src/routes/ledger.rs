@@ -7,7 +7,7 @@ use crate::state::AppState;
 use crate::telemetry::{
     create_request_span, extract_request_id, extract_trace_id, set_span_error_code,
 };
-use axum::extract::{Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -386,6 +386,20 @@ pub async fn info(
     Ok(Json(info).into_response())
 }
 
+/// Get ledger information with ledger as greedy tail segment.
+///
+/// GET /fluree/info/<ledger...>
+pub async fn info_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
+    Query(mut query): Query<LedgerInfoQuery>,
+) -> Result<Response> {
+    query.ledger = Some(ledger);
+    info(State(state), headers, bearer, axum::extract::Query(query)).await
+}
+
 /// Simplified ledger info for proxy storage mode (nameservice lookup only)
 async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) -> Result<Response> {
     // Lookup ledger in nameservice
@@ -518,6 +532,20 @@ pub async fn exists(
         ledger: alias,
         exists,
     }))
+}
+
+/// Check ledger existence with ledger as greedy tail segment.
+///
+/// GET /fluree/exists/<ledger...>
+pub async fn exists_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
+    Query(mut query): Query<LedgerInfoQuery>,
+) -> Result<Json<ExistsResponse>> {
+    query.ledger = Some(ledger);
+    exists(State(state), headers, bearer, axum::extract::Query(query)).await
 }
 
 /// Forward a write request to the transaction server (peer mode)
