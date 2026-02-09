@@ -113,6 +113,7 @@
 
 - [Reference](reference/README.md)
   - [Glossary](reference/glossary.md)
+  - [Fluree system vocabulary](reference/vocabulary.md)
   - [JSON-LD connection configuration](reference/connection-config-jsonld.md)
   - [Standards and feature flags](reference/compatibility.md)
   - [Crate map](reference/crate-map.md)

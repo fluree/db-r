@@ -34,7 +34,6 @@ members = [
     "fluree-search-httpd",
     "fluree-db-ingest",
     "fluree-db-cli",
-    "bench-dict-bihash",
 ]
 
 [workspace.package]

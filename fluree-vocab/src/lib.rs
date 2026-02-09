@@ -37,12 +37,6 @@ pub mod rdf {
 
     /// rdf:nil IRI (RDF list terminator)
     pub const NIL: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil";
-
-    /// rdf:t IRI - transaction annotation predicate (RDF-Star)
-    pub const T_ANNOTATION: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#t";
-
-    /// rdf:op IRI - operation annotation predicate (RDF-Star)
-    pub const OP_ANNOTATION: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#op";
 }
 
 /// RDFS vocabulary constants

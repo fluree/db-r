@@ -13,6 +13,15 @@ Definitions of key terms and concepts:
 - Query terminology
 - Index terminology
 
+### [Fluree System Vocabulary](vocabulary.md)
+
+Complete reference for Fluree's system vocabulary under `https://ns.flur.ee/db#`:
+- Commit metadata predicates (`db:t`, `db:address`, `db:time`, etc.)
+- Search query vocabulary (BM25 and vector search patterns)
+- Nameservice record fields and type taxonomy
+- Policy vocabulary
+- Namespace codes
+
 ### [Standards and Feature Flags](compatibility.md)
 
 Standards and feature-flag reference:
