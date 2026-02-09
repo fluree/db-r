@@ -231,8 +231,6 @@ mod tests {
             class_policy: false,
             for_classes: HashSet::new(),
             class_check_needed: false,
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         }
     }
 
@@ -248,8 +246,6 @@ mod tests {
             class_policy: true,
             for_classes: [class].into_iter().collect(),
             class_check_needed: true, // Will be computed
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         }
     }
 
@@ -265,8 +261,6 @@ mod tests {
             class_policy: false,
             for_classes: HashSet::new(),
             class_check_needed: false,
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         }
     }
 

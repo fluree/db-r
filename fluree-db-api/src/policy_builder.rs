@@ -390,8 +390,6 @@ async fn load_policy_restriction<S: Storage + Clone + 'static>(
     let mut on_property: HashSet<Sid> = HashSet::new();
     let mut on_subject: HashSet<Sid> = HashSet::new();
     let mut on_class: HashSet<Sid> = HashSet::new();
-    let mut target_property: HashSet<Sid> = HashSet::new();
-    let mut target_subject: HashSet<Sid> = HashSet::new();
     let mut required = false;
     let mut message: Option<String> = None;
     let mut policy_query_json: Option<String> = None;
@@ -464,26 +462,6 @@ async fn load_policy_restriction<S: Storage + Clone + 'static>(
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
                 on_class.insert(sid.clone());
-            }
-        }
-    }
-
-    // f:targetProperty (can have multiple values)
-    if let Ok(pred_sid) = resolve_iri_to_sid(db, policy_iris::TARGET_PROPERTY) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
-        for binding in bindings {
-            if let Some(sid) = binding.as_sid() {
-                target_property.insert(sid.clone());
-            }
-        }
-    }
-
-    // f:targetSubject (can have multiple values)
-    if let Ok(pred_sid) = resolve_iri_to_sid(db, policy_iris::TARGET_SUBJECT) {
-        let bindings = query_predicate(db, overlay, to_t, policy_sid, &pred_sid).await?;
-        for binding in bindings {
-            if let Some(sid) = binding.as_sid() {
-                target_subject.insert(sid.clone());
             }
         }
     }
@@ -612,8 +590,6 @@ async fn load_policy_restriction<S: Storage + Clone + 'static>(
         class_policy: !for_classes.is_empty(),
         for_classes,
         class_check_needed: false, // Will be set by build_policy_set
-        s_targets: target_subject,
-        p_targets: target_property,
     };
 
     Ok(Some(restriction))
@@ -888,8 +864,6 @@ fn parse_inline_policy<S: Storage>(
             class_policy: !for_classes.is_empty(),
             for_classes,
             class_check_needed: false,
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         });
     }
 

@@ -227,8 +227,6 @@ These predicates are used to define access control policies.
 | `db:onProperty` | `https://ns.flur.ee/db#onProperty` | Property-level policy targeting |
 | `db:onSubject` | `https://ns.flur.ee/db#onSubject` | Subject-level policy targeting |
 | `db:onClass` | `https://ns.flur.ee/db#onClass` | Class-level policy targeting |
-| `db:targetProperty` | `https://ns.flur.ee/db#targetProperty` | Explicit property target |
-| `db:targetSubject` | `https://ns.flur.ee/db#targetSubject` | Explicit subject target |
 | `db:query` | `https://ns.flur.ee/db#query` | Policy query (determines applicability) |
 | `db:required` | `https://ns.flur.ee/db#required` | Whether the policy is required (boolean) |
 | `db:exMessage` | `https://ns.flur.ee/db#exMessage` | Error message when policy denies access |

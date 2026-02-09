@@ -91,13 +91,6 @@ async fn seed_credential_ledger(
     }))
     .expect("policy query json string");
 
-    // Target only ct:User subjects (Clojure parity).
-    let target_subject_query_str = serde_json::to_string(&json!({
-        "@context": ctx_ct(ledger_id),
-        "where": [{"@id":"?$target","@type":"ct:User"}]
-    }))
-    .expect("targetSubject query json string");
-
     let tx = json!({
         "@context": ctx_ct(ledger_id),
         "insert": [
@@ -122,7 +115,6 @@ async fn seed_credential_ledger(
                 "f:required": true,
                 "f:action": [{"@id":"f:view"}, {"@id":"f:modify"}],
                 "f:exMessage": "Users can only manage their own data.",
-                "f:targetSubject": target_subject_query_str,
                 "f:query": policy_query_str
             }
         ]
@@ -180,10 +172,6 @@ async fn credential_transact_then_credential_query_enforces_policy() {
         "f:required": true,
         "f:action": [{"@id":"f:modify"}],
         "f:exMessage": "Users can only manage their own data.",
-        "f:targetSubject": serde_json::to_string(&json!({
-            "@context": ctx_ct(ledger_id),
-            "where": [{"@id":"?$target","@type":"ct:User"}]
-        })).unwrap(),
         "f:query": serde_json::to_string(&json!({
             "@context": ctx_ct(ledger_id),
             "where": [{"@id":"?$this","ct:sameAs":"?$identity"}]
@@ -216,10 +204,6 @@ async fn credential_transact_then_credential_query_enforces_policy() {
             "@id": "ct:inlineViewSelfOnly",
             "f:required": true,
             "f:action": [{"@id":"f:view"}],
-            "f:targetSubject": serde_json::to_string(&json!({
-                "@context": ctx_ct(ledger_id),
-                "where": [{"@id":"?$target","@type":"ct:User"}]
-            })).unwrap(),
             "f:query": serde_json::to_string(&json!({
                 "@context": ctx_ct(ledger_id),
                 "where": [{"@id":"?$this","ct:sameAs":"?$identity"}]

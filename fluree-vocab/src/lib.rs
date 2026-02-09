@@ -1640,12 +1640,6 @@ pub mod policy_iris {
     /// `https://ns.flur.ee/db#onClass` - class-level targeting
     pub const ON_CLASS: &str = "https://ns.flur.ee/db#onClass";
 
-    /// `https://ns.flur.ee/db#targetProperty` - explicit property target
-    pub const TARGET_PROPERTY: &str = "https://ns.flur.ee/db#targetProperty";
-
-    /// `https://ns.flur.ee/db#targetSubject` - explicit subject target
-    pub const TARGET_SUBJECT: &str = "https://ns.flur.ee/db#targetSubject";
-
     /// `https://ns.flur.ee/db#query` - policy query predicate
     pub const QUERY: &str = "https://ns.flur.ee/db#query";
 
