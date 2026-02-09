@@ -3,14 +3,13 @@
 use crate::config::{storage_path, TomlSyncConfigStore};
 use crate::context;
 use crate::error::{CliError, CliResult};
-use crate::remote_client::{RefreshConfig, RemoteLedgerClient};
 use colored::Colorize;
 use fluree_db_core::StorageRead;
 use fluree_db_nameservice::{
     FileTrackingStore, RefKind, RefPublisher, RemoteName, RemoteTrackingStore,
 };
 use fluree_db_nameservice_sync::{
-    FetchResult, HttpRemoteClient, PullResult, RemoteEndpoint, SyncConfigStore, SyncDriver,
+    FetchResult, HttpRemoteClient, RemoteEndpoint, SyncConfigStore, SyncDriver,
 };
 use fluree_db_novelty::trace_commit_envelopes;
 use futures::StreamExt;
@@ -166,14 +165,15 @@ fn print_fetch_result(result: &FetchResult) {
     }
 }
 
-/// Pull (fetch + fast-forward) a ledger from its upstream
+/// Pull commits from upstream and apply them to the local ledger.
+///
+/// Downloads commit blobs page-by-page (newest→oldest) until we reach local
+/// history, then applies them oldest→newest via `import_commits_incremental`.
 pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
     let ledger_id = context::resolve_ledger(ledger, fluree_dir)?;
     let ledger_id = context::to_ledger_id(&ledger_id);
 
-    let (driver, config_store) = build_sync_driver(fluree_dir).await?;
-
-    // Get upstream config to know which remote to fetch from
+    let config_store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
     let upstream = config_store
         .get_upstream(&ledger_id)
         .await
@@ -188,92 +188,150 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
         )));
     };
 
-    // Fetch first
-    println!("Fetching from '{}'...", upstream.remote.as_str().cyan());
-
-    // Proactively fail with a clear message for query-only tokens.
-    if let Some(remote_cfg) = config_store
+    // Resolve remote config → build client.
+    let remote_cfg = config_store
         .get_remote(&upstream.remote)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-    {
-        if let Some(tok) = &remote_cfg.auth.token {
-            if let Some(false) = token_has_storage_permissions(tok) {
-                return Err(replication_permission_error(upstream.remote.as_str()));
-            }
+        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", upstream.remote)))?;
+
+    // Proactively fail with a clear message for query-only tokens.
+    if let Some(tok) = &remote_cfg.auth.token {
+        if let Some(false) = token_has_storage_permissions(tok) {
+            return Err(replication_permission_error(upstream.remote.as_str()));
         }
     }
 
-    let _fetch_result = driver.fetch_remote(&upstream.remote).await.map_err(|e| {
-        let msg = e.to_string();
-        map_sync_auth_error(upstream.remote.as_str(), &msg)
-            .unwrap_or_else(|| CliError::Config(format!("fetch failed: {msg}")))
-    })?;
+    let base_url = match &remote_cfg.endpoint {
+        RemoteEndpoint::Http { base_url } => base_url.clone(),
+        _ => {
+            return Err(CliError::Config(format!(
+                "remote '{}' is not an HTTP remote",
+                upstream.remote.as_str()
+            )));
+        }
+    };
 
-    // Then pull
-    println!("Pulling '{}'...", ledger_id.cyan());
-    let result = driver.pull_tracked(&ledger_id).await.map_err(|e| {
-        let msg = e.to_string();
-        map_sync_auth_error(upstream.remote.as_str(), &msg)
-            .unwrap_or_else(|| CliError::Config(format!("pull failed: {msg}")))
-    })?;
+    let client = context::build_client_from_auth(&base_url, &remote_cfg.auth);
 
-    print_pull_result(&result);
+    // Use the remote ledger ID for all remote API calls (may differ from local ledger_id).
+    // Note: UpstreamConfig field is named `remote_alias` (pre-existing; should be `remote_id`).
+    let remote_ledger_id = &upstream.remote_alias;
 
-    match &result {
-        PullResult::Diverged { .. } => Err(CliError::Config(
-            "cannot fast-forward; histories have diverged".into(),
-        )),
-        _ => Ok(()),
+    // Resolve remote head.
+    let info = client
+        .ledger_info(remote_ledger_id)
+        .await
+        .map_err(|e| CliError::Config(format!("pull failed (remote ledger info): {e}")))?;
+    let remote_t = info
+        .get("t")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| CliError::Config("remote ledger-info response missing 't'".into()))?;
+
+    // Resolve local head.
+    let fluree = context::build_fluree(fluree_dir)?;
+    let local_ref = fluree
+        .nameservice()
+        .get_ref(&ledger_id, RefKind::CommitHead)
+        .await
+        .map_err(|e| CliError::Config(e.to_string()))?
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
+
+    if remote_t <= local_ref.t {
+        println!("{} '{}' is already up to date", "✓".green(), ledger_id);
+        context::persist_refreshed_tokens(&client, upstream.remote.as_str(), fluree_dir).await;
+        return Ok(());
     }
-}
 
-fn print_pull_result(result: &PullResult) {
-    match result {
-        PullResult::FastForwarded {
-            ledger_id,
-            from,
-            to,
-        } => {
-            println!(
-                "{} '{}' fast-forwarded: t={} -> t={}",
-                "✓".green(),
-                ledger_id,
-                from.t,
-                to.t
-            );
+    println!(
+        "Pulling '{}' from '{}' (local t={}, remote t={})...",
+        ledger_id.cyan(),
+        upstream.remote.as_str().cyan(),
+        local_ref.t,
+        remote_t
+    );
+
+    // Fetch pages (newest→oldest) until we reach local history.
+    let mut all_commits: Vec<fluree_db_api::Base64Bytes> = Vec::new();
+    let mut all_blobs: std::collections::HashMap<String, fluree_db_api::Base64Bytes> =
+        std::collections::HashMap::new();
+    let mut cursor: Option<String> = None;
+
+    loop {
+        let page = client
+            .fetch_commits(remote_ledger_id, cursor.as_deref(), 100)
+            .await
+            .map_err(|e| {
+                let msg = e.to_string();
+                map_sync_auth_error(upstream.remote.as_str(), &msg).unwrap_or_else(|| {
+                    CliError::Config(format!("pull failed (fetch commits): {msg}"))
+                })
+            })?;
+
+        for commit in &page.commits {
+            all_commits.push(commit.clone());
         }
-        PullResult::Current { ledger_id } => {
-            println!("{} '{}' is already up to date", "✓".green(), ledger_id);
+        for (addr, blob) in &page.blobs {
+            all_blobs
+                .entry(addr.clone())
+                .or_insert_with(|| blob.clone());
         }
-        PullResult::Diverged {
-            ledger_id,
-            local,
-            remote,
-        } => {
-            println!(
-                "{} '{}' has diverged: local t={}, remote t={}",
-                "✗".red(),
-                ledger_id,
-                local.t,
-                remote.t
-            );
-            println!(
-                "  {} your local has commits the remote does not have",
-                "hint:".cyan().bold()
-            );
+
+        // If this page reached our local history, stop fetching.
+        if page.oldest_t <= local_ref.t + 1 {
+            break;
         }
-        PullResult::NoUpstream { ledger_id } => {
-            println!("{} '{}' has no upstream configured", "✗".red(), ledger_id);
-        }
-        PullResult::NoTracking { ledger_id } => {
-            println!(
-                "{} '{}' has no tracking data; run 'fluree fetch' first",
-                "✗".red(),
-                ledger_id
-            );
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break, // Reached genesis.
         }
     }
+
+    // Filter to only commits with t > local_t, then reverse to oldest→newest.
+    use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};
+    let mut to_import: Vec<fluree_db_api::Base64Bytes> = Vec::new();
+    for commit in &all_commits {
+        if commit.0.len() < HEADER_LEN {
+            continue;
+        }
+        let header = CommitV2Header::read_from(&commit.0)
+            .map_err(|e| CliError::Config(format!("invalid commit in pull response: {e}")))?;
+        if header.t > local_ref.t {
+            to_import.push(commit.clone());
+        }
+    }
+    to_import.reverse(); // oldest→newest
+
+    if to_import.is_empty() {
+        println!("{} '{}' is already up to date", "✓".green(), ledger_id);
+        context::persist_refreshed_tokens(&client, upstream.remote.as_str(), fluree_dir).await;
+        return Ok(());
+    }
+
+    let count = to_import.len();
+
+    // Import incrementally (validates chain, ancestry, writes blobs, advances head, updates novelty).
+    let handle = fluree
+        .ledger_cached(&ledger_id)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to load ledger: {e}")))?;
+
+    let result = fluree
+        .import_commits_incremental(&handle, to_import, all_blobs)
+        .await
+        .map_err(|e| CliError::Config(format!("pull failed (import): {e}")))?;
+
+    println!(
+        "{} '{}' pulled {} commit(s) (new head t={})",
+        "✓".green(),
+        ledger_id,
+        count,
+        result.head_t
+    );
+
+    // Persist refreshed token if auto-refresh happened.
+    context::persist_refreshed_tokens(&client, upstream.remote.as_str(), fluree_dir).await;
+    Ok(())
 }
 
 /// Push a ledger to its upstream remote
@@ -319,24 +377,14 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
     };
 
     // Build remote ledger client (wire refresh if configured).
-    let mut client = RemoteLedgerClient::new(&base_url, remote_cfg.auth.token.clone());
-    if remote_cfg.auth.auth_type.as_ref()
-        == Some(&fluree_db_nameservice_sync::RemoteAuthType::OidcDevice)
-    {
-        if let (Some(exchange_url), Some(refresh_token)) = (
-            &remote_cfg.auth.exchange_url,
-            &remote_cfg.auth.refresh_token,
-        ) {
-            client = client.with_refresh(RefreshConfig {
-                exchange_url: exchange_url.clone(),
-                refresh_token: refresh_token.clone(),
-            });
-        }
-    }
+    let client = context::build_client_from_auth(&base_url, &remote_cfg.auth);
+
+    // Use the remote ledger ID for all remote API calls (may differ from local ledger_id).
+    let remote_ledger_id = &upstream.remote_alias;
 
     // Resolve remote head (t + commit address).
     let info = client
-        .ledger_info(&ledger_id)
+        .ledger_info(remote_ledger_id)
         .await
         .map_err(|e| CliError::Config(format!("push failed (remote ledger info): {e}")))?;
     let remote_t = info
@@ -414,7 +462,7 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
 
     // Build request: commit bytes + any referenced txn blobs.
     let mut commits = Vec::with_capacity(to_push.len());
-    let mut blobs: std::collections::HashMap<String, fluree_db_api::push_commits::Base64Bytes> =
+    let mut blobs: std::collections::HashMap<String, fluree_db_api::Base64Bytes> =
         std::collections::HashMap::new();
 
     for addr in &to_push {
@@ -424,7 +472,7 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
             })?;
         let commit = fluree_db_novelty::commit_v2::read_commit(&bytes)
             .map_err(|e| CliError::Config(format!("failed to decode local commit {addr}: {e}")))?;
-        commits.push(fluree_db_api::push_commits::Base64Bytes(bytes));
+        commits.push(fluree_db_api::Base64Bytes(bytes));
 
         if let Some(txn_addr) = commit.txn.as_deref() {
             if !blobs.contains_key(txn_addr) {
@@ -434,17 +482,14 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
                         txn_addr, e
                     ))
                 })?;
-                blobs.insert(
-                    txn_addr.to_string(),
-                    fluree_db_api::push_commits::Base64Bytes(txn_bytes),
-                );
+                blobs.insert(txn_addr.to_string(), fluree_db_api::Base64Bytes(txn_bytes));
             }
         }
     }
 
     let req = fluree_db_api::PushCommitsRequest { commits, blobs };
     let resp = client
-        .push_commits(&ledger_id, &req)
+        .push_commits(remote_ledger_id, &req)
         .await
         .map_err(|e| CliError::Config(format!("push failed: {e}")))?;
 
@@ -461,4 +506,172 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
     Ok(())
 }
 
-// (push result printing for old ref-only push was removed; commit-push prints directly)
+/// Clone a ledger from a remote server.
+///
+/// Downloads all commits via paginated export (bulk import), sets the commit
+/// head, and configures upstream tracking.
+///
+/// Usage: `fluree clone <remote> <ledger> [--alias <local-name>]`
+pub async fn run_clone(
+    remote_name: &str,
+    ledger: &str,
+    alias: Option<&str>,
+    fluree_dir: &Path,
+) -> CliResult<()> {
+    let ledger_id = context::to_ledger_id(ledger);
+    let local_id = alias.map_or_else(|| ledger_id.clone(), context::to_ledger_id);
+
+    // v1: local ledger ID must match remote ledger ID.
+    // CAS addresses embed the ledger path (e.g., fluree:file://mydb/main/commit/...).
+    // Using a different local ID would break previous_ref chain traversal.
+    // Cross-ID support requires address rewriting, deferred to a future release.
+    if local_id != ledger_id {
+        return Err(CliError::Config(format!(
+            "clone --alias must match remote ledger name in this version.\n  \
+             Remote ledger: '{}', requested alias: '{}'\n  \
+             {} CAS addresses embed the ledger path; aliasing requires address rewriting (not yet supported).",
+            ledger_id,
+            local_id,
+            "reason:".cyan().bold()
+        )));
+    }
+
+    // Resolve remote config.
+    let config_store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let remote_cfg = config_store
+        .get_remote(&RemoteName::new(remote_name))
+        .await
+        .map_err(|e| CliError::Config(e.to_string()))?
+        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", remote_name)))?;
+
+    if let Some(tok) = &remote_cfg.auth.token {
+        if let Some(false) = token_has_storage_permissions(tok) {
+            return Err(replication_permission_error(remote_name));
+        }
+    }
+
+    let base_url = match &remote_cfg.endpoint {
+        RemoteEndpoint::Http { base_url } => base_url.clone(),
+        _ => {
+            return Err(CliError::Config(format!(
+                "remote '{}' is not an HTTP remote",
+                remote_name
+            )));
+        }
+    };
+
+    let client = context::build_client_from_auth(&base_url, &remote_cfg.auth);
+
+    // Verify the remote ledger exists.
+    let info = client
+        .ledger_info(&ledger_id)
+        .await
+        .map_err(|e| CliError::Config(format!("clone failed (remote ledger info): {e}")))?;
+    let remote_t = info
+        .get("t")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| CliError::Config("remote ledger-info response missing 't'".into()))?;
+
+    if remote_t == 0 {
+        return Err(CliError::Config(format!(
+            "remote ledger '{}' is empty (t=0); nothing to clone",
+            ledger_id
+        )));
+    }
+
+    println!(
+        "Cloning '{}' from '{}' (remote t={})...",
+        local_id.cyan(),
+        remote_name.cyan(),
+        remote_t
+    );
+
+    // Create the local ledger.
+    let fluree = context::build_fluree(fluree_dir)?;
+    fluree
+        .create_ledger(&local_id)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to create local ledger: {e}")))?;
+
+    // Fetch all pages (bulk mode).
+    let mut head_address: Option<String> = None;
+    let mut head_t: i64 = 0;
+    let mut total: usize = 0;
+    let mut cursor: Option<String> = None;
+
+    let handle = fluree
+        .ledger_cached(&local_id)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to load ledger: {e}")))?;
+
+    loop {
+        let page = client
+            .fetch_commits(&ledger_id, cursor.as_deref(), 500)
+            .await
+            .map_err(|e| {
+                let msg = e.to_string();
+                map_sync_auth_error(remote_name, &msg).unwrap_or_else(|| {
+                    CliError::Config(format!("clone failed (fetch commits): {msg}"))
+                })
+            })?;
+
+        if head_address.is_none() {
+            head_address = Some(page.head_address.clone());
+            head_t = page.head_t;
+        }
+
+        fluree
+            .import_commits_bulk(&handle, &page)
+            .await
+            .map_err(|e| CliError::Config(format!("clone failed (import): {e}")))?;
+
+        total += page.count;
+        eprint!("  fetched {} commits...\r", total);
+
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+
+    eprintln!(); // Clear progress line.
+
+    // Set the commit head.
+    let head_addr = head_address
+        .ok_or_else(|| CliError::Config("clone failed: no commits fetched from remote".into()))?;
+    fluree
+        .set_commit_head(&handle, &head_addr, head_t)
+        .await
+        .map_err(|e| CliError::Config(format!("clone failed (set head): {e}")))?;
+
+    // Configure upstream tracking.
+    // Note: UpstreamConfig fields use `_alias` naming (pre-existing; should be `_id`).
+    use fluree_db_nameservice_sync::UpstreamConfig;
+    config_store
+        .set_upstream(&UpstreamConfig {
+            local_alias: local_id.clone(),
+            remote: RemoteName::new(remote_name),
+            remote_alias: ledger_id.clone(),
+            auto_pull: false,
+        })
+        .await
+        .map_err(|e| CliError::Config(format!("failed to set upstream: {e}")))?;
+
+    println!(
+        "{} Cloned '{}' ({} commits, head t={})",
+        "✓".green(),
+        local_id,
+        total,
+        head_t
+    );
+    println!(
+        "  {} upstream set to '{}/{}'",
+        "→".cyan(),
+        remote_name,
+        ledger_id
+    );
+
+    // Persist refreshed token if auto-refresh happened.
+    context::persist_refreshed_tokens(&client, remote_name, fluree_dir).await;
+    Ok(())
+}

@@ -40,6 +40,7 @@ rand.workspace = true
 
 # Remote ledger client (track mode) + OIDC discovery/exchange
 reqwest = { workspace = true }
+urlencoding = { workspace = true }
 open = "5"
 
 # Sync command dependencies

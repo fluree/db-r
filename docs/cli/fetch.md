@@ -20,7 +20,7 @@ Fetches ledger references from a remote server and updates local tracking data. 
 
 This is a **replication** operation. It requires a Bearer token with **root / storage-proxy** permissions (`fluree.storage.*`). If you only have permissioned/query access to a ledger, you should use `fluree track` (or `--remote`) and run queries/transactions against the remote instead.
 
-After fetching, you can use `pull` to fast-forward your local ledger to match the remote.
+After fetching, you can use `pull` to download and apply new commits to your local ledger.
 
 ## Examples
 
@@ -52,5 +52,6 @@ No ledgers found on remote.
 ## See Also
 
 - [remote](remote.md) - Configure remote servers
-- [pull](pull.md) - Pull (fetch + fast-forward) from upstream
+- [clone](clone.md) - Clone a ledger from a remote
+- [pull](pull.md) - Pull commits from upstream
 - [push](push.md) - Push to upstream

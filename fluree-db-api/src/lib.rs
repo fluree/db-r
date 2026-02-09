@@ -34,6 +34,7 @@
 pub mod admin;
 pub mod block_fetch;
 pub mod bm25_worker;
+pub mod commit_transfer;
 #[cfg(feature = "credential")]
 pub mod credential;
 pub mod dataset;
@@ -52,7 +53,6 @@ pub mod nameservice_query;
 mod overlay;
 pub mod policy_builder;
 pub mod policy_view;
-pub mod push_commits;
 mod query;
 mod time_resolve;
 pub mod tx;
@@ -83,6 +83,10 @@ pub use block_fetch::{
     AddressContext, BlockAccessScope, BlockContent, BlockFetchError, EnforcementMode, FetchedBlock,
     LedgerBlockContext,
 };
+pub use commit_transfer::{
+    Base64Bytes, BulkImportResult, CommitImportResult, ExportCommitsRequest, ExportCommitsResponse,
+    PushCommitsRequest, PushCommitsResponse,
+};
 pub use dataset::{
     sparql_dataset_aliases, DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions,
     TimeSpec,
@@ -107,7 +111,6 @@ pub use policy_view::{
     build_policy_context, wrap_identity_policy_view, wrap_policy_view, wrap_policy_view_historical,
     PolicyWrappedView,
 };
-pub use push_commits::{PushCommitsRequest, PushCommitsResponse};
 pub use query::builder::{
     DatasetQueryBuilder, FromQueryBuilder, GraphSourceMode, ViewQueryBuilder,
 };

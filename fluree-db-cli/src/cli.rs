@@ -268,6 +268,21 @@ pub enum Commands {
         ledger: Option<String>,
     },
 
+    /// Clone a ledger from a remote server (downloads all commits)
+    Clone {
+        /// Remote name (e.g., "origin")
+        remote: String,
+
+        /// Ledger name on remote (e.g., "mydb:main")
+        ledger: String,
+
+        /// Local alias for the cloned ledger (defaults to remote ledger name).
+        /// Not yet supported: CAS addresses embed ledger paths, so aliasing
+        /// requires address rewriting (planned for a future release).
+        #[arg(long, hide = true)]
+        alias: Option<String>,
+    },
+
     /// Track a remote ledger (remote-only, no local data)
     Track {
         #[command(subcommand)]

@@ -203,6 +203,15 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::sync::run_push(ledger.as_deref(), &fluree_dir).await
         }
 
+        Commands::Clone {
+            remote,
+            ledger,
+            alias,
+        } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::sync::run_clone(&remote, &ledger, alias.as_deref(), &fluree_dir).await
+        }
+
         Commands::Track { action } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::track::run(action, &fluree_dir).await

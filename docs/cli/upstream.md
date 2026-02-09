@@ -101,5 +101,6 @@ fluree upstream list
 ## See Also
 
 - [remote](remote.md) - Configure remote servers
+- [clone](clone.md) - Clone a ledger from a remote
 - [pull](pull.md) - Pull from upstream
 - [push](push.md) - Push to upstream
