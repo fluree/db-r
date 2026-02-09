@@ -331,6 +331,61 @@ JSON object:
 - `409 Conflict`: head changed / diverged / first commit `t` did not match next-t
 - `422 Unprocessable Entity`: invalid commit bytes, missing referenced blob, or retraction invariant violation
 
+### GET /commits/*ledger
+
+Export commit blobs from a ledger using address-cursor pagination. Pages walk backward via `previous_ref` — O(limit) per page regardless of ledger size. Used by `fluree pull` and `fluree clone`.
+
+**Requires replication-grade permissions** (`fluree.storage.*`). The storage proxy must be enabled on the server.
+
+**URL:**
+
+```
+GET /commits/<ledger...>?limit=100&cursor=<address>
+```
+
+**Query Parameters:**
+
+- `limit` (optional): Max commits per page (default 100, server clamps to max 500)
+- `cursor` (optional): Commit address to start from. Omit for first page (starts from head). Use `next_cursor` from previous response for subsequent pages.
+
+**Request Headers:**
+
+```http
+Authorization: Bearer <token>   (requires fluree.storage.* claims)
+```
+
+**Response Body (200 OK):**
+
+```json
+{
+  "ledger": "mydb:main",
+  "head_address": "fluree:file://mydb:main/commit/abc123.json",
+  "head_t": 42,
+  "commits": ["<base64>", "<base64>"],
+  "blobs": { "fluree:file://mydb:main/txn/def456.json": "<base64>" },
+  "newest_t": 42,
+  "oldest_t": 41,
+  "next_cursor": "fluree:file://mydb:main/commit/prev789.json",
+  "count": 2,
+  "effective_limit": 100
+}
+```
+
+- `commits`: Raw commit v2 blobs, newest → oldest within each page.
+- `blobs`: Referenced txn blobs keyed by address.
+- `next_cursor`: Address for the next page, or `null` when genesis is reached.
+- `effective_limit`: Actual limit used (after server clamping).
+
+**Responses:**
+
+- `200 OK`: Page of commits returned
+- `401 Unauthorized`: Missing or invalid storage token
+- `404 Not Found`: Storage proxy not enabled, ledger not found, or not authorized for this ledger
+
+**Pagination:**
+
+Addresses in the immutable CAS chain are stable cursors. New commits appended to the head do not affect backward pointers, so cursors remain valid across pages even when new commits arrive between requests.
+
 ## Query Endpoints
 
 ### POST /query

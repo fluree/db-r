@@ -66,7 +66,8 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 | [`remote`](remote.md) | Manage remote servers |
 | [`upstream`](upstream.md) | Manage upstream tracking configuration |
 | [`fetch`](fetch.md) | Fetch refs from a remote |
-| [`pull`](pull.md) | Pull (fetch + fast-forward) from upstream |
+| [`clone`](clone.md) | Clone a ledger from a remote (full commit download) |
+| [`pull`](pull.md) | Pull commits from upstream |
 | [`push`](push.md) | Push to upstream remote |
 | [`track`](track.md) | Track remote-only ledgers (no local data) |
 

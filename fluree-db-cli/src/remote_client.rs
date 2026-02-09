@@ -16,7 +16,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fluree_db_api::PushCommitsResponse;
+use fluree_db_api::{ExportCommitsResponse, PushCommitsResponse};
 
 /// Configuration for automatic token refresh on 401.
 #[derive(Clone, Debug)]
@@ -566,6 +566,34 @@ impl RemoteLedgerClient {
                 "application/json",
                 Some(RequestBody::Json(&body)),
             )
+            .await?;
+
+        serde_json::from_value(resp).map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
+    }
+
+    // =========================================================================
+    // Fetch commits (export)
+    // =========================================================================
+
+    /// Fetch paginated commits from the remote server.
+    ///
+    /// Uses address-cursor pagination. Pass `cursor: None` for the first page
+    /// (starts from head). Each response includes `next_cursor` for the next page,
+    /// or `None` when genesis has been reached.
+    pub async fn fetch_commits(
+        &self,
+        ledger: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<ExportCommitsResponse, RemoteLedgerError> {
+        let mut url = self.op_url("commits", ledger);
+        url.push_str(&format!("?limit={}", limit));
+        if let Some(c) = cursor {
+            url.push_str(&format!("&cursor={}", urlencoding::encode(c)));
+        }
+
+        let resp = self
+            .send_json(reqwest::Method::GET, &url, "application/json", None)
             .await?;
 
         serde_json::from_value(resp).map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))

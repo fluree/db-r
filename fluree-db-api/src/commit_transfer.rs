@@ -1,16 +1,22 @@
-//! Push precomputed commit blobs to a transactor.
+//! Commit transfer: push, export, and import of commit v2 blobs.
 //!
-//! This module implements a "push commits" protocol where clients submit
-//! locally-written commit v2 blobs. The server validates them against the
-//! current ledger state (sequencing, retraction invariants, policy, SHACL),
-//! writes the commit bytes to storage, and advances `CommitHead` via CAS.
+//! ## Push (client → server)
 //!
-//! Key invariants (first cut):
+//! Clients submit locally-written commit v2 blobs. The server validates them
+//! against the current ledger state (sequencing, retraction invariants, policy,
+//! SHACL), writes the commit bytes to storage, and advances `CommitHead` via CAS.
+//!
+//! Key invariants:
 //! - The first commit's `t` MUST equal server `next_t` (strict sequencing).
-//! - Retractions MUST target facts that are currently asserted at that point
-//!   in the push batch (strict existence invariant).
+//! - Retractions MUST target facts currently asserted at that point in the batch.
 //! - List retractions require exact metadata match (no hydration).
 //! - Commit bytes are stored verbatim; the server does not rebuild commits.
+//!
+//! ## Export (server → client)
+//!
+//! Paginated export of commit blobs using address-cursor pagination.
+//! Pages walk backward via `previous_ref` — O(limit) per page regardless of
+//! ledger size. Used by pull and clone operations.
 
 use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
@@ -724,5 +730,466 @@ impl<S: Storage + Clone + 'static> LedgerStateCloneExt<S> for LedgerState<S> {
         let mut s = self.clone();
         s.novelty = novelty;
         s
+    }
+}
+
+// ============================================================================
+// Export (server → client)
+// ============================================================================
+
+/// Maximum commits per export page (server-enforced cap).
+const EXPORT_MAX_LIMIT: usize = 500;
+
+/// Default commits per export page when no limit is specified.
+const EXPORT_DEFAULT_LIMIT: usize = 100;
+
+/// Query parameters for paginated commit export.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportCommitsRequest {
+    /// Commit address to start from. When `None`, starts from the current head.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Maximum commits per page. Clamped to server max (500).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Paginated response containing commit blobs (newest → oldest).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportCommitsResponse {
+    /// Ledger identifier.
+    pub ledger: String,
+    /// Head address at time of export (informational; clone uses this for final head).
+    pub head_address: String,
+    /// Head `t` at time of export (informational).
+    pub head_t: i64,
+    /// Raw commit v2 blobs, newest → oldest within this page.
+    pub commits: Vec<Base64Bytes>,
+    /// Referenced blobs (txn blobs) keyed by address.
+    #[serde(default)]
+    pub blobs: HashMap<String, Base64Bytes>,
+    /// Highest `t` in this page.
+    pub newest_t: i64,
+    /// Lowest `t` in this page.
+    pub oldest_t: i64,
+    /// Cursor for the next page (`previous_ref.address` of oldest commit).
+    /// `None` when genesis has been reached.
+    pub next_cursor: Option<String>,
+    /// Number of commits in this page.
+    pub count: usize,
+    /// Actual limit used (after server clamping).
+    pub effective_limit: usize,
+}
+
+/// Export a paginated range of commits from a ledger.
+///
+/// Uses address-cursor pagination: each page walks backward from the cursor
+/// via `previous_ref` for up to `limit` commits. Each page is O(limit)
+/// regardless of total ledger size.
+///
+/// Commits are returned newest → oldest. The client reverses for import.
+impl<S, N> Fluree<S, N>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    N: NameService + RefPublisher + Send + Sync,
+{
+    pub async fn export_commit_range(
+        &self,
+        handle: &LedgerHandle<S>,
+        request: &ExportCommitsRequest,
+    ) -> Result<ExportCommitsResponse> {
+        use fluree_db_novelty::commit_v2::envelope::decode_envelope;
+        use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};
+
+        let effective_limit = request
+            .limit
+            .unwrap_or(EXPORT_DEFAULT_LIMIT)
+            .min(EXPORT_MAX_LIMIT);
+
+        let ledger_id = handle.ledger_id();
+
+        // Read current head.
+        let head_ref = self
+            .nameservice()
+            .get_ref(ledger_id, RefKind::CommitHead)
+            .await?;
+        let Some(head_ref) = head_ref else {
+            return Err(ApiError::NotFound(format!(
+                "Ledger not found: {}",
+                ledger_id
+            )));
+        };
+        let head_address = head_ref
+            .address
+            .clone()
+            .ok_or_else(|| ApiError::NotFound("Ledger has no commits".to_string()))?;
+        let head_t = head_ref.t;
+
+        // Determine start address.
+        let start_address = request
+            .cursor
+            .clone()
+            .unwrap_or_else(|| head_address.clone());
+
+        // Validate cursor belongs to this ledger (address embeds alias path).
+        if request.cursor.is_some() {
+            use fluree_db_core::storage::alias_prefix_for_path;
+            let alias_path = alias_prefix_for_path(ledger_id);
+            // Address format: "fluree:{method}://{alias_path}/commit/{hash}.ext"
+            // Check that the alias_path segment appears after the "://" separator.
+            let after_scheme = start_address
+                .find("://")
+                .map(|i| &start_address[i + 3..])
+                .unwrap_or(&start_address);
+            // Important: require a path boundary to avoid prefix collisions
+            // (e.g. "mydb/main2/..." must not match "mydb/main").
+            let expected_prefix = format!("{}/", alias_path);
+            if !after_scheme.starts_with(&expected_prefix) {
+                return Err(ApiError::http(
+                    400,
+                    format!(
+                        "cursor address does not belong to ledger '{}': {}",
+                        ledger_id, start_address
+                    ),
+                ));
+            }
+        }
+
+        let storage = self.storage().clone();
+        let mut commits = Vec::with_capacity(effective_limit);
+        let mut blobs: HashMap<String, Base64Bytes> = HashMap::new();
+        let mut newest_t: Option<i64> = None;
+        let mut oldest_t: Option<i64> = None;
+        let mut next_cursor: Option<String> = None;
+        let mut current_address = start_address;
+
+        for _ in 0..effective_limit {
+            // Read raw commit bytes from CAS.
+            let raw_bytes = storage.read_bytes(&current_address).await.map_err(|e| {
+                ApiError::internal(format!(
+                    "failed to read commit at '{}': {}",
+                    current_address, e
+                ))
+            })?;
+
+            // Lightweight decode: header + envelope only (skip ops decompression).
+            let header = CommitV2Header::read_from(&raw_bytes).map_err(|e| {
+                ApiError::internal(format!(
+                    "invalid commit header at '{}': {}",
+                    current_address, e
+                ))
+            })?;
+
+            let envelope_start = HEADER_LEN;
+            let envelope_end = envelope_start + header.envelope_len as usize;
+            if envelope_end > raw_bytes.len() {
+                return Err(ApiError::internal(format!(
+                    "commit envelope extends past blob at '{}'",
+                    current_address
+                )));
+            }
+            let env = decode_envelope(&raw_bytes[envelope_start..envelope_end]).map_err(|e| {
+                ApiError::internal(format!(
+                    "failed to decode envelope at '{}': {}",
+                    current_address, e
+                ))
+            })?;
+
+            // Track t range.
+            let t = header.t;
+            if newest_t.is_none() {
+                newest_t = Some(t);
+            }
+            oldest_t = Some(t);
+
+            commits.push(Base64Bytes(raw_bytes));
+
+            // Collect referenced txn blob.
+            if let Some(ref txn_addr) = env.txn {
+                if !blobs.contains_key(txn_addr.as_str()) {
+                    let txn_bytes = storage.read_bytes(txn_addr).await.map_err(|e| {
+                        ApiError::internal(format!("failed to read txn blob '{}': {}", txn_addr, e))
+                    })?;
+                    blobs.insert(txn_addr.clone(), Base64Bytes(txn_bytes));
+                }
+            }
+
+            // Follow chain backward.
+            match env.previous_ref {
+                Some(prev) => {
+                    next_cursor = Some(prev.address.clone());
+                    current_address = prev.address;
+                }
+                None => {
+                    // Reached genesis — no more commits.
+                    next_cursor = None;
+                    break;
+                }
+            }
+        }
+
+        // If we exited the loop by hitting the limit (not genesis), next_cursor
+        // is already set to the address of the next commit to read.
+
+        let count = commits.len();
+
+        Ok(ExportCommitsResponse {
+            ledger: ledger_id.to_string(),
+            head_address,
+            head_t,
+            commits,
+            blobs,
+            newest_t: newest_t.unwrap_or(0),
+            oldest_t: oldest_t.unwrap_or(0),
+            next_cursor,
+            count,
+            effective_limit,
+        })
+    }
+}
+
+// ============================================================================
+// Import (client ← server)
+// ============================================================================
+
+/// Result of a bulk import (clone path — CAS writes only, no novelty).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkImportResult {
+    /// Number of commit blobs written to local CAS.
+    pub stored: usize,
+    /// Number of txn/reference blobs written to local CAS.
+    pub blobs_stored: usize,
+}
+
+/// Result of an incremental import (pull path — validated + novelty applied).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitImportResult {
+    /// Number of commits imported.
+    pub imported: usize,
+    /// New local head `t`.
+    pub head_t: i64,
+    /// New local head address.
+    pub head_address: String,
+}
+
+impl<S, N> Fluree<S, N>
+where
+    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
+    N: NameService + RefPublisher + Send + Sync,
+{
+    /// Bulk-import commit blobs to local CAS (clone path).
+    ///
+    /// Writes commit and txn blobs without validation or novelty updates.
+    /// Order doesn't matter — CAS writes are idempotent.
+    /// Call [`set_commit_head`] after all pages are imported.
+    pub async fn import_commits_bulk(
+        &self,
+        handle: &LedgerHandle<S>,
+        response: &ExportCommitsResponse,
+    ) -> Result<BulkImportResult> {
+        let ledger_id = handle.ledger_id();
+        let storage = self.storage();
+        let mut stored = 0usize;
+        let mut blobs_stored = 0usize;
+
+        // Write commit blobs to local CAS.
+        //
+        // The CAS hash for a commit blob is the embedded trailing hash (SHA-256 of
+        // everything before the hash itself), NOT SHA-256 of the full blob.
+        // We must extract it with `commit_hash_hex_from_bytes` to match the address
+        // that the remote's `previous_ref.address` chain references.
+        for b64 in &response.commits {
+            let bytes = &b64.0;
+            let hash_hex = commit_hash_hex_from_bytes(bytes)
+                .map_err(|e| ApiError::internal(format!("invalid commit blob in export: {}", e)))?;
+            storage
+                .content_write_bytes_with_hash(ContentKind::Commit, ledger_id, &hash_hex, bytes)
+                .await
+                .map_err(|e| ApiError::internal(format!("failed to write commit blob: {}", e)))?;
+            stored += 1;
+        }
+
+        // Write referenced txn blobs to local CAS.
+        for (addr, b64) in &response.blobs {
+            let bytes = &b64.0;
+            let expected_hash = extract_hash_from_address(addr).ok_or_else(|| {
+                ApiError::internal(format!("blob address is not content-addressed: {}", addr))
+            })?;
+            let actual_hash = sha256_hex(bytes);
+            if actual_hash != expected_hash {
+                return Err(ApiError::http(
+                    422,
+                    format!(
+                        "blob hash mismatch for '{}': expected {}, got {}",
+                        addr, expected_hash, actual_hash
+                    ),
+                ));
+            }
+            storage
+                .content_write_bytes_with_hash(ContentKind::Txn, ledger_id, &expected_hash, bytes)
+                .await
+                .map_err(|e| ApiError::internal(format!("failed to write txn blob: {}", e)))?;
+            blobs_stored += 1;
+        }
+
+        Ok(BulkImportResult {
+            stored,
+            blobs_stored,
+        })
+    }
+
+    /// Set the commit head after bulk import (clone finalization).
+    ///
+    /// Points `CommitHead` at the given address/t. Used after all pages of a
+    /// bulk clone have been imported to make the ledger loadable.
+    pub async fn set_commit_head(
+        &self,
+        handle: &LedgerHandle<S>,
+        head_address: &str,
+        head_t: i64,
+    ) -> Result<()> {
+        let ledger_id = handle.ledger_id();
+        let new_ref = RefValue {
+            address: Some(head_address.to_string()),
+            t: head_t,
+        };
+
+        // Read current head for CAS.
+        let current_ref = self
+            .nameservice()
+            .get_ref(ledger_id, RefKind::CommitHead)
+            .await?;
+
+        match self
+            .nameservice()
+            .compare_and_set_ref(
+                ledger_id,
+                RefKind::CommitHead,
+                current_ref.as_ref(),
+                &new_ref,
+            )
+            .await?
+        {
+            CasResult::Updated => Ok(()),
+            CasResult::Conflict { actual } => Err(ApiError::http(
+                409,
+                format!(
+                    "commit head changed during clone finalization (expected {:?}, actual {:?})",
+                    current_ref, actual
+                ),
+            )),
+        }
+    }
+
+    /// Incrementally import commits (pull path).
+    ///
+    /// Validates the commit chain, verifies ancestry against the local head,
+    /// writes blobs to CAS, advances `CommitHead`, and updates in-memory novelty.
+    ///
+    /// `commits` must be ordered oldest → newest.
+    pub async fn import_commits_incremental(
+        &self,
+        handle: &LedgerHandle<S>,
+        commits: Vec<Base64Bytes>,
+        blobs: HashMap<String, Base64Bytes>,
+    ) -> Result<CommitImportResult> {
+        if commits.is_empty() {
+            return Err(ApiError::http(400, "no commits to import"));
+        }
+
+        let mut guard = handle.lock_for_write().await;
+        let base_state = guard.clone_state();
+
+        // 1) Read current head ref.
+        let current_ref = self
+            .nameservice()
+            .get_ref(base_state.ledger_id(), RefKind::CommitHead)
+            .await?;
+        let Some(current_ref) = current_ref else {
+            return Err(ApiError::NotFound(format!(
+                "Ledger not found: {}",
+                base_state.ledger_id()
+            )));
+        };
+
+        // 2) Build a PushCommitsRequest-compatible structure for validation reuse.
+        let request = PushCommitsRequest {
+            commits,
+            blobs: blobs.clone(),
+        };
+
+        // 3) Decode and validate chain.
+        let decoded = decode_and_validate_commit_chain(base_state.ledger_id(), &request)
+            .map_err(|e| e.into_api_error())?;
+
+        // 4) Ancestry preflight: verify first commit's previous_ref matches local head.
+        preflight_strict_next_t_and_prev(&current_ref, &decoded).map_err(|e| e.into_api_error())?;
+
+        // 5) Validate referenced blobs are provided.
+        validate_required_blobs(&decoded, &request.blobs).map_err(|e| e.into_api_error())?;
+
+        // 6) Write blobs + commit bytes to local CAS.
+        write_required_blobs(
+            self.storage(),
+            base_state.ledger_id(),
+            &request.blobs,
+            &decoded,
+        )
+        .await
+        .map_err(|e| e.into_api_error())?;
+
+        let stored_commits = write_commit_blobs(self.storage(), base_state.ledger_id(), &decoded)
+            .await
+            .map_err(|e| e.into_api_error())?;
+
+        let final_head = stored_commits.last().expect("non-empty stored_commits");
+        let new_ref = RefValue {
+            address: Some(final_head.address.clone()),
+            t: final_head.t,
+        };
+
+        // 7) CAS update CommitHead.
+        match self
+            .nameservice()
+            .compare_and_set_ref(
+                base_state.ledger_id(),
+                RefKind::CommitHead,
+                Some(&current_ref),
+                &new_ref,
+            )
+            .await?
+        {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                return Err(ApiError::http(
+                    409,
+                    format!(
+                        "commit head changed during import (expected t={}, actual={:?})",
+                        current_ref.t, actual
+                    ),
+                ));
+            }
+        }
+
+        // 8) Update in-memory state (novelty + dict novelty + namespace deltas).
+        let all_flakes: Vec<(i64, Vec<Flake>)> = decoded
+            .iter()
+            .map(|c| {
+                let mut flakes = c.commit.flakes.clone();
+                let meta_flakes =
+                    generate_commit_flakes(&c.commit, base_state.ledger_id(), c.commit.t);
+                flakes.extend(meta_flakes);
+                (c.commit.t, flakes)
+            })
+            .collect();
+
+        let new_state = apply_pushed_commits_to_state(base_state, &all_flakes, &stored_commits);
+        guard.replace(new_state);
+
+        Ok(CommitImportResult {
+            imported: decoded.len(),
+            head_t: final_head.t,
+            head_address: final_head.address.clone(),
+        })
     }
 }

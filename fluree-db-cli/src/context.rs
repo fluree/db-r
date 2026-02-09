@@ -143,7 +143,7 @@ pub async fn build_remote_mode(
 }
 
 /// Build a `RemoteLedgerClient` from auth config, wiring up refresh if available.
-fn build_client_from_auth(base_url: &str, auth: &RemoteAuth) -> RemoteLedgerClient {
+pub fn build_client_from_auth(base_url: &str, auth: &RemoteAuth) -> RemoteLedgerClient {
     let client = RemoteLedgerClient::new(base_url, auth.token.clone());
 
     // Attach refresh config for OIDC remotes that have a refresh_token + exchange_url

@@ -24,6 +24,7 @@
   - [fetch](cli/fetch.md)
   - [pull](cli/pull.md)
   - [push](cli/push.md)
+  - [clone](cli/clone.md)
   - [track](cli/track.md)
   - [completions](cli/completions.md)
 
@@ -46,6 +47,7 @@
   - [Auth contract (CLI ↔ Server)](design/auth-contract.md)
   - [Nameservice schema v2](design/nameservice-schema-v2.md)
   - [Graph source index manifests](design/graph-source-index-manifests.md)
+  - [Storage-agnostic commits and sync](design/storage-agnostic-commits-and-sync.md)
   - [Index format](design/index-format.md)
   - [Storage traits](design/storage-traits.md)
 

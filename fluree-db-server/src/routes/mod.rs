@@ -2,6 +2,7 @@
 
 mod admin;
 mod admin_auth;
+mod commits;
 mod events;
 mod ledger;
 mod nameservice_refs;
@@ -63,6 +64,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/upsert/*ledger", post(transact::upsert_ledger_tail))
         // Commit-push endpoint (precomputed commits)
         .route("/push/*ledger", post(push::push_ledger_tail))
+        // Commit export endpoint (paginated, replication-grade auth)
+        .route("/commits/*ledger", get(commits::commits_ledger_tail))
         // SSE event streaming
         .route("/events", get(events::events))
         // Storage proxy endpoints (for peer mode)
