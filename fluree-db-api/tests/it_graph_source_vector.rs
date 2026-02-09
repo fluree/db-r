@@ -69,7 +69,7 @@ async fn vector_create_index_indexes_docs_and_is_loadable() {
 
     // Load the index back via nameservice+storage
     let idx = fluree
-        .load_vector_index(&created.graph_source_address)
+        .load_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     assert_eq!(idx.len(), 2, "loaded index should include 2 vectors");
@@ -128,7 +128,7 @@ async fn vector_search_returns_scored_results() {
 
     // Load and search - query vector similar to doc1/doc2
     let idx = fluree
-        .load_vector_index(&created.graph_source_address)
+        .load_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     let query_vector = [0.85, 0.15, 0.05];
@@ -217,7 +217,7 @@ async fn vector_sync_indexes_new_documents() {
 
     // Check staleness
     let staleness = fluree
-        .check_vector_staleness(&created.graph_source_address)
+        .check_vector_staleness(&created.graph_source_id)
         .await
         .unwrap();
     assert!(
@@ -228,7 +228,7 @@ async fn vector_sync_indexes_new_documents() {
 
     // Sync the index
     let synced = fluree
-        .sync_vector_index(&created.graph_source_address)
+        .sync_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     assert!(
@@ -238,7 +238,7 @@ async fn vector_sync_indexes_new_documents() {
 
     // Verify by loading the index and checking vector count
     let idx = fluree
-        .load_vector_index(&created.graph_source_address)
+        .load_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     assert_eq!(idx.len(), 3, "loaded index should have 3 vectors");
@@ -283,7 +283,7 @@ async fn vector_sync_updates_head_snapshot() {
 
     // Load head — should have 1 vector
     let idx = fluree
-        .load_vector_index(&created.graph_source_address)
+        .load_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     assert_eq!(idx.len(), 1, "head index should have 1 vector after create");
@@ -307,14 +307,14 @@ async fn vector_sync_updates_head_snapshot() {
 
     // Sync to update head
     let synced = fluree
-        .sync_vector_index(&created.graph_source_address)
+        .sync_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     assert_eq!(synced.new_watermark, t2);
 
     // Load head again — should now have 2 vectors
     let idx = fluree
-        .load_vector_index(&created.graph_source_address)
+        .load_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     assert_eq!(idx.len(), 2, "head index should have 2 vectors after sync");
@@ -355,20 +355,18 @@ async fn vector_drop_index_marks_as_retracted() {
 
     // Drop the index
     let dropped = fluree
-        .drop_vector_index(&created.graph_source_address)
+        .drop_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     assert!(!dropped.was_already_retracted);
 
     // Trying to sync should fail
-    let sync_result = fluree
-        .sync_vector_index(&created.graph_source_address)
-        .await;
+    let sync_result = fluree.sync_vector_index(&created.graph_source_id).await;
     assert!(sync_result.is_err(), "sync should fail on dropped index");
 
     // Dropping again should indicate already retracted
     let dropped_again = fluree
-        .drop_vector_index(&created.graph_source_address)
+        .drop_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     assert!(dropped_again.was_already_retracted);
@@ -467,7 +465,7 @@ async fn vector_supports_different_metrics() {
     assert_eq!(created.vector_count, 2);
 
     let idx = fluree
-        .load_vector_index(&created.graph_source_address)
+        .load_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     assert_eq!(idx.metadata.metric, DistanceMetric::Dot);
@@ -480,7 +478,7 @@ async fn vector_supports_different_metrics() {
     assert_eq!(created2.vector_count, 2);
 
     let idx2 = fluree
-        .load_vector_index(&created2.graph_source_address)
+        .load_vector_index(&created2.graph_source_id)
         .await
         .unwrap();
     assert_eq!(idx2.metadata.metric, DistanceMetric::Euclidean);
@@ -535,7 +533,7 @@ async fn vector_provider_integration() {
     let params = VectorSearchParams::new(&query_vector, DistanceMetric::Cosine, 10);
 
     let results = provider
-        .search(&created.graph_source_address, params)
+        .search(&created.graph_source_id, params)
         .await
         .unwrap();
 
@@ -587,7 +585,7 @@ async fn vector_collection_exists() {
 
     // Should exist
     let exists = provider
-        .collection_exists(&created.graph_source_address)
+        .collection_exists(&created.graph_source_id)
         .await
         .unwrap();
     assert!(exists, "collection should exist");
@@ -601,11 +599,11 @@ async fn vector_collection_exists() {
 
     // Drop and check again
     fluree
-        .drop_vector_index(&created.graph_source_address)
+        .drop_vector_index(&created.graph_source_id)
         .await
         .unwrap();
     let after_drop = provider
-        .collection_exists(&created.graph_source_address)
+        .collection_exists(&created.graph_source_id)
         .await
         .unwrap();
     assert!(!after_drop, "dropped collection should not exist");
@@ -671,7 +669,7 @@ async fn vector_idx_query_syntax_e2e() {
         "from": alias,
         "where": [
             {
-                "db:graphSource": created.graph_source_address,
+                "db:graphSource": created.graph_source_id,
                 "db:queryVector": [0.85, 0.1, 0.05],
                 "db:distanceMetric": "cosine",
                 "db:searchLimit": 10,

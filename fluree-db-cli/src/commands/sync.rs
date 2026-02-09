@@ -151,9 +151,9 @@ fn print_fetch_result(result: &FetchResult) {
 
     if !result.updated.is_empty() {
         println!("{}", "Updated:".green().bold());
-        for (ledger_address, tracking) in &result.updated {
+        for (ledger_id, tracking) in &result.updated {
             let t = tracking.commit_ref.as_ref().map(|r| r.t).unwrap_or(0);
-            println!("  {} -> t={}", ledger_address, t);
+            println!("  {} -> t={}", ledger_id, t);
         }
     }
 
@@ -168,23 +168,23 @@ fn print_fetch_result(result: &FetchResult) {
 
 /// Pull (fetch + fast-forward) a ledger from its upstream
 pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
-    let ledger_address = context::resolve_ledger(ledger, fluree_dir)?;
-    let ledger_address = context::to_ledger_address(&ledger_address);
+    let ledger_id = context::resolve_ledger(ledger, fluree_dir)?;
+    let ledger_id = context::to_ledger_id(&ledger_id);
 
     let (driver, config_store) = build_sync_driver(fluree_dir).await?;
 
     // Get upstream config to know which remote to fetch from
     let upstream = config_store
-        .get_upstream(&ledger_address)
+        .get_upstream(&ledger_id)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?;
 
     let Some(upstream) = upstream else {
         return Err(CliError::Config(format!(
             "no upstream configured for '{}'\n  {} fluree upstream set {} <remote>",
-            ledger_address,
+            ledger_id,
             "hint:".cyan().bold(),
-            ledger_address
+            ledger_id
         )));
     };
 
@@ -211,8 +211,8 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
     })?;
 
     // Then pull
-    println!("Pulling '{}'...", ledger_address.cyan());
-    let result = driver.pull_tracked(&ledger_address).await.map_err(|e| {
+    println!("Pulling '{}'...", ledger_id.cyan());
+    let result = driver.pull_tracked(&ledger_id).await.map_err(|e| {
         let msg = e.to_string();
         map_sync_auth_error(upstream.remote.as_str(), &msg)
             .unwrap_or_else(|| CliError::Config(format!("pull failed: {msg}")))
@@ -231,30 +231,30 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
 fn print_pull_result(result: &PullResult) {
     match result {
         PullResult::FastForwarded {
-            ledger_address,
+            ledger_id,
             from,
             to,
         } => {
             println!(
                 "{} '{}' fast-forwarded: t={} -> t={}",
                 "✓".green(),
-                ledger_address,
+                ledger_id,
                 from.t,
                 to.t
             );
         }
-        PullResult::Current { ledger_address } => {
-            println!("{} '{}' is already up to date", "✓".green(), ledger_address);
+        PullResult::Current { ledger_id } => {
+            println!("{} '{}' is already up to date", "✓".green(), ledger_id);
         }
         PullResult::Diverged {
-            ledger_address,
+            ledger_id,
             local,
             remote,
         } => {
             println!(
                 "{} '{}' has diverged: local t={}, remote t={}",
                 "✗".red(),
-                ledger_address,
+                ledger_id,
                 local.t,
                 remote.t
             );
@@ -263,18 +263,14 @@ fn print_pull_result(result: &PullResult) {
                 "hint:".cyan().bold()
             );
         }
-        PullResult::NoUpstream { ledger_address } => {
-            println!(
-                "{} '{}' has no upstream configured",
-                "✗".red(),
-                ledger_address
-            );
+        PullResult::NoUpstream { ledger_id } => {
+            println!("{} '{}' has no upstream configured", "✗".red(), ledger_id);
         }
-        PullResult::NoTracking { ledger_address } => {
+        PullResult::NoTracking { ledger_id } => {
             println!(
                 "{} '{}' has no tracking data; run 'fluree fetch' first",
                 "✗".red(),
-                ledger_address
+                ledger_id
             );
         }
     }
@@ -282,26 +278,26 @@ fn print_pull_result(result: &PullResult) {
 
 /// Push a ledger to its upstream remote
 pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
-    let ledger_address = context::resolve_ledger(ledger, fluree_dir)?;
-    let ledger_address = context::to_ledger_address(&ledger_address);
+    let ledger_id = context::resolve_ledger(ledger, fluree_dir)?;
+    let ledger_id = context::to_ledger_id(&ledger_id);
 
     let config_store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
     let upstream = config_store
-        .get_upstream(&ledger_address)
+        .get_upstream(&ledger_id)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?;
     let Some(upstream) = upstream else {
         return Err(CliError::Config(format!(
             "no upstream configured for '{}'\n  {} fluree upstream set {} <remote>",
-            ledger_address,
+            ledger_id,
             "hint:".cyan().bold(),
-            ledger_address
+            ledger_id
         )));
     };
 
     println!(
         "Pushing '{}' to '{}'...",
-        ledger_address.cyan(),
+        ledger_id.cyan(),
         upstream.remote.as_str()
     );
 
@@ -340,7 +336,7 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
 
     // Resolve remote head (t + commit address).
     let info = client
-        .ledger_info(&ledger_address)
+        .ledger_info(&ledger_id)
         .await
         .map_err(|e| CliError::Config(format!("push failed (remote ledger info): {e}")))?;
     let remote_t = info
@@ -356,12 +352,10 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
     let fluree = context::build_fluree(fluree_dir)?;
     let local_ref = fluree
         .nameservice()
-        .get_ref(&ledger_address, RefKind::CommitHead)
+        .get_ref(&ledger_id, RefKind::CommitHead)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| {
-            CliError::NotFound(format!("local ledger '{}' not found", ledger_address))
-        })?;
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
 
     if local_ref.t < remote_t {
         return Err(CliError::Config(format!(
@@ -374,7 +368,7 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
     let local_head_addr = local_ref.address.clone().ok_or_else(|| {
         CliError::Config(format!(
             "local ledger '{}' has no commit head; nothing to push",
-            ledger_address
+            ledger_id
         ))
     })?;
 
@@ -411,7 +405,7 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
     }
 
     if to_push.is_empty() {
-        println!("{} '{}' is already up to date", "✓".green(), ledger_address);
+        println!("{} '{}' is already up to date", "✓".green(), ledger_id);
         context::persist_refreshed_tokens(&client, upstream.remote.as_str(), fluree_dir).await;
         return Ok(());
     }
@@ -450,14 +444,14 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
 
     let req = fluree_db_api::PushCommitsRequest { commits, blobs };
     let resp = client
-        .push_commits(&ledger_address, &req)
+        .push_commits(&ledger_id, &req)
         .await
         .map_err(|e| CliError::Config(format!("push failed: {e}")))?;
 
     println!(
         "{} '{}' pushed {} commit(s) (new head t={})",
         "✓".green(),
-        ledger_address,
+        ledger_id,
         resp.accepted,
         resp.head.t
     );

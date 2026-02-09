@@ -10,7 +10,7 @@
 #[derive(Debug, Clone)]
 pub struct Bm25CreateResult {
     /// Graph source alias (name:branch)
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Number of documents indexed
     pub doc_count: usize,
@@ -29,7 +29,7 @@ pub struct Bm25CreateResult {
 #[derive(Debug, Clone)]
 pub struct Bm25SyncResult {
     /// Graph source alias
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Number of documents upserted
     pub upserted: usize,
@@ -54,7 +54,7 @@ pub struct Bm25SyncResult {
 #[derive(Debug, Clone)]
 pub struct Bm25StalenessCheck {
     /// Graph source alias
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Source ledger alias
     pub source_ledger: String,
@@ -76,7 +76,7 @@ pub struct Bm25StalenessCheck {
 #[derive(Debug, Clone)]
 pub struct Bm25DropResult {
     /// Graph source alias that was dropped
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Number of snapshot files deleted from storage
     pub deleted_snapshots: usize,
@@ -89,7 +89,7 @@ pub struct Bm25DropResult {
 #[derive(Debug, Clone)]
 pub struct SnapshotSelection {
     /// Graph source alias
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// The snapshot's index time (watermark)
     pub snapshot_t: i64,
@@ -107,7 +107,7 @@ pub struct SnapshotSelection {
 #[derive(Debug, Clone)]
 pub struct VectorCreateResult {
     /// Graph source alias (name:branch)
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Number of vectors indexed
     pub vector_count: usize,
@@ -130,7 +130,7 @@ pub struct VectorCreateResult {
 #[derive(Debug, Clone)]
 pub struct VectorSyncResult {
     /// Graph source alias
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Number of vectors upserted
     pub upserted: usize,
@@ -156,7 +156,7 @@ pub struct VectorSyncResult {
 #[derive(Debug, Clone)]
 pub struct VectorStalenessCheck {
     /// Graph source alias
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Source ledger alias
     pub source_ledger: String,
@@ -179,7 +179,7 @@ pub struct VectorStalenessCheck {
 #[derive(Debug, Clone)]
 pub struct VectorDropResult {
     /// Graph source alias that was dropped
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Number of snapshot files deleted from storage
     pub deleted_snapshots: usize,
@@ -197,7 +197,7 @@ pub struct VectorDropResult {
 #[derive(Debug, Clone)]
 pub struct IcebergCreateResult {
     /// Graph source alias (name:branch)
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Table identifier that was registered
     pub table_identifier: String,
@@ -214,7 +214,7 @@ pub struct IcebergCreateResult {
 #[derive(Debug, Clone)]
 pub struct R2rmlCreateResult {
     /// Graph source alias (name:branch)
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Table identifier that was registered
     pub table_identifier: String,

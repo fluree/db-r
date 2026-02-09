@@ -160,9 +160,8 @@ where
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
-        let alias_prefix =
-            fluree_db_core::address_path::alias_to_path_prefix(&ledger.db.ledger_address)
-                .unwrap_or_else(|_| ledger.db.ledger_address.replace(':', "/"));
+        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&ledger.db.ledger_id)
+            .unwrap_or_else(|_| ledger.db.ledger_id.replace(':', "/"));
         let manifest_addr_primary =
             format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
         if let Ok(bytes) = ledger.db.storage.read_bytes(&manifest_addr_primary).await {
@@ -184,8 +183,7 @@ where
     // 1. Commit section (ALWAYS include, even if None - for Clojure parity)
     let mut index_id_from_commit: Option<String> = None;
     if let Some(commit_addr) = &ledger.head_commit {
-        match build_commit_jsonld(&ledger.db.storage, commit_addr, &ledger.db.ledger_address).await
-        {
+        match build_commit_jsonld(&ledger.db.storage, commit_addr, &ledger.db.ledger_id).await {
             Ok((commit_json, idx_id)) => {
                 result.insert("commit".to_string(), commit_json);
                 index_id_from_commit = idx_id;
@@ -479,7 +477,7 @@ async fn build_commit_jsonld<S: Storage>(
         "type": ["Commit"],
         "v": commit.v,
         "address": commit_address,
-        "ledger_address": alias,
+        "ledger_id": alias,
     });
 
     // Add content-address IRI if available
@@ -1051,7 +1049,7 @@ use fluree_db_nameservice::NameService;
 /// ```
 pub struct LedgerInfoBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    ledger_address: String,
+    ledger_id: String,
     context: Option<&'a JsonValue>,
     options: LedgerInfoOptions,
 }
@@ -1062,10 +1060,10 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::ledger_info()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger_address: String) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger_id: String) -> Self {
         Self {
             fluree,
-            ledger_address,
+            ledger_id,
             context: None,
             options: LedgerInfoOptions::default(),
         }
@@ -1105,7 +1103,7 @@ where
     /// and index information.
     pub async fn execute(self) -> crate::Result<JsonValue> {
         // Load the ledger (uses cache if caching is enabled)
-        let ledger = self.fluree.ledger(&self.ledger_address).await?;
+        let ledger = self.fluree.ledger(&self.ledger_id).await?;
 
         // Build and return the ledger info
         build_ledger_info_with_options(&ledger, self.context, self.options)

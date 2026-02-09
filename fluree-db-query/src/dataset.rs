@@ -31,7 +31,7 @@ use crate::policy::QueryPolicyEnforcer;
 /// - The database (index storage)
 /// - The overlay provider (novelty layer)
 /// - Time bounds for the query
-/// - Ledger address for provenance tracking in multi-ledger joins
+/// - Ledger ID for provenance tracking in multi-ledger joins
 /// - Optional policy enforcer for per-graph policy enforcement
 ///
 /// # Per-Graph Policy
@@ -46,12 +46,12 @@ pub struct GraphRef<'a, S: Storage> {
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time for this graph
     pub to_t: i64,
-    /// Ledger address for provenance tracking (e.g., "orders:main", "customers:main")
+    /// Ledger ID for provenance tracking (e.g., "orders:main", "customers:main")
     ///
     /// Used when creating `Binding::IriMatch` in multi-ledger mode to track
     /// which ledger a SID came from. This enables correct re-encoding when
     /// joining across ledgers with different namespace tables.
-    pub ledger_address: Arc<str>,
+    pub ledger_id: Arc<str>,
     /// Optional per-graph policy enforcer
     ///
     /// When present, this graph's data is filtered by the enforcer's policy.
@@ -68,18 +68,18 @@ impl<'a, S: Storage> GraphRef<'a, S> {
     /// * `db` - The database for this graph
     /// * `overlay` - Overlay provider (novelty layer)
     /// * `to_t` - Target transaction time
-    /// * `ledger_address` - Ledger address for provenance tracking (e.g., "orders:main")
+    /// * `ledger_id` - Ledger ID for provenance tracking (e.g., "orders:main")
     pub fn new(
         db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
-        ledger_address: impl Into<Arc<str>>,
+        ledger_id: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             db,
             overlay,
             to_t,
-            ledger_address: ledger_address.into(),
+            ledger_id: ledger_id.into(),
             policy_enforcer: None,
         }
     }
@@ -91,25 +91,25 @@ impl<'a, S: Storage> GraphRef<'a, S> {
     /// * `db` - The database for this graph
     /// * `overlay` - Overlay provider (novelty layer)
     /// * `to_t` - Target transaction time
-    /// * `ledger_address` - Ledger address for provenance tracking
+    /// * `ledger_id` - Ledger ID for provenance tracking
     /// * `policy_enforcer` - Policy enforcer for this graph
     pub fn with_policy(
         db: &'a Db<S>,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
-        ledger_address: impl Into<Arc<str>>,
+        ledger_id: impl Into<Arc<str>>,
         policy_enforcer: Arc<QueryPolicyEnforcer>,
     ) -> Self {
         Self {
             db,
             overlay,
             to_t,
-            ledger_address: ledger_address.into(),
+            ledger_id: ledger_id.into(),
             policy_enforcer: Some(policy_enforcer),
         }
     }
 
-    /// Create a graph reference using the db's address as the ledger address
+    /// Create a graph reference using the db's address as the ledger ID
     ///
     /// Convenience method when the db's address is the appropriate identifier.
     pub fn from_db(db: &'a Db<S>, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
@@ -117,7 +117,7 @@ impl<'a, S: Storage> GraphRef<'a, S> {
             db,
             overlay,
             to_t,
-            ledger_address: Arc::from(db.ledger_address.as_str()),
+            ledger_id: Arc::from(db.ledger_id.as_str()),
             policy_enforcer: None,
         }
     }
@@ -137,7 +137,7 @@ impl<'a, S: Storage> fmt::Debug for GraphRef<'a, S> {
             .field("db", &"<Db>")
             .field("overlay", &"<dyn OverlayProvider>")
             .field("to_t", &self.to_t)
-            .field("ledger_address", &self.ledger_address)
+            .field("ledger_id", &self.ledger_id)
             .field("has_policy", &self.policy_enforcer.is_some())
             .finish()
     }
@@ -152,12 +152,12 @@ impl<'a, S: Storage> crate::graph_view::GraphView<S> for GraphRef<'a, S> {
             to_t: self.to_t,
             // Convert Option<Arc<T>> to Option<&T>
             policy_enforcer: self.policy_enforcer.as_deref(),
-            ledger_address: &self.ledger_address,
+            ledger_id: &self.ledger_id,
         }
     }
 
-    fn ledger_address(&self) -> &Arc<str> {
-        &self.ledger_address
+    fn ledger_id(&self) -> &Arc<str> {
+        &self.ledger_id
     }
 }
 
@@ -238,36 +238,36 @@ impl<'a, S: Storage> DataSet<'a, S> {
 
     /// Iterate over all named graphs (IRI, GraphRef pairs)
     ///
-    /// Used when searching for a graph by ledger_address rather than by IRI.
+    /// Used when searching for a graph by ledger_id rather than by IRI.
     pub fn named_graphs_iter(&self) -> impl Iterator<Item = (&Arc<str>, &GraphRef<'a, S>)> {
         self.named_graphs.iter()
     }
 
-    /// Find a graph by ledger address (searching both default and named graphs)
+    /// Find a graph by ledger ID (searching both default and named graphs)
     ///
-    /// Returns the first graph whose `ledger_address` matches the given address.
+    /// Returns the first graph whose `ledger_id` matches the given address.
     /// This is used for cross-ledger SID encoding/decoding where we need to
-    /// find the db associated with a specific ledger address.
+    /// find the db associated with a specific ledger ID.
     ///
     /// # Invariant
     ///
-    /// Ledger addresses should be unique within a dataset. If multiple graphs
-    /// have the same ledger address, this method returns the first match
+    /// Ledger IDs should be unique within a dataset. If multiple graphs
+    /// have the same ledger ID, this method returns the first match
     /// (checking default graphs before named graphs). This could lead to
     /// incorrect encoding/decoding if the invariant is violated.
     ///
     /// The dataset construction code should ensure uniqueness, or the caller
     /// should be aware that duplicate addresses may cause ambiguous behavior.
-    pub fn find_by_ledger_address(&self, ledger_address: &str) -> Option<&GraphRef<'a, S>> {
+    pub fn find_by_ledger_id(&self, ledger_id: &str) -> Option<&GraphRef<'a, S>> {
         // Check default graphs first
         self.default_graphs
             .iter()
-            .find(|graph| graph.ledger_address.as_ref() == ledger_address)
+            .find(|graph| graph.ledger_id.as_ref() == ledger_id)
             .or_else(|| {
                 // Check named graphs
                 self.named_graphs
                     .values()
-                    .find(|graph| graph.ledger_address.as_ref() == ledger_address)
+                    .find(|graph| graph.ledger_id.as_ref() == ledger_id)
             })
     }
 }

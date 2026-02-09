@@ -54,7 +54,7 @@ struct NsRetractedEnvelope {
 #[derive(Debug, serde::Deserialize)]
 struct LedgerSseRecord {
     /// Canonical address, e.g. "books:main"
-    #[serde(rename = "ledger_address")]
+    #[serde(rename = "ledger_id")]
     address: String,
     branch: String,
     commit_address: Option<String>,
@@ -67,7 +67,7 @@ struct LedgerSseRecord {
 #[derive(Debug, serde::Deserialize)]
 struct GraphSourceSseRecord {
     /// Canonical address, e.g. "search:main"
-    #[serde(rename = "graph_source_address")]
+    #[serde(rename = "graph_source_id")]
     address: String,
     name: String,
     branch: String,
@@ -170,7 +170,7 @@ mod tests {
                 "kind": "ledger",
                 "address": "mydb:main",
                 "record": {
-                    "ledger_address": "mydb:main",
+                    "ledger_id": "mydb:main",
                     "branch": "main",
                     "commit_address": "fluree:file://commit/abc",
                     "commit_t": 5,
@@ -224,7 +224,7 @@ mod tests {
                 "kind": "graph-source",
                 "address": "search:main",
                 "record": {
-                    "graph_source_address": "search:main",
+                    "graph_source_id": "search:main",
                     "name": "search",
                     "branch": "main",
                     "source_type": "db:Bm25Index",

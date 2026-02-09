@@ -65,6 +65,6 @@ pub use parse::{
 pub use stage::{generate_txn_id, stage, stage_flakes, StageOptions};
 
 #[cfg(feature = "shacl")]
-pub use stage::stage_with_shacl;
+pub use stage::{stage_with_shacl, validate_view_with_shacl};
 
 pub mod commit_v2;

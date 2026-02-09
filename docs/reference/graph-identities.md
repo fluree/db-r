@@ -22,10 +22,10 @@ Under the hood, this “graph snapshot” corresponds to the same semantic idea 
 ## User-facing naming (recommended)
 
 ### Core terms
-- **Ledger**: A durable data product with a commit chain, identified by a *ledger address* like `mydb:main`.
+- **Ledger**: A durable data product with a commit chain, identified by a *ledger ID* like `mydb:main`.
   - A ledger is what users create/manage.
   - A ledger can contain multiple graphs (default graph + named graphs).
-- **Graph Source Address**: A canonical `name:branch` identifier used in APIs/CLI/config to refer to a graph source, e.g. `products-search:main`.
+- **Graph Source ID**: A canonical `name:branch` identifier used in APIs/CLI/config to refer to a graph source, e.g. `products-search:main`.
   - This is an *alias-style* identifier (not a full IRI).
   - In SPARQL contexts it may appear inside `<…>` and can be resolved against a configured base into a canonical Graph IRI.
 - **Graph**: A query scope (SPARQL term).
@@ -108,7 +108,7 @@ To avoid ambiguity and URL pitfalls:
 - **Reserved delimiters**:
   - `@` separates the time specifier
   - `#` separates a named-graph alias (fragment)
-  - `:` is used inside the ledger address as `ledger:branch`
+  - `:` is used inside the ledger ID as `ledger:branch`
 - **Do not use raw `@` or `#` inside ledger names, branch names, or named-graph aliases**.
   - If needed, percent-encode them.
 - RFC3339 / ISO timestamps must be URL-safe:
@@ -137,26 +137,29 @@ Graph sources differ in capabilities:
 
 ### Canonical identities: prefer explicit types, not raw `String`
 Internally we should distinguish:
-- **`LedgerAddress`**: the durable ledger identifier (e.g., `acme/people:main`)
+- **`LedgerId`**: the durable ledger identifier (e.g., `acme/people:main`)
 - **`GraphIri`**: canonical graph identity used by SPARQL (`Arc<str>` or validated URL/IRI type)
 - **`GraphRef`**: user input token, resolved to a `GraphIri` using base rules
 
-Even if these are initially just `struct LedgerAddress(Arc<str>)` newtypes, they prevent accidental mixing and make APIs self-documenting.
+Even if these are initially just `struct LedgerId(Arc<str>)` newtypes, they prevent accidental mixing and make APIs self-documenting.
 
 ### Naming rules (make each word mean one thing)
-This repo currently mixes `alias`, `address`, and `ledger_alias` in ways that cause confusion. The recommended rule set:
+This repo reserves `_address` for **storage pointers** (dereferenceable URIs like `commit_address`, `index_address`) and uses `_id` for **identity/lookup keys** (`name:branch` tokens). The recommended rule set:
 
-- **`address`**: canonical identifier used as a cache key / stable identity.
+- **`id`**: canonical identifier used as a cache key / stable identity.
   - For ledgers this is the full `name:branch` form (e.g., `people:main`).
-  - For graph identities this is the resolved graph IRI (e.g., `https://data.flur.ee/acme/people:main@t:42#txn-meta`).
+  - For graph sources this is the full `name:branch` form (e.g., `products-search:main`).
+- **`address`**: a storage pointer (dereferenceable URI) used by the storage layer to fetch bytes.
+  - Examples: `commit_address`, `index_address`, `default_context_address`.
 - **`name`**: a base name without branch (e.g., `people`).
 - **`branch`**: the branch name (e.g., `main`).
 - **`alias`**: a human-friendly label, and only that.
-  - If you need “base name without branch”, prefer `name` (or `ledger_name`) rather than `alias`.
+  - If you need "base name without branch", prefer `name` (or `ledger_name`) rather than `alias`.
 
 Practical guidelines:
-- If a string is used to load/cache/lookup a ledger, call it **`ledger_address`** (not `ledger_alias`).
-- If a string is used to load/cache/lookup a graph source by `name:branch`, call it **`graph_source_address`** (not `gs_alias`, not `graph_source_alias`).
+- If a string is used to load/cache/lookup a ledger, call it **`ledger_id`** (not `ledger_alias`, not `ledger_address`).
+- If a string is used to load/cache/lookup a graph source by `name:branch`, call it **`graph_source_id`** (not `gs_alias`, not `graph_source_alias`, not `graph_source_address`).
+- If a string points to a storage location (commit, index, context), call it **`*_address`** (e.g., `commit_address`, `index_address`).
 - If a string is used to identify a graph in SPARQL (`FROM`, `GRAPH`), call it **`graph_iri`** (canonical) or **`graph_ref`** (user input).
 - Avoid having two different meanings for the same field name across crates. Prefer longer, explicit names.
 
@@ -172,7 +175,7 @@ Related: for non-ledger graph sources (e.g., BM25/vector/spatial), nameservice o
 
 Concretely it contains:
 - **Identity & time**
-  - `ledger_address` (canonical ledger identifier, `name:branch`)
+  - `ledger_id` (canonical ledger identifier, `name:branch`)
   - `t` (index transaction time; i.e., `index_t` / “how far the indexed snapshot covers”)
   - `version`
 - **Index roots** (e.g., SPOT/PSOT/POST/OPST/TSPO), optional

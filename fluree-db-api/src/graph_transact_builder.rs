@@ -156,7 +156,7 @@ where
         let handle = self
             .graph
             .fluree
-            .ledger_cached(&self.graph.ledger_address)
+            .ledger_cached(&self.graph.ledger_id)
             .await?;
         commit_with_handle(self.graph.fluree, &handle, self.core).await
     }
@@ -189,7 +189,7 @@ where
         let index_config = self.core.index_config.unwrap_or_default();
 
         // Load the current ledger state
-        let ledger_state = self.graph.fluree.ledger(&self.graph.ledger_address).await?;
+        let ledger_state = self.graph.fluree.ledger(&self.graph.ledger_id).await?;
 
         // Stage
         // TODO: Add trig_meta support to tracked+policy path

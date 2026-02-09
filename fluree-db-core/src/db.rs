@@ -23,8 +23,8 @@ use std::sync::Arc;
 /// Bundles all the metadata fields extracted from a v2 BinaryIndexRootV2
 /// for constructing a metadata-only `Db`.
 pub struct DbMetadata {
-    /// Ledger address (e.g., "mydb/main")
-    pub ledger_address: String,
+    /// Ledger ID (e.g., "mydb/main")
+    pub ledger_id: String,
     /// Current transaction time
     pub t: i64,
     /// Namespace code -> IRI prefix mapping
@@ -44,8 +44,8 @@ pub struct DbMetadata {
 /// Generic over:
 /// - `S`: Storage backend
 pub struct Db<S> {
-    /// Ledger address (e.g., "mydb/main")
-    pub ledger_address: String,
+    /// Ledger ID (e.g., "mydb/main")
+    pub ledger_id: String,
     /// Current transaction time
     pub t: i64,
     /// Index version
@@ -86,7 +86,7 @@ pub struct Db<S> {
 impl<S: Clone> Clone for Db<S> {
     fn clone(&self) -> Self {
         Self {
-            ledger_address: self.ledger_address.clone(),
+            ledger_id: self.ledger_id.clone(),
             t: self.t,
             version: self.version,
             namespace_codes: self.namespace_codes.clone(),
@@ -104,7 +104,7 @@ impl<S: Clone> Clone for Db<S> {
 impl<S: std::fmt::Debug> std::fmt::Debug for Db<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Db")
-            .field("ledger_address", &self.ledger_address)
+            .field("ledger_id", &self.ledger_id)
             .field("t", &self.t)
             .field("version", &self.version)
             .field(
@@ -121,9 +121,9 @@ impl<S: Storage> Db<S> {
     /// Used when a nameservice has a commit but no index yet.
     /// The database starts at t=0 with no base data.  Queries against
     /// a genesis Db return overlay (novelty) flakes only.
-    pub fn genesis(storage: S, ledger_address: &str) -> Self {
+    pub fn genesis(storage: S, ledger_id: &str) -> Self {
         Self {
-            ledger_address: ledger_address.to_string(),
+            ledger_id: ledger_id.to_string(),
             t: 0,
             version: 2,
             // Seed with baseline Fluree namespace codes (matches Clojure genesis-root-map).
@@ -146,7 +146,7 @@ impl<S: Storage> Db<S> {
     /// through `BinaryIndexStore` / `BinaryScanOperator`.
     pub fn new_meta(meta: DbMetadata, storage: S) -> Self {
         Self {
-            ledger_address: meta.ledger_address,
+            ledger_id: meta.ledger_id,
             t: meta.t,
             version: 2,
             namespace_codes: meta.namespace_codes,
@@ -189,9 +189,9 @@ impl<S: Storage> Db<S> {
 
     /// Extract metadata from a v2 BinaryIndexRootV2 JSON blob.
     fn from_v2_json(storage: S, root: &serde_json::Value) -> Result<Self> {
-        let ledger_address = root["ledger_address"]
+        let ledger_id = root["ledger_id"]
             .as_str()
-            .ok_or_else(|| Error::invalid_index("v2 root missing ledger_address"))?
+            .ok_or_else(|| Error::invalid_index("v2 root missing ledger_id"))?
             .to_string();
         let t = root["index_t"]
             .as_i64()
@@ -227,7 +227,7 @@ impl<S: Storage> Db<S> {
             .unwrap_or(0) as u32;
 
         let meta = DbMetadata {
-            ledger_address,
+            ledger_id,
             t,
             namespace_codes,
             stats,
@@ -300,7 +300,7 @@ mod tests {
     async fn test_db_load_v2() {
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_address": "test/main",
+            "ledger_id": "test/main",
             "index_t": 42,
             "base_t": 0,
             "namespace_codes": {
@@ -321,7 +321,7 @@ mod tests {
         storage.insert("test-root", serde_json::to_vec(&root_json).unwrap());
 
         let db = Db::load(storage, "test-root").await.unwrap();
-        assert_eq!(db.ledger_address, "test/main");
+        assert_eq!(db.ledger_id, "test/main");
         assert_eq!(db.t, 42);
         assert_eq!(db.version, 2);
         assert!(db.range_provider.is_none());
@@ -345,7 +345,7 @@ mod tests {
     async fn test_db_encode_decode_sid() {
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_address": "test/main",
+            "ledger_id": "test/main",
             "index_t": 1,
             "base_t": 0,
             "namespace_codes": {
@@ -373,7 +373,7 @@ mod tests {
         let storage = MemoryStorage::new();
         let db = Db::genesis(storage, "test/main");
         assert_eq!(db.t, 0);
-        assert_eq!(db.ledger_address, "test/main");
+        assert_eq!(db.ledger_id, "test/main");
         assert!(db.range_provider.is_none());
     }
 }

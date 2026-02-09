@@ -53,7 +53,7 @@ pub async fn run(
             }
         }
         LedgerMode::Local { fluree, alias } => {
-            let address = context::to_ledger_address(&alias);
+            let address = context::to_ledger_id(&alias);
             let record = fluree
                 .nameservice()
                 .lookup(&address)

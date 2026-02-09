@@ -62,9 +62,9 @@ where
         &self,
         config: Bm25CreateConfig,
     ) -> Result<Bm25CreateResult> {
-        let graph_source_address = config.graph_source_address();
+        let graph_source_id = config.graph_source_id();
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             ledger = %config.ledger,
             "Creating BM25 full-text index"
         );
@@ -72,13 +72,13 @@ where
         // Check if graph source already exists (prevent duplicates)
         if let Some(existing) = self
             .nameservice
-            .lookup_graph_source(&graph_source_address)
+            .lookup_graph_source(&graph_source_id)
             .await?
         {
             if !existing.retracted {
                 return Err(crate::ApiError::Config(format!(
                     "Graph source '{}' already exists",
-                    graph_source_address
+                    graph_source_id
                 )));
             }
         }
@@ -131,7 +131,7 @@ where
 
         // 4. Persist index snapshot blob to CAS
         let snapshot_address = self
-            .write_bm25_snapshot_blob(&graph_source_address, &index, source_t)
+            .write_bm25_snapshot_blob(&graph_source_id, &index, source_t)
             .await?;
 
         info!(
@@ -141,7 +141,7 @@ where
         );
 
         // 5. Build manifest with initial snapshot entry
-        let mut manifest = Bm25Manifest::new(&graph_source_address);
+        let mut manifest = Bm25Manifest::new(&graph_source_id);
         manifest.append(Bm25SnapshotEntry::new(source_t, &snapshot_address));
 
         // 6. Publish graph source config record to nameservice
@@ -163,18 +163,18 @@ where
 
         // 7. Publish manifest to CAS and head pointer to nameservice
         let index_address = self
-            .publish_bm25_manifest(&graph_source_address, &manifest, source_t)
+            .publish_bm25_manifest(&graph_source_id, &manifest, source_t)
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             doc_count = doc_count,
             index_t = source_t,
             "Created BM25 full-text index"
         );
 
         Ok(Bm25CreateResult {
-            graph_source_address,
+            graph_source_id,
             doc_count,
             term_count,
             index_t: source_t,
@@ -288,7 +288,7 @@ where
     /// Does NOT update nameservice or the manifest -- callers handle that.
     pub(crate) async fn write_bm25_snapshot_blob(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         index: &fluree_db_query::bm25::Bm25Index,
         index_t: i64,
     ) -> Result<String> {
@@ -296,10 +296,10 @@ where
 
         let bytes = serialize(index)?;
 
-        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
                 "Invalid graph source alias '{}': {}",
-                graph_source_address, e
+                graph_source_id, e
             ))
         })?;
         let address = format!(
@@ -318,14 +318,14 @@ where
     /// publish creates a new immutable object in storage.
     pub(crate) async fn publish_bm25_manifest(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         manifest: &Bm25Manifest,
         index_t: i64,
     ) -> Result<String> {
-        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
                 "Invalid graph source alias '{}': {}",
-                graph_source_address, e
+                graph_source_id, e
             ))
         })?;
 
@@ -365,11 +365,11 @@ where
     /// if the graph source has no index_address yet (e.g., during initial create).
     pub(crate) async fn load_or_create_bm25_manifest(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
     ) -> Result<Bm25Manifest> {
         match self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
         {
             Some(record) if record.index_address.is_some() => {
@@ -378,33 +378,24 @@ where
                 let manifest: Bm25Manifest = serde_json::from_slice(&bytes)?;
                 Ok(manifest)
             }
-            _ => Ok(Bm25Manifest::new(graph_source_address)),
+            _ => Ok(Bm25Manifest::new(graph_source_id)),
         }
     }
 
     /// Load the current BM25 manifest from CAS.
     ///
     /// Returns an error if the graph source is not found or has no index_address.
-    pub(crate) async fn load_bm25_manifest(
-        &self,
-        graph_source_address: &str,
-    ) -> Result<Bm25Manifest> {
+    pub(crate) async fn load_bm25_manifest(&self, graph_source_id: &str) -> Result<Bm25Manifest> {
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         let manifest_addr = record.index_address.ok_or_else(|| {
-            crate::ApiError::NotFound(format!(
-                "No index for graph source: {}",
-                graph_source_address
-            ))
+            crate::ApiError::NotFound(format!("No index for graph source: {}", graph_source_id))
         })?;
 
         let bytes = self.storage().read_bytes(&manifest_addr).await?;
@@ -428,14 +419,14 @@ where
     /// largest `index_t` that is <= `as_of_t`.
     pub async fn select_bm25_snapshot(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         as_of_t: i64,
     ) -> Result<Option<SnapshotSelection>> {
-        let manifest = self.load_bm25_manifest(graph_source_address).await?;
+        let manifest = self.load_bm25_manifest(graph_source_id).await?;
 
         match manifest.select_snapshot(as_of_t) {
             Some(entry) => Ok(Some(SnapshotSelection {
-                graph_source_address: graph_source_address.to_string(),
+                graph_source_id: graph_source_id.to_string(),
                 snapshot_t: entry.index_t,
                 snapshot_address: entry.snapshot_address.clone(),
             })),
@@ -448,18 +439,18 @@ where
     /// This is the time-travel aware version of `load_bm25_index`.
     pub async fn load_bm25_index_at(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         as_of_t: i64,
     ) -> Result<(Arc<fluree_db_query::bm25::Bm25Index>, i64)> {
         use fluree_db_query::bm25::deserialize;
 
         let selection = self
-            .select_bm25_snapshot(graph_source_address, as_of_t)
+            .select_bm25_snapshot(graph_source_id, as_of_t)
             .await?
             .ok_or_else(|| {
                 crate::ApiError::NotFound(format!(
                     "No BM25 snapshot available for {} at t={}",
-                    graph_source_address, as_of_t
+                    graph_source_id, as_of_t
                 ))
             })?;
 
@@ -478,16 +469,13 @@ where
     /// For time-travel queries, use `load_bm25_index_at` instead.
     pub async fn load_bm25_index(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
     ) -> Result<Arc<fluree_db_query::bm25::Bm25Index>> {
         use fluree_db_query::bm25::deserialize;
 
-        let manifest = self.load_bm25_manifest(graph_source_address).await?;
+        let manifest = self.load_bm25_manifest(graph_source_id).await?;
         let head = manifest.head().ok_or_else(|| {
-            crate::ApiError::NotFound(format!(
-                "No snapshots in manifest for: {}",
-                graph_source_address
-            ))
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
 
         let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
@@ -498,20 +486,14 @@ where
     /// Check if a BM25 index is stale relative to its source ledger.
     ///
     /// This is a lightweight check that only looks up nameservice records.
-    pub async fn check_bm25_staleness(
-        &self,
-        graph_source_address: &str,
-    ) -> Result<Bm25StalenessCheck> {
+    pub async fn check_bm25_staleness(&self, graph_source_id: &str) -> Result<Bm25StalenessCheck> {
         // Look up graph source record
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         // Get source ledger from dependencies
@@ -541,7 +523,7 @@ where
         let lag = ledger_t - index_t;
 
         Ok(Bm25StalenessCheck {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             source_ledger,
             index_t,
             ledger_t,
@@ -564,36 +546,33 @@ where
     ///
     /// This operation performs incremental updates when possible,
     /// falling back to full resync if needed.
-    pub async fn sync_bm25_index(&self, graph_source_address: &str) -> Result<Bm25SyncResult> {
+    pub async fn sync_bm25_index(&self, graph_source_id: &str) -> Result<Bm25SyncResult> {
         use fluree_db_novelty::trace_commits;
         use fluree_db_query::bm25::{deserialize, CompiledPropertyDeps, IncrementalUpdater};
         use futures::StreamExt;
 
-        info!(graph_source_address = %graph_source_address, "Starting BM25 index sync");
+        info!(graph_source_id = %graph_source_id, "Starting BM25 index sync");
 
         // 1. Look up graph source record to get config and index address
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         // Check if graph source has been dropped
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
                 "Cannot sync retracted graph source: {}",
-                graph_source_address
+                graph_source_id
             )));
         }
 
         if record.index_address.is_none() {
             // No index yet - need full resync
-            return self.resync_bm25_index(graph_source_address).await;
+            return self.resync_bm25_index(graph_source_id).await;
         }
 
         // Parse config to get query
@@ -617,12 +596,9 @@ where
         let ledger_t = ledger.t();
 
         // 3. Load existing index via manifest head
-        let manifest = self.load_bm25_manifest(graph_source_address).await?;
+        let manifest = self.load_bm25_manifest(graph_source_id).await?;
         let head = manifest.head().ok_or_else(|| {
-            crate::ApiError::NotFound(format!(
-                "No snapshots in manifest for: {}",
-                graph_source_address
-            ))
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
         let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
         let mut index = deserialize(&bytes)?;
@@ -630,9 +606,9 @@ where
 
         // Already up to date?
         if ledger_t <= old_watermark {
-            info!(graph_source_address = %graph_source_address, ledger_t = ledger_t, "Index already up to date");
+            info!(graph_source_id = %graph_source_id, ledger_t = ledger_t, "Index already up to date");
             return Ok(Bm25SyncResult {
-                graph_source_address: graph_source_address.to_string(),
+                graph_source_id: graph_source_id.to_string(),
                 upserted: 0,
                 removed: 0,
                 affected_subjects: 0,
@@ -672,12 +648,12 @@ where
         // If no subjects affected, fall back to full resync
         if affected_sids.is_empty() {
             warn!(
-                graph_source_address = %graph_source_address,
+                graph_source_id = %graph_source_id,
                 old_watermark = old_watermark,
                 ledger_t = ledger_t,
                 "No affected subjects detected, falling back to full resync"
             );
-            return self.resync_bm25_index(graph_source_address).await;
+            return self.resync_bm25_index(graph_source_id).await;
         }
 
         // 7. Convert affected Sids to IRIs
@@ -687,7 +663,7 @@ where
             .collect();
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             affected_count = affected_iris.len(),
             "Found affected subjects for incremental update"
         );
@@ -718,7 +694,7 @@ where
         let update_result = updater.apply_update(&results, &affected_iris_expanded, ledger_t);
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             upserted = update_result.upserted,
             removed = update_result.removed,
             "Applied incremental update"
@@ -726,24 +702,24 @@ where
 
         // 10. Persist updated index blob
         let new_address = self
-            .write_bm25_snapshot_blob(graph_source_address, &index, ledger_t)
+            .write_bm25_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
         // 11. Update manifest and publish
         let mut manifest = manifest;
         manifest.append(Bm25SnapshotEntry::new(ledger_t, &new_address));
-        self.publish_bm25_manifest(graph_source_address, &manifest, ledger_t)
+        self.publish_bm25_manifest(graph_source_id, &manifest, ledger_t)
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             new_address = %new_address,
             ledger_t = ledger_t,
             "Incremental sync complete"
         );
 
         Ok(Bm25SyncResult {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             upserted: update_result.upserted,
             removed: update_result.removed,
             affected_subjects: affected_iris.len(),
@@ -757,34 +733,31 @@ where
     ///
     /// Unlike `sync_bm25_index`, this re-runs the entire indexing query
     /// and rebuilds the index from scratch.
-    pub async fn resync_bm25_index(&self, graph_source_address: &str) -> Result<Bm25SyncResult> {
+    pub async fn resync_bm25_index(&self, graph_source_id: &str) -> Result<Bm25SyncResult> {
         use fluree_db_query::bm25::{deserialize, IncrementalUpdater};
 
-        info!(graph_source_address = %graph_source_address, "Starting BM25 full resync");
+        info!(graph_source_id = %graph_source_id, "Starting BM25 full resync");
 
         // 1. Look up graph source record
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
                 "Cannot sync retracted graph source: {}",
-                graph_source_address
+                graph_source_id
             )));
         }
 
         if record.index_address.is_none() {
             return Err(crate::ApiError::NotFound(format!(
                 "No index for graph source: {}",
-                graph_source_address
+                graph_source_id
             )));
         }
 
@@ -803,12 +776,9 @@ where
             .clone();
 
         // 2. Load existing index via manifest head (to preserve config and property deps)
-        let manifest = self.load_bm25_manifest(graph_source_address).await?;
+        let manifest = self.load_bm25_manifest(graph_source_id).await?;
         let head = manifest.head().ok_or_else(|| {
-            crate::ApiError::NotFound(format!(
-                "No snapshots in manifest for: {}",
-                graph_source_address
-            ))
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
         let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
         let mut index = deserialize(&bytes)?;
@@ -822,7 +792,7 @@ where
         let results = self.execute_bm25_indexing_query(&ledger, &query).await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             result_count = results.len(),
             ledger_t = ledger_t,
             "Executed full indexing query"
@@ -834,24 +804,24 @@ where
 
         // 6. Persist updated index blob
         let new_address = self
-            .write_bm25_snapshot_blob(graph_source_address, &index, ledger_t)
+            .write_bm25_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
         // 7. Update manifest and publish
         let mut manifest = manifest;
         manifest.append(Bm25SnapshotEntry::new(ledger_t, &new_address));
-        self.publish_bm25_manifest(graph_source_address, &manifest, ledger_t)
+        self.publish_bm25_manifest(graph_source_id, &manifest, ledger_t)
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             new_address = %new_address,
             ledger_t = ledger_t,
             "Full resync complete"
         );
 
         Ok(Bm25SyncResult {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             upserted: update_result.upserted,
             removed: update_result.removed,
             affected_subjects: update_result.upserted + update_result.removed,
@@ -866,7 +836,7 @@ where
     /// This implements the "on-query catch-up" pattern.
     pub async fn load_bm25_index_with_sync(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         auto_sync: bool,
     ) -> Result<(
         Arc<fluree_db_query::bm25::Bm25Index>,
@@ -877,13 +847,10 @@ where
         // Look up graph source record
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         // Get source ledger to check staleness
@@ -911,23 +878,20 @@ where
         // Sync if stale and auto_sync is enabled
         let sync_result = if is_stale && auto_sync {
             info!(
-                graph_source_address = %graph_source_address,
+                graph_source_id = %graph_source_id,
                 index_t = index_t,
                 ledger_t = ledger_t,
                 "Index is stale, syncing before load"
             );
-            Some(self.sync_bm25_index(graph_source_address).await?)
+            Some(self.sync_bm25_index(graph_source_id).await?)
         } else {
             None
         };
 
         // Load the (possibly updated) index via manifest head
-        let manifest = self.load_bm25_manifest(graph_source_address).await?;
+        let manifest = self.load_bm25_manifest(graph_source_id).await?;
         let head = manifest.head().ok_or_else(|| {
-            crate::ApiError::NotFound(format!(
-                "No snapshots in manifest for: {}",
-                graph_source_address
-            ))
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
 
         let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
@@ -942,14 +906,14 @@ where
     /// the source ledger at that historical point.
     pub async fn sync_bm25_index_to(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         target_t: i64,
         timeout_ms: Option<u64>,
     ) -> Result<Bm25SyncResult> {
         use fluree_db_query::bm25::{Bm25IndexBuilder, IncrementalUpdater, PropertyDeps};
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             target_t = target_t,
             timeout_ms = ?timeout_ms,
             "Starting BM25 index sync to specific t"
@@ -960,13 +924,10 @@ where
         // 1. Look up graph source record to get config
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         let config: JsonValue = serde_json::from_str(&record.config)?;
@@ -986,13 +947,11 @@ where
             .clone();
 
         // 2. Check if we already have a snapshot at target_t
-        let manifest = self
-            .load_or_create_bm25_manifest(graph_source_address)
-            .await?;
+        let manifest = self.load_or_create_bm25_manifest(graph_source_id).await?;
         if manifest.has_snapshot_at(target_t) {
-            info!(graph_source_address = %graph_source_address, target_t = target_t, "Snapshot already exists");
+            info!(graph_source_id = %graph_source_id, target_t = target_t, "Snapshot already exists");
             return Ok(Bm25SyncResult {
-                graph_source_address: graph_source_address.to_string(),
+                graph_source_id: graph_source_id.to_string(),
                 upserted: 0,
                 removed: 0,
                 affected_subjects: 0,
@@ -1011,7 +970,7 @@ where
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             target_t = target_t,
             result_count = results.len(),
             "Executed indexing query at historical t"
@@ -1033,25 +992,25 @@ where
 
         // 6. Persist versioned snapshot blob
         let address = self
-            .write_bm25_snapshot_blob(graph_source_address, &index, target_t)
+            .write_bm25_snapshot_blob(graph_source_id, &index, target_t)
             .await?;
 
         // 7. Update manifest and publish (only advances head if target_t is newest)
         let mut manifest = manifest;
         manifest.append(Bm25SnapshotEntry::new(target_t, &address));
         let effective_t = manifest.head().map(|h| h.index_t).unwrap_or(target_t);
-        self.publish_bm25_manifest(graph_source_address, &manifest, effective_t)
+        self.publish_bm25_manifest(graph_source_id, &manifest, effective_t)
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             target_t = target_t,
             upserted = update_result.upserted,
             "Sync to specific t complete"
         );
 
         Ok(Bm25SyncResult {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             upserted: update_result.upserted,
             removed: update_result.removed,
             affected_subjects: update_result.upserted + update_result.removed,
@@ -1064,10 +1023,10 @@ where
     /// Sync multiple BM25 indexes.
     pub async fn sync_bm25_indexes(
         &self,
-        graph_source_addresses: &[&str],
+        graph_source_ides: &[&str],
     ) -> Vec<Result<Bm25SyncResult>> {
-        let mut results = Vec::with_capacity(graph_source_addresses.len());
-        for alias in graph_source_addresses {
+        let mut results = Vec::with_capacity(graph_source_ides.len());
+        for alias in graph_source_ides {
             results.push(self.sync_bm25_index(alias).await);
         }
         results
@@ -1076,10 +1035,10 @@ where
     /// Check staleness for multiple BM25 indexes.
     pub async fn check_bm25_staleness_batch(
         &self,
-        graph_source_addresses: &[&str],
+        graph_source_ides: &[&str],
     ) -> Vec<Result<Bm25StalenessCheck>> {
-        let mut results = Vec::with_capacity(graph_source_addresses.len());
-        for alias in graph_source_addresses {
+        let mut results = Vec::with_capacity(graph_source_ides.len());
+        for alias in graph_source_ides {
             results.push(self.check_bm25_staleness(alias).await);
         }
         results
@@ -1090,16 +1049,16 @@ where
     /// This operation:
     /// 1. Marks the graph source as retracted in nameservice
     /// 2. Deletes all snapshot files from storage
-    pub async fn drop_full_text_index(&self, graph_source_address: &str) -> Result<Bm25DropResult>
+    pub async fn drop_full_text_index(&self, graph_source_id: &str) -> Result<Bm25DropResult>
     where
         S: StorageWrite,
     {
-        info!(graph_source_address = %graph_source_address, "Dropping BM25 full-text index");
+        info!(graph_source_id = %graph_source_id, "Dropping BM25 full-text index");
 
         // 1. Look up graph source record to verify it exists
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?;
 
         let record = match record {
@@ -1107,25 +1066,23 @@ where
             None => {
                 return Err(crate::ApiError::NotFound(format!(
                     "Graph source not found: {}",
-                    graph_source_address
+                    graph_source_id
                 )));
             }
         };
 
         // If already retracted, return early (idempotent)
         if record.retracted {
-            info!(graph_source_address = %graph_source_address, "Graph source already retracted");
+            info!(graph_source_id = %graph_source_id, "Graph source already retracted");
             return Ok(Bm25DropResult {
-                graph_source_address: graph_source_address.to_string(),
+                graph_source_id: graph_source_id.to_string(),
                 deleted_snapshots: 0,
                 was_already_retracted: true,
             });
         }
 
         // 2. Load manifest for cleanup (get all snapshot addresses)
-        let manifest = self
-            .load_or_create_bm25_manifest(graph_source_address)
-            .await?;
+        let manifest = self.load_or_create_bm25_manifest(graph_source_id).await?;
 
         // 3. Retract graph source in nameservice
         self.nameservice
@@ -1133,7 +1090,7 @@ where
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             snapshot_count = manifest.snapshots.len(),
             "Graph source retracted, cleaning up storage"
         );
@@ -1159,7 +1116,7 @@ where
                 }
                 Err(e) => {
                     warn!(
-                        graph_source_address = %graph_source_address,
+                        graph_source_id = %graph_source_id,
                         address = %addr,
                         error = %e,
                         "Failed to delete snapshot file"
@@ -1169,14 +1126,14 @@ where
         }
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             deleted = deleted_snapshots,
             total = addresses_to_delete.len(),
             "Drop complete"
         );
 
         Ok(Bm25DropResult {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             deleted_snapshots,
             was_already_retracted: false,
         })

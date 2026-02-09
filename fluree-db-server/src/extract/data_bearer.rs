@@ -42,12 +42,12 @@ pub struct DataPrincipal {
 }
 
 impl DataPrincipal {
-    pub fn can_read(&self, ledger_address: &str) -> bool {
-        self.read_all || self.read_ledgers.contains(ledger_address)
+    pub fn can_read(&self, ledger_id: &str) -> bool {
+        self.read_all || self.read_ledgers.contains(ledger_id)
     }
 
-    pub fn can_write(&self, ledger_address: &str) -> bool {
-        self.write_all || self.write_ledgers.contains(ledger_address)
+    pub fn can_write(&self, ledger_id: &str) -> bool {
+        self.write_all || self.write_ledgers.contains(ledger_id)
     }
 }
 

@@ -54,32 +54,32 @@ pub trait IndexLoader: std::fmt::Debug + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - Graph source alias
+    /// * `graph_source_id` - Graph source alias
     /// * `index_t` - Transaction number of the index snapshot
     ///
     /// # Returns
     ///
     /// The loaded BM25 index, or an error if not found.
-    async fn load_index(&self, graph_source_address: &str, index_t: i64) -> Result<Bm25Index>;
+    async fn load_index(&self, graph_source_id: &str, index_t: i64) -> Result<Bm25Index>;
 
     /// Get the latest available index transaction for a graph source.
     ///
     /// Returns `None` if no index has been built yet.
-    async fn get_latest_index_t(&self, graph_source_address: &str) -> Result<Option<i64>>;
+    async fn get_latest_index_t(&self, graph_source_id: &str) -> Result<Option<i64>>;
 
     /// Find the newest index snapshot with watermark <= target_t.
     ///
     /// Returns `None` if no suitable snapshot exists.
     async fn find_snapshot_for_t(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         target_t: i64,
     ) -> Result<Option<i64>>;
 
     /// Get the current nameservice index head for sync operations.
     ///
     /// This is the latest committed transaction that should be indexed.
-    async fn get_index_head(&self, graph_source_address: &str) -> Result<Option<i64>>;
+    async fn get_index_head(&self, graph_source_id: &str) -> Result<Option<i64>>;
 }
 
 /// BM25 search backend.
@@ -121,14 +121,14 @@ impl<L: IndexLoader> Bm25Backend<L> {
     /// Get or load an index for the given graph source and transaction.
     async fn get_or_load_index(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         index_t: i64,
     ) -> Result<Arc<Bm25Index>> {
-        let cache_key = (graph_source_address.to_string(), index_t);
+        let cache_key = (graph_source_id.to_string(), index_t);
 
         // Check cache first
         if let Some(index) = self.cache.get(&cache_key) {
-            tracing::debug!(graph_source_address, index_t, "BM25 index cache hit");
+            tracing::debug!(graph_source_id, index_t, "BM25 index cache hit");
             return Ok(index);
         }
 
@@ -147,15 +147,8 @@ impl<L: IndexLoader> Bm25Backend<L> {
         }
 
         // Load from storage
-        tracing::debug!(
-            graph_source_address,
-            index_t,
-            "Loading BM25 index from storage"
-        );
-        let index = self
-            .loader
-            .load_index(graph_source_address, index_t)
-            .await?;
+        tracing::debug!(graph_source_id, index_t, "Loading BM25 index from storage");
+        let index = self.loader.load_index(graph_source_id, index_t).await?;
         let index = Arc::new(index);
 
         // Insert into cache
@@ -172,7 +165,7 @@ impl<L: IndexLoader> Bm25Backend<L> {
     /// - Otherwise, use the latest available snapshot
     async fn resolve_index_t(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         as_of_t: Option<i64>,
         sync: bool,
         timeout: Duration,
@@ -181,7 +174,7 @@ impl<L: IndexLoader> Bm25Backend<L> {
             // Wait for index to reach head (or as_of_t if specified)
             let target_t = as_of_t;
             wait_for_head(
-                || async { self.loader.get_index_head(graph_source_address).await },
+                || async { self.loader.get_index_head(graph_source_id).await },
                 target_t,
                 timeout,
                 &self.config.sync_config,
@@ -193,17 +186,17 @@ impl<L: IndexLoader> Bm25Backend<L> {
             Some(target_t) => {
                 // Find newest snapshot <= target_t
                 self.loader
-                    .find_snapshot_for_t(graph_source_address, target_t)
+                    .find_snapshot_for_t(graph_source_id, target_t)
                     .await?
                     .ok_or(ServiceError::NoSnapshotForAsOfT { as_of_t: target_t })
             }
             None => {
                 // Use latest available
                 self.loader
-                    .get_latest_index_t(graph_source_address)
+                    .get_latest_index_t(graph_source_id)
                     .await?
                     .ok_or_else(|| ServiceError::IndexNotBuilt {
-                        address: graph_source_address.to_string(),
+                        address: graph_source_id.to_string(),
                     })
             }
         }
@@ -224,7 +217,7 @@ impl<L: IndexLoader> std::fmt::Debug for Bm25Backend<L> {
 impl<L: IndexLoader> SearchBackend for Bm25Backend<L> {
     async fn search(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         query: &QueryVariant,
         limit: usize,
         as_of_t: Option<i64>,
@@ -245,13 +238,11 @@ impl<L: IndexLoader> SearchBackend for Bm25Backend<L> {
 
         // Resolve which index snapshot to use
         let index_t = self
-            .resolve_index_t(graph_source_address, as_of_t, sync, timeout)
+            .resolve_index_t(graph_source_id, as_of_t, sync, timeout)
             .await?;
 
         // Load the index (from cache or storage)
-        let index = self
-            .get_or_load_index(graph_source_address, index_t)
-            .await?;
+        let index = self.get_or_load_index(graph_source_id, index_t).await?;
 
         // Analyze query
         let terms = self.analyzer.analyze_to_strings(query_text);
@@ -300,58 +291,53 @@ mod tests {
     }
 
     impl MockLoader {
-        fn add_index(&self, graph_source_address: &str, index_t: i64, index: Bm25Index) {
+        fn add_index(&self, graph_source_id: &str, index_t: i64, index: Bm25Index) {
             self.indexes
                 .write()
                 .unwrap()
-                .insert((graph_source_address.to_string(), index_t), index);
+                .insert((graph_source_id.to_string(), index_t), index);
             let mut latest = self.latest_t.write().unwrap();
-            let current = latest.entry(graph_source_address.to_string()).or_insert(0);
+            let current = latest.entry(graph_source_id.to_string()).or_insert(0);
             if index_t > *current {
                 *current = index_t;
             }
         }
 
-        fn set_head(&self, graph_source_address: &str, t: i64) {
+        fn set_head(&self, graph_source_id: &str, t: i64) {
             self.head_t
                 .write()
                 .unwrap()
-                .insert(graph_source_address.to_string(), t);
+                .insert(graph_source_id.to_string(), t);
         }
     }
 
     #[async_trait]
     impl IndexLoader for MockLoader {
-        async fn load_index(&self, graph_source_address: &str, index_t: i64) -> Result<Bm25Index> {
+        async fn load_index(&self, graph_source_id: &str, index_t: i64) -> Result<Bm25Index> {
             self.indexes
                 .read()
                 .unwrap()
-                .get(&(graph_source_address.to_string(), index_t))
+                .get(&(graph_source_id.to_string(), index_t))
                 .cloned()
                 .ok_or_else(|| ServiceError::IndexNotBuilt {
-                    address: graph_source_address.to_string(),
+                    address: graph_source_id.to_string(),
                 })
         }
 
-        async fn get_latest_index_t(&self, graph_source_address: &str) -> Result<Option<i64>> {
-            Ok(self
-                .latest_t
-                .read()
-                .unwrap()
-                .get(graph_source_address)
-                .copied())
+        async fn get_latest_index_t(&self, graph_source_id: &str) -> Result<Option<i64>> {
+            Ok(self.latest_t.read().unwrap().get(graph_source_id).copied())
         }
 
         async fn find_snapshot_for_t(
             &self,
-            graph_source_address: &str,
+            graph_source_id: &str,
             target_t: i64,
         ) -> Result<Option<i64>> {
             // Find newest snapshot <= target_t
             let indexes = self.indexes.read().unwrap();
             let mut best: Option<i64> = None;
             for (key, _) in indexes.iter() {
-                if key.0 == graph_source_address && key.1 <= target_t {
+                if key.0 == graph_source_id && key.1 <= target_t {
                     match best {
                         None => best = Some(key.1),
                         Some(b) if key.1 > b => best = Some(key.1),
@@ -362,13 +348,8 @@ mod tests {
             Ok(best)
         }
 
-        async fn get_index_head(&self, graph_source_address: &str) -> Result<Option<i64>> {
-            Ok(self
-                .head_t
-                .read()
-                .unwrap()
-                .get(graph_source_address)
-                .copied())
+        async fn get_index_head(&self, graph_source_id: &str) -> Result<Option<i64>> {
+            Ok(self.head_t.read().unwrap().get(graph_source_id).copied())
         }
     }
 

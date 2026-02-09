@@ -13,9 +13,7 @@ pub async fn run(
     let store = crate::config::TomlSyncConfigStore::new(fluree_dir.to_path_buf());
     let alias = context::resolve_ledger(explicit_ledger, fluree_dir)?;
     if store.get_tracked(&alias).is_some()
-        || store
-            .get_tracked(&context::to_ledger_address(&alias))
-            .is_some()
+        || store.get_tracked(&context::to_ledger_id(&alias)).is_some()
     {
         return Err(CliError::Usage(
             "export is not available for tracked ledgers (no local data).".to_string(),

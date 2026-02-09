@@ -938,7 +938,7 @@ where
     }
 
     let storage = ledger.db.storage.clone();
-    let ledger_addr = ledger.ledger_address().to_string();
+    let ledger_addr = ledger.ledger_id().to_string();
 
     match crate::build_index_for_ledger(&storage, nameservice, &ledger_addr, indexer_config).await {
         Ok(result) => {
@@ -1007,7 +1007,7 @@ where
     N: fluree_db_nameservice::NameService + Publisher,
 {
     let storage = ledger.db.storage.clone();
-    let ledger_addr = ledger.ledger_address().to_string();
+    let ledger_addr = ledger.ledger_id().to_string();
 
     let result =
         crate::build_index_for_ledger(&storage, nameservice, &ledger_addr, indexer_config).await?;
@@ -1328,7 +1328,7 @@ mod tests {
 
         let result = orchestrator.index_ledger("test:main").await.unwrap();
         assert_eq!(result.index_t, 1);
-        assert_eq!(result.ledger_address, "test:main");
+        assert_eq!(result.ledger_id, "test:main");
     }
 
     #[tokio::test]

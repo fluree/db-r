@@ -31,7 +31,7 @@ async fn create_graph_source_test() {
         .with_b(0.75);
 
     let gs_obj = fluree.create_full_text_index(config).await.unwrap();
-    let gs_name = &gs_obj.graph_source_address;
+    let gs_name = &gs_obj.graph_source_id;
 
     // Graph source names are normalized with branch
     assert_eq!(gs_name, "article-search:main");
@@ -62,7 +62,7 @@ async fn create_graph_source_test() {
 
     // Clean up
     let drop_result = fluree.drop_full_text_index(gs_name).await.unwrap();
-    assert_eq!(drop_result.graph_source_address, *gs_name);
+    assert_eq!(drop_result.graph_source_id, *gs_name);
     assert!(!drop_result.was_already_retracted);
 }
 

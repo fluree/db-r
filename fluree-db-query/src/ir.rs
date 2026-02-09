@@ -453,7 +453,7 @@ impl SubqueryPattern {
 #[derive(Debug, Clone)]
 pub struct IndexSearchPattern {
     /// Graph source alias (e.g., "my-search:main")
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Search query target - can be a constant string or variable
     pub target: IndexSearchTarget,
@@ -489,12 +489,12 @@ pub enum IndexSearchTarget {
 impl IndexSearchPattern {
     /// Create a new index search pattern with just ID binding
     pub fn new(
-        graph_source_address: impl Into<String>,
+        graph_source_id: impl Into<String>,
         target: IndexSearchTarget,
         id_var: VarId,
     ) -> Self {
         Self {
-            graph_source_address: graph_source_address.into(),
+            graph_source_id: graph_source_id.into(),
             target,
             limit: None,
             id_var,
@@ -589,7 +589,7 @@ impl IndexSearchPattern {
 #[derive(Debug, Clone)]
 pub struct VectorSearchPattern {
     /// Graph source alias (e.g., "embeddings:main")
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Search target - can be a constant vector or variable
     pub target: VectorSearchTarget,
@@ -628,12 +628,12 @@ pub enum VectorSearchTarget {
 impl VectorSearchPattern {
     /// Create a new vector search pattern with just ID binding
     pub fn new(
-        graph_source_address: impl Into<String>,
+        graph_source_id: impl Into<String>,
         target: VectorSearchTarget,
         id_var: VarId,
     ) -> Self {
         Self {
-            graph_source_address: graph_source_address.into(),
+            graph_source_id: graph_source_id.into(),
             target,
             metric: crate::vector::DistanceMetric::default(),
             limit: None,
@@ -723,7 +723,7 @@ impl VectorSearchPattern {
 #[derive(Debug, Clone)]
 pub struct R2rmlPattern {
     /// Graph source alias (e.g., "airlines-r2rml:main")
-    pub graph_source_address: String,
+    pub graph_source_id: String,
 
     /// Variable to bind the subject IRI
     pub subject_var: VarId,
@@ -753,12 +753,12 @@ pub struct R2rmlPattern {
 impl R2rmlPattern {
     /// Create a new R2RML pattern with subject and object variables.
     pub fn new(
-        graph_source_address: impl Into<String>,
+        graph_source_id: impl Into<String>,
         subject_var: VarId,
         object_var: Option<VarId>,
     ) -> Self {
         Self {
-            graph_source_address: graph_source_address.into(),
+            graph_source_id: graph_source_id.into(),
             subject_var,
             object_var,
             triples_map_iri: None,

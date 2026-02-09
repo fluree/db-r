@@ -6,7 +6,7 @@ use std::path::Path;
 
 pub async fn run(ledger: &str, fluree_dir: &Path) -> CliResult<()> {
     let fluree = context::build_fluree(fluree_dir)?;
-    let address = context::to_ledger_address(ledger);
+    let address = context::to_ledger_id(ledger);
 
     // Check if it's a local ledger
     let record = fluree.nameservice().lookup(&address).await?;

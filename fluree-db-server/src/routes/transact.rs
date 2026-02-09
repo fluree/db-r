@@ -120,7 +120,7 @@ fn extract_query_params(request: &Request) -> TransactQueryParams {
 /// Helper to extract ledger alias from request
 ///
 /// Priority: path > query param > header > body.ledger > body.from
-fn get_ledger_address(
+fn get_ledger_id(
     path_ledger: Option<&str>,
     query_params: &TransactQueryParams,
     headers: &FlureeHeaders,
@@ -300,7 +300,7 @@ async fn transact_local(
         // For Turtle/TriG, ledger must come from query param or header
         let alias = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
             Some(ledger) => {
-                span.record("ledger_address", ledger.as_str());
+                span.record("ledger_id", ledger.as_str());
                 ledger.clone()
             }
             None => {
@@ -337,9 +337,9 @@ async fn transact_local(
         }
     };
 
-    let alias = match get_ledger_address(None, &query_params, &headers, &body_json) {
+    let alias = match get_ledger_id(None, &query_params, &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {
@@ -492,9 +492,9 @@ async fn transact_ledger_local(
         }
     };
 
-    let alias = match get_ledger_address(Some(&ledger), &query_params, &headers, &body_json) {
+    let alias = match get_ledger_id(Some(&ledger), &query_params, &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {
@@ -590,7 +590,7 @@ async fn insert_local(
         // For Turtle/TriG, ledger must come from query param or header
         let alias = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
             Some(ledger) => {
-                span.record("ledger_address", ledger.as_str());
+                span.record("ledger_id", ledger.as_str());
                 ledger.clone()
             }
             None => {
@@ -624,9 +624,9 @@ async fn insert_local(
         }
     };
 
-    let alias = match get_ledger_address(None, &query_params, &headers, &body_json) {
+    let alias = match get_ledger_id(None, &query_params, &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {
@@ -722,7 +722,7 @@ async fn upsert_local(
         // For Turtle/TriG, ledger must come from query param or header
         let alias = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
             Some(ledger) => {
-                span.record("ledger_address", ledger.as_str());
+                span.record("ledger_id", ledger.as_str());
                 ledger.clone()
             }
             None => {
@@ -756,9 +756,9 @@ async fn upsert_local(
         }
     };
 
-    let alias = match get_ledger_address(None, &query_params, &headers, &body_json) {
+    let alias = match get_ledger_id(None, &query_params, &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {
@@ -889,9 +889,9 @@ async fn insert_ledger_local(
         }
     };
 
-    let alias = match get_ledger_address(Some(&ledger), &query_params, &headers, &body_json) {
+    let alias = match get_ledger_id(Some(&ledger), &query_params, &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {
@@ -1022,9 +1022,9 @@ async fn upsert_ledger_local(
         }
     };
 
-    let alias = match get_ledger_address(Some(&ledger), &query_params, &headers, &body_json) {
+    let alias = match get_ledger_id(Some(&ledger), &query_params, &headers, &body_json) {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {
@@ -1057,8 +1057,7 @@ async fn execute_transaction(
     author: Option<&str>,
 ) -> Result<Json<TransactResponse>> {
     // Create execution span
-    let span =
-        tracing::info_span!("transact_execute", ledger_address = alias, txn_type = ?txn_type);
+    let span = tracing::info_span!("transact_execute", ledger_id = alias, txn_type = ?txn_type);
     let _guard = span.enter();
 
     // Compute tx-id from request body (before any modification)
@@ -1173,7 +1172,7 @@ async fn execute_turtle_transaction(
 
     // Create execution span
     let format = if is_trig { "trig" } else { "turtle" };
-    let span = tracing::info_span!("transact_execute", ledger_address = alias, txn_type = ?txn_type, format = format);
+    let span = tracing::info_span!("transact_execute", ledger_id = alias, txn_type = ?txn_type, format = format);
     let _guard = span.enter();
 
     // TriG on /insert is not supported - named graphs require upsert path
@@ -1313,7 +1312,7 @@ async fn execute_sparql_update_request(
         },
     };
 
-    parent_span.record("ledger_address", alias.as_str());
+    parent_span.record("ledger_id", alias.as_str());
 
     // Enforce write access for unsigned requests when bearer is present/required
     enforce_write_access(state, &alias, bearer, credential)?;

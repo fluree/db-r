@@ -28,15 +28,10 @@ pub trait PeerCallbacks: Send + Sync {
     async fn on_snapshot_complete(&self, _hash: &str) {}
 
     /// Called when a ledger is created or updated
-    async fn on_ledger_updated(&self, _ledger_address: &str, _state: &LedgerState) {}
+    async fn on_ledger_updated(&self, _ledger_id: &str, _state: &LedgerState) {}
 
     /// Called when a graph source is created or updated
-    async fn on_graph_source_updated(
-        &self,
-        _graph_source_address: &str,
-        _state: &GraphSourceState,
-    ) {
-    }
+    async fn on_graph_source_updated(&self, _graph_source_id: &str, _state: &GraphSourceState) {}
 
     /// Called when a resource is retracted
     async fn on_retracted(&self, _kind: &str, _address: &str) {}
@@ -59,18 +54,18 @@ impl PeerCallbacks for LoggingCallbacks {
         tracing::info!(hash, "Snapshot complete");
     }
 
-    async fn on_ledger_updated(&self, ledger_address: &str, state: &LedgerState) {
+    async fn on_ledger_updated(&self, ledger_id: &str, state: &LedgerState) {
         tracing::info!(
-            ledger_address,
+            ledger_id,
             commit_t = state.commit_t,
             index_t = state.index_t,
             "Ledger updated"
         );
     }
 
-    async fn on_graph_source_updated(&self, graph_source_address: &str, state: &GraphSourceState) {
+    async fn on_graph_source_updated(&self, graph_source_id: &str, state: &GraphSourceState) {
         tracing::info!(
-            graph_source_address,
+            graph_source_id,
             index_t = state.index_t,
             config_hash = %state.config_hash,
             "Graph source updated"
@@ -144,9 +139,9 @@ impl<C: PeerCallbacks + 'static> PeerRuntime<C> {
             SseClientEvent::LedgerRecord(record) => {
                 let changed = self.state.handle_ledger_record(&record).await;
                 if changed {
-                    if let Some(state) = self.state.get_ledger(&record.ledger_address).await {
+                    if let Some(state) = self.state.get_ledger(&record.ledger_id).await {
                         self.callbacks
-                            .on_ledger_updated(&record.ledger_address, &state)
+                            .on_ledger_updated(&record.ledger_id, &state)
                             .await;
                     }
                 }
@@ -155,13 +150,10 @@ impl<C: PeerCallbacks + 'static> PeerRuntime<C> {
             SseClientEvent::GraphSourceRecord(record) => {
                 let changed = self.state.handle_graph_source_record(&record).await;
                 if changed {
-                    if let Some(state) = self
-                        .state
-                        .get_graph_source(&record.graph_source_address)
-                        .await
+                    if let Some(state) = self.state.get_graph_source(&record.graph_source_id).await
                     {
                         self.callbacks
-                            .on_graph_source_updated(&record.graph_source_address, &state)
+                            .on_graph_source_updated(&record.graph_source_id, &state)
                             .await;
                     }
                 }
@@ -212,15 +204,11 @@ mod tests {
             self.connected.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_ledger_updated(&self, _ledger_address: &str, _state: &LedgerState) {
+        async fn on_ledger_updated(&self, _ledger_id: &str, _state: &LedgerState) {
             self.ledger_updates.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_graph_source_updated(
-            &self,
-            _graph_source_address: &str,
-            _state: &GraphSourceState,
-        ) {
+        async fn on_graph_source_updated(&self, _graph_source_id: &str, _state: &GraphSourceState) {
             self.graph_source_updates.fetch_add(1, Ordering::SeqCst);
         }
 
@@ -249,7 +237,7 @@ mod tests {
 
         use crate::sse::LedgerRecord;
         let record = LedgerRecord {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
             branch: Some("main".to_string()),
             commit_address: Some("commit:1".to_string()),
             commit_t: 5,
@@ -276,7 +264,7 @@ mod tests {
         // First add a ledger
         use crate::sse::LedgerRecord;
         let record = LedgerRecord {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
             branch: Some("main".to_string()),
             commit_address: Some("commit:1".to_string()),
             commit_t: 5,
@@ -310,7 +298,7 @@ mod tests {
         // Add a ledger
         use crate::sse::LedgerRecord;
         let record = LedgerRecord {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
             branch: Some("main".to_string()),
             commit_address: Some("commit:1".to_string()),
             commit_t: 5,

@@ -123,17 +123,17 @@ where
         // 1) Read current head ref (CAS expected).
         let current_ref = self
             .nameservice()
-            .get_ref(base_state.ledger_address(), RefKind::CommitHead)
+            .get_ref(base_state.ledger_id(), RefKind::CommitHead)
             .await?;
         let Some(current_ref) = current_ref else {
             return Err(ApiError::NotFound(format!(
                 "Ledger not found: {}",
-                base_state.ledger_address()
+                base_state.ledger_id()
             )));
         };
 
         // 2) Decode commits and preflight strict sequencing.
-        let decoded = decode_and_validate_commit_chain(base_state.ledger_address(), &request)
+        let decoded = decode_and_validate_commit_chain(base_state.ledger_id(), &request)
             .map_err(|e| e.into_api_error())?;
 
         preflight_strict_next_t_and_prev(&current_ref, &decoded).map_err(|e| e.into_api_error())?;
@@ -185,7 +185,7 @@ where
                 let engine = ShaclEngine::from_db_with_overlay(
                     &base_state.db,
                     &evolving_novelty,
-                    base_state.ledger_address(),
+                    base_state.ledger_id(),
                 )
                 .await
                 .map_err(|e| ApiError::Transact(fluree_db_transact::TransactError::from(e)))?;
@@ -201,8 +201,7 @@ where
 
             // 4.5 Advance evolving novelty with this commit's flakes + derived metadata flakes.
             let mut all_flakes = c.commit.flakes.clone();
-            let meta_flakes =
-                generate_commit_flakes(&c.commit, base_state.ledger_address(), c.commit.t);
+            let meta_flakes = generate_commit_flakes(&c.commit, base_state.ledger_id(), c.commit.t);
             all_flakes.extend(meta_flakes);
 
             // Note: Novelty::apply_commit bumps to max(commit_t) internally.
@@ -216,17 +215,16 @@ where
         // 5) Write required blobs and commit bytes to storage (safe before CAS).
         write_required_blobs(
             self.storage(),
-            base_state.ledger_address(),
+            base_state.ledger_id(),
             &request.blobs,
             &decoded,
         )
         .await
         .map_err(|e| e.into_api_error())?;
 
-        let stored_commits =
-            write_commit_blobs(self.storage(), base_state.ledger_address(), &decoded)
-                .await
-                .map_err(|e| e.into_api_error())?;
+        let stored_commits = write_commit_blobs(self.storage(), base_state.ledger_id(), &decoded)
+            .await
+            .map_err(|e| e.into_api_error())?;
 
         let final_head = stored_commits.last().expect("non-empty stored_commits");
         let new_ref = RefValue {
@@ -238,7 +236,7 @@ where
         match self
             .nameservice()
             .compare_and_set_ref(
-                base_state.ledger_address(),
+                base_state.ledger_id(),
                 RefKind::CommitHead,
                 Some(&current_ref),
                 &new_ref,
@@ -263,7 +261,7 @@ where
         guard.replace(new_state);
 
         Ok(PushCommitsResponse {
-            ledger: handle.ledger_address().to_string(),
+            ledger: handle.ledger_id().to_string(),
             accepted: decoded.len(),
             head: PushedHead {
                 t: final_head.t,
@@ -308,7 +306,7 @@ impl PushError {
 }
 
 fn decode_and_validate_commit_chain(
-    _ledger_address: &str,
+    _ledger_id: &str,
     request: &PushCommitsRequest,
 ) -> std::result::Result<Vec<PushCommitDecoded>, PushError> {
     let mut out = Vec::with_capacity(request.commits.len());
@@ -332,7 +330,7 @@ fn decode_and_validate_commit_chain(
         // Extract the embedded content hash (trailing hash bytes) as hex.
         let content_hash_hex = commit_hash_hex_from_bytes(&bytes).map_err(PushError::Invalid)?;
 
-        // Note: commit blobs are applied to the server-selected `ledger_address` via CAS.
+        // Note: commit blobs are applied to the server-selected `ledger_id` via CAS.
         // We do not currently enforce a ledger identity embedded inside the commit bytes.
 
         // Chain validation: strict contiguous t (+1).
@@ -534,7 +532,7 @@ async fn write_required_blobs<
     S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
 >(
     storage: &S,
-    ledger_address: &str,
+    ledger_id: &str,
     provided: &HashMap<String, Base64Bytes>,
     decoded: &[PushCommitDecoded],
 ) -> std::result::Result<(), PushError> {
@@ -570,7 +568,7 @@ async fn write_required_blobs<
 
         // Write using the hash from the address to ensure deterministic placement.
         let res = storage
-            .content_write_bytes_with_hash(ContentKind::Txn, ledger_address, &expected_hash, &bytes)
+            .content_write_bytes_with_hash(ContentKind::Txn, ledger_id, &expected_hash, &bytes)
             .await
             .map_err(|e| PushError::Internal(e.to_string()))?;
 
@@ -588,7 +586,7 @@ async fn write_required_blobs<
 
 async fn write_commit_blobs<S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static>(
     storage: &S,
-    ledger_address: &str,
+    ledger_id: &str,
     decoded: &[PushCommitDecoded],
 ) -> std::result::Result<Vec<StoredCommit>, PushError> {
     let mut stored = Vec::with_capacity(decoded.len());
@@ -596,7 +594,7 @@ async fn write_commit_blobs<S: Storage + ContentAddressedWrite + Clone + Send + 
         let res = storage
             .content_write_bytes_with_hash(
                 ContentKind::Commit,
-                ledger_address,
+                ledger_id,
                 &c.content_hash_hex,
                 &c.bytes,
             )

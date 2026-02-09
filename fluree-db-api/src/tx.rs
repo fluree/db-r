@@ -23,7 +23,7 @@ use fluree_db_transact::{
 };
 use serde_json::Value as JsonValue;
 
-fn ledger_address_from_txn(txn_json: &JsonValue) -> Result<&str> {
+fn ledger_id_from_txn(txn_json: &JsonValue) -> Result<&str> {
     let obj = txn_json
         .as_object()
         .ok_or_else(|| ApiError::config("Invalid transaction, missing required key: ledger."))?;
@@ -476,13 +476,10 @@ where
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
-            let engine = ShaclEngine::from_db_with_overlay(
-                &ledger.db,
-                &*ledger.novelty,
-                ledger.ledger_address(),
-            )
-            .await
-            .map_err(fluree_db_transact::TransactError::from)?;
+            let engine =
+                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
+                    .await
+                    .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
             let mut options = match index_config {
                 Some(cfg) => StageOptions::new().with_index_config(cfg),
@@ -530,13 +527,10 @@ where
 
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
-            let engine = ShaclEngine::from_db_with_overlay(
-                &ledger.db,
-                &*ledger.novelty,
-                ledger.ledger_address(),
-            )
-            .await
-            .map_err(fluree_db_transact::TransactError::from)?;
+            let engine =
+                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
+                    .await
+                    .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
             let options = match index_config {
                 Some(cfg) => StageOptions::new().with_index_config(cfg),
@@ -594,13 +588,12 @@ where
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
-            let engine = ShaclEngine::from_db_with_overlay(
-                &ledger.db,
-                &*ledger.novelty,
-                ledger.ledger_address(),
-            )
-            .await
-            .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
+            let engine =
+                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
+                    .await
+                    .map_err(|e| {
+                        TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+                    })?;
             let shacl_cache = engine.cache().clone();
             stage_with_shacl(ledger, txn, ns_registry, options, &shacl_cache)
                 .await
@@ -678,7 +671,7 @@ where
 
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.ledger_address(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -791,7 +784,7 @@ where
         // Trigger indexing AFTER publish_commit succeeds (fast operation)
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.ledger_address(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -886,7 +879,7 @@ where
         // Trigger indexing AFTER publish_commit succeeds (fast operation)
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.ledger_address(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -985,7 +978,7 @@ where
         // Trigger indexing AFTER publish_commit succeeds (fast operation)
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.ledger_address(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -1125,7 +1118,7 @@ where
         // Trigger indexing AFTER publish_commit succeeds
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.ledger_address(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -1496,8 +1489,8 @@ where
     /// This mirrors Clojure's `update!` API where the transaction payload includes
     /// a `ledger` field. The ledger is loaded by alias before executing the update.
     pub async fn update_with_ledger(&self, update_json: &JsonValue) -> Result<TransactResult<S>> {
-        let ledger_address = ledger_address_from_txn(update_json)?;
-        let ledger = self.ledger(ledger_address).await?;
+        let ledger_id = ledger_id_from_txn(update_json)?;
+        let ledger = self.ledger(ledger_id).await?;
         self.update(ledger, update_json).await
     }
 
@@ -1508,8 +1501,8 @@ where
         &self,
         update_json: &JsonValue,
     ) -> Result<(TransactResult<S>, Option<TrackingTally>)> {
-        let ledger_address = ledger_address_from_txn(update_json)?;
-        let ledger = self.ledger(ledger_address).await?;
+        let ledger_id = ledger_id_from_txn(update_json)?;
+        let ledger = self.ledger(ledger_id).await?;
         let policy_ctx = crate::PolicyContext::new(fluree_db_policy::PolicyWrapper::root(), None);
         let index_config = self.default_index_config();
         let input = TrackedTransactionInput::new(

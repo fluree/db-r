@@ -559,7 +559,7 @@ WHERE {
 
 For local Fluree ledger queries, use the `fluree:ledger:` scheme:
 
-| Format | Description | Matches dataset ledger address |
+| Format | Description | Matches dataset ledger ID |
 |--------|-------------|----------------------|
 | `fluree:ledger:<name>` | Query ledger with default branch (main) | `<name>:main` |
 | `fluree:ledger:<name>:<branch>` | Query specific branch | `<name>:<branch>` |
@@ -567,9 +567,9 @@ For local Fluree ledger queries, use the `fluree:ledger:` scheme:
 Where:
 - `<name>` is the ledger name **without** the branch (e.g., `orders`, `acme/people`)
 - `<branch>` is the branch name (e.g., `main`, `dev`)
-- The full dataset ledger address is always `<name>:<branch>` (e.g., `orders:main`, `acme/people:dev`)
+- The full dataset ledger ID is always `<name>:<branch>` (e.g., `orders:main`, `acme/people:dev`)
 
-The endpoint is resolved by matching against the full `ledger_address` in the dataset.
+The endpoint is resolved by matching against the full `ledger_id` in the dataset.
 
 **Examples:**
 

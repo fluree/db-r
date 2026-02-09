@@ -438,8 +438,8 @@ pub async fn seed_people_with_ssn(fluree: &MemoryFluree, alias: &str) -> MemoryL
 
 /// Load people test data into a new ledger (matches Clojure `test-utils/load-people`)
 pub async fn load_people(fluree: &MemoryFluree) -> Result<String, Box<dyn std::error::Error>> {
-    let ledger_address = "test/people:main";
-    let ledger = fluree.create_ledger(ledger_address).await?;
+    let ledger_id = "test/people:main";
+    let ledger = fluree.create_ledger(ledger_id).await?;
 
     let ctx = json!([
         default_context(),
@@ -452,5 +452,5 @@ pub async fn load_people(fluree: &MemoryFluree) -> Result<String, Box<dyn std::e
     });
 
     fluree.insert(ledger, &insert_txn).await?;
-    Ok(ledger_address.to_string())
+    Ok(ledger_id.to_string())
 }

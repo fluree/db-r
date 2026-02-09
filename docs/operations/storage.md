@@ -230,7 +230,7 @@ See [Storage Encryption](../security/encryption.md) for full documentation.
 **Nameservice (JSON):**
 ```json
 {
-  "ledger_address": "mydb:main",
+  "ledger_id": "mydb:main",
   "commit_t": 150,
   "index_t": 145,
   "commit_address": "fluree:file:commit:abc123...",

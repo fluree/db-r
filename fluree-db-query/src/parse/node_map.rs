@@ -246,7 +246,7 @@ fn parse_index_search_pattern(
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
     // Extract db:graphSource - the graph source alias (required)
-    let graph_source_address = map_get_by_iri(map, search_iris::GRAPH_SOURCE, context)
+    let graph_source_id = map_get_by_iri(map, search_iris::GRAPH_SOURCE, context)
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
             ParseError::InvalidWhere("index search: 'db:graphSource' must be a string".to_string())
@@ -287,7 +287,7 @@ fn parse_index_search_pattern(
     let timeout = map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(|v| v.as_u64());
 
     let mut pattern =
-        UnresolvedIndexSearchPattern::new(graph_source_address, target, result_vars.id.as_ref());
+        UnresolvedIndexSearchPattern::new(graph_source_id, target, result_vars.id.as_ref());
 
     if let Some(limit) = limit {
         pattern = pattern.with_limit(limit);
@@ -337,7 +337,7 @@ fn parse_vector_search_pattern(
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
     // Extract db:graphSource (required)
-    let graph_source_address = map_get_by_iri(map, search_iris::GRAPH_SOURCE, context)
+    let graph_source_id = map_get_by_iri(map, search_iris::GRAPH_SOURCE, context)
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
             ParseError::InvalidWhere("vector search: 'db:graphSource' must be a string".to_string())
@@ -398,7 +398,7 @@ fn parse_vector_search_pattern(
     let timeout = map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(|v| v.as_u64());
 
     let mut pattern = UnresolvedVectorSearchPattern::new(
-        graph_source_address,
+        graph_source_id,
         target,
         metric,
         result_vars.id.as_ref(),

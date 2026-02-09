@@ -60,7 +60,7 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
         .map(|raw| raw_schema_to_index_schema(&raw));
     let meta = DbMetadata {
-        ledger_address: root.ledger_address,
+        ledger_id: root.ledger_id,
         t: root.index_t,
         namespace_codes: ns_codes,
         stats,
@@ -151,7 +151,7 @@ async fn property_and_class_statistics_persist_in_db_root() {
 
             let commit_t = result.receipt.t;
             let outcome =
-                trigger_index_and_wait_outcome(&handle, result.ledger.ledger_address(), commit_t).await;
+                trigger_index_and_wait_outcome(&handle, result.ledger.ledger_id(), commit_t).await;
             let fluree_db_api::IndexOutcome::Completed {
                 index_t,
                 root_address,
@@ -236,8 +236,7 @@ async fn class_statistics_decrement_after_delete_refresh() {
                 .expect("insert txn1");
 
             let _ =
-                trigger_index_and_wait_outcome(&handle, r1.ledger.ledger_address(), r1.receipt.t)
-                    .await;
+                trigger_index_and_wait_outcome(&handle, r1.ledger.ledger_id(), r1.receipt.t).await;
 
             let del = json!({
                 "@context": { "ex": "http://example.org/" },
@@ -256,8 +255,7 @@ async fn class_statistics_decrement_after_delete_refresh() {
                 .expect("delete bob");
 
             let outcome =
-                trigger_index_and_wait_outcome(&handle, r2.ledger.ledger_address(), r2.receipt.t)
-                    .await;
+                trigger_index_and_wait_outcome(&handle, r2.ledger.ledger_id(), r2.receipt.t).await;
             let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
                 unreachable!("helper only returns Completed")
             };
@@ -312,8 +310,7 @@ async fn statistics_work_with_memory_storage_when_indexed() {
                 .expect("insert");
 
             let outcome =
-                trigger_index_and_wait_outcome(&handle, r.ledger.ledger_address(), r.receipt.t)
-                    .await;
+                trigger_index_and_wait_outcome(&handle, r.ledger.ledger_id(), r.receipt.t).await;
             let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
                 unreachable!("helper only returns Completed")
             };
@@ -403,7 +400,7 @@ async fn ledger_info_api_returns_expected_structure() {
 
             // Trigger indexing and wait for completion
             let _ =
-                trigger_index_and_wait_outcome(&handle, result.ledger.ledger_address(), result.receipt.t)
+                trigger_index_and_wait_outcome(&handle, result.ledger.ledger_id(), result.receipt.t)
                     .await;
 
             // Call ledger_info without context
@@ -441,8 +438,8 @@ async fn ledger_info_api_returns_expected_structure() {
                 "commit should have address"
             );
             assert!(
-                json_path_exists(commit, &["ledger_address"]),
-                "commit should have ledger_address"
+                json_path_exists(commit, &["ledger_id"]),
+                "commit should have ledger_id"
             );
             assert!(
                 json_path_exists(commit, &["data"]),
@@ -647,7 +644,7 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             // Trigger indexing
             let _ = trigger_index_and_wait_outcome(
                 &handle,
-                result.ledger.ledger_address(),
+                result.ledger.ledger_id(),
                 result.receipt.t,
             )
             .await;
@@ -714,8 +711,8 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             // (they use full IRIs regardless of context)
             // ================================================================
             let commit = &info["commit"];
-            // commit.ledger_address should still be full "test/ledger-info-ctx:main" not compacted
-            assert_eq!(commit["ledger_address"], "test/ledger-info-ctx:main");
+            // commit.ledger_id should still be full "test/ledger-info-ctx:main" not compacted
+            assert_eq!(commit["ledger_id"], "test/ledger-info-ctx:main");
 
             // nameservice @id should still be full
             let ns = &info["nameservice"];
@@ -796,7 +793,7 @@ async fn ledger_info_property_datatypes_option_merges_novelty() {
                 )
                 .await
                 .expect("insert txn1");
-            let _ = trigger_index_and_wait_outcome(&handle, result1.ledger.ledger_address(), result1.receipt.t)
+            let _ = trigger_index_and_wait_outcome(&handle, result1.ledger.ledger_id(), result1.receipt.t)
                 .await;
 
             // 2) Add an integer-valued price in novelty (do NOT index).
@@ -911,7 +908,7 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
                 .expect("insert txn1");
             let _ = trigger_index_and_wait_outcome(
                 &handle,
-                result1.ledger.ledger_address(),
+                result1.ledger.ledger_id(),
                 result1.receipt.t,
             )
             .await;
@@ -1036,7 +1033,7 @@ async fn ndv_cardinality_estimates_are_accurate() {
 
             let outcome = trigger_index_and_wait_outcome(
                 &handle,
-                result.ledger.ledger_address(),
+                result.ledger.ledger_id(),
                 result.receipt.t,
             )
             .await;
@@ -1199,7 +1196,7 @@ async fn selectivity_calculation_is_correct() {
 
             let _ = trigger_index_and_wait_outcome(
                 &handle,
-                result.ledger.ledger_address(),
+                result.ledger.ledger_id(),
                 result.receipt.t,
             )
             .await;
@@ -1326,7 +1323,7 @@ async fn multi_class_entities_tracked_correctly() {
 
             let _ = trigger_index_and_wait_outcome(
                 &handle,
-                result.ledger.ledger_address(),
+                result.ledger.ledger_id(),
                 result.receipt.t,
             )
             .await;
@@ -1458,7 +1455,7 @@ async fn class_property_type_distribution_tracked() {
 
             let _ = trigger_index_and_wait_outcome(
                 &handle,
-                result.ledger.ledger_address(),
+                result.ledger.ledger_id(),
                 result.receipt.t,
             )
             .await;
@@ -1574,8 +1571,7 @@ async fn large_dataset_statistics_accuracy() {
                 // then apply the persisted index to the in-memory ledger state so the
                 // next batch starts from the newly indexed db (true "across indexes").
                 let outcome =
-                    trigger_index_and_wait_outcome(&handle, ledger.ledger_address(), commit_t)
-                        .await;
+                    trigger_index_and_wait_outcome(&handle, ledger.ledger_id(), commit_t).await;
                 let fluree_db_api::IndexOutcome::Completed {
                     index_t,
                     root_address,
@@ -1594,7 +1590,7 @@ async fn large_dataset_statistics_accuracy() {
             // Final sync point (should already be indexed, but keep this to ensure
             // we load stats from a persisted index root).
             let outcome =
-                trigger_index_and_wait_outcome(&handle, ledger.ledger_address(), ledger.t()).await;
+                trigger_index_and_wait_outcome(&handle, ledger.ledger_id(), ledger.t()).await;
             let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
                 unreachable!("helper only returns Completed")
             };

@@ -43,7 +43,7 @@ pub async fn resolve_ledger_mode(
     let fluree = build_fluree(fluree_dir)?;
 
     // Check if local ledger exists (local wins)
-    let address = to_ledger_address(&alias);
+    let address = to_ledger_id(&alias);
     if fluree.ledger_exists(&address).await.unwrap_or(false) {
         return Ok(LedgerMode::Local {
             fluree: Box::new(fluree),
@@ -183,7 +183,7 @@ pub fn build_fluree(fluree_dir: &Path) -> CliResult<Fluree<FileStorage, FileName
 ///
 /// The nameservice uses canonical addresses like `mydb:main`.
 /// When users provide just `mydb`, we append `:main`.
-pub fn to_ledger_address(alias: &str) -> String {
+pub fn to_ledger_id(alias: &str) -> String {
     if alias.contains(':') {
         alias.to_string()
     } else {

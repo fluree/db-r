@@ -218,17 +218,17 @@ async fn setup_dataset_indexed(
 ) {
     let (fluree, _ledger, query_all, query_filtered, n_recent) = setup_dataset(n_articles).await;
 
-    let ledger_address = format!("bench/vec-{}:main", n_articles);
+    let ledger_id = format!("bench/vec-{}:main", n_articles);
 
     // Offline reindex from commit history (builds binary columnar index + publishes root).
     // Note: this is intentionally done once during setup, not inside the hot loop.
     fluree
-        .reindex(&ledger_address, ReindexOptions::default())
+        .reindex(&ledger_id, ReindexOptions::default())
         .await
         .unwrap();
 
     // Reload as a view so queries can use the binary store (no commit replay).
-    let view = fluree.view(&ledger_address).await.unwrap();
+    let view = fluree.view(&ledger_id).await.unwrap();
 
     (fluree, view, query_all, query_filtered, n_recent)
 }

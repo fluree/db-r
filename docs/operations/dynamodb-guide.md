@@ -224,7 +224,7 @@ All items share these common attributes:
 | `branch` | String | Branch name |
 | `retracted` | Boolean | Soft-delete flag |
 | `source_type` | String (graph source only) | Graph-source type (e.g., `db:Bm25Index`) |
-| `dependencies` | List\<String\> (graph source only) | Dependent ledger addresses |
+| `dependencies` | List\<String\> (graph source only) | Dependent ledger IDs |
 
 **`head` item (ledgers only):**
 

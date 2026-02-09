@@ -252,8 +252,8 @@ export FLUREE_JWKS_ISSUERS="https://issuer1.example.com=https://issuer1.example.
 When a Bearer token is present for connection-scoped SPARQL queries (`/v1/fluree/query` with
 `Content-Type: application/sparql-query`), the server enforces ledger scope:
 
-- FROM / FROM NAMED clauses are parsed to extract ledger addresses (`name:branch`).
-- Each ledger address is checked against the token's read scope (`fluree.ledger.read.all` or `fluree.ledger.read.ledgers`).
+- FROM / FROM NAMED clauses are parsed to extract ledger IDs (`name:branch`).
+- Each ledger ID is checked against the token's read scope (`fluree.ledger.read.all` or `fluree.ledger.read.ledgers`).
 - Out-of-scope ledgers return 404 (no existence leak).
 - If no FROM clause is present, the query proceeds normally (the engine handles missing dataset errors).
 

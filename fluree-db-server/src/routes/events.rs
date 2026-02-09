@@ -126,15 +126,15 @@ fn now_iso8601() -> String {
 
 /// Convert a ledger NsRecord to an SSE Event
 fn ledger_to_sse_event(record: &NsRecord) -> Event {
-    let ledger_address = format!("{}:{}", record.name, record.branch);
-    let event_id = ledger_event_id(&ledger_address, record);
+    let ledger_id = format!("{}:{}", record.name, record.branch);
+    let event_id = ledger_event_id(&ledger_id, record);
 
     let data = NsRecordData {
         action: "ns-record",
         kind: SSE_KIND_LEDGER,
-        address: ledger_address.clone(),
+        address: ledger_id.clone(),
         record: serde_json::json!({
-            "ledger_address": ledger_address,
+            "ledger_id": ledger_id,
             "branch": record.branch,
             "commit_address": record.commit_address,
             "commit_t": record.commit_t,
@@ -154,15 +154,15 @@ fn ledger_to_sse_event(record: &NsRecord) -> Event {
 
 /// Convert a graph source record to an SSE Event
 fn graph_source_to_sse_event(record: &GraphSourceRecord) -> Event {
-    let graph_source_address = record.address.clone();
-    let event_id = graph_source_event_id(&graph_source_address, record);
+    let graph_source_id = record.address.clone();
+    let event_id = graph_source_event_id(&graph_source_id, record);
 
     let data = NsRecordData {
         action: "ns-record",
         kind: SSE_KIND_GRAPH_SOURCE,
-        address: graph_source_address.clone(),
+        address: graph_source_id.clone(),
         record: serde_json::json!({
-            "graph_source_address": graph_source_address,
+            "graph_source_id": graph_source_id,
             "name": record.name,
             "branch": record.branch,
             "source_type": record.source_type.to_type_string(),
@@ -244,10 +244,10 @@ where
         }
 
         // Requested graph sources (skip missing, sorted, deduped)
-        let mut graph_source_addresses: Vec<_> = params.graph_sources.iter().collect();
-        graph_source_addresses.sort();
-        graph_source_addresses.dedup();
-        for alias in graph_source_addresses {
+        let mut graph_source_ides: Vec<_> = params.graph_sources.iter().collect();
+        graph_source_ides.sort();
+        graph_source_ides.dedup();
+        for alias in graph_source_ides {
             if let Ok(Some(r)) = ns.lookup_graph_source(alias).await {
                 if !r.retracted {
                     events.push(graph_source_to_sse_event(&r));
@@ -262,9 +262,9 @@ where
 /// Extract the address from a NameServiceEvent
 fn event_address(event: &NameServiceEvent) -> &str {
     match event {
-        NameServiceEvent::LedgerCommitPublished { ledger_address, .. } => ledger_address,
-        NameServiceEvent::LedgerIndexPublished { ledger_address, .. } => ledger_address,
-        NameServiceEvent::LedgerRetracted { ledger_address } => ledger_address,
+        NameServiceEvent::LedgerCommitPublished { ledger_id, .. } => ledger_id,
+        NameServiceEvent::LedgerIndexPublished { ledger_id, .. } => ledger_id,
+        NameServiceEvent::LedgerRetracted { ledger_id } => ledger_id,
         NameServiceEvent::GraphSourceConfigPublished { address, .. } => address,
         NameServiceEvent::GraphSourceIndexPublished { address, .. } => address,
         NameServiceEvent::GraphSourceRetracted { address } => address,
@@ -296,8 +296,8 @@ where
             let record = ns.lookup(&address).await.ok()??;
             Some(ledger_to_sse_event(&record))
         }
-        NameServiceEvent::LedgerRetracted { ledger_address } => {
-            Some(retracted_sse_event(SSE_KIND_LEDGER, &ledger_address))
+        NameServiceEvent::LedgerRetracted { ledger_id } => {
+            Some(retracted_sse_event(SSE_KIND_LEDGER, &ledger_id))
         }
         NameServiceEvent::GraphSourceConfigPublished { .. }
         | NameServiceEvent::GraphSourceIndexPublished { .. } => {

@@ -91,7 +91,7 @@ impl Bm25CreateConfig {
     }
 
     /// Get the graph source alias (name:branch).
-    pub fn graph_source_address(&self) -> String {
+    pub fn graph_source_id(&self) -> String {
         format!("{}:{}", self.name, self.effective_branch())
     }
 
@@ -308,7 +308,7 @@ impl VectorCreateConfig {
     }
 
     /// Get the graph source alias (name:branch).
-    pub fn graph_source_address(&self) -> String {
+    pub fn graph_source_id(&self) -> String {
         format!("{}:{}", self.name, self.effective_branch())
     }
 
@@ -516,7 +516,7 @@ impl IcebergCreateConfig {
     }
 
     /// Get the graph source alias (name:branch).
-    pub fn graph_source_address(&self) -> String {
+    pub fn graph_source_id(&self) -> String {
         format!("{}:{}", self.name, self.effective_branch())
     }
 
@@ -687,8 +687,8 @@ impl R2rmlCreateConfig {
     }
 
     /// Get the graph source alias (name:branch).
-    pub fn graph_source_address(&self) -> String {
-        self.iceberg.graph_source_address()
+    pub fn graph_source_id(&self) -> String {
+        self.iceberg.graph_source_id()
     }
 
     /// Convert to the internal IcebergGsConfig structure with mapping for storage.
@@ -729,7 +729,7 @@ mod tests {
         assert_eq!(config.name, "search");
         assert_eq!(config.ledger, "docs:main");
         assert_eq!(config.effective_branch(), "main");
-        assert_eq!(config.graph_source_address(), "search:main");
+        assert_eq!(config.graph_source_id(), "search:main");
 
         let bm25 = config.bm25_config();
         assert!((bm25.k1 - 1.2).abs() < 0.001);
@@ -744,7 +744,7 @@ mod tests {
             .with_b(0.5);
 
         assert_eq!(config.effective_branch(), "dev");
-        assert_eq!(config.graph_source_address(), "search:dev");
+        assert_eq!(config.graph_source_id(), "search:dev");
 
         let bm25 = config.bm25_config();
         assert!((bm25.k1 - 1.5).abs() < 0.001);

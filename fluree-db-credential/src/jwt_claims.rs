@@ -321,17 +321,17 @@ impl EventsTokenPayload {
                 .is_some_and(|l| !l.is_empty())
     }
 
-    /// Check if token authorizes read/query access to a specific ledger address.
+    /// Check if token authorizes read/query access to a specific ledger ID.
     ///
     /// Back-compat: `fluree.storage.*` implies read access when ledger.read.* absent.
-    pub fn is_ledger_read_authorized_for(&self, ledger_address: &str) -> bool {
+    pub fn is_ledger_read_authorized_for(&self, ledger_id: &str) -> bool {
         if self.ledger_read_all.unwrap_or(false) {
             return true;
         }
         if self
             .ledger_read_ledgers
             .as_ref()
-            .is_some_and(|l| l.iter().any(|x| x == ledger_address))
+            .is_some_and(|l| l.iter().any(|x| x == ledger_id))
         {
             return true;
         }
@@ -340,16 +340,16 @@ impl EventsTokenPayload {
             || self
                 .storage_ledgers
                 .as_ref()
-                .is_some_and(|l| l.iter().any(|x| x == ledger_address))
+                .is_some_and(|l| l.iter().any(|x| x == ledger_id))
     }
 
-    /// Check if token authorizes write/transact access to a specific ledger address.
-    pub fn is_ledger_write_authorized_for(&self, ledger_address: &str) -> bool {
+    /// Check if token authorizes write/transact access to a specific ledger ID.
+    pub fn is_ledger_write_authorized_for(&self, ledger_id: &str) -> bool {
         self.ledger_write_all.unwrap_or(false)
             || self
                 .ledger_write_ledgers
                 .as_ref()
-                .is_some_and(|l| l.iter().any(|x| x == ledger_address))
+                .is_some_and(|l| l.iter().any(|x| x == ledger_id))
     }
 
     /// Resolve identity: fluree.identity takes precedence, then sub.

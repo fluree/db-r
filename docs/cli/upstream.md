@@ -28,14 +28,14 @@ fluree upstream set <LOCAL> <REMOTE> [OPTIONS]
 
 | Argument | Description |
 |----------|-------------|
-| `<LOCAL>` | Local ledger address (e.g., `mydb` or `mydb:main`) |
+| `<LOCAL>` | Local ledger ID (e.g., `mydb` or `mydb:main`) |
 | `<REMOTE>` | Remote name (e.g., `origin`) |
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `--remote-alias <ALIAS>` | Remote ledger address (defaults to local ledger address) |
+| `--remote-alias <ALIAS>` | Remote ledger ID (defaults to local ledger ID) |
 | `--auto-pull` | Automatically pull on fetch |
 
 ### Examples
@@ -67,7 +67,7 @@ fluree upstream remove <LOCAL>
 
 | Argument | Description |
 |----------|-------------|
-| `<LOCAL>` | Local ledger address |
+| `<LOCAL>` | Local ledger ID |
 
 ### Examples
 

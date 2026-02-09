@@ -16,9 +16,9 @@ use std::sync::Arc;
 /// Result of a fetch operation
 #[derive(Debug)]
 pub struct FetchResult {
-    /// Ledger addresses whose tracking refs were updated
+    /// Ledger IDs whose tracking refs were updated
     pub updated: Vec<(String, TrackingRecord)>,
-    /// Ledger addresses that were unchanged
+    /// Ledger IDs that were unchanged
     pub unchanged: Vec<String>,
 }
 
@@ -27,40 +27,37 @@ pub struct FetchResult {
 pub enum PullResult {
     /// Local was fast-forwarded to match remote
     FastForwarded {
-        ledger_address: String,
+        ledger_id: String,
         from: RefValue,
         to: RefValue,
     },
     /// Already up to date
-    Current { ledger_address: String },
+    Current { ledger_id: String },
     /// Cannot fast-forward (local has commits remote does not)
     Diverged {
-        ledger_address: String,
+        ledger_id: String,
         local: RefValue,
         remote: RefValue,
     },
-    /// No upstream configured for this ledger address
-    NoUpstream { ledger_address: String },
+    /// No upstream configured for this ledger ID
+    NoUpstream { ledger_id: String },
     /// No tracking data available (need to fetch first)
-    NoTracking { ledger_address: String },
+    NoTracking { ledger_id: String },
 }
 
 /// Result of a push operation
 #[derive(Debug)]
 pub enum PushResult {
     /// Push succeeded
-    Pushed {
-        ledger_address: String,
-        value: RefValue,
-    },
+    Pushed { ledger_id: String, value: RefValue },
     /// Remote rejected (CAS conflict)
     Rejected {
-        ledger_address: String,
+        ledger_id: String,
         local: RefValue,
         remote: RefValue,
     },
-    /// No upstream configured for this ledger address
-    NoUpstream { ledger_address: String },
+    /// No upstream configured for this ledger ID
+    NoUpstream { ledger_id: String },
 }
 
 /// Orchestrates sync operations between local and remote nameservices
@@ -121,8 +118,8 @@ impl SyncDriver {
         let mut unchanged = Vec::new();
 
         for record in &snapshot.ledgers {
-            let ledger_address = &record.address;
-            let existing = self.tracking.get_tracking(remote, ledger_address).await?;
+            let ledger_id = &record.address;
+            let existing = self.tracking.get_tracking(remote, ledger_id).await?;
 
             let new_commit = Some(RefValue {
                 address: record.commit_address.clone(),
@@ -150,30 +147,30 @@ impl SyncDriver {
                 let tracking_record = TrackingRecord {
                     schema_version: 1,
                     remote: remote.clone(),
-                    ledger_address: ledger_address.clone(),
+                    ledger_id: ledger_id.clone(),
                     commit_ref: new_commit,
                     index_ref: new_index,
                     retracted: record.retracted,
                     last_fetched: Some(now.clone()),
                 };
                 self.tracking.set_tracking(&tracking_record).await?;
-                updated.push((ledger_address.clone(), tracking_record));
+                updated.push((ledger_id.clone(), tracking_record));
             } else {
-                unchanged.push(ledger_address.clone());
+                unchanged.push(ledger_id.clone());
             }
         }
 
         Ok(FetchResult { updated, unchanged })
     }
 
-    /// Pull (fast-forward) a local ledger address from its upstream tracking ref.
+    /// Pull (fast-forward) a local ledger ID from its upstream tracking ref.
     ///
     /// Analogous to `git pull --ff-only`. Requires a prior `fetch_remote`.
     pub async fn pull_tracked(&self, local_alias: &str) -> Result<PullResult> {
         let upstream = self.config.get_upstream(local_alias).await?;
         let Some(upstream) = upstream else {
             return Ok(PullResult::NoUpstream {
-                ledger_address: local_alias.to_string(),
+                ledger_id: local_alias.to_string(),
             });
         };
 
@@ -183,7 +180,7 @@ impl SyncDriver {
             .await?;
         let Some(tracking) = tracking else {
             return Ok(PullResult::NoTracking {
-                ledger_address: local_alias.to_string(),
+                ledger_id: local_alias.to_string(),
             });
         };
 
@@ -191,7 +188,7 @@ impl SyncDriver {
 
         let Some(remote_commit) = &tracking.commit_ref else {
             return Ok(PullResult::Current {
-                ledger_address: local_alias.to_string(),
+                ledger_id: local_alias.to_string(),
             });
         };
 
@@ -226,7 +223,7 @@ impl SyncDriver {
                         }
 
                         Ok(PullResult::FastForwarded {
-                            ledger_address: local_alias.to_string(),
+                            ledger_id: local_alias.to_string(),
                             from: RefValue {
                                 address: None,
                                 t: 0,
@@ -237,7 +234,7 @@ impl SyncDriver {
                     CasResult::Conflict { actual } => {
                         // Someone else created it concurrently
                         Ok(PullResult::Diverged {
-                            ledger_address: local_alias.to_string(),
+                            ledger_id: local_alias.to_string(),
                             local: actual.unwrap_or(RefValue {
                                 address: None,
                                 t: 0,
@@ -265,13 +262,13 @@ impl SyncDriver {
                             }
 
                             Ok(PullResult::FastForwarded {
-                                ledger_address: local_alias.to_string(),
+                                ledger_id: local_alias.to_string(),
                                 from: local_commit.clone(),
                                 to: remote_commit.clone(),
                             })
                         }
                         CasResult::Conflict { actual } => Ok(PullResult::Diverged {
-                            ledger_address: local_alias.to_string(),
+                            ledger_id: local_alias.to_string(),
                             local: actual.unwrap_or(local_commit.clone()),
                             remote: remote_commit.clone(),
                         }),
@@ -287,12 +284,12 @@ impl SyncDriver {
                     }
 
                     Ok(PullResult::Current {
-                        ledger_address: local_alias.to_string(),
+                        ledger_id: local_alias.to_string(),
                     })
                 } else {
                     // Local is ahead or different history
                     Ok(PullResult::Diverged {
-                        ledger_address: local_alias.to_string(),
+                        ledger_id: local_alias.to_string(),
                         local: local_commit.clone(),
                         remote: remote_commit.clone(),
                     })
@@ -308,15 +305,12 @@ impl SyncDriver {
     /// but uses the `IndexHead` guard.
     async fn fast_forward_index(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         new: &RefValue,
         max_retries: usize,
     ) -> std::result::Result<CasResult, fluree_db_nameservice::NameServiceError> {
         for _ in 0..max_retries {
-            let current = self
-                .local
-                .get_ref(ledger_address, RefKind::IndexHead)
-                .await?;
+            let current = self.local.get_ref(ledger_id, RefKind::IndexHead).await?;
 
             // If current index is ahead, this is not a fast-forward.
             if let Some(ref cur) = current {
@@ -327,7 +321,7 @@ impl SyncDriver {
 
             match self
                 .local
-                .compare_and_set_ref(ledger_address, RefKind::IndexHead, current.as_ref(), new)
+                .compare_and_set_ref(ledger_id, RefKind::IndexHead, current.as_ref(), new)
                 .await?
             {
                 CasResult::Updated => return Ok(CasResult::Updated),
@@ -343,21 +337,18 @@ impl SyncDriver {
             }
         }
 
-        let current = self
-            .local
-            .get_ref(ledger_address, RefKind::IndexHead)
-            .await?;
+        let current = self.local.get_ref(ledger_id, RefKind::IndexHead).await?;
         Ok(CasResult::Conflict { actual: current })
     }
 
-    /// Push a local ledger address to its upstream remote.
+    /// Push a local ledger ID to its upstream remote.
     ///
     /// Analogous to `git push`. Uses CAS to ensure no concurrent changes.
     pub async fn push_tracked(&self, local_alias: &str) -> Result<PushResult> {
         let upstream = self.config.get_upstream(local_alias).await?;
         let Some(upstream) = upstream else {
             return Ok(PushResult::NoUpstream {
-                ledger_address: local_alias.to_string(),
+                ledger_id: local_alias.to_string(),
             });
         };
 
@@ -370,7 +361,7 @@ impl SyncDriver {
             .map_err(SyncError::Nameservice)?;
         let Some(local_commit) = local_ref else {
             return Err(SyncError::Config(format!(
-                "Local ledger address '{}' has no commit ref",
+                "Local ledger ID '{}' has no commit ref",
                 local_alias
             )));
         };
@@ -427,7 +418,7 @@ impl SyncDriver {
                 self.tracking.set_tracking(&tracking_record).await?;
 
                 Ok(PushResult::Pushed {
-                    ledger_address: local_alias.to_string(),
+                    ledger_id: local_alias.to_string(),
                     value: local_commit,
                 })
             }
@@ -437,7 +428,7 @@ impl SyncDriver {
                     t: 0,
                 });
                 Ok(PushResult::Rejected {
-                    ledger_address: local_alias.to_string(),
+                    ledger_id: local_alias.to_string(),
                     local: local_commit,
                     remote,
                 })

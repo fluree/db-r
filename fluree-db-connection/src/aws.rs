@@ -212,11 +212,11 @@ impl std::fmt::Debug for AwsNameService {
 impl NameService for AwsNameService {
     async fn lookup(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
     ) -> std::result::Result<Option<NsRecord>, NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.lookup(ledger_address).await,
-            Self::Storage(ns) => ns.lookup(ledger_address).await,
+            Self::DynamoDb(ns) => ns.lookup(ledger_id).await,
+            Self::Storage(ns) => ns.lookup(ledger_id).await,
         }
     }
 
@@ -232,55 +232,49 @@ impl NameService for AwsNameService {
 impl Publisher for AwsNameService {
     async fn publish_ledger_init(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
     ) -> std::result::Result<(), NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.publish_ledger_init(ledger_address).await,
-            Self::Storage(ns) => ns.publish_ledger_init(ledger_address).await,
+            Self::DynamoDb(ns) => ns.publish_ledger_init(ledger_id).await,
+            Self::Storage(ns) => ns.publish_ledger_init(ledger_id).await,
         }
     }
 
     async fn publish_commit(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         commit_addr: &str,
         commit_t: i64,
     ) -> std::result::Result<(), NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => {
-                ns.publish_commit(ledger_address, commit_addr, commit_t)
-                    .await
-            }
-            Self::Storage(ns) => {
-                ns.publish_commit(ledger_address, commit_addr, commit_t)
-                    .await
-            }
+            Self::DynamoDb(ns) => ns.publish_commit(ledger_id, commit_addr, commit_t).await,
+            Self::Storage(ns) => ns.publish_commit(ledger_id, commit_addr, commit_t).await,
         }
     }
 
     async fn publish_index(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         index_addr: &str,
         index_t: i64,
     ) -> std::result::Result<(), NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.publish_index(ledger_address, index_addr, index_t).await,
-            Self::Storage(ns) => ns.publish_index(ledger_address, index_addr, index_t).await,
+            Self::DynamoDb(ns) => ns.publish_index(ledger_id, index_addr, index_t).await,
+            Self::Storage(ns) => ns.publish_index(ledger_id, index_addr, index_t).await,
         }
     }
 
-    async fn retract(&self, ledger_address: &str) -> std::result::Result<(), NameServiceError> {
+    async fn retract(&self, ledger_id: &str) -> std::result::Result<(), NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.retract(ledger_address).await,
-            Self::Storage(ns) => ns.retract(ledger_address).await,
+            Self::DynamoDb(ns) => ns.retract(ledger_id).await,
+            Self::Storage(ns) => ns.retract(ledger_id).await,
         }
     }
 
-    fn publishing_address(&self, ledger_address: &str) -> Option<String> {
+    fn publishing_address(&self, ledger_id: &str) -> Option<String> {
         match self {
-            Self::DynamoDb(ns) => ns.publishing_address(ledger_address),
-            Self::Storage(ns) => ns.publishing_address(ledger_address),
+            Self::DynamoDb(ns) => ns.publishing_address(ledger_id),
+            Self::Storage(ns) => ns.publishing_address(ledger_id),
         }
     }
 }
@@ -289,17 +283,17 @@ impl Publisher for AwsNameService {
 impl AdminPublisher for AwsNameService {
     async fn publish_index_allow_equal(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         index_addr: &str,
         index_t: i64,
     ) -> std::result::Result<(), NameServiceError> {
         match self {
             Self::DynamoDb(ns) => {
-                ns.publish_index_allow_equal(ledger_address, index_addr, index_t)
+                ns.publish_index_allow_equal(ledger_id, index_addr, index_t)
                     .await
             }
             Self::Storage(ns) => {
-                ns.publish_index_allow_equal(ledger_address, index_addr, index_t)
+                ns.publish_index_allow_equal(ledger_id, index_addr, index_t)
                     .await
             }
         }
@@ -310,31 +304,25 @@ impl AdminPublisher for AwsNameService {
 impl RefPublisher for AwsNameService {
     async fn get_ref(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         kind: RefKind,
     ) -> std::result::Result<Option<RefValue>, NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.get_ref(ledger_address, kind).await,
-            Self::Storage(ns) => ns.get_ref(ledger_address, kind).await,
+            Self::DynamoDb(ns) => ns.get_ref(ledger_id, kind).await,
+            Self::Storage(ns) => ns.get_ref(ledger_id, kind).await,
         }
     }
 
     async fn compare_and_set_ref(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
     ) -> std::result::Result<CasResult, NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => {
-                ns.compare_and_set_ref(ledger_address, kind, expected, new)
-                    .await
-            }
-            Self::Storage(ns) => {
-                ns.compare_and_set_ref(ledger_address, kind, expected, new)
-                    .await
-            }
+            Self::DynamoDb(ns) => ns.compare_and_set_ref(ledger_id, kind, expected, new).await,
+            Self::Storage(ns) => ns.compare_and_set_ref(ledger_id, kind, expected, new).await,
         }
     }
 }
@@ -541,38 +529,38 @@ impl AwsConnectionHandle {
         &self.nameservice
     }
 
-    /// Load a database by ledger address
+    /// Load a database by ledger ID
     ///
     /// Uses the nameservice to look up the ledger's index root address,
     /// then loads the database from that address.
     ///
     /// # Arguments
     ///
-    /// * `ledger_address` - Ledger address (e.g., "mydb" or "mydb:main")
+    /// * `ledger_id` - Ledger ID (e.g., "mydb" or "mydb:main")
     ///
     /// # Returns
     ///
     /// A `Db` instance backed by S3 storage, or an error if the ledger
     /// is not found or has no index.
-    pub async fn load_db(&self, ledger_address: &str) -> Result<Db<S3Storage>> {
+    pub async fn load_db(&self, ledger_id: &str) -> Result<Db<S3Storage>> {
         let record = self
             .nameservice
-            .lookup(ledger_address)
+            .lookup(ledger_id)
             .await
             .map_err(|e| ConnectionError::storage(format!("Nameservice lookup failed: {}", e)))?
             .ok_or_else(|| {
-                ConnectionError::not_found(format!("Ledger not found: {}", ledger_address))
+                ConnectionError::not_found(format!("Ledger not found: {}", ledger_id))
             })?;
 
         if record.retracted {
             return Err(ConnectionError::not_found(format!(
                 "Ledger has been retracted: {}",
-                ledger_address
+                ledger_id
             )));
         }
 
         let index_address = record.index_address.ok_or_else(|| {
-            ConnectionError::not_found(format!("Ledger has no index yet: {}", ledger_address))
+            ConnectionError::not_found(format!("Ledger has no index yet: {}", ledger_id))
         })?;
 
         self.load_db_by_address(&index_address).await

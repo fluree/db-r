@@ -158,7 +158,7 @@ where
 
     let commit_span = tracing::info_span!(
         "txn_commit",
-        alias = base.ledger_address(),
+        alias = base.ledger_id(),
         base_t = base.t(),
         flake_count = tracing::field::Empty,
         delta_bytes = tracing::field::Empty,
@@ -197,7 +197,7 @@ where
     let current = {
         let span = tracing::info_span!("commit_nameservice_lookup");
         let _g = span.enter();
-        nameservice.lookup(base.ledger_address()).await?
+        nameservice.lookup(base.ledger_id()).await?
     };
     {
         let span = tracing::info_span!("commit_verify_sequencing");
@@ -238,7 +238,7 @@ where
             let _g = span.enter();
             let txn_bytes = serde_json::to_vec(txn_json)?;
             let res = storage
-                .content_write_bytes(ContentKind::Txn, base.ledger_address(), &txn_bytes)
+                .content_write_bytes(ContentKind::Txn, base.ledger_id(), &txn_bytes)
                 .await?;
             (txn_bytes, res)
         };
@@ -325,7 +325,7 @@ where
         let signing = opts
             .signing_key
             .as_ref()
-            .map(|key| (key.as_ref(), base.ledger_address()));
+            .map(|key| (key.as_ref(), base.ledger_id()));
         let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
         let commit_id = format!("sha256:{}", &result.content_hash_hex);
         (commit_id, result.content_hash_hex, result.bytes)
@@ -334,7 +334,7 @@ where
     let write_res = storage
         .content_write_bytes_with_hash(
             ContentKind::Commit,
-            base.ledger_address(),
+            base.ledger_id(),
             &commit_hash_hex,
             &bytes,
         )
@@ -351,7 +351,7 @@ where
         let span = tracing::info_span!("commit_publish_nameservice");
         let _g = span.enter();
         nameservice
-            .publish_commit(base.ledger_address(), &address, new_t)
+            .publish_commit(base.ledger_id(), &address, new_t)
             .await?;
     }
 
@@ -361,7 +361,7 @@ where
     let commit_metadata_flakes = {
         let span = tracing::info_span!("commit_generate_metadata_flakes");
         let _g = span.enter();
-        generate_commit_flakes(&commit_record, base.ledger_address(), new_t)
+        generate_commit_flakes(&commit_record, base.ledger_id(), new_t)
     };
     tracing::info!(
         metadata_flakes = commit_metadata_flakes.len(),

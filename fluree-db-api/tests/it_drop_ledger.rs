@@ -210,7 +210,7 @@ async fn drop_ledger_normalizes_alias() {
         .await
         .expect("drop");
     assert_eq!(report.status, DropStatus::Dropped);
-    assert_eq!(report.ledger_address, "normalize-test:main");
+    assert_eq!(report.ledger_id, "normalize-test:main");
 }
 
 /// Test that drop cancels pending indexing before deletion (the flake fix).

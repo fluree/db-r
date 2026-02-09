@@ -36,17 +36,17 @@ impl Bm25SnapshotEntry {
 /// (idempotent reindex).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bm25Manifest {
-    /// Graph source address this manifest belongs to (e.g., "my-search:main").
-    pub graph_source_address: String,
+    /// Graph source ID this manifest belongs to (e.g., "my-search:main").
+    pub graph_source_id: String,
     /// Ordered list of snapshots (ascending by `index_t`).
     pub snapshots: Vec<Bm25SnapshotEntry>,
 }
 
 impl Bm25Manifest {
     /// Create a new empty manifest.
-    pub fn new(graph_source_address: impl Into<String>) -> Self {
+    pub fn new(graph_source_id: impl Into<String>) -> Self {
         Self {
-            graph_source_address: graph_source_address.into(),
+            graph_source_id: graph_source_id.into(),
             snapshots: Vec::new(),
         }
     }
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn test_empty_manifest() {
         let m = Bm25Manifest::new("test:main");
-        assert_eq!(m.graph_source_address, "test:main");
+        assert_eq!(m.graph_source_id, "test:main");
         assert!(m.snapshots.is_empty());
         assert!(m.head().is_none());
         assert!(m.select_snapshot(100).is_none());

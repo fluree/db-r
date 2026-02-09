@@ -247,7 +247,7 @@ pub enum UnresolvedIndexSearchTarget {
 #[derive(Debug, Clone)]
 pub struct UnresolvedIndexSearchPattern {
     /// Graph source alias (e.g., "my-search:main")
-    pub graph_source_address: Arc<str>,
+    pub graph_source_id: Arc<str>,
 
     /// Search query target - can be a constant string or variable
     pub target: UnresolvedIndexSearchTarget,
@@ -274,12 +274,12 @@ pub struct UnresolvedIndexSearchPattern {
 impl UnresolvedIndexSearchPattern {
     /// Create a new index search pattern with just ID binding
     pub fn new(
-        graph_source_address: impl AsRef<str>,
+        graph_source_id: impl AsRef<str>,
         target: UnresolvedIndexSearchTarget,
         id_var: impl AsRef<str>,
     ) -> Self {
         Self {
-            graph_source_address: Arc::from(graph_source_address.as_ref()),
+            graph_source_id: Arc::from(graph_source_id.as_ref()),
             target,
             limit: None,
             id_var: Arc::from(id_var.as_ref()),
@@ -348,7 +348,7 @@ pub enum UnresolvedVectorSearchTarget {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnresolvedVectorSearchPattern {
     /// Graph source alias (e.g., "embeddings:main")
-    pub graph_source_address: Arc<str>,
+    pub graph_source_id: Arc<str>,
 
     /// Search target - can be a constant vector or variable
     pub target: UnresolvedVectorSearchTarget,
@@ -378,13 +378,13 @@ pub struct UnresolvedVectorSearchPattern {
 impl UnresolvedVectorSearchPattern {
     /// Create a new vector search pattern with just ID binding
     pub fn new(
-        graph_source_address: impl AsRef<str>,
+        graph_source_id: impl AsRef<str>,
         target: UnresolvedVectorSearchTarget,
         metric: impl AsRef<str>,
         id_var: impl AsRef<str>,
     ) -> Self {
         Self {
-            graph_source_address: Arc::from(graph_source_address.as_ref()),
+            graph_source_id: Arc::from(graph_source_id.as_ref()),
             target,
             metric: Arc::from(metric.as_ref()),
             limit: None,

@@ -97,7 +97,7 @@ fn has_tracking_opts(query_json: &JsonValue) -> bool {
 }
 
 /// Helper to extract ledger alias from request (for FQL queries)
-fn get_ledger_address(
+fn get_ledger_id(
     path_ledger: Option<&str>,
     headers: &FlureeHeaders,
     body: &JsonValue,
@@ -238,9 +238,9 @@ pub async fn query(
         }
 
         // Get ledger alias
-        let alias = match get_ledger_address(None, &headers, &query_json) {
+        let alias = match get_ledger_id(None, &headers, &query_json) {
             Ok(alias) => {
-                span.record("ledger_address", alias.as_str());
+                span.record("ledger_id", alias.as_str());
                 alias
             }
             Err(e) => {
@@ -352,9 +352,9 @@ pub async fn query_ledger(
     }
 
     // Get ledger alias (path takes precedence)
-    let alias = match get_ledger_address(Some(&ledger), &headers, &query_json) {
+    let alias = match get_ledger_id(Some(&ledger), &headers, &query_json) {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {
@@ -436,7 +436,7 @@ async fn execute_query(
     query_json: &JsonValue,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create execution span
-    let span = tracing::info_span!("query_execute", ledger_address = alias, query_kind = "fql");
+    let span = tracing::info_span!("query_execute", ledger_id = alias, query_kind = "fql");
     let _guard = span.enter();
 
     // Check for history query: explicit "to" key indicates history mode
@@ -603,7 +603,7 @@ async fn execute_sparql_ledger(
     identity: Option<&str>,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create span for peer mode loading
-    let span = tracing::info_span!("sparql_execute", ledger_address = alias);
+    let span = tracing::info_span!("sparql_execute", ledger_id = alias);
     let _guard = span.enter();
 
     // In proxy mode, use the unified FlureeInstance method
@@ -707,9 +707,9 @@ pub async fn explain(
     }
 
     // Get ledger alias
-    let alias = match get_ledger_address(None, &headers, &query_json) {
+    let alias = match get_ledger_id(None, &headers, &query_json) {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {

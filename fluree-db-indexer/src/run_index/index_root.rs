@@ -130,8 +130,8 @@ pub struct GraphEntryV2 {
 ///
 /// Bundles all parameters needed by `BinaryIndexRootV2::from_cas_artifacts`.
 pub struct CasArtifactsConfig<'a> {
-    /// Ledger address (e.g. `"mydb:main"`).
-    pub ledger_address: &'a str,
+    /// Ledger ID (e.g. `"mydb:main"`).
+    pub ledger_id: &'a str,
     /// Maximum transaction time covered by the index.
     pub index_t: i64,
     /// Base (minimum) transaction time of the snapshot.
@@ -171,8 +171,8 @@ pub struct BinaryIndexRootV2 {
     /// Schema version (must equal [`BINARY_INDEX_ROOT_VERSION_V2`]).
     pub version: u32,
 
-    /// Ledger address (e.g. `"mydb:main"`).
-    pub ledger_address: String,
+    /// Ledger ID (e.g. `"mydb:main"`).
+    pub ledger_id: String,
 
     /// Maximum transaction time covered by the index.
     pub index_t: i64,
@@ -299,7 +299,7 @@ impl BinaryIndexRootV2 {
 
         Self {
             version: BINARY_INDEX_ROOT_VERSION_V2,
-            ledger_address: cfg.ledger_address.to_string(),
+            ledger_id: cfg.ledger_id.to_string(),
             index_t: cfg.index_t,
             base_t: cfg.base_t,
             graphs,
@@ -406,7 +406,7 @@ mod tests {
 
     /// Helper to build a test CasArtifactsConfig with defaults.
     fn test_config<'a>(
-        ledger_address: &'a str,
+        ledger_id: &'a str,
         index_t: i64,
         base_t: i64,
         predicate_sids: Vec<(u16, String)>,
@@ -415,7 +415,7 @@ mod tests {
         stats: Option<serde_json::Value>,
     ) -> CasArtifactsConfig<'a> {
         CasArtifactsConfig {
-            ledger_address,
+            ledger_id,
             index_t,
             base_t,
             predicate_sids,
@@ -436,7 +436,7 @@ mod tests {
     fn round_trip_v2_json() {
         let root = BinaryIndexRootV2 {
             version: BINARY_INDEX_ROOT_VERSION_V2,
-            ledger_address: "test:main".to_string(),
+            ledger_id: "test:main".to_string(),
             index_t: 42,
             base_t: 1,
             graphs: vec![GraphEntryV2 {
@@ -626,7 +626,7 @@ mod tests {
 
         let ns = HashMap::new();
         let root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
-            ledger_address: "test:main",
+            ledger_id: "test:main",
             index_t: 10,
             base_t: 1,
             predicate_sids: vec![],
@@ -666,7 +666,7 @@ mod tests {
     fn v2_round_trip_with_gc_fields() {
         let ns = HashMap::new();
         let root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
-            ledger_address: "test:main",
+            ledger_id: "test:main",
             index_t: 42,
             base_t: 1,
             predicate_sids: vec![],
@@ -734,7 +734,7 @@ mod tests {
     fn watermarks_round_trip() {
         let ns = HashMap::new();
         let root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
-            ledger_address: "test:main",
+            ledger_id: "test:main",
             index_t: 42,
             base_t: 1,
             predicate_sids: vec![],

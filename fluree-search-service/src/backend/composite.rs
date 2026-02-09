@@ -48,7 +48,7 @@ impl std::fmt::Debug for CompositeBackend {
 impl SearchBackend for CompositeBackend {
     async fn search(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         query: &QueryVariant,
         limit: usize,
         as_of_t: Option<i64>,
@@ -58,14 +58,7 @@ impl SearchBackend for CompositeBackend {
         for backend in &self.backends {
             if backend.supports(query) {
                 return backend
-                    .search(
-                        graph_source_address,
-                        query,
-                        limit,
-                        as_of_t,
-                        sync,
-                        timeout_ms,
-                    )
+                    .search(graph_source_id, query, limit, as_of_t, sync, timeout_ms)
                     .await;
             }
         }
@@ -98,7 +91,7 @@ mod tests {
     impl SearchBackend for FixedBackend {
         async fn search(
             &self,
-            _graph_source_address: &str,
+            _graph_source_id: &str,
             _query: &QueryVariant,
             _limit: usize,
             _as_of_t: Option<i64>,

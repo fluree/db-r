@@ -62,22 +62,22 @@ pub trait VectorIndexLoader: std::fmt::Debug + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - Graph source alias
+    /// * `graph_source_id` - Graph source alias
     /// * `index_t` - Head transaction (used as cache key, not for snapshot selection)
-    async fn load_index(&self, graph_source_address: &str, index_t: i64) -> Result<VectorIndex>;
+    async fn load_index(&self, graph_source_id: &str, index_t: i64) -> Result<VectorIndex>;
 
     /// Get the latest available index transaction for a graph source.
     ///
     /// Returns `None` if no index has been built yet.
-    async fn get_latest_index_t(&self, graph_source_address: &str) -> Result<Option<i64>>;
+    async fn get_latest_index_t(&self, graph_source_id: &str) -> Result<Option<i64>>;
 
     /// Get the current nameservice index head for sync operations.
     ///
     /// This is the latest committed transaction that should be indexed.
-    async fn get_index_head(&self, graph_source_address: &str) -> Result<Option<i64>>;
+    async fn get_index_head(&self, graph_source_id: &str) -> Result<Option<i64>>;
 }
 
-/// Cache key: (graph_source_address, index_t)
+/// Cache key: (graph_source_id, index_t)
 type VectorCacheKey = (String, i64);
 
 /// Cache entry with timestamp for TTL expiration.
@@ -175,14 +175,14 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
     /// Get or load an index for the given graph source and transaction.
     async fn get_or_load_index(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         index_t: i64,
     ) -> Result<Arc<VectorIndex>> {
-        let cache_key = (graph_source_address.to_string(), index_t);
+        let cache_key = (graph_source_id.to_string(), index_t);
 
         // Check cache first
         if let Some(index) = self.cache.get(&cache_key) {
-            tracing::debug!(graph_source_address, index_t, "Vector index cache hit");
+            tracing::debug!(graph_source_id, index_t, "Vector index cache hit");
             return Ok(index);
         }
 
@@ -202,14 +202,11 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
 
         // Load from storage
         tracing::debug!(
-            graph_source_address,
+            graph_source_id,
             index_t,
             "Loading vector index from storage"
         );
-        let index = self
-            .loader
-            .load_index(graph_source_address, index_t)
-            .await?;
+        let index = self.loader.load_index(graph_source_id, index_t).await?;
         let index = Arc::new(index);
 
         // Insert into cache
@@ -224,13 +221,13 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
     /// If `sync` is true, waits for any index head to appear first.
     async fn resolve_index_t(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         sync: bool,
         timeout: Duration,
     ) -> Result<i64> {
         if sync {
             wait_for_head(
-                || async { self.loader.get_index_head(graph_source_address).await },
+                || async { self.loader.get_index_head(graph_source_id).await },
                 None,
                 timeout,
                 &self.config.sync_config,
@@ -239,10 +236,10 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
         }
 
         self.loader
-            .get_latest_index_t(graph_source_address)
+            .get_latest_index_t(graph_source_id)
             .await?
             .ok_or_else(|| ServiceError::IndexNotBuilt {
-                address: graph_source_address.to_string(),
+                address: graph_source_id.to_string(),
             })
     }
 }
@@ -261,7 +258,7 @@ impl<L: VectorIndexLoader> std::fmt::Debug for VectorBackend<L> {
 impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
     async fn search(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         query: &QueryVariant,
         limit: usize,
         as_of_t: Option<i64>,
@@ -274,7 +271,7 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
                 message: format!(
                     "Vector index '{}' does not support time-travel queries (as_of_t). \
                      Only the latest snapshot is available.",
-                    graph_source_address
+                    graph_source_id
                 ),
             });
         }
@@ -295,14 +292,10 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
         let timeout = Duration::from_millis(timeout_ms.unwrap_or(self.config.default_timeout_ms));
 
         // Resolve which index snapshot to use (always head)
-        let index_t = self
-            .resolve_index_t(graph_source_address, sync, timeout)
-            .await?;
+        let index_t = self.resolve_index_t(graph_source_id, sync, timeout).await?;
 
         // Load the index (from cache or storage)
-        let index = self
-            .get_or_load_index(graph_source_address, index_t)
-            .await?;
+        let index = self.get_or_load_index(graph_source_id, index_t).await?;
 
         // Validate metric if the client specified one
         if let Some(metric_str) = requested_metric {
@@ -316,7 +309,7 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
                 return Err(ServiceError::InvalidRequest {
                     message: format!(
                         "Metric mismatch for '{}': request asks for {} but index uses {}",
-                        graph_source_address, requested, index_metric
+                        graph_source_id, requested, index_metric
                     ),
                 });
             }
@@ -359,71 +352,57 @@ mod tests {
     /// on each load (since `VectorIndex` doesn't implement `Clone`).
     #[derive(Debug, Default)]
     struct MockLoader {
-        /// Set of (graph_source_address, index_t) pairs that have indexes.
+        /// Set of (graph_source_id, index_t) pairs that have indexes.
         known_indexes: StdRwLock<HashSet<(String, i64)>>,
         latest_t: StdRwLock<HashMap<String, i64>>,
         head_t: StdRwLock<HashMap<String, i64>>,
     }
 
     impl MockLoader {
-        fn add_index(&self, graph_source_address: &str, index_t: i64, _index: VectorIndex) {
+        fn add_index(&self, graph_source_id: &str, index_t: i64, _index: VectorIndex) {
             self.known_indexes
                 .write()
                 .unwrap()
-                .insert((graph_source_address.to_string(), index_t));
+                .insert((graph_source_id.to_string(), index_t));
             let mut latest = self.latest_t.write().unwrap();
-            let current = latest.entry(graph_source_address.to_string()).or_insert(0);
+            let current = latest.entry(graph_source_id.to_string()).or_insert(0);
             if index_t > *current {
                 *current = index_t;
             }
         }
 
-        fn set_head(&self, graph_source_address: &str, t: i64) {
+        fn set_head(&self, graph_source_id: &str, t: i64) {
             self.head_t
                 .write()
                 .unwrap()
-                .insert(graph_source_address.to_string(), t);
+                .insert(graph_source_id.to_string(), t);
         }
     }
 
     #[async_trait]
     impl VectorIndexLoader for MockLoader {
-        async fn load_index(
-            &self,
-            graph_source_address: &str,
-            index_t: i64,
-        ) -> Result<VectorIndex> {
+        async fn load_index(&self, graph_source_id: &str, index_t: i64) -> Result<VectorIndex> {
             if self
                 .known_indexes
                 .read()
                 .unwrap()
-                .contains(&(graph_source_address.to_string(), index_t))
+                .contains(&(graph_source_id.to_string(), index_t))
             {
                 // Rebuild a fresh test index (same content each time)
                 Ok(build_test_index())
             } else {
                 Err(ServiceError::IndexNotBuilt {
-                    address: graph_source_address.to_string(),
+                    address: graph_source_id.to_string(),
                 })
             }
         }
 
-        async fn get_latest_index_t(&self, graph_source_address: &str) -> Result<Option<i64>> {
-            Ok(self
-                .latest_t
-                .read()
-                .unwrap()
-                .get(graph_source_address)
-                .copied())
+        async fn get_latest_index_t(&self, graph_source_id: &str) -> Result<Option<i64>> {
+            Ok(self.latest_t.read().unwrap().get(graph_source_id).copied())
         }
 
-        async fn get_index_head(&self, graph_source_address: &str) -> Result<Option<i64>> {
-            Ok(self
-                .head_t
-                .read()
-                .unwrap()
-                .get(graph_source_address)
-                .copied())
+        async fn get_index_head(&self, graph_source_id: &str) -> Result<Option<i64>> {
+            Ok(self.head_t.read().unwrap().get(graph_source_id).copied())
         }
     }
 

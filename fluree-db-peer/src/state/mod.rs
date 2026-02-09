@@ -14,7 +14,7 @@ use fluree_sse::{SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 /// Tracked state for a ledger
 #[derive(Debug, Clone)]
 pub struct LedgerState {
-    pub ledger_address: String,
+    pub ledger_id: String,
     pub commit_t: i64,
     pub index_t: i64,
     pub commit_address: Option<String>,
@@ -27,7 +27,7 @@ pub struct LedgerState {
 /// Tracked state for a graph source
 #[derive(Debug, Clone)]
 pub struct GraphSourceState {
-    pub graph_source_address: String,
+    pub graph_source_id: String,
     pub index_t: i64,
     pub config_hash: String,
     pub index_address: Option<String>,
@@ -62,7 +62,7 @@ impl PeerState {
     pub async fn handle_ledger_record(&self, record: &LedgerRecord) -> bool {
         let mut ledgers = self.ledgers.write().await;
 
-        let changed = match ledgers.get(&record.ledger_address) {
+        let changed = match ledgers.get(&record.ledger_id) {
             Some(existing) => {
                 // Check if watermarks advanced
                 record.commit_t > existing.commit_t || record.index_t > existing.index_t
@@ -72,9 +72,9 @@ impl PeerState {
 
         if changed {
             ledgers.insert(
-                record.ledger_address.clone(),
+                record.ledger_id.clone(),
                 LedgerState {
-                    ledger_address: record.ledger_address.clone(),
+                    ledger_id: record.ledger_id.clone(),
                     commit_t: record.commit_t,
                     index_t: record.index_t,
                     commit_address: record.commit_address.clone(),
@@ -95,7 +95,7 @@ impl PeerState {
 
         let config_hash = record.config_hash();
 
-        let changed = match graph_sources.get(&record.graph_source_address) {
+        let changed = match graph_sources.get(&record.graph_source_id) {
             Some(existing) => {
                 record.index_t > existing.index_t || config_hash != existing.config_hash
             }
@@ -104,9 +104,9 @@ impl PeerState {
 
         if changed {
             graph_sources.insert(
-                record.graph_source_address.clone(),
+                record.graph_source_id.clone(),
                 GraphSourceState {
-                    graph_source_address: record.graph_source_address.clone(),
+                    graph_source_id: record.graph_source_id.clone(),
                     index_t: record.index_t,
                     config_hash,
                     index_address: record.index_address.clone(),
@@ -160,16 +160,16 @@ impl PeerState {
     }
 
     /// Get current ledger state
-    pub async fn get_ledger(&self, ledger_address: &str) -> Option<LedgerState> {
-        self.ledgers.read().await.get(ledger_address).cloned()
+    pub async fn get_ledger(&self, ledger_id: &str) -> Option<LedgerState> {
+        self.ledgers.read().await.get(ledger_id).cloned()
     }
 
     /// Get current graph source state
-    pub async fn get_graph_source(&self, graph_source_address: &str) -> Option<GraphSourceState> {
+    pub async fn get_graph_source(&self, graph_source_id: &str) -> Option<GraphSourceState> {
         self.graph_sources
             .read()
             .await
-            .get(graph_source_address)
+            .get(graph_source_id)
             .cloned()
     }
 
@@ -206,20 +206,15 @@ impl PeerState {
     }
 
     /// Mark ledger as clean (after refresh)
-    pub async fn mark_ledger_clean(&self, ledger_address: &str) {
-        if let Some(ledger) = self.ledgers.write().await.get_mut(ledger_address) {
+    pub async fn mark_ledger_clean(&self, ledger_id: &str) {
+        if let Some(ledger) = self.ledgers.write().await.get_mut(ledger_id) {
             ledger.dirty = false;
         }
     }
 
     /// Mark graph source as clean
-    pub async fn mark_graph_source_clean(&self, graph_source_address: &str) {
-        if let Some(gs) = self
-            .graph_sources
-            .write()
-            .await
-            .get_mut(graph_source_address)
-        {
+    pub async fn mark_graph_source_clean(&self, graph_source_id: &str) {
+        if let Some(gs) = self.graph_sources.write().await.get_mut(graph_source_id) {
             gs.dirty = false;
         }
     }
@@ -250,9 +245,9 @@ impl Default for PeerState {
 mod tests {
     use super::*;
 
-    fn make_ledger_record(ledger_address: &str, commit_t: i64, index_t: i64) -> LedgerRecord {
+    fn make_ledger_record(ledger_id: &str, commit_t: i64, index_t: i64) -> LedgerRecord {
         LedgerRecord {
-            ledger_address: ledger_address.to_string(),
+            ledger_id: ledger_id.to_string(),
             branch: Some("main".to_string()),
             commit_address: Some(format!("commit:{}", commit_t)),
             commit_t,
@@ -262,9 +257,9 @@ mod tests {
         }
     }
 
-    fn make_graph_source_record(graph_source_address: &str, index_t: i64) -> GraphSourceRecord {
+    fn make_graph_source_record(graph_source_id: &str, index_t: i64) -> GraphSourceRecord {
         GraphSourceRecord {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             name: Some("test".to_string()),
             branch: Some("main".to_string()),
             source_type: Some("fulltext".to_string()),
@@ -380,6 +375,6 @@ mod tests {
         // Mark one clean
         state.mark_ledger_clean("books:main").await;
         assert_eq!(state.dirty_ledgers().await.len(), 1);
-        assert_eq!(state.dirty_ledgers().await[0].ledger_address, "users:main");
+        assert_eq!(state.dirty_ledgers().await[0].ledger_id, "users:main");
     }
 }

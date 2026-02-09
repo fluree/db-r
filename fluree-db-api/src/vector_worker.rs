@@ -91,9 +91,9 @@ pub struct VectorWorkerStats {
 /// Uses `RefCell` for interior mutability to work in single-threaded contexts.
 #[cfg(feature = "vector")]
 pub struct VectorWorkerState {
-    /// Reverse dependency map: ledger_address -> set of graph source addresses.
+    /// Reverse dependency map: ledger_id -> set of graph source IDs.
     ledger_to_graph_sources: HashMap<String, HashSet<String>>,
-    /// Forward map: graph_source_address -> set of ledger_addresses (for unregistration).
+    /// Forward map: graph_source_id -> set of ledger_ides (for unregistration).
     gs_to_ledgers: HashMap<String, HashSet<String>>,
     /// Statistics.
     stats: VectorWorkerStats,
@@ -111,36 +111,36 @@ impl VectorWorkerState {
     }
 
     /// Register a graph source with its dependencies.
-    pub fn register_graph_source(&mut self, graph_source_address: &str, dependencies: &[String]) {
+    pub fn register_graph_source(&mut self, graph_source_id: &str, dependencies: &[String]) {
         let deps_set: HashSet<String> = dependencies.iter().cloned().collect();
 
         // Update forward map
         self.gs_to_ledgers
-            .insert(graph_source_address.to_string(), deps_set.clone());
+            .insert(graph_source_id.to_string(), deps_set.clone());
 
         // Update reverse map
         for ledger in &deps_set {
             self.ledger_to_graph_sources
                 .entry(ledger.clone())
                 .or_default()
-                .insert(graph_source_address.to_string());
+                .insert(graph_source_id.to_string());
         }
 
         self.stats.registered_graph_sources = self.gs_to_ledgers.len();
         debug!(
-            graph_source_address,
+            graph_source_id,
             ?dependencies,
             "Registered vector graph source for maintenance"
         );
     }
 
     /// Unregister a graph source.
-    pub fn unregister_graph_source(&mut self, graph_source_address: &str) {
-        if let Some(ledgers) = self.gs_to_ledgers.remove(graph_source_address) {
+    pub fn unregister_graph_source(&mut self, graph_source_id: &str) {
+        if let Some(ledgers) = self.gs_to_ledgers.remove(graph_source_id) {
             // Remove from reverse map
             for ledger in ledgers {
                 if let Some(graph_sources) = self.ledger_to_graph_sources.get_mut(&ledger) {
-                    graph_sources.remove(graph_source_address);
+                    graph_sources.remove(graph_source_id);
                     if graph_sources.is_empty() {
                         self.ledger_to_graph_sources.remove(&ledger);
                     }
@@ -149,15 +149,15 @@ impl VectorWorkerState {
         }
         self.stats.registered_graph_sources = self.gs_to_ledgers.len();
         debug!(
-            graph_source_address,
+            graph_source_id,
             "Unregistered vector graph source from maintenance"
         );
     }
 
     /// Get graph sources that depend on a ledger.
-    pub fn graph_sources_for_ledger(&self, ledger_address: &str) -> Vec<String> {
+    pub fn graph_sources_for_ledger(&self, ledger_id: &str) -> Vec<String> {
         self.ledger_to_graph_sources
-            .get(ledger_address)
+            .get(ledger_id)
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default()
     }
@@ -216,38 +216,34 @@ impl VectorWorkerHandle {
     pub async fn register_graph_source<N: NameService + GraphSourcePublisher>(
         &self,
         ns: &N,
-        graph_source_address: &str,
+        graph_source_id: &str,
     ) -> Result<()> {
         // Look up graph source to get its dependencies
         let record = ns
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                ApiError::NotFound(format!("Graph source not found: {}", graph_source_address))
+                ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         self.state
             .borrow_mut()
-            .register_graph_source(graph_source_address, &record.dependencies);
+            .register_graph_source(graph_source_id, &record.dependencies);
         Ok(())
     }
 
     /// Register a graph source with explicit dependencies (no nameservice lookup).
-    pub fn register_graph_source_with_deps(
-        &self,
-        graph_source_address: &str,
-        dependencies: &[String],
-    ) {
+    pub fn register_graph_source_with_deps(&self, graph_source_id: &str, dependencies: &[String]) {
         self.state
             .borrow_mut()
-            .register_graph_source(graph_source_address, dependencies);
+            .register_graph_source(graph_source_id, dependencies);
     }
 
     /// Unregister a graph source from automatic maintenance.
-    pub fn unregister_graph_source(&self, graph_source_address: &str) {
+    pub fn unregister_graph_source(&self, graph_source_id: &str) {
         self.state
             .borrow_mut()
-            .unregister_graph_source(graph_source_address);
+            .unregister_graph_source(graph_source_id);
     }
 
     /// Get current worker statistics.
@@ -326,14 +322,14 @@ where
 
         match event {
             NameServiceEvent::LedgerCommitPublished {
-                ledger_address,
+                ledger_id,
                 commit_t,
                 ..
             } => {
-                let graph_sources = self.state.borrow().graph_sources_for_ledger(ledger_address);
+                let graph_sources = self.state.borrow().graph_sources_for_ledger(ledger_id);
                 if !graph_sources.is_empty() {
                     info!(
-                        ledger = %ledger_address,
+                        ledger = %ledger_id,
                         commit_t,
                         gs_count = graph_sources.len(),
                         "Ledger commit triggers vector graph source sync"
@@ -342,12 +338,10 @@ where
                 graph_sources
             }
             NameServiceEvent::LedgerIndexPublished {
-                ledger_address,
-                index_t,
-                ..
+                ledger_id, index_t, ..
             } => {
                 // Index updates don't require graph source sync (commit already triggered it)
-                debug!(ledger = %ledger_address, index_t, "Ledger index published (no vector graph source sync needed)");
+                debug!(ledger = %ledger_id, index_t, "Ledger index published (no vector graph source sync needed)");
                 vec![]
             }
             NameServiceEvent::GraphSourceConfigPublished {
@@ -378,14 +372,14 @@ where
     }
 
     /// Sync a single graph source (called by the event loop).
-    pub async fn sync_graph_source(&self, graph_source_address: &str) -> Result<()> {
-        debug!(graph_source = %graph_source_address, "Syncing vector graph source");
+    pub async fn sync_graph_source(&self, graph_source_id: &str) -> Result<()> {
+        debug!(graph_source = %graph_source_id, "Syncing vector graph source");
 
-        match self.fluree.sync_vector_index(graph_source_address).await {
+        match self.fluree.sync_vector_index(graph_source_id).await {
             Ok(result) => {
                 self.state.borrow_mut().record_sync(true);
                 info!(
-                    graph_source = %graph_source_address,
+                    graph_source = %graph_source_id,
                     upserted = result.upserted,
                     removed = result.removed,
                     skipped = result.skipped,
@@ -396,7 +390,7 @@ where
             }
             Err(e) => {
                 self.state.borrow_mut().record_sync(false);
-                error!(graph_source = %graph_source_address, error = %e, "Vector graph source sync failed");
+                error!(graph_source = %graph_source_id, error = %e, "Vector graph source sync failed");
                 Err(e)
             }
         }
@@ -439,15 +433,15 @@ where
             let can_flush = next_flush.map(|t| now >= t).unwrap_or(false);
             if can_flush {
                 while in_flight.len() < self.config.max_concurrent_syncs {
-                    let Some(graph_source_address) = pending.iter().next().cloned() else {
+                    let Some(graph_source_id) = pending.iter().next().cloned() else {
                         break;
                     };
-                    pending.remove(&graph_source_address);
+                    pending.remove(&graph_source_id);
 
                     // Spawn a non-Send future into our in-flight set (polled on this task).
                     let fut = async move {
-                        let res = self.sync_graph_source(&graph_source_address).await;
-                        (graph_source_address, res)
+                        let res = self.sync_graph_source(&graph_source_id).await;
+                        (graph_source_id, res)
                     };
                     in_flight.push(Box::pin(fut));
                 }
@@ -495,9 +489,9 @@ where
                 }
 
                 // Complete one in-flight sync.
-                Some((graph_source_address, res)) = in_flight.next() => {
+                Some((graph_source_id, res)) = in_flight.next() => {
                     if let Err(e) = res {
-                        warn!(graph_source = %graph_source_address, error = %e, "Failed to sync vector graph source");
+                        warn!(graph_source = %graph_source_id, error = %e, "Failed to sync vector graph source");
                     }
                 }
 

@@ -60,7 +60,7 @@ A new resource was created.
 **Example:**
 ```json
 {
-  "ledger_address": "mydb:main",
+  "ledger_id": "mydb:main",
   "created": "2024-01-22T10:00:00.000Z"
 }
 ```

@@ -61,7 +61,7 @@ use tokio::sync::broadcast;
 /// and the ledger name (without branch suffix).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NsRecord {
-    /// Canonical ledger address with branch (e.g., "mydb:main")
+    /// Canonical ledger ID with branch (e.g., "mydb:main")
     ///
     /// This is the primary cache key and the fully-qualified identifier.
     /// Use this for cache lookups and as the canonical form.
@@ -245,7 +245,7 @@ pub struct GraphSourceRecord {
     /// Configuration as JSON string (parsed by graph source implementation)
     pub config: String,
 
-    /// Dependent ledger addresses (e.g., ["source-ledger:main"])
+    /// Dependent ledger IDs (e.g., ["source-ledger:main"])
     pub dependencies: Vec<String>,
 
     /// Index snapshot address (if any)
@@ -321,7 +321,7 @@ pub trait NameService: Debug + Send + Sync {
     /// Look up a ledger by address (may be name or IRI)
     ///
     /// Returns `None` if the ledger is not found.
-    async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>>;
+    async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>>;
 
     /// Get all known ledger records
     ///
@@ -338,26 +338,22 @@ pub trait Publisher: Debug + Send + Sync {
     /// Initialize a new ledger in the nameservice
     ///
     /// Creates a minimal NsRecord for a new ledger with no commits yet.
-    /// Only succeeds if no record exists for this ledger address.
+    /// Only succeeds if no record exists for this ledger ID.
     ///
     /// # Arguments
-    /// * `ledger_address` - The normalized ledger address (e.g., "mydb:main")
+    /// * `ledger_id` - The normalized ledger ID (e.g., "mydb:main")
     ///
     /// # Errors
     /// Returns an error if a record already exists (including retracted records).
-    async fn publish_ledger_init(&self, ledger_address: &str) -> Result<()>;
+    async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()>;
 
     /// Publish a new commit
     ///
     /// Only updates if: `(not exists) OR (new_t > existing_t)`
     ///
     /// This is called by the transactor after each successful commit.
-    async fn publish_commit(
-        &self,
-        ledger_address: &str,
-        commit_addr: &str,
-        commit_t: i64,
-    ) -> Result<()>;
+    async fn publish_commit(&self, ledger_id: &str, commit_addr: &str, commit_t: i64)
+        -> Result<()>;
 
     /// Publish a new index
     ///
@@ -368,24 +364,19 @@ pub trait Publisher: Debug + Send + Sync {
     /// with commit publishing.
     ///
     /// Note: "equal t prefers index file" is a READ-TIME merge rule, not a write rule.
-    async fn publish_index(
-        &self,
-        ledger_address: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()>;
+    async fn publish_index(&self, ledger_id: &str, index_addr: &str, index_t: i64) -> Result<()>;
 
     /// Retract a ledger
     ///
     /// Marks the ledger as retracted. Future lookups will return the record
     /// with `retracted: true`.
-    async fn retract(&self, ledger_address: &str) -> Result<()>;
+    async fn retract(&self, ledger_id: &str) -> Result<()>;
 
-    /// Get the publishing address for a ledger address
+    /// Get the publishing address for a ledger ID
     ///
     /// Returns `None` for "private" publishing (don't write ns field to commit).
     /// Returns `Some(address)` for the value to write into commit's ns field.
-    fn publishing_address(&self, ledger_address: &str) -> Option<String>;
+    fn publishing_address(&self, ledger_id: &str) -> Option<String>;
 }
 
 /// Admin-level publisher operations
@@ -404,7 +395,7 @@ pub trait AdminPublisher: Publisher {
     /// and snapshot history.
     async fn publish_index_allow_equal(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         index_addr: &str,
         index_t: i64,
     ) -> Result<()>;
@@ -513,18 +504,18 @@ impl SubscriptionScope {
 pub enum NameServiceEvent {
     /// A ledger commit head was advanced.
     LedgerCommitPublished {
-        ledger_address: String,
+        ledger_id: String,
         commit_address: String,
         commit_t: i64,
     },
     /// A ledger index head was advanced.
     LedgerIndexPublished {
-        ledger_address: String,
+        ledger_id: String,
         index_address: String,
         index_t: i64,
     },
     /// A ledger was retracted.
-    LedgerRetracted { ledger_address: String },
+    LedgerRetracted { ledger_id: String },
     /// A graph source config was published/updated.
     GraphSourceConfigPublished {
         address: String,
@@ -566,8 +557,8 @@ pub trait Publication: Debug + Send + Sync {
     /// Unsubscribe from updates (no-op for stateless implementations)
     async fn unsubscribe(&self, scope: &SubscriptionScope) -> Result<()>;
 
-    /// Get all known addresses for a ledger address (commit history)
-    async fn known_addresses(&self, ledger_address: &str) -> Result<Vec<String>>;
+    /// Get all known addresses for a ledger ID (commit history)
+    async fn known_addresses(&self, ledger_id: &str) -> Result<Vec<String>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -591,7 +582,7 @@ pub enum RefKind {
 /// - `Some(RefValue { address: None, t: 0 })` — ref exists but is "unborn"
 ///   (ledger initialised, no commit yet — analogous to git's unborn HEAD).
 /// - `Some(RefValue { address: Some(..), t })` — ref exists with a value.
-/// - `None` (at the `Option` level) — ledger address/ref is completely unknown.
+/// - `None` (at the `Option` level) — ledger ID/ref is completely unknown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefValue {
     /// Address of the commit or index root. `None` means "unborn".
@@ -629,13 +620,13 @@ pub enum CasResult {
 /// graph walk would be required — that is out of scope here.
 #[async_trait]
 pub trait RefPublisher: Debug + Send + Sync {
-    /// Read the current ref value for a ledger address + kind.
+    /// Read the current ref value for a ledger ID + kind.
     ///
     /// Returns:
     /// - `Some(RefValue { address: None, .. })` — ref exists, unborn
     /// - `Some(RefValue { address: Some(..), .. })` — ref exists with value
-    /// - `None` — ledger address/ref completely unknown
-    async fn get_ref(&self, ledger_address: &str, kind: RefKind) -> Result<Option<RefValue>>;
+    /// - `None` — ledger ID/ref completely unknown
+    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>>;
 
     /// Atomic compare-and-set.
     ///
@@ -649,7 +640,7 @@ pub trait RefPublisher: Debug + Send + Sync {
     /// Returns [`CasResult::Conflict`] (with the actual value) on mismatch.
     async fn compare_and_set_ref(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
@@ -664,12 +655,12 @@ pub trait RefPublisher: Debug + Send + Sync {
     /// diverged (`current.t >= new.t` after re-read).
     async fn fast_forward_commit(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         new: &RefValue,
         max_retries: usize,
     ) -> Result<CasResult> {
         for _ in 0..max_retries {
-            let current = self.get_ref(ledger_address, RefKind::CommitHead).await?;
+            let current = self.get_ref(ledger_id, RefKind::CommitHead).await?;
 
             // Check whether fast-forward is still possible.
             if let Some(ref cur) = current {
@@ -679,7 +670,7 @@ pub trait RefPublisher: Debug + Send + Sync {
             }
 
             match self
-                .compare_and_set_ref(ledger_address, RefKind::CommitHead, current.as_ref(), new)
+                .compare_and_set_ref(ledger_id, RefKind::CommitHead, current.as_ref(), new)
                 .await?
             {
                 CasResult::Updated => return Ok(CasResult::Updated),
@@ -696,12 +687,12 @@ pub trait RefPublisher: Debug + Send + Sync {
             }
         }
         // Exhausted retries — return latest known state.
-        let current = self.get_ref(ledger_address, RefKind::CommitHead).await?;
+        let current = self.get_ref(ledger_id, RefKind::CommitHead).await?;
         Ok(CasResult::Conflict { actual: current })
     }
 }
 
-/// Parse a ledger address into (ledger_name, branch) components
+/// Parse a ledger ID into (ledger_name, branch) components
 ///
 /// Address format: `ledger-name:branch` (e.g., "mydb:main")
 /// If no branch is specified, defaults to the core default branch.
@@ -924,19 +915,19 @@ pub enum ConfigCasResult {
 /// Status always exists once a record is created (initial state is "ready" with v=1).
 #[async_trait]
 pub trait StatusPublisher: Debug + Send + Sync {
-    /// Get current status for a ledger address.
+    /// Get current status for a ledger ID.
     ///
     /// Returns:
     /// - `Some(StatusValue)` — record exists with status
     /// - `None` — record doesn't exist at all
-    async fn get_status(&self, ledger_address: &str) -> Result<Option<StatusValue>>;
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>>;
 
     /// Push status with CAS semantics.
     ///
     /// Updates only if current matches expected. Returns conflict with actual on mismatch.
     ///
     /// # Arguments
-    /// * `ledger_address` - The ledger address
+    /// * `ledger_id` - The ledger ID
     /// * `expected` - The expected current status (`None` for initial creation)
     /// * `new` - The new status to set (must have `new.v > expected.v`)
     ///
@@ -945,7 +936,7 @@ pub trait StatusPublisher: Debug + Send + Sync {
     /// - `Conflict { actual }` — current didn't match expected
     async fn push_status(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> Result<StatusCasResult>;
@@ -960,19 +951,19 @@ pub trait StatusPublisher: Debug + Send + Sync {
 /// Config can be "unborn" (v=0, payload=None) if no config has been set yet.
 #[async_trait]
 pub trait ConfigPublisher: Debug + Send + Sync {
-    /// Get current config for a ledger address.
+    /// Get current config for a ledger ID.
     ///
     /// Returns:
     /// - `Some(ConfigValue)` — record exists (may be unborn with v=0)
     /// - `None` — record doesn't exist at all
-    async fn get_config(&self, ledger_address: &str) -> Result<Option<ConfigValue>>;
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>>;
 
     /// Push config with CAS semantics.
     ///
     /// Updates only if current matches expected. Returns conflict with actual on mismatch.
     ///
     /// # Arguments
-    /// * `ledger_address` - The ledger address
+    /// * `ledger_id` - The ledger ID
     /// * `expected` - The expected current config (`None` for initial creation)
     /// * `new` - The new config to set (must have `new.v > expected.v`)
     ///
@@ -981,7 +972,7 @@ pub trait ConfigPublisher: Debug + Send + Sync {
     /// - `Conflict { actual }` — current didn't match expected
     async fn push_config(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult>;

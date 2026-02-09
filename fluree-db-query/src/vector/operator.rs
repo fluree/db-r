@@ -78,7 +78,7 @@ pub trait VectorIndexProvider: std::fmt::Debug + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - Graph source alias (e.g., "embeddings:main")
+    /// * `graph_source_id` - Graph source alias (e.g., "embeddings:main")
     /// * `params` - Search parameters (query vector, metric, limit, etc.)
     ///
     /// # Returns
@@ -86,12 +86,12 @@ pub trait VectorIndexProvider: std::fmt::Debug + Send + Sync {
     /// Vector of search hits, ordered by similarity (best first).
     async fn search(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         params: VectorSearchParams<'_>,
     ) -> Result<Vec<VectorSearchHit>>;
 
     /// Check if a collection exists for the given graph source alias
-    async fn collection_exists(&self, graph_source_address: &str) -> Result<bool>;
+    async fn collection_exists(&self, graph_source_id: &str) -> Result<bool>;
 }
 
 /// Vector search operator for `Pattern::VectorSearch`.
@@ -282,7 +282,7 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
                 .with_timeout_ms(self.pattern.timeout);
 
             let results = provider
-                .search(&self.pattern.graph_source_address, params)
+                .search(&self.pattern.graph_source_id, params)
                 .await?;
 
             // For each search result, merge with the child row.
@@ -400,7 +400,7 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct SearchCall {
-        graph_source_address: String,
+        graph_source_id: String,
         query_vector: Vec<f32>,
         metric: DistanceMetric,
         limit: usize,
@@ -428,12 +428,12 @@ mod tests {
     impl VectorIndexProvider for MockVectorProvider {
         async fn search(
             &self,
-            graph_source_address: &str,
+            graph_source_id: &str,
             params: VectorSearchParams<'_>,
         ) -> Result<Vec<VectorSearchHit>> {
             // Record the call
             self.search_calls.lock().unwrap().push(SearchCall {
-                graph_source_address: graph_source_address.to_string(),
+                graph_source_id: graph_source_id.to_string(),
                 query_vector: params.query_vector.to_vec(),
                 metric: params.metric,
                 limit: params.limit,
@@ -441,7 +441,7 @@ mod tests {
             Ok(self.results.iter().take(params.limit).cloned().collect())
         }
 
-        async fn collection_exists(&self, _graph_source_address: &str) -> Result<bool> {
+        async fn collection_exists(&self, _graph_source_id: &str) -> Result<bool> {
             Ok(true)
         }
     }
@@ -515,7 +515,7 @@ mod tests {
         // Verify search was called correctly
         let calls = provider.search_calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].graph_source_address, "embeddings:main");
+        assert_eq!(calls[0].graph_source_id, "embeddings:main");
         assert_eq!(calls[0].query_vector, vec![0.1, 0.2, 0.3]);
         assert_eq!(calls[0].metric, DistanceMetric::Cosine);
         assert_eq!(calls[0].limit, 10);

@@ -161,7 +161,7 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
                 view.db.as_ref(),
                 view.overlay.as_ref(),
                 view.to_t,
-                Arc::clone(&view.ledger_address),
+                Arc::clone(&view.ledger_id),
             );
             graph.policy_enforcer = view.policy_enforcer().cloned();
             ds = ds.with_default_graph(graph);
@@ -176,7 +176,7 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
                 view.db.as_ref(),
                 view.overlay.as_ref(),
                 view.to_t,
-                Arc::clone(&view.ledger_address),
+                Arc::clone(&view.ledger_id),
             );
             graph.policy_enforcer = view.policy_enforcer().cloned();
             ds = ds.with_named_graph(Arc::clone(iri), graph);
@@ -287,12 +287,12 @@ mod tests {
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
         let view = fluree.view("testdb:main").await.unwrap();
-        let alias = view.ledger_address.clone();
+        let alias = view.ledger_id.clone();
         let dataset = FlureeDataSetView::single(view);
 
         let unwrapped = dataset.into_single();
         assert!(unwrapped.is_some());
-        assert_eq!(unwrapped.unwrap().ledger_address, alias);
+        assert_eq!(unwrapped.unwrap().ledger_id, alias);
     }
 
     #[tokio::test]

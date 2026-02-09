@@ -623,11 +623,11 @@ async fn nameservice_config_publisher() {
 async fn nameservice_graph_source_publisher() {
     let (_container, ns) = setup_localstack_ns().await;
 
-    let graph_source_address = "search-bm25:main";
+    let graph_source_id = "search-bm25:main";
 
     // lookup_graph_source before publish → None
     assert!(ns
-        .lookup_graph_source(graph_source_address)
+        .lookup_graph_source(graph_source_id)
         .await
         .unwrap()
         .is_none());
@@ -645,7 +645,7 @@ async fn nameservice_graph_source_publisher() {
 
     // lookup_graph_source
     let gs = ns
-        .lookup_graph_source(graph_source_address)
+        .lookup_graph_source(graph_source_id)
         .await
         .unwrap()
         .expect("exists");
@@ -662,7 +662,7 @@ async fn nameservice_graph_source_publisher() {
         .await
         .unwrap();
     let gs = ns
-        .lookup_graph_source(graph_source_address)
+        .lookup_graph_source(graph_source_id)
         .await
         .unwrap()
         .unwrap();
@@ -674,14 +674,14 @@ async fn nameservice_graph_source_publisher() {
         .await
         .unwrap();
     let gs = ns
-        .lookup_graph_source(graph_source_address)
+        .lookup_graph_source(graph_source_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(gs.index_address.as_deref(), Some("gs-index:1"));
 
     // lookup_any → ledger or graph source
-    let any = ns.lookup_any(graph_source_address).await.unwrap();
+    let any = ns.lookup_any(graph_source_id).await.unwrap();
     match any {
         NsLookupResult::GraphSource(ref r) => assert_eq!(r.name, "search-bm25"),
         _ => panic!("expected GraphSource, got {any:?}"),
@@ -710,7 +710,7 @@ async fn nameservice_graph_source_publisher() {
     ns.retract_graph_source("search-bm25", "main")
         .await
         .unwrap();
-    let gs = ns.lookup_graph_source(graph_source_address).await.unwrap();
+    let gs = ns.lookup_graph_source(graph_source_id).await.unwrap();
     assert!(
         gs.is_some(),
         "retracted graph source still visible via lookup_graph_source"
@@ -727,7 +727,7 @@ async fn nameservice_graph_source_publisher() {
     .await
     .unwrap();
     let gs = ns
-        .lookup_graph_source(graph_source_address)
+        .lookup_graph_source(graph_source_id)
         .await
         .unwrap()
         .unwrap();

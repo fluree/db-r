@@ -121,7 +121,7 @@ where
         let view = self
             .graph
             .fluree
-            .load_view_at(&self.graph.ledger_address, self.graph.time_spec.clone())
+            .load_view_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await?;
         let input = self.core.input.unwrap();
         self.graph.fluree.query_view(&view, input).await
@@ -137,7 +137,7 @@ where
         let view = self
             .graph
             .fluree
-            .load_view_at(&self.graph.ledger_address, self.graph.time_spec.clone())
+            .load_view_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await?;
         let format_config = self
             .core
@@ -168,7 +168,7 @@ where
         let view = self
             .graph
             .fluree
-            .load_view_at(&self.graph.ledger_address, self.graph.time_spec.clone())
+            .load_view_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await
             .map_err(|e| TrackedErrorResponse::from_error(404, e.to_string(), None))?;
         let input = self.core.input.unwrap();

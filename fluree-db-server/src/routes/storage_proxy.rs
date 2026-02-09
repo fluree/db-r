@@ -5,7 +5,7 @@
 //! peers don't have direct storage credentials.
 //!
 //! # Endpoints
-//! - `GET /fluree/storage/ns/{ledger_address}` - Fetch nameservice record for a ledger
+//! - `GET /fluree/storage/ns/{ledger_id}` - Fetch nameservice record for a ledger
 //! - `POST /fluree/storage/block` - Fetch a block by address
 //!
 //! # Authorization
@@ -178,7 +178,7 @@ fn build_json_flakes_response(
 /// Response for nameservice record endpoint
 #[derive(Debug, Clone, Serialize)]
 pub struct NsRecordResponse {
-    pub ledger_address: String,
+    pub ledger_id: String,
     pub branch: String,
     pub commit_address: Option<String>,
     pub commit_t: i64,
@@ -200,7 +200,7 @@ pub struct BlockRequest {
 /// GET /fluree/storage/ns/{alias}
 ///
 /// Returns the nameservice record for a ledger.
-/// Requires Bearer token with access to the requested ledger address.
+/// Requires Bearer token with access to the requested ledger ID.
 ///
 /// Note: The `StorageProxyBearer` extractor handles:
 /// - Checking if storage proxy is enabled (returns 404 if not)
@@ -209,11 +209,11 @@ pub struct BlockRequest {
 /// - Checking that token has storage permissions
 pub async fn get_ns_record(
     State(state): State<Arc<AppState>>,
-    Path(ledger_address): Path<String>,
+    Path(ledger_id): Path<String>,
     StorageProxyBearer(principal): StorageProxyBearer,
 ) -> Result<Json<NsRecordResponse>, ServerError> {
     // Check authorization for this specific ledger
-    if !principal.is_authorized_for_ledger(&ledger_address) {
+    if !principal.is_authorized_for_ledger(&ledger_id) {
         // Return 404 for unauthorized (no existence leak)
         return Err(ServerError::not_found("Ledger not found"));
     }
@@ -224,13 +224,13 @@ pub async fn get_ns_record(
         .fluree
         .as_file()
         .nameservice()
-        .lookup(&ledger_address)
+        .lookup(&ledger_id)
         .await
         .map_err(|e| ServerError::internal(format!("Nameservice lookup failed: {}", e)))?
         .ok_or_else(|| ServerError::not_found("Ledger not found"))?;
 
     Ok(Json(NsRecordResponse {
-        ledger_address: ns_record.name.clone(),
+        ledger_id: ns_record.name.clone(),
         branch: ns_record.branch.clone(),
         commit_address: ns_record.commit_address.clone(),
         commit_t: ns_record.commit_t,
@@ -290,10 +290,10 @@ pub async fn get_block(
         policy_class: effective_policy_class,
     };
 
-    // Load ledger context if this is a ledger address
+    // Load ledger context if this is a ledger ID
     let fluree = state.fluree.as_file();
     let ledger_ctx_data;
-    let ledger_ctx = if let Some(ledger_addr) = context.ledger_address() {
+    let ledger_ctx = if let Some(ledger_addr) = context.ledger_id() {
         let handle = fluree
             .ledger_cached(&ledger_addr)
             .await

@@ -34,7 +34,7 @@ impl Debug for ProxyNameService {
 /// Must match `NsRecordResponse` from routes/storage_proxy.rs
 #[derive(Debug, Deserialize)]
 struct NsRecordResponse {
-    ledger_address: String,
+    ledger_id: String,
     branch: String,
     commit_address: Option<String>,
     commit_t: i64,
@@ -49,7 +49,7 @@ impl NsRecordResponse {
         NsRecord {
             // address is the key used for lookup (may differ from name)
             address: lookup_key.to_string(),
-            name: self.ledger_address,
+            name: self.ledger_id,
             branch: self.branch,
             commit_address: self.commit_address,
             commit_t: self.commit_t,
@@ -96,8 +96,8 @@ impl ProxyNameService {
 
 #[async_trait]
 impl NameService for ProxyNameService {
-    async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
-        let url = self.ns_url(ledger_address);
+    async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
+        let url = self.ns_url(ledger_id);
 
         let response = self
             .client
@@ -116,12 +116,12 @@ impl NameService for ProxyNameService {
                 let ns_response: NsRecordResponse = response.json().await.map_err(|e| {
                     NameServiceError::storage(format!("Failed to parse NS response: {}", e))
                 })?;
-                Ok(Some(ns_response.into_ns_record(ledger_address)))
+                Ok(Some(ns_response.into_ns_record(ledger_id)))
             }
             StatusCode::NOT_FOUND => Ok(None),
             StatusCode::UNAUTHORIZED => Err(NameServiceError::storage(format!(
                 "Nameservice proxy authentication failed for {}: check token validity",
-                ledger_address
+                ledger_id
             ))),
             StatusCode::FORBIDDEN => {
                 // Not in token scope - treat as not found (no existence leak)
@@ -129,7 +129,7 @@ impl NameService for ProxyNameService {
             }
             _ => Err(NameServiceError::storage(format!(
                 "Nameservice proxy unexpected status {} for {}",
-                status, ledger_address
+                status, ledger_id
             ))),
         }
     }
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn test_ns_record_conversion() {
         let response = NsRecordResponse {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
             branch: "main".to_string(),
             commit_address: Some("fluree:file://books:main/commit/abc.json".to_string()),
             commit_t: 42,

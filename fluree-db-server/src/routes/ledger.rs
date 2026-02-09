@@ -105,7 +105,7 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
         .ok_or_else(|| ServerError::bad_request("Missing required field: ledger"))
     {
         Ok(alias) => {
-            span.record("ledger_address", alias);
+            span.record("ledger_id", alias);
             alias.to_string()
         }
         Err(e) => {
@@ -129,15 +129,15 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
             return Err(server_error);
         }
     };
-    let ledger_address = ledger.ledger_address().to_string();
+    let ledger_id = ledger.ledger_id().to_string();
 
     let response = CreateResponse {
-        ledger: ledger_address.clone(),
+        ledger: ledger_id.clone(),
         t: 0,
         tx_id,
         commit: CommitInfo {
             // Genesis state address
-            address: format!("fluree:memory://{}/main/head", ledger_address),
+            address: format!("fluree:memory://{}/main/head", ledger_id),
             hash: String::new(),
         },
     };
@@ -186,7 +186,7 @@ impl From<DropReport> for DropResponse {
         };
 
         DropResponse {
-            ledger: report.ledger_address,
+            ledger: report.ledger_id,
             status: status.to_string(),
             files_deleted,
             warnings: report.warnings,
@@ -320,7 +320,7 @@ pub async fn info(
         .ok_or(ServerError::MissingLedger)
     {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {
@@ -490,7 +490,7 @@ pub async fn exists(
         .ok_or(ServerError::MissingLedger)
     {
         Ok(alias) => {
-            span.record("ledger_address", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias.clone()
         }
         Err(e) => {

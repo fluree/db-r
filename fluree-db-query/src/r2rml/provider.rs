@@ -31,18 +31,18 @@ pub trait R2rmlProvider: Debug + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - The graph source alias (e.g., "openflights-gs:main")
+    /// * `graph_source_id` - The graph source alias (e.g., "openflights-gs:main")
     ///
     /// # Returns
     ///
     /// `true` if the graph source exists and has an R2RML mapping, `false` otherwise.
-    async fn has_r2rml_mapping(&self, graph_source_address: &str) -> bool;
+    async fn has_r2rml_mapping(&self, graph_source_id: &str) -> bool;
 
     /// Get the compiled R2RML mapping for a graph source alias.
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - The graph source alias (e.g., "openflights-gs:main")
+    /// * `graph_source_id` - The graph source alias (e.g., "openflights-gs:main")
     /// * `as_of_t` - The transaction time for time-travel queries.
     ///
     /// In dataset (multi-ledger) mode, there is no meaningful "dataset t".
@@ -55,7 +55,7 @@ pub trait R2rmlProvider: Debug + Send + Sync {
     /// the mapping couldn't be loaded.
     async fn compiled_mapping(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         as_of_t: Option<i64>,
     ) -> Result<Arc<CompiledR2rmlMapping>>;
 }
@@ -75,7 +75,7 @@ pub trait R2rmlTableProvider: Debug + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - The graph source alias
+    /// * `graph_source_id` - The graph source alias
     /// * `table_name` - The logical table name from the R2RML mapping
     /// * `projection` - Column names to project (for pushdown)
     /// * `as_of_t` - Transaction time for snapshot selection.
@@ -90,7 +90,7 @@ pub trait R2rmlTableProvider: Debug + Send + Sync {
     /// depends on the implementation.
     async fn scan_table(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         table_name: &str,
         projection: &[String],
         as_of_t: Option<i64>,
@@ -118,20 +118,20 @@ impl NoOpR2rmlProvider {
 
 #[async_trait]
 impl R2rmlProvider for NoOpR2rmlProvider {
-    async fn has_r2rml_mapping(&self, _graph_source_address: &str) -> bool {
+    async fn has_r2rml_mapping(&self, _graph_source_id: &str) -> bool {
         // Always return false - no R2RML mappings available
         false
     }
 
     async fn compiled_mapping(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         _as_of_t: Option<i64>,
     ) -> Result<Arc<CompiledR2rmlMapping>> {
         Err(crate::error::QueryError::Internal(format!(
             "R2RML provider not available for graph source '{}'. \
              This Fluree instance does not support graph source operations.",
-            graph_source_address
+            graph_source_id
         )))
     }
 }
@@ -140,7 +140,7 @@ impl R2rmlProvider for NoOpR2rmlProvider {
 impl R2rmlTableProvider for NoOpR2rmlProvider {
     async fn scan_table(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         _table_name: &str,
         _projection: &[String],
         _as_of_t: Option<i64>,
@@ -148,7 +148,7 @@ impl R2rmlTableProvider for NoOpR2rmlProvider {
         Err(crate::error::QueryError::Internal(format!(
             "R2RML table scanning not available for graph source '{}'. \
              This Fluree instance does not support graph source operations.",
-            graph_source_address
+            graph_source_id
         )))
     }
 }

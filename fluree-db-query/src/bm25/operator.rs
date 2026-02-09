@@ -58,7 +58,7 @@ pub trait Bm25IndexProvider: std::fmt::Debug + Send + Sync {
     ///   the query itself provides an unambiguous as-of anchor.
     async fn bm25_index(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         as_of_t: Option<i64>,
         sync: bool,
         timeout_ms: Option<u64>,
@@ -123,7 +123,7 @@ pub trait Bm25SearchProvider: std::fmt::Debug + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - Graph source alias (e.g., "products-search:main")
+    /// * `graph_source_id` - Graph source alias (e.g., "products-search:main")
     /// * `query_text` - The search query text
     /// * `limit` - Maximum number of hits to return
     /// * `as_of_t` - Target transaction time for time-travel queries (None = latest)
@@ -131,7 +131,7 @@ pub trait Bm25SearchProvider: std::fmt::Debug + Send + Sync {
     /// * `timeout_ms` - Timeout for the entire operation
     async fn search_bm25(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         query_text: &str,
         limit: usize,
         as_of_t: Option<i64>,
@@ -333,7 +333,7 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
                 let limit = self.pattern.limit.unwrap_or(usize::MAX);
                 let result = search_provider
                     .search_bm25(
-                        &self.pattern.graph_source_address,
+                        &self.pattern.graph_source_id,
                         query_text,
                         limit,
                         as_of_t,
@@ -357,7 +357,7 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
 
             let idx = index_provider
                 .bm25_index(
-                    &self.pattern.graph_source_address,
+                    &self.pattern.graph_source_id,
                     as_of_t,
                     self.pattern.sync,
                     self.pattern.timeout,
@@ -462,7 +462,7 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
 
                     let result = search_provider
                         .search_bm25(
-                            &self.pattern.graph_source_address,
+                            &self.pattern.graph_source_id,
                             &target,
                             limit,
                             as_of_t,
@@ -633,15 +633,15 @@ mod tests {
     impl Bm25IndexProvider for TestProvider {
         async fn bm25_index(
             &self,
-            graph_source_address: &str,
+            graph_source_id: &str,
             _as_of_t: Option<i64>,
             _sync: bool,
             _timeout_ms: Option<u64>,
         ) -> Result<Arc<Bm25Index>> {
-            self.map.get(graph_source_address).cloned().ok_or_else(|| {
+            self.map.get(graph_source_id).cloned().ok_or_else(|| {
                 QueryError::InvalidQuery(format!(
                     "No BM25 index for graph source alias {}",
-                    graph_source_address
+                    graph_source_id
                 ))
             })
         }

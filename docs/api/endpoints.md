@@ -650,7 +650,7 @@ GET /ledgers
 {
   "ledgers": [
     {
-      "ledger_address": "mydb:main",
+      "ledger_id": "mydb:main",
       "branch": "main",
       "commit_t": 5,
       "index_t": 5,
@@ -658,7 +658,7 @@ GET /ledgers
       "last_updated": "2024-01-22T10:30:00.000Z"
     },
     {
-      "ledger_address": "mydb:dev",
+      "ledger_id": "mydb:dev",
       "branch": "dev",
       "commit_t": 3,
       "index_t": 2,
@@ -675,23 +675,23 @@ GET /ledgers
 curl http://localhost:8090/ledgers
 ```
 
-### GET /ledgers/:address
+### GET /ledgers/:id
 
 Get metadata for a specific ledger.
 
 **URL:**
 ```
-GET /ledgers/{ledger-address}
+GET /ledgers/{ledger-id}
 ```
 
 **Path Parameters:**
-- `ledger-address`: Ledger identifier (format: `name:branch`)
+- `ledger-id`: Ledger identifier (format: `name:branch`)
 
 **Response:**
 
 ```json
 {
-  "ledger_address": "mydb:main",
+  "ledger_id": "mydb:main",
   "branch": "main",
   "commit_t": 5,
   "index_t": 5,
@@ -722,7 +722,7 @@ POST /ledgers
 
 ```json
 {
-  "ledger_address": "mydb:main",
+  "ledger_id": "mydb:main",
   "config": {
     "default_context": "http://example.org/context.jsonld"
   }
@@ -733,7 +733,7 @@ POST /ledgers
 
 ```json
 {
-  "ledger_address": "mydb:main",
+  "ledger_id": "mydb:main",
   "branch": "main",
   "commit_t": 0,
   "index_t": 0,
@@ -746,7 +746,7 @@ POST /ledgers
 ```bash
 curl -X POST http://localhost:8090/ledgers \
   -H "Content-Type: application/json" \
-  -d '{"ledger_address": "mydb:main"}'
+  -d '{"ledger_id": "mydb:main"}'
 ```
 
 ### POST /fluree/create
@@ -770,7 +770,7 @@ POST /fluree/create
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `ledger` | string | Yes | Ledger address (e.g., "mydb" or "mydb:main") |
+| `ledger` | string | Yes | Ledger ID (e.g., "mydb" or "mydb:main") |
 
 **Response:**
 
@@ -788,7 +788,7 @@ POST /fluree/create
 
 | Field | Description |
 |-------|-------------|
-| `ledger` | Normalized ledger address |
+| `ledger` | Normalized ledger ID |
 | `t` | Transaction time (0 for new ledger) |
 | `tx-id` | Transaction ID (SHA-256 hash of request) |
 | `commit` | Commit information |
@@ -842,7 +842,7 @@ POST /fluree/drop
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `ledger` | string | Yes | Ledger address (e.g., "mydb" or "mydb:main") |
+| `ledger` | string | Yes | Ledger ID (e.g., "mydb" or "mydb:main") |
 | `hard` | boolean | No | If `true`, permanently delete all storage files. Default: `false` (soft drop) |
 
 **Drop Modes:**
@@ -865,7 +865,7 @@ POST /fluree/drop
 
 | Field | Description |
 |-------|-------------|
-| `ledger` | Normalized ledger address |
+| `ledger` | Normalized ledger ID |
 | `status` | One of: `"dropped"`, `"already_retracted"`, `"not_found"` |
 | `files_deleted` | File counts (only populated for hard drop) |
 
@@ -877,7 +877,7 @@ POST /fluree/drop
 
 **Drop Sequence:**
 
-1. Normalizes the address (ensures branch suffix like `:main`)
+1. Normalizes the ledger ID (ensures branch suffix like `:main`)
 2. Cancels any pending background indexing
 3. Waits for in-progress indexing to complete
 4. In hard mode: deletes all storage artifacts (commits + indexes)
@@ -925,7 +925,7 @@ GET /fluree/exists?ledger={ledger-alias}
 ```
 
 **Query Parameters:**
-- `ledger`: Ledger address (e.g., "mydb" or "mydb:main")
+- `ledger`: Ledger ID (e.g., "mydb" or "mydb:main")
 
 **Alternative:** Use the `fluree-ledger` header instead of query parameter.
 
@@ -940,7 +940,7 @@ GET /fluree/exists?ledger={ledger-alias}
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ledger` | string | Ledger address (echoed back) |
+| `ledger` | string | Ledger ID (echoed back) |
 | `exists` | boolean | Whether the ledger is registered in the nameservice |
 
 **Status Codes:**
@@ -954,7 +954,7 @@ This is a lightweight check that only queries the nameservice without loading th
 
 - Check if a ledger exists before attempting to load it
 - Implement conditional create-or-load logic
-- Validate ledger addresses in application code
+- Validate ledger IDs in application code
 
 **Examples:**
 

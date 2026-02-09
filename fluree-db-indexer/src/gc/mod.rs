@@ -74,7 +74,7 @@ pub struct CleanGarbageResult {
 /// Includes a wall-clock `created_at_ms` timestamp for time-based GC retention.
 pub async fn write_garbage_record<S: ContentAddressedWrite>(
     storage: &S,
-    ledger_address: &str,
+    ledger_id: &str,
     t: i64,
     garbage_addresses: Vec<String>,
 ) -> Result<Option<GarbageRef>> {
@@ -88,7 +88,7 @@ pub async fn write_garbage_record<S: ContentAddressedWrite>(
     garbage_addresses.dedup();
 
     let record = GarbageRecord {
-        ledger_address: ledger_address.to_string(),
+        ledger_id: ledger_id.to_string(),
         t,
         garbage: garbage_addresses,
         created_at_ms: std::time::SystemTime::now()
@@ -99,7 +99,7 @@ pub async fn write_garbage_record<S: ContentAddressedWrite>(
 
     let bytes = serde_json::to_vec(&record)?;
     let res = storage
-        .content_write_bytes(ContentKind::GarbageRecord, ledger_address, &bytes)
+        .content_write_bytes(ContentKind::GarbageRecord, ledger_id, &bytes)
         .await?;
 
     Ok(Some(GarbageRef {

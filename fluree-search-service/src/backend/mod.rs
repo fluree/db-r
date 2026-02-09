@@ -39,7 +39,7 @@ pub trait SearchBackend: std::fmt::Debug + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - Graph source name
+    /// * `graph_source_id` - Graph source name
     /// * `query` - The search query variant
     /// * `limit` - Maximum number of results
     /// * `as_of_t` - Target transaction for time-travel (None = latest)
@@ -52,7 +52,7 @@ pub trait SearchBackend: std::fmt::Debug + Send + Sync {
     /// of the snapshot that was searched.
     async fn search(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         query: &QueryVariant,
         limit: usize,
         as_of_t: Option<i64>,

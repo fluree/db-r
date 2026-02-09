@@ -36,9 +36,9 @@ All requests are stateless:
 
 ## Core Concepts
 
-### Ledger Addressing
+### Ledger Identification
 
-Ledgers are addressed using aliases with branch names:
+Ledgers are identified using aliases with branch names:
 
 ```text
 ledger-name:branch-name
@@ -51,7 +51,7 @@ Examples:
 
 ### Time Travel in URLs
 
-Historical queries use time specifiers in ledger addresses:
+Historical queries use time specifiers in ledger IDs:
 
 ```text
 ledger:branch@t:100           # Transaction number

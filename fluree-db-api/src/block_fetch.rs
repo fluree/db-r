@@ -97,13 +97,13 @@ pub enum BlockFetchError {
 /// Context inferred from a storage address.
 ///
 /// Addresses encode their context in the path structure:
-/// - Commits: `fluree:file://{ledger_address}/commit/...`
+/// - Commits: `fluree:file://{ledger_id}/commit/...`
 /// - Indexes: `fluree:file://{ledger}/{branch}/index/...`
 /// - Graph source artifacts: `fluree:file://graph-sources/{name}/{branch}/...`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddressContext {
-    /// Ledger commit: `fluree:file://{ledger_address}/commit/...`
-    LedgerCommit { ledger_address: String },
+    /// Ledger commit: `fluree:file://{ledger_id}/commit/...`
+    LedgerCommit { ledger_id: String },
     /// Ledger index: `fluree:file://{ledger}/{branch}/index/...`
     LedgerIndex { ledger: String, branch: String },
     /// Graph source artifact: `fluree:file://graph-sources/{name}/{branch}/...`
@@ -113,11 +113,11 @@ pub enum AddressContext {
 }
 
 impl AddressContext {
-    /// Get the canonical ledger address (e.g., "books:main") if this is a
+    /// Get the canonical ledger ID (e.g., "books:main") if this is a
     /// ledger context.
-    pub fn ledger_address(&self) -> Option<String> {
+    pub fn ledger_id(&self) -> Option<String> {
         match self {
-            AddressContext::LedgerCommit { ledger_address } => Some(ledger_address.clone()),
+            AddressContext::LedgerCommit { ledger_id } => Some(ledger_id.clone()),
             AddressContext::LedgerIndex { ledger, branch } => {
                 Some(format!("{}:{}", ledger, branch))
             }
@@ -143,14 +143,14 @@ impl AddressContext {
 pub struct BlockAccessScope {
     /// If true, authorized for all ledgers.
     pub all_ledgers: bool,
-    /// Specific ledger addresses authorized (e.g., `{"books:main", "users:main"}`).
+    /// Specific ledger IDs authorized (e.g., `{"books:main", "users:main"}`).
     pub authorized_ledgers: HashSet<String>,
 }
 
 impl BlockAccessScope {
-    /// Check if this scope authorizes access to the given ledger address.
-    pub fn is_authorized_for_ledger(&self, ledger_address: &str) -> bool {
-        self.all_ledgers || self.authorized_ledgers.contains(ledger_address)
+    /// Check if this scope authorizes access to the given ledger ID.
+    pub fn is_authorized_for_ledger(&self, ledger_id: &str) -> bool {
+        self.all_ledgers || self.authorized_ledgers.contains(ledger_id)
     }
 }
 
@@ -241,7 +241,7 @@ pub struct FetchedBlock {
 /// # Examples
 /// ```ignore
 /// parse_address_context("fluree:file://books:main/commit/abc.json")
-///     // => LedgerCommit { ledger_address: "books:main" }
+///     // => LedgerCommit { ledger_id: "books:main" }
 ///
 /// parse_address_context("fluree:file://books/main/index/abc.json")
 ///     // => LedgerIndex { ledger: "books", branch: "main" }
@@ -267,7 +267,7 @@ pub fn parse_address_context(address: &str) -> AddressContext {
         return AddressContext::Unknown;
     }
 
-    // Commit format: {ledger_address}/commit/... (address may contain :)
+    // Commit format: {ledger_id}/commit/... (address may contain :)
     if path.contains("/commit/") {
         if let Some(addr) = path.split("/commit/").next() {
             if !addr.is_empty() {
@@ -277,12 +277,12 @@ pub fn parse_address_context(address: &str) -> AddressContext {
                     let parts: Vec<&str> = addr.splitn(2, '/').collect();
                     if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
                         return AddressContext::LedgerCommit {
-                            ledger_address: format!("{}:{}", parts[0], parts[1]),
+                            ledger_id: format!("{}:{}", parts[0], parts[1]),
                         };
                     }
                 }
                 return AddressContext::LedgerCommit {
-                    ledger_address: addr.to_string(),
+                    ledger_id: addr.to_string(),
                 };
             }
         }
@@ -317,9 +317,7 @@ pub fn parse_address_context(address: &str) -> AddressContext {
 /// Graph source artifacts and unknown addresses always return `false`.
 pub fn is_authorized(scope: &BlockAccessScope, context: &AddressContext) -> bool {
     match context {
-        AddressContext::LedgerCommit { ledger_address } => {
-            scope.is_authorized_for_ledger(ledger_address)
-        }
+        AddressContext::LedgerCommit { ledger_id } => scope.is_authorized_for_ledger(ledger_id),
         AddressContext::LedgerIndex { ledger, branch } => {
             let addr = format!("{}:{}", ledger, branch);
             scope.is_authorized_for_ledger(&addr)
@@ -353,9 +351,7 @@ pub fn authorize_address(
                 Err(BlockFetchError::GraphSourceNotAuthorized)
             }
             _ => Err(BlockFetchError::UnknownAddress(
-                context
-                    .ledger_address()
-                    .unwrap_or_else(|| "unknown".to_string()),
+                context.ledger_id().unwrap_or_else(|| "unknown".to_string()),
             )),
         }
     }
@@ -363,12 +359,12 @@ pub fn authorize_address(
 
 /// Validate that an address belongs to the claimed ledger.
 ///
-/// Compares the ledger address extracted from `context` against `expected_ledger`.
+/// Compares the ledger ID extracted from `context` against `expected_ledger`.
 pub fn validate_ledger_scope(
     context: &AddressContext,
     expected_ledger: &str,
 ) -> Result<(), BlockFetchError> {
-    let actual = context.ledger_address();
+    let actual = context.ledger_id();
     match &actual {
         Some(addr) if addr == expected_ledger => Ok(()),
         _ => Err(BlockFetchError::LedgerMismatch {
@@ -660,10 +656,10 @@ mod tests {
         assert_eq!(
             ctx,
             AddressContext::LedgerCommit {
-                ledger_address: "books:main".to_string()
+                ledger_id: "books:main".to_string()
             }
         );
-        assert_eq!(ctx.ledger_address(), Some("books:main".to_string()));
+        assert_eq!(ctx.ledger_id(), Some("books:main".to_string()));
     }
 
     #[test]
@@ -673,7 +669,7 @@ mod tests {
         assert_eq!(
             ctx,
             AddressContext::LedgerCommit {
-                ledger_address: "books:main".to_string()
+                ledger_id: "books:main".to_string()
             }
         );
     }
@@ -689,11 +685,11 @@ mod tests {
                 branch: "main".to_string()
             }
         );
-        assert_eq!(ctx.ledger_address(), Some("books:main".to_string()));
+        assert_eq!(ctx.ledger_id(), Some("books:main".to_string()));
     }
 
     #[test]
-    fn test_parse_graph_source_address() {
+    fn test_parse_graph_source_id() {
         let addr = "fluree:file://graph-sources/search/main/snapshot.bin";
         let ctx = parse_address_context(addr);
         assert_eq!(
@@ -704,7 +700,7 @@ mod tests {
             }
         );
         assert!(ctx.is_graph_source());
-        assert_eq!(ctx.ledger_address(), None);
+        assert_eq!(ctx.ledger_id(), None);
     }
 
     #[test]
@@ -741,7 +737,7 @@ mod tests {
     fn test_is_authorized_commit_allowed() {
         let scope = make_scope(false, vec!["books:main"]);
         let ctx = AddressContext::LedgerCommit {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
         };
         assert!(is_authorized(&scope, &ctx));
     }
@@ -750,7 +746,7 @@ mod tests {
     fn test_is_authorized_commit_denied() {
         let scope = make_scope(false, vec!["other:main"]);
         let ctx = AddressContext::LedgerCommit {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
         };
         assert!(!is_authorized(&scope, &ctx));
     }
@@ -769,7 +765,7 @@ mod tests {
     fn test_is_authorized_storage_all() {
         let scope = make_scope(true, vec![]);
         let ctx = AddressContext::LedgerCommit {
-            ledger_address: "any:ledger".to_string(),
+            ledger_id: "any:ledger".to_string(),
         };
         assert!(is_authorized(&scope, &ctx));
     }
@@ -797,7 +793,7 @@ mod tests {
     fn test_authorize_address_ok() {
         let scope = make_scope(false, vec!["books:main"]);
         let ctx = AddressContext::LedgerCommit {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
         };
         assert!(authorize_address(&scope, &ctx).is_ok());
     }
@@ -806,7 +802,7 @@ mod tests {
     fn test_authorize_address_denied() {
         let scope = make_scope(false, vec!["other:main"]);
         let ctx = AddressContext::LedgerCommit {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
         };
         assert!(authorize_address(&scope, &ctx).is_err());
     }
@@ -816,7 +812,7 @@ mod tests {
     #[test]
     fn test_validate_ledger_scope_match() {
         let ctx = AddressContext::LedgerCommit {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
         };
         assert!(validate_ledger_scope(&ctx, "books:main").is_ok());
     }
@@ -833,7 +829,7 @@ mod tests {
     #[test]
     fn test_validate_ledger_scope_mismatch() {
         let ctx = AddressContext::LedgerCommit {
-            ledger_address: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
         };
         let result = validate_ledger_scope(&ctx, "other:main");
         assert!(result.is_err());

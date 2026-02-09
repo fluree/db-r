@@ -29,7 +29,7 @@ pub enum LedgerError {
     MaxNovelty,
 
     /// Address mismatch when applying index
-    #[error("Index address '{new}' does not match ledger address '{expected}'")]
+    #[error("Index address '{new}' does not match ledger ID '{expected}'")]
     AddressMismatch { new: String, expected: String },
 
     /// Stale index (older than current)
@@ -37,24 +37,21 @@ pub enum LedgerError {
     StaleIndex { index_t: i64, current_t: i64 },
 
     /// Missing index address in nameservice record
-    #[error("Nameservice has index_t={index_t} for '{ledger_address}' but no index_address")]
-    MissingIndexAddress {
-        ledger_address: String,
-        index_t: i64,
-    },
+    #[error("Nameservice has index_t={index_t} for '{ledger_id}' but no index_address")]
+    MissingIndexAddress { ledger_id: String, index_t: i64 },
 
     /// No index exists at or before the requested time
-    #[error("No index available at or before t={target_t} for '{ledger_address}' (earliest index at t={earliest_t})")]
+    #[error("No index available at or before t={target_t} for '{ledger_id}' (earliest index at t={earliest_t})")]
     NoIndexAtTime {
-        ledger_address: String,
+        ledger_id: String,
         target_t: i64,
         earliest_t: i64,
     },
 
     /// Target time is in the future (beyond current head)
-    #[error("Target t={target_t} is beyond current head t={head_t} for '{ledger_address}'")]
+    #[error("Target t={target_t} is beyond current head t={head_t} for '{ledger_id}'")]
     FutureTime {
-        ledger_address: String,
+        ledger_id: String,
         target_t: i64,
         head_t: i64,
     },
@@ -80,30 +77,26 @@ impl LedgerError {
     }
 
     /// Create a missing index address error
-    pub fn missing_index_address(ledger_address: impl Into<String>, index_t: i64) -> Self {
+    pub fn missing_index_address(ledger_id: impl Into<String>, index_t: i64) -> Self {
         Self::MissingIndexAddress {
-            ledger_address: ledger_address.into(),
+            ledger_id: ledger_id.into(),
             index_t,
         }
     }
 
     /// Create a no index at time error
-    pub fn no_index_at_time(
-        ledger_address: impl Into<String>,
-        target_t: i64,
-        earliest_t: i64,
-    ) -> Self {
+    pub fn no_index_at_time(ledger_id: impl Into<String>, target_t: i64, earliest_t: i64) -> Self {
         Self::NoIndexAtTime {
-            ledger_address: ledger_address.into(),
+            ledger_id: ledger_id.into(),
             target_t,
             earliest_t,
         }
     }
 
     /// Create a future time error
-    pub fn future_time(ledger_address: impl Into<String>, target_t: i64, head_t: i64) -> Self {
+    pub fn future_time(ledger_id: impl Into<String>, target_t: i64, head_t: i64) -> Self {
         Self::FutureTime {
-            ledger_address: ledger_address.into(),
+            ledger_id: ledger_id.into(),
             target_t,
             head_t,
         }

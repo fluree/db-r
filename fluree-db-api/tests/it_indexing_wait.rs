@@ -77,9 +77,7 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
             assert!(commit_t >= 0);
 
             // 2) Trigger indexing predicate: index_t >= commit_t
-            let completion = handle
-                .trigger(result.ledger.ledger_address(), commit_t)
-                .await;
+            let completion = handle.trigger(result.ledger.ledger_id(), commit_t).await;
 
             // 3) Wait + assert we can load the persisted root
             match completion.wait().await {

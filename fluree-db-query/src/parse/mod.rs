@@ -3010,7 +3010,7 @@ mod tests {
 
         match &ast.patterns[0] {
             UnresolvedPattern::VectorSearch(vsp) => {
-                assert_eq!(vsp.graph_source_address.as_ref(), "embeddings:main");
+                assert_eq!(vsp.graph_source_id.as_ref(), "embeddings:main");
                 assert_eq!(vsp.metric.as_ref(), "cosine");
                 assert_eq!(vsp.limit, Some(10));
                 assert_eq!(vsp.id_var.as_ref(), "?doc");
@@ -3049,7 +3049,7 @@ mod tests {
 
         match &ast.patterns[0] {
             UnresolvedPattern::VectorSearch(vsp) => {
-                assert_eq!(vsp.graph_source_address.as_ref(), "embeddings:main");
+                assert_eq!(vsp.graph_source_id.as_ref(), "embeddings:main");
                 assert_eq!(vsp.metric.as_ref(), "dot");
                 assert_eq!(vsp.id_var.as_ref(), "?doc");
                 assert!(vsp.score_var.is_none());
@@ -3110,7 +3110,7 @@ mod tests {
 
         match &ast.patterns[0] {
             UnresolvedPattern::VectorSearch(vsp) => {
-                assert_eq!(vsp.graph_source_address.as_ref(), "embeddings:main");
+                assert_eq!(vsp.graph_source_id.as_ref(), "embeddings:main");
             }
             _ => panic!("Expected VectorSearch pattern"),
         }

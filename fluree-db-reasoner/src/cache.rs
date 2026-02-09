@@ -21,7 +21,7 @@ use crate::types::ReasoningModes;
 #[derive(Clone, Debug)]
 pub struct ReasoningCacheKey {
     /// Ledger alias (identifier for the ledger)
-    pub ledger_address: Arc<str>,
+    pub ledger_id: Arc<str>,
     /// Commit epoch (more robust than raw t for snapshot/time-travel)
     pub db_epoch: u64,
     /// Query "as-of" time (historical query support)
@@ -42,7 +42,7 @@ pub struct ReasoningCacheKey {
 
 impl Hash for ReasoningCacheKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.ledger_address.hash(state);
+        self.ledger_id.hash(state);
         self.db_epoch.hash(state);
         self.to_t.hash(state);
         self.overlay_epoch.hash(state);
@@ -59,7 +59,7 @@ impl Hash for ReasoningCacheKey {
 
 impl PartialEq for ReasoningCacheKey {
     fn eq(&self, other: &Self) -> bool {
-        self.ledger_address == other.ledger_address
+        self.ledger_id == other.ledger_id
             && self.db_epoch == other.db_epoch
             && self.to_t == other.to_t
             && self.overlay_epoch == other.overlay_epoch
@@ -281,7 +281,7 @@ mod tests {
 
     fn make_key(alias: &str, epoch: u64) -> ReasoningCacheKey {
         ReasoningCacheKey {
-            ledger_address: alias.into(),
+            ledger_id: alias.into(),
             db_epoch: epoch,
             to_t: 0,
             overlay_epoch: 0,

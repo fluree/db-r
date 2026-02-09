@@ -1,7 +1,7 @@
 //! File-based implementation of [`RemoteTrackingStore`]
 //!
 //! Stores tracking records at `{base_path}/ns-sync/remotes/{remote_name}/{address_encoded}.json`.
-//! Ledger addresses are percent-encoded to handle `:` and `/` safely in filenames.
+//! Ledger IDs are percent-encoded to handle `:` and `/` safely in filenames.
 //!
 //! This module is only available with the `native` feature (requires filesystem access).
 
@@ -40,13 +40,13 @@ impl FileTrackingStore {
     }
 
     /// Full path to a tracking record file.
-    fn record_path(&self, remote: &RemoteName, ledger_address: &str) -> PathBuf {
+    fn record_path(&self, remote: &RemoteName, ledger_id: &str) -> PathBuf {
         self.remote_dir(remote)
-            .join(format!("{}.json", encode_address(ledger_address)))
+            .join(format!("{}.json", encode_address(ledger_id)))
     }
 }
 
-/// Percent-encode a ledger address for use as a filename.
+/// Percent-encode a ledger ID for use as a filename.
 ///
 /// Encodes `:`, `/`, `\`, and `%` to avoid path traversal and filesystem issues.
 fn encode_address(address: &str) -> String {
@@ -93,9 +93,9 @@ impl RemoteTrackingStore for FileTrackingStore {
     async fn get_tracking(
         &self,
         remote: &RemoteName,
-        ledger_address: &str,
+        ledger_id: &str,
     ) -> Result<Option<TrackingRecord>> {
-        let path = self.record_path(remote, ledger_address);
+        let path = self.record_path(remote, ledger_id);
         let path_clone = path.clone();
 
         tokio::task::spawn_blocking(move || match std::fs::read_to_string(&path_clone) {
@@ -115,7 +115,7 @@ impl RemoteTrackingStore for FileTrackingStore {
     }
 
     async fn set_tracking(&self, record: &TrackingRecord) -> Result<()> {
-        let path = self.record_path(&record.remote, &record.ledger_address);
+        let path = self.record_path(&record.remote, &record.ledger_id);
         let json = serde_json::to_string_pretty(record)?;
 
         tokio::task::spawn_blocking(move || {
@@ -209,8 +209,8 @@ impl RemoteTrackingStore for FileTrackingStore {
         .map_err(|e| NameServiceError::storage(format!("Task join error: {}", e)))?
     }
 
-    async fn remove_tracking(&self, remote: &RemoteName, ledger_address: &str) -> Result<()> {
-        let path = self.record_path(remote, ledger_address);
+    async fn remove_tracking(&self, remote: &RemoteName, ledger_id: &str) -> Result<()> {
+        let path = self.record_path(remote, ledger_id);
 
         tokio::task::spawn_blocking(move || match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -280,7 +280,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(fetched.ledger_address, "mydb:main");
+        assert_eq!(fetched.ledger_id, "mydb:main");
         assert_eq!(fetched.commit_ref.as_ref().unwrap().t, 5);
     }
 

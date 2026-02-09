@@ -348,10 +348,7 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
     // The address "ns:test" is split into namespace "ns" and branch "test"
-    assert_eq!(
-        json.get("ledger_address").and_then(|v| v.as_str()),
-        Some("ns")
-    );
+    assert_eq!(json.get("ledger_id").and_then(|v| v.as_str()), Some("ns"));
     assert_eq!(json.get("branch").and_then(|v| v.as_str()), Some("test"));
     assert_eq!(json.get("retracted").and_then(|v| v.as_bool()), Some(false));
 }
@@ -631,7 +628,7 @@ async fn test_storage_proxy_block_authorization() {
 
 /// Test that graph source artifact addresses are rejected in v1
 #[tokio::test]
-async fn test_storage_proxy_rejects_graph_source_addresses() {
+async fn test_storage_proxy_rejects_graph_source_ides() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state);
 

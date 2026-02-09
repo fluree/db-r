@@ -268,7 +268,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
             Some(ctx.to_t)
         };
         let mapping = provider
-            .compiled_mapping(&self.pattern.graph_source_address, as_of_t)
+            .compiled_mapping(&self.pattern.graph_source_id, as_of_t)
             .await?;
 
         self.mapping = Some(mapping);
@@ -408,7 +408,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
                 };
                 let batches = table_provider
                     .scan_table(
-                        &self.pattern.graph_source_address,
+                        &self.pattern.graph_source_id,
                         table_name,
                         &projection,
                         as_of_t,
@@ -495,7 +495,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
                         };
                         let parent_batches = table_provider
                             .scan_table(
-                                &self.pattern.graph_source_address,
+                                &self.pattern.graph_source_id,
                                 parent_table,
                                 &parent_projection,
                                 as_of_t,

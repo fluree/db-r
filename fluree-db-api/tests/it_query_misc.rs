@@ -737,9 +737,9 @@ async fn load_with_new_connection_placeholder() {
     let fluree = FlureeBuilder::file(storage_path)
         .build()
         .expect("build file fluree");
-    let ledger_address = "new3:main";
+    let ledger_id = "new3:main";
 
-    let ledger0 = fluree.create_ledger(ledger_address).await.unwrap();
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
     let insert = json!({
         "@context": {"ex": "http://example.org/ns/"},
         "@graph": [{"@id": "ex:created", "ex:createdAt": "now"}]
@@ -751,12 +751,12 @@ async fn load_with_new_connection_placeholder() {
         .expect("build file fluree2");
     let query = json!({
         "@context": {"ex": "http://example.org/ns/"},
-        "from": ledger_address,
+        "from": ledger_id,
         "where": {"@id": "?s", "ex:createdAt": "now"},
         "select": {"?s": ["ex:createdAt"]}
     });
     let result = fluree2.query_connection(&query).await.unwrap();
-    let ledger = fluree2.ledger(ledger_address).await.unwrap();
+    let ledger = fluree2.ledger(ledger_id).await.unwrap();
     let jsonld = result.to_jsonld_async(&ledger.db).await.unwrap();
 
     let rows = jsonld.as_array().expect("rows");

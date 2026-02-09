@@ -85,7 +85,7 @@ async fn run_add(
 
     // Check mutual exclusion: refuse if local ledger exists
     let fluree = crate::context::build_fluree(fluree_dir)?;
-    let local_address = crate::context::to_ledger_address(ledger);
+    let local_address = crate::context::to_ledger_id(ledger);
     if fluree.ledger_exists(&local_address).await.unwrap_or(false) {
         return Err(CliError::Config(format!(
             "ledger '{}' already exists locally. \

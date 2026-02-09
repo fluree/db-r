@@ -234,7 +234,7 @@ Graph sources registered in nameservice:
 
 ```json
 {
-  "graph_source_address": "products-search:main",
+  "graph_source_id": "products-search:main",
   "type": "bm25",
   "source": "products:main",
   "backend": "inverted_index",

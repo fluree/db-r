@@ -44,9 +44,9 @@ where
         &self,
         config: IcebergCreateConfig,
     ) -> Result<IcebergCreateResult> {
-        let graph_source_address = config.graph_source_address();
+        let graph_source_id = config.graph_source_id();
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             catalog_uri = %config.catalog_uri,
             table = %config.table_identifier,
             "Creating Iceberg graph source"
@@ -59,7 +59,7 @@ where
         let connection_tested = self.test_iceberg_connection(&config).await.is_ok();
         if !connection_tested {
             warn!(
-                graph_source_address = %graph_source_address,
+                graph_source_id = %graph_source_id,
                 "Could not verify catalog connection - graph source will be created but may fail at query time"
             );
         }
@@ -82,13 +82,13 @@ where
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             connection_tested = connection_tested,
             "Created Iceberg graph source"
         );
 
         Ok(IcebergCreateResult {
-            graph_source_address,
+            graph_source_id,
             table_identifier: config.table_identifier.clone(),
             catalog_uri: config.catalog_uri.clone(),
             connection_tested,
@@ -106,9 +106,9 @@ where
         &self,
         config: R2rmlCreateConfig,
     ) -> Result<R2rmlCreateResult> {
-        let graph_source_address = config.graph_source_address();
+        let graph_source_id = config.graph_source_id();
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             catalog_uri = %config.iceberg.catalog_uri,
             table = %config.iceberg.table_identifier,
             mapping = %config.mapping_source,
@@ -125,7 +125,7 @@ where
             .map(|count| (count, true))
             .unwrap_or_else(|e| {
                 warn!(
-                    graph_source_address = %graph_source_address,
+                    graph_source_id = %graph_source_id,
                     error = %e,
                     "Could not validate R2RML mapping - graph source will be created but may fail at query time"
                 );
@@ -136,7 +136,7 @@ where
         let connection_tested = self.test_iceberg_connection(&config.iceberg).await.is_ok();
         if !connection_tested {
             warn!(
-                graph_source_address = %graph_source_address,
+                graph_source_id = %graph_source_id,
                 "Could not verify catalog connection - graph source will be created but may fail at query time"
             );
         }
@@ -159,7 +159,7 @@ where
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             triples_map_count = triples_map_count,
             connection_tested = connection_tested,
             mapping_validated = mapping_validated,
@@ -167,7 +167,7 @@ where
         );
 
         Ok(R2rmlCreateResult {
-            graph_source_address,
+            graph_source_id,
             table_identifier: config.iceberg.table_identifier.clone(),
             catalog_uri: config.iceberg.catalog_uri.clone(),
             mapping_source: config.mapping_source.clone(),
@@ -309,11 +309,11 @@ where
     N: NameService + GraphSourcePublisher,
 {
     /// Check if a graph source has an R2RML mapping.
-    async fn has_r2rml_mapping(&self, graph_source_address: &str) -> bool {
+    async fn has_r2rml_mapping(&self, graph_source_id: &str) -> bool {
         match self
             .fluree
             .nameservice()
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await
         {
             Ok(Some(record)) => {
@@ -342,21 +342,18 @@ where
     /// This method uses the R2RML cache to avoid repeated parsing and compilation.
     async fn compiled_mapping(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
         // Look up the graph source record
         let record = self
             .fluree
             .nameservice()
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
             .ok_or_else(|| {
-                QueryError::InvalidQuery(format!(
-                    "Graph source '{}' not found",
-                    graph_source_address
-                ))
+                QueryError::InvalidQuery(format!("Graph source '{}' not found", graph_source_id))
             })?;
 
         // Verify it's an R2RML or Iceberg graph source
@@ -366,7 +363,7 @@ where
         ) {
             return Err(QueryError::InvalidQuery(format!(
                 "Graph source '{}' is not an R2RML graph source (type: {:?})",
-                graph_source_address, record.source_type
+                graph_source_id, record.source_type
             )));
         }
 
@@ -374,14 +371,14 @@ where
         let iceberg_config = IcebergGsConfig::from_json(&record.config).map_err(|e| {
             QueryError::Internal(format!(
                 "Failed to parse graph source config for '{}': {}",
-                graph_source_address, e
+                graph_source_id, e
             ))
         })?;
 
         let mapping_config = iceberg_config.mapping.as_ref().ok_or_else(|| {
             QueryError::InvalidQuery(format!(
                 "Graph source '{}' is missing 'mapping' in config",
-                graph_source_address
+                graph_source_id
             ))
         })?;
 
@@ -390,12 +387,11 @@ where
 
         // Check cache first
         let cache = self.fluree.r2rml_cache();
-        let cache_key =
-            R2rmlCache::mapping_cache_key(graph_source_address, mapping_source, media_type);
+        let cache_key = R2rmlCache::mapping_cache_key(graph_source_id, mapping_source, media_type);
 
         if let Some(cached) = cache.get_mapping(&cache_key).await {
             debug!(
-                graph_source_address = %graph_source_address,
+                graph_source_id = %graph_source_id,
                 cache_key = %cache_key,
                 "R2RML mapping cache hit"
             );
@@ -403,7 +399,7 @@ where
         }
 
         debug!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             cache_key = %cache_key,
             "R2RML mapping cache miss - loading from storage"
         );
@@ -455,7 +451,7 @@ where
             return Err(QueryError::InvalidQuery(format!(
                 "R2RML mapping for '{}' uses JSON-LD format, which is not yet supported. \
                  Please use Turtle format (.ttl).",
-                graph_source_address
+                graph_source_id
             )));
         };
 
@@ -467,7 +463,7 @@ where
             .await;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             cache_key = %cache_key,
             triples_maps = compiled.triples_maps.len(),
             "Loaded, compiled, and cached R2RML mapping"
@@ -489,7 +485,7 @@ where
     /// the specified projection, and returns the results as column batches.
     async fn scan_table(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         table_name: &str,
         projection: &[String],
         _as_of_t: Option<i64>,
@@ -498,21 +494,18 @@ where
         let record = self
             .fluree
             .nameservice()
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
             .ok_or_else(|| {
-                QueryError::InvalidQuery(format!(
-                    "Graph source '{}' not found",
-                    graph_source_address
-                ))
+                QueryError::InvalidQuery(format!("Graph source '{}' not found", graph_source_id))
             })?;
 
         // Parse the Iceberg graph source config
         let iceberg_config = IcebergGsConfig::from_json(&record.config).map_err(|e| {
             QueryError::Internal(format!(
                 "Failed to parse Iceberg graph source config for '{}': {}",
-                graph_source_address, e
+                graph_source_id, e
             ))
         })?;
 
@@ -520,12 +513,12 @@ where
         iceberg_config.validate().map_err(|e| {
             QueryError::InvalidQuery(format!(
                 "Invalid Iceberg graph source config for '{}': {}",
-                graph_source_address, e
+                graph_source_id, e
             ))
         })?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             table_name = %table_name,
             catalog_uri = %iceberg_config.catalog.uri,
             projection = ?projection,

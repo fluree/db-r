@@ -56,13 +56,13 @@ impl MockR2rmlProvider {
 
 #[async_trait]
 impl R2rmlProvider for MockR2rmlProvider {
-    async fn has_r2rml_mapping(&self, _graph_source_address: &str) -> bool {
+    async fn has_r2rml_mapping(&self, _graph_source_id: &str) -> bool {
         true
     }
 
     async fn compiled_mapping(
         &self,
-        _graph_source_address: &str,
+        _graph_source_id: &str,
         _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
         Ok(Arc::clone(&self.mapping))
@@ -73,7 +73,7 @@ impl R2rmlProvider for MockR2rmlProvider {
 impl R2rmlTableProvider for MockR2rmlProvider {
     async fn scan_table(
         &self,
-        _graph_source_address: &str,
+        _graph_source_id: &str,
         _table_name: &str,
         _projection: &[String],
         _as_of_t: Option<i64>,
@@ -615,7 +615,7 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
     let gs_result = fluree.create_r2rml_graph_source(config).await;
     match &gs_result {
         Ok(result) => {
-            eprintln!("  Graph source created: {}", result.graph_source_address);
+            eprintln!("  Graph source created: {}", result.graph_source_id);
             eprintln!("  Connection tested: {}", result.connection_tested);
             eprintln!("  Mapping validated: {}", result.mapping_validated);
             eprintln!("  TriplesMap count: {}", result.triples_map_count);
@@ -723,13 +723,13 @@ struct IcebergDirectProvider {
 
 #[async_trait]
 impl R2rmlProvider for IcebergDirectProvider {
-    async fn has_r2rml_mapping(&self, _graph_source_address: &str) -> bool {
+    async fn has_r2rml_mapping(&self, _graph_source_id: &str) -> bool {
         true
     }
 
     async fn compiled_mapping(
         &self,
-        _graph_source_address: &str,
+        _graph_source_id: &str,
         _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
         Ok(Arc::clone(&self.mapping))
@@ -740,7 +740,7 @@ impl R2rmlProvider for IcebergDirectProvider {
 impl R2rmlTableProvider for IcebergDirectProvider {
     async fn scan_table(
         &self,
-        _graph_source_address: &str,
+        _graph_source_id: &str,
         table_name: &str,
         projection: &[String],
         _as_of_t: Option<i64>,
@@ -1148,18 +1148,18 @@ async fn engine_e2e_provider_method_calls() {
 
     #[async_trait]
     impl R2rmlProvider for TrackingProvider {
-        async fn has_r2rml_mapping(&self, graph_source_address: &str) -> bool {
-            eprintln!("has_r2rml_mapping called for: {}", graph_source_address);
+        async fn has_r2rml_mapping(&self, graph_source_id: &str) -> bool {
+            eprintln!("has_r2rml_mapping called for: {}", graph_source_id);
             self.has_mapping_called.store(true, Ordering::SeqCst);
-            graph_source_address == "airlines-gs:main"
+            graph_source_id == "airlines-gs:main"
         }
 
         async fn compiled_mapping(
             &self,
-            graph_source_address: &str,
+            graph_source_id: &str,
             _as_of_t: Option<i64>,
         ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
-            eprintln!("compiled_mapping called for: {}", graph_source_address);
+            eprintln!("compiled_mapping called for: {}", graph_source_id);
             self.compiled_mapping_called.fetch_add(1, Ordering::SeqCst);
             Ok(Arc::clone(&self.mapping))
         }
@@ -1169,14 +1169,14 @@ async fn engine_e2e_provider_method_calls() {
     impl R2rmlTableProvider for TrackingProvider {
         async fn scan_table(
             &self,
-            graph_source_address: &str,
+            graph_source_id: &str,
             table_name: &str,
             projection: &[String],
             _as_of_t: Option<i64>,
         ) -> QueryResult<Vec<ColumnBatch>> {
             eprintln!(
                 "scan_table called: gs={}, table={}, projection={:?}",
-                graph_source_address, table_name, projection
+                graph_source_id, table_name, projection
             );
             self.scan_table_called.fetch_add(1, Ordering::SeqCst);
             Ok(self.batches.clone())
@@ -1291,7 +1291,7 @@ fn test_iceberg_create_config_validation_valid() {
     );
 
     // Check alias
-    assert_eq!(config.graph_source_address(), "my-iceberg-gs:main");
+    assert_eq!(config.graph_source_id(), "my-iceberg-gs:main");
 }
 
 /// Test IcebergCreateConfig validation - empty name.
@@ -1358,7 +1358,7 @@ fn test_iceberg_create_config_builder() {
         .with_s3_endpoint("http://localhost:9000")
         .with_s3_path_style(true);
 
-    assert_eq!(config.graph_source_address(), "my-gs:dev");
+    assert_eq!(config.graph_source_id(), "my-gs:dev");
     assert_eq!(config.warehouse, Some("my-warehouse".to_string()));
     assert!(!config.vended_credentials);
     assert_eq!(config.s3_region, Some("us-west-2".to_string()));
@@ -1389,7 +1389,7 @@ fn test_r2rml_create_config_validation_valid() {
         result.err()
     );
 
-    assert_eq!(config.graph_source_address(), "my-r2rml-gs:main");
+    assert_eq!(config.graph_source_id(), "my-r2rml-gs:main");
 }
 
 /// Test R2rmlCreateConfig validation - empty mapping source.
@@ -1427,7 +1427,7 @@ fn test_r2rml_create_config_builder() {
     .with_auth_bearer("token123")
     .with_warehouse("analytics");
 
-    assert_eq!(config.graph_source_address(), "airlines-rdf:staging");
+    assert_eq!(config.graph_source_id(), "airlines-rdf:staging");
     assert_eq!(config.mapping_source, "s3://bucket/mappings/airlines.ttl");
     assert_eq!(config.mapping_media_type, Some("text/turtle".to_string()));
     assert_eq!(config.iceberg.warehouse, Some("analytics".to_string()));
@@ -1515,7 +1515,7 @@ async fn integration_create_iceberg_graph_source() {
     );
 
     let create_result = result.unwrap();
-    assert_eq!(create_result.graph_source_address, "test-iceberg-gs:main");
+    assert_eq!(create_result.graph_source_id, "test-iceberg-gs:main");
     assert!(
         !create_result.connection_tested,
         "Connection test should fail without real catalog"
@@ -1570,7 +1570,7 @@ async fn integration_create_r2rml_graph_source_with_mapping() {
     );
 
     let create_result = result.unwrap();
-    assert_eq!(create_result.graph_source_address, "airlines-rdf:main");
+    assert_eq!(create_result.graph_source_id, "airlines-rdf:main");
     assert_eq!(create_result.mapping_source, mapping_address);
     assert!(
         create_result.mapping_validated,
@@ -1640,7 +1640,7 @@ async fn integration_query_graph_source_provider_wiring() {
         gs_result.err()
     );
 
-    let graph_source_address = gs_result.unwrap().graph_source_address;
+    let graph_source_id = gs_result.unwrap().graph_source_id;
 
     // Create a basic ledger to query against
     let ledger = genesis_ledger(&fluree, "query-gs-test:main");
@@ -1652,7 +1652,7 @@ async fn integration_query_graph_source_provider_wiring() {
         "select": ["?s"],
         "where": [
             {
-                "graph": graph_source_address,
+                "graph": graph_source_id,
                 "where": [
                     ["?s", "a", "ex:Airline"]
                 ]
@@ -1760,13 +1760,13 @@ struct MultiTableMockProvider {
 
 #[async_trait]
 impl R2rmlProvider for MultiTableMockProvider {
-    async fn has_r2rml_mapping(&self, _graph_source_address: &str) -> bool {
+    async fn has_r2rml_mapping(&self, _graph_source_id: &str) -> bool {
         true
     }
 
     async fn compiled_mapping(
         &self,
-        _graph_source_address: &str,
+        _graph_source_id: &str,
         _as_of_t: Option<i64>,
     ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
         Ok(Arc::clone(&self.mapping))
@@ -1777,7 +1777,7 @@ impl R2rmlProvider for MultiTableMockProvider {
 impl R2rmlTableProvider for MultiTableMockProvider {
     async fn scan_table(
         &self,
-        _graph_source_address: &str,
+        _graph_source_id: &str,
         table_name: &str,
         _projection: &[String],
         _as_of_t: Option<i64>,

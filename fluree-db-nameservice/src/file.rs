@@ -154,7 +154,7 @@ struct IndexRef {
 /// Graph source records use the same ns@v2 path pattern but have different fields:
 /// - `@type` includes "db:IndexSource" (or "db:MappedSource") and a source-specific type
 /// - `db:graphSourceConfig` contains the graph source configuration as a JSON string
-/// - `db:graphSourceDependencies` lists dependent ledger addresses
+/// - `db:graphSourceDependencies` lists dependent ledger IDs
 #[derive(Debug, Serialize, Deserialize)]
 struct GraphSourceNsFileV2 {
     /// Context uses db: namespace
@@ -180,7 +180,7 @@ struct GraphSourceNsFileV2 {
     #[serde(rename = "db:graphSourceConfig")]
     config: ConfigRef,
 
-    /// Dependent ledger addresses
+    /// Dependent ledger IDs
     #[serde(rename = "db:graphSourceDependencies")]
     dependencies: Vec<String>,
 
@@ -598,8 +598,8 @@ impl FileNameService {
 
 #[async_trait]
 impl NameService for FileNameService {
-    async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         self.load_record(&ledger_name, &branch).await
     }
 
@@ -679,8 +679,8 @@ impl NameService for FileNameService {
 
 #[async_trait]
 impl Publisher for FileNameService {
-    async fn publish_ledger_init(&self, ledger_address: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
         let normalized_address = core_alias::format_alias(&ledger_name, &branch);
 
@@ -759,11 +759,11 @@ impl Publisher for FileNameService {
 
     async fn publish_commit(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         commit_addr: &str,
         commit_t: i64,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
@@ -825,7 +825,7 @@ impl Publisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                    ledger_address: address_for_event,
+                    ledger_id: address_for_event,
                     commit_address: commit_addr_for_event,
                     commit_t,
                 });
@@ -869,7 +869,7 @@ impl Publisher for FileNameService {
             self.write_json_atomic(&main_path, &file).await?;
             if did_update {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                    ledger_address: core_alias::format_alias(&ledger_name, &branch),
+                    ledger_id: core_alias::format_alias(&ledger_name, &branch),
                     commit_address: commit_addr.to_string(),
                     commit_t,
                 });
@@ -878,13 +878,8 @@ impl Publisher for FileNameService {
         }
     }
 
-    async fn publish_index(
-        &self,
-        ledger_address: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn publish_index(&self, ledger_id: &str, index_addr: &str, index_t: i64) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let index_path = self.index_path(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
@@ -918,7 +913,7 @@ impl Publisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_address: address_for_event,
+                    ledger_id: address_for_event,
                     index_address: index_addr_for_event,
                     index_t,
                 });
@@ -945,7 +940,7 @@ impl Publisher for FileNameService {
             };
             self.write_json_atomic(&index_path, &file).await?;
             let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                ledger_address: core_alias::format_alias(&ledger_name, &branch),
+                ledger_id: core_alias::format_alias(&ledger_name, &branch),
                 index_address: index_addr.to_string(),
                 index_t,
             });
@@ -953,8 +948,8 @@ impl Publisher for FileNameService {
         }
     }
 
-    async fn retract(&self, ledger_address: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn retract(&self, ledger_id: &str) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
@@ -984,7 +979,7 @@ impl Publisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
-                    ledger_address: address_for_event,
+                    ledger_id: address_for_event,
                 });
             }
 
@@ -1002,7 +997,7 @@ impl Publisher for FileNameService {
                     file.status_v = Some(current_v + 1);
                     self.write_json_atomic(&main_path, &file).await?;
                     let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
-                        ledger_address: core_alias::format_alias(&ledger_name, &branch),
+                        ledger_id: core_alias::format_alias(&ledger_name, &branch),
                     });
                 }
             }
@@ -1010,12 +1005,9 @@ impl Publisher for FileNameService {
         }
     }
 
-    fn publishing_address(&self, ledger_address: &str) -> Option<String> {
-        // File nameservice returns the ledger address as the publishing address
-        Some(
-            core_alias::normalize_alias(ledger_address)
-                .unwrap_or_else(|_| ledger_address.to_string()),
-        )
+    fn publishing_address(&self, ledger_id: &str) -> Option<String> {
+        // File nameservice returns the ledger ID as the publishing address
+        Some(core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string()))
     }
 }
 
@@ -1023,11 +1015,11 @@ impl Publisher for FileNameService {
 impl AdminPublisher for FileNameService {
     async fn publish_index_allow_equal(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         index_addr: &str,
         index_t: i64,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let index_path = self.index_path(&ledger_name, &branch);
         let address_for_event = core_alias::format_alias(&ledger_name, &branch);
 
@@ -1064,7 +1056,7 @@ impl AdminPublisher for FileNameService {
             // Only emit event if update actually happened
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_address: address_for_event,
+                    ledger_id: address_for_event,
                     index_address: index_addr_for_event,
                     index_t,
                 });
@@ -1093,7 +1085,7 @@ impl AdminPublisher for FileNameService {
                 self.write_json_atomic(&index_path, &file).await?;
 
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_address: address_for_event,
+                    ledger_id: address_for_event,
                     index_address: index_addr.to_string(),
                     index_t,
                 });
@@ -1444,8 +1436,8 @@ impl GraphSourcePublisher for FileNameService {
 
 #[async_trait]
 impl RefPublisher for FileNameService {
-    async fn get_ref(&self, ledger_address: &str, kind: RefKind) -> Result<Option<RefValue>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         match kind {
             RefKind::CommitHead => {
                 let main_path = self.ns_path(&ledger_name, &branch);
@@ -1486,12 +1478,12 @@ impl RefPublisher for FileNameService {
 
     async fn compare_and_set_ref(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
     ) -> Result<CasResult> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let expected_clone = expected.cloned();
         let new_clone = new.clone();
         let event_tx = self.event_tx.clone();
@@ -1584,7 +1576,7 @@ impl RefPublisher for FileNameService {
                 if result == CasResult::Updated {
                     if let Some(addr) = &new.address {
                         let _ = event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                            ledger_address: core_alias::format_alias(&ledger_name, &branch),
+                            ledger_id: core_alias::format_alias(&ledger_name, &branch),
                             commit_address: addr.clone(),
                             commit_t: new.t,
                         });
@@ -1658,7 +1650,7 @@ impl RefPublisher for FileNameService {
                 if result == CasResult::Updated {
                     if let Some(addr) = &new.address {
                         let _ = event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                            ledger_address: core_alias::format_alias(&ledger_name, &branch),
+                            ledger_id: core_alias::format_alias(&ledger_name, &branch),
                             index_address: addr.clone(),
                             index_t: new.t,
                         });
@@ -1683,8 +1675,8 @@ impl Publication for FileNameService {
         Ok(())
     }
 
-    async fn known_addresses(&self, ledger_address: &str) -> Result<Vec<String>> {
-        let (name, branch) = parse_address(ledger_address)?;
+    async fn known_addresses(&self, ledger_id: &str) -> Result<Vec<String>> {
+        let (name, branch) = parse_address(ledger_id)?;
         match self.load_record(&name, &branch).await? {
             Some(record) => {
                 let mut addresses = Vec::new();
@@ -1708,8 +1700,8 @@ impl Publication for FileNameService {
 #[cfg(all(feature = "native", unix))]
 #[async_trait]
 impl StatusPublisher for FileNameService {
-    async fn get_status(&self, ledger_address: &str) -> Result<Option<StatusValue>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -1734,11 +1726,11 @@ impl StatusPublisher for FileNameService {
 
     async fn push_status(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> Result<StatusCasResult> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let path = self.ns_path(&ledger_name, &branch);
 
         // Clone values for the closure
@@ -1817,8 +1809,8 @@ impl StatusPublisher for FileNameService {
 #[cfg(all(feature = "native", unix))]
 #[async_trait]
 impl ConfigPublisher for FileNameService {
-    async fn get_config(&self, ledger_address: &str) -> Result<Option<ConfigValue>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -1855,11 +1847,11 @@ impl ConfigPublisher for FileNameService {
 
     async fn push_config(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let path = self.ns_path(&ledger_name, &branch);
 
         // Clone values for the closure
@@ -1962,8 +1954,8 @@ impl ConfigPublisher for FileNameService {
 #[cfg(not(all(feature = "native", unix)))]
 #[async_trait]
 impl StatusPublisher for FileNameService {
-    async fn get_status(&self, ledger_address: &str) -> Result<Option<StatusValue>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -1984,7 +1976,7 @@ impl StatusPublisher for FileNameService {
 
     async fn push_status(
         &self,
-        _ledger_address: &str,
+        _ledger_id: &str,
         _expected: Option<&StatusValue>,
         _new: &StatusValue,
     ) -> Result<StatusCasResult> {
@@ -1998,8 +1990,8 @@ impl StatusPublisher for FileNameService {
 #[cfg(not(all(feature = "native", unix)))]
 #[async_trait]
 impl ConfigPublisher for FileNameService {
-    async fn get_config(&self, ledger_address: &str) -> Result<Option<ConfigValue>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -2033,7 +2025,7 @@ impl ConfigPublisher for FileNameService {
 
     async fn push_config(
         &self,
-        _ledger_address: &str,
+        _ledger_id: &str,
         _expected: Option<&ConfigValue>,
         _new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
@@ -2069,7 +2061,7 @@ mod tests {
         assert_eq!(
             evt,
             NameServiceEvent::LedgerCommitPublished {
-                ledger_address: "mydb:main".to_string(),
+                ledger_id: "mydb:main".to_string(),
                 commit_address: "commit-1".to_string(),
                 commit_t: 1
             }

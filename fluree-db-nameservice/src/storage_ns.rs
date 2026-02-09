@@ -620,8 +620,8 @@ impl<S> NameService for StorageNameService<S>
 where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
-    async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         self.load_record(&ledger_name, &branch).await
     }
 
@@ -679,8 +679,8 @@ impl<S> Publisher for StorageNameService<S>
 where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
-    async fn publish_ledger_init(&self, ledger_address: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
         let normalized_address = core_alias::format_alias(&ledger_name, &branch);
 
@@ -723,11 +723,11 @@ where
 
     async fn publish_commit(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         commit_addr: &str,
         commit_t: i64,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
 
         let ledger_name_clone = ledger_name.clone();
@@ -762,13 +762,8 @@ where
         .await
     }
 
-    async fn publish_index(
-        &self,
-        ledger_address: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn publish_index(&self, ledger_id: &str, index_addr: &str, index_t: i64) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let key = self.index_key(&ledger_name, &branch);
 
         let index_addr = index_addr.to_string();
@@ -792,8 +787,8 @@ where
         .await
     }
 
-    async fn retract(&self, ledger_address: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn retract(&self, ledger_id: &str) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
 
         self.cas_update::<NsFileV2, _>(&key, |existing| {
@@ -810,12 +805,9 @@ where
         .await
     }
 
-    fn publishing_address(&self, ledger_address: &str) -> Option<String> {
+    fn publishing_address(&self, ledger_id: &str) -> Option<String> {
         // Return normalized address as publishing address
-        Some(
-            core_alias::normalize_alias(ledger_address)
-                .unwrap_or_else(|_| ledger_address.to_string()),
-        )
+        Some(core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string()))
     }
 }
 
@@ -826,11 +818,11 @@ where
 {
     async fn publish_index_allow_equal(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         index_addr: &str,
         index_t: i64,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let index_key = self.index_key(&ledger_name, &branch);
         let index_addr = index_addr.to_string();
 
@@ -865,8 +857,8 @@ impl<S> RefPublisher for StorageNameService<S>
 where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
-    async fn get_ref(&self, ledger_address: &str, kind: RefKind) -> Result<Option<RefValue>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
 
         match kind {
             RefKind::CommitHead => {
@@ -925,12 +917,12 @@ where
 
     async fn compare_and_set_ref(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
     ) -> Result<CasResult> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
 
         match kind {
             RefKind::CommitHead => {
@@ -1313,8 +1305,8 @@ impl<S> StatusPublisher for StorageNameService<S>
 where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
-    async fn get_status(&self, ledger_address: &str) -> Result<Option<StatusValue>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
 
         let data = match self.storage.read_bytes(&key).await {
@@ -1345,11 +1337,11 @@ where
 
     async fn push_status(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> Result<StatusCasResult> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
         // Retry only on ETag precondition failures (true write races).
         // If the expected/current check fails, return Conflict immediately.
@@ -1437,7 +1429,7 @@ where
         }
 
         // Too much contention; return best-effort current value.
-        let current = self.get_status(ledger_address).await?;
+        let current = self.get_status(ledger_id).await?;
         Ok(StatusCasResult::Conflict { actual: current })
     }
 }
@@ -1447,8 +1439,8 @@ impl<S> ConfigPublisher for StorageNameService<S>
 where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
-    async fn get_config(&self, ledger_address: &str) -> Result<Option<ConfigValue>> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
 
         let data = match self.storage.read_bytes(&key).await {
@@ -1491,11 +1483,11 @@ where
 
     async fn push_config(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
         // Retry only on ETag precondition failures (true write races).
         // If the expected/current check fails, return Conflict immediately.
@@ -1606,7 +1598,7 @@ where
         }
 
         // Too much contention; return best-effort current value.
-        let current = self.get_config(ledger_address).await?;
+        let current = self.get_config(ledger_id).await?;
         Ok(ConfigCasResult::Conflict { actual: current })
     }
 }
@@ -1716,7 +1708,7 @@ mod tests {
         async fn content_write_bytes_with_hash(
             &self,
             _kind: fluree_db_core::ContentKind,
-            _ledger_address: &str,
+            _ledger_id: &str,
             content_hash_hex: &str,
             bytes: &[u8],
         ) -> fluree_db_core::Result<fluree_db_core::ContentWriteResult> {
@@ -1855,14 +1847,14 @@ mod tests {
         async fn content_write_bytes_with_hash(
             &self,
             kind: fluree_db_core::ContentKind,
-            ledger_address: &str,
+            ledger_id: &str,
             content_hash_hex: &str,
             bytes: &[u8],
         ) -> fluree_db_core::Result<fluree_db_core::ContentWriteResult> {
             fluree_db_core::ContentAddressedWrite::content_write_bytes_with_hash(
                 &self.inner,
                 kind,
-                ledger_address,
+                ledger_id,
                 content_hash_hex,
                 bytes,
             )

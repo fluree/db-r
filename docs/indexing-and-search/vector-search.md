@@ -370,8 +370,8 @@ println!("Indexed {} vectors", result.vector_count);
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `name` | Index name (creates graph source address `name:branch`) | Required |
-| `ledger` | Source ledger address (`name:branch`) | Required |
+| `name` | Index name (creates graph source ID `name:branch`) | Required |
+| `ledger` | Source ledger ID (`name:branch`) | Required |
 | `query` | JSON-LD query selecting documents | Required |
 | `embedding_property` | Property containing embeddings | Required |
 | `dimensions` | Vector dimensions | Required |

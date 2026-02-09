@@ -16,7 +16,7 @@ Get Fluree up and running in minutes. Learn how to:
 
 Create your first ledger to store data. Learn how to:
 - Create a new ledger using the API
-- Understand ledger addresses and branching
+- Understand ledger IDs and branching
 - Set up initial configuration
 - Verify ledger creation
 

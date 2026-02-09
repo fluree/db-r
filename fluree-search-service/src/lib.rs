@@ -147,7 +147,7 @@ impl<B: SearchBackend> SearchService<B> {
         let (index_t, hits) = self
             .backend
             .search(
-                &request.graph_source_address,
+                &request.graph_source_id,
                 &request.query,
                 limit,
                 request.as_of_t,
@@ -258,7 +258,7 @@ mod tests {
     impl SearchBackend for MockBackend {
         async fn search(
             &self,
-            _graph_source_address: &str,
+            _graph_source_id: &str,
             _query: &QueryVariant,
             _limit: usize,
             _as_of_t: Option<i64>,

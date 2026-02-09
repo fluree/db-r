@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     // Create a new ledger (or load an existing one)
     let ledger = fluree.create_ledger("mydb").await?;
 
-    // Load an existing ledger by address (`name:branch`)
+    // Load an existing ledger by ID (`name:branch`)
     let ledger = fluree.ledger("mydb:main").await?;
 
     Ok(())
@@ -660,7 +660,7 @@ async fn main() -> Result<()> {
 **When to use `ledger_exists`:**
 
 - **Conditional create-or-load**: Check before deciding whether to create or load
-- **Validation**: Verify ledger addresses exist before operations
+- **Validation**: Verify ledger IDs exist before operations
 - **Defensive programming**: Avoid `NotFound` errors in application logic
 
 **Performance note:** This is a lightweight check that only queries the nameservice - it does NOT load the ledger data, indexes, or novelty. Much faster than attempting to load and catching `NotFound` errors.
@@ -705,7 +705,7 @@ async fn main() -> Result<()> {
 
 **Drop Sequence:**
 
-1. Normalizes the ledger address (ensures `:main` suffix)
+1. Normalizes the ledger ID (ensures `:main` suffix)
 2. Cancels any pending background indexing
 3. Waits for in-progress indexing to complete
 4. In hard mode: deletes all commit and index files
@@ -1065,8 +1065,8 @@ async fn main() -> Result<()> {
         Ok(ledger) => {
             println!("Ledger created at t={}", ledger.t());
         }
-        Err(ApiError::LedgerExists(ledger_address)) => {
-            println!("Ledger {} already exists, loading...", ledger_address);
+        Err(ApiError::LedgerExists(ledger_id)) => {
+            println!("Ledger {} already exists, loading...", ledger_id);
             let ledger = fluree.ledger("mydb:main").await?;
             println!("Loaded at t={}", ledger.t());
         }

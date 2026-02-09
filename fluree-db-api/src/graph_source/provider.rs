@@ -91,13 +91,13 @@ where
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - Graph source alias (e.g., "my-search:main")
+    /// * `graph_source_id` - Graph source alias (e.g., "my-search:main")
     /// * `as_of_t` - Target transaction time for time-travel query
     /// * `sync` - Whether to sync if no suitable snapshot exists
     /// * `timeout_ms` - Optional timeout for sync operations
     async fn bm25_index(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         as_of_t: Option<i64>,
         sync: bool,
         timeout_ms: Option<u64>,
@@ -107,7 +107,7 @@ where
         // Load BM25 manifest from CAS
         let manifest = self
             .fluree
-            .load_or_create_bm25_manifest(graph_source_address)
+            .load_or_create_bm25_manifest(graph_source_id)
             .await
             .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
 
@@ -134,7 +134,7 @@ where
                 .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
 
             info!(
-                graph_source_address = %graph_source_address,
+                graph_source_id = %graph_source_id,
                 as_of_t = effective_as_of_t,
                 snapshot_t = entry.index_t,
                 "Loaded BM25 snapshot for time-travel query"
@@ -149,14 +149,14 @@ where
 
             // Sync to head (which will create a new snapshot in the manifest)
             self.fluree
-                .sync_bm25_index(graph_source_address)
+                .sync_bm25_index(graph_source_id)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
 
             // Re-load manifest after sync
             let manifest = self
                 .fluree
-                .load_or_create_bm25_manifest(graph_source_address)
+                .load_or_create_bm25_manifest(graph_source_id)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
 
@@ -174,7 +174,7 @@ where
                     .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
 
                 info!(
-                    graph_source_address = %graph_source_address,
+                    graph_source_id = %graph_source_id,
                     as_of_t = %as_of_label,
                     snapshot_t = entry.index_t,
                     "Loaded BM25 snapshot after sync"
@@ -185,7 +185,7 @@ where
 
             return Err(QueryError::InvalidQuery(format!(
                 "No BM25 snapshot available for {} at t={}. The earliest snapshot may be later than requested.",
-                graph_source_address, as_of_label
+                graph_source_id, as_of_label
             )));
         }
 
@@ -202,7 +202,7 @@ where
 
         Err(QueryError::InvalidQuery(format!(
             "No BM25 snapshot available for {} at t={}.{}",
-            graph_source_address, as_of_label, available
+            graph_source_id, as_of_label, available
         )))
     }
 }
@@ -227,7 +227,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - Graph source alias (e.g., "products-search:main")
+    /// * `graph_source_id` - Graph source alias (e.g., "products-search:main")
     /// * `query_text` - The search query text
     /// * `limit` - Maximum number of results to return
     /// * `as_of_t` - Target transaction time for time-travel (None = latest)
@@ -235,7 +235,7 @@ where
     /// * `timeout_ms` - Optional timeout for the operation
     async fn search_bm25(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         query_text: &str,
         limit: usize,
         as_of_t: Option<i64>,
@@ -243,33 +243,33 @@ where
         timeout_ms: Option<u64>,
     ) -> QueryResult<Bm25SearchResult> {
         // Look up graph source record to get deployment configuration
-        let deployment_config = self.get_deployment_config(graph_source_address).await?;
+        let deployment_config = self.get_deployment_config(graph_source_id).await?;
 
         match deployment_config.mode {
             DeploymentMode::Embedded => {
-                debug!(graph_source_address = %graph_source_address, "Using embedded search mode");
+                debug!(graph_source_id = %graph_source_id, "Using embedded search mode");
                 let adapter = EmbeddedBm25SearchProvider::new(self);
                 adapter
-                    .search_bm25(graph_source_address, query_text, limit, as_of_t, sync, timeout_ms)
+                    .search_bm25(graph_source_id, query_text, limit, as_of_t, sync, timeout_ms)
                     .await
             }
             #[cfg(feature = "search-remote-client")]
             DeploymentMode::Remote => {
                 debug!(
-                    graph_source_address = %graph_source_address,
+                    graph_source_id = %graph_source_id,
                     endpoint = ?deployment_config.endpoint,
                     "Using remote search mode"
                 );
                 let client = RemoteBm25SearchProvider::from_config(&deployment_config)?;
                 client
-                    .search_bm25(graph_source_address, query_text, limit, as_of_t, sync, timeout_ms)
+                    .search_bm25(graph_source_id, query_text, limit, as_of_t, sync, timeout_ms)
                     .await
             }
             #[cfg(not(feature = "search-remote-client"))]
             DeploymentMode::Remote => {
                 Err(QueryError::InvalidQuery(format!(
                     "Remote search mode not available for graph source '{}': 'search-remote-client' feature not enabled",
-                    graph_source_address
+                    graph_source_id
                 )))
             }
         }
@@ -288,13 +288,13 @@ where
     /// no deployment config is specified.
     async fn get_deployment_config(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
     ) -> QueryResult<SearchDeploymentConfig> {
         // Look up graph source record from nameservice
         let gs_record = self
             .fluree
             .nameservice()
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
 
@@ -363,49 +363,49 @@ where
     ///
     /// # Arguments
     ///
-    /// * `graph_source_address` - Graph source alias (e.g., "embeddings:main")
+    /// * `graph_source_id` - Graph source alias (e.g., "embeddings:main")
     /// * `params` - Search parameters (query vector, metric, limit, etc.)
     async fn search(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         params: VectorSearchParams<'_>,
     ) -> QueryResult<Vec<VectorSearchHit>> {
         // Look up graph source record to get deployment configuration
-        let deployment_config = self.get_deployment_config(graph_source_address).await?;
+        let deployment_config = self.get_deployment_config(graph_source_id).await?;
 
         match deployment_config.mode {
             DeploymentMode::Embedded => {
-                debug!(graph_source_address = %graph_source_address, "Using embedded vector search mode");
-                self.search_vector_embedded(graph_source_address, &params).await
+                debug!(graph_source_id = %graph_source_id, "Using embedded vector search mode");
+                self.search_vector_embedded(graph_source_id, &params).await
             }
             #[cfg(feature = "search-remote-client")]
             DeploymentMode::Remote => {
                 debug!(
-                    graph_source_address = %graph_source_address,
+                    graph_source_id = %graph_source_id,
                     endpoint = ?deployment_config.endpoint,
                     "Using remote vector search mode"
                 );
                 let client = RemoteVectorSearchProvider::from_config(&deployment_config)?;
                 client
-                    .search(graph_source_address, params)
+                    .search(graph_source_id, params)
                     .await
             }
             #[cfg(not(feature = "search-remote-client"))]
             DeploymentMode::Remote => {
                 Err(QueryError::InvalidQuery(format!(
                     "Remote search mode not available for graph source '{}': 'search-remote-client' feature not enabled",
-                    graph_source_address
+                    graph_source_id
                 )))
             }
         }
     }
 
     /// Check if a vector index collection exists for the given graph source alias.
-    async fn collection_exists(&self, graph_source_address: &str) -> QueryResult<bool> {
+    async fn collection_exists(&self, graph_source_id: &str) -> QueryResult<bool> {
         let record = self
             .fluree
             .nameservice()
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
 
@@ -425,7 +425,7 @@ where
     /// from nameservice and performs similarity search in-process.
     async fn search_vector_embedded(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         params: &VectorSearchParams<'_>,
     ) -> QueryResult<Vec<VectorSearchHit>> {
         use fluree_db_query::vector::usearch::deserialize;
@@ -437,7 +437,7 @@ where
             return Err(QueryError::InvalidQuery(format!(
                 "Vector index '{}' does not support time-travel queries (as_of_t). \
                  Only the latest snapshot is available.",
-                graph_source_address
+                graph_source_id
             )));
         }
 
@@ -445,12 +445,12 @@ where
         let record = self
             .fluree
             .nameservice()
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await
             .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
 
         let record = record.ok_or_else(|| {
-            QueryError::InvalidQuery(format!("Graph source not found: {}", graph_source_address))
+            QueryError::InvalidQuery(format!("Graph source not found: {}", graph_source_id))
         })?;
 
         let index_address = match &record.index_address {
@@ -459,7 +459,7 @@ where
                 // No index yet -- try to sync if requested
                 if params.sync {
                     self.fluree
-                        .sync_vector_index(graph_source_address)
+                        .sync_vector_index(graph_source_id)
                         .await
                         .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
 
@@ -467,26 +467,26 @@ where
                     let record = self
                         .fluree
                         .nameservice()
-                        .lookup_graph_source(graph_source_address)
+                        .lookup_graph_source(graph_source_id)
                         .await
                         .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
                         .ok_or_else(|| {
                             QueryError::Internal(format!(
                                 "Graph source disappeared after sync: {}",
-                                graph_source_address
+                                graph_source_id
                             ))
                         })?;
 
                     record.index_address.ok_or_else(|| {
                         QueryError::InvalidQuery(format!(
                             "No vector index available for {} after sync",
-                            graph_source_address
+                            graph_source_id
                         ))
                     })?
                 } else {
                     return Err(QueryError::InvalidQuery(format!(
                         "No vector index available for {}. Try syncing first.",
-                        graph_source_address
+                        graph_source_id
                     )));
                 }
             }
@@ -507,12 +507,12 @@ where
         if index.metadata.metric != params.metric {
             return Err(QueryError::InvalidQuery(format!(
                 "Vector index '{}' uses {:?} metric, but query requested {:?}",
-                graph_source_address, index.metadata.metric, params.metric
+                graph_source_id, index.metadata.metric, params.metric
             )));
         }
 
         debug!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             index_t = record.index_t,
             limit = params.limit,
             "Executing vector search (head-only)"

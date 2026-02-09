@@ -74,22 +74,22 @@ impl MemoryNameService {
     /// Create a record for a new ledger
     ///
     /// This is a convenience method for tests to bootstrap a ledger.
-    pub fn create_ledger(&self, ledger_address: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+    pub fn create_ledger(&self, ledger_id: &str) -> Result<()> {
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let record = NsRecord::new(ledger_name, branch);
         self.records.write().insert(record.address.clone(), record);
         Ok(())
     }
 
     /// Get a record by address (internal helper)
-    fn get_record(&self, ledger_address: &str) -> Option<NsRecord> {
+    fn get_record(&self, ledger_id: &str) -> Option<NsRecord> {
         // Try direct lookup first
-        if let Some(record) = self.records.read().get(ledger_address).cloned() {
+        if let Some(record) = self.records.read().get(ledger_id).cloned() {
             return Some(record);
         }
 
         // Try with default branch
-        let with_branch = match core_alias::normalize_alias(ledger_address) {
+        let with_branch = match core_alias::normalize_alias(ledger_id) {
             Ok(value) => value,
             Err(_) => return None,
         };
@@ -97,16 +97,16 @@ impl MemoryNameService {
         self.records.read().get(&with_branch).cloned()
     }
 
-    /// Normalize ledger address to canonical form
-    fn normalize_address(&self, ledger_address: &str) -> String {
-        core_alias::normalize_alias(ledger_address).unwrap_or_else(|_| ledger_address.to_string())
+    /// Normalize ledger ID to canonical form
+    fn normalize_ledger_id(&self, ledger_id: &str) -> String {
+        core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string())
     }
 }
 
 #[async_trait]
 impl NameService for MemoryNameService {
-    async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
-        Ok(self.get_record(ledger_address))
+    async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
+        Ok(self.get_record(ledger_id))
     }
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
@@ -116,8 +116,8 @@ impl NameService for MemoryNameService {
 
 #[async_trait]
 impl Publisher for MemoryNameService {
-    async fn publish_ledger_init(&self, ledger_address: &str) -> Result<()> {
-        let key = self.normalize_address(ledger_address);
+    async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
 
         // Check if record already exists (including retracted)
         if self.records.read().contains_key(&key) {
@@ -125,7 +125,7 @@ impl Publisher for MemoryNameService {
         }
 
         // Create minimal NsRecord
-        let (ledger_name, branch) = parse_address(ledger_address)?;
+        let (ledger_name, branch) = parse_address(ledger_id)?;
         let record = NsRecord::new(ledger_name, branch);
         self.records.write().insert(key, record);
 
@@ -134,11 +134,11 @@ impl Publisher for MemoryNameService {
 
     async fn publish_commit(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         commit_addr: &str,
         commit_t: i64,
     ) -> Result<()> {
-        let key = self.normalize_address(ledger_address);
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
         let mut did_update = false;
 
@@ -152,7 +152,7 @@ impl Publisher for MemoryNameService {
             // If commit_t <= existing, silently ignore (monotonic guarantee)
         } else {
             // Create new record
-            let (ledger_name, branch) = parse_address(ledger_address)?;
+            let (ledger_name, branch) = parse_address(ledger_id)?;
             let mut record = NsRecord::new(ledger_name, branch);
             record.commit_address = Some(commit_addr.to_string());
             record.commit_t = commit_t;
@@ -162,7 +162,7 @@ impl Publisher for MemoryNameService {
 
         if did_update {
             let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                ledger_address: self.normalize_address(ledger_address),
+                ledger_id: self.normalize_ledger_id(ledger_id),
                 commit_address: commit_addr.to_string(),
                 commit_t,
             });
@@ -170,13 +170,8 @@ impl Publisher for MemoryNameService {
         Ok(())
     }
 
-    async fn publish_index(
-        &self,
-        ledger_address: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()> {
-        let key = self.normalize_address(ledger_address);
+    async fn publish_index(&self, ledger_id: &str, index_addr: &str, index_t: i64) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
         let mut did_update = false;
 
@@ -190,7 +185,7 @@ impl Publisher for MemoryNameService {
             // If index_t <= existing, silently ignore (monotonic guarantee)
         } else {
             // Create new record
-            let (ledger_name, branch) = parse_address(ledger_address)?;
+            let (ledger_name, branch) = parse_address(ledger_id)?;
             let mut record = NsRecord::new(ledger_name, branch);
             record.index_address = Some(index_addr.to_string());
             record.index_t = index_t;
@@ -200,7 +195,7 @@ impl Publisher for MemoryNameService {
 
         if did_update {
             let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                ledger_address: self.normalize_address(ledger_address),
+                ledger_id: self.normalize_ledger_id(ledger_id),
                 index_address: index_addr.to_string(),
                 index_t,
             });
@@ -208,8 +203,8 @@ impl Publisher for MemoryNameService {
         Ok(())
     }
 
-    async fn retract(&self, ledger_address: &str) -> Result<()> {
-        let key = self.normalize_address(ledger_address);
+    async fn retract(&self, ledger_id: &str) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
         let mut did_update = false;
 
@@ -229,16 +224,16 @@ impl Publisher for MemoryNameService {
                 StatusValue::new(current_v + 1, StatusPayload::new("retracted")),
             );
 
-            let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
-                ledger_address: key,
-            });
+            let _ = self
+                .event_tx
+                .send(NameServiceEvent::LedgerRetracted { ledger_id: key });
         }
         Ok(())
     }
 
-    fn publishing_address(&self, ledger_address: &str) -> Option<String> {
+    fn publishing_address(&self, ledger_id: &str) -> Option<String> {
         // Memory nameservice always returns the normalized address as the publishing address
-        Some(self.normalize_address(ledger_address))
+        Some(self.normalize_ledger_id(ledger_id))
     }
 }
 
@@ -246,11 +241,11 @@ impl Publisher for MemoryNameService {
 impl AdminPublisher for MemoryNameService {
     async fn publish_index_allow_equal(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         index_addr: &str,
         index_t: i64,
     ) -> Result<()> {
-        let key = self.normalize_address(ledger_address);
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
 
         if let Some(record) = records.get_mut(&key) {
@@ -261,7 +256,7 @@ impl AdminPublisher for MemoryNameService {
 
                 // Emit event (preserve semantics with regular publish_index)
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_address: key.clone(),
+                    ledger_id: key.clone(),
                     index_address: index_addr.to_string(),
                     index_t,
                 });
@@ -269,14 +264,14 @@ impl AdminPublisher for MemoryNameService {
             // If index_t < existing, silently ignore (protect time-travel invariants)
         } else {
             // Create new record (same as publish_index)
-            let (ledger_name, branch) = parse_address(ledger_address)?;
+            let (ledger_name, branch) = parse_address(ledger_id)?;
             let mut record = NsRecord::new(ledger_name, branch);
             record.index_address = Some(index_addr.to_string());
             record.index_t = index_t;
             records.insert(key.clone(), record);
 
             let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                ledger_address: key,
+                ledger_id: key,
                 index_address: index_addr.to_string(),
                 index_t,
             });
@@ -288,8 +283,8 @@ impl AdminPublisher for MemoryNameService {
 
 #[async_trait]
 impl RefPublisher for MemoryNameService {
-    async fn get_ref(&self, ledger_address: &str, kind: RefKind) -> Result<Option<RefValue>> {
-        let key = self.normalize_address(ledger_address);
+    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
+        let key = self.normalize_ledger_id(ledger_id);
         let records = self.records.read();
 
         match records.get(&key) {
@@ -309,12 +304,12 @@ impl RefPublisher for MemoryNameService {
 
     async fn compare_and_set_ref(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
     ) -> Result<CasResult> {
-        let key = self.normalize_address(ledger_address);
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
 
         let current_ref = records.get(&key).map(|r| match kind {
@@ -333,7 +328,7 @@ impl RefPublisher for MemoryNameService {
             (None, None) => {
                 // Creating a new ref — record must not exist yet.
                 // Initialize the ledger record.
-                let (ledger_name, branch) = parse_address(ledger_address)?;
+                let (ledger_name, branch) = parse_address(ledger_id)?;
                 let mut record = NsRecord::new(ledger_name, branch);
                 match kind {
                     RefKind::CommitHead => {
@@ -351,7 +346,7 @@ impl RefPublisher for MemoryNameService {
                     RefKind::CommitHead => {
                         if let Some(addr) = &new.address {
                             let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                                ledger_address: key,
+                                ledger_id: key,
                                 commit_address: addr.clone(),
                                 commit_t: new.t,
                             });
@@ -360,7 +355,7 @@ impl RefPublisher for MemoryNameService {
                     RefKind::IndexHead => {
                         if let Some(addr) = &new.address {
                             let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                                ledger_address: key,
+                                ledger_id: key,
                                 index_address: addr.clone(),
                                 index_t: new.t,
                             });
@@ -410,7 +405,7 @@ impl RefPublisher for MemoryNameService {
                 // Emit event.
                 if let Some(addr) = &new.address {
                     let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                        ledger_address: key.clone(),
+                        ledger_id: key.clone(),
                         commit_address: addr.clone(),
                         commit_t: new.t,
                     });
@@ -421,7 +416,7 @@ impl RefPublisher for MemoryNameService {
                 record.index_t = new.t;
                 if let Some(addr) = &new.address {
                     let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                        ledger_address: key.clone(),
+                        ledger_id: key.clone(),
                         index_address: addr.clone(),
                         index_t: new.t,
                     });
@@ -446,8 +441,8 @@ impl Publication for MemoryNameService {
         Ok(())
     }
 
-    async fn known_addresses(&self, ledger_address: &str) -> Result<Vec<String>> {
-        let key = self.normalize_address(ledger_address);
+    async fn known_addresses(&self, ledger_id: &str) -> Result<Vec<String>> {
+        let key = self.normalize_ledger_id(ledger_id);
         let records = self.records.read();
 
         if let Some(record) = records.get(&key) {
@@ -559,12 +554,12 @@ impl GraphSourcePublisher for MemoryNameService {
     }
 
     async fn lookup_graph_source(&self, address: &str) -> Result<Option<GraphSourceRecord>> {
-        let key = self.normalize_address(address);
+        let key = self.normalize_ledger_id(address);
         Ok(self.graph_source_records.read().get(&key).cloned())
     }
 
     async fn lookup_any(&self, address: &str) -> Result<NsLookupResult> {
-        let key = self.normalize_address(address);
+        let key = self.normalize_ledger_id(address);
 
         // Check graph source records first
         if let Some(record) = self.graph_source_records.read().get(&key).cloned() {
@@ -586,8 +581,8 @@ impl GraphSourcePublisher for MemoryNameService {
 
 #[async_trait]
 impl StatusPublisher for MemoryNameService {
-    async fn get_status(&self, ledger_address: &str) -> Result<Option<StatusValue>> {
-        let key = self.normalize_address(ledger_address);
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
+        let key = self.normalize_ledger_id(ledger_id);
         let status_values = self.status_values.read();
 
         // If status exists, return it
@@ -607,11 +602,11 @@ impl StatusPublisher for MemoryNameService {
 
     async fn push_status(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> Result<StatusCasResult> {
-        let key = self.normalize_address(ledger_address);
+        let key = self.normalize_ledger_id(ledger_id);
 
         // Get current status (or initial if record exists but no status)
         let current = {
@@ -669,8 +664,8 @@ impl StatusPublisher for MemoryNameService {
 
 #[async_trait]
 impl ConfigPublisher for MemoryNameService {
-    async fn get_config(&self, ledger_address: &str) -> Result<Option<ConfigValue>> {
-        let key = self.normalize_address(ledger_address);
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
+        let key = self.normalize_ledger_id(ledger_id);
         let config_values = self.config_values.read();
 
         // If config exists, return it
@@ -690,11 +685,11 @@ impl ConfigPublisher for MemoryNameService {
 
     async fn push_config(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
-        let key = self.normalize_address(ledger_address);
+        let key = self.normalize_ledger_id(ledger_id);
 
         // Get current config (or unborn if record exists but no config)
         let current = {
@@ -874,7 +869,7 @@ mod tests {
         assert_eq!(
             evt,
             NameServiceEvent::LedgerCommitPublished {
-                ledger_address: "mydb:main".to_string(),
+                ledger_id: "mydb:main".to_string(),
                 commit_address: "commit-1".to_string(),
                 commit_t: 1
             }
@@ -1270,11 +1265,11 @@ mod tests {
 
         match sub.receiver.recv().await.unwrap() {
             NameServiceEvent::LedgerCommitPublished {
-                ledger_address,
+                ledger_id,
                 commit_address,
                 commit_t,
             } => {
-                assert_eq!(ledger_address, "mydb:main");
+                assert_eq!(ledger_id, "mydb:main");
                 assert_eq!(commit_address, "commit-1");
                 assert_eq!(commit_t, 1);
             }
@@ -1305,11 +1300,11 @@ mod tests {
 
         match sub.receiver.recv().await.unwrap() {
             NameServiceEvent::LedgerIndexPublished {
-                ledger_address,
+                ledger_id,
                 index_address,
                 index_t,
             } => {
-                assert_eq!(ledger_address, "mydb:main");
+                assert_eq!(ledger_id, "mydb:main");
                 assert_eq!(index_address, "index-1");
                 assert_eq!(index_t, 5);
             }

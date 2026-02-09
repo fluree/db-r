@@ -245,7 +245,7 @@ impl PropertyJoinOperator {
                 // In dataset mode, use canonical IRI strings as join keys.
                 // Prefer decoding within the active ledger when available.
                 let iri = ctx
-                    .active_ledger_address()
+                    .active_ledger_id()
                     .and_then(|addr| ctx.decode_sid_in_ledger(sid, addr))
                     .or_else(|| ctx.decode_sid(sid))?;
                 Some(SubjectKey::Iri(Arc::from(iri)))

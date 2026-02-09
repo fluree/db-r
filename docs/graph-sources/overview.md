@@ -48,7 +48,7 @@ Non-ledger graph sources are registered in nameservice:
 
 ```json
 {
-  "graph_source_address": "products-search:main",
+  "graph_source_id": "products-search:main",
   "type": "graph-source",
   "backend": "bm25",
   "source": "products:main",

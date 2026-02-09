@@ -480,9 +480,9 @@ impl DynamoDbNameService {
 impl NameService for DynamoDbNameService {
     async fn lookup(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
     ) -> std::result::Result<Option<NsRecord>, NameServiceError> {
-        let pk = Self::normalize(ledger_address);
+        let pk = Self::normalize(ledger_id);
         let items = self.query_all_items(&pk).await?;
         Ok(Self::items_to_ns_record(&pk, &items))
     }

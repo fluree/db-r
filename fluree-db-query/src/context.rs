@@ -315,10 +315,10 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     ///
     /// Used in multi-ledger mode to decode SIDs from the correct ledger.
     /// Falls back to the primary db if the ledger is not found.
-    pub fn decode_sid_in_ledger(&self, sid: &Sid, ledger_address: &str) -> Option<String> {
+    pub fn decode_sid_in_ledger(&self, sid: &Sid, ledger_id: &str) -> Option<String> {
         if let Some(ds) = &self.dataset {
-            // Search all graphs (default and named) by ledger_address
-            if let Some(graph) = ds.find_by_ledger_address(ledger_address) {
+            // Search all graphs (default and named) by ledger_id
+            if let Some(graph) = ds.find_by_ledger_id(ledger_id) {
                 return graph.db.decode_sid(sid);
             }
         }
@@ -331,10 +331,10 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     /// Used in multi-ledger mode when re-encoding an IRI for a target ledger.
     /// This is needed when an IriMatch from one ledger needs to be used in
     /// a scan against a different ledger.
-    pub fn encode_iri_in_ledger(&self, iri: &str, ledger_address: &str) -> Option<Sid> {
+    pub fn encode_iri_in_ledger(&self, iri: &str, ledger_id: &str) -> Option<Sid> {
         if let Some(ds) = &self.dataset {
-            // Search all graphs (default and named) by ledger_address
-            if let Some(graph) = ds.find_by_ledger_address(ledger_address) {
+            // Search all graphs (default and named) by ledger_id
+            if let Some(graph) = ds.find_by_ledger_id(ledger_id) {
                 return graph.db.encode_iri(iri);
             }
         }
@@ -342,14 +342,14 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
         self.db.encode_iri(iri)
     }
 
-    /// Get the ledger address for the currently active graph (if in dataset mode)
+    /// Get the ledger ID for the currently active graph (if in dataset mode)
     ///
-    /// Returns the ledger address when a single named graph is active,
+    /// Returns the ledger ID when a single named graph is active,
     /// or None for single-db mode or when multiple default graphs are active.
-    pub fn active_ledger_address(&self) -> Option<&str> {
+    pub fn active_ledger_id(&self) -> Option<&str> {
         match (&self.dataset, &self.active_graph) {
             (Some(ds), ActiveGraph::Named(iri)) => {
-                ds.named_graph(iri).map(|g| g.ledger_address.as_ref())
+                ds.named_graph(iri).map(|g| g.ledger_id.as_ref())
             }
             _ => None,
         }

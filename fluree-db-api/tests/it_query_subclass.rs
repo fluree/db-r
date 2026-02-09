@@ -244,7 +244,7 @@ async fn subclass_inferencing_after_load_issue_core_48() {
     let fluree = FlureeBuilder::file(storage_path)
         .build()
         .expect("build file fluree");
-    let ledger_address = "subclass-inferencing-test:main";
+    let ledger_id = "subclass-inferencing-test:main";
 
     let ctx = json!({
         "id":"@id",
@@ -254,7 +254,7 @@ async fn subclass_inferencing_after_load_issue_core_48() {
         "rdfs":"http://www.w3.org/2000/01/rdf-schema#"
     });
 
-    let ledger0 = fluree.create_ledger(ledger_address).await.unwrap();
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
     let insert_people = json!({
         "@context": ctx,
         "insert": [
@@ -279,7 +279,7 @@ async fn subclass_inferencing_after_load_issue_core_48() {
     let fluree2 = FlureeBuilder::file(storage_path)
         .build()
         .expect("build file fluree2");
-    let loaded = fluree2.ledger(ledger_address).await.unwrap();
+    let loaded = fluree2.ledger(ledger_id).await.unwrap();
 
     let q = json!({
         "@context": ctx,

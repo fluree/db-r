@@ -344,7 +344,7 @@ pub fn create_request_span(
     operation: &str,
     request_id: Option<&str>,
     trace_id: Option<&str>,
-    ledger_address: Option<&str>,
+    ledger_id: Option<&str>,
     tenant_id: Option<&str>,
 ) -> tracing::Span {
     tracing::info_span!(
@@ -352,7 +352,7 @@ pub fn create_request_span(
         operation = operation,
         request_id = request_id,
         trace_id = trace_id,
-        ledger_address = ledger_address,
+        ledger_id = ledger_id,
         tenant_id = tenant_id,
         error_code = tracing::field::Empty, // Will be set on error
     )

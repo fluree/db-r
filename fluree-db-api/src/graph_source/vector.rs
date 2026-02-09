@@ -91,9 +91,9 @@ where
         &self,
         config: VectorCreateConfig,
     ) -> Result<VectorCreateResult> {
-        let graph_source_address = config.graph_source_address();
+        let graph_source_id = config.graph_source_id();
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             ledger = %config.ledger,
             dimensions = config.dimensions,
             "Creating vector similarity search index"
@@ -102,13 +102,13 @@ where
         // Check if graph source already exists (prevent duplicates)
         if let Some(existing) = self
             .nameservice
-            .lookup_graph_source(&graph_source_address)
+            .lookup_graph_source(&graph_source_id)
             .await?
         {
             if !existing.retracted {
                 return Err(crate::ApiError::Config(format!(
                     "Graph source '{}' already exists",
-                    graph_source_address
+                    graph_source_id
                 )));
             }
         }
@@ -178,7 +178,7 @@ where
 
         // 4. Persist index snapshot
         let index_address = self
-            .write_vector_snapshot_blob(&graph_source_address, &index, source_t)
+            .write_vector_snapshot_blob(&graph_source_id, &index, source_t)
             .await?;
 
         info!(
@@ -221,14 +221,14 @@ where
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             vector_count = vector_count,
             index_t = source_t,
             "Created vector similarity search index"
         );
 
         Ok(VectorCreateResult {
-            graph_source_address,
+            graph_source_id,
             vector_count,
             skipped_count,
             dimensions: config.dimensions,
@@ -292,7 +292,7 @@ where
     /// the head pointer via nameservice.
     pub(crate) async fn write_vector_snapshot_blob(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         index: &VectorIndex,
         index_t: i64,
     ) -> Result<String> {
@@ -302,10 +302,10 @@ where
         let bytes = serialize(index)?;
 
         // Build versioned storage address
-        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
                 "Invalid graph source alias '{}': {}",
-                graph_source_address, e
+                graph_source_id, e
             ))
         })?;
         let address = format!(
@@ -333,27 +333,21 @@ where
     /// Load a vector index from storage (head snapshot).
     ///
     /// Vector indexes are head-only and do not support time-travel queries.
-    pub async fn load_vector_index(&self, graph_source_address: &str) -> Result<Arc<VectorIndex>> {
+    pub async fn load_vector_index(&self, graph_source_id: &str) -> Result<Arc<VectorIndex>> {
         use fluree_db_query::vector::usearch::deserialize;
 
         // Look up graph source record
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         // Get index address
         let index_address = record.index_address.ok_or_else(|| {
-            crate::ApiError::NotFound(format!(
-                "No index for graph source: {}",
-                graph_source_address
-            ))
+            crate::ApiError::NotFound(format!("No index for graph source: {}", graph_source_id))
         })?;
 
         // Load from storage
@@ -370,18 +364,15 @@ where
     /// This is a lightweight check that only looks up nameservice records.
     pub async fn check_vector_staleness(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
     ) -> Result<VectorStalenessCheck> {
         // Look up graph source record
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         // Get source ledger from dependencies
@@ -411,7 +402,7 @@ where
         let lag = ledger_t - index_t;
 
         Ok(VectorStalenessCheck {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             source_ledger,
             index_t,
             ledger_t,
@@ -435,31 +426,28 @@ where
     ///
     /// This operation performs incremental updates when possible,
     /// falling back to full resync if needed.
-    pub async fn sync_vector_index(&self, graph_source_address: &str) -> Result<VectorSyncResult> {
+    pub async fn sync_vector_index(&self, graph_source_id: &str) -> Result<VectorSyncResult> {
         use fluree_db_novelty::trace_commits;
         use fluree_db_query::bm25::CompiledPropertyDeps;
         use fluree_db_query::vector::usearch::deserialize;
         use futures::StreamExt;
 
-        info!(graph_source_address = %graph_source_address, "Starting vector index sync");
+        info!(graph_source_id = %graph_source_id, "Starting vector index sync");
 
         // 1. Look up graph source record to get config and index address
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         // Check if graph source has been dropped
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
                 "Cannot sync retracted graph source: {}",
-                graph_source_address
+                graph_source_id
             )));
         }
 
@@ -467,7 +455,7 @@ where
             Some(addr) => addr.clone(),
             None => {
                 // No index yet - need full resync
-                return self.resync_vector_index(graph_source_address).await;
+                return self.resync_vector_index(graph_source_id).await;
             }
         };
 
@@ -498,9 +486,9 @@ where
 
         // Already up to date?
         if ledger_t <= old_watermark {
-            info!(graph_source_address = %graph_source_address, ledger_t = ledger_t, "Index already up to date");
+            info!(graph_source_id = %graph_source_id, ledger_t = ledger_t, "Index already up to date");
             return Ok(VectorSyncResult {
-                graph_source_address: graph_source_address.to_string(),
+                graph_source_id: graph_source_id.to_string(),
                 upserted: 0,
                 removed: 0,
                 skipped: 0,
@@ -542,12 +530,12 @@ where
         // If no subjects affected, fall back to full resync
         if affected_sids.is_empty() {
             warn!(
-                graph_source_address = %graph_source_address,
+                graph_source_id = %graph_source_id,
                 old_watermark = old_watermark,
                 ledger_t = ledger_t,
                 "No affected subjects detected, falling back to full resync"
             );
-            return self.resync_vector_index(graph_source_address).await;
+            return self.resync_vector_index(graph_source_id).await;
         }
 
         // 7. Convert affected Sids to IRIs
@@ -557,7 +545,7 @@ where
             .collect();
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             affected_count = affected_iris.len(),
             "Found affected subjects for incremental update"
         );
@@ -590,7 +578,7 @@ where
         let update_result = updater.apply_update(&results, &affected_iris_expanded, ledger_t);
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             upserted = update_result.upserted,
             removed = update_result.removed,
             skipped = update_result.skipped,
@@ -599,13 +587,13 @@ where
 
         // 10. Persist updated index and update head pointer
         let new_address = self
-            .write_vector_snapshot_blob(graph_source_address, &index, ledger_t)
+            .write_vector_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
-        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
                 "Invalid graph source alias '{}': {}",
-                graph_source_address, e
+                graph_source_id, e
             ))
         })?;
 
@@ -615,14 +603,14 @@ where
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             new_address = %new_address,
             ledger_t = ledger_t,
             "Persisted synced vector index"
         );
 
         Ok(VectorSyncResult {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             upserted: update_result.upserted,
             removed: update_result.removed,
             skipped: update_result.skipped,
@@ -635,30 +623,24 @@ where
     /// Full resync of a vector index.
     ///
     /// Rebuilds the entire index from scratch by re-running the indexing query.
-    pub async fn resync_vector_index(
-        &self,
-        graph_source_address: &str,
-    ) -> Result<VectorSyncResult> {
+    pub async fn resync_vector_index(&self, graph_source_id: &str) -> Result<VectorSyncResult> {
         use fluree_db_query::vector::usearch::deserialize;
 
-        info!(graph_source_address = %graph_source_address, "Starting full vector index resync");
+        info!(graph_source_id = %graph_source_id, "Starting full vector index resync");
 
         // 1. Look up graph source record
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
                 "Cannot resync retracted graph source: {}",
-                graph_source_address
+                graph_source_id
             )));
         }
 
@@ -754,7 +736,7 @@ where
         let index = builder.build();
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             upserted = upserted,
             skipped = skipped,
             "Built new vector index"
@@ -762,13 +744,13 @@ where
 
         // 6. Persist new index and update head pointer
         let new_address = self
-            .write_vector_snapshot_blob(graph_source_address, &index, ledger_t)
+            .write_vector_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
-        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
                 "Invalid graph source alias '{}': {}",
-                graph_source_address, e
+                graph_source_id, e
             ))
         })?;
 
@@ -778,14 +760,14 @@ where
             .await?;
 
         info!(
-            graph_source_address = %graph_source_address,
+            graph_source_id = %graph_source_id,
             new_address = %new_address,
             ledger_t = ledger_t,
             "Completed full vector index resync"
         );
 
         Ok(VectorSyncResult {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             upserted,
             removed: 0, // Full resync doesn't track removals
             skipped,
@@ -799,34 +781,31 @@ where
     ///
     /// This marks the graph source as retracted in the nameservice but does not
     /// immediately delete snapshot files (they may be needed for time-travel).
-    pub async fn drop_vector_index(&self, graph_source_address: &str) -> Result<VectorDropResult> {
-        info!(graph_source_address = %graph_source_address, "Dropping vector index");
+    pub async fn drop_vector_index(&self, graph_source_id: &str) -> Result<VectorDropResult> {
+        info!(graph_source_id = %graph_source_id, "Dropping vector index");
 
         // Look up graph source record
         let record = self
             .nameservice
-            .lookup_graph_source(graph_source_address)
+            .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_address
-                ))
+                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
         if record.retracted {
             return Ok(VectorDropResult {
-                graph_source_address: graph_source_address.to_string(),
+                graph_source_id: graph_source_id.to_string(),
                 deleted_snapshots: 0,
                 was_already_retracted: true,
             });
         }
 
         // Mark as retracted
-        let (name, branch) = core_alias::split_alias(graph_source_address).map_err(|e| {
+        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
                 "Invalid graph source alias '{}': {}",
-                graph_source_address, e
+                graph_source_id, e
             ))
         })?;
 
@@ -834,10 +813,10 @@ where
             .retract_graph_source(&name, &branch)
             .await?;
 
-        info!(graph_source_address = %graph_source_address, "Marked vector index as retracted");
+        info!(graph_source_id = %graph_source_id, "Marked vector index as retracted");
 
         Ok(VectorDropResult {
-            graph_source_address: graph_source_address.to_string(),
+            graph_source_id: graph_source_id.to_string(),
             deleted_snapshots: 0,
             was_already_retracted: false,
         })

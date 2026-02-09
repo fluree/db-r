@@ -113,7 +113,7 @@ impl fmt::Debug for RemoteBm25SearchProvider {
 impl Bm25SearchProvider for RemoteBm25SearchProvider {
     async fn search_bm25(
         &self,
-        graph_source_address: &str,
+        graph_source_id: &str,
         query_text: &str,
         limit: usize,
         as_of_t: Option<i64>,
@@ -121,7 +121,7 @@ impl Bm25SearchProvider for RemoteBm25SearchProvider {
         timeout_ms: Option<u64>,
     ) -> Result<Bm25SearchResult> {
         // Build the search request
-        let mut request = SearchRequest::bm25(graph_source_address, query_text, limit);
+        let mut request = SearchRequest::bm25(graph_source_id, query_text, limit);
         request.as_of_t = as_of_t;
         request.sync = sync;
         request.timeout_ms = timeout_ms;

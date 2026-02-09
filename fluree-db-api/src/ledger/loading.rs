@@ -205,10 +205,10 @@ where
     ///
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
-    pub async fn ledger(&self, ledger_address: &str) -> Result<LedgerState<S>> {
+    pub async fn ledger(&self, ledger_id: &str) -> Result<LedgerState<S>> {
         let mut state = LedgerState::load(
             &self.nameservice,
-            ledger_address,
+            ledger_id,
             self.connection.storage().clone(),
         )
         .await?;
@@ -279,12 +279,12 @@ where
     /// as it existed at `target_t`. The view is read-only and time-bounded.
     pub async fn ledger_view_at(
         &self,
-        ledger_address: &str,
+        ledger_id: &str,
         target_t: i64,
     ) -> Result<HistoricalLedgerView<S>> {
         let view = HistoricalLedgerView::load_at(
             &self.nameservice,
-            ledger_address,
+            ledger_id,
             self.connection.storage().clone(),
             target_t,
         )
@@ -306,14 +306,14 @@ where
     /// Create a new empty ledger with genesis state
     ///
     /// This operation:
-    /// 1. Normalizes the ledger address (ensures branch suffix like `:main`)
+    /// 1. Normalizes the ledger ID (ensures branch suffix like `:main`)
     /// 2. Registers the ledger in the nameservice (fails if already exists)
     /// 3. Creates a genesis database with t=0 (no transactions yet)
     /// 4. Returns the new LedgerState ready for transactions
     ///
     /// # Arguments
     ///
-    /// * `ledger_address` - Ledger address (e.g., "mydb" or "mydb:main")
+    /// * `ledger_id` - Ledger ID (e.g., "mydb" or "mydb:main")
     ///
     /// # Errors
     ///
@@ -327,18 +327,17 @@ where
     /// let ledger = fluree.create_ledger("mydb").await?;
     /// // Now you can transact: fluree.insert(ledger, &data).await?
     /// ```
-    pub async fn create_ledger(&self, ledger_address: &str) -> Result<LedgerState<S>> {
+    pub async fn create_ledger(&self, ledger_id: &str) -> Result<LedgerState<S>> {
         use fluree_db_core::alias::normalize_alias;
         use fluree_db_novelty::Novelty;
         use tracing::info;
 
         // 1. Normalize address (ensure branch suffix)
-        let ledger_address =
-            normalize_alias(ledger_address).unwrap_or_else(|_| ledger_address.to_string());
-        info!(ledger_address = %ledger_address, "Creating ledger");
+        let ledger_id = normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
+        info!(ledger_id = %ledger_id, "Creating ledger");
 
         // 2. Register in nameservice via Publisher (fails if already exists)
-        match self.nameservice.publish_ledger_init(&ledger_address).await {
+        match self.nameservice.publish_ledger_init(&ledger_id).await {
             Ok(()) => {}
             Err(NameServiceError::LedgerAlreadyExists(a)) => {
                 return Err(ApiError::ledger_exists(a));
@@ -349,12 +348,12 @@ where
         }
 
         // 3. Create genesis Db with empty state at t=0
-        let db = fluree_db_core::Db::genesis(self.connection.storage().clone(), &ledger_address);
+        let db = fluree_db_core::Db::genesis(self.connection.storage().clone(), &ledger_id);
 
         // 4. Create LedgerState with empty Novelty (t=0)
         let ledger = LedgerState::new(db, Novelty::new(0));
 
-        info!(ledger_address = %ledger_address, "Ledger created successfully");
+        info!(ledger_id = %ledger_id, "Ledger created successfully");
         Ok(ledger)
     }
 }

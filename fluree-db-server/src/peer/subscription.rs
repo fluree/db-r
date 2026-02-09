@@ -159,7 +159,7 @@ impl PeerSubscriptionTask {
                         let changed = self
                             .peer_state
                             .update_ledger(
-                                &record.ledger_address,
+                                &record.ledger_id,
                                 record.commit_t,
                                 record.index_t,
                                 record.commit_address.clone(),
@@ -169,7 +169,7 @@ impl PeerSubscriptionTask {
 
                         if changed {
                             tracing::info!(
-                                ledger_address = %record.ledger_address,
+                                ledger_id = %record.ledger_id,
                                 commit_t = record.commit_t,
                                 index_t = record.index_t,
                                 "Remote ledger watermark updated"
@@ -185,7 +185,7 @@ impl PeerSubscriptionTask {
                         let changed = self
                             .peer_state
                             .update_graph_source(
-                                &record.graph_source_address,
+                                &record.graph_source_id,
                                 record.index_t,
                                 record.config_hash(),
                                 record.index_address.clone(),
@@ -194,7 +194,7 @@ impl PeerSubscriptionTask {
 
                         if changed {
                             tracing::info!(
-                                graph_source_address = %record.graph_source_address,
+                                graph_source_id = %record.graph_source_id,
                                 index_t = record.index_t,
                                 "Remote graph source watermark updated"
                             );
@@ -211,14 +211,14 @@ impl PeerSubscriptionTask {
                 match data.kind.as_str() {
                     SSE_KIND_LEDGER => {
                         self.peer_state.remove_ledger(&data.address).await;
-                        tracing::info!(ledger_address = %data.address, "Ledger retracted from remote");
+                        tracing::info!(ledger_id = %data.address, "Ledger retracted from remote");
 
                         // Evict any cached state for the ledger (no-op if not cached).
                         self.disconnect_cached_ledger(&data.address).await;
                     }
                     SSE_KIND_GRAPH_SOURCE => {
                         self.peer_state.remove_graph_source(&data.address).await;
-                        tracing::info!(graph_source_address = %data.address, "Graph source retracted from remote");
+                        tracing::info!(graph_source_id = %data.address, "Graph source retracted from remote");
                     }
                     _ => {
                         tracing::debug!(kind = %data.kind, "Unknown retraction kind");
@@ -242,28 +242,28 @@ impl PeerSubscriptionTask {
             return;
         }
 
-        for ledger_address in &sub.ledgers {
+        for ledger_id in &sub.ledgers {
             // Preload by loading into the connection-level ledger cache.
             let result = match &self.fluree {
-                FlureeInstance::File(f) => f.ledger_cached(ledger_address).await.map(|_| ()),
-                FlureeInstance::Proxy(p) => p.ledger_cached(ledger_address).await.map(|_| ()),
+                FlureeInstance::File(f) => f.ledger_cached(ledger_id).await.map(|_| ()),
+                FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await.map(|_| ()),
             };
 
             match result {
                 Ok(()) => {
-                    tracing::info!(ledger_address = %ledger_address, "Preloaded ledger into peer cache")
+                    tracing::info!(ledger_id = %ledger_id, "Preloaded ledger into peer cache")
                 }
                 Err(e) => {
-                    tracing::warn!(ledger_address = %ledger_address, error = %e, "Failed to preload ledger")
+                    tracing::warn!(ledger_id = %ledger_id, error = %e, "Failed to preload ledger")
                 }
             }
         }
     }
 
-    async fn disconnect_cached_ledger(&self, ledger_address: &str) {
+    async fn disconnect_cached_ledger(&self, ledger_id: &str) {
         match &self.fluree {
-            FlureeInstance::File(f) => f.disconnect_ledger(ledger_address).await,
-            FlureeInstance::Proxy(p) => p.disconnect_ledger(ledger_address).await,
+            FlureeInstance::File(f) => f.disconnect_ledger(ledger_id).await,
+            FlureeInstance::Proxy(p) => p.disconnect_ledger(ledger_id).await,
         }
     }
 
@@ -271,7 +271,7 @@ impl PeerSubscriptionTask {
         let ns_record = match ledger_record_to_ns_record(record) {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(ledger_address = %record.ledger_address, error = %e, "Failed to build NsRecord from SSE record");
+                tracing::warn!(ledger_id = %record.ledger_id, error = %e, "Failed to build NsRecord from SSE record");
                 return;
             }
         };
@@ -303,7 +303,7 @@ impl PeerSubscriptionTask {
     {
         match mgr
             .notify(NsNotify {
-                ledger_address: record.ledger_address.clone(),
+                ledger_id: record.ledger_id.clone(),
                 record: Some(ns_record),
             })
             .await
@@ -319,10 +319,10 @@ impl PeerSubscriptionTask {
                 | NotifyResult::IndexUpdated
                 | NotifyResult::CommitApplied),
             ) => {
-                tracing::info!(ledger_address = %record.ledger_address, ?result, "Refreshed cached ledger from SSE update");
+                tracing::info!(ledger_id = %record.ledger_id, ?result, "Refreshed cached ledger from SSE update");
             }
             Err(e) => {
-                tracing::warn!(ledger_address = %record.ledger_address, error = %e, "Failed to refresh cached ledger from SSE update");
+                tracing::warn!(ledger_id = %record.ledger_id, error = %e, "Failed to refresh cached ledger from SSE update");
             }
         }
     }
@@ -357,11 +357,11 @@ impl PeerSubscriptionTask {
 }
 
 fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String> {
-    let (name, branch) = alias::split_alias(&record.ledger_address)
-        .map_err(|e| format!("invalid ledger address '{}': {}", record.ledger_address, e))?;
+    let (name, branch) = alias::split_alias(&record.ledger_id)
+        .map_err(|e| format!("invalid ledger ID '{}': {}", record.ledger_id, e))?;
 
     Ok(NsRecord {
-        address: record.ledger_address.clone(),
+        address: record.ledger_id.clone(),
         name,
         branch,
         commit_address: record.commit_address.clone(),

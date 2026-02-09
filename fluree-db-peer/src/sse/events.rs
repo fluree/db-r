@@ -7,7 +7,7 @@ use serde::Deserialize;
 /// Ledger record from SSE ns-record event
 #[derive(Debug, Clone, Deserialize)]
 pub struct LedgerRecord {
-    pub ledger_address: String,
+    pub ledger_id: String,
     #[serde(default)]
     pub branch: Option<String>,
     pub commit_address: Option<String>,
@@ -21,7 +21,7 @@ pub struct LedgerRecord {
 /// Graph source record from SSE ns-record event
 #[derive(Debug, Clone, Deserialize)]
 pub struct GraphSourceRecord {
-    pub graph_source_address: String,
+    pub graph_source_id: String,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn test_parse_ledger_record() {
         let json = r#"{
-            "ledger_address": "books:main",
+            "ledger_id": "books:main",
             "branch": "main",
             "commit_address": "fluree:file://commit/abc123",
             "commit_t": 5,
@@ -129,7 +129,7 @@ mod tests {
         }"#;
 
         let record: LedgerRecord = serde_json::from_str(json).unwrap();
-        assert_eq!(record.ledger_address, "books:main");
+        assert_eq!(record.ledger_id, "books:main");
         assert_eq!(record.commit_t, 5);
         assert_eq!(record.index_t, 3);
     }
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn test_parse_graph_source_record() {
         let json = r#"{
-            "graph_source_address": "search:main",
+            "graph_source_id": "search:main",
             "name": "search",
             "branch": "main",
             "source_type": "fulltext",
@@ -149,7 +149,7 @@ mod tests {
         }"#;
 
         let record: GraphSourceRecord = serde_json::from_str(json).unwrap();
-        assert_eq!(record.graph_source_address, "search:main");
+        assert_eq!(record.graph_source_id, "search:main");
         assert_eq!(record.index_t, 2);
         assert_eq!(record.dependencies, vec!["books:main"]);
     }
@@ -160,7 +160,7 @@ mod tests {
             "action": "ns-record",
             "kind": "ledger",
             "address": "books:main",
-            "record": {"ledger_address": "books:main", "commit_t": 1, "index_t": 1},
+            "record": {"ledger_id": "books:main", "commit_t": 1, "index_t": 1},
             "emitted_at": "2024-01-01T00:00:00Z"
         }"#;
 
@@ -188,7 +188,7 @@ mod tests {
         // Test that config_hash produces SHA-256 truncated to 8 hex chars
         // This should match the server's sha256_short function
         let record = GraphSourceRecord {
-            graph_source_address: "test:main".to_string(),
+            graph_source_id: "test:main".to_string(),
             name: None,
             branch: None,
             source_type: None,
@@ -210,7 +210,7 @@ mod tests {
     fn test_graph_source_config_hash_empty() {
         // Empty config should still produce valid hash
         let record = GraphSourceRecord {
-            graph_source_address: "test:main".to_string(),
+            graph_source_id: "test:main".to_string(),
             name: None,
             branch: None,
             source_type: None,

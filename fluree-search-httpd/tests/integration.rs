@@ -106,10 +106,10 @@ mod http_tests {
         }
 
         /// Load the BM25 manifest from CAS via the nameservice head pointer.
-        async fn load_manifest(&self, graph_source_address: &str) -> ServiceResult<Bm25Manifest> {
+        async fn load_manifest(&self, graph_source_id: &str) -> ServiceResult<Bm25Manifest> {
             let record = self
                 .nameservice
-                .lookup_graph_source(graph_source_address)
+                .lookup_graph_source(graph_source_id)
                 .await
                 .map_err(|e| ServiceError::Internal {
                     message: format!("Nameservice error: {}", e),
@@ -117,12 +117,12 @@ mod http_tests {
 
             let record = match record {
                 Some(r) => r,
-                None => return Ok(Bm25Manifest::new(graph_source_address)),
+                None => return Ok(Bm25Manifest::new(graph_source_id)),
             };
 
             let manifest_address = match &record.index_address {
                 Some(addr) => addr.clone(),
-                None => return Ok(Bm25Manifest::new(graph_source_address)),
+                None => return Ok(Bm25Manifest::new(graph_source_id)),
             };
 
             let bytes = self
@@ -146,20 +146,17 @@ mod http_tests {
     impl IndexLoader for TestIndexLoader {
         async fn load_index(
             &self,
-            graph_source_address: &str,
+            graph_source_id: &str,
             index_t: i64,
         ) -> ServiceResult<Bm25Index> {
-            let manifest = self.load_manifest(graph_source_address).await?;
+            let manifest = self.load_manifest(graph_source_id).await?;
 
             let entry = manifest
                 .snapshots
                 .iter()
                 .find(|e| e.index_t == index_t)
                 .ok_or_else(|| ServiceError::Internal {
-                    message: format!(
-                        "No snapshot found for {} at t={}",
-                        graph_source_address, index_t
-                    ),
+                    message: format!("No snapshot found for {} at t={}", graph_source_id, index_t),
                 })?;
 
             let bytes = self
@@ -177,25 +174,22 @@ mod http_tests {
             Ok(index)
         }
 
-        async fn get_latest_index_t(
-            &self,
-            graph_source_address: &str,
-        ) -> ServiceResult<Option<i64>> {
-            let manifest = self.load_manifest(graph_source_address).await?;
+        async fn get_latest_index_t(&self, graph_source_id: &str) -> ServiceResult<Option<i64>> {
+            let manifest = self.load_manifest(graph_source_id).await?;
             Ok(manifest.head().map(|e| e.index_t))
         }
 
         async fn find_snapshot_for_t(
             &self,
-            graph_source_address: &str,
+            graph_source_id: &str,
             target_t: i64,
         ) -> ServiceResult<Option<i64>> {
-            let manifest = self.load_manifest(graph_source_address).await?;
+            let manifest = self.load_manifest(graph_source_id).await?;
             Ok(manifest.select_snapshot(target_t).map(|e| e.index_t))
         }
 
-        async fn get_index_head(&self, graph_source_address: &str) -> ServiceResult<Option<i64>> {
-            self.get_latest_index_t(graph_source_address).await
+        async fn get_index_head(&self, graph_source_id: &str) -> ServiceResult<Option<i64>> {
+            self.get_latest_index_t(graph_source_id).await
         }
     }
 
@@ -218,7 +212,7 @@ mod http_tests {
         let result = state
             .backend
             .search(
-                &request.graph_source_address,
+                &request.graph_source_id,
                 &request.query,
                 limit,
                 request.as_of_t,
@@ -409,7 +403,7 @@ mod http_tests {
             .create_full_text_index(cfg)
             .await
             .expect("create bm25 index");
-        let graph_source_address = created.graph_source_address;
+        let graph_source_id = created.graph_source_id;
 
         // Build router pointing at same storage (file storage stores both data and ns in same dir)
         let storage_path = tmp.path().to_path_buf();
@@ -417,7 +411,7 @@ mod http_tests {
         let app = build_test_router(storage_path, ns_path);
 
         // Search for "rust programming"
-        let request = SearchRequest::bm25(&graph_source_address, "rust programming", 10);
+        let request = SearchRequest::bm25(&graph_source_id, "rust programming", 10);
 
         let resp = app
             .oneshot(
@@ -554,7 +548,7 @@ mod parity_tests {
 
         // Get results via direct scorer (what service backend does)
         let idx = fluree
-            .load_bm25_index(&created.graph_source_address)
+            .load_bm25_index(&created.graph_source_id)
             .await
             .unwrap();
         let analyzer = Analyzer::clojure_parity_english();
@@ -577,7 +571,7 @@ mod parity_tests {
         let provider = FlureeIndexProvider::new(&fluree);
         let embedded_result = provider
             .search_bm25(
-                &created.graph_source_address,
+                &created.graph_source_id,
                 "rust programming",
                 10,
                 None,
@@ -623,7 +617,7 @@ mod parity_tests {
         // Empty query via provider
         let provider = FlureeIndexProvider::new(&fluree);
         let result = provider
-            .search_bm25(&created.graph_source_address, "", 10, None, false, None)
+            .search_bm25(&created.graph_source_id, "", 10, None, false, None)
             .await
             .unwrap();
 
@@ -634,14 +628,7 @@ mod parity_tests {
 
         // Stopword-only query
         let result2 = provider
-            .search_bm25(
-                &created.graph_source_address,
-                "the a an",
-                10,
-                None,
-                false,
-                None,
-            )
+            .search_bm25(&created.graph_source_id, "the a an", 10, None, false, None)
             .await
             .unwrap();
 
@@ -691,7 +678,7 @@ mod parity_tests {
         for limit in [1, 3, 5, 10, 100] {
             let result = provider
                 .search_bm25(
-                    &created.graph_source_address,
+                    &created.graph_source_id,
                     "programming",
                     limit,
                     None,
@@ -741,7 +728,7 @@ mod parity_tests {
 
         let provider = FlureeIndexProvider::new(&fluree);
         let result = provider
-            .search_bm25(&created.graph_source_address, "rust", 10, None, false, None)
+            .search_bm25(&created.graph_source_id, "rust", 10, None, false, None)
             .await
             .unwrap();
 

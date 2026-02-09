@@ -259,7 +259,7 @@ pub trait ContentAddressedWrite: StorageWrite {
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_address: &str,
+        ledger_id: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult>;
@@ -268,11 +268,11 @@ pub trait ContentAddressedWrite: StorageWrite {
     async fn content_write_bytes(
         &self,
         kind: ContentKind,
-        ledger_address: &str,
+        ledger_id: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult> {
         let hash_hex = sha256_hex(bytes);
-        self.content_write_bytes_with_hash(kind, ledger_address, &hash_hex, bytes)
+        self.content_write_bytes_with_hash(kind, ledger_id, &hash_hex, bytes)
             .await
     }
 }
@@ -482,11 +482,11 @@ impl ContentAddressedWrite for MemoryStorage {
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_address: &str,
+        ledger_id: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult> {
-        let address = content_address("memory", kind, ledger_address, content_hash_hex);
+        let address = content_address("memory", kind, ledger_id, content_hash_hex);
         self.write_bytes(&address, bytes).await?;
         Ok(ContentWriteResult {
             address,
@@ -734,11 +734,11 @@ impl ContentAddressedWrite for FileStorage {
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_address: &str,
+        ledger_id: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult> {
-        let address = content_address("file", kind, ledger_address, content_hash_hex);
+        let address = content_address("file", kind, ledger_id, content_hash_hex);
         self.write_bytes(&address, bytes).await?;
         Ok(ContentWriteResult {
             address,
