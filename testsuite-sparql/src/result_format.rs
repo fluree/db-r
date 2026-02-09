@@ -214,10 +214,7 @@ pub fn parse_srx(xml: &str) -> Result<SparqlResults> {
             }
             Ok(Event::Text(ref e)) => {
                 if current_term.is_some() || in_boolean {
-                    text_buf.push_str(
-                        &e.unescape()
-                            .unwrap_or(std::borrow::Cow::Borrowed("")),
-                    );
+                    text_buf.push_str(&e.unescape().unwrap_or(std::borrow::Cow::Borrowed("")));
                 }
             }
             Ok(Event::Eof) => break,

@@ -3,7 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
-use fluree_db_sparql::parse_sparql;
+use fluree_db_sparql::{parse_sparql, validate, Capabilities};
 
 use crate::evaluator::TestEvaluator;
 use crate::files::read_file_to_string;
@@ -85,7 +85,17 @@ fn parse_with_timeout(query_string: &str, test_id: &str) -> Result<bool> {
 
     thread::spawn(move || {
         let output = parse_sparql(&query);
-        let _ = tx.send(output.has_errors());
+        let mut has_errors = output.has_errors();
+        // Run validation if parsing produced an AST
+        if !has_errors {
+            if let Some(ast) = &output.ast {
+                let val_diags = validate(ast, &Capabilities::default());
+                if val_diags.iter().any(|d| d.is_error()) {
+                    has_errors = true;
+                }
+            }
+        }
+        let _ = tx.send(has_errors);
     });
 
     match rx.recv_timeout(PARSE_TIMEOUT) {
