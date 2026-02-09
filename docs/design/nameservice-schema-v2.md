@@ -49,9 +49,9 @@ Each concern can be pushed independently without affecting or contending with th
 
 ### Physical layout: item-per-concern (PK+SK)
 
-DynamoDB serializes writes per *item*, not per attribute. To achieve true per-concern independence (transactor vs indexer vs admin), represent each concern as a **separate item** under the same alias partition:
+DynamoDB serializes writes per *item*, not per attribute. To achieve true per-concern independence (transactor vs indexer vs admin), represent each concern as a **separate item** under the same address partition:
 
-- `pk` (partition key): alias identifier in the `name:branch` form (e.g., `"mydb:main"`, `"products-search:main"`)
+- `pk` (partition key): record address in the `name:branch` form (e.g., `"mydb:main"`, `"products-search:main"`)
 - `sk` (sort key): concern discriminator
 
 Recommended `sk` values:
@@ -462,7 +462,7 @@ Key: { pk: "mydb:main", sk: "meta" }
 ConsistentRead: true
 ```
 
-To read full state, query all items for the alias: `pk = "mydb:main"` and assemble `meta + head + index + status + config` as present.
+To read full state, query all items for the record address: `pk = "mydb:main"` and assemble `meta + head + index + status + config` as present.
 
 ### List by Kind
 
@@ -541,15 +541,15 @@ On `Conflict`, the caller receives the actual current state and can:
 ```rust
 async fn push_with_retry<T>(
     ns: &impl ConcernPublisher<T>,
-    alias: &str,
+    address: &str,
     kind: ConcernKind,
     new: ConcernValue<T>,
     max_retries: usize,
 ) -> Result<CasResult<T>> {
-    let mut expected = ns.get_concern(alias, kind).await?;
+    let mut expected = ns.get_concern(address, kind).await?;
 
     for _ in 0..max_retries {
-        match ns.push_concern(alias, kind, expected.as_ref(), &new).await? {
+        match ns.push_concern(address, kind, expected.as_ref(), &new).await? {
             CasResult::Updated => return Ok(CasResult::Updated),
             CasResult::Conflict { actual } => {
                 // Check if fast-forward is still possible
@@ -566,7 +566,7 @@ async fn push_with_retry<T>(
     }
 
     // Exhausted retries
-    let actual = ns.get_concern(alias, kind).await?;
+    let actual = ns.get_concern(address, kind).await?;
     Ok(CasResult::Conflict { actual })
 }
 ```
@@ -577,7 +577,7 @@ async fn push_with_retry<T>(
 
 ### DynamoDB (item-per-concern) examples
 
-This section shows the DynamoDB **physical layout** (multiple items per alias partition).
+This section shows the DynamoDB **physical layout** (multiple items per address partition).
 Other backends serialize the same logical concerns differently.
 
 #### Ledger (typical items)
@@ -844,9 +844,9 @@ Clients track watermarks to detect changes:
 ### Subscription Granularity
 
 Clients can subscribe to:
-- **All concerns** for an alias
+- **All concerns** for an address
 - **Specific concerns** (e.g., only `commit_t` for a query client)
-- **All aliases** of a kind (e.g., all ledgers)
+- **All addresses** of a kind (e.g., all ledgers)
 
 ---
 
@@ -1001,7 +1001,7 @@ All items share:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `pk` | String | Alias identifier (`name:branch`) |
+| `pk` | String | Record address (`name:branch`) |
 | `sk` | String | Concern discriminator (`meta`, `head`, `index`, `status`, `config`) |
 | `schema` | Number | Schema version (always `2`) |
 

@@ -30,12 +30,12 @@ A single commit can have both: a transaction signature from the user who submitt
 When a commit is written, its content is hashed with SHA-256 to produce a `commit_hash`. The signing digest is then computed with domain separation to prevent cross-protocol and cross-ledger replay:
 
 ```text
-to_sign = SHA-256("fluree/commit/v1" || varint(alias.len()) || alias || commit_hash)
+to_sign = SHA-256("fluree/commit/v1" || varint(ledger_address.len()) || ledger_address || commit_hash)
 ```
 
 Where:
 - `"fluree/commit/v1"` is a domain separator (18 bytes ASCII)
-- `alias` is the ledger alias (length-prefixed)
+- `ledger_address` is the ledger address (`name:branch`, length-prefixed)
 - `commit_hash` is the 32-byte SHA-256 of the commit content
 
 ### Signature Block Layout
@@ -99,7 +99,7 @@ let opts = CommitOpts::default()
 ```
 
 When a signing key is present, the commit writer:
-1. Computes the domain-separated digest from the commit hash and ledger alias
+1. Computes the domain-separated digest from the commit hash and ledger address
 2. Signs the digest with Ed25519
 3. Appends the signature block after the commit hash
 4. Sets the `FLAG_HAS_COMMIT_SIG` bit in the header
@@ -121,7 +121,7 @@ verify_commit_digest(
 
 The verifier:
 1. Extracts the Ed25519 public key from the `did:key` identifier
-2. Recomputes `to_sign = SHA-256("fluree/commit/v1" || varint(alias.len()) || alias || commit_hash)`
+2. Recomputes `to_sign = SHA-256("fluree/commit/v1" || varint(ledger_address.len()) || ledger_address || commit_hash)`
 3. Verifies the signature over `to_sign`
 
 No external key registry is needed for `did:key` identifiers — the public key is embedded in the DID itself.
@@ -146,7 +146,7 @@ The signature block is prefixed with `sig_count: u16` (LE) containing the number
 
 ### Replay Prevention
 
-- **Cross-ledger:** The ledger alias is part of the signed digest, so a signature from ledger A cannot be replayed on ledger B
+- **Cross-ledger:** The ledger address is part of the signed digest, so a signature from ledger A cannot be replayed on ledger B
 - **Cross-protocol:** The domain separator `"fluree/commit/v1"` prevents signatures meant for other systems from being accepted
 - **Version upgrade:** Changing the domain separator (e.g., `v1` to `v2`) invalidates old signatures
 

@@ -13,7 +13,7 @@ fluree upsert [LEDGER] [FILE] [OPTIONS]
 | Arguments | Behavior |
 |-----------|----------|
 | (none) | Active ledger + stdin or `-e` expression |
-| `<arg>` | If file exists: active ledger + file; else: ledger alias + stdin/-e |
+| `<arg>` | If file exists: active ledger + file; else: ledger address + stdin/-e |
 | `<ledger> <file>` | Specified ledger + file |
 
 ## Options

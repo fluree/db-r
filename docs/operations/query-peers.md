@@ -25,8 +25,8 @@ The transaction server exposes a Server-Sent Events (SSE) stream that emits **na
 ### Query parameters
 
 - **`all=true`**: subscribe to all ledgers and graph sources
-- **`ledger=<alias>`**: subscribe to a ledger alias (repeatable)
-- **`graph-source=<alias>`**: subscribe to a graph source alias (repeatable)
+- **`ledger=<ledger_address>`**: subscribe to a ledger address (`name:branch`, repeatable)
+- **`graph-source=<graph_source_address>`**: subscribe to a graph source address (`name:branch`, repeatable)
 
 ### Authentication and authorization
 
@@ -57,7 +57,7 @@ In peer mode:
 - **`--peer-events-token <token-or-@file>`** (optional; Bearer token for `/fluree/events`)
 - Subscribe scope:
   - **`--peer-subscribe-all`** or
-  - **`--peer-ledger <alias>`** (repeatable) and/or **`--peer-graph-source <alias>`** (repeatable)
+  - **`--peer-ledger <ledger_address>`** (repeatable) and/or **`--peer-graph-source <graph_source_address>`** (repeatable)
 
 ### Peer storage access modes
 
@@ -105,7 +105,7 @@ Unauthorized requests return **404** (no existence leak).
 
 #### `GET /fluree/storage/ns/{alias}`
 
-Fetch a nameservice record for a ledger alias. Requires storage proxy authorization for that alias.
+Fetch a nameservice record for a ledger address. Requires storage proxy authorization for that address.
 
 #### `POST /fluree/storage/block`
 

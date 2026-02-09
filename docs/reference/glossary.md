@@ -6,13 +6,13 @@ Definitions of key terms and concepts used throughout Fluree documentation.
 
 ### Ledger
 
-A versioned graph database instance in Fluree, equivalent to a database in traditional systems. Ledgers are identified by aliases like `mydb:main`.
+A versioned graph database instance in Fluree, equivalent to a database in traditional systems. Ledgers are identified by ledger addresses like `mydb:main`.
 
 Example: `customers:main`, `inventory:prod`
 
 ### Branch
 
-A variant of a ledger, allowing multiple independent versions of the same logical database. Branches are part of the ledger alias after the colon.
+A variant of a ledger, allowing multiple independent versions of the same logical database. Branches are part of the ledger address after the colon.
 
 Example: In `mydb:dev`, "dev" is the branch.
 

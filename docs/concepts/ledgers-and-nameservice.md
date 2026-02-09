@@ -12,9 +12,11 @@ A **ledger** in Fluree is an independent, versioned graph database containing:
 - Configurable permissions and policies
 - Support for multiple branches
 
-### Ledger Aliases
+### Ledger addresses
 
-Ledgers are identified by **aliases** with the format `ledger-name:branch`. The alias serves as both a human-readable identifier and a query target.
+Ledgers are identified by **ledger addresses** with the format `ledger-name:branch`.
+
+A ledger address serves as both a human-readable identifier and the canonical lookup key used across APIs, CLI, and caching.
 
 **Examples:**
 
@@ -41,7 +43,7 @@ Ledgers are created implicitly through the first transaction and persist until e
 
 **Creation Flow:**
 
-1. First transaction to a ledger alias creates the ledger automatically
+1. First transaction to a ledger address creates the ledger automatically
 2. Transaction is committed and assigned a transaction time (`t`)
 3. Commit address is published to the nameservice
 4. Background indexing process creates queryable indexes
@@ -63,7 +65,7 @@ The **nameservice** is Fluree's metadata registry that enables ledger discovery 
 
 The nameservice provides:
 
-- **Discovery**: Find ledgers by alias across distributed deployments
+- **Discovery**: Find ledgers by ledger address across distributed deployments
 - **Coordination**: Track commit and index state for consistency
 - **Metadata Management**: Store ledger configuration and status
 - **Multi-Process Support**: Enable coordination across multiple Fluree instances
@@ -74,8 +76,8 @@ For each ledger, the nameservice maintains a **nameservice record** (`NsRecord`)
 
 #### Core Identifiers
 
-- **`alias`**: Canonical ledger identifier (e.g., `"mydb:main"`)
-- **`address`**: Lookup address (may be alias or IRI)
+- **`address`**: Canonical ledger address with branch (e.g., `"mydb:main"`)
+- **`name`**: Ledger name without branch suffix (e.g., `"mydb"`)
 - **`branch`**: Branch name (e.g., `"main"`)
 
 #### Commit State
@@ -135,7 +137,7 @@ The nameservice supports these key operations:
 
 #### Lookup
 
-Find ledger metadata by alias:
+Find ledger metadata by ledger address:
 
 ```rust
 // Pseudo-code
@@ -147,8 +149,8 @@ let record = nameservice.lookup("mydb:main").await?;
 
 Record new commits and indexes:
 
-- **`publish_commit(alias, commit_addr, commit_t)`**: Update commit state (monotonic: only if `new_t > existing_t`)
-- **`publish_index(alias, index_addr, index_t)`**: Update index state (monotonic: only if `new_t > existing_t`)
+- **`publish_commit(ledger_address, commit_address, commit_t)`**: Update commit state (monotonic: only if `new_t > existing_t`)
+- **`publish_index(ledger_address, index_address, index_t)`**: Update index state (monotonic: only if `new_t > existing_t`)
 
 Publishing is **monotonic**—the nameservice only accepts updates that advance time forward, ensuring consistency.
 
@@ -332,7 +334,7 @@ Graph sources have their own nameservice records (`GraphSourceRecord`) with simi
 
 ### Creating a Ledger
 
-Ledgers are created automatically on the first transaction. Specify the ledger alias in your transaction:
+Ledgers are created automatically on the first transaction. Specify the ledger address in your transaction:
 
 ```json
 POST /transact?ledger=mydb:main
@@ -363,7 +365,7 @@ Content-Type: application/json
 
 ### Querying a Ledger
 
-Specify the ledger alias in your query:
+Specify the ledger address in your query:
 
 **SPARQL:**
 
@@ -621,14 +623,14 @@ Understanding how records evolve:
 **Symptom**: Query fails with "ledger not found"
 
 **Possible Causes:**
-- Ledger alias misspelled
+- Ledger address misspelled
 - Ledger not yet created (no transactions yet)
 - Ledger retracted
 - Nameservice backend misconfigured
 
 **Solutions:**
-- Verify alias spelling and format
-- Check if ledger exists: `nameservice.lookup(alias)`
+- Verify address spelling and format
+- Check if ledger exists: `nameservice.lookup(ledger_address)`
 - Verify nameservice backend configuration
 - Check ledger status (retracted?)
 

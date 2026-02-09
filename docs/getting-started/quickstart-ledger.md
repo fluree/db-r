@@ -2,9 +2,9 @@
 
 Ledgers are Fluree's fundamental unit of data organization—similar to databases in traditional systems. This guide shows you how to create your first ledger.
 
-## Understanding Ledger Aliases
+## Understanding Ledger Addresses
 
-Ledgers are identified by **aliases** with the format `ledger-name:branch`:
+Ledgers are identified by **ledger addresses** with the format `ledger-name:branch`:
 
 - `mydb:main` - Primary branch of the "mydb" ledger
 - `customers:dev` - Development branch of the "customers" ledger
@@ -42,7 +42,7 @@ let ledger = fluree.ledger("mydb:main").await?;
 
 ### HTTP API (Server Usage)
 
-Via the HTTP API, ledgers can be created **implicitly** on the first transaction, or **explicitly** via `POST /ledgers`. Simply send a transaction to a ledger alias, and the server will create it automatically.
+Via the HTTP API, ledgers can be created **implicitly** on the first transaction, or **explicitly** via `POST /ledgers`. Simply send a transaction to a ledger address, and the server will create it automatically.
 
 #### Method 1: Via First Transaction
 

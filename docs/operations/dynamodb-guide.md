@@ -210,7 +210,7 @@ All items share these common attributes:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `pk` | String | Alias identifier (`name:branch`) |
+| `pk` | String | Record address (`name:branch`) |
 | `sk` | String | Concern discriminator |
 | `schema` | Number | Schema version (always `2`) |
 | `updated_at_ms` | Number | Last update timestamp (epoch milliseconds) |
@@ -224,7 +224,7 @@ All items share these common attributes:
 | `branch` | String | Branch name |
 | `retracted` | Boolean | Soft-delete flag |
 | `source_type` | String (graph source only) | Graph-source type (e.g., `db:Bm25Index`) |
-| `dependencies` | List\<String\> (graph source only) | Dependent ledger aliases |
+| `dependencies` | List\<String\> (graph source only) | Dependent ledger addresses |
 
 **`head` item (ledgers only):**
 
@@ -264,7 +264,7 @@ Enables listing all entities of a given kind (ledger or graph source).
 | GSI Attribute | Source Attribute | Description |
 |---------------|------------------|-------------|
 | Partition Key | `kind` | `ledger` or `graph_source` |
-| Sort Key | `pk` | Alias identifier |
+| Sort Key | `pk` | Record address |
 | Projected | `name`, `branch`, `source_type`, `dependencies`, `retracted` | Meta fields for listing without additional reads |
 
 Only `meta` items carry the `kind` attribute and project into the GSI.

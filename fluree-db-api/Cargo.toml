@@ -115,3 +115,7 @@ required-features = ["aws-testcontainers"]
 [[bench]]
 name = "vector_query"
 harness = false
+
+[[bench]]
+name = "insert_formats"
+harness = false

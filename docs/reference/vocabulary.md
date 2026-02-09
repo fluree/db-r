@@ -111,7 +111,7 @@ These predicates are used in WHERE clause patterns for BM25 and vector search. U
 
 | Predicate | Full IRI | Required | Description |
 |-----------|----------|----------|-------------|
-| `db:graphSource` | `https://ns.flur.ee/db#graphSource` | Yes | Graph source alias (e.g. `"my-search:main"`) |
+| `db:graphSource` | `https://ns.flur.ee/db#graphSource` | Yes | Graph source address (`name:branch`, e.g. `"my-search:main"`) |
 | `db:searchText` | `https://ns.flur.ee/db#searchText` | Yes | Search query text (string or variable) |
 | `db:searchResult` | `https://ns.flur.ee/db#searchResult` | Yes | Result binding (variable or nested object) |
 | `db:searchLimit` | `https://ns.flur.ee/db#searchLimit` | No | Maximum results |
@@ -122,7 +122,7 @@ These predicates are used in WHERE clause patterns for BM25 and vector search. U
 
 | Predicate | Full IRI | Required | Description |
 |-----------|----------|----------|-------------|
-| `db:graphSource` | `https://ns.flur.ee/db#graphSource` | Yes | Graph source alias |
+| `db:graphSource` | `https://ns.flur.ee/db#graphSource` | Yes | Graph source address (`name:branch`) |
 | `db:queryVector` | `https://ns.flur.ee/db#queryVector` | Yes | Query vector (array of numbers or variable) |
 | `db:searchResult` | `https://ns.flur.ee/db#searchResult` | Yes | Result binding |
 | `db:distanceMetric` | `https://ns.flur.ee/db#distanceMetric` | No | Distance metric: `"cosine"`, `"dot"`, `"euclidean"` (default: `"cosine"`) |
@@ -138,7 +138,7 @@ Both BM25 and vector search support nested result bindings:
 |-----------|----------|-------------|
 | `db:resultId` | `https://ns.flur.ee/db#resultId` | Document/subject ID binding |
 | `db:resultScore` | `https://ns.flur.ee/db#resultScore` | Search score binding |
-| `db:resultLedger` | `https://ns.flur.ee/db#resultLedger` | Source ledger alias (multi-ledger disambiguation) |
+| `db:resultLedger` | `https://ns.flur.ee/db#resultLedger` | Source ledger address (multi-ledger disambiguation) |
 
 Example BM25 search with nested result:
 
@@ -184,7 +184,7 @@ These predicates appear on ledger nameservice records (the metadata Fluree store
 | `db:branch` | `https://ns.flur.ee/db#branch` | Branch |
 | `db:status` | `https://ns.flur.ee/db#status` | Status |
 | `db:graphSourceConfig` | `https://ns.flur.ee/db#graphSourceConfig` | Configuration JSON |
-| `db:graphSourceDependencies` | `https://ns.flur.ee/db#graphSourceDependencies` | Dependent ledger aliases |
+| `db:graphSourceDependencies` | `https://ns.flur.ee/db#graphSourceDependencies` | Dependent ledger addresses |
 | `db:graphSourceIndex` | `https://ns.flur.ee/db#graphSourceIndex` | Index address reference |
 | `db:graphSourceIndexT` | `https://ns.flur.ee/db#graphSourceIndexT` | Index watermark (commit t) |
 | `db:graphSourceIndexAddress` | `https://ns.flur.ee/db#graphSourceIndexAddress` | Index address (string) |
