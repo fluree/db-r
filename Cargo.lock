@@ -2547,6 +2547,7 @@ dependencies = [
  "rand 0.8.5",
  "regex",
  "rust-stemmers",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha1",

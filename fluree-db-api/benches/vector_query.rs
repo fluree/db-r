@@ -30,6 +30,32 @@ use rand::prelude::*;
 use serde_json::{json, Value as JsonValue};
 use tokio::runtime::Runtime;
 
+use fluree_db_api::admin::ReindexOptions;
+
+fn init_tracing_for_bench() {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        // Opt-in only: enable by setting FLUREE_BENCH_TRACING=1.
+        if std::env::var("FLUREE_BENCH_TRACING").ok().as_deref() != Some("1") {
+            return;
+        }
+
+        // Default to info if RUST_LOG not provided.
+        if std::env::var("RUST_LOG").is_err() {
+            std::env::set_var("RUST_LOG", "info");
+        }
+
+        let filter = tracing_subscriber::EnvFilter::from_default_env();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_level(true)
+            .try_init()
+            .ok();
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -176,11 +202,43 @@ async fn setup_dataset(
     (fluree, ledger, query_all, query_filtered, n_recent)
 }
 
+/// Like `setup_dataset` but also builds a binary index and returns a reusable snapshot.
+///
+/// This exercises the production fast path:
+/// - `ScanOperator` selects `BinaryScanOperator`
+/// - `PropertyJoinOperator` can batched-probe the non-driver predicate
+async fn setup_dataset_indexed(
+    n_articles: usize,
+) -> (
+    BenchFluree,
+    fluree_db_api::view::FlureeView<fluree_db_core::MemoryStorage>,
+    JsonValue,
+    JsonValue,
+    usize,
+) {
+    let (fluree, _ledger, query_all, query_filtered, n_recent) = setup_dataset(n_articles).await;
+
+    let ledger_address = format!("bench/vec-{}:main", n_articles);
+
+    // Offline reindex from commit history (builds binary columnar index + publishes root).
+    // Note: this is intentionally done once during setup, not inside the hot loop.
+    fluree
+        .reindex(&ledger_address, ReindexOptions::default())
+        .await
+        .unwrap();
+
+    // Reload as a view so queries can use the binary store (no commit replay).
+    let view = fluree.view(&ledger_address).await.unwrap();
+
+    (fluree, view, query_all, query_filtered, n_recent)
+}
+
 // ---------------------------------------------------------------------------
 // Benchmark: scan all vectors on a single property
 // ---------------------------------------------------------------------------
 
 fn bench_vector_scan_all(c: &mut Criterion) {
+    init_tracing_for_bench();
     let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("vector_scan_all");
     group.sample_size(10);
@@ -204,10 +262,41 @@ fn bench_vector_scan_all(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Benchmark (indexed): scan all vectors using binary store
+// ---------------------------------------------------------------------------
+
+fn bench_vector_scan_all_indexed(c: &mut Criterion) {
+    init_tracing_for_bench();
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("vector_scan_all_indexed");
+    group.sample_size(10);
+
+    for &n in DATASET_SIZES {
+        eprintln!(
+            "  [setup] Inserting {} articles with {}-dim vectors + building index...",
+            n, VECTOR_DIM
+        );
+        let (_fluree, snapshot, query, _, _) = rt.block_on(setup_dataset_indexed(n));
+
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| {
+                rt.block_on(async {
+                    black_box(_fluree.query_view(&snapshot, &query).await.unwrap())
+                })
+            })
+        });
+    }
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Benchmark: filter by date, then score remaining vectors
 // ---------------------------------------------------------------------------
 
 fn bench_vector_scan_filtered(c: &mut Criterion) {
+    init_tracing_for_bench();
     let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("vector_scan_filtered");
     group.sample_size(10);
@@ -241,5 +330,52 @@ fn bench_vector_scan_filtered(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_vector_scan_all, bench_vector_scan_filtered);
+// ---------------------------------------------------------------------------
+// Benchmark (indexed): filter by date, then score remaining vectors (binary store)
+// ---------------------------------------------------------------------------
+
+fn bench_vector_scan_filtered_indexed(c: &mut Criterion) {
+    init_tracing_for_bench();
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("vector_scan_filtered_indexed");
+    group.sample_size(10);
+
+    for &n in DATASET_SIZES {
+        eprintln!(
+            "  [setup] Inserting {} articles with {}-dim vectors + building index...",
+            n, VECTOR_DIM
+        );
+        let (_fluree, snapshot, _, query, n_recent) = rt.block_on(setup_dataset_indexed(n));
+        eprintln!(
+            "  {} of {} articles pass date filter (~{:.0}%)",
+            n_recent,
+            n,
+            n_recent as f64 / n as f64 * 100.0
+        );
+
+        // Throughput = vectors actually scored (after filter).
+        group.throughput(Throughput::Elements(n_recent as u64));
+        group.bench_with_input(
+            BenchmarkId::new(format!("{n}_total"), n_recent),
+            &n,
+            |b, _| {
+                b.iter(|| {
+                    rt.block_on(async {
+                        black_box(_fluree.query_view(&snapshot, &query).await.unwrap())
+                    })
+                })
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_vector_scan_all,
+    bench_vector_scan_filtered,
+    bench_vector_scan_all_indexed,
+    bench_vector_scan_filtered_indexed
+);
 criterion_main!(benches);
