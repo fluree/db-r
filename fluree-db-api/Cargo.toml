@@ -71,6 +71,7 @@ tokio.workspace = true
 tracing.workspace = true
 # Base64 for encryption key decoding
 base64 = "0.22"
+hex.workspace = true
 
 # Opt-in AWS + LocalStack testing deps (feature-gated)
 testcontainers = { version = "0.23", optional = true }

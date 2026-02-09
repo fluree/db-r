@@ -16,6 +16,8 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use fluree_db_api::PushCommitsResponse;
+
 /// Configuration for automatic token refresh on 401.
 #[derive(Clone, Debug)]
 pub struct RefreshConfig {
@@ -69,8 +71,14 @@ pub enum RemoteLedgerError {
     NotFound(String),
     /// 400 Bad Request (includes server error message)
     BadRequest(String),
+    /// 409 Conflict (includes server error message)
+    Conflict(String),
+    /// 422 Unprocessable Entity / validation error
+    ValidationError(String),
     /// 5xx Server Error (includes server error message)
     ServerError(String),
+    /// Request could not be serialized (client-side bug)
+    InvalidRequest(String),
     /// Response could not be parsed as expected
     InvalidResponse(String),
 }
@@ -88,7 +96,10 @@ impl fmt::Display for RemoteLedgerError {
             RemoteLedgerError::Forbidden => write!(f, "access denied (403)"),
             RemoteLedgerError::NotFound(msg) => write!(f, "not found: {msg}"),
             RemoteLedgerError::BadRequest(msg) => write!(f, "bad request: {msg}"),
+            RemoteLedgerError::Conflict(msg) => write!(f, "conflict (409): {msg}"),
+            RemoteLedgerError::ValidationError(msg) => write!(f, "validation error (422): {msg}"),
             RemoteLedgerError::ServerError(msg) => write!(f, "server error: {msg}"),
+            RemoteLedgerError::InvalidRequest(msg) => write!(f, "invalid request: {msg}"),
             RemoteLedgerError::InvalidResponse(msg) => write!(f, "invalid response: {msg}"),
         }
     }
@@ -163,6 +174,18 @@ impl RemoteLedgerClient {
             } else {
                 body
             }),
+            StatusCode::CONFLICT => RemoteLedgerError::Conflict(if body.is_empty() {
+                "conflict".to_string()
+            } else {
+                body
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY => {
+                RemoteLedgerError::ValidationError(if body.is_empty() {
+                    "validation error".to_string()
+                } else {
+                    body
+                })
+            }
             s if s.is_server_error() => RemoteLedgerError::ServerError(if body.is_empty() {
                 format!("status {s}")
             } else {
@@ -520,6 +543,32 @@ impl RemoteLedgerClient {
         } else {
             Err(Self::map_error(resp).await)
         }
+    }
+
+    // =========================================================================
+    // Push commits
+    // =========================================================================
+
+    /// Push precomputed commit blobs to the remote server.
+    pub async fn push_commits(
+        &self,
+        ledger: &str,
+        request: &fluree_db_api::PushCommitsRequest,
+    ) -> Result<PushCommitsResponse, RemoteLedgerError> {
+        let url = self.op_url("push", ledger);
+        let body = serde_json::to_value(request)
+            .map_err(|e| RemoteLedgerError::InvalidRequest(e.to_string()))?;
+
+        let resp = self
+            .send_json(
+                reqwest::Method::POST,
+                &url,
+                "application/json",
+                Some(RequestBody::Json(&body)),
+            )
+            .await?;
+
+        serde_json::from_value(resp).map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
     }
 }
 

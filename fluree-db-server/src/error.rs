@@ -59,7 +59,15 @@ impl ServerError {
 
         match self {
             // API errors (explicit HTTP status passthrough)
-            ServerError::Api(ApiError::Http { .. }) => errors::INTERNAL,
+            //
+            // Map common statuses to stable error types so clients can branch on `@type`.
+            ServerError::Api(ApiError::Http { status, .. }) => match status {
+                401 => errors::UNAUTHORIZED,
+                403 => errors::ACCESS_DENIED,
+                409 => errors::COMMIT_CONFLICT,
+                422 => errors::INVALID_TRANSACTION,
+                _ => errors::INTERNAL,
+            },
 
             // Not Found
             ServerError::Api(ApiError::NotFound(msg)) => {

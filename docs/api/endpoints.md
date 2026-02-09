@@ -298,6 +298,39 @@ curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
       }'
 ```
 
+### POST /push/*ledger
+
+Push precomputed commit v2 blobs to the server.
+
+This endpoint is intended for Git-like workflows (`fluree push`) where a client has written commits locally and wants the server to validate and commit them.
+
+**URL:**
+
+```
+POST /push/<ledger...>
+```
+
+**Request Headers:**
+
+```http
+Content-Type: application/json
+Accept: application/json
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+
+JSON object:
+
+- `commits`: array of base64-encoded commit v2 blobs (oldest → newest)
+- `blobs` (optional): map of `{ address: base64Bytes }` for referenced blobs (currently: `commit.txn` when present)
+
+**Responses:**
+
+- `200 OK`: commit(s) accepted and head advanced
+- `409 Conflict`: head changed / diverged / first commit `t` did not match next-t
+- `422 Unprocessable Entity`: invalid commit bytes, missing referenced blob, or retraction invariant violation
+
 ## Query Endpoints
 
 ### POST /query

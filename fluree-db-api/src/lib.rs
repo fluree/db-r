@@ -52,6 +52,7 @@ pub mod nameservice_query;
 mod overlay;
 pub mod policy_builder;
 pub mod policy_view;
+pub mod push_commits;
 mod query;
 mod time_resolve;
 pub mod tx;
@@ -106,6 +107,7 @@ pub use policy_view::{
     build_policy_context, wrap_identity_policy_view, wrap_policy_view, wrap_policy_view_historical,
     PolicyWrappedView,
 };
+pub use push_commits::{PushCommitsRequest, PushCommitsResponse};
 pub use query::builder::{
     DatasetQueryBuilder, FromQueryBuilder, GraphSourceMode, ViewQueryBuilder,
 };

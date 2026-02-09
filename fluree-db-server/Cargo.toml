@@ -130,3 +130,4 @@ http-body-util = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tempfile = "3"
 wiremock = { workspace = true }
+fluree-db-novelty = { path = "../fluree-db-novelty" }

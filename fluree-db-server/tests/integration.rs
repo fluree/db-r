@@ -1,6 +1,11 @@
 use axum::body::Body;
+use fluree_db_api::PushCommitsRequest;
+use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
+use fluree_db_novelty::{Commit, CommitRef};
 use fluree_db_server::config::{AdminAuthMode, DataAuthMode, EventsAuthMode};
 use fluree_db_server::{routes::build_router, AppState, ServerConfig, TelemetryConfig};
+use fluree_vocab::namespaces::{FLUREE_DB, XSD};
+use fluree_vocab::xsd_names;
 use http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value as JsonValue;
@@ -42,6 +47,15 @@ fn json_contains_string(v: &JsonValue, needle: &str) -> bool {
         JsonValue::Array(a) => a.iter().any(|x| json_contains_string(x, needle)),
         JsonValue::Object(o) => o.values().any(|x| json_contains_string(x, needle)),
     }
+}
+
+fn make_commit_bytes(t: i64, previous: Option<&str>, flakes: Vec<Flake>) -> Vec<u8> {
+    let mut c = Commit::new("", t, flakes);
+    if let Some(prev) = previous {
+        c = c.with_previous_ref(CommitRef::new(prev.to_string()));
+    }
+    let res = fluree_db_novelty::commit_v2::write_commit(&c, true, None).expect("write_commit");
+    res.bytes
 }
 
 #[tokio::test]
@@ -307,6 +321,260 @@ async fn ledger_with_slash_works_via_op_prefixed_routes() {
         "Expected query response to contain 'Alice', got: {}",
         json
     );
+}
+
+#[tokio::test]
+async fn push_endpoint_accepts_single_commit_and_advances_head() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create empty ledger.
+    let create_body = serde_json::json!({ "ledger": "push:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, _json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Push commit t=1 (no previous).
+    let s = Sid::new(FLUREE_DB, "alice");
+    let p = Sid::new(FLUREE_DB, "name");
+    let o = FlakeValue::String("Alice".to_string());
+    let dt = Sid::new(XSD, xsd_names::STRING);
+    let flakes = vec![Flake::new(s, p, o, dt, 1, true, None)];
+    let bytes = make_commit_bytes(1, None, flakes);
+    let push_req = PushCommitsRequest {
+        commits: vec![fluree_db_api::push_commits::Base64Bytes(bytes)],
+        blobs: std::collections::HashMap::new(),
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/push/push:main")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&push_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json.get("accepted").and_then(|v| v.as_u64()), Some(1));
+    assert_eq!(json.pointer("/head/t").and_then(|v| v.as_i64()), Some(1));
+    let head_addr = json
+        .pointer("/head/address")
+        .and_then(|v| v.as_str())
+        .expect("head.address")
+        .to_string();
+
+    // Re-pushing the same commit should now be rejected (next-t mismatch).
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/push/push:main")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&push_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "expected conflict when re-pushing commit already applied (head={})",
+        head_addr
+    );
+}
+
+#[tokio::test]
+async fn push_rejects_first_commit_t_mismatch_with_409() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    let create_body = serde_json::json!({ "ledger": "push-t:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let s = Sid::new(FLUREE_DB, "alice");
+    let p = Sid::new(FLUREE_DB, "name");
+    let o = FlakeValue::String("Alice".to_string());
+    let dt = Sid::new(XSD, xsd_names::STRING);
+    let flakes = vec![Flake::new(s, p, o, dt, 2, true, None)];
+    let bytes = make_commit_bytes(2, None, flakes);
+    let push_req = PushCommitsRequest {
+        commits: vec![fluree_db_api::push_commits::Base64Bytes(bytes)],
+        blobs: std::collections::HashMap::new(),
+    };
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/push/push-t:main")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&push_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn push_rejects_retraction_without_existing_assertion_with_422() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    let create_body = serde_json::json!({ "ledger": "push-ret:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let s = Sid::new(FLUREE_DB, "alice");
+    let p = Sid::new(FLUREE_DB, "name");
+    let o = FlakeValue::String("Alice".to_string());
+    let dt = Sid::new(XSD, xsd_names::STRING);
+    let flakes = vec![Flake::new(s, p, o, dt, 1, false, None)];
+    let bytes = make_commit_bytes(1, None, flakes);
+    let push_req = PushCommitsRequest {
+        commits: vec![fluree_db_api::push_commits::Base64Bytes(bytes)],
+        blobs: std::collections::HashMap::new(),
+    };
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/push/push-ret:main")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&push_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(json_contains_string(&json, "retraction invariant"));
+}
+
+#[tokio::test]
+async fn push_rejects_list_retraction_missing_meta_with_422() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create empty ledger.
+    let create_body = serde_json::json!({ "ledger": "push-list:main" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Push commit t=1 asserting a list item with index meta.
+    let s = Sid::new(FLUREE_DB, "alice");
+    let p = Sid::new(FLUREE_DB, "tags");
+    let o = FlakeValue::String("one".to_string());
+    let dt = Sid::new(XSD, xsd_names::STRING);
+    let flakes = vec![Flake::new(
+        s.clone(),
+        p.clone(),
+        o.clone(),
+        dt.clone(),
+        1,
+        true,
+        Some(FlakeMeta::with_index(0)),
+    )];
+    let bytes = make_commit_bytes(1, None, flakes);
+    let push_req = PushCommitsRequest {
+        commits: vec![fluree_db_api::push_commits::Base64Bytes(bytes)],
+        blobs: std::collections::HashMap::new(),
+    };
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/push/push-list:main")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&push_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    let head_addr = json
+        .pointer("/head/address")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    // Push commit t=2 attempting to retract the value but WITHOUT list meta.
+    let retract = Flake::new(s, p, o, dt, 2, false, None);
+    let bytes = make_commit_bytes(2, Some(&head_addr), vec![retract]);
+    let push_req = PushCommitsRequest {
+        commits: vec![fluree_db_api::push_commits::Base64Bytes(bytes)],
+        blobs: std::collections::HashMap::new(),
+    };
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/push/push-list:main")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&push_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(json_contains_string(&json, "retraction invariant"));
 }
 
 #[tokio::test]

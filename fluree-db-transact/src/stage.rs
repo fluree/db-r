@@ -855,6 +855,31 @@ pub async fn stage_with_shacl<S: Storage + Clone + 'static>(
     Ok((view, ns_registry))
 }
 
+/// Validate a staged [`LedgerView`] against SHACL shapes.
+///
+/// This is a helper for callers that already have pre-built flakes and stage them
+/// via [`stage_flakes`], but still want SHACL validation parity with [`stage_with_shacl`].
+///
+/// Returns `Ok(())` when conforming, or `TransactError::ShaclViolation` when any
+/// violations are present.
+#[cfg(feature = "shacl")]
+pub async fn validate_view_with_shacl<S: Storage + Clone + 'static>(
+    view: &LedgerView<S>,
+    shacl_cache: &ShaclCache,
+) -> Result<()> {
+    // Fast path: if there are no SHACL shapes, elide validation entirely.
+    if shacl_cache.is_empty() {
+        return Ok(());
+    }
+
+    let engine = ShaclEngine::new(shacl_cache.clone());
+    let report = validate_staged_nodes(view, &engine).await?;
+    if !report.conforms {
+        return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
+    }
+    Ok(())
+}
+
 /// Validate staged nodes against SHACL shapes
 #[cfg(feature = "shacl")]
 async fn validate_staged_nodes<S: Storage + Clone + 'static>(

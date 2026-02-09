@@ -5,6 +5,7 @@ mod admin_auth;
 mod events;
 mod ledger;
 mod nameservice_refs;
+mod push;
 mod query;
 mod storage_proxy;
 mod stubs;
@@ -60,6 +61,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/insert/*ledger", post(transact::insert_ledger_tail))
         .route("/upsert", post(transact::upsert))
         .route("/upsert/*ledger", post(transact::upsert_ledger_tail))
+        // Commit-push endpoint (precomputed commits)
+        .route("/push/*ledger", post(push::push_ledger_tail))
         // SSE event streaming
         .route("/events", get(events::events))
         // Storage proxy endpoints (for peer mode)
