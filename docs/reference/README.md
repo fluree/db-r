@@ -48,9 +48,7 @@ Overview of Fluree's Rust crate architecture:
 ### Fluree Namespaces
 
 ```turtle
-@prefix f: <https://ns.flur.ee/ledger#> .
-@prefix bm25: <https://ns.flur.ee/bm25#> .
-@prefix vector: <https://ns.flur.ee/vector#> .
+@prefix db: <https://ns.flur.ee/db#> .
 ```
 
 ### Time Specifiers

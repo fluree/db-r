@@ -9,7 +9,7 @@
 //! ```ignore
 //! // Find all ledgers on main branch
 //! let query = json!({
-//!     "@context": {"f": "https://ns.flur.ee/ledger#"},
+//!     "@context": {"f": "https://ns.flur.ee/db#"},
 //!     "select": ["?ledger"],
 //!     "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
 //! });
@@ -58,7 +58,7 @@ use serde_json::json;
 /// ```ignore
 /// // Query all ledgers with their t values
 /// let query = json!({
-///     "@context": {"f": "https://ns.flur.ee/ledger#"},
+///     "@context": {"f": "https://ns.flur.ee/db#"},
 ///     "select": ["?ledger", "?t"],
 ///     "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:t": "?t"}]
 /// });
@@ -71,22 +71,22 @@ use serde_json::json;
 ///
 /// # Available Properties
 ///
-/// Ledger records (`@type: "f:PhysicalDatabase"`):
-/// - `f:ledger` - Ledger name (without branch)
-/// - `f:branch` - Branch name (e.g., "main")
-/// - `f:t` - Current transaction number
-/// - `f:status` - Status ("ready" or "retracted")
-/// - `f:commit` - Commit address reference
-/// - `f:index` - Index info with `@id` and `f:t`
+/// Ledger records (`@type: "db:LedgerSource"`):
+/// - `db:ledger` - Ledger name (without branch)
+/// - `db:branch` - Branch name (e.g., "main")
+/// - `db:t` - Current transaction number
+/// - `db:status` - Status ("ready" or "retracted")
+/// - `db:ledgerCommit` - Commit address reference
+/// - `db:ledgerIndex` - Index info with `@id` and `db:t`
 ///
-/// Graph source records (`@type: "f:GraphSource"`):
-/// - `f:name` - Graph source name
-/// - `f:branch` - Branch name
-/// - `f:status` - Status
-/// - `fidx:config` - Configuration JSON
-/// - `fidx:dependencies` - Source ledger dependencies
-/// - `fidx:indexAddress` - Index address
-/// - `fidx:indexT` - Index t value
+/// Graph source records (`@type: "db:IndexSource"` or `"db:MappedSource"`):
+/// - `db:name` - Graph source name
+/// - `db:branch` - Branch name
+/// - `db:status` - Status
+/// - `db:graphSourceConfig` - Configuration JSON
+/// - `db:graphSourceDependencies` - Source ledger dependencies
+/// - `db:graphSourceIndex` - Index address
+/// - `db:graphSourceIndexT` - Index t value
 pub struct NameserviceQueryBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
     core: QueryCore<'a>,
@@ -113,7 +113,7 @@ where
     ///
     /// ```ignore
     /// let query = json!({
-    ///     "@context": {"f": "https://ns.flur.ee/ledger#"},
+    ///     "@context": {"f": "https://ns.flur.ee/db#"},
     ///     "select": ["?ledger"],
     ///     "where": [{"@id": "?ns", "f:ledger": "?ledger"}]
     /// });
@@ -134,7 +134,7 @@ where
     ///
     /// ```ignore
     /// let results = fluree.nameservice_query()
-    ///     .sparql("SELECT ?ledger WHERE { ?ns <https://ns.flur.ee/ledger#ledger> ?ledger }")
+    ///     .sparql("SELECT ?ledger WHERE { ?ns <https://ns.flur.ee/db#ledger> ?ledger }")
     ///     .execute_formatted()
     ///     .await?;
     /// ```
@@ -397,7 +397,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let builder = fluree
             .nameservice_query()
-            .sparql("SELECT ?ledger WHERE { ?ns <https://ns.flur.ee/ledger#ledger> ?ledger }");
+            .sparql("SELECT ?ledger WHERE { ?ns <https://ns.flur.ee/db#ledger> ?ledger }");
         let result = builder.validate();
         assert!(result.is_ok());
     }
@@ -407,9 +407,9 @@ mod tests {
         let fluree = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"f": "https://ns.flur.ee/ledger#"},
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger"}]
+            "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger"}]
         });
 
         let result = fluree
@@ -428,9 +428,9 @@ mod tests {
         let fluree = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"f": "https://ns.flur.ee/ledger#"},
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
+            "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:branch": "main"}]
         });
 
         let result = fluree
@@ -449,12 +449,9 @@ mod tests {
         let fluree = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {
-                "f": "https://ns.flur.ee/ledger#",
-                "fidx": "https://ns.flur.ee/index#"
-            },
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?name"],
-            "where": [{"@id": "?gs", "@type": "f:GraphSource", "f:name": "?name"}]
+            "where": [{"@id": "?gs", "@type": "db:IndexSource", "db:name": "?name"}]
         });
 
         let result = fluree
@@ -474,7 +471,7 @@ mod tests {
 
         let query = json!({
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "f:ledger": "?ledger"}]
+            "where": [{"@id": "?ns", "db:ledger": "?ledger"}]
         });
 
         let result = fluree
@@ -492,9 +489,9 @@ mod tests {
         let fluree = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"f": "https://ns.flur.ee/ledger#"},
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?ledger", "?t"],
-            "where": [{"@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger", "f:t": "?t"}]
+            "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:t": "?t"}]
         });
 
         let result = fluree
@@ -518,8 +515,8 @@ mod tests {
         let result = fluree
             .nameservice_query()
             .sparql(
-                "PREFIX f: <https://ns.flur.ee/ledger#>
-                 SELECT ?ledger WHERE { ?ns a f:PhysicalDatabase ; f:ledger ?ledger }",
+                "PREFIX db: <https://ns.flur.ee/db#>
+                 SELECT ?ledger WHERE { ?ns a db:LedgerSource ; db:ledger ?ledger }",
             )
             .execute_formatted()
             .await

@@ -221,8 +221,7 @@ where
                     // This enables `ledger#txn-meta` time travel even when we intentionally
                     // don't attach the binary store (overlay replay path).
                     let inner = Arc::clone(&view.overlay);
-                    let txn_meta_graph =
-                        Sid::new(fluree_vocab::namespaces::FLUREE_LEDGER, "txn-meta");
+                    let txn_meta_graph = Sid::new(fluree_vocab::namespaces::FLUREE_DB, "txn-meta");
                     view.overlay = Arc::new(GraphSidFilteredOverlay::new(inner, txn_meta_graph));
                     Ok(view.with_graph_id(1))
                 }

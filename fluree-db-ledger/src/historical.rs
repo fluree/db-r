@@ -30,7 +30,7 @@ use fluree_db_core::storage::extract_hash_from_address;
 use fluree_db_core::{Db, Flake, FlakeMeta, FlakeValue, IndexType, OverlayProvider, Sid, Storage};
 use fluree_db_nameservice::NameService;
 use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
-use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_LEDGER, JSON_LD, RDF, XSD};
+use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB, JSON_LD, RDF, XSD};
 use fluree_vocab::{rdf_names, xsd_names};
 use futures::StreamExt;
 use std::sync::Arc;
@@ -216,7 +216,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
             // These are stored in the commit envelope (not in commit.flakes) and must be
             // replayed to support historical `ledger#txn-meta` views.
             let txn_meta_flakes = commit_subject.as_ref().map(|commit_sid| {
-                let txn_meta_graph = Sid::new(FLUREE_LEDGER, TXN_META_GRAPH_LOCAL_NAME);
+                let txn_meta_graph = Sid::new(FLUREE_DB, TXN_META_GRAPH_LOCAL_NAME);
                 commit
                     .txn_meta
                     .iter()

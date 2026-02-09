@@ -3,7 +3,7 @@
 //! This module provides functionality for extracting user-defined datalog rules
 //! from a Fluree database and parsing them into executable form.
 //!
-//! Rules are stored with the `f:rule` predicate (`https://ns.flur.ee/ledger#rule`)
+//! Rules are stored with the `f:rule` predicate (`https://ns.flur.ee/db#rule`)
 //! and have a JSON format:
 //!
 //! ```json
@@ -26,7 +26,7 @@ use fluree_db_reasoner::{
     BindingValue, Bindings, CompareOp, DatalogRule, DatalogRuleSet, DerivedFactsBuilder,
     FrozenSameAs, RuleFilter, RuleTerm, RuleTriplePattern, RuleValue,
 };
-use fluree_vocab::namespaces::FLUREE_LEDGER;
+use fluree_vocab::namespaces::FLUREE_DB;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -58,7 +58,7 @@ pub async fn extract_datalog_rules<S: Storage>(
     let mut rule_set = DatalogRuleSet::new();
 
     // Create the SID for f:rule predicate
-    let rule_predicate_sid = Sid::new(FLUREE_LEDGER, RULE_LOCAL_NAME);
+    let rule_predicate_sid = Sid::new(FLUREE_DB, RULE_LOCAL_NAME);
 
     // Query PSOT index for all f:rule assertions
     let opts = RangeOptions {
@@ -121,7 +121,7 @@ fn parse_query_time_rule<S: Storage>(
     // Check if this is a stored rule format with f:rule wrapper
     if let Some(f_rule) = json
         .get("f:rule")
-        .or_else(|| json.get("https://ns.flur.ee/ledger#rule"))
+        .or_else(|| json.get(fluree_vocab::fluree::RULE))
     {
         // Extract the actual rule from the @value wrapper
         let rule_value = if let Some(value) = f_rule.get("@value") {

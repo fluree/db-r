@@ -684,34 +684,34 @@ Query all changes (assertions and retractions) within a time range using `FROM..
 
 ```sparql
 PREFIX ex: <http://example.org/ns/>
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 
 SELECT ?age ?t ?op
 FROM <ledger:main@t:1>
 TO <ledger:main@t:latest>
 WHERE {
-  << ex:alice ex:age ?age >> f:t ?t .
-  << ex:alice ex:age ?age >> f:op ?op .
+  << ex:alice ex:age ?age >> db:t ?t .
+  << ex:alice ex:age ?age >> db:op ?op .
 }
 ORDER BY ?t
 ```
 
 The `<< subject predicate object >>` syntax (RDF-star) treats the triple as an entity that can have metadata:
-- `f:t` - Transaction time when the fact was asserted or retracted
-- `f:op` - Operation type: `"assert"` or `"retract"`
+- `db:t` - Transaction time when the fact was asserted or retracted
+- `db:op` - Operation type: `"assert"` or `"retract"`
 
 **Filter by operation type:**
 
 ```sparql
 PREFIX ex: <http://example.org/ns/>
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 
 SELECT ?age ?t
 FROM <ledger:main@t:1>
 TO <ledger:main@t:latest>
 WHERE {
-  << ex:alice ex:age ?age >> f:t ?t .
-  << ex:alice ex:age ?age >> f:op ?op .
+  << ex:alice ex:age ?age >> db:t ?t .
+  << ex:alice ex:age ?age >> db:op ?op .
   FILTER(?op = "retract")
 }
 ```
@@ -720,14 +720,14 @@ WHERE {
 
 ```sparql
 PREFIX ex: <http://example.org/ns/>
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 
 SELECT ?name ?t ?op
 FROM <ledger:main@iso:2024-01-01T00:00:00Z>
 TO <ledger:main@iso:2024-12-31T23:59:59Z>
 WHERE {
-  << ex:alice ex:name ?name >> f:t ?t .
-  << ex:alice ex:name ?name >> f:op ?op .
+  << ex:alice ex:name ?name >> db:t ?t .
+  << ex:alice ex:name ?name >> db:op ?op .
 }
 ```
 

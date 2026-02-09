@@ -60,42 +60,42 @@ struct NsFileV2 {
     #[serde(rename = "@type")]
     record_type: Vec<String>,
 
-    #[serde(rename = "f:ledger")]
+    #[serde(rename = "db:ledger")]
     ledger: LedgerRef,
 
-    #[serde(rename = "f:branch")]
+    #[serde(rename = "db:branch")]
     branch: String,
 
-    #[serde(rename = "f:commit", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:ledgerCommit", skip_serializing_if = "Option::is_none")]
     commit: Option<AddressRef>,
 
-    #[serde(rename = "f:t")]
+    #[serde(rename = "db:t")]
     t: i64,
 
-    #[serde(rename = "f:index", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:ledgerIndex", skip_serializing_if = "Option::is_none")]
     index: Option<IndexRef>,
 
-    #[serde(rename = "f:status")]
+    #[serde(rename = "db:status")]
     status: String,
 
-    #[serde(rename = "f:defaultContext", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:defaultContext", skip_serializing_if = "Option::is_none")]
     default_context: Option<AddressRef>,
 
     // V2 extension fields (optional for backward compatibility)
     /// Status watermark (v2 extension) - defaults to 1 if missing
-    #[serde(rename = "f:statusV", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:statusV", skip_serializing_if = "Option::is_none")]
     status_v: Option<i64>,
 
     /// Status metadata beyond the state field (v2 extension)
-    #[serde(rename = "f:statusMeta", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:statusMeta", skip_serializing_if = "Option::is_none")]
     status_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
 
     /// Config watermark (v2 extension) - defaults to 0 (unborn) if missing
-    #[serde(rename = "f:configV", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:configV", skip_serializing_if = "Option::is_none")]
     config_v: Option<i64>,
 
     /// Config metadata beyond default_context (v2 extension)
-    #[serde(rename = "f:configMeta", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:configMeta", skip_serializing_if = "Option::is_none")]
     config_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
@@ -105,7 +105,7 @@ struct NsIndexFileV2 {
     #[serde(rename = "@context")]
     context: serde_json::Value,
 
-    #[serde(rename = "f:index")]
+    #[serde(rename = "db:ledgerIndex")]
     index: IndexRef,
 }
 
@@ -126,12 +126,10 @@ struct IndexRef {
     #[serde(rename = "@id")]
     id: String,
 
-    #[serde(rename = "f:t")]
+    #[serde(rename = "db:t")]
     t: i64,
 }
 
-const NS_CONTEXT_IRI: &str = "https://ns.flur.ee/ledger#";
-const FIDX_CONTEXT_IRI: &str = "https://ns.flur.ee/index#";
 const NS_VERSION: &str = "ns@v2";
 const MAX_CAS_RETRIES: u32 = 5;
 
@@ -151,19 +149,19 @@ struct GraphSourceNsFileV2 {
     #[serde(rename = "@type")]
     record_type: Vec<String>,
 
-    #[serde(rename = "f:name")]
+    #[serde(rename = "db:name")]
     name: String,
 
-    #[serde(rename = "f:branch")]
+    #[serde(rename = "db:branch")]
     branch: String,
 
-    #[serde(rename = "fidx:config")]
+    #[serde(rename = "db:graphSourceConfig")]
     config: GraphSourceConfigRef,
 
-    #[serde(rename = "fidx:dependencies")]
+    #[serde(rename = "db:graphSourceDependencies")]
     dependencies: Vec<String>,
 
-    #[serde(rename = "f:status")]
+    #[serde(rename = "db:status")]
     status: String,
 }
 
@@ -182,10 +180,10 @@ struct GraphSourceIndexFileV2 {
     #[serde(rename = "@id")]
     id: String,
 
-    #[serde(rename = "fidx:index")]
+    #[serde(rename = "db:graphSourceIndex")]
     index: GraphSourceIndexRef,
 
-    #[serde(rename = "fidx:indexT")]
+    #[serde(rename = "db:graphSourceIndexT")]
     index_t: i64,
 }
 
@@ -194,21 +192,13 @@ struct GraphSourceIndexRef {
     #[serde(rename = "@type")]
     ref_type: String,
 
-    #[serde(rename = "fidx:indexAddress")]
+    #[serde(rename = "db:graphSourceIndexAddress")]
     address: String,
 }
 
 /// Create the standard ns@v2 context as JSON value
 fn ns_context() -> serde_json::Value {
-    serde_json::json!({"f": NS_CONTEXT_IRI})
-}
-
-/// Create graph source ns@v2 context including both f: and fidx: namespaces
-fn graph_source_context() -> serde_json::Value {
-    serde_json::json!({
-        "f": NS_CONTEXT_IRI,
-        "fidx": FIDX_CONTEXT_IRI
-    })
+    serde_json::json!({"db": fluree_vocab::fluree::DB})
 }
 
 // Methods that do not depend on storage trait bounds.
@@ -226,7 +216,7 @@ impl<S> StorageNameService<S> {
         NsFileV2 {
             context: ns_context(),
             id: core_alias::format_alias(ledger_name, branch),
-            record_type: vec!["f:Database".to_string(), "f:PhysicalDatabase".to_string()],
+            record_type: vec!["db:LedgerSource".to_string()],
             ledger: LedgerRef {
                 id: ledger_name.to_string(),
             },
@@ -289,7 +279,7 @@ where
     }
 
     /// Check if a record is a graph source by reading and checking @type.
-    /// Uses exact match for "f:GraphSource".
+    /// Uses exact match for "db:IndexSource" or "db:MappedSource".
     async fn is_graph_source_record(&self, name: &str, branch: &str) -> Result<bool> {
         let key = self.ns_key(name, branch);
 
@@ -311,13 +301,17 @@ where
         Self::is_graph_source_from_json(&parsed)
     }
 
-    /// Check if parsed JSON represents a graph source record (exact match for "f:GraphSource").
+    /// Check if parsed JSON represents a graph source record.
     fn is_graph_source_from_json(parsed: &serde_json::Value) -> bool {
         if let Some(types) = parsed.get("@type").and_then(|t| t.as_array()) {
             for t in types {
                 if let Some(s) = t.as_str() {
-                    // Exact match: either prefixed or full IRI
-                    if s == "f:GraphSource" || s == "https://ns.flur.ee/ledger#GraphSource" {
+                    // Match on kind types (db:IndexSource, db:MappedSource)
+                    if s == "db:IndexSource"
+                        || s == "db:MappedSource"
+                        || s == fluree_vocab::ns_types::INDEX_SOURCE
+                        || s == fluree_vocab::ns_types::MAPPED_SOURCE
+                    {
                         return true;
                     }
                 }
@@ -354,11 +348,19 @@ where
     ) -> Result<Option<GraphSourceRecord>> {
         let index_key = self.index_key(name, branch);
 
-        // Determine graph source type from @type array (exact match, excluding GraphSource)
+        // Determine graph source type from @type array (exclude the kind types)
         let source_type = main
             .record_type
             .iter()
-            .find(|t| *t != "f:GraphSource" && *t != "https://ns.flur.ee/ledger#GraphSource")
+            .find(|t| {
+                !matches!(
+                    t.as_str(),
+                    "db:IndexSource"
+                        | "db:MappedSource"
+                        | fluree_vocab::ns_types::INDEX_SOURCE
+                        | fluree_vocab::ns_types::MAPPED_SOURCE
+                )
+            })
             .map(|t| GraphSourceType::from_type_string(t))
             .unwrap_or(GraphSourceType::Unknown("unknown".to_string()));
 
@@ -686,7 +688,7 @@ where
         let file = NsFileV2 {
             context: ns_context(),
             id: normalized_address.clone(),
-            record_type: vec!["f:Database".to_string(), "f:PhysicalDatabase".to_string()],
+            record_type: vec!["db:LedgerSource".to_string()],
             ledger: LedgerRef {
                 id: ledger_name.clone(),
             },
@@ -1085,6 +1087,11 @@ where
         let branch = branch.to_string();
         let config = config.to_string();
         let dependencies = dependencies.to_vec();
+        let kind_type_str = match source_type.kind() {
+            crate::GraphSourceKind::Index => "db:IndexSource".to_string(),
+            crate::GraphSourceKind::Mapped => "db:MappedSource".to_string(),
+            crate::GraphSourceKind::Ledger => "db:LedgerSource".to_string(),
+        };
         let source_type_str = source_type.to_type_string();
 
         self.cas_update::<GraphSourceNsFileV2, _>(&key, move |existing| {
@@ -1093,6 +1100,7 @@ where
             let branch = branch.clone();
             let config = config.clone();
             let dependencies = dependencies.clone();
+            let kind_type_str = kind_type_str.clone();
             let source_type_str = source_type_str.clone();
 
             // For graph source config, we always update (config changes are allowed)
@@ -1104,9 +1112,9 @@ where
                 .unwrap_or_else(|| "ready".to_string());
 
             Some(GraphSourceNsFileV2 {
-                context: graph_source_context(),
+                context: ns_context(),
                 id: core_alias::format_alias(&name, &branch),
-                record_type: vec!["f:GraphSource".to_string(), source_type_str],
+                record_type: vec![kind_type_str, source_type_str],
                 name,
                 branch,
                 config: GraphSourceConfigRef { value: config },
@@ -1144,10 +1152,10 @@ where
             }
 
             Some(GraphSourceIndexFileV2 {
-                context: graph_source_context(),
+                context: ns_context(),
                 id: core_alias::format_alias(&name, &branch),
                 index: GraphSourceIndexRef {
-                    ref_type: "f:Address".to_string(),
+                    ref_type: "db:Address".to_string(),
                     address: index_addr,
                 },
                 index_t,

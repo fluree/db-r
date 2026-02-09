@@ -139,13 +139,13 @@ Use the `#txn-meta` fragment on a ledger reference:
 ```json
 {
   "@context": {
-    "f": "https://ns.flur.ee/ledger#",
+    "db": "https://ns.flur.ee/db#",
     "ex": "http://example.org/ns/"
   },
   "from": "mydb:main#txn-meta",
   "select": ["?commit", "?t", "?machine"],
   "where": [
-    { "@id": "?commit", "f:t": "?t" },
+    { "@id": "?commit", "db:t": "?t" },
     { "@id": "?commit", "ex:machine": "?machine" }
   ]
 }
@@ -154,13 +154,13 @@ Use the `#txn-meta` fragment on a ledger reference:
 **SPARQL Query:**
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 PREFIX ex: <http://example.org/ns/>
 
 SELECT ?commit ?t ?machine
 FROM <mydb:main#txn-meta>
 WHERE {
-  ?commit f:t ?t .
+  ?commit db:t ?t .
   OPTIONAL { ?commit ex:machine ?machine }
 }
 ```
@@ -450,7 +450,7 @@ Combine default and named graph patterns:
 **SPARQL:**
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 PREFIX ex: <http://example.org/ns/>
 
 SELECT ?name ?commit ?t
@@ -459,7 +459,7 @@ FROM NAMED <mydb:main#txn-meta>
 WHERE {
   ?person ex:name ?name .
   GRAPH <mydb:main#txn-meta> {
-    ?commit f:t ?t .
+    ?commit db:t ?t .
   }
 }
 ```

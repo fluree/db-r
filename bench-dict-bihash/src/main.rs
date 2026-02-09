@@ -150,7 +150,7 @@ fn generate_iris(count: usize, seed: u64) -> Vec<String> {
         "http://example.org/organizations/",
         "http://example.org/products/",
         "http://example.org/events/",
-        "https://ns.flur.ee/ledger#",
+        "https://ns.flur.ee/db#",
         "http://purl.org/dc/terms/",
     ];
     let local_parts = [
@@ -211,7 +211,7 @@ fn generate_predicate_iris(count: usize, seed: u64) -> Vec<String> {
         "http://www.w3.org/2000/01/rdf-schema#",
         "http://xmlns.com/foaf/0.1/",
         "http://schema.org/",
-        "https://ns.flur.ee/ledger#",
+        "https://ns.flur.ee/db#",
         "http://purl.org/dc/terms/",
     ];
     let local_parts = [
@@ -259,8 +259,8 @@ fn generate_graph_iris(count: usize, seed: u64) -> Vec<String> {
         "http://example.org/graph/system",
         "http://example.org/graph/public",
         "http://example.org/graph/private",
-        "https://ns.flur.ee/ledger#default",
-        "https://ns.flur.ee/ledger#commit",
+        "https://ns.flur.ee/db#default",
+        "https://ns.flur.ee/db#commit",
     ];
     let mut rng = SmallRng::seed_from_u64(seed);
     (0..count)

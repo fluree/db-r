@@ -171,9 +171,9 @@ The nameservice can be queried using standard FQL (JSON-LD Query) or SPARQL synt
 ```rust
 // Find all ledgers on main branch
 let query = json!({
-    "@context": {"f": "https://ns.flur.ee/ledger#"},
+    "@context": {"db": "https://ns.flur.ee/db#"},
     "select": ["?ledger"],
-    "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
+    "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:branch": "main"}]
 });
 
 let results = fluree.nameservice_query()
@@ -183,11 +183,11 @@ let results = fluree.nameservice_query()
 
 // Query with SPARQL
 let results = fluree.nameservice_query()
-    .sparql("PREFIX f: <https://ns.flur.ee/ledger#>
+    .sparql("PREFIX db: <https://ns.flur.ee/db#>
              SELECT ?ledger ?t WHERE {
-               ?ns a f:PhysicalDatabase ;
-                   f:ledger ?ledger ;
-                   f:t ?t
+               ?ns a db:LedgerSource ;
+                   db:ledger ?ledger ;
+                   db:t ?t
              }")
     .execute_formatted()
     .await?;
@@ -203,48 +203,48 @@ let results = fluree.query_nameservice(&query).await?;
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
-    "@context": {"f": "https://ns.flur.ee/ledger#"},
+    "@context": {"db": "https://ns.flur.ee/db#"},
     "select": ["?ledger", "?branch", "?t"],
-    "where": [{"@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger", "f:branch": "?branch", "f:t": "?t"}],
+    "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:branch": "?branch", "db:t": "?t"}],
     "orderBy": [{"var": "?t", "desc": true}]
   }'
 ```
 
 #### Available Properties
 
-**Ledger Records** (`@type: "f:PhysicalDatabase"`):
+**Ledger Records** (`@type: "db:LedgerSource"`):
 
 | Property | Description |
 |----------|-------------|
-| `f:ledger` | Ledger name (without branch suffix) |
-| `f:branch` | Branch name (e.g., "main", "dev") |
-| `f:t` | Current transaction number |
-| `f:status` | Status: "ready" or "retracted" |
-| `f:commit` | Reference to latest commit address |
-| `f:index` | Index info object with `@id` (address) and `f:t` |
-| `f:defaultContext` | Default JSON-LD context address (if set) |
+| `db:ledger` | Ledger name (without branch suffix) |
+| `db:branch` | Branch name (e.g., "main", "dev") |
+| `db:t` | Current transaction number |
+| `db:status` | Status: "ready" or "retracted" |
+| `db:ledgerCommit` | Reference to latest commit address |
+| `db:ledgerIndex` | Index info object with `@id` (address) and `db:t` |
+| `db:defaultContext` | Default JSON-LD context address (if set) |
 
-**Graph Source Records** (`@type: "f:GraphSource"`):
+**Graph Source Records** (`@type: "db:GraphSourceDatabase"`):
 
 | Property | Description |
 |----------|-------------|
-| `f:name` | Graph source name |
-| `f:branch` | Branch name |
-| `f:status` | Status: "ready" or "retracted" |
-| `fidx:config` | Configuration JSON |
-| `fidx:dependencies` | Array of source ledger dependencies |
-| `fidx:indexAddress` | Index storage address |
-| `fidx:indexT` | Index transaction number |
+| `db:name` | Graph source name |
+| `db:branch` | Branch name |
+| `db:status` | Status: "ready" or "retracted" |
+| `db:config` | Configuration JSON |
+| `db:dependencies` | Array of source ledger dependencies |
+| `db:indexAddress` | Index storage address |
+| `db:indexT` | Index transaction number |
 
 #### Example Queries
 
 **Find all ledgers with t > 100:**
 ```json
 {
-  "@context": {"f": "https://ns.flur.ee/ledger#"},
+  "@context": {"db": "https://ns.flur.ee/db#"},
   "select": ["?ledger", "?t"],
   "where": [
-    {"@id": "?ns", "f:ledger": "?ledger", "f:t": "?t"}
+    {"@id": "?ns", "db:ledger": "?ledger", "db:t": "?t"}
   ],
   "filter": ["(> ?t 100)"]
 }
@@ -253,10 +253,10 @@ curl -X POST http://localhost:8090/nameservice/query \
 **Find ledgers by name pattern (hierarchical):**
 ```json
 {
-  "@context": {"f": "https://ns.flur.ee/ledger#"},
+  "@context": {"db": "https://ns.flur.ee/db#"},
   "select": ["?ledger", "?branch"],
   "where": [
-    {"@id": "?ns", "f:ledger": "?ledger", "f:branch": "?branch"}
+    {"@id": "?ns", "db:ledger": "?ledger", "db:branch": "?branch"}
   ],
   "filter": ["(strStarts ?ledger \"tenant1/\")"]
 }
@@ -266,12 +266,11 @@ curl -X POST http://localhost:8090/nameservice/query \
 ```json
 {
   "@context": {
-    "f": "https://ns.flur.ee/ledger#",
-    "fidx": "https://ns.flur.ee/index#"
+    "db": "https://ns.flur.ee/db#"
   },
   "select": ["?name", "?deps"],
   "where": [
-    {"@id": "?gs", "@type": "fidx:BM25", "f:name": "?name", "fidx:dependencies": "?deps"}
+    {"@id": "?gs", "@type": "db:Bm25Index", "db:name": "?name", "db:dependencies": "?deps"}
   ]
 }
 ```

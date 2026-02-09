@@ -475,7 +475,7 @@ async fn build_commit_jsonld<S: Storage>(
         .map_err(|e| LedgerInfoError::CommitLoad(e.to_string()))?;
 
     let mut obj = json!({
-        "@context": "https://ns.flur.ee/ledger/v1",
+        "@context": "https://ns.flur.ee/db/v1",
         "type": ["Commit"],
         "v": commit.v,
         "address": commit_address,
@@ -594,26 +594,26 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
     };
 
     let mut obj = json!({
-        "@context": { "f": "https://ns.flur.ee/ledger#" },
+        "@context": { "db": "https://ns.flur.ee/db#" },
         "@id": &canonical_id,
-        "@type": ["f:Database", "f:PhysicalDatabase"],
-        "f:ledger": { "@id": &ledger_name },
-        "f:branch": &record.branch,
-        "f:t": record.commit_t,
-        "f:status": status,
+        "@type": ["db:LedgerSource"],
+        "db:ledger": { "@id": &ledger_name },
+        "db:branch": &record.branch,
+        "db:t": record.commit_t,
+        "db:status": status,
     });
 
     if let Some(ref commit_addr) = record.commit_address {
-        obj["f:commit"] = json!({ "@id": commit_addr });
+        obj["db:ledgerCommit"] = json!({ "@id": commit_addr });
     }
     if let Some(ref index_addr) = record.index_address {
-        obj["f:index"] = json!({
+        obj["db:ledgerIndex"] = json!({
             "@id": index_addr,
-            "f:t": record.index_t
+            "db:t": record.index_t
         });
     }
     if let Some(ref ctx_addr) = record.default_context_address {
-        obj["f:defaultContext"] = json!({ "@id": ctx_addr });
+        obj["db:defaultContext"] = json!({ "@id": ctx_addr });
     }
 
     obj
@@ -621,8 +621,8 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
 
 /// Convert GraphSourceRecord to JSON-LD format for nameservice queries.
 ///
-/// Uses standard JSON-LD keywords with both `f:` (ledger) and `fidx:` (index) namespaces.
-/// Includes `f:status` field that reflects retracted state.
+/// Uses standard JSON-LD keywords with `db:` namespace.
+/// Includes `db:status` field that reflects retracted state.
 pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
     // Use canonical form for @id: "{name}:{branch}"
     let canonical_id = core_alias::format_alias(&record.name, &record.branch);
@@ -634,24 +634,28 @@ pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
         "ready"
     };
 
+    // Determine the kind type string
+    let kind_type_str = match record.source_type.kind() {
+        fluree_db_nameservice::GraphSourceKind::Index => "db:IndexSource",
+        fluree_db_nameservice::GraphSourceKind::Mapped => "db:MappedSource",
+        fluree_db_nameservice::GraphSourceKind::Ledger => "db:LedgerSource",
+    };
+
     let mut obj = json!({
-        "@context": {
-            "f": "https://ns.flur.ee/ledger#",
-            "fidx": "https://ns.flur.ee/index#"
-        },
+        "@context": { "db": "https://ns.flur.ee/db#" },
         "@id": &canonical_id,
-        "@type": ["f:GraphSource", record.source_type.to_type_string()],
-        "f:name": &record.name,
-        "f:branch": &record.branch,
-        "f:status": status,
-        "fidx:config": { "@value": &record.config },
-        "fidx:dependencies": &record.dependencies,
+        "@type": [kind_type_str, record.source_type.to_type_string()],
+        "db:name": &record.name,
+        "db:branch": &record.branch,
+        "db:status": status,
+        "db:graphSourceConfig": { "@value": &record.config },
+        "db:graphSourceDependencies": &record.dependencies,
     });
 
     // Include index fields if present (matching ns@v2 on-disk format)
     if let Some(ref index_addr) = record.index_address {
-        obj["fidx:indexAddress"] = json!(index_addr);
-        obj["fidx:indexT"] = json!(record.index_t);
+        obj["db:graphSourceIndex"] = json!(index_addr);
+        obj["db:graphSourceIndexT"] = json!(record.index_t);
     }
 
     obj
@@ -1141,16 +1145,16 @@ mod tests {
         let json = ns_record_to_jsonld(&record);
 
         assert_eq!(json["@id"], "mydb:main");
-        assert_eq!(json["@type"], json!(["f:Database", "f:PhysicalDatabase"]));
-        assert_eq!(json["f:ledger"]["@id"], "mydb");
-        assert_eq!(json["f:branch"], "main");
-        assert_eq!(json["f:t"], 42);
-        assert_eq!(json["f:status"], "ready");
+        assert_eq!(json["@type"], json!(["db:LedgerSource"]));
+        assert_eq!(json["db:ledger"]["@id"], "mydb");
+        assert_eq!(json["db:branch"], "main");
+        assert_eq!(json["db:t"], 42);
+        assert_eq!(json["db:status"], "ready");
         assert_eq!(
-            json["f:commit"]["@id"],
+            json["db:ledgerCommit"]["@id"],
             "fluree:file://mydb/main/commit/abc.json"
         );
-        assert_eq!(json["f:index"]["f:t"], 40);
+        assert_eq!(json["db:ledgerIndex"]["db:t"], 40);
     }
 
     #[test]
@@ -1168,7 +1172,7 @@ mod tests {
         };
 
         let json = ns_record_to_jsonld(&record);
-        assert_eq!(json["f:status"], "retracted");
+        assert_eq!(json["db:status"], "retracted");
     }
 
     #[test]
@@ -1188,16 +1192,22 @@ mod tests {
         let json = gs_record_to_jsonld(&record);
 
         assert_eq!(json["@id"], "my-search:main");
-        assert_eq!(json["@type"], json!(["f:GraphSource", "fidx:BM25"]));
-        assert_eq!(json["f:name"], "my-search");
-        assert_eq!(json["f:branch"], "main");
-        assert_eq!(json["f:status"], "ready");
-        assert_eq!(json["fidx:config"]["@value"], r#"{"k1":1.2,"b":0.75}"#);
-        assert_eq!(json["fidx:dependencies"], json!(["source-ledger:main"]));
+        assert_eq!(json["@type"], json!(["db:IndexSource", "db:Bm25Index"]));
+        assert_eq!(json["db:name"], "my-search");
+        assert_eq!(json["db:branch"], "main");
+        assert_eq!(json["db:status"], "ready");
         assert_eq!(
-            json["fidx:indexAddress"],
+            json["db:graphSourceConfig"]["@value"],
+            r#"{"k1":1.2,"b":0.75}"#
+        );
+        assert_eq!(
+            json["db:graphSourceDependencies"],
+            json!(["source-ledger:main"])
+        );
+        assert_eq!(
+            json["db:graphSourceIndex"],
             "fluree:file://graph-sources/snapshot.bin"
         );
-        assert_eq!(json["fidx:indexT"], 42);
+        assert_eq!(json["db:graphSourceIndexT"], 42);
     }
 }

@@ -982,7 +982,7 @@ fn parse_literal_value_with_meta(
             // Handle @vector shorthand: "@vector" or full IRI both route
             // through the standard vector coercion path.
             let resolved_type = if type_iri == "@vector" {
-                fluree_vocab::fluree::VECTOR
+                fluree_vocab::fluree::EMBEDDING_VECTOR
             } else {
                 type_iri
             };

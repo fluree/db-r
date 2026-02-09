@@ -209,14 +209,14 @@ The same query in SPARQL uses RDF-star syntax with `FROM...TO`:
 
 ```sparql
 PREFIX ex: <http://example.org/ns/>
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 
 SELECT ?name ?t ?op
 FROM <ledger:main@t:1>
 TO <ledger:main@t:latest>
 WHERE {
-  << ex:alice ex:name ?name >> f:t ?t .
-  << ex:alice ex:name ?name >> f:op ?op .
+  << ex:alice ex:name ?name >> db:t ?t .
+  << ex:alice ex:name ?name >> db:op ?op .
 }
 ORDER BY ?t
 ```

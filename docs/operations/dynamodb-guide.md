@@ -223,7 +223,7 @@ All items share these common attributes:
 | `name` | String | Base name (reserved word — use `#name` in expressions) |
 | `branch` | String | Branch name |
 | `retracted` | Boolean | Soft-delete flag |
-| `source_type` | String (graph source only) | Graph-source type (e.g., `fidx:BM25`) |
+| `source_type` | String (graph source only) | Graph-source type (e.g., `db:Bm25Index`) |
 | `dependencies` | List\<String\> (graph source only) | Dependent ledger aliases |
 
 **`head` item (ledgers only):**

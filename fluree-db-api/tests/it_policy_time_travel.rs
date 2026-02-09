@@ -75,7 +75,7 @@ async fn policy_applies_to_time_travel_queries() {
 
     // With policy: requiring ssn should yield 0 rows at t=1.
     let q_ssn_t1_policy = json!({
-        "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/","f":"https://ns.flur.ee/ledger#"},
+        "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/","f":"https://ns.flur.ee/db#"},
         "from": {"@id": alias, "t": 1},
         "opts": {"policy": policy.clone(), "default-allow": true},
         "select": ["?ssn"],
@@ -90,7 +90,7 @@ async fn policy_applies_to_time_travel_queries() {
 
     // With policy: non-ssn fields still visible at t=1.
     let q_name_t1_policy = json!({
-        "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/","f":"https://ns.flur.ee/ledger#"},
+        "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/","f":"https://ns.flur.ee/db#"},
         "from": {"@id": alias, "t": 1},
         "opts": {"policy": policy.clone(), "default-allow": true},
         "select": ["?name"],

@@ -460,7 +460,7 @@ async fn test_trig_txn_meta_basic() {
             // a direct flake path that bypasses TriG extraction.
             let turtle = r#"
                 @prefix ex: <http://example.org/> .
-                @prefix fluree: <https://ns.flur.ee/ledger#> .
+                @prefix fluree: <https://ns.flur.ee/db#> .
 
                 # Default graph data
                 ex:alice ex:name "Alice" .

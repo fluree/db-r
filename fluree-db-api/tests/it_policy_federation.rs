@@ -47,7 +47,7 @@ async fn policy_applies_in_multi_ledger_query_connection() {
     }]);
 
     let q_policy = json!({
-        "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/","f":"https://ns.flur.ee/ledger#"},
+        "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/","f":"https://ns.flur.ee/db#"},
         "from": [alias1, alias2],
         "opts": {"policy": deny_ssn, "default-allow": true},
         "select": ["?s", "?ssn"],

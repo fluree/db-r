@@ -51,7 +51,7 @@ impl Datatype {
             Datatype::JsonLdJson
         } else if iri == "@vector" {
             // Normalize @vector shorthand to full IRI
-            Datatype::Iri(Arc::from(fluree_vocab::fluree::VECTOR))
+            Datatype::Iri(Arc::from(fluree_vocab::fluree::EMBEDDING_VECTOR))
         } else {
             Datatype::Iri(Arc::from(iri))
         }

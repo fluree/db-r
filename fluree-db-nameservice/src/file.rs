@@ -78,42 +78,42 @@ struct NsFileV2 {
     #[serde(rename = "@type")]
     record_type: Vec<String>,
 
-    #[serde(rename = "f:ledger")]
+    #[serde(rename = "db:ledger")]
     ledger: LedgerRef,
 
-    #[serde(rename = "f:branch")]
+    #[serde(rename = "db:branch")]
     branch: String,
 
-    #[serde(rename = "f:commit", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:ledgerCommit", skip_serializing_if = "Option::is_none")]
     commit: Option<AddressRef>,
 
-    #[serde(rename = "f:t")]
+    #[serde(rename = "db:t")]
     t: i64,
 
-    #[serde(rename = "f:index", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:ledgerIndex", skip_serializing_if = "Option::is_none")]
     index: Option<IndexRef>,
 
-    #[serde(rename = "f:status")]
+    #[serde(rename = "db:status")]
     status: String,
 
-    #[serde(rename = "f:defaultContext", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:defaultContext", skip_serializing_if = "Option::is_none")]
     default_context: Option<AddressRef>,
 
     // V2 extension fields (optional for backward compatibility)
     /// Status watermark (v2 extension) - defaults to 1 if missing
-    #[serde(rename = "f:statusV", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:statusV", skip_serializing_if = "Option::is_none")]
     status_v: Option<i64>,
 
     /// Status metadata beyond the state field (v2 extension)
-    #[serde(rename = "f:statusMeta", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:statusMeta", skip_serializing_if = "Option::is_none")]
     status_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
 
     /// Config watermark (v2 extension) - defaults to 0 (unborn) if missing
-    #[serde(rename = "f:configV", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:configV", skip_serializing_if = "Option::is_none")]
     config_v: Option<i64>,
 
     /// Config metadata beyond default_context (v2 extension)
-    #[serde(rename = "f:configMeta", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "db:configMeta", skip_serializing_if = "Option::is_none")]
     config_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
@@ -124,7 +124,7 @@ struct NsIndexFileV2 {
     #[serde(rename = "@context")]
     context: serde_json::Value,
 
-    #[serde(rename = "f:index")]
+    #[serde(rename = "db:ledgerIndex")]
     index: IndexRef,
 }
 
@@ -145,47 +145,47 @@ struct IndexRef {
     #[serde(rename = "@id")]
     id: String,
 
-    #[serde(rename = "f:t")]
+    #[serde(rename = "db:t")]
     t: i64,
 }
 
 /// JSON structure for graph source ns@v2 config record file
 ///
 /// Graph source records use the same ns@v2 path pattern but have different fields:
-/// - `@type` includes "f:GraphSource" and a source-specific type (fidx:BM25, etc.)
-/// - `fidx:config` contains the graph source configuration as a JSON string
-/// - `fidx:dependencies` lists dependent ledger addresses
+/// - `@type` includes "db:IndexSource" (or "db:MappedSource") and a source-specific type
+/// - `db:graphSourceConfig` contains the graph source configuration as a JSON string
+/// - `db:graphSourceDependencies` lists dependent ledger addresses
 #[derive(Debug, Serialize, Deserialize)]
 struct GraphSourceNsFileV2 {
-    /// Context includes both f: (ledger) and fidx: (index) namespaces
+    /// Context uses db: namespace
     #[serde(rename = "@context")]
     context: serde_json::Value,
 
     #[serde(rename = "@id")]
     id: String,
 
-    /// Type array includes "f:GraphSource" and source-specific type
+    /// Type array includes kind type and source-specific type
     #[serde(rename = "@type")]
     record_type: Vec<String>,
 
     /// Base name of the graph source
-    #[serde(rename = "f:name")]
+    #[serde(rename = "db:name")]
     name: String,
 
     /// Branch name
-    #[serde(rename = "f:branch")]
+    #[serde(rename = "db:branch")]
     branch: String,
 
     /// Graph source configuration as JSON string
-    #[serde(rename = "fidx:config")]
+    #[serde(rename = "db:graphSourceConfig")]
     config: ConfigRef,
 
     /// Dependent ledger addresses
-    #[serde(rename = "fidx:dependencies")]
+    #[serde(rename = "db:graphSourceDependencies")]
     dependencies: Vec<String>,
 
     /// Status (ready/retracted)
-    #[serde(rename = "f:status")]
+    #[serde(rename = "db:status")]
     status: String,
 }
 
@@ -196,7 +196,7 @@ struct ConfigRef {
     value: String,
 }
 
-/// Reference to a graph source index address
+/// Reference to a graph source index address with typed value
 #[derive(Debug, Serialize, Deserialize)]
 struct GraphSourceIndexRef {
     #[serde(rename = "@type")]
@@ -219,29 +219,19 @@ struct GraphSourceIndexFileV2WithT {
     #[serde(rename = "@id")]
     id: String,
 
-    #[serde(rename = "fidx:index")]
+    #[serde(rename = "db:graphSourceIndex")]
     index: GraphSourceIndexRef,
 
-    #[serde(rename = "fidx:indexT")]
+    #[serde(rename = "db:graphSourceIndexT")]
     index_t: i64,
 }
 
-const NS_CONTEXT_IRI: &str = "https://ns.flur.ee/ledger#";
-const FIDX_CONTEXT_IRI: &str = "https://ns.flur.ee/index#";
 const NS_VERSION: &str = "ns@v2";
 
 /// Create the standard ns@v2 context as JSON value
-/// Uses object format `{"f": "https://ns.flur.ee/ledger#"}` for Clojure compatibility
+/// Uses object format `{"db": "https://ns.flur.ee/db#"}` for prefix expansion
 fn ns_context() -> serde_json::Value {
-    serde_json::json!({"f": NS_CONTEXT_IRI})
-}
-
-/// Create graph source ns@v2 context including both f: and fidx: namespaces
-fn graph_source_context() -> serde_json::Value {
-    serde_json::json!({
-        "f": NS_CONTEXT_IRI,
-        "fidx": FIDX_CONTEXT_IRI
-    })
+    serde_json::json!({"db": fluree_vocab::fluree::DB})
 }
 
 #[cfg(all(feature = "native", unix))]
@@ -474,7 +464,7 @@ impl FileNameService {
     }
 
     /// Check if a record file is a graph source record (based on @type).
-    /// Uses exact match for "f:GraphSource" or full IRI.
+    /// Uses exact match for "db:IndexSource" or "db:MappedSource".
     async fn is_graph_source_record(&self, name: &str, branch: &str) -> Result<bool> {
         let main_path = self.ns_path(name, branch);
         if !main_path.exists() {
@@ -495,8 +485,12 @@ impl FileNameService {
         if let Some(types) = parsed.get("@type").and_then(|t| t.as_array()) {
             for t in types {
                 if let Some(s) = t.as_str() {
-                    // Exact match: either prefixed or full IRI
-                    if s == "f:GraphSource" || s == "https://ns.flur.ee/ledger#GraphSource" {
+                    // Match on kind types (db:IndexSource, db:MappedSource)
+                    if s == "db:IndexSource"
+                        || s == "db:MappedSource"
+                        || s == fluree_vocab::ns_types::INDEX_SOURCE
+                        || s == fluree_vocab::ns_types::MAPPED_SOURCE
+                    {
                         return true;
                     }
                 }
@@ -521,11 +515,19 @@ impl FileNameService {
             return Ok(None);
         };
 
-        // Determine graph source type from @type array (exact match, excluding GraphSource)
+        // Determine graph source type from @type array (exclude the kind types)
         let source_type = main
             .record_type
             .iter()
-            .find(|t| *t != "f:GraphSource" && *t != "https://ns.flur.ee/ledger#GraphSource")
+            .find(|t| {
+                !matches!(
+                    t.as_str(),
+                    "db:IndexSource"
+                        | "db:MappedSource"
+                        | fluree_vocab::ns_types::INDEX_SOURCE
+                        | fluree_vocab::ns_types::MAPPED_SOURCE
+                )
+            })
             .map(|t| GraphSourceType::from_type_string(t))
             .unwrap_or(GraphSourceType::Unknown("unknown".to_string()));
 
@@ -562,7 +564,7 @@ impl FileNameService {
         NsFileV2 {
             context: ns_context(),
             id: record.address.clone(),
-            record_type: vec!["f:Database".to_string(), "f:PhysicalDatabase".to_string()],
+            record_type: vec!["db:LedgerSource".to_string()],
             ledger: LedgerRef {
                 id: record.name.clone(),
             },
@@ -703,10 +705,7 @@ impl Publisher for FileNameService {
                     let file = NsFileV2 {
                         context: ns_context(),
                         id: core_alias::format_alias(&ledger_name_for_file, &branch_for_file),
-                        record_type: vec![
-                            "f:Database".to_string(),
-                            "f:PhysicalDatabase".to_string(),
-                        ],
+                        record_type: vec!["db:LedgerSource".to_string()],
                         ledger: LedgerRef {
                             id: ledger_name_for_file.clone(),
                         },
@@ -737,7 +736,7 @@ impl Publisher for FileNameService {
             let file = NsFileV2 {
                 context: ns_context(),
                 id: normalized_address.clone(),
-                record_type: vec!["f:Database".to_string(), "f:PhysicalDatabase".to_string()],
+                record_type: vec!["db:LedgerSource".to_string()],
                 ledger: LedgerRef {
                     id: ledger_name.clone(),
                 },
@@ -801,10 +800,7 @@ impl Publisher for FileNameService {
                                     &ledger_name_for_file,
                                     &branch_for_file,
                                 ),
-                                record_type: vec![
-                                    "f:Database".to_string(),
-                                    "f:PhysicalDatabase".to_string(),
-                                ],
+                                record_type: vec!["db:LedgerSource".to_string()],
                                 ledger: LedgerRef {
                                     id: ledger_name_for_file.clone(),
                                 },
@@ -1129,6 +1125,11 @@ impl GraphSourcePublisher for FileNameService {
             let dependencies_for_file = dependencies.to_vec();
             let dependencies_for_event = dependencies_for_file.clone();
             let source_type_for_event = source_type.clone();
+            let kind_type_str = match source_type.kind() {
+                crate::GraphSourceKind::Index => "db:IndexSource".to_string(),
+                crate::GraphSourceKind::Mapped => "db:MappedSource".to_string(),
+                crate::GraphSourceKind::Ledger => "db:LedgerSource".to_string(),
+            };
             let source_type_str = source_type.to_type_string();
             let name_for_file = name.clone();
             let branch_for_file = branch.clone();
@@ -1148,9 +1149,9 @@ impl GraphSourcePublisher for FileNameService {
                         .unwrap_or_else(|| "ready".to_string());
 
                     let file = GraphSourceNsFileV2 {
-                        context: graph_source_context(),
+                        context: ns_context(),
                         id: core_alias::format_alias(&name_for_file, &branch_for_file),
-                        record_type: vec!["f:GraphSource".to_string(), source_type_str],
+                        record_type: vec![kind_type_str, source_type_str],
                         name: name_for_file,
                         branch: branch_for_file,
                         config: ConfigRef { value: config },
@@ -1177,10 +1178,15 @@ impl GraphSourcePublisher for FileNameService {
 
         #[cfg(not(all(feature = "native", unix)))]
         {
+            let kind_type_str = match source_type.kind() {
+                crate::GraphSourceKind::Index => "db:IndexSource".to_string(),
+                crate::GraphSourceKind::Mapped => "db:MappedSource".to_string(),
+                crate::GraphSourceKind::Ledger => "db:LedgerSource".to_string(),
+            };
             let file = GraphSourceNsFileV2 {
-                context: graph_source_context(),
+                context: ns_context(),
                 id: core_alias::format_alias(&name, &branch),
-                record_type: vec!["f:GraphSource".to_string(), source_type.to_type_string()],
+                record_type: vec![kind_type_str, source_type.to_type_string()],
                 name: name.to_string(),
                 branch: branch.to_string(),
                 config: ConfigRef {
@@ -1231,10 +1237,10 @@ impl GraphSourcePublisher for FileNameService {
                     }
 
                     let file = GraphSourceIndexFileV2WithT {
-                        context: graph_source_context(),
+                        context: ns_context(),
                         id: core_alias::format_alias(&name, &branch),
                         index: GraphSourceIndexRef {
-                            ref_type: "f:Address".to_string(),
+                            ref_type: "db:Address".to_string(),
                             address: index_addr,
                         },
                         index_t,
@@ -1267,10 +1273,10 @@ impl GraphSourcePublisher for FileNameService {
             }
 
             let file = GraphSourceIndexFileV2WithT {
-                context: graph_source_context(),
+                context: ns_context(),
                 id: core_alias::format_alias(&name, &branch),
                 index: GraphSourceIndexRef {
-                    ref_type: "f:Address".to_string(),
+                    ref_type: "db:Address".to_string(),
                     address: index_addr.to_string(),
                 },
                 index_t,
@@ -1546,10 +1552,7 @@ impl RefPublisher for FileNameService {
                         NsFileV2 {
                             context: ns_context(),
                             id: address_c.clone(),
-                            record_type: vec![
-                                "f:Database".to_string(),
-                                "f:PhysicalDatabase".to_string(),
-                            ],
+                            record_type: vec!["db:LedgerSource".to_string()],
                             ledger: LedgerRef {
                                 id: ledger_name_c.clone(),
                             },
@@ -2383,7 +2386,7 @@ mod tests {
         ns.publish_graph_source(
             "custom-gs",
             "main",
-            GraphSourceType::Unknown("fidx:CustomType".to_string()),
+            GraphSourceType::Unknown("db:CustomType".to_string()),
             "{}",
             &[],
         )
@@ -2420,7 +2423,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .source_type,
-            GraphSourceType::Unknown("fidx:CustomType".to_string())
+            GraphSourceType::Unknown("db:CustomType".to_string())
         );
     }
 

@@ -47,7 +47,7 @@ fn create_jws(payload: &str, signing_key: &SigningKey) -> String {
 
 fn ctx_ct(ledger_id: &str) -> JsonValue {
     json!({
-        "f": "https://ns.flur.ee/ledger#",
+        "f": "https://ns.flur.ee/db#",
         "ct": format!("ledger:{}/", ledger_id)
     })
 }

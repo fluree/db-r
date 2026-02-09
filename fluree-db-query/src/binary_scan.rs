@@ -43,7 +43,7 @@ use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
-use fluree_vocab::namespaces::FLUREE_LEDGER;
+use fluree_vocab::namespaces::FLUREE_DB;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -266,7 +266,7 @@ impl BinaryScanOperator {
             && self
                 .p_sids
                 .get(p_id as usize)
-                .is_some_and(|s| s.namespace_code == FLUREE_LEDGER)
+                .is_some_and(|s| s.namespace_code == FLUREE_DB)
     }
 
     /// Decode an object value, routing through DictOverlay when present.
@@ -1751,7 +1751,7 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                 if self.p_is_var {
                     flakes
                         .iter()
-                        .filter(|f| f.p.namespace_code != FLUREE_LEDGER)
+                        .filter(|f| f.p.namespace_code != FLUREE_DB)
                         .count()
                 } else {
                     flakes.len()
@@ -1760,7 +1760,7 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                 flakes
                     .iter()
                     .filter(|f| {
-                        (!self.p_is_var || f.p.namespace_code != FLUREE_LEDGER)
+                        (!self.p_is_var || f.p.namespace_code != FLUREE_DB)
                             && self.flake_matches(f, ctx.db)
                     })
                     .count()
@@ -1783,7 +1783,7 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                 }
                 // Filter internal predicates (commit metadata) for wildcard predicate patterns.
                 // Matches `BinaryScanOperator` behavior.
-                if self.p_is_var && f.p.namespace_code == FLUREE_LEDGER {
+                if self.p_is_var && f.p.namespace_code == FLUREE_DB {
                     continue;
                 }
 

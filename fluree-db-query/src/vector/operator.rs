@@ -2,10 +2,10 @@
 //!
 //! This operator executes vector similarity search against a vector index provider
 //! and emits bindings for:
-//! - idx:id      -> `Binding::IriMatch` (canonical IRI with ledger provenance for cross-ledger joins)
+//! - db:resultId      -> `Binding::IriMatch` (canonical IRI with ledger provenance for cross-ledger joins)
 //!   or `Binding::Iri` (if IRI cannot be encoded to SID)
-//! - idx:score   -> `Binding::Lit` (xsd:double, similarity score)
-//! - idx:ledger  -> `Binding::Lit` (xsd:string; ledger alias) [optional]
+//! - db:resultScore   -> `Binding::Lit` (xsd:double, similarity score)
+//! - db:resultLedger  -> `Binding::Lit` (xsd:string; ledger alias) [optional]
 //!
 //! # Provider Abstraction
 //!
@@ -19,11 +19,11 @@
 //! ```json
 //! {
 //!   "where": [{
-//!     "idx:graph": "embeddings:main",
-//!     "idx:vector": [0.1, 0.2, 0.3],
-//!     "idx:metric": "cosine",
-//!     "idx:limit": 10,
-//!     "idx:result": {"idx:id": "?doc", "idx:score": "?score"}
+//!     "db:graphSource": "embeddings:main",
+//!     "db:queryVector": [0.1, 0.2, 0.3],
+//!     "db:distanceMetric": "cosine",
+//!     "db:searchLimit": 10,
+//!     "db:searchResult": {"db:resultId": "?doc", "db:resultScore": "?score"}
 //!   }],
 //!   "select": ["?doc", "?score"]
 //! }

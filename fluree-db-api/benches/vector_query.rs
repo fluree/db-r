@@ -109,7 +109,7 @@ async fn setup_dataset(
     let ctx = json!({
         "xsd": "http://www.w3.org/2001/XMLSchema#",
         "ex": "http://example.org/ns/",
-        "f": "https://ns.flur.ee/ledger#"
+        "f": "https://ns.flur.ee/db#"
     });
 
     // Use a large novelty limit to avoid backpressure during bulk setup.
@@ -170,7 +170,7 @@ async fn setup_dataset(
         "select": ["?article", "?score"],
         "values": [
             ["?queryVec"],
-            [{"@value": query_vec.clone(), "@type": "f:vector"}]
+            [{"@value": query_vec.clone(), "@type": "@vector"}]
         ],
         "where": [
             {"@id": "?article", "ex:articleSummaryVec": "?vec"},
@@ -188,7 +188,7 @@ async fn setup_dataset(
         "select": ["?article", "?score"],
         "values": [
             ["?queryVec"],
-            [{"@value": query_vec, "@type": "f:vector"}]
+            [{"@value": query_vec, "@type": "@vector"}]
         ],
         "where": [
             {"@id": "?article", "ex:publishedDate": "?date", "ex:articleSummaryVec": "?vec"},

@@ -223,7 +223,7 @@ async fn policy_per_source_override_denies_when_global_allows() {
         "@context": {
             "ex": "http://example.org/ns/",
             "schema": "http://schema.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "from": {
             "@id": "policy/per-source-deny:main",

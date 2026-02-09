@@ -396,7 +396,7 @@ pub fn coerce_json_value(
 
         serde_json::Value::Array(arr) => {
             // Only vectors are supported
-            if datatype_iri == fluree_vocab::fluree::VECTOR {
+            if datatype_iri == fluree_vocab::fluree::EMBEDDING_VECTOR {
                 coerce_array_to_vector(arr)
             } else {
                 Err(CoercionError::incompatible(

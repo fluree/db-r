@@ -78,18 +78,18 @@ Query metadata about all ledgers and graph sources in the system. The nameservic
 **JSON-LD Query:**
 ```json
 {
-  "@context": {"f": "https://ns.flur.ee/ledger#"},
+  "@context": {"db": "https://ns.flur.ee/db#"},
   "select": ["?ledger", "?t"],
   "where": [
-    { "@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger", "f:t": "?t" }
+    { "@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:t": "?t" }
   ]
 }
 ```
 
 **SPARQL:**
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
-SELECT ?ledger ?t WHERE { ?ns a f:PhysicalDatabase ; f:ledger ?ledger ; f:t ?t }
+PREFIX db: <https://ns.flur.ee/db#>
+SELECT ?ledger ?t WHERE { ?ns a db:LedgerSource ; db:ledger ?ledger ; db:t ?t }
 ```
 
 See the [Ledgers and Nameservice](../concepts/ledgers-and-nameservice.md) concept documentation for details.

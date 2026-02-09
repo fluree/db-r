@@ -215,13 +215,13 @@ Signed transactions include author information in commit metadata:
 Query provenance:
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 
 SELECT ?t ?author ?timestamp
 WHERE {
-  ?commit f:t ?t ;
-          f:author ?author ;
-          f:timestamp ?timestamp .
+  ?commit db:t ?t ;
+          db:author ?author ;
+          db:timestamp ?timestamp .
 }
 ORDER BY DESC(?t)
 ```
@@ -234,14 +234,14 @@ Use signed transaction author for authorization:
 {
   "@context": {
     "ex": "http://example.org/ns/",
-    "f": "https://ns.flur.ee/ledger#"
+    "db": "https://ns.flur.ee/db#"
   },
   "@id": "ex:admin-policy",
-  "f:policy": [
+  "db:policy": [
     {
-      "f:subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-      "f:action": "transact",
-      "f:allow": true
+      "db:subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+      "db:action": "transact",
+      "db:allow": true
     }
   ]
 }
@@ -460,10 +460,10 @@ Signed transactions provide complete audit trail:
 ```sparql
 SELECT ?t ?author ?timestamp ?action
 WHERE {
-  ?commit f:t ?t ;
-          f:author ?author ;
-          f:timestamp ?timestamp .
-  ?commit f:assert ?assertion .
+  ?commit db:t ?t ;
+          db:author ?author ;
+          db:timestamp ?timestamp .
+  ?commit db:assert ?assertion .
   ?assertion ?predicate ?object .
 }
 ORDER BY DESC(?t)

@@ -14,18 +14,18 @@
 //!
 //! # Query Syntax
 //!
-//! Vector search uses the `idx:*` pattern syntax:
+//! Vector search uses the `db:*` pattern syntax:
 //!
 //! ```json
 //! {
 //!   "where": [{
-//!     "idx:graph": "embeddings:main",
-//!     "idx:vector": [0.1, 0.2, ...],  // or "?embedding" variable
-//!     "idx:metric": "cosine",          // "cosine" | "dot" | "l2"
-//!     "idx:limit": 10,
-//!     "idx:result": {
-//!       "idx:id": "?doc",
-//!       "idx:score": "?score"
+//!     "db:graphSource": "embeddings:main",
+//!     "db:queryVector": [0.1, 0.2, ...],  // or "?embedding" variable
+//!     "db:distanceMetric": "cosine",          // "cosine" | "dot" | "l2"
+//!     "db:searchLimit": 10,
+//!     "db:searchResult": {
+//!       "db:resultId": "?doc",
+//!       "db:resultScore": "?score"
 //!     }
 //!   }]
 //! }

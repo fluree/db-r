@@ -52,7 +52,7 @@ pub const ATTR_NAME: &str = "name";
 pub const ATTR_BRANCH: &str = "branch";
 /// Whether this record has been retracted
 pub const ATTR_RETRACTED: &str = "retracted";
-/// Graph-source type string (e.g., "fidx:BM25")
+/// Graph-source type string (e.g., "db:Bm25Index")
 pub const ATTR_SOURCE_TYPE: &str = "source_type";
 /// Dependent ledger aliases (List<String>)
 pub const ATTR_DEPENDENCIES: &str = "dependencies";

@@ -1597,9 +1597,9 @@ async fn main() -> Result<()> {
 
     // Find all ledgers on main branch
     let query = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"db": "https://ns.flur.ee/db#"},
         "select": ["?ledger", "?t"],
-        "where": [{"@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger", "f:branch": "main", "f:t": "?t"}],
+        "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:branch": "main", "db:t": "?t"}],
         "orderBy": [{"var": "?t", "desc": true}]
     });
 
@@ -1612,8 +1612,8 @@ async fn main() -> Result<()> {
 
     // SPARQL query
     let results = fluree.nameservice_query()
-        .sparql("PREFIX f: <https://ns.flur.ee/ledger#>
-                 SELECT ?ledger ?t WHERE { ?ns a f:PhysicalDatabase ; f:ledger ?ledger ; f:t ?t }")
+        .sparql("PREFIX db: <https://ns.flur.ee/db#>
+                 SELECT ?ledger ?t WHERE { ?ns a db:LedgerSource ; db:ledger ?ledger ; db:t ?t }")
         .execute_formatted()
         .await?;
 
@@ -1628,27 +1628,27 @@ async fn main() -> Result<()> {
 
 ### Available Properties
 
-**Ledger Records** (`@type: "f:PhysicalDatabase"`):
+**Ledger Records** (`@type: "db:LedgerSource"`):
 
 | Property | Description |
 |----------|-------------|
-| `f:ledger` | Ledger name (without branch suffix) |
-| `f:branch` | Branch name |
-| `f:t` | Current transaction number |
-| `f:status` | Status: "ready" or "retracted" |
-| `f:commit` | Reference to latest commit address |
-| `f:index` | Index info with `@id` and `f:t` |
+| `db:ledger` | Ledger name (without branch suffix) |
+| `db:branch` | Branch name |
+| `db:t` | Current transaction number |
+| `db:status` | Status: "ready" or "retracted" |
+| `db:ledgerCommit` | Reference to latest commit address |
+| `db:ledgerIndex` | Index info with `@id` and `db:t` |
 
-**Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
+**Graph Source Records** (`@type: "db:GraphSourceDatabase"`):
 
 | Property | Description |
 |----------|-------------|
-| `f:name` | Graph source name |
-| `f:branch` | Branch name |
-| `fidx:config` | Configuration JSON |
-| `fidx:dependencies` | Source ledger dependencies |
-| `fidx:indexAddress` | Index storage address |
-| `fidx:indexT` | Index transaction number |
+| `db:name` | Graph source name |
+| `db:branch` | Branch name |
+| `db:config` | Configuration JSON |
+| `db:dependencies` | Source ledger dependencies |
+| `db:indexAddress` | Index storage address |
+| `db:indexT` | Index transaction number |
 
 ### Builder Methods
 
@@ -1666,17 +1666,17 @@ async fn main() -> Result<()> {
 ```rust
 // Find ledgers with t > 100
 let query = json!({
-    "@context": {"f": "https://ns.flur.ee/ledger#"},
+    "@context": {"db": "https://ns.flur.ee/db#"},
     "select": ["?ledger", "?t"],
-    "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:t": "?t"}],
+    "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:t": "?t"}],
     "filter": ["(> ?t 100)"]
 });
 
 // Find all BM25 graph sources
 let query = json!({
-    "@context": {"f": "https://ns.flur.ee/ledger#", "fidx": "https://ns.flur.ee/index#"},
+    "@context": {"db": "https://ns.flur.ee/db#"},
     "select": ["?name", "?deps"],
-    "where": [{"@id": "?gs", "@type": "fidx:BM25", "f:name": "?name", "fidx:dependencies": "?deps"}]
+    "where": [{"@id": "?gs", "@type": "db:Bm25Index", "db:name": "?name", "db:dependencies": "?deps"}]
 });
 ```
 

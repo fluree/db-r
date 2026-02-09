@@ -144,9 +144,9 @@ mod tests {
         let ns = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"f": "https://ns.flur.ee/ledger#"},
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger"}]
+            "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger"}]
         });
 
         let result = query_nameservice(&ns, &query).await.unwrap();
@@ -161,9 +161,9 @@ mod tests {
         let ns = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"f": "https://ns.flur.ee/ledger#"},
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
+            "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:branch": "main"}]
         });
 
         let result = query_nameservice(&ns, &query).await.unwrap();
@@ -178,12 +178,9 @@ mod tests {
         let ns = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {
-                "f": "https://ns.flur.ee/ledger#",
-                "fidx": "https://ns.flur.ee/index#"
-            },
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?name"],
-            "where": [{"@id": "?gs", "@type": "f:GraphSource", "f:name": "?name"}]
+            "where": [{"@id": "?gs", "@type": "db:IndexSource", "db:name": "?name"}]
         });
 
         let result = query_nameservice(&ns, &query).await.unwrap();
@@ -199,7 +196,7 @@ mod tests {
 
         let query = json!({
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "f:ledger": "?ledger"}]
+            "where": [{"@id": "?ns", "db:ledger": "?ledger"}]
         });
 
         let result = query_nameservice(&ns, &query).await.unwrap();
@@ -211,9 +208,9 @@ mod tests {
         let ns = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"f": "https://ns.flur.ee/ledger#"},
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?ledger", "?t"],
-            "where": [{"@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger", "f:t": "?t"}],
+            "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:t": "?t"}],
             "orderBy": [{"var": "?t", "desc": true}]
         });
 

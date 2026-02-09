@@ -9,21 +9,21 @@
 //! Each commit generates 7-10 flakes:
 //!
 //! **Commit subject flakes** (subject = commit IRI):
-//! - `ledger#address` - commit storage address (xsd:string)
-//! - `ledger#alias` - ledger alias (xsd:string)
-//! - `ledger#v` - commit version (xsd:int)
-//! - `ledger#time` - timestamp in epoch ms (xsd:long)
-//! - `ledger#previous` - reference to previous commit (@id, optional)
-//! - `ledger#t` - transaction number (xsd:int)
-//! - `ledger#size` - cumulative size in bytes (xsd:long)
-//! - `ledger#flakes` - cumulative flake count (xsd:long)
-//! - `ledger#author` - transaction signer DID (xsd:string, optional)
-//! - `ledger#txn` - transaction storage address (xsd:string, optional)
+//! - `db#address` - commit storage address (xsd:string)
+//! - `db#alias` - ledger alias (xsd:string)
+//! - `db#v` - commit version (xsd:int)
+//! - `db#time` - timestamp in epoch ms (xsd:long)
+//! - `db#previous` - reference to previous commit (@id, optional)
+//! - `db#t` - transaction number (xsd:int)
+//! - `db#size` - cumulative size in bytes (xsd:long)
+//! - `db#flakes` - cumulative flake count (xsd:long)
+//! - `db#author` - transaction signer DID (xsd:string, optional)
+//! - `db#txn` - transaction storage address (xsd:string, optional)
 
 use chrono::DateTime;
 use fluree_db_core::{Flake, FlakeValue, Sid};
-use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_LEDGER, JSON_LD, XSD};
-use fluree_vocab::{ledger, xsd_names};
+use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB, JSON_LD, XSD};
+use fluree_vocab::{db, xsd_names};
 
 use crate::Commit;
 
@@ -82,10 +82,10 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
 
     // === Commit subject flakes ===
 
-    // 1. ledger#address (commit storage address)
+    // 1. db#address (commit storage address)
     flakes.push(Flake::new(
         commit_sid.clone(),
-        Sid::new(FLUREE_LEDGER, ledger::ADDRESS),
+        Sid::new(FLUREE_DB, db::ADDRESS),
         FlakeValue::String(commit.address.clone()),
         string_dt.clone(),
         t,
@@ -93,10 +93,10 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
         None,
     ));
 
-    // 2. ledger#alias
+    // 2. db#alias
     flakes.push(Flake::new(
         commit_sid.clone(),
-        Sid::new(FLUREE_LEDGER, ledger::ALIAS),
+        Sid::new(FLUREE_DB, db::ALIAS),
         FlakeValue::String(ledger_address.to_string()),
         string_dt.clone(),
         t,
@@ -104,10 +104,10 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
         None,
     ));
 
-    // 3. ledger#v (commit version)
+    // 3. db#v (commit version)
     flakes.push(Flake::new(
         commit_sid.clone(),
-        Sid::new(FLUREE_LEDGER, ledger::V),
+        Sid::new(FLUREE_DB, db::V),
         FlakeValue::Long(COMMIT_VERSION as i64),
         int_dt.clone(),
         t,
@@ -115,12 +115,12 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
         None,
     ));
 
-    // 4. ledger#time (timestamp as epoch milliseconds)
+    // 4. db#time (timestamp as epoch milliseconds)
     if let Some(time_str) = &commit.time {
         let epoch_ms = iso_to_epoch_ms(time_str);
         flakes.push(Flake::new(
             commit_sid.clone(),
-            Sid::new(FLUREE_LEDGER, ledger::TIME),
+            Sid::new(FLUREE_DB, db::TIME),
             FlakeValue::Long(epoch_ms),
             long_dt.clone(),
             t,
@@ -129,11 +129,11 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
         ));
     }
 
-    // 5. ledger#t (transaction number)
+    // 5. db#t (transaction number)
     // Note: Rust CommitData has no t field; use commit.t
     flakes.push(Flake::new(
         commit_sid.clone(),
-        Sid::new(FLUREE_LEDGER, ledger::T),
+        Sid::new(FLUREE_DB, db::T),
         FlakeValue::Long(commit.t),
         int_dt.clone(),
         t,
@@ -141,7 +141,7 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
         None,
     ));
 
-    // 6-7. ledger#size / ledger#flakes (cumulative stats)
+    // 6-7. db#size / db#flakes (cumulative stats)
     // Use xsd:long to avoid overflow from u64 stats.
     if let Some(data) = &commit.data {
         // Note: safe cast: clamp to i64::MAX on overflow.
@@ -150,7 +150,7 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
 
         flakes.push(Flake::new(
             commit_sid.clone(),
-            Sid::new(FLUREE_LEDGER, ledger::SIZE),
+            Sid::new(FLUREE_DB, db::SIZE),
             FlakeValue::Long(size_i64),
             long_dt.clone(),
             t,
@@ -160,7 +160,7 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
 
         flakes.push(Flake::new(
             commit_sid.clone(),
-            Sid::new(FLUREE_LEDGER, ledger::FLAKES),
+            Sid::new(FLUREE_DB, db::FLAKES),
             FlakeValue::Long(flakes_i64),
             long_dt.clone(),
             t,
@@ -169,13 +169,13 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
         ));
     }
 
-    // 8. ledger#previous (optional: reference to previous commit)
+    // 8. db#previous (optional: reference to previous commit)
     if let Some(prev_iri) = commit.previous_id() {
         if let Some(prev_hex) = commit_iri_hex_local_part(prev_iri) {
             let prev_sid = Sid::new(FLUREE_COMMIT, prev_hex);
             flakes.push(Flake::new(
                 commit_sid.clone(),
-                Sid::new(FLUREE_LEDGER, ledger::PREVIOUS),
+                Sid::new(FLUREE_DB, db::PREVIOUS),
                 FlakeValue::Ref(prev_sid),
                 ref_dt,
                 t,
@@ -185,11 +185,11 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
         }
     }
 
-    // 9. ledger#author (optional: transaction signer DID)
+    // 9. db#author (optional: transaction signer DID)
     if let Some(txn_sig) = &commit.txn_signature {
         flakes.push(Flake::new(
             commit_sid.clone(),
-            Sid::new(FLUREE_LEDGER, ledger::AUTHOR),
+            Sid::new(FLUREE_DB, db::AUTHOR),
             FlakeValue::String(txn_sig.signer.clone()),
             string_dt.clone(),
             t,
@@ -198,11 +198,11 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_address: &str, t: i64) -> 
         ));
     }
 
-    // 10. ledger#txn (optional: transaction storage address)
+    // 10. db#txn (optional: transaction storage address)
     if let Some(txn_addr) = &commit.txn {
         flakes.push(Flake::new(
             commit_sid,
-            Sid::new(FLUREE_LEDGER, ledger::TXN),
+            Sid::new(FLUREE_DB, db::TXN),
             FlakeValue::String(txn_addr.clone()),
             string_dt,
             t,
@@ -271,14 +271,14 @@ mod tests {
         let commit = make_test_commit(true);
         let flakes = generate_commit_flakes(&commit, "test:main", 5);
 
-        // Should have 8 flakes (includes ledger#previous)
+        // Should have 8 flakes (includes db#previous)
         assert_eq!(flakes.len(), 8);
 
         // Find the previous flake
         let prev_flake = flakes
             .iter()
-            .find(|f| f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::PREVIOUS);
-        assert!(prev_flake.is_some(), "Should have ledger#previous flake");
+            .find(|f| f.p.namespace_code == FLUREE_DB && f.p.name.as_ref() == db::PREVIOUS);
+        assert!(prev_flake.is_some(), "Should have db#previous flake");
 
         let prev_flake = prev_flake.unwrap();
         // Verify it's a ref with correct datatype
@@ -295,7 +295,7 @@ mod tests {
         let commit = make_test_commit(false);
         let flakes = generate_commit_flakes(&commit, "test:main", 5);
 
-        // Find the ledger#previous flake (not present here) by asserting none, and
+        // Find the db#previous flake (not present here) by asserting none, and
         // verify no other ref flakes exist in the no-previous case.
         let ref_flakes: Vec<&Flake> = flakes
             .iter()
@@ -344,27 +344,27 @@ mod tests {
         let commit = make_test_commit(false);
         let flakes = generate_commit_flakes(&commit, "test:main", 5);
 
-        // Find ledger#t flake
+        // Find db#t flake
         let t_flake = flakes
             .iter()
-            .find(|f| f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::T);
+            .find(|f| f.p.namespace_code == FLUREE_DB && f.p.name.as_ref() == db::T);
         assert!(t_flake.is_some());
         let t_flake = t_flake.unwrap();
         assert_eq!(t_flake.s.namespace_code, FLUREE_COMMIT);
         assert!(matches!(&t_flake.o, FlakeValue::Long(5)));
 
-        // Find ledger#size flake
+        // Find db#size flake
         let size_flake = flakes
             .iter()
-            .find(|f| f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::SIZE);
+            .find(|f| f.p.namespace_code == FLUREE_DB && f.p.name.as_ref() == db::SIZE);
         assert!(size_flake.is_some());
         let size_flake = size_flake.unwrap();
         assert!(matches!(&size_flake.o, FlakeValue::Long(5000)));
 
-        // Find ledger#flakes flake
+        // Find db#flakes flake
         let flakes_flake = flakes
             .iter()
-            .find(|f| f.p.namespace_code == FLUREE_LEDGER && f.p.name.as_ref() == ledger::FLAKES);
+            .find(|f| f.p.namespace_code == FLUREE_DB && f.p.name.as_ref() == db::FLAKES);
         assert!(flakes_flake.is_some());
         let flakes_flake = flakes_flake.unwrap();
         assert!(matches!(&flakes_flake.o, FlakeValue::Long(100)));

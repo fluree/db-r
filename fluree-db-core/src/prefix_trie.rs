@@ -166,7 +166,7 @@ mod tests {
         let mut codes = HashMap::new();
         codes.insert(0, String::new()); // empty prefix, should be skipped
         codes.insert(3, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
-        codes.insert(8, "https://ns.flur.ee/ledger#".to_string());
+        codes.insert(8, "https://ns.flur.ee/db#".to_string());
 
         let trie = PrefixTrie::from_namespace_codes(&codes);
 
@@ -177,8 +177,8 @@ mod tests {
         let result = trie.longest_match("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
         assert_eq!(result, Some((3, 43)));
 
-        let result = trie.longest_match("https://ns.flur.ee/ledger#address");
-        assert_eq!(result, Some((8, 26)));
+        let result = trie.longest_match("https://ns.flur.ee/db#address");
+        assert_eq!(result, Some((8, 22)));
     }
 
     #[test]

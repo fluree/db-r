@@ -461,14 +461,14 @@ curl -X POST http://localhost:8090/query \
 curl -X POST http://localhost:8090/query \
   -H "Content-Type: application/sparql-query" \
   -d 'PREFIX ex: <http://example.org/ns/>
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 
 SELECT ?name ?t ?op
 FROM <mydb:main@t:1>
 TO <mydb:main@t:latest>
 WHERE {
-  << ex:alice ex:name ?name >> f:t ?t .
-  << ex:alice ex:name ?name >> f:op ?op .
+  << ex:alice ex:name ?name >> db:t ?t .
+  << ex:alice ex:name ?name >> db:op ?op .
 }
 ORDER BY ?t'
 ```
@@ -501,11 +501,11 @@ Accept: application/sparql-results+json
 ```json
 {
   "@context": {
-    "f": "https://ns.flur.ee/ledger#"
+    "db": "https://ns.flur.ee/db#"
   },
   "select": ["?ledger", "?branch", "?t"],
   "where": [
-    { "@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger", "f:branch": "?branch", "f:t": "?t" }
+    { "@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:branch": "?branch", "db:t": "?t" }
   ],
   "orderBy": [{"var": "?t", "desc": true}]
 }
@@ -514,14 +514,14 @@ Accept: application/sparql-results+json
 **Request Body (SPARQL):**
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 
 SELECT ?ledger ?branch ?t
 WHERE {
-  ?ns a f:PhysicalDatabase ;
-      f:ledger ?ledger ;
-      f:branch ?branch ;
-      f:t ?t .
+  ?ns a db:LedgerSource ;
+      db:ledger ?ledger ;
+      db:branch ?branch ;
+      db:t ?t .
 }
 ORDER BY DESC(?t)
 ```
@@ -557,21 +557,21 @@ ORDER BY DESC(?t)
 
 **Available Properties:**
 
-Ledger records (`@type: "f:PhysicalDatabase"`):
-- `f:ledger` - Ledger name
-- `f:branch` - Branch name
-- `f:t` - Transaction number
-- `f:status` - "ready" or "retracted"
-- `f:commit` - Commit address reference
-- `f:index` - Index info with address and t
+Ledger records (`@type: "db:LedgerSource"`):
+- `db:ledger` - Ledger name
+- `db:branch` - Branch name
+- `db:t` - Transaction number
+- `db:status` - "ready" or "retracted"
+- `db:ledgerCommit` - Commit address reference
+- `db:ledgerIndex` - Index info with address and t
 
-Graph source records (`@type: "f:GraphSourceDatabase"`):
-- `f:name` - Graph source name
-- `f:branch` - Branch name
-- `fidx:config` - Configuration JSON
-- `fidx:dependencies` - Source ledger dependencies
-- `fidx:indexAddress` - Index address
-- `fidx:indexT` - Index t value
+Graph source records (`@type: "db:GraphSourceDatabase"`):
+- `db:name` - Graph source name
+- `db:branch` - Branch name
+- `db:config` - Configuration JSON
+- `db:dependencies` - Source ledger dependencies
+- `db:indexAddress` - Index address
+- `db:indexT` - Index t value
 
 **Status Codes:**
 - `200 OK` - Query successful
@@ -585,18 +585,18 @@ Graph source records (`@type: "f:GraphSourceDatabase"`):
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
-    "@context": {"f": "https://ns.flur.ee/ledger#"},
+    "@context": {"db": "https://ns.flur.ee/db#"},
     "select": ["?ledger"],
-    "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
+    "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:branch": "main"}]
   }'
 
 # Find all graph sources
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
-    "@context": {"f": "https://ns.flur.ee/ledger#", "fidx": "https://ns.flur.ee/index#"},
+    "@context": {"db": "https://ns.flur.ee/db#"},
     "select": ["?name", "?type"],
-    "where": [{"@id": "?gs", "@type": "f:GraphSourceDatabase", "f:name": "?name"}]
+    "where": [{"@id": "?gs", "@type": "db:GraphSourceDatabase", "db:name": "?name"}]
   }'
 ```
 

@@ -106,7 +106,7 @@ async fn policy_applies_to_named_graph_queries() {
 
             // 1) Structured from: named graph + denied property
             let q_private_ssn = json!({
-                "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/", "f":"https://ns.flur.ee/ledger#"},
+                "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/", "f":"https://ns.flur.ee/db#"},
                 "from": {"@id": alias, "graph": "http://example.org/graphs/private"},
                 "opts": {"policy": policy.clone(), "default-allow": true},
                 "select": ["?ssn"],
@@ -126,7 +126,7 @@ async fn policy_applies_to_named_graph_queries() {
 
             // 2) Fragment from: public graph, allowed property
             let q_public_name = json!({
-                "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/", "f":"https://ns.flur.ee/ledger#"},
+                "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/", "f":"https://ns.flur.ee/db#"},
                 "from": format!("{alias}#http://example.org/graphs/public"),
                 "opts": {"policy": policy.clone(), "default-allow": true},
                 "select": ["?name"],
@@ -142,7 +142,7 @@ async fn policy_applies_to_named_graph_queries() {
 
             // 3) Structured from: public graph still returns name with policy (sanity)
             let q_public_name_structured = json!({
-                "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/", "f":"https://ns.flur.ee/ledger#"},
+                "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/", "f":"https://ns.flur.ee/db#"},
                 "from": {"@id": alias, "graph": "http://example.org/graphs/public"},
                 "opts": {"policy": policy.clone(), "default-allow": true},
                 "select": ["?name"],

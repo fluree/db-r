@@ -750,7 +750,7 @@ impl GlobalDicts {
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
         dicts
             .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "txn-meta");
+            .get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
         Ok(dicts)
     }
 
@@ -772,7 +772,7 @@ impl GlobalDicts {
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
         dicts
             .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "txn-meta");
+            .get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
         dicts
     }
 

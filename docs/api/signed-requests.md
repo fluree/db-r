@@ -368,14 +368,14 @@ Fluree policies can use the signer's DID for authorization:
 {
   "@context": {
     "ex": "http://example.org/ns/",
-    "f": "https://ns.flur.ee/ledger#"
+    "db": "https://ns.flur.ee/db#"
   },
   "@id": "ex:admin-policy",
-  "f:policy": [
+  "db:policy": [
     {
-      "f:subject": "did:key:z6Mkh...",
-      "f:action": ["query", "transact"],
-      "f:allow": true
+      "db:subject": "did:key:z6Mkh...",
+      "db:action": ["query", "transact"],
+      "db:allow": true
     }
   ]
 }
@@ -397,11 +397,11 @@ Policy checks the role:
 
 ```json
 {
-  "f:policy": [
+  "db:policy": [
     {
-      "f:subject": { "ex:role": "ex:Administrator" },
-      "f:action": "*",
-      "f:allow": true
+      "db:subject": { "ex:role": "ex:Administrator" },
+      "db:action": "*",
+      "db:allow": true
     }
   ]
 }

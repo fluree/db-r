@@ -50,6 +50,7 @@ pub use tracking_file::FileTrackingStore;
 
 use async_trait::async_trait;
 use fluree_db_core::alias;
+use fluree_vocab::ns_types;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use tokio::sync::broadcast;
@@ -172,30 +173,50 @@ impl GraphSourceType {
         }
     }
 
-    /// Convert to the JSON-LD @type string (fidx: namespace)
+    /// Convert to the compact JSON-LD @type string using `db:` prefix.
+    ///
+    /// Returns the compact form (e.g., `"db:Bm25Index"`) suitable for use in
+    /// JSON files where the `@context` provides `{"db": "https://ns.flur.ee/db#"}`.
     pub fn to_type_string(&self) -> String {
         match self {
-            GraphSourceType::Bm25 => "fidx:BM25".to_string(),
-            GraphSourceType::Vector => "fidx:Vector".to_string(),
-            GraphSourceType::Geo => "fidx:Geo".to_string(),
-            GraphSourceType::R2rml => "fidx:R2RML".to_string(),
-            GraphSourceType::Iceberg => "fidx:Iceberg".to_string(),
+            GraphSourceType::Bm25 => "db:Bm25Index".to_string(),
+            GraphSourceType::Vector => "db:HnswIndex".to_string(),
+            GraphSourceType::Geo => "db:GeoIndex".to_string(),
+            GraphSourceType::R2rml => "db:R2rmlMapping".to_string(),
+            GraphSourceType::Iceberg => "db:IcebergMapping".to_string(),
             GraphSourceType::Unknown(s) => s.clone(),
         }
     }
 
-    /// Parse from a JSON-LD @type string
+    /// Parse from a JSON-LD @type string.
+    ///
+    /// Accepts both compact (`db:Bm25Index`) and full IRI
+    /// (`https://ns.flur.ee/db#Bm25Index`) forms, plus fuzzy matching as fallback.
     pub fn from_type_string(s: &str) -> Self {
         match s {
-            "fidx:BM25" => GraphSourceType::Bm25,
-            "fidx:Vector" => GraphSourceType::Vector,
-            "fidx:Geo" => GraphSourceType::Geo,
-            "fidx:R2RML" => GraphSourceType::R2rml,
-            "fidx:Iceberg" => GraphSourceType::Iceberg,
-            _ if s.contains("BM25") || s.contains("bm25") => GraphSourceType::Bm25,
-            _ if s.contains("Vector") || s.contains("vector") => GraphSourceType::Vector,
+            // Compact forms (primary, used in ns@v2 files)
+            "db:Bm25Index" => GraphSourceType::Bm25,
+            "db:HnswIndex" => GraphSourceType::Vector,
+            "db:GeoIndex" => GraphSourceType::Geo,
+            "db:R2rmlMapping" => GraphSourceType::R2rml,
+            "db:IcebergMapping" => GraphSourceType::Iceberg,
+            // Full IRI forms
+            ns_types::BM25_INDEX => GraphSourceType::Bm25,
+            ns_types::HNSW_INDEX => GraphSourceType::Vector,
+            ns_types::GEO_INDEX => GraphSourceType::Geo,
+            ns_types::R2RML_MAPPING => GraphSourceType::R2rml,
+            ns_types::ICEBERG_MAPPING => GraphSourceType::Iceberg,
+            // Fuzzy matching fallback for legacy or abbreviated type strings
+            _ if s.contains("BM25") || s.contains("bm25") || s.contains("Bm25") => {
+                GraphSourceType::Bm25
+            }
+            _ if s.contains("Vector") || s.contains("vector") || s.contains("Hnsw") => {
+                GraphSourceType::Vector
+            }
             _ if s.contains("Geo") || s.contains("geo") => GraphSourceType::Geo,
-            _ if s.contains("R2RML") || s.contains("r2rml") => GraphSourceType::R2rml,
+            _ if s.contains("R2RML") || s.contains("r2rml") || s.contains("R2rml") => {
+                GraphSourceType::R2rml
+            }
             _ if s.contains("Iceberg") || s.contains("iceberg") => GraphSourceType::Iceberg,
             _ => GraphSourceType::Unknown(s.to_string()),
         }
@@ -1024,19 +1045,66 @@ mod tests {
 
     #[test]
     fn test_graph_source_type_to_string() {
-        assert_eq!(GraphSourceType::Bm25.to_type_string(), "fidx:BM25");
-        assert_eq!(GraphSourceType::Vector.to_type_string(), "fidx:Vector");
-        assert_eq!(GraphSourceType::Geo.to_type_string(), "fidx:Geo");
-        assert_eq!(GraphSourceType::R2rml.to_type_string(), "fidx:R2RML");
-        assert_eq!(GraphSourceType::Iceberg.to_type_string(), "fidx:Iceberg");
+        // to_type_string returns compact "db:" prefixed forms
+        assert_eq!(GraphSourceType::Bm25.to_type_string(), "db:Bm25Index");
+        assert_eq!(GraphSourceType::Vector.to_type_string(), "db:HnswIndex");
+        assert_eq!(GraphSourceType::Geo.to_type_string(), "db:GeoIndex");
+        assert_eq!(GraphSourceType::R2rml.to_type_string(), "db:R2rmlMapping");
         assert_eq!(
-            GraphSourceType::Unknown("fidx:Custom".to_string()).to_type_string(),
-            "fidx:Custom"
+            GraphSourceType::Iceberg.to_type_string(),
+            "db:IcebergMapping"
+        );
+        assert_eq!(
+            GraphSourceType::Unknown("https://example.com/Custom".to_string()).to_type_string(),
+            "https://example.com/Custom"
         );
     }
 
     #[test]
     fn test_graph_source_type_from_string() {
+        // Compact "db:" prefixed forms (primary)
+        assert_eq!(
+            GraphSourceType::from_type_string("db:Bm25Index"),
+            GraphSourceType::Bm25
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string("db:HnswIndex"),
+            GraphSourceType::Vector
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string("db:GeoIndex"),
+            GraphSourceType::Geo
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string("db:R2rmlMapping"),
+            GraphSourceType::R2rml
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string("db:IcebergMapping"),
+            GraphSourceType::Iceberg
+        );
+        // Full IRI forms
+        assert_eq!(
+            GraphSourceType::from_type_string(ns_types::BM25_INDEX),
+            GraphSourceType::Bm25
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string(ns_types::HNSW_INDEX),
+            GraphSourceType::Vector
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string(ns_types::GEO_INDEX),
+            GraphSourceType::Geo
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string(ns_types::R2RML_MAPPING),
+            GraphSourceType::R2rml
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string(ns_types::ICEBERG_MAPPING),
+            GraphSourceType::Iceberg
+        );
+        // Fuzzy matching fallback (legacy)
         assert_eq!(
             GraphSourceType::from_type_string("fidx:BM25"),
             GraphSourceType::Bm25
@@ -1046,19 +1114,6 @@ mod tests {
             GraphSourceType::Vector
         );
         assert_eq!(
-            GraphSourceType::from_type_string("fidx:Geo"),
-            GraphSourceType::Geo
-        );
-        assert_eq!(
-            GraphSourceType::from_type_string("fidx:R2RML"),
-            GraphSourceType::R2rml
-        );
-        assert_eq!(
-            GraphSourceType::from_type_string("fidx:Iceberg"),
-            GraphSourceType::Iceberg
-        );
-        // Fuzzy matching
-        assert_eq!(
             GraphSourceType::from_type_string("https://ns.flur.ee/index#BM25"),
             GraphSourceType::Bm25
         );
@@ -1066,9 +1121,10 @@ mod tests {
             GraphSourceType::from_type_string("https://ns.flur.ee/index#Vector"),
             GraphSourceType::Vector
         );
+        // Unknown type
         assert_eq!(
-            GraphSourceType::from_type_string("fidx:Custom"),
-            GraphSourceType::Unknown("fidx:Custom".to_string())
+            GraphSourceType::from_type_string("https://example.com/Custom"),
+            GraphSourceType::Unknown("https://example.com/Custom".to_string())
         );
     }
 

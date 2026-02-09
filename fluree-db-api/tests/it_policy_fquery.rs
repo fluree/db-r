@@ -68,7 +68,7 @@ async fn seed_classified_data(fluree: &MemoryFluree, alias: &str) {
     let txn = json!({
         "@context": {
             "ex": "http://example.org/ns/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {

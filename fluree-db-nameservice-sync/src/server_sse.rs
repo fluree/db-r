@@ -71,7 +71,7 @@ struct GraphSourceSseRecord {
     address: String,
     name: String,
     branch: String,
-    /// String form of graph source type, e.g. "fidx:BM25"
+    /// String form of graph source type, e.g. "db:Bm25Index"
     source_type: String,
     config: String,
     dependencies: Vec<String>,
@@ -227,7 +227,7 @@ mod tests {
                     "graph_source_address": "search:main",
                     "name": "search",
                     "branch": "main",
-                    "source_type": "fidx:BM25",
+                    "source_type": "db:Bm25Index",
                     "config": "{\"k1\":1.2}",
                     "dependencies": ["books:main"],
                     "index_address": null,

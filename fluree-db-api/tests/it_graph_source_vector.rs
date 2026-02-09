@@ -22,26 +22,26 @@ async fn vector_create_index_indexes_docs_and_is_loadable() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Seed a small ledger with embeddings (3-dimensional for simplicity)
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication of array elements
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication of array elements
     let alias = "vector/docs:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc1",
                 "@type":"ex:Doc",
                 "ex:title":"Hello world",
-                "ex:embedding": { "@value": [0.1, 0.2, 0.3], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.1, 0.2, 0.3], "@type": "@vector" }
             },
             {
                 "@id":"ex:doc2",
                 "@type":"ex:Doc",
                 "ex:title":"Hello rust",
-                "ex:embedding": { "@value": [0.4, 0.5, 0.6], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.4, 0.5, 0.6], "@type": "@vector" }
             }
         ]
     });
@@ -83,32 +83,32 @@ async fn vector_search_returns_scored_results() {
     // Seed ledger with documents - using 3D vectors for simplicity
     // doc1 and doc2 are similar (both have high first component)
     // doc3 is different (high third component)
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
     let alias = "vector/search:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc1",
                 "@type":"ex:Doc",
                 "ex:title":"First document",
-                "ex:embedding": { "@value": [0.9, 0.1, 0.05], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.9, 0.1, 0.05], "@type": "@vector" }
             },
             {
                 "@id":"ex:doc2",
                 "@type":"ex:Doc",
                 "ex:title":"Second document",
-                "ex:embedding": { "@value": [0.8, 0.2, 0.1], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.8, 0.2, 0.1], "@type": "@vector" }
             },
             {
                 "@id":"ex:doc3",
                 "@type":"ex:Doc",
                 "ex:title":"Third document",
-                "ex:embedding": { "@value": [0.1, 0.1, 0.9], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.1, 0.1, 0.9], "@type": "@vector" }
             }
         ]
     });
@@ -162,20 +162,20 @@ async fn vector_sync_indexes_new_documents() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create initial ledger with one doc
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
     let alias = "vector/sync:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx1 = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc1",
                 "@type":"ex:Doc",
                 "ex:title":"Initial document",
-                "ex:embedding": { "@value": [0.5, 0.5, 0.0], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.5, 0.5, 0.0], "@type": "@vector" }
             }
         ]
     });
@@ -196,20 +196,20 @@ async fn vector_sync_indexes_new_documents() {
     let tx2 = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc2",
                 "@type":"ex:Doc",
                 "ex:title":"Second document",
-                "ex:embedding": { "@value": [0.3, 0.3, 0.4], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.3, 0.3, 0.4], "@type": "@vector" }
             },
             {
                 "@id":"ex:doc3",
                 "@type":"ex:Doc",
                 "ex:title":"Third document",
-                "ex:embedding": { "@value": [0.1, 0.1, 0.8], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.1, 0.1, 0.8], "@type": "@vector" }
             }
         ]
     });
@@ -250,19 +250,19 @@ async fn vector_sync_updates_head_snapshot() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with initial doc
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
     let alias = "vector/headonly:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx1 = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc1",
                 "@type":"ex:Doc",
-                "ex:embedding": { "@value": [1.0, 0.0, 0.0], "@type": "f:vector" }
+                "ex:embedding": { "@value": [1.0, 0.0, 0.0], "@type": "@vector" }
             }
         ]
     });
@@ -292,13 +292,13 @@ async fn vector_sync_updates_head_snapshot() {
     let tx2 = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc2",
                 "@type":"ex:Doc",
-                "ex:embedding": { "@value": [0.0, 1.0, 0.0], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.0, 1.0, 0.0], "@type": "@vector" }
             }
         ]
     });
@@ -326,19 +326,19 @@ async fn vector_drop_index_marks_as_retracted() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create a minimal index
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
     let alias = "vector/drop:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc1",
                 "@type":"ex:Doc",
-                "ex:embedding": { "@value": [0.5, 0.5, 0.0], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.5, 0.5, 0.0], "@type": "@vector" }
             }
         ]
     });
@@ -380,20 +380,20 @@ async fn vector_skips_documents_without_embeddings() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with some docs having embeddings and some without
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
     let alias = "vector/skip:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc1",
                 "@type":"ex:Doc",
                 "ex:title":"Has embedding",
-                "ex:embedding": { "@value": [0.1, 0.2, 0.3], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.1, 0.2, 0.3], "@type": "@vector" }
             },
             {
                 "@id":"ex:doc2",
@@ -405,7 +405,7 @@ async fn vector_skips_documents_without_embeddings() {
                 "@id":"ex:doc3",
                 "@type":"ex:Doc",
                 "ex:title":"Also has embedding",
-                "ex:embedding": { "@value": [0.4, 0.5, 0.6], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.4, 0.5, 0.6], "@type": "@vector" }
             }
         ]
     });
@@ -431,24 +431,24 @@ async fn vector_skips_documents_without_embeddings() {
 async fn vector_supports_different_metrics() {
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
     let alias = "vector/metrics:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc1",
                 "@type":"ex:Doc",
-                "ex:embedding": { "@value": [1.0, 0.0, 0.0], "@type": "f:vector" }
+                "ex:embedding": { "@value": [1.0, 0.0, 0.0], "@type": "@vector" }
             },
             {
                 "@id":"ex:doc2",
                 "@type":"ex:Doc",
-                "ex:embedding": { "@value": [0.0, 1.0, 0.0], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.0, 1.0, 0.0], "@type": "@vector" }
             }
         ]
     });
@@ -494,24 +494,24 @@ async fn vector_provider_integration() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with vectors
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
     let alias = "vector/provider:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc1",
                 "@type":"ex:Doc",
-                "ex:embedding": { "@value": [0.9, 0.1, 0.05], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.9, 0.1, 0.05], "@type": "@vector" }
             },
             {
                 "@id":"ex:doc2",
                 "@type":"ex:Doc",
-                "ex:embedding": { "@value": [0.1, 0.9, 0.0], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.1, 0.9, 0.0], "@type": "@vector" }
             }
         ]
     });
@@ -556,19 +556,19 @@ async fn vector_collection_exists() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create a ledger and index
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
     let alias = "vector/exists:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id":"ex:doc1",
                 "@type":"ex:Doc",
-                "ex:embedding": { "@value": [0.5, 0.5, 0.0], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.5, 0.5, 0.0], "@type": "@vector" }
             }
         ]
     });
@@ -622,32 +622,32 @@ async fn vector_idx_query_syntax_e2e() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with vector embeddings
-    // NOTE: Embeddings must use @type: f:vector to avoid RDF deduplication
+    // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
     let alias = "vector/query-e2e:main";
     let ledger0 = support::genesis_ledger(&fluree, alias);
     let tx = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
                 "@id": "ex:doc1",
                 "@type": "ex:Doc",
                 "ex:title": "Machine learning basics",
-                "ex:embedding": { "@value": [0.9, 0.1, 0.05], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.9, 0.1, 0.05], "@type": "@vector" }
             },
             {
                 "@id": "ex:doc2",
                 "@type": "ex:Doc",
                 "ex:title": "Database fundamentals",
-                "ex:embedding": { "@value": [0.1, 0.9, 0.1], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.1, 0.9, 0.1], "@type": "@vector" }
             },
             {
                 "@id": "ex:doc3",
                 "@type": "ex:Doc",
                 "ex:title": "Deep learning advanced",
-                "ex:embedding": { "@value": [0.85, 0.15, 0.0], "@type": "f:vector" }
+                "ex:embedding": { "@value": [0.85, 0.15, 0.0], "@type": "@vector" }
             }
         ]
     });
@@ -667,17 +667,17 @@ async fn vector_idx_query_syntax_e2e() {
     // Execute a query using idx:vector syntax
     // Query for vectors similar to [0.85, 0.1, 0.05] - should match doc1 and doc3 best
     let search_query = json!({
-        "@context": { "ex": "http://example.org/" },
+        "@context": { "ex": "http://example.org/", "db": "https://ns.flur.ee/db#" },
         "from": alias,
         "where": [
             {
-                "idx:graph": created.graph_source_address,
-                "idx:vector": [0.85, 0.1, 0.05],
-                "idx:metric": "cosine",
-                "idx:limit": 10,
-                "idx:result": {
-                    "idx:id": "?doc",
-                    "idx:score": "?score"
+                "db:graphSource": created.graph_source_address,
+                "db:queryVector": [0.85, 0.1, 0.05],
+                "db:distanceMetric": "cosine",
+                "db:searchLimit": 10,
+                "db:searchResult": {
+                    "db:resultId": "?doc",
+                    "db:resultScore": "?score"
                 }
             }
         ],

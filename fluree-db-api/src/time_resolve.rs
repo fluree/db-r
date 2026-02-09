@@ -20,8 +20,8 @@ use fluree_db_core::{
     range_bounded_with_overlay, range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds,
     RangeMatch, RangeOptions, RangeTest, Sid,
 };
-use fluree_vocab::ledger::TIME as LEDGER_TIME;
-use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_LEDGER};
+use fluree_vocab::db::TIME as LEDGER_TIME;
+use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB};
 
 use crate::error::{ApiError, Result};
 
@@ -73,7 +73,7 @@ where
         current_t,
         "datetime_to_t: resolving ISO epoch-ms"
     );
-    let time_predicate = Sid::new(FLUREE_LEDGER, LEDGER_TIME);
+    let time_predicate = Sid::new(FLUREE_DB, LEDGER_TIME);
 
     // Step 1: Check if any ledger#time flakes exist at all
     // (and get the earliest commit time)

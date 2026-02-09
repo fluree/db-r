@@ -273,15 +273,15 @@ async function getCommitHistory(ledger, fromT, toT) {
 ### SPARQL Query for Commits
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX db: <https://ns.flur.ee/db#>
 
 SELECT ?t ?timestamp ?sha ?author
 WHERE {
-  ?commit a f:Commit ;
-          f:t ?t ;
-          f:timestamp ?timestamp ;
-          f:sha ?sha .
-  OPTIONAL { ?commit f:author ?author }
+  ?commit a db:Commit ;
+          db:t ?t ;
+          db:timestamp ?timestamp ;
+          db:sha ?sha .
+  OPTIONAL { ?commit db:author ?author }
 }
 ORDER BY DESC(?t)
 LIMIT 10
@@ -292,14 +292,14 @@ LIMIT 10
 ```json
 {
   "@context": {
-    "f": "https://ns.flur.ee/ledger#"
+    "db": "https://ns.flur.ee/db#"
   },
   "select": ["?t", "?timestamp", "?sha"],
   "where": [
-    { "@id": "?commit", "@type": "f:Commit" },
-    { "@id": "?commit", "f:t": "?t" },
-    { "@id": "?commit", "f:timestamp": "?timestamp" },
-    { "@id": "?commit", "f:sha": "?sha" }
+    { "@id": "?commit", "@type": "db:Commit" },
+    { "@id": "?commit", "db:t": "?t" },
+    { "@id": "?commit", "db:timestamp": "?timestamp" },
+    { "@id": "?commit", "db:sha": "?sha" }
   ],
   "orderBy": ["-?t"],
   "limit": 10

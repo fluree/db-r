@@ -76,9 +76,9 @@ async fn nameservice_query_memory_parity() {
 
     // Query for database records (Clojure: "Query for specific ledger information")
     let db_query = json!({
-        "@context": {"f":"https://ns.flur.ee/ledger#"},
-        "select": {"?ns": ["f:ledger", "f:branch", "f:t"]},
-        "where": [{"@id":"?ns","@type":"f:Database"}]
+        "@context": {"db":"https://ns.flur.ee/db#"},
+        "select": {"?ns": ["db:ledger", "db:branch", "db:t"]},
+        "where": [{"@id":"?ns","@type":"db:LedgerSource"}]
     });
     let db_result = fluree
         .query_nameservice(&db_query)
@@ -89,9 +89,9 @@ async fn nameservice_query_memory_parity() {
 
     // Query for ledgers on main branch
     let branch_query = json!({
-        "@context": {"f":"https://ns.flur.ee/ledger#"},
+        "@context": {"db":"https://ns.flur.ee/db#"},
         "select": ["?ledger"],
-        "where": [{"@id":"?ns","@type":"f:PhysicalDatabase","f:ledger":"?ledger","f:branch":"main"}]
+        "where": [{"@id":"?ns","@type":"db:LedgerSource","db:ledger":"?ledger","db:branch":"main"}]
     });
     let branch_result = fluree
         .query_nameservice(&branch_query)
@@ -113,9 +113,9 @@ async fn nameservice_query_memory_parity() {
 
     // Query for ledger t values; ensure ledger-three has t >= 2
     let t_query = json!({
-        "@context": {"f":"https://ns.flur.ee/ledger#"},
+        "@context": {"db":"https://ns.flur.ee/db#"},
         "select": ["?ledger","?t"],
-        "where": [{"@id":"?ns","f:ledger":"?ledger","f:t":"?t"}]
+        "where": [{"@id":"?ns","db:ledger":"?ledger","db:t":"?t"}]
     });
     let t_result = fluree
         .query_nameservice(&t_query)
@@ -137,9 +137,9 @@ async fn nameservice_query_memory_parity() {
 
     // Query with no results
     let none_query = json!({
-        "@context": {"f":"https://ns.flur.ee/ledger#"},
+        "@context": {"db":"https://ns.flur.ee/db#"},
         "select": ["?ledger"],
-        "where": [{"@id":"?ns","f:ledger":"?ledger","f:branch":"nonexistent-branch"}]
+        "where": [{"@id":"?ns","db:ledger":"?ledger","db:branch":"nonexistent-branch"}]
     });
     let none_result = fluree
         .query_nameservice(&none_query)
@@ -167,9 +167,9 @@ async fn nameservice_query_file_storage_parity() {
     let _ = fluree.insert(ledger, &tx).await.expect("insert");
 
     let query = json!({
-        "@context": {"f":"https://ns.flur.ee/ledger#"},
+        "@context": {"db":"https://ns.flur.ee/db#"},
         "select": ["?ledger","?t"],
-        "where": [{"@id":"?ns","f:ledger":"?ledger","f:t":"?t"}]
+        "where": [{"@id":"?ns","db:ledger":"?ledger","db:t":"?t"}]
     });
     let result = fluree
         .query_nameservice(&query)
@@ -231,9 +231,9 @@ async fn nameservice_slash_ledger_names_parity() {
 
     // Query all ledger names
     let query = json!({
-        "@context": {"f":"https://ns.flur.ee/ledger#"},
+        "@context": {"db":"https://ns.flur.ee/db#"},
         "select": ["?ledger"],
-        "where": [{"@id":"?ns","@type":"f:PhysicalDatabase","f:ledger":"?ledger"}]
+        "where": [{"@id":"?ns","@type":"db:LedgerSource","db:ledger":"?ledger"}]
     });
     let result = fluree
         .query_nameservice(&query)

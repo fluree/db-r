@@ -76,7 +76,7 @@ With the item-per-concern layout, DynamoDB contention is limited to writers of t
 
 The `meta` item carries the record discriminator:
 - `kind`: `ledger` | `graph_source`
-- `source_type` (graph sources only): a type string (e.g., `fidx:BM25`, `fidx:Vector`, `fidx:Iceberg`, `fidx:R2RML`, `fidx:JDBC`)
+- `source_type` (graph sources only): a type string (e.g., `db:Bm25Index`, `db:HnswIndex`, `db:IcebergSource`, `db:R2rmlSource`, `db:JdbcSource`)
 
 Use `graph_source` naming consistently in `pk` values and type strings.
 
@@ -475,7 +475,7 @@ ExpressionAttributeValues: { ":kind": "ledger" }
 
 To list graph sources, query `kind = graph_source`.
 
-To list graph sources of a specific type (optional GSI), query `source_type = fidx:BM25`, etc.
+To list graph sources of a specific type (optional GSI), query `source_type = db:Bm25Index`, etc.
 
 ---
 
@@ -652,7 +652,7 @@ An "unborn" ledger has all 5 concern items created atomically at initialization.
   "sk": "meta",
   "schema": 2,
   "kind": "graph_source",
-  "source_type": "fidx:BM25",
+  "source_type": "db:Bm25Index",
   "name": "search",
   "branch": "main",
   "dependencies": ["mydb:main"],
@@ -692,7 +692,7 @@ Additional concern items for the same `pk` (examples):
   "sk": "meta",
   "schema": 2,
   "kind": "graph_source",
-  "source_type": "fidx:Iceberg",
+  "source_type": "db:IcebergSource",
   "name": "analytics",
   "branch": "main",
   "dependencies": ["mydb:main"],
@@ -711,7 +711,7 @@ Additional concern items for the same `pk` (examples):
   "sk": "meta",
   "schema": 2,
   "kind": "graph_source",
-  "source_type": "fidx:JDBC",
+  "source_type": "db:JdbcSource",
   "name": "erp",
   "branch": "main",
   "dependencies": null,
@@ -825,7 +825,7 @@ Clients track watermarks to detect changes:
     },
     "search:main": {
       "kind": "graph_source",
-      "source_type": "fidx:BM25",
+      "source_type": "db:Bm25Index",
       "index_t": 42,
       "status_v": 12,
       "config_v": 1
@@ -859,10 +859,10 @@ The file-backed and storage-backed implementations in this repo use the **`ns@v2
 - Index record: `ns@v2/{name}/{branch}.index.json` (index head pointer only)
 
 Field names differ from the DynamoDB layout, but the **semantics match**:
-- logical `commit_t` is stored as `f:t`
-- logical `commit.address` is stored as `f:commit.@id`
-- logical `index_t` is stored as `f:index.f:t` (or `fidx:indexT` for graph source index files)
-- logical `index.address` is stored as `f:index.@id` (or `fidx:indexAddress` for graph source index files)
+- logical `commit_t` is stored as `db:t`
+- logical `commit.address` is stored as `db:ledgerCommit.@id`
+- logical `index_t` is stored as `db:ledgerIndex.db:t` (or `db:indexT` for graph source index files)
+- logical `index.address` is stored as `db:ledgerIndex.@id` (or `db:indexAddress` for graph source index files)
 
 ### Layout Options
 
@@ -928,23 +928,23 @@ Each file contains JSON matching the concern's payload plus metadata:
 **head file** (`{name}/{branch}.json`):
 ```json
 {
-  "@context": { "f": "https://ns.flur.ee/ledger#" },
+  "@context": { "db": "https://ns.flur.ee/db#" },
   "@id": "mydb:main",
-  "@type": ["f:Database", "f:PhysicalDatabase"],
-  "f:ledger": { "@id": "mydb" },
-  "f:branch": "main",
-  "f:commit": { "@id": "fluree:s3://.../t42.json" },
-  "f:t": 42,
-  "f:index": { "@id": "fluree:s3://.../index-t42.bin", "f:t": 42 },
-  "f:status": "ready"
+  "@type": ["db:Database", "db:LedgerSource"],
+  "db:ledger": { "@id": "mydb" },
+  "db:branch": "main",
+  "db:ledgerCommit": { "@id": "fluree:s3://.../t42.json" },
+  "db:t": 42,
+  "db:ledgerIndex": { "@id": "fluree:s3://.../index-t42.bin", "db:t": 42 },
+  "db:status": "ready"
 }
 ```
 
 **index file** (`{name}/{branch}.index.json`):
 ```json
 {
-  "@context": { "f": "https://ns.flur.ee/ledger#" },
-  "f:index": { "@id": "fluree:s3://.../index-t42.bin", "f:t": 42 }
+  "@context": { "db": "https://ns.flur.ee/db#" },
+  "db:ledgerIndex": { "@id": "fluree:s3://.../index-t42.bin", "db:t": 42 }
 }
 ```
 
@@ -1014,7 +1014,7 @@ All items share:
 | `branch` | String | Branch name |
 | `retracted` | Boolean | Soft-delete flag |
 | `dependencies` | List\<String\> \| null | Graph-source dependencies (optional) |
-| `source_type` | String \| null | Graph-source type (e.g., `fidx:BM25`) |
+| `source_type` | String \| null | Graph-source type (e.g., `db:Bm25Index`) |
 | `created_at` | Number | Creation timestamp (epoch seconds, optional) |
 | `updated_at_ms` | Number | Last update time (epoch millis, optional) |
 

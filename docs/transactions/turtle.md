@@ -574,7 +574,7 @@ You can combine named graphs with transaction metadata using the special `#txn-m
 
 ```trig
 @prefix ex: <http://example.org/ns/> .
-@prefix f: <https://ns.flur.ee/ledger#> .
+@prefix db: <https://ns.flur.ee/db#> .
 
 # Transaction metadata (stored in txn-meta graph)
 GRAPH <#txn-meta> {

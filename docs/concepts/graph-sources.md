@@ -143,11 +143,11 @@ Graph sources are created through administrative operations, specifying:
 
 ```json
 {
-  "@type": "fidx:BM25",
-  "fidx:name": "products-search",
-  "fidx:branch": "main",
-  "fidx:sourceLedger": "products:main",
-  "fidx:config": {
+  "@type": "db:Bm25Index",
+  "db:name": "products-search",
+  "db:branch": "main",
+  "db:sourceLedger": "products:main",
+  "db:config": {
     "k1": 1.2,
     "b": 0.75,
     "fields": ["name", "description"]
@@ -256,28 +256,31 @@ WHERE {
 ORDER BY DESC(?textScore + ?vectorScore)
 ```
 
-Vector/HNSW graph sources are currently queried via JSON-LD Query using `idx:*` patterns (e.g. `idx:graph`, `idx:vector`, `idx:result`). SPARQL query syntax for HNSW vector indexes is not currently available.
+Vector/HNSW graph sources are currently queried via JSON-LD Query using `db:*` patterns (e.g. `db:graphSource`, `db:queryVector`, `db:searchResult`). SPARQL query syntax for HNSW vector indexes is not currently available.
 
 Example (JSON-LD Query):
 
 ```json
 {
-  "@context": { "ex": "http://example.org/" },
+  "@context": {
+    "ex": "http://example.org/",
+    "db": "https://ns.flur.ee/db#"
+  },
   "from": ["products:main", "products-search:main"],
   "select": ["?product", "?textScore", "?vectorScore"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
   ],
   "where": [
     { "@id": "?product", "ex:category": "electronics" },
     { "@id": "?product", "bm25:matches": "wireless" },
     { "@id": "?product", "bm25:score": "?textScore" },
     {
-      "idx:graph": "products-vector:main",
-      "idx:vector": "?queryVec",
-      "idx:limit": 10,
-      "idx:result": { "idx:id": "?product", "idx:score": "?vectorScore" }
+      "db:graphSource": "products-vector:main",
+      "db:queryVector": "?queryVec",
+      "db:searchLimit": 10,
+      "db:searchResult": { "db:resultId": "?product", "db:resultScore": "?vectorScore" }
     }
   ],
   "orderBy": [["desc", "(?textScore + ?vectorScore)"]]
@@ -321,7 +324,7 @@ WHERE {
 }
 ```
 
-Semantic similarity via HNSW vector indexes is currently queried via JSON-LD Query using `idx:*` patterns. SPARQL syntax for vector index search is not currently available.
+Semantic similarity via HNSW vector indexes is currently queried via JSON-LD Query using `db:*` patterns. SPARQL syntax for vector index search is not currently available.
 
 ## Best Practices
 

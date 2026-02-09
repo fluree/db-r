@@ -22,7 +22,7 @@ where
     /// ```ignore
     /// // Find all ledgers on main branch
     /// let query = json!({
-    ///     "@context": {"f": "https://ns.flur.ee/ledger#"},
+    ///     "@context": {"f": "https://ns.flur.ee/db#"},
     ///     "select": ["?ledger"],
     ///     "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
     /// });
@@ -35,19 +35,19 @@ where
     ///
     /// # Available Properties
     ///
-    /// Ledger records (`@type: "f:PhysicalDatabase"`):
-    /// - `f:ledger` - Ledger name
-    /// - `f:branch` - Branch name
-    /// - `f:t` - Transaction number
-    /// - `f:status` - Status ("ready" or "retracted")
-    /// - `f:commit` - Commit address
-    /// - `f:index` - Index info
+    /// Ledger records (`@type: "db:LedgerSource"`):
+    /// - `db:ledger` - Ledger name
+    /// - `db:branch` - Branch name
+    /// - `db:t` - Transaction number
+    /// - `db:status` - Status ("ready" or "retracted")
+    /// - `db:ledgerCommit` - Commit address
+    /// - `db:ledgerIndex` - Index info
     ///
-    /// Graph source records (`@type: "f:GraphSource"`):
-    /// - `f:name` - Graph source name
-    /// - `f:branch` - Branch name
-    /// - `fidx:config` - Configuration
-    /// - `fidx:dependencies` - Source ledgers
+    /// Graph source records (`@type: "db:IndexSource"` or `"db:MappedSource"`):
+    /// - `db:name` - Graph source name
+    /// - `db:branch` - Branch name
+    /// - `db:graphSourceConfig` - Configuration
+    /// - `db:graphSourceDependencies` - Source ledgers
     pub fn nameservice_query(&self) -> NameserviceQueryBuilder<'_, S, N> {
         NameserviceQueryBuilder::new(self)
     }

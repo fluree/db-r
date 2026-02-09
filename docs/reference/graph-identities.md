@@ -247,7 +247,7 @@ SELECT ?commit ?t
 FROM NAMED <acme/people:main@t:1000#txn-meta>
 WHERE {
   GRAPH <acme/people:main@t:1000#txn-meta> {
-    ?commit <https://ns.flur.ee/ledger#t> ?t .
+    ?commit <https://ns.flur.ee/db#t> ?t .
   }
 }
 ```

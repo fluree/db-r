@@ -839,19 +839,22 @@ Query graph sources using the same syntax:
 
 ```json
 {
-  "@context": { "ex": "http://example.org/" },
+  "@context": {
+    "ex": "http://example.org/",
+    "db": "https://ns.flur.ee/db#"
+  },
   "from": "documents:main",
   "select": ["?document", "?similarity"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
   ],
   "where": [
     {
-      "idx:graph": "documents-vector:main",
-      "idx:vector": "?queryVec",
-      "idx:limit": 5,
-      "idx:result": { "idx:id": "?document", "idx:score": "?similarity" }
+      "db:graphSource": "documents-vector:main",
+      "db:queryVector": "?queryVec",
+      "db:searchLimit": 5,
+      "db:searchResult": { "db:resultId": "?document", "db:resultScore": "?similarity" }
     }
   ],
   "orderBy": [["desc", "?similarity"]],
@@ -859,7 +862,7 @@ Query graph sources using the same syntax:
 }
 ```
 
-Note: `idx:*` keys are **reserved query pattern keys** and are not expanded via `@context` (you do not need to define an `idx` prefix).
+Note: `db:*` keys used for graph source queries should be defined in your `@context` for clarity.
 
 ## Complete Examples
 

@@ -40,17 +40,17 @@
 //!
 //! ## Querying
 //!
-//! Use `idx:*` properties in your query's where clause:
+//! Use `db:*` properties (with `"db": "https://ns.flur.ee/db#"` in `@context`) in your query's where clause:
 //!
 //! ```json
 //! {
 //!   "where": [{
-//!     "idx:graph": "my-search:main",
-//!     "idx:target": "rust programming",
-//!     "idx:result": {
-//!       "idx:id": "?doc",
-//!       "idx:score": "?score",
-//!       "idx:ledger": "?source"
+//!     "db:graphSource": "my-search:main",
+//!     "db:searchText": "rust programming",
+//!     "db:searchResult": {
+//!       "db:resultId": "?doc",
+//!       "db:resultScore": "?score",
+//!       "db:resultLedger": "?source"
 //!     }
 //!   }],
 //!   "select": ["?doc", "?score"],

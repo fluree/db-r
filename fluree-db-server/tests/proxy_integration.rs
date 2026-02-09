@@ -1799,7 +1799,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         "@context": {
             "ex": "http://example.org/ns/",
             "schema": "http://schema.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "insert": {
             "@graph": [

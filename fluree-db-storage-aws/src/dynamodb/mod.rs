@@ -1985,7 +1985,7 @@ mod tests {
     #[test]
     fn test_items_to_ns_record_wrong_kind() {
         let pk = "search:main";
-        let items = vec![make_meta_gs(pk, "search", "main", "fidx:BM25")];
+        let items = vec![make_meta_gs(pk, "search", "main", "db:Bm25Index")];
 
         assert!(DynamoDbNameService::items_to_ns_record(pk, &items).is_none());
     }
@@ -2004,7 +2004,7 @@ mod tests {
     fn test_items_to_gs_record_full() {
         let pk = "search:main";
         let items = vec![
-            make_meta_gs(pk, "search", "main", "fidx:BM25"),
+            make_meta_gs(pk, "search", "main", "db:Bm25Index"),
             make_config_gs(pk, r#"{"k1":1.2}"#),
             make_index(pk, Some("snap-001"), 42),
         ];
@@ -2025,7 +2025,7 @@ mod tests {
     fn test_items_to_gs_record_unborn_index() {
         let pk = "search:main";
         let items = vec![
-            make_meta_gs(pk, "search", "main", "fidx:BM25"),
+            make_meta_gs(pk, "search", "main", "db:Bm25Index"),
             make_config_gs(pk, "{}"),
             make_index(pk, None, 0),
         ];

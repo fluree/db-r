@@ -113,13 +113,13 @@ Non-ledger graph sources are registered in nameservice:
   "from": "mydb:main",
   "where": [
     {
-      "idx:graph": "products-vector:main",
-      "idx:vector": [0.1, 0.2, ...],
-      "idx:metric": "cosine",
-      "idx:limit": 10,
-      "idx:result": {
-        "idx:id": "?product",
-        "idx:score": "?score"
+      "db:graphSource": "products-vector:main",
+      "db:queryVector": [0.1, 0.2, ...],
+      "db:distanceMetric": "cosine",
+      "db:searchLimit": 10,
+      "db:searchResult": {
+        "db:resultId": "?product",
+        "db:resultScore": "?score"
       }
     }
   ],
@@ -213,11 +213,11 @@ Define graph source as RDF:
   "@graph": [
     {
       "@id": "gs:products-search",
-      "@type": "f:GraphSource",
-      "f:type": "bm25",
-      "f:source": "products:main",
-      "f:config": {
-        "f:fields": [...]
+      "@type": "db:IndexSource",
+      "db:type": "bm25",
+      "db:source": "products:main",
+      "db:config": {
+        "db:fields": [...]
       }
     }
   ]
@@ -250,16 +250,16 @@ Combine multiple graph sources:
   "select": ["?product", "?textScore", "?vecScore"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
   ],
   "where": [
     { "@id": "?product", "bm25:matches": "laptop" },
     { "@id": "?product", "bm25:score": "?textScore" },
     {
-      "idx:graph": "products-vector:main",
-      "idx:vector": "?queryVec",
-      "idx:limit": 100,
-      "idx:result": { "idx:id": "?product", "idx:score": "?vecScore" }
+      "db:graphSource": "products-vector:main",
+      "db:queryVector": "?queryVec",
+      "db:searchLimit": 100,
+      "db:searchResult": { "db:resultId": "?product", "db:resultScore": "?vecScore" }
     }
   ]
 }

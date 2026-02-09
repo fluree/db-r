@@ -250,7 +250,7 @@ async fn transact_api_test() {
         "@context": [
             context.clone(),
             {"ex": "http://example.org/ns/"},
-            {"f": "https://ns.flur.ee/ledger#", "foo": "http://foo.com/", "id": "@id"}
+            {"f": "https://ns.flur.ee/db#", "foo": "http://foo.com/", "id": "@id"}
         ],
         "ledger": ledger_name,
         "insert": [
@@ -316,7 +316,7 @@ async fn transact_api_test() {
 
     // @context inside node is correctly handled
     let txn3 = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "ledger": ledger_name,
         "insert": [{
             "@context": [context.clone(), {"ex": "http://example.org/ns/"}, {"quux": "http://quux.com/"}],
@@ -353,7 +353,7 @@ async fn transact_api_test() {
 
     // Fuel tracking works on transactions
     let txn4 = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "ledger": ledger_name,
         "insert": [{
             "@context": [context.clone(), {"ex": "http://example.org/ns/"}, {"quux": "http://quux.com/"}],
@@ -393,7 +393,7 @@ async fn base_and_vocab_test() {
         "@base": "http://example.org/",
         "@vocab": "http://example.org/terms/",
         "ex": "http://example.org/terms/",
-        "f": "https://ns.flur.ee/ledger#"
+        "f": "https://ns.flur.ee/db#"
     });
     let insert_graph = json!({
         "@context": ctx,

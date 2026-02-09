@@ -428,7 +428,7 @@ async fn ledger_info_api_returns_expected_structure() {
             // Verify commit structure (Clojure parity)
             // ================================================================
             let commit = &info["commit"];
-            assert_eq!(commit["@context"], "https://ns.flur.ee/ledger/v1");
+            assert_eq!(commit["@context"], "https://ns.flur.ee/db/v1");
             assert!(
                 commit["type"]
                     .as_array()
@@ -474,10 +474,10 @@ async fn ledger_info_api_returns_expected_structure() {
             );
             assert!(ns.get("@id").is_some(), "nameservice should have @id");
             assert!(ns.get("@type").is_some(), "nameservice should have @type");
-            assert!(ns.get("f:t").is_some(), "nameservice should have f:t");
+            assert!(ns.get("db:t").is_some(), "nameservice should have db:t");
             assert_eq!(
-                ns["f:status"], "ready",
-                "nameservice f:status should be 'ready'"
+                ns["db:status"], "ready",
+                "nameservice db:status should be 'ready'"
             );
 
             // ================================================================

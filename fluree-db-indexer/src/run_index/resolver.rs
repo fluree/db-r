@@ -23,7 +23,7 @@ use fluree_db_core::{DatatypeDictId, ListIndex};
 use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
 use fluree_db_novelty::commit_v2::{load_commit_ops, CommitV2Error};
-use fluree_vocab::{fluree, ledger};
+use fluree_vocab::{db, fluree};
 use num_bigint::BigInt;
 use std::collections::HashMap;
 use std::io;
@@ -215,7 +215,7 @@ impl CommitResolver {
         };
 
         // 2. g_id=1 (pre-reserved in GlobalDicts::new())
-        let g_id = dicts.graphs.get_or_insert_parts(fluree::LEDGER, "txn-meta") + 1;
+        let g_id = dicts.graphs.get_or_insert_parts(fluree::DB, "txn-meta") + 1;
         debug_assert_eq!(g_id, 1, "txn-meta graph must be g_id=1");
 
         let t = envelope.t;
@@ -229,25 +229,19 @@ impl CommitResolver {
         // 4. Resolve predicate p_ids
         let p_address = dicts
             .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::ADDRESS);
-        let p_time = dicts
-            .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::TIME);
+            .get_or_insert_parts(fluree::DB, db::ADDRESS);
+        let p_time = dicts.predicates.get_or_insert_parts(fluree::DB, db::TIME);
         let p_previous = dicts
             .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::PREVIOUS);
-        let p_t = dicts
-            .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::T);
-        let p_size = dicts
-            .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::SIZE);
+            .get_or_insert_parts(fluree::DB, db::PREVIOUS);
+        let p_t = dicts.predicates.get_or_insert_parts(fluree::DB, db::T);
+        let p_size = dicts.predicates.get_or_insert_parts(fluree::DB, db::SIZE);
         let p_asserts = dicts
             .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::ASSERTS);
+            .get_or_insert_parts(fluree::DB, db::ASSERTS);
         let p_retracts = dicts
             .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::RETRACTS);
+            .get_or_insert_parts(fluree::DB, db::RETRACTS);
 
         let mut count = 0u32;
 
@@ -357,9 +351,7 @@ impl CommitResolver {
 
         // ledger:author (STRING) -- transaction signer DID
         if let Some(txn_sig) = &envelope.txn_signature {
-            let p_author = dicts
-                .predicates
-                .get_or_insert_parts(fluree::LEDGER, ledger::AUTHOR);
+            let p_author = dicts.predicates.get_or_insert_parts(fluree::DB, db::AUTHOR);
             let author_str_id = dicts.strings.get_or_insert(&txn_sig.signer)?;
             push(
                 commit_s_id,
@@ -372,9 +364,7 @@ impl CommitResolver {
 
         // ledger:txn (STRING) -- transaction storage address
         if let Some(txn_addr) = &envelope.txn {
-            let p_txn = dicts
-                .predicates
-                .get_or_insert_parts(fluree::LEDGER, ledger::TXN);
+            let p_txn = dicts.predicates.get_or_insert_parts(fluree::DB, db::TXN);
             let txn_str_id = dicts.strings.get_or_insert(txn_addr)?;
             push(
                 commit_s_id,
@@ -1421,7 +1411,7 @@ mod tests {
         // Verify g_id=1 reservation
         let g_id = dicts
             .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "txn-meta")
+            .get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta")
             + 1;
         assert_eq!(g_id, 1);
 
@@ -1442,14 +1432,14 @@ mod tests {
         }
 
         // Verify predicates were registered
-        let p_address = dicts.predicates.get("https://ns.flur.ee/ledger#address");
-        let p_time = dicts.predicates.get("https://ns.flur.ee/ledger#time");
-        let p_t = dicts.predicates.get("https://ns.flur.ee/ledger#t");
-        let p_previous = dicts.predicates.get("https://ns.flur.ee/ledger#previous");
-        assert!(p_address.is_some(), "ledger:address predicate missing");
-        assert!(p_time.is_some(), "ledger:time predicate missing");
-        assert!(p_t.is_some(), "ledger:t predicate missing");
-        assert!(p_previous.is_some(), "ledger:previous predicate missing");
+        let p_address = dicts.predicates.get("https://ns.flur.ee/db#address");
+        let p_time = dicts.predicates.get("https://ns.flur.ee/db#time");
+        let p_t = dicts.predicates.get("https://ns.flur.ee/db#t");
+        let p_previous = dicts.predicates.get("https://ns.flur.ee/db#previous");
+        assert!(p_address.is_some(), "db:address predicate missing");
+        assert!(p_time.is_some(), "db:time predicate missing");
+        assert!(p_t.is_some(), "db:t predicate missing");
+        assert!(p_previous.is_some(), "db:previous predicate missing");
 
         // Find the time record and verify it's NUM_INT with DatatypeDictId::LONG
         let time_pid = p_time.unwrap();
@@ -1717,7 +1707,7 @@ mod tests {
     #[test]
     fn test_global_dicts_reserves_g_id_1() {
         let dicts = GlobalDicts::new_memory();
-        let g_id = dicts.graphs.get("https://ns.flur.ee/ledger#txn-meta");
+        let g_id = dicts.graphs.get("https://ns.flur.ee/db#txn-meta");
         assert_eq!(
             g_id,
             Some(0),

@@ -9,7 +9,7 @@
 //!
 //! ```trig
 //! @prefix ex: <http://example.org/> .
-//! @prefix fluree: <https://ns.flur.ee/ledger#> .
+//! @prefix fluree: <https://ns.flur.ee/db#> .
 //!
 //! # Default graph triples (passed through to Turtle parser)
 //! ex:alice ex:name "Alice" .
@@ -51,17 +51,9 @@ use rustc_hash::FxHashMap;
 /// in the context of a ledger reference (e.g., `<mydb:main#txn-meta>`).
 pub const TXN_META_GRAPH_IRI: &str = "#txn-meta";
 
-/// Special subject IRI indicating "this commit" (HTTP-based form).
-/// This is the canonical form when `fluree:` prefix is defined as `https://ns.flur.ee/ledger#`.
-const COMMIT_THIS_IRI_HTTP: &str = "https://ns.flur.ee/ledger#commit:this";
-
-/// Special subject IRI indicating "this commit" (scheme-based form).
-/// Users may use this directly without a prefix definition.
-const COMMIT_THIS_IRI_SCHEME: &str = "fluree:commit:this";
-
 /// Check if an IRI represents the "this commit" placeholder.
 fn is_commit_this_iri(iri: &str) -> bool {
-    iri == COMMIT_THIS_IRI_HTTP || iri == COMMIT_THIS_IRI_SCHEME
+    iri == fluree_vocab::fluree::COMMIT_THIS_HTTP || iri == fluree_vocab::fluree::COMMIT_THIS_SCHEME
 }
 
 /// Result of extracting transaction metadata from a TriG document.
@@ -1338,7 +1330,7 @@ mod tests {
         let mut ns = test_registry();
         let input = r#"
 @prefix ex: <http://example.org/> .
-@prefix fluree: <https://ns.flur.ee/ledger#> .
+@prefix fluree: <https://ns.flur.ee/db#> .
 
 ex:alice ex:name "Alice" .
 
@@ -1446,7 +1438,7 @@ GRAPH <http://example.org/orders> {
         let mut ns = test_registry();
         let input = r#"
 @prefix ex: <http://example.org/> .
-@prefix fluree: <https://ns.flur.ee/ledger#> .
+@prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:machine "server-01" .
@@ -1507,7 +1499,7 @@ GRAPH <#txn-meta> {
         let mut ns = test_registry();
         let input = r#"
 @prefix ex: <http://example.org/> .
-@prefix fluree: <https://ns.flur.ee/ledger#> .
+@prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:source _:b1 .
@@ -1526,7 +1518,7 @@ GRAPH <#txn-meta> {
         let input = r#"
 @prefix ex: <http://example.org/> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-@prefix fluree: <https://ns.flur.ee/ledger#> .
+@prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:timestamp "2025-01-15T10:30:00Z"^^xsd:dateTime .
@@ -1549,7 +1541,7 @@ GRAPH <#txn-meta> {
         let mut ns = test_registry();
         let input = r#"
 @prefix ex: <http://example.org/> .
-@prefix fluree: <https://ns.flur.ee/ledger#> .
+@prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:description "Mise a jour"@fr .
@@ -1572,7 +1564,7 @@ GRAPH <#txn-meta> {
         let mut ns = test_registry();
         let input = r#"
 @prefix ex: <http://example.org/> .
-@prefix fluree: <https://ns.flur.ee/ledger#> .
+@prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:author ex:alice .
@@ -1594,7 +1586,7 @@ GRAPH <#txn-meta> {
         let mut ns = test_registry();
         let input = r#"
 @prefix ex: <http://example.org/> .
-@prefix fluree: <https://ns.flur.ee/ledger#> .
+@prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:validated true .
@@ -1614,7 +1606,7 @@ GRAPH <#txn-meta> {
         let mut ns = test_registry();
         let input = r#"
 PREFIX ex: <http://example.org/>
-PREFIX fluree: <https://ns.flur.ee/ledger#>
+PREFIX fluree: <https://ns.flur.ee/db#>
 
 ex:alice ex:name "Alice" .
 
@@ -1635,7 +1627,7 @@ GRAPH <#txn-meta> {
 @prefix ex: <http://example.org/> .
 
 GRAPH <#txn-meta> {
-    <https://ns.flur.ee/ledger#commit:this> ex:note "test" .
+    <https://ns.flur.ee/db#commit:this> ex:note "test" .
 }
 "#;
 
@@ -1666,7 +1658,7 @@ GRAPH <#txn-meta> {
         let mut ns = test_registry();
         let input = r#"
 @prefix ex: <http://example.org/> .
-@prefix fluree: <https://ns.flur.ee/ledger#> .
+@prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:tags "a", "b", "c" .

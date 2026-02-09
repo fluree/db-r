@@ -280,13 +280,13 @@ fn parse_literal_value(value_val: &JsonValue, dt_iri: Option<&str>) -> Result<Li
 fn parse_vector_literal(arr: &[JsonValue], dt_iri: Option<&str>) -> Result<LiteralValue> {
     // Allow vector literals only when explicitly typed
     let is_vec = dt_iri.is_some_and(|dt| {
-        dt == "https://ns.flur.ee/ledger#vector"
-            || (dt.ends_with("#vector") && dt.contains("ns.flur.ee/ledger"))
+        dt == fluree_vocab::fluree::EMBEDDING_VECTOR
+            || (dt.ends_with("#embeddingVector") && dt.contains("ns.flur.ee/db"))
     });
 
     if !is_vec {
         return Err(ParseError::InvalidWhere(
-            "Array @value is only supported for https://ns.flur.ee/ledger#vector typed literals"
+            "Array @value is only supported for https://ns.flur.ee/db#embeddingVector typed literals"
                 .to_string(),
         ));
     }

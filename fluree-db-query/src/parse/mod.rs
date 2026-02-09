@@ -1283,10 +1283,10 @@ mod tests {
     #[test]
     fn test_values_typed_vector_cell_parses() {
         let json = json!({
-            "@context": { "fluree": "https://ns.flur.ee/ledger#" },
+            "@context": { "fluree": "https://ns.flur.ee/db#" },
             "select": ["?v"],
             "values": ["?v", [
-                { "@value": [0.7, 0.6], "@type": "fluree:vector" }
+                { "@value": [0.7, 0.6], "@type": "fluree:embeddingVector" }
             ]]
         });
 
@@ -1305,7 +1305,7 @@ mod tests {
                 assert_eq!(v.as_slice(), &[0.7, 0.6]);
                 assert!(dt_iri
                     .as_ref()
-                    .is_some_and(|dt| dt.as_ref() == "https://ns.flur.ee/ledger#vector"));
+                    .is_some_and(|dt| dt.as_ref() == "https://ns.flur.ee/db#embeddingVector"));
             }
             other => panic!("unexpected cell: {:?}", other),
         }
@@ -2989,17 +2989,18 @@ mod tests {
 
     #[test]
     fn test_parse_vector_search_constant_vector() {
-        // Vector search with constant vector
+        // Vector search with constant vector using db: prefix
         let json = json!({
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?doc", "?score"],
             "where": [{
-                "idx:graph": "embeddings:main",
-                "idx:vector": [0.1, 0.2, 0.3],
-                "idx:metric": "cosine",
-                "idx:limit": 10,
-                "idx:result": {
-                    "idx:id": "?doc",
-                    "idx:score": "?score"
+                "db:graphSource": "embeddings:main",
+                "db:queryVector": [0.1, 0.2, 0.3],
+                "db:distanceMetric": "cosine",
+                "db:searchLimit": 10,
+                "db:searchResult": {
+                    "db:resultId": "?doc",
+                    "db:resultScore": "?score"
                 }
             }]
         });
@@ -3033,12 +3034,13 @@ mod tests {
     fn test_parse_vector_search_variable_vector() {
         // Vector search with variable vector
         let json = json!({
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?doc"],
             "where": [{
-                "idx:graph": "embeddings:main",
-                "idx:vector": "?queryVec",
-                "idx:metric": "dot",
-                "idx:result": "?doc"
+                "db:graphSource": "embeddings:main",
+                "db:queryVector": "?queryVec",
+                "db:distanceMetric": "dot",
+                "db:searchResult": "?doc"
             }]
         });
 
@@ -3067,14 +3069,15 @@ mod tests {
     fn test_parse_vector_search_with_sync_and_timeout() {
         // Vector search with sync and timeout options
         let json = json!({
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?doc"],
             "where": [{
-                "idx:graph": "embeddings:main",
-                "idx:vector": [0.5, 0.5],
-                "idx:metric": "euclidean",
-                "idx:result": "?doc",
-                "idx:sync": true,
-                "idx:timeout": 5000
+                "db:graphSource": "embeddings:main",
+                "db:queryVector": [0.5, 0.5],
+                "db:distanceMetric": "euclidean",
+                "db:searchResult": "?doc",
+                "db:syncBeforeQuery": true,
+                "db:timeoutMs": 5000
             }]
         });
 
@@ -3091,15 +3094,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_vector_search_with_graph_alias() {
-        // Vector search using "graph" instead of "idx:graph" (for consistency with BM25)
+    fn test_parse_vector_search_with_full_iris() {
+        // Vector search using full IRIs (no prefix needed)
         let json = json!({
             "select": ["?doc"],
             "where": [{
-                "graph": "embeddings:main",
-                "idx:vector": [0.1, 0.2],
-                "idx:metric": "cosine",
-                "idx:result": "?doc"
+                "https://ns.flur.ee/db#graphSource": "embeddings:main",
+                "https://ns.flur.ee/db#queryVector": [0.1, 0.2],
+                "https://ns.flur.ee/db#distanceMetric": "cosine",
+                "https://ns.flur.ee/db#searchResult": "?doc"
             }]
         });
 
@@ -3115,61 +3118,64 @@ mod tests {
 
     #[test]
     fn test_parse_vector_search_missing_vector() {
-        // Missing idx:vector should fail
+        // Missing db:queryVector should fail
         let json = json!({
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?doc"],
             "where": [{
-                "idx:graph": "embeddings:main",
-                "idx:metric": "cosine",
-                "idx:result": "?doc"
+                "db:graphSource": "embeddings:main",
+                "db:distanceMetric": "cosine",
+                "db:searchResult": "?doc"
             }]
         });
 
         let err = parse_query_ast(&json).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("idx:vector") && msg.contains("required"),
+            msg.contains("queryVector") && msg.contains("required"),
             "unexpected error: {msg}"
         );
     }
 
     #[test]
     fn test_parse_vector_search_missing_result() {
-        // Missing idx:result should fail
+        // Missing db:searchResult should fail
         let json = json!({
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?doc"],
             "where": [{
-                "idx:graph": "embeddings:main",
-                "idx:vector": [0.1, 0.2],
-                "idx:metric": "cosine"
+                "db:graphSource": "embeddings:main",
+                "db:queryVector": [0.1, 0.2],
+                "db:distanceMetric": "cosine"
             }]
         });
 
         let err = parse_query_ast(&json).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("idx:result") && msg.contains("required"),
+            msg.contains("searchResult") && msg.contains("required"),
             "unexpected error: {msg}"
         );
     }
 
     #[test]
     fn test_parse_vector_search_invalid_vector_value() {
-        // Non-array, non-variable idx:vector should fail
+        // Non-array, non-variable db:queryVector should fail
         let json = json!({
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?doc"],
             "where": [{
-                "idx:graph": "embeddings:main",
-                "idx:vector": "not a variable or array",
-                "idx:metric": "cosine",
-                "idx:result": "?doc"
+                "db:graphSource": "embeddings:main",
+                "db:queryVector": "not a variable or array",
+                "db:distanceMetric": "cosine",
+                "db:searchResult": "?doc"
             }]
         });
 
         let err = parse_query_ast(&json).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("idx:vector") && msg.contains("variable or array"),
+            msg.contains("queryVector") && msg.contains("variable or array"),
             "unexpected error: {msg}"
         );
     }
@@ -3178,11 +3184,12 @@ mod tests {
     fn test_parse_vector_search_default_metric() {
         // Default metric should be "cosine" if not specified
         let json = json!({
+            "@context": {"db": "https://ns.flur.ee/db#"},
             "select": ["?doc"],
             "where": [{
-                "idx:graph": "embeddings:main",
-                "idx:vector": [0.1, 0.2],
-                "idx:result": "?doc"
+                "db:graphSource": "embeddings:main",
+                "db:queryVector": [0.1, 0.2],
+                "db:searchResult": "?doc"
             }]
         });
 

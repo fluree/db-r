@@ -8,7 +8,7 @@ use crate::ir::{TemplateTerm, TripleTemplate};
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 use fluree_db_query::{Batch, Binding};
-use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, OGC_GEO, RDF, XSD};
+use fluree_vocab::namespaces::{FLUREE_DB, JSON_LD, OGC_GEO, RDF, XSD};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 
@@ -26,7 +26,7 @@ pub(crate) static DT_TIME: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "time"));
 pub(crate) static DT_STRING: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "string"));
 pub(crate) static DT_JSON: Lazy<Sid> = Lazy::new(|| Sid::new(RDF, "JSON"));
 pub(crate) static DT_LANG_STRING: Lazy<Sid> = Lazy::new(|| Sid::new(RDF, "langString"));
-pub(crate) static DT_VECTOR: Lazy<Sid> = Lazy::new(|| Sid::new(FLUREE_LEDGER, "vector"));
+pub(crate) static DT_VECTOR: Lazy<Sid> = Lazy::new(|| Sid::new(FLUREE_DB, "embeddingVector"));
 pub(crate) static DT_G_YEAR: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gYear"));
 pub(crate) static DT_G_YEAR_MONTH: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gYearMonth"));
 pub(crate) static DT_G_MONTH: Lazy<Sid> = Lazy::new(|| Sid::new(XSD, "gMonth"));

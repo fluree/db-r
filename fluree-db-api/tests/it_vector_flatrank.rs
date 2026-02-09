@@ -24,7 +24,7 @@ async fn vector_search_test() {
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data with vectors
@@ -34,13 +34,13 @@ async fn vector_search_test() {
             {
                 "@id": "ex:homer",
                 "ex:name": "Homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"},
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"},
                 "ex:age": 36
             },
             {
                 "@id": "ex:bart",
                 "ex:name": "Bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"},
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"},
                 "ex:age": "forever 10"
             }
         ]
@@ -52,7 +52,7 @@ async fn vector_search_test() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -87,7 +87,7 @@ async fn vector_search_test() {
 
     assert_eq!(results[0].0, "ex:homer");
     assert!((results[0].1 - 0.72).abs() < 0.001);
-    // f:vector is f32 storage; returned values are f32-quantized.
+    // @vector is f32 storage; returned values are f32-quantized.
     assert_eq!(results[0].2, vec![0.6f32 as f64, 0.5f32 as f64]);
 
     assert_eq!(results[1].0, "ex:bart");
@@ -104,7 +104,7 @@ async fn vector_search_with_filter() {
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data
@@ -114,13 +114,13 @@ async fn vector_search_with_filter() {
             {
                 "@id": "ex:homer",
                 "ex:name": "Homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"},
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"},
                 "ex:age": 36
             },
             {
                 "@id": "ex:bart",
                 "ex:name": "Bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"},
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"},
                 "ex:age": "forever 10"
             }
         ]
@@ -132,7 +132,7 @@ async fn vector_search_with_filter() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:age": 36, "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -160,7 +160,7 @@ async fn vector_search_score_filter() {
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data
@@ -170,12 +170,12 @@ async fn vector_search_score_filter() {
             {
                 "@id": "ex:homer",
                 "ex:name": "Homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:bart",
                 "ex:name": "Bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
             }
         ]
     });
@@ -186,7 +186,7 @@ async fn vector_search_score_filter() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]],
@@ -215,7 +215,7 @@ async fn vector_search_multi_cardinality() {
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data with multiple vectors per entity
@@ -224,13 +224,13 @@ async fn vector_search_multi_cardinality() {
         "@graph": [
             {
                 "@id": "ex:homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:bart",
                 "ex:xVec": [
-                    {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"},
-                    {"@value": [0.2, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                    {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"},
+                    {"@value": [0.2, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
                 ]
             }
         ]
@@ -242,7 +242,7 @@ async fn vector_search_multi_cardinality() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -283,7 +283,7 @@ async fn vector_search_cosine_similarity() {
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data
@@ -292,11 +292,11 @@ async fn vector_search_cosine_similarity() {
         "@graph": [
             {
                 "@id": "ex:homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
             }
         ]
     });
@@ -307,7 +307,7 @@ async fn vector_search_cosine_similarity() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["cosineSimilarity", "?vec", "?targetVec"]]
@@ -338,7 +338,7 @@ async fn vector_search_euclidean_distance() {
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data
@@ -347,11 +347,11 @@ async fn vector_search_euclidean_distance() {
         "@graph": [
             {
                 "@id": "ex:homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
             }
         ]
     });
@@ -362,7 +362,7 @@ async fn vector_search_euclidean_distance() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["euclideanDistance", "?vec", "?targetVec"]]
@@ -393,7 +393,7 @@ async fn vector_search_mixed_datatypes() {
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data with mixed datatypes
@@ -402,7 +402,7 @@ async fn vector_search_mixed_datatypes() {
         "@graph": [
             {
                 "@id": "ex:homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:lucy",
@@ -410,7 +410,7 @@ async fn vector_search_mixed_datatypes() {
             },
             {
                 "@id": "ex:bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
             }
         ]
     });
@@ -421,7 +421,7 @@ async fn vector_search_mixed_datatypes() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -490,7 +490,7 @@ async fn vector_search_post_indexing() {
 
             let ctx = json!([
                 support::default_context(),
-                {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+                {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
             ]);
 
             let insert_txn = json!({
@@ -499,12 +499,12 @@ async fn vector_search_post_indexing() {
                     {
                         "@id": "ex:homer",
                         "ex:name": "Homer",
-                        "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                        "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
                     },
                     {
                         "@id": "ex:bart",
                         "ex:name": "Bart",
-                        "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                        "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
                     }
                 ]
             });
@@ -553,7 +553,7 @@ async fn vector_search_post_indexing() {
             let query = json!({
                 "@context": ctx,
                 "select": ["?x", "?score", "?vec"],
-                "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+                "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
                 "where": [
                     {"@id": "?x", "ex:xVec": "?vec"},
                     ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -611,7 +611,7 @@ async fn vector_search_novelty_plus_indexed() {
 
             let ctx = json!([
                 support::default_context(),
-                {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+                {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
             ]);
 
             let index_cfg = IndexConfig {
@@ -625,7 +625,7 @@ async fn vector_search_novelty_plus_indexed() {
                 "@graph": [{
                     "@id": "ex:homer",
                     "ex:name": "Homer",
-                    "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                    "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
                 }]
             });
 
@@ -654,7 +654,7 @@ async fn vector_search_novelty_plus_indexed() {
                 "@graph": [{
                     "@id": "ex:bart",
                     "ex:name": "Bart",
-                    "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                    "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
                 }]
             });
 
@@ -675,7 +675,7 @@ async fn vector_search_novelty_plus_indexed() {
             let query = json!({
                 "@context": ctx,
                 "select": ["?x", "?score"],
-                "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+                "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
                 "where": [
                     {"@id": "?x", "ex:xVec": "?vec"},
                     ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -738,7 +738,7 @@ async fn vector_at_type_shorthand() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -796,7 +796,7 @@ async fn vector_cosine_normalized_optimization() {
 
             let ctx = json!([
                 support::default_context(),
-                {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+                {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
             ]);
 
             let index_cfg = IndexConfig {
@@ -811,11 +811,11 @@ async fn vector_cosine_normalized_optimization() {
                 "@graph": [
                     {
                         "@id": "ex:a",
-                        "ex:xVec": {"@value": [inv_sqrt2, inv_sqrt2], "@type": "https://ns.flur.ee/ledger#vector"}
+                        "ex:xVec": {"@value": [inv_sqrt2, inv_sqrt2], "@type": "https://ns.flur.ee/db#embeddingVector"}
                     },
                     {
                         "@id": "ex:b",
-                        "ex:xVec": {"@value": [1.0, 0.0], "@type": "https://ns.flur.ee/ledger#vector"}
+                        "ex:xVec": {"@value": [1.0, 0.0], "@type": "https://ns.flur.ee/db#embeddingVector"}
                     }
                 ]
             });
@@ -845,7 +845,7 @@ async fn vector_cosine_normalized_optimization() {
             let cosine_query = json!({
                 "@context": ctx,
                 "select": ["?x", "?cosine"],
-                "values": [["?targetVec"], [{"@value": [1.0, 0.0], "@type": "https://ns.flur.ee/ledger#vector"}]],
+                "values": [["?targetVec"], [{"@value": [1.0, 0.0], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
                 "where": [
                     {"@id": "?x", "ex:xVec": "?vec"},
                     ["bind", "?cosine", ["cosineSimilarity", "?vec", "?targetVec"]]
@@ -856,7 +856,7 @@ async fn vector_cosine_normalized_optimization() {
             let dot_query = json!({
                 "@context": ctx,
                 "select": ["?x", "?dot"],
-                "values": [["?targetVec"], [{"@value": [1.0, 0.0], "@type": "https://ns.flur.ee/ledger#vector"}]],
+                "values": [["?targetVec"], [{"@value": [1.0, 0.0], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
                 "where": [
                     {"@id": "?x", "ex:xVec": "?vec"},
                     ["bind", "?dot", ["dotProduct", "?vec", "?targetVec"]]
@@ -924,7 +924,7 @@ async fn vector_search_with_date_filter_property_join() {
         {
             "ex": "http://example.org/ns/",
             "xsd": "http://www.w3.org/2001/XMLSchema#",
-            "fluree": "https://ns.flur.ee/ledger#"
+            "fluree": "https://ns.flur.ee/db#"
         }
     ]);
 
@@ -961,7 +961,7 @@ async fn vector_search_with_date_filter_property_join() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:publishedDate": "?date", "ex:xVec": "?vec"},
             ["filter", [">=", "?date", "2026-01-01"]],

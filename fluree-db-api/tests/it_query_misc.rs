@@ -444,7 +444,7 @@ async fn commit_db_metadata_spo_queries_parity() {
     let ledger2 = fluree.insert(ledger1, &tx2).await.unwrap().ledger;
 
     let q_commit = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "select": ["?c","?alias"],
         "where": {"@id": "?c", "f:alias": "?alias"}
     });
@@ -473,7 +473,7 @@ async fn commit_db_metadata_spo_queries_parity() {
     }
 
     let q_db = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "select": ["?c","?t"],
         "where": {"@id": "?c", "f:t": "?t"}
     });
@@ -884,11 +884,11 @@ async fn untyped_value_matching_parity() {
 
     let q_typed = json!({
         "@context": {
-            "f": "https://ns.flur.ee/ledger#",
+            "db": "https://ns.flur.ee/db#",
             "xsd": "http://www.w3.org/2001/XMLSchema#"
         },
         "select": "?c",
-        "where": [{"@id": "?c", "f:t": {"@value": commit_t, "@type": "xsd:int"}}]
+        "where": [{"@id": "?c", "db:t": {"@value": commit_t, "@type": "xsd:int"}}]
     });
     let r_typed = fluree
         .query(&ledger2, &q_typed)
@@ -908,9 +908,9 @@ async fn untyped_value_matching_parity() {
     );
 
     let q_untyped = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"db": "https://ns.flur.ee/db#"},
         "select": "?c",
-        "where": [{"@id": "?c", "f:t": commit_t}]
+        "where": [{"@id": "?c", "db:t": commit_t}]
     });
     let r_untyped = fluree
         .query(&ledger2, &q_untyped)

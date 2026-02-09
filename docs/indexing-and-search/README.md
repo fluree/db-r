@@ -36,8 +36,8 @@ Integrated full-text search using BM25 ranking:
 Approximate nearest neighbor (ANN) search for embeddings:
 - Vector index configuration
 - Embedded HNSW indexes (in-process) or remote via dedicated search service
-- Embedding storage with `f:vector` datatype
-- Similarity queries via `idx:vector` syntax
+- Embedding storage with `@vector` datatype (resolves to `https://ns.flur.ee/db#embeddingVector`)
+- Similarity queries via `db:*` syntax
 - Deployment modes (embedded / remote)
 - Use cases (semantic search, recommendations)
 
@@ -126,7 +126,7 @@ See [BM25](bm25.md) for details.
 
 Similarity search using vector embeddings via HNSW indexes (embedded or remote).
 
-**Important**: Embeddings must be stored with the vector datatype (`@type: "@vector"`, `@type: "f:vector"`, or full IRI `https://ns.flur.ee/ledger#vector`) to preserve array structure.
+**Important**: Embeddings must be stored with the vector datatype (`@type: "@vector"`, `@type: "db:embeddingVector"`, or full IRI `https://ns.flur.ee/db#embeddingVector`) to preserve array structure.
 
 **Creating Index (Rust API):**
 ```rust
@@ -143,12 +143,12 @@ fluree.create_vector_index(config).await?;
   "select": ["?product", "?score"],
   "where": [
     {
-      "idx:graph": "products-vector:main",
-      "idx:vector": [0.1, 0.2, ..., 0.9],
-      "idx:limit": 10,
-      "idx:result": {
-        "idx:id": "?product",
-        "idx:score": "?score"
+      "db:graphSource": "products-vector:main",
+      "db:queryVector": [0.1, 0.2, ..., 0.9],
+      "db:searchLimit": 10,
+      "db:searchResult": {
+        "db:resultId": "?product",
+        "db:resultScore": "?score"
       }
     }
   ]
@@ -277,16 +277,16 @@ Query optimizer handles joins efficiently.
   "from": "articles:main",
   "values": [
     ["?queryVec"],
-    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
   ],
   "where": [
     {
-      "idx:graph": "articles-vector:main",
-      "idx:vector": "?queryVec",
-      "idx:limit": 10,
-      "idx:result": {
-        "idx:id": "?article",
-        "idx:score": "?vecScore"
+      "db:graphSource": "articles-vector:main",
+      "db:queryVector": "?queryVec",
+      "db:searchLimit": 10,
+      "db:searchResult": {
+        "db:resultId": "?article",
+        "db:resultScore": "?vecScore"
       }
     }
   ],
@@ -305,10 +305,10 @@ Query optimizer handles joins efficiently.
       "ex:embedding": "?queryVec"
     },
     {
-      "idx:graph": "products-vector:main",
-      "idx:vector": "?queryVec",
-      "idx:limit": 5,
-      "idx:result": { "idx:id": "?similar", "idx:score": "?vecScore" }
+      "db:graphSource": "products-vector:main",
+      "db:queryVector": "?queryVec",
+      "db:searchLimit": 5,
+      "db:searchResult": { "db:resultId": "?similar", "db:resultScore": "?vecScore" }
     }
   ],
   "select": ["?similar", "?vecScore"],
@@ -325,16 +325,16 @@ Combine text and vector search:
   "from": ["products-search:main", "products-vector:main"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/ledger#vector"}]
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
   ],
   "where": [
     { "@id": "?product", "bm25:matches": "laptop" },
     { "@id": "?product", "bm25:score": "?textScore" },
     {
-      "idx:graph": "products-vector:main",
-      "idx:vector": "?queryVec",
-      "idx:limit": 100,
-      "idx:result": { "idx:id": "?product", "idx:score": "?vecScore" }
+      "db:graphSource": "products-vector:main",
+      "db:queryVector": "?queryVec",
+      "db:searchLimit": 100,
+      "db:searchResult": { "db:resultId": "?product", "db:resultScore": "?vecScore" }
     }
   ],
   "bind": {
