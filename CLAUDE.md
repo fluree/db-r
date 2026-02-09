@@ -141,6 +141,7 @@ If the code is obsolete, redundant, or from an abandoned approach — delete it.
 - **Logging**: `tracing` crate. Use structured fields: `tracing::debug!(?value, "processing")`. Respect `LOG_SENSITIVE_DATA` config.
 - **Tests**: Integration tests named `it_*.rs`. `#[tokio::test]` for async. Shared helpers in `fluree-db-api/tests/support/`. Clojure parity comments where applicable.
 - **Dependencies**: Workspace-level dep declarations in root `Cargo.toml`. Feature-gate optional deps.
+- **Modern idioms**: Prefer post-2018 Rust idioms over legacy alternatives. Examples: `&self.field` over `ref` in patterns, `?` over `try!`, `impl Trait` over `Box<dyn>` where appropriate, inclusive ranges (`..=`) over deprecated `...`.
 
 ## Pre-existing Warnings
 
