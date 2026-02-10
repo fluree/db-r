@@ -286,8 +286,8 @@ impl Materializer {
     }
 
     /// Set ledger ID for IriMatch construction in multi-ledger mode.
-    pub fn with_ledger_id(mut self, address: impl Into<Arc<str>>) -> Self {
-        self.ledger_id = Some(address.into());
+    pub fn with_ledger_id(mut self, ledger_id: impl Into<Arc<str>>) -> Self {
+        self.ledger_id = Some(ledger_id.into());
         self
     }
 

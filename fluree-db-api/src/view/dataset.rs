@@ -287,12 +287,12 @@ mod tests {
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
         let view = fluree.view("testdb:main").await.unwrap();
-        let alias = view.ledger_id.clone();
+        let expected_ledger_id = view.ledger_id.clone();
         let dataset = FlureeDataSetView::single(view);
 
         let unwrapped = dataset.into_single();
         assert!(unwrapped.is_some());
-        assert_eq!(unwrapped.unwrap().ledger_id, alias);
+        assert_eq!(unwrapped.unwrap().ledger_id, expected_ledger_id);
     }
 
     #[tokio::test]

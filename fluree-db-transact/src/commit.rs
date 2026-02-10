@@ -461,7 +461,7 @@ where
                 // Both have CIDs: compare directly
                 (Some(base_cid), Some(record_cid)) => {
                     if base_cid != record_cid {
-                        return Err(TransactError::AddressMismatch {
+                        return Err(TransactError::CommitIdMismatch {
                             expected: record_cid.to_string(),
                             found: base_cid.to_string(),
                         });
@@ -471,13 +471,13 @@ where
                 (None, None) => {}
                 // Mixed state: one side has CID, the other doesn't
                 (Some(base_cid), None) => {
-                    return Err(TransactError::AddressMismatch {
+                    return Err(TransactError::CommitIdMismatch {
                         expected: "None".to_string(),
                         found: base_cid.to_string(),
                     });
                 }
                 (None, Some(record_cid)) => {
-                    return Err(TransactError::AddressMismatch {
+                    return Err(TransactError::CommitIdMismatch {
                         expected: record_cid.to_string(),
                         found: "None".to_string(),
                     });

@@ -27,15 +27,15 @@
 //! // Create a watch channel for coalescing
 //! let (tx, mut rx) = watch::channel::<Option<String>>(None);
 //!
-//! // Trigger indexing (latest alias wins)
+//! // Trigger indexing (latest ledger_id wins)
 //! tx.send(Some("mydb:main".to_string())).ok();
 //!
 //! // In your indexing loop (running in a LocalSet or dedicated runtime):
 //! loop {
 //!     if rx.changed().await.is_err() { break; }
-//!     let alias = rx.borrow_and_update().clone();
-//!     if let Some(alias) = alias {
-//!         let result = build_index_for_ledger(&storage, &ns, &alias, config.clone()).await;
+//!     let ledger_id = rx.borrow_and_update().clone();
+//!     if let Some(ledger_id) = ledger_id {
+//!         let result = build_index_for_ledger(&storage, &ns, &ledger_id, config.clone()).await;
 //!         // handle result...
 //!     }
 //! }
@@ -244,13 +244,13 @@ where
     /// Check if a ledger needs indexing
     ///
     /// Returns `true` if the ledger's index is behind its commits.
-    pub async fn needs_indexing(&self, alias: &str) -> Result<bool> {
+    pub async fn needs_indexing(&self, ledger_id: &str) -> Result<bool> {
         let record = self
             .nameservice
-            .lookup(alias)
+            .lookup(ledger_id)
             .await
             .map_err(|e| crate::error::IndexerError::NameService(e.to_string()))?
-            .ok_or_else(|| crate::error::IndexerError::LedgerNotFound(alias.to_string()))?;
+            .ok_or_else(|| crate::error::IndexerError::LedgerNotFound(ledger_id.to_string()))?;
 
         // Check if there's a commit without an index, or index_t < commit_t
         if record.commit_head_id.is_none() {
@@ -269,11 +269,11 @@ where
     /// Returns the existing index if already current, otherwise:
     /// 1. Attempts incremental refresh if an index exists
     /// 2. Falls back to full batched rebuild if refresh fails or no index exists
-    pub async fn index_ledger(&self, alias: &str) -> Result<IndexResult> {
+    pub async fn index_ledger(&self, ledger_id: &str) -> Result<IndexResult> {
         crate::build_index_for_ledger(
             &self.storage,
             self.nameservice.as_ref(),
-            alias,
+            ledger_id,
             self.config.clone(),
         )
         .await
@@ -282,8 +282,8 @@ where
     /// Index a ledger and publish the result
     ///
     /// Combines `index_ledger` with publishing to the nameservice.
-    pub async fn index_and_publish(&self, alias: &str) -> Result<IndexResult> {
-        let result = self.index_ledger(alias).await?;
+    pub async fn index_and_publish(&self, ledger_id: &str) -> Result<IndexResult> {
+        let result = self.index_ledger(ledger_id).await?;
         publish_index_result(self.nameservice.as_ref(), &result).await?;
         Ok(result)
     }
@@ -345,13 +345,13 @@ impl IndexerHandle {
     /// then resolves ALL waiters whose min_t is satisfied.
     ///
     /// Fire-and-forget: just drop the returned `IndexCompletion`.
-    pub async fn trigger(&self, alias: impl Into<String>, min_t: i64) -> IndexCompletion {
-        let alias = alias.into();
+    pub async fn trigger(&self, ledger_id: impl Into<String>, min_t: i64) -> IndexCompletion {
+        let ledger_id = ledger_id.into();
         let (tx, rx) = oneshot::channel();
 
         {
             let mut states = self.states.lock().await;
-            let state = states.entry(alias).or_default();
+            let state = states.entry(ledger_id).or_default();
 
             // Clear cancelled flag on new trigger
             state.cancelled = false;
@@ -391,10 +391,10 @@ impl IndexerHandle {
     /// - Resolves all waiters whose min_t is NOT yet satisfied as Cancelled
     ///
     /// Returns true if there was pending work to cancel.
-    pub async fn cancel(&self, alias: &str) -> bool {
+    pub async fn cancel(&self, ledger_id: &str) -> bool {
         let had_work = {
             let mut states = self.states.lock().await;
-            if let Some(state) = states.get_mut(alias) {
+            if let Some(state) = states.get_mut(ledger_id) {
                 let had_work = state.has_pending_work();
                 state.cancelled = true;
                 // Resolve all waiters as cancelled (they haven't been satisfied)
@@ -433,16 +433,16 @@ impl IndexerHandle {
     }
 
     /// Check current status for a ledger
-    pub async fn status(&self, alias: &str) -> Option<IndexStatusSnapshot> {
+    pub async fn status(&self, ledger_id: &str) -> Option<IndexStatusSnapshot> {
         let states = self.states.lock().await;
-        states.get(alias).map(|s| s.snapshot())
+        states.get(ledger_id).map(|s| s.snapshot())
     }
 
     /// Check if a ledger has pending or in-progress work
-    pub async fn is_pending(&self, alias: &str) -> bool {
+    pub async fn is_pending(&self, ledger_id: &str) -> bool {
         let states = self.states.lock().await;
         states
-            .get(alias)
+            .get(ledger_id)
             .is_some_and(|s| s.phase != IndexPhase::Idle)
     }
 
@@ -452,7 +452,7 @@ impl IndexerHandle {
         states
             .iter()
             .filter(|(_, s)| s.phase != IndexPhase::Idle)
-            .map(|(alias, _)| alias.clone())
+            .map(|(ledger_id, _)| ledger_id.clone())
             .collect()
     }
 
@@ -461,14 +461,14 @@ impl IndexerHandle {
     /// Returns immediately if no work pending.
     /// Different from `IndexCompletion`: this waits for the queue to drain,
     /// not for a specific min_t to be reached.
-    pub async fn wait_for_idle(&self, alias: &str) {
+    pub async fn wait_for_idle(&self, ledger_id: &str) {
         loop {
             // Avoid missed-wakeup races: create the notification future *before*
             // checking the condition, then await it if still not idle.
             let notified = self.idle_notify.notified();
             {
                 let states = self.states.lock().await;
-                if let Some(state) = states.get(alias) {
+                if let Some(state) = states.get(ledger_id) {
                     if state.phase == IndexPhase::Idle {
                         return;
                     }
@@ -589,13 +589,13 @@ where
                             && !state.cancelled
                             && state.next_retry_at.is_none_or(|t| t <= now)
                     })
-                    .map(|(alias, _)| alias.clone())
+                    .map(|(ledger_id, _)| ledger_id.clone())
                     .collect()
             };
 
             // Process each ledger
-            for alias in ledgers_to_process {
-                self.process_ledger(&alias).await;
+            for ledger_id in ledgers_to_process {
+                self.process_ledger(&ledger_id).await;
             }
 
             // Handle cancelled ledgers
@@ -617,11 +617,11 @@ where
     }
 
     /// Process a single ledger
-    async fn process_ledger(&self, alias: &str) {
+    async fn process_ledger(&self, ledger_id: &str) {
         // Mark as in-progress
         {
             let mut states = self.states.lock().await;
-            if let Some(state) = states.get_mut(alias) {
+            if let Some(state) = states.get_mut(ledger_id) {
                 if state.cancelled {
                     return;
                 }
@@ -632,12 +632,12 @@ where
         }
 
         // Re-check nameservice for current state
-        let record = match self.nameservice.lookup(alias).await {
+        let record = match self.nameservice.lookup(ledger_id).await {
             Ok(Some(r)) => r,
             Ok(None) => {
                 // Ledger doesn't exist - resolve waiters as failed
                 let mut states = self.states.lock().await;
-                if let Some(state) = states.get_mut(alias) {
+                if let Some(state) = states.get_mut(ledger_id) {
                     state.resolve_waiters_below(
                         i64::MAX,
                         IndexOutcome::Failed("Ledger not found".to_string()),
@@ -649,11 +649,11 @@ where
             }
             Err(e) => {
                 warn!(
-                alias = %alias,
+                ledger_id = %ledger_id,
                         error = %e,
                         "Nameservice lookup failed, will retry"
                     );
-                self.schedule_retry(alias, &e.to_string()).await;
+                self.schedule_retry(ledger_id, &e.to_string()).await;
                 return;
             }
         };
@@ -663,7 +663,7 @@ where
         // Check if index already satisfies all waiters
         {
             let mut states = self.states.lock().await;
-            if let Some(state) = states.get_mut(alias) {
+            if let Some(state) = states.get_mut(ledger_id) {
                 state.last_index_t = current_index_t;
 
                 if let Some(pending_min) = state.pending_min_t {
@@ -725,7 +725,7 @@ where
         // Skip if already indexed to current commit
         if record.commit_t <= current_index_t {
             let mut states = self.states.lock().await;
-            if let Some(state) = states.get_mut(alias) {
+            if let Some(state) = states.get_mut(ledger_id) {
                 // Resolve waiters that can be satisfied
                 if let Some(root_id) = &record.index_head_id {
                     let outcome = IndexOutcome::Completed {
@@ -761,7 +761,7 @@ where
         let result = crate::build_index_for_ledger(
             &self.storage,
             self.nameservice.as_ref(),
-            alias,
+            ledger_id,
             self.config.clone(),
         )
         .await;
@@ -773,14 +773,14 @@ where
                     crate::publish_index_result(self.nameservice.as_ref(), &index_result).await
                 {
                     warn!(
-                    alias = %alias,
+                    ledger_id = %ledger_id,
                             error = %e,
                             "Failed to publish index, will retry"
                         );
-                    self.schedule_retry(alias, &e.to_string()).await;
+                    self.schedule_retry(ledger_id, &e.to_string()).await;
                 } else {
                     info!(
-                    alias = %alias,
+                    ledger_id = %ledger_id,
                             index_t = index_result.index_t,
                             "Successfully indexed ledger"
                         );
@@ -814,7 +814,7 @@ where
 
                     // Resolve waiters
                     let mut states = self.states.lock().await;
-                    if let Some(state) = states.get_mut(alias) {
+                    if let Some(state) = states.get_mut(ledger_id) {
                         let outcome = IndexOutcome::Completed {
                             index_t: index_result.index_t,
                             root_id: Some(index_result.root_id.clone()),
@@ -833,11 +833,11 @@ where
             }
             Err(e) => {
                 warn!(
-                alias = %alias,
+                ledger_id = %ledger_id,
                         error = %e,
                         "Indexing failed, will retry"
                     );
-                self.schedule_retry(alias, &e.to_string()).await;
+                self.schedule_retry(ledger_id, &e.to_string()).await;
             }
         }
     }

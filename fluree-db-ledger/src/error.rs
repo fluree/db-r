@@ -28,9 +28,9 @@ pub enum LedgerError {
     #[error("Novelty at max capacity, waiting for indexer")]
     MaxNovelty,
 
-    /// Address mismatch when applying index
-    #[error("Index address '{new}' does not match ledger ID '{expected}'")]
-    AddressMismatch { new: String, expected: String },
+    /// Ledger ID mismatch when applying index
+    #[error("Index ledger_id '{new}' does not match expected '{expected}'")]
+    LedgerIdMismatch { new: String, expected: String },
 
     /// Stale index (older than current)
     #[error("Index at t={index_t} is older than current index at t={current_t}")]
@@ -63,9 +63,9 @@ impl LedgerError {
         Self::NotFound(msg.into())
     }
 
-    /// Create an address mismatch error
-    pub fn address_mismatch(new: impl Into<String>, expected: impl Into<String>) -> Self {
-        Self::AddressMismatch {
+    /// Create a ledger ID mismatch error
+    pub fn ledger_id_mismatch(new: impl Into<String>, expected: impl Into<String>) -> Self {
+        Self::LedgerIdMismatch {
             new: new.into(),
             expected: expected.into(),
         }

@@ -29,7 +29,7 @@ async fn create_ledger_name_validation() {
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("Invalid alias format"));
+        .contains("Invalid ledger ID format"));
 
     // Test accepting valid ledger names
     let ledger = fluree.create_ledger("valid-name").await.unwrap();
@@ -60,21 +60,21 @@ async fn edge_case_validation() {
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("Invalid alias format"));
+        .contains("Invalid ledger ID format"));
 
     let result = fluree.create_ledger(":branch").await;
     assert!(result.is_err(), "Should reject name starting with colon");
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("Invalid alias format"));
+        .contains("Invalid ledger ID format"));
 
     let result = fluree.create_ledger("ledger:").await;
     assert!(result.is_err(), "Should reject name ending with colon");
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("Invalid alias format"));
+        .contains("Invalid ledger ID format"));
 
     // Test special characters that ARE allowed
     let ledger = fluree.create_ledger("ledger.with.dots").await.unwrap();

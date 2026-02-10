@@ -183,7 +183,7 @@ impl Publication for ProxyNameService {
         Ok(())
     }
 
-    async fn known_addresses(&self, _alias: &str) -> Result<Vec<String>> {
+    async fn known_ledger_ids(&self, _ledger_id: &str) -> Result<Vec<String>> {
         // Proxy mode doesn't track commit history locally.
         // Return empty - the transaction server has this information.
         Ok(Vec::new())

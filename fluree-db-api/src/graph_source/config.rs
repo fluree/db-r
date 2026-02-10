@@ -3,7 +3,7 @@
 //! This module contains builder-style configuration structs for creating
 //! different types of graph sources (BM25, Vector, Iceberg, R2RML).
 
-use fluree_db_core::alias as core_alias;
+use fluree_db_core::ledger_id::{format_ledger_id, DEFAULT_BRANCH};
 use fluree_db_query::bm25::Bm25Config;
 use serde_json::Value as JsonValue;
 
@@ -87,12 +87,12 @@ impl Bm25CreateConfig {
 
     /// Get the effective branch name.
     pub fn effective_branch(&self) -> &str {
-        self.branch.as_deref().unwrap_or(core_alias::DEFAULT_BRANCH)
+        self.branch.as_deref().unwrap_or(DEFAULT_BRANCH)
     }
 
-    /// Get the graph source alias (name:branch).
+    /// Get the graph source ID (name:branch).
     pub fn graph_source_id(&self) -> String {
-        format!("{}:{}", self.name, self.effective_branch())
+        format_ledger_id(&self.name, self.effective_branch())
     }
 
     /// Build BM25Config from the options.
@@ -304,12 +304,12 @@ impl VectorCreateConfig {
 
     /// Get the effective branch name.
     pub fn effective_branch(&self) -> &str {
-        self.branch.as_deref().unwrap_or(core_alias::DEFAULT_BRANCH)
+        self.branch.as_deref().unwrap_or(DEFAULT_BRANCH)
     }
 
-    /// Get the graph source alias (name:branch).
+    /// Get the graph source ID (name:branch).
     pub fn graph_source_id(&self) -> String {
-        format!("{}:{}", self.name, self.effective_branch())
+        format_ledger_id(&self.name, self.effective_branch())
     }
 
     /// Get the effective distance metric.
@@ -512,12 +512,12 @@ impl IcebergCreateConfig {
 
     /// Get the effective branch name.
     pub fn effective_branch(&self) -> &str {
-        self.branch.as_deref().unwrap_or("main")
+        self.branch.as_deref().unwrap_or(DEFAULT_BRANCH)
     }
 
-    /// Get the graph source alias (name:branch).
+    /// Get the graph source ID (name:branch).
     pub fn graph_source_id(&self) -> String {
-        format!("{}:{}", self.name, self.effective_branch())
+        format_ledger_id(&self.name, self.effective_branch())
     }
 
     /// Convert to the internal IcebergGsConfig structure for storage.
@@ -686,7 +686,7 @@ impl R2rmlCreateConfig {
         self
     }
 
-    /// Get the graph source alias (name:branch).
+    /// Get the graph source ID (name:branch).
     pub fn graph_source_id(&self) -> String {
         self.iceberg.graph_source_id()
     }

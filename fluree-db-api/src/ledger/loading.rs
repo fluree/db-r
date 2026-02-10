@@ -143,12 +143,12 @@ where
     /// // Now you can transact: fluree.insert(ledger, &data).await?
     /// ```
     pub async fn create_ledger(&self, ledger_id: &str) -> Result<LedgerState<S>> {
-        use fluree_db_core::alias::normalize_alias;
+        use fluree_db_core::ledger_id::normalize_ledger_id;
         use fluree_db_novelty::Novelty;
         use tracing::info;
 
-        // 1. Normalize address (ensure branch suffix)
-        let ledger_id = normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
+        // 1. Normalize ledger_id (ensure branch suffix)
+        let ledger_id = normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
         info!(ledger_id = %ledger_id, "Creating ledger");
 
         // 2. Register in nameservice via Publisher (fails if already exists)

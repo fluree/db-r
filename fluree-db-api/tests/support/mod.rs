@@ -70,7 +70,7 @@ where
     N: fluree_db_api::NameService,
 {
     let canonical =
-        fluree_db_core::alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+        fluree_db_core::ledger_id::normalize_ledger_id(alias).unwrap_or_else(|_| alias.to_string());
     let db = Db::genesis(fluree.storage().clone(), &canonical);
     LedgerState::new(db, Novelty::new(0))
 }

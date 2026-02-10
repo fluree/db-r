@@ -63,14 +63,14 @@ pub struct RemoteConfig {
     pub fetch_interval_secs: Option<u64>,
 }
 
-/// Maps a local ledger ID to a remote address for automatic sync
+/// Maps a local ledger ID to a remote ledger ID for automatic sync
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UpstreamConfig {
     /// Local ledger ID (e.g., "mydb:main")
     pub local_alias: String,
     /// Which remote this tracks
     pub remote: RemoteName,
-    /// Address on the remote (usually same as local_alias)
+    /// Ledger ID on the remote (usually same as local_alias)
     pub remote_alias: String,
     /// Whether to automatically fast-forward local on fetch
     pub auto_pull: bool,

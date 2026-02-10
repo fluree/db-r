@@ -16,7 +16,7 @@ use crate::graph_source::result::{
 #[cfg(feature = "vector")]
 use crate::{QueryResult as ApiQueryResult, Result};
 #[cfg(feature = "vector")]
-use fluree_db_core::{alias as core_alias, ContentId, ContentStore, Storage, StorageWrite};
+use fluree_db_core::{ledger_id::split_ledger_id, ContentId, ContentStore, Storage, StorageWrite};
 #[cfg(feature = "vector")]
 use fluree_db_ledger::LedgerState;
 #[cfg(feature = "vector")]
@@ -580,9 +580,9 @@ where
             .write_vector_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
-        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
+        let (name, branch) = split_ledger_id(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
-                "Invalid graph source alias '{}': {}",
+                "Invalid graph source ID '{}': {}",
                 graph_source_id, e
             ))
         })?;
@@ -738,9 +738,9 @@ where
             .write_vector_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
-        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
+        let (name, branch) = split_ledger_id(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
-                "Invalid graph source alias '{}': {}",
+                "Invalid graph source ID '{}': {}",
                 graph_source_id, e
             ))
         })?;
@@ -793,9 +793,9 @@ where
         }
 
         // Mark as retracted
-        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
+        let (name, branch) = split_ledger_id(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
-                "Invalid graph source alias '{}': {}",
+                "Invalid graph source ID '{}': {}",
                 graph_source_id, e
             ))
         })?;

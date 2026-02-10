@@ -24,12 +24,12 @@ pub async fn run(
     }
 
     let fluree = context::build_fluree(fluree_dir)?;
-    let address = context::to_ledger_id(&alias);
+    let ledger_id = context::to_ledger_id(&alias);
 
-    // Get head commit address from nameservice
+    // Look up ledger record from nameservice
     let record = fluree
         .nameservice()
-        .lookup(&address)
+        .lookup(&ledger_id)
         .await?
         .ok_or_else(|| CliError::NotFound(format!("ledger '{}' not found", alias)))?;
 
@@ -39,7 +39,7 @@ pub async fn run(
 
     // Walk commit chain by CID
     let storage = fluree.storage().clone();
-    let prefix = address.clone();
+    let prefix = ledger_id.clone();
     let store = fluree_db_core::bridge_content_store(storage, &prefix, "file");
     let stream: std::pin::Pin<
         Box<dyn futures::Stream<Item = fluree_db_novelty::Result<fluree_db_novelty::Commit>>>,

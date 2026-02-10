@@ -73,7 +73,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
     /// # Arguments
     ///
     /// * `ns` - Nameservice for ledger discovery
-    /// * `alias` - Ledger alias (e.g., "mydb:main")
+    /// * `ledger_id` - Ledger ID (e.g., "mydb:main")
     /// * `storage` - Storage backend
     /// * `target_t` - The time to load the view at
     ///

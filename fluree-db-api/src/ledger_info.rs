@@ -12,8 +12,9 @@
 //! - Stats with decoded IRIs and computed selectivity
 
 use crate::format::iri::IriCompactor;
-use fluree_db_core::alias as core_alias;
+use fluree_db_core::address_path::ledger_id_to_path_prefix;
 use fluree_db_core::comparator::IndexType;
+use fluree_db_core::ledger_id::{format_ledger_id, split_ledger_id};
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{
     is_rdf_type, ClassPropertyUsage, ClassRefCount, Db, FlakeValue, OverlayProvider, Sid, Storage,
@@ -23,7 +24,7 @@ use fluree_db_core::{
     PropertyStatEntry, SchemaPredicateInfo,
 };
 use fluree_db_ledger::LedgerState;
-use fluree_db_nameservice::{parse_address, GraphSourceRecord, NsRecord};
+use fluree_db_nameservice::{GraphSourceRecord, NsRecord};
 use fluree_db_novelty::{load_commit_by_id, Novelty};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
@@ -62,8 +63,8 @@ fn build_schema_index(schema: &IndexSchema) -> SchemaIndex<'_> {
 /// Error type for ledger info operations
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerInfoError {
-    #[error("No commit address available")]
-    NoCommitAddress,
+    #[error("No commit ID available")]
+    NoCommitId,
 
     #[error("Failed to load commit: {0}")]
     CommitLoad(String),
@@ -160,7 +161,7 @@ where
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
-        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&ledger.db.ledger_id)
+        let alias_prefix = ledger_id_to_path_prefix(&ledger.db.ledger_id)
             .unwrap_or_else(|_| ledger.db.ledger_id.replace(':', "/"));
         let manifest_addr_primary =
             format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
@@ -536,12 +537,12 @@ async fn build_commit_jsonld<S: Storage + Clone>(
 /// `query-nameservice` temporary ledger population.
 pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
     // Use parse_alias for ledger name extraction (avoids edge cases)
-    let ledger_name = parse_address(&record.name)
+    let ledger_name = split_ledger_id(&record.ledger_id)
         .map(|(ledger, _branch)| ledger)
         .unwrap_or_else(|_| record.name.clone());
 
     // Use canonical form for @id: "{ledger_name}:{branch}"
-    let canonical_id = core_alias::format_alias(&ledger_name, &record.branch);
+    let canonical_id = format_ledger_id(&ledger_name, &record.branch);
 
     // Reflect retracted state in status
     let status = if record.retracted {
@@ -586,7 +587,7 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
 /// Includes `f:status` field that reflects retracted state.
 pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
     // Use canonical form for @id: "{name}:{branch}"
-    let canonical_id = core_alias::format_alias(&record.name, &record.branch);
+    let canonical_id = format_ledger_id(&record.name, &record.branch);
 
     // Reflect retracted state in status
     let status = if record.retracted {

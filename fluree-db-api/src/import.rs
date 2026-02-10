@@ -357,7 +357,7 @@ where
 
     // ---- Phase 1: Create ledger (init nameservice) ----
     let normalized_alias =
-        fluree_db_core::alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+        fluree_db_core::ledger_id::normalize_ledger_id(alias).unwrap_or_else(|_| alias.to_string());
 
     // Check if ledger already exists
     let ns_record = nameservice
@@ -383,7 +383,7 @@ where
     }
 
     // ---- Set up session directory for runs/indexes ----
-    let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&normalized_alias)
+    let alias_prefix = fluree_db_core::address_path::ledger_id_to_path_prefix(&normalized_alias)
         .unwrap_or_else(|_| normalized_alias.replace(':', "/"));
 
     // Derive session dir from storage's data directory.

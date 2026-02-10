@@ -17,7 +17,9 @@ use aws_sdk_dynamodb::types::{
 };
 use aws_sdk_dynamodb::Client;
 use aws_smithy_types::timeout::TimeoutConfig;
-use fluree_db_core::alias::{self as core_alias, DEFAULT_BRANCH};
+use fluree_db_core::ledger_id::{
+    format_ledger_id, normalize_ledger_id, split_ledger_id, DEFAULT_BRANCH,
+};
 use fluree_db_core::ContentId;
 use fluree_db_nameservice::{
     AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
@@ -46,7 +48,7 @@ pub struct DynamoDbConfig {
 
 /// DynamoDB-based nameservice (composite-key layout v2)
 ///
-/// Each alias maps to multiple DynamoDB items (one per concern: meta, head,
+/// Each ledger ID maps to multiple DynamoDB items (one per concern: meta, head,
 /// index, config, status). Init operations materialize all concern items
 /// atomically; subsequent writes are plain UpdateItem.
 #[derive(Clone)]
@@ -102,9 +104,9 @@ impl DynamoDbNameService {
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 impl DynamoDbNameService {
-    /// Normalize alias to canonical `name:branch` form.
-    fn normalize(alias: &str) -> String {
-        core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string())
+    /// Normalize ledger ID to canonical `name:branch` form.
+    fn normalize(ledger_id: &str) -> String {
+        normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string())
     }
 
     /// Current epoch time in milliseconds.
@@ -516,10 +518,10 @@ impl NameService for DynamoDbNameService {
 
 #[async_trait]
 impl Publisher for DynamoDbNameService {
-    async fn publish_ledger_init(&self, alias: &str) -> std::result::Result<(), NameServiceError> {
-        let pk = Self::normalize(alias);
-        let (ledger_name, branch) = core_alias::split_alias(alias)
-            .unwrap_or_else(|_| (alias.to_string(), DEFAULT_BRANCH.to_string()));
+    async fn publish_ledger_init(&self, ledger_id: &str) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(ledger_id);
+        let (ledger_name, branch) = split_ledger_id(ledger_id)
+            .unwrap_or_else(|_| (ledger_id.to_string(), DEFAULT_BRANCH.to_string()));
         let now = Self::now_epoch_ms().to_string();
         let sv = SCHEMA_VERSION.to_string();
 
@@ -615,11 +617,11 @@ impl Publisher for DynamoDbNameService {
 
     async fn publish_commit(
         &self,
-        alias: &str,
+        ledger_id: &str,
         commit_t: i64,
         commit_id: &ContentId,
     ) -> std::result::Result<(), NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(ledger_id);
         let now = Self::now_epoch_ms().to_string();
 
         let result = self
@@ -659,16 +661,16 @@ impl Publisher for DynamoDbNameService {
 
     async fn publish_index(
         &self,
-        alias: &str,
+        ledger_id: &str,
         index_t: i64,
         index_id: &ContentId,
     ) -> std::result::Result<(), NameServiceError> {
-        self.update_index_item(alias, index_t, index_id, "#it < :t")
+        self.update_index_item(ledger_id, index_t, index_id, "#it < :t")
             .await
     }
 
-    async fn retract(&self, alias: &str) -> std::result::Result<(), NameServiceError> {
-        let pk = Self::normalize(alias);
+    async fn retract(&self, ledger_id: &str) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(ledger_id);
         let now = Self::now_epoch_ms().to_string();
 
         self.client
@@ -688,8 +690,8 @@ impl Publisher for DynamoDbNameService {
         Ok(())
     }
 
-    fn publishing_address(&self, alias: &str) -> Option<String> {
-        Some(Self::normalize(alias))
+    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
+        Some(Self::normalize(ledger_id))
     }
 }
 
@@ -697,15 +699,15 @@ impl DynamoDbNameService {
     /// Shared helper for publish_index and publish_index_allow_equal.
     async fn update_index_item(
         &self,
-        alias: &str,
+        ledger_id: &str,
         index_t: i64,
         index_id: &ContentId,
         condition: &str,
     ) -> std::result::Result<(), NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(ledger_id);
         let now = Self::now_epoch_ms().to_string();
 
-        // Prepend attribute_exists to catch uninitialized aliases.
+        // Prepend attribute_exists to catch uninitialized ledger IDs.
         let full_condition = format!("attribute_exists(#pk) AND {condition}");
 
         let result = self
@@ -750,21 +752,21 @@ impl DynamoDbNameService {
     async fn create_ledger_with_ref(
         &self,
         pk: &str,
-        alias: &str,
+        ledger_id: &str,
         kind: RefKind,
         new: &RefValue,
     ) -> std::result::Result<(), NameServiceError> {
         // Reject setting a watermark without a pointer — avoids a weird
         // "t is advanced but there's nothing to read" state.
         if new.id.is_none() && new.t > 0 {
-            return Err(NameServiceError::invalid_alias(format!(
+            return Err(NameServiceError::invalid_id(format!(
                 "Cannot create ref with t={} but no id for {pk}",
                 new.t
             )));
         }
 
-        let (ledger_name, branch) = core_alias::split_alias(alias)
-            .unwrap_or_else(|_| (alias.to_string(), DEFAULT_BRANCH.to_string()));
+        let (ledger_name, branch) = split_ledger_id(ledger_id)
+            .unwrap_or_else(|_| (ledger_id.to_string(), DEFAULT_BRANCH.to_string()));
         let now = Self::now_epoch_ms().to_string();
         let sv = SCHEMA_VERSION.to_string();
 
@@ -895,11 +897,11 @@ impl DynamoDbNameService {
 impl AdminPublisher for DynamoDbNameService {
     async fn publish_index_allow_equal(
         &self,
-        alias: &str,
+        ledger_id: &str,
         index_t: i64,
         index_id: &ContentId,
     ) -> std::result::Result<(), NameServiceError> {
-        self.update_index_item(alias, index_t, index_id, "#it <= :t")
+        self.update_index_item(ledger_id, index_t, index_id, "#it <= :t")
             .await
     }
 }
@@ -910,10 +912,10 @@ impl AdminPublisher for DynamoDbNameService {
 impl RefPublisher for DynamoDbNameService {
     async fn get_ref(
         &self,
-        alias: &str,
+        ledger_id: &str,
         kind: RefKind,
     ) -> std::result::Result<Option<RefValue>, NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(ledger_id);
         let sk = Self::ref_kind_sk(kind);
         let (id_attr, t_attr) = Self::ref_kind_attrs(kind);
 
@@ -954,25 +956,25 @@ impl RefPublisher for DynamoDbNameService {
 
     async fn compare_and_set_ref(
         &self,
-        alias: &str,
+        ledger_id: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
     ) -> std::result::Result<CasResult, NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(ledger_id);
         let sk = Self::ref_kind_sk(kind);
         let (id_attr, t_attr) = Self::ref_kind_attrs(kind);
 
         // ── Case 1: expected = None ─────────────────────────────────────
         // Caller expects the ref doesn't exist. Matches StorageNameService
-        // semantics: if alias truly unknown, create the ledger with the ref set.
+        // semantics: if ledger_id truly unknown, create the ledger with the ref set.
         let Some(exp) = expected else {
-            let current = self.get_ref(alias, kind).await?;
+            let current = self.get_ref(ledger_id, kind).await?;
             if current.is_some() {
                 return Ok(CasResult::Conflict { actual: current });
             }
-            // Alias is truly unknown — create via init with the ref pre-set.
-            self.create_ledger_with_ref(&pk, alias, kind, new).await?;
+            // Ledger ID is truly unknown — create via init with the ref pre-set.
+            self.create_ledger_with_ref(&pk, ledger_id, kind, new).await?;
             return Ok(CasResult::Updated);
         };
 
@@ -980,13 +982,13 @@ impl RefPublisher for DynamoDbNameService {
         match kind {
             RefKind::CommitHead => {
                 if new.t <= exp.t {
-                    let actual = self.get_ref(alias, kind).await?;
+                    let actual = self.get_ref(ledger_id, kind).await?;
                     return Ok(CasResult::Conflict { actual });
                 }
             }
             RefKind::IndexHead => {
                 if new.t < exp.t {
-                    let actual = self.get_ref(alias, kind).await?;
+                    let actual = self.get_ref(ledger_id, kind).await?;
                     return Ok(CasResult::Conflict { actual });
                 }
             }
@@ -1027,7 +1029,7 @@ impl RefPublisher for DynamoDbNameService {
             return match result {
                 Ok(_) => Ok(CasResult::Updated),
                 Err(e) if Self::is_conditional_check_failed(&e) => {
-                    let actual = self.get_ref(alias, kind).await?;
+                    let actual = self.get_ref(ledger_id, kind).await?;
                     Ok(CasResult::Conflict { actual })
                 }
                 Err(e) => Err(NameServiceError::storage(format!(
@@ -1070,7 +1072,7 @@ impl RefPublisher for DynamoDbNameService {
         match result {
             Ok(_) => Ok(CasResult::Updated),
             Err(e) if Self::is_conditional_check_failed(&e) => {
-                let actual = self.get_ref(alias, kind).await?;
+                let actual = self.get_ref(ledger_id, kind).await?;
                 Ok(CasResult::Conflict { actual })
             }
             Err(e) => Err(NameServiceError::storage(format!(
@@ -1092,7 +1094,7 @@ impl GraphSourcePublisher for DynamoDbNameService {
         config: &str,
         dependencies: &[String],
     ) -> std::result::Result<(), NameServiceError> {
-        let pk = core_alias::format_alias(name, branch);
+        let pk = format_ledger_id(name, branch);
         let now = Self::now_epoch_ms().to_string();
         let sv = SCHEMA_VERSION.to_string();
 
@@ -1207,7 +1209,7 @@ impl GraphSourcePublisher for DynamoDbNameService {
         index_id: &ContentId,
         index_t: i64,
     ) -> std::result::Result<(), NameServiceError> {
-        let pk = core_alias::format_alias(name, branch);
+        let pk = format_ledger_id(name, branch);
         let now = Self::now_epoch_ms().to_string();
 
         let result = self
@@ -1241,7 +1243,7 @@ impl GraphSourcePublisher for DynamoDbNameService {
         name: &str,
         branch: &str,
     ) -> std::result::Result<(), NameServiceError> {
-        let pk = core_alias::format_alias(name, branch);
+        let pk = format_ledger_id(name, branch);
         let now = Self::now_epoch_ms().to_string();
 
         self.client
@@ -1263,18 +1265,18 @@ impl GraphSourcePublisher for DynamoDbNameService {
 
     async fn lookup_graph_source(
         &self,
-        alias: &str,
+        graph_source_id: &str,
     ) -> std::result::Result<Option<GraphSourceRecord>, NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(graph_source_id);
         let items = self.query_all_items(&pk).await?;
         Ok(Self::items_to_gs_record(&pk, &items))
     }
 
     async fn lookup_any(
         &self,
-        alias: &str,
+        resource_id: &str,
     ) -> std::result::Result<NsLookupResult, NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(resource_id);
         let items = self.query_all_items(&pk).await?;
 
         // Discriminate by meta.kind
@@ -1427,9 +1429,9 @@ impl GraphSourcePublisher for DynamoDbNameService {
 impl StatusPublisher for DynamoDbNameService {
     async fn get_status(
         &self,
-        alias: &str,
+        ledger_id: &str,
     ) -> std::result::Result<Option<StatusValue>, NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(ledger_id);
 
         let response = self
             .client

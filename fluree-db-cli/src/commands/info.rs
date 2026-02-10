@@ -61,10 +61,10 @@ pub async fn run(
             }
         }
         LedgerMode::Local { fluree, alias } => {
-            let address = context::to_ledger_id(&alias);
+            let ledger_id = context::to_ledger_id(&alias);
             let record = fluree
                 .nameservice()
-                .lookup(&address)
+                .lookup(&ledger_id)
                 .await?
                 .ok_or_else(|| CliError::NotFound(format!("ledger '{}' not found", alias)))?;
 

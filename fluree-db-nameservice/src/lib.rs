@@ -51,8 +51,7 @@ pub use tracking::{MemoryTrackingStore, RemoteName, RemoteTrackingStore, Trackin
 pub use tracking_file::FileTrackingStore;
 
 use async_trait::async_trait;
-use fluree_db_core::alias;
-use fluree_db_core::ContentId;
+use fluree_db_core::{format_ledger_id, ContentId};
 use fluree_vocab::ns_types;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -111,7 +110,7 @@ impl NsRecord {
     pub fn new(name: impl Into<String>, branch: impl Into<String>) -> Self {
         let name = name.into();
         let branch = branch.into();
-        let ledger_id = format!("{}:{}", name, branch);
+        let ledger_id = format_ledger_id(&name, &branch);
 
         Self {
             ledger_id,
@@ -284,7 +283,7 @@ impl GraphSourceRecord {
     ) -> Self {
         let name = name.into();
         let branch = branch.into();
-        let graph_source_id = format!("{}:{}", name, branch);
+        let graph_source_id = format_ledger_id(&name, &branch);
 
         Self {
             graph_source_id,
@@ -330,10 +329,10 @@ pub enum NsLookupResult {
 
 /// Read-only nameservice lookup trait
 ///
-/// Implementations provide ledger discovery by name or address.
+/// Implementations provide ledger discovery by ledger ID.
 #[async_trait]
 pub trait NameService: Debug + Send + Sync {
-    /// Look up a ledger by address (may be name or IRI)
+    /// Look up a ledger by its ledger ID (e.g. "mydb:main")
     ///
     /// Returns `None` if the ledger is not found.
     async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>>;
@@ -396,11 +395,11 @@ pub trait Publisher: Debug + Send + Sync {
     /// with `retracted: true`.
     async fn retract(&self, ledger_id: &str) -> Result<()>;
 
-    /// Get the publishing address for a ledger ID
+    /// Get the publishing ledger ID for a ledger.
     ///
     /// Returns `None` for "private" publishing (don't write ns field to commit).
-    /// Returns `Some(address)` for the value to write into commit's ns field.
-    fn publishing_address(&self, ledger_id: &str) -> Option<String>;
+    /// Returns `Some(ledger_id)` for the value to write into commit's ns field.
+    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String>;
 }
 
 /// Admin-level publisher operations
@@ -469,15 +468,16 @@ pub trait GraphSourcePublisher: Debug + Send + Sync {
     /// with `retracted: true`.
     async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()>;
 
-    /// Look up a graph source by address
+    /// Look up a graph source by its graph_source_id (e.g. "my-search:main").
     ///
     /// Returns `None` if not found or if the record is a ledger (not a graph source).
-    async fn lookup_graph_source(&self, address: &str) -> Result<Option<GraphSourceRecord>>;
+    async fn lookup_graph_source(&self, graph_source_id: &str)
+        -> Result<Option<GraphSourceRecord>>;
 
-    /// Look up any record (ledger or graph source) and return unified result
+    /// Look up any record (ledger or graph source) and return unified result.
     ///
-    /// This is useful when you don't know if an address refers to a ledger or graph source.
-    async fn lookup_any(&self, address: &str) -> Result<NsLookupResult>;
+    /// `resource_id` can be either a ledger_id or graph_source_id.
+    async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult>;
 
     /// Get all known graph source records
     ///
@@ -489,20 +489,20 @@ pub trait GraphSourcePublisher: Debug + Send + Sync {
 /// Subscription scope for filtering nameservice events.
 ///
 /// Determines which events a subscriber will receive:
-/// - `Address(String)` - Only events matching this specific address
+/// - `ResourceId(String)` - Only events matching this specific ledger_id or graph_source_id
 /// - `All` - All events from any ledger or graph source
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubscriptionScope {
-    /// Subscribe to events for a specific address (ledger or graph source)
-    Address(String),
+    /// Subscribe to events for a specific resource (ledger_id or graph_source_id)
+    ResourceId(String),
     /// Subscribe to all events (all ledgers and graph sources)
     All,
 }
 
 impl SubscriptionScope {
-    /// Create a scope for a specific address
-    pub fn address(address: impl Into<String>) -> Self {
-        Self::Address(address.into())
+    /// Create a scope for a specific resource ID (ledger_id or graph_source_id)
+    pub fn resource_id(id: impl Into<String>) -> Self {
+        Self::ResourceId(id.into())
     }
 
     /// Create a scope for all events
@@ -510,11 +510,11 @@ impl SubscriptionScope {
         Self::All
     }
 
-    /// Check if this scope matches a given event address
-    pub fn matches(&self, event_address: &str) -> bool {
+    /// Check if this scope matches a given event's resource_id
+    pub fn matches(&self, event_resource_id: &str) -> bool {
         match self {
             Self::All => true,
-            Self::Address(a) => a == event_address,
+            Self::ResourceId(id) => id == event_resource_id,
         }
     }
 }
@@ -559,7 +559,7 @@ pub enum NameServiceEvent {
 /// Subscription handle for receiving ledger updates
 #[derive(Debug)]
 pub struct Subscription {
-    /// The subscription scope (address or all)
+    /// The subscription scope (resource_id or all)
     pub scope: SubscriptionScope,
     /// Receiver for nameservice events (in-process).
     pub receiver: broadcast::Receiver<NameServiceEvent>,
@@ -581,8 +581,8 @@ pub trait Publication: Debug + Send + Sync {
     /// Unsubscribe from updates (no-op for stateless implementations)
     async fn unsubscribe(&self, scope: &SubscriptionScope) -> Result<()>;
 
-    /// Get all known addresses for a ledger ID (commit history)
-    async fn known_addresses(&self, ledger_id: &str) -> Result<Vec<String>>;
+    /// Get all known ledger IDs for a ledger (commit history)
+    async fn known_ledger_ids(&self, ledger_id: &str) -> Result<Vec<String>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -714,14 +714,6 @@ pub trait RefPublisher: Debug + Send + Sync {
         let current = self.get_ref(ledger_id, RefKind::CommitHead).await?;
         Ok(CasResult::Conflict { actual: current })
     }
-}
-
-/// Parse a ledger ID into (ledger_name, branch) components
-///
-/// Address format: `ledger-name:branch` (e.g., "mydb:main")
-/// If no branch is specified, defaults to the core default branch.
-pub fn parse_address(address: &str) -> Result<(String, String)> {
-    alias::split_alias(address).map_err(|e| NameServiceError::invalid_alias(format!("{}", e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,34 +1003,6 @@ pub trait ConfigPublisher: Debug + Send + Sync {
 mod tests {
     use super::*;
     use fluree_db_core::ContentKind;
-
-    #[test]
-    fn test_parse_address_with_branch() {
-        let (ledger, branch) = parse_address("mydb:main").unwrap();
-        assert_eq!(ledger, "mydb");
-        assert_eq!(branch, "main");
-    }
-
-    #[test]
-    fn test_parse_address_without_branch() {
-        let (ledger, branch) = parse_address("mydb").unwrap();
-        assert_eq!(ledger, "mydb");
-        assert_eq!(branch, "main");
-    }
-
-    #[test]
-    fn test_parse_address_with_slashes() {
-        let (ledger, branch) = parse_address("tenant/customers:dev").unwrap();
-        assert_eq!(ledger, "tenant/customers");
-        assert_eq!(branch, "dev");
-    }
-
-    #[test]
-    fn test_parse_address_empty() {
-        assert!(parse_address("").is_err());
-        assert!(parse_address(":main").is_err());
-        assert!(parse_address("ledger:").is_err());
-    }
 
     #[test]
     fn test_ns_record_new() {

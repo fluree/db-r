@@ -10,7 +10,7 @@
 mod support;
 
 use fluree_db_api::{DropMode, DropStatus, FlureeBuilder, IndexConfig, LedgerState, Novelty};
-use fluree_db_core::address_path::alias_to_path_prefix;
+use fluree_db_core::address_path::ledger_id_to_path_prefix;
 use fluree_db_core::{Db, StorageRead};
 use fluree_db_nameservice::NameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
@@ -62,7 +62,7 @@ async fn drop_ledger_soft_mode_retracts_only() {
     // Files should still exist (commit prefix uses canonical storage path, no ':')
     let commit_prefix = format!(
         "fluree:file://{}/commit/",
-        alias_to_path_prefix(alias).unwrap()
+        ledger_id_to_path_prefix(alias).unwrap()
     );
     let files = fluree
         .storage()
@@ -96,7 +96,7 @@ async fn drop_ledger_hard_mode_deletes_files() {
     // Verify files exist before drop
     let commit_prefix = format!(
         "fluree:file://{}/commit/",
-        alias_to_path_prefix(alias).unwrap()
+        ledger_id_to_path_prefix(alias).unwrap()
     );
     let files_before = fluree
         .storage()
@@ -282,7 +282,7 @@ async fn drop_ledger_cancels_pending_indexing() {
             // Verify both commit and index files are deleted
             // Commits use raw alias: fluree:file://drop-cancel-test:main/commit/
             // Indexes use normalized: fluree:file://drop-cancel-test/main/index/
-            let prefix = alias_to_path_prefix(alias).unwrap();
+            let prefix = ledger_id_to_path_prefix(alias).unwrap();
             let commit_prefix = format!("fluree:file://{}/commit/", prefix);
             let index_prefix = format!("fluree:file://{}/index/", prefix);
 
@@ -338,7 +338,7 @@ async fn drop_ledger_hard_mode_deletes_even_when_retracted() {
     // Verify files still exist
     let commit_prefix = format!(
         "fluree:file://{}/commit/",
-        alias_to_path_prefix(alias).unwrap()
+        ledger_id_to_path_prefix(alias).unwrap()
     );
     let files_before = fluree
         .storage()

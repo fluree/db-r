@@ -43,8 +43,8 @@ pub async fn resolve_ledger_mode(
     let fluree = build_fluree(fluree_dir)?;
 
     // Check if local ledger exists (local wins)
-    let address = to_ledger_id(&alias);
-    if fluree.ledger_exists(&address).await.unwrap_or(false) {
+    let ledger_id = to_ledger_id(&alias);
+    if fluree.ledger_exists(&ledger_id).await.unwrap_or(false) {
         return Ok(LedgerMode::Local {
             fluree: Box::new(fluree),
             alias,
@@ -57,10 +57,10 @@ pub async fn resolve_ledger_mode(
         return build_tracked_mode(&store, &tracked, &alias).await;
     }
 
-    // Also try the normalized address (user might have typed "mydb" but tracked as "mydb:main")
-    if alias != address {
-        if let Some(tracked) = store.get_tracked(&address) {
-            return build_tracked_mode(&store, &tracked, &address).await;
+    // Also try the normalized ledger_id (user might have typed "mydb" but tracked as "mydb:main")
+    if alias != ledger_id {
+        if let Some(tracked) = store.get_tracked(&ledger_id) {
+            return build_tracked_mode(&store, &tracked, &ledger_id).await;
         }
     }
 
@@ -179,16 +179,12 @@ pub fn build_fluree(fluree_dir: &Path) -> CliResult<Fluree<FileStorage, FileName
         .map_err(|e| CliError::Config(format!("failed to initialize Fluree: {e}")))
 }
 
-/// Normalize an alias to include a branch suffix if missing.
+/// Normalize a ledger identifier to include a branch suffix if missing.
 ///
-/// The nameservice uses canonical addresses like `mydb:main`.
+/// The nameservice uses canonical ledger IDs like `mydb:main`.
 /// When users provide just `mydb`, we append `:main`.
-pub fn to_ledger_id(alias: &str) -> String {
-    if alias.contains(':') {
-        alias.to_string()
-    } else {
-        format!("{alias}:main")
-    }
+pub fn to_ledger_id(ledger_id: &str) -> String {
+    fluree_db_core::normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string())
 }
 
 /// Persist any refreshed tokens back to config.toml after a remote operation.

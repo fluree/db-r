@@ -383,7 +383,7 @@ mod tests {
         // Object-safety check (doesn't run, just compiles)
         fn _check_dyn<S: Storage + 'static>(v: &dyn GraphView<S>) {
             let _resolved = v.resolve();
-            let _address = v.ledger_id();
+            let _ledger_id = v.ledger_id();
         }
     }
 }

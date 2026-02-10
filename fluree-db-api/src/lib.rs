@@ -89,7 +89,7 @@ pub use commit_transfer::{
     PushCommitsRequest, PushCommitsResponse,
 };
 pub use dataset::{
-    sparql_dataset_aliases, DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions,
+    sparql_dataset_ledger_ids, DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions,
     TimeSpec,
 };
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
@@ -325,11 +325,15 @@ impl StorageMethod for AnyStorage {
 
 /// A dynamically-dispatched nameservice + publisher.
 pub trait NameServicePublisher:
-    fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher
+    fluree_db_nameservice::NameService
+    + fluree_db_nameservice::Publisher
+    + fluree_db_nameservice::RefPublisher
 {
 }
 impl<T> NameServicePublisher for T where
-    T: fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher
+    T: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + fluree_db_nameservice::RefPublisher
 {
 }
 
@@ -404,30 +408,57 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
         self.0.retract(alias).await
     }
 
-    fn publishing_address(&self, alias: &str) -> Option<String> {
-        self.0.publishing_address(alias)
+    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
+        self.0.publishing_ledger_id(ledger_id)
     }
 }
 
-/// Transparent nameservice wrapper.
+#[async_trait]
+impl fluree_db_nameservice::RefPublisher for AnyNameService {
+    async fn get_ref(
+        &self,
+        ledger_id: &str,
+        kind: fluree_db_nameservice::RefKind,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::RefValue>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.0.get_ref(ledger_id, kind).await
+    }
+
+    async fn compare_and_set_ref(
+        &self,
+        ledger_id: &str,
+        kind: fluree_db_nameservice::RefKind,
+        expected: Option<&fluree_db_nameservice::RefValue>,
+        new: &fluree_db_nameservice::RefValue,
+    ) -> std::result::Result<
+        fluree_db_nameservice::CasResult,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.0
+            .compare_and_set_ref(ledger_id, kind, expected, new)
+            .await
+    }
+}
+
+/// Transparent delegating nameservice wrapper.
 ///
-/// Historically this rewrote published addresses to include `addressIdentifier`.
-/// With CID-only addressing, the rewriting logic is no longer needed and has been
-/// removed. The wrapper is retained so that builder call-sites do not need
+/// This wrapper is retained so that builder call-sites do not need
 /// restructuring — it simply delegates every call to `inner`.
 #[derive(Clone, Debug)]
-struct AddressRewritingNameService<N> {
+struct DelegatingNameService<N> {
     inner: N,
 }
 
-impl<N> AddressRewritingNameService<N> {
+impl<N> DelegatingNameService<N> {
     fn new(inner: N) -> Self {
         Self { inner }
     }
 }
 
 #[async_trait::async_trait]
-impl<N> fluree_db_nameservice::NameService for AddressRewritingNameService<N>
+impl<N> fluree_db_nameservice::NameService for DelegatingNameService<N>
 where
     N: fluree_db_nameservice::NameService
         + fluree_db_nameservice::Publisher
@@ -456,7 +487,7 @@ where
 }
 
 #[async_trait::async_trait]
-impl<N> fluree_db_nameservice::Publisher for AddressRewritingNameService<N>
+impl<N> fluree_db_nameservice::Publisher for DelegatingNameService<N>
 where
     N: fluree_db_nameservice::NameService
         + fluree_db_nameservice::Publisher
@@ -496,8 +527,45 @@ where
         self.inner.retract(alias).await
     }
 
-    fn publishing_address(&self, alias: &str) -> Option<String> {
-        self.inner.publishing_address(alias)
+    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
+        self.inner.publishing_ledger_id(ledger_id)
+    }
+}
+
+#[async_trait::async_trait]
+impl<N> fluree_db_nameservice::RefPublisher for DelegatingNameService<N>
+where
+    N: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + fluree_db_nameservice::RefPublisher
+        + std::fmt::Debug
+        + Send
+        + Sync,
+{
+    async fn get_ref(
+        &self,
+        ledger_id: &str,
+        kind: fluree_db_nameservice::RefKind,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::RefValue>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.inner.get_ref(ledger_id, kind).await
+    }
+
+    async fn compare_and_set_ref(
+        &self,
+        ledger_id: &str,
+        kind: fluree_db_nameservice::RefKind,
+        expected: Option<&fluree_db_nameservice::RefValue>,
+        new: &fluree_db_nameservice::RefValue,
+    ) -> std::result::Result<
+        fluree_db_nameservice::CasResult,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.inner
+            .compare_and_set_ref(ledger_id, kind, expected, new)
+            .await
     }
 }
 
@@ -1047,7 +1115,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
         let connection = Connection::new(aws_handle.config().clone(), storage);
 
         let nameservice_inner = aws_handle.nameservice().clone();
-        let nameservice_wrapped = AddressRewritingNameService::new(nameservice_inner);
+        let nameservice_wrapped = DelegatingNameService::new(nameservice_inner);
         let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
 
         // Start background indexing if enabled in config
@@ -1088,9 +1156,8 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
 
             let connection = Connection::new(parsed, storage);
             let nameservice_inner = MemoryNameService::new();
-            let nameservice = AnyNameService::new(Arc::new(AddressRewritingNameService::new(
-                nameservice_inner,
-            )));
+            let nameservice =
+                AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
             // Start background indexing if enabled in config
             let indexing_mode = start_background_indexing_if_enabled(
@@ -1151,9 +1218,8 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
 
                 let connection = Connection::new(parsed, storage);
                 let nameservice_inner = FileNameService::new(path.as_ref());
-                let nameservice = AnyNameService::new(Arc::new(AddressRewritingNameService::new(
-                    nameservice_inner,
-                )));
+                let nameservice =
+                    AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
                 // Start background indexing if enabled in config
                 let indexing_mode = start_background_indexing_if_enabled(

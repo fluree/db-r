@@ -302,7 +302,7 @@ where
 
     /// Process a single nameservice event.
     ///
-    /// Returns the list of graph source aliases that need syncing.
+    /// Returns the list of graph source IDs that need syncing.
     pub fn process_event(&self, event: &NameServiceEvent) -> Vec<String> {
         self.state.borrow_mut().record_event();
 

@@ -10,15 +10,15 @@ use fluree_db_api::{FlureeBuilder, IndexConfig};
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-fn alias_prefix(alias: &str) -> String {
-    fluree_db_core::address_path::alias_to_path_prefix(alias)
-        .unwrap_or_else(|_| alias.replace(':', "/"))
+fn ledger_id_prefix(ledger_id: &str) -> String {
+    fluree_db_core::address_path::ledger_id_to_path_prefix(ledger_id)
+        .unwrap_or_else(|_| ledger_id.replace(':', "/"))
 }
 
 fn default_run_dir(args: &Args) -> PathBuf {
     args.run_dir.clone().unwrap_or_else(|| {
         args.db_dir
-            .join(alias_prefix(&args.ledger))
+            .join(ledger_id_prefix(&args.ledger))
             .join("tmp_import")
     })
 }
@@ -26,7 +26,7 @@ fn default_run_dir(args: &Args) -> PathBuf {
 fn default_index_dir(args: &Args) -> PathBuf {
     args.index_dir
         .clone()
-        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("index"))
+        .unwrap_or_else(|| args.db_dir.join(ledger_id_prefix(&args.ledger)).join("index"))
 }
 
 fn init_logging() {
@@ -537,7 +537,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Nameservice ledger record"
         );
 
-        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&args.ledger)
+        let alias_prefix = fluree_db_core::address_path::ledger_id_to_path_prefix(&args.ledger)
             .unwrap_or_else(|_| args.ledger.replace(':', "/"));
         let manifest_addr = format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
         match storage.read_bytes(&manifest_addr).await {

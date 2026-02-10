@@ -320,7 +320,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     ///
     /// # Errors
     ///
-    /// - `AddressMismatch` if the new index is for a different ledger
+    /// - `LedgerIdMismatch` if the new index is for a different ledger
     /// - `StaleIndex` if the new index is older than the current index
     /// - `Core` errors from loading the index
     pub async fn apply_index(&mut self, index_id: &ContentId) -> Result<()> {
@@ -333,7 +333,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
 
         // Verify ledger ID matches
         if new_db.ledger_id != self.db.ledger_id {
-            return Err(LedgerError::address_mismatch(
+            return Err(LedgerError::ledger_id_mismatch(
                 &new_db.ledger_id,
                 &self.db.ledger_id,
             ));
@@ -387,7 +387,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     pub fn apply_loaded_db(&mut self, new_db: Db<S>, index_id: Option<&ContentId>) -> Result<()> {
         // Verify ledger ID matches
         if new_db.ledger_id != self.db.ledger_id {
-            return Err(LedgerError::address_mismatch(
+            return Err(LedgerError::ledger_id_mismatch(
                 &new_db.ledger_id,
                 &self.db.ledger_id,
             ));
@@ -674,9 +674,9 @@ mod tests {
         // Store under "test:main" CAS namespace so the CID resolves
         let index_cid = store_index_root(&state.db.storage, "test:main", &root_json).await;
 
-        // Should fail with address mismatch
+        // Should fail with ledger ID mismatch
         let result = state.apply_index(&index_cid).await;
-        assert!(matches!(result, Err(LedgerError::AddressMismatch { .. })));
+        assert!(matches!(result, Err(LedgerError::LedgerIdMismatch { .. })));
     }
 
     #[tokio::test]

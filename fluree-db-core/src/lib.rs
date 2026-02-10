@@ -26,7 +26,6 @@
 
 pub mod address;
 pub mod address_path;
-pub mod alias;
 pub mod coerce;
 pub mod comparator;
 pub mod content_id;
@@ -40,6 +39,7 @@ pub mod geo;
 pub mod ids;
 pub mod index_schema;
 pub mod index_stats;
+pub mod ledger_id;
 pub mod namespaces;
 pub mod ns_vec_bi_dict;
 pub mod overlay;
@@ -65,10 +65,6 @@ pub use address::{
     extract_identifier, extract_ledger_prefix, extract_path, parse_fluree_address,
     ParsedFlureeAddress,
 };
-pub use alias::{
-    format_alias, normalize_alias, parse_alias_with_time, split_alias, split_time_travel_suffix,
-    AliasParseError, AliasTimeSpec, ParsedAlias, DEFAULT_BRANCH,
-};
 pub use coerce::{coerce_json_value, coerce_value, CoercionError, CoercionResult};
 pub use comparator::IndexType;
 pub use content_id::{CommitId, ContentId, IndexRootId, TxnId};
@@ -89,6 +85,10 @@ pub use index_stats::{
     ClassPropertyUsage, ClassRefCount, ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry,
     IndexStats, PropertyStatEntry,
 };
+pub use ledger_id::{
+    format_ledger_id, normalize_ledger_id, parse_ledger_id_with_time, split_ledger_id,
+    split_time_travel_suffix, LedgerIdParseError, LedgerIdTimeSpec, ParsedLedgerId, DEFAULT_BRANCH,
+};
 pub use namespaces::{
     default_namespace_codes, is_owl_equivalent_class, is_owl_equivalent_property,
     is_owl_inverse_of, is_owl_same_as, is_owl_symmetric_property, is_owl_transitive_property,
@@ -108,12 +108,12 @@ pub use stats_view::{PropertyStatData, StatsView};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use storage::FileStorage;
 pub use storage::{
-    // Helper functions for storage implementations
-    alias_prefix_for_path,
     bridge_content_store,
     content_address,
     content_path,
     content_store_for,
+    // Helper functions for storage implementations
+    ledger_id_prefix_for_path,
     sha256_hex,
     ContentAddressedWrite,
     ContentStore,

@@ -19,13 +19,13 @@
 
 use crate::storage_traits::{StorageCas, StorageExtError, StorageList};
 use crate::{
-    parse_address, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher,
-    ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
-    NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, Result,
-    StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
+    NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult,
+    StatusPayload, StatusPublisher, StatusValue,
 };
 use async_trait::async_trait;
-use fluree_db_core::alias as core_alias;
+use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
 use fluree_db_core::ContentId;
 use fluree_db_core::{Error as CoreError, StorageRead, StorageWrite};
 use serde::{Deserialize, Serialize};
@@ -233,7 +233,7 @@ impl<S> StorageNameService<S> {
     ) -> NsFileV2 {
         NsFileV2 {
             context: ns_context(),
-            id: core_alias::format_alias(ledger_name, branch),
+            id: format_ledger_id(ledger_name, branch),
             record_type: vec!["f:LedgerSource".to_string()],
             ledger: LedgerRef {
                 id: ledger_name.to_string(),
@@ -381,7 +381,7 @@ where
 
         // Convert to GraphSourceRecord
         let mut record = GraphSourceRecord {
-            graph_source_id: core_alias::format_alias(name, branch),
+            graph_source_id: format_ledger_id(name, branch),
             name: main.name,
             branch: main.branch,
             source_type,
@@ -434,7 +434,7 @@ where
 
         // Convert to NsRecord, parsing persisted CID strings
         let mut record = NsRecord {
-            ledger_id: core_alias::format_alias(ledger_name, branch),
+            ledger_id: format_ledger_id(ledger_name, branch),
             name: main.ledger.id.clone(),
             branch: main.branch,
             commit_head_id: main
@@ -651,7 +651,7 @@ where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         self.load_record(&ledger_name, &branch).await
     }
 
@@ -710,9 +710,9 @@ where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
-        let normalized_address = core_alias::format_alias(&ledger_name, &branch);
+        let normalized_address = format_ledger_id(&ledger_name, &branch);
 
         // Create minimal record with no commits
         let file = NsFileV2 {
@@ -758,7 +758,7 @@ where
         commit_t: i64,
         commit_id: &ContentId,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
 
         let ledger_name_clone = ledger_name.clone();
@@ -797,7 +797,7 @@ where
         index_t: i64,
         index_id: &ContentId,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.index_key(&ledger_name, &branch);
 
         let cid_str = index_id.to_string();
@@ -822,7 +822,7 @@ where
     }
 
     async fn retract(&self, ledger_id: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
 
         self.cas_update::<NsFileV2, _>(&key, |existing| {
@@ -839,9 +839,9 @@ where
         .await
     }
 
-    fn publishing_address(&self, ledger_id: &str) -> Option<String> {
-        // Return normalized address as publishing address
-        Some(core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string()))
+    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
+        // Return normalized ledger ID for publishing
+        Some(normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string()))
     }
 }
 
@@ -856,7 +856,7 @@ where
         index_t: i64,
         index_id: &ContentId,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let index_key = self.index_key(&ledger_name, &branch);
         let cid_str = index_id.to_string();
 
@@ -892,7 +892,7 @@ where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
 
         match kind {
             RefKind::CommitHead => {
@@ -960,7 +960,7 @@ where
         expected: Option<&RefValue>,
         new: &RefValue,
     ) -> Result<CasResult> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
 
         match kind {
             RefKind::CommitHead => {
@@ -1165,7 +1165,7 @@ where
 
             Some(GraphSourceNsFileV2 {
                 context: ns_context(),
-                id: core_alias::format_alias(&name, &branch),
+                id: format_ledger_id(&name, &branch),
                 record_type: vec![kind_type_str, source_type_str],
                 name,
                 branch,
@@ -1205,7 +1205,7 @@ where
 
             Some(GraphSourceIndexFileV2 {
                 context: ns_context(),
-                id: core_alias::format_alias(&name, &branch),
+                id: format_ledger_id(&name, &branch),
                 index: GraphSourceIndexRef {
                     ref_type: "f:ContentId".to_string(),
                     cid: cid_str,
@@ -1230,8 +1230,11 @@ where
         .await
     }
 
-    async fn lookup_graph_source(&self, address: &str) -> Result<Option<GraphSourceRecord>> {
-        let (name, branch) = parse_address(address)?;
+    async fn lookup_graph_source(
+        &self,
+        graph_source_id: &str,
+    ) -> Result<Option<GraphSourceRecord>> {
+        let (name, branch) = split_ledger_id(graph_source_id)?;
 
         // First check if it's a graph source record
         if !self.is_graph_source_record(&name, &branch).await? {
@@ -1241,8 +1244,8 @@ where
         self.load_graph_source_record(&name, &branch).await
     }
 
-    async fn lookup_any(&self, address: &str) -> Result<NsLookupResult> {
-        let (name, branch) = parse_address(address)?;
+    async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult> {
+        let (name, branch) = split_ledger_id(resource_id)?;
         let key = self.ns_key(&name, &branch);
 
         // Check if file exists
@@ -1366,7 +1369,7 @@ where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
 
         let data = match self.storage.read_bytes(&key).await {
@@ -1401,7 +1404,7 @@ where
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> Result<StatusCasResult> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
         // Retry only on ETag precondition failures (true write races).
         // If the expected/current check fails, return Conflict immediately.
@@ -1500,7 +1503,7 @@ where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
     async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
 
         let data = match self.storage.read_bytes(&key).await {
@@ -1558,7 +1561,7 @@ where
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
         // Retry only on ETag precondition failures (true write races).
         // If the expected/current check fails, return Conflict immediately.

@@ -93,7 +93,7 @@ impl LoadedLedgerHandle {
 /// with support for idle eviction.
 #[derive(Debug)]
 pub struct LedgerRegistry {
-    /// Map of alias -> handle for tracked ledgers
+    /// Map of ledger_id -> handle for tracked ledgers
     entries: RwLock<HashMap<String, Arc<LoadedLedgerHandle>>>,
 
     /// Time-to-live for idle entries before they can be swept
@@ -113,10 +113,10 @@ impl LedgerRegistry {
     ///
     /// If the ledger is already tracked, returns the existing handle and touches it.
     /// Otherwise, creates a new handle.
-    pub fn get_or_create(&self, alias: &str) -> Arc<LoadedLedgerHandle> {
+    pub fn get_or_create(&self, ledger_id: &str) -> Arc<LoadedLedgerHandle> {
         // Fast path: read lock to check if exists
         if let Ok(entries) = self.entries.read() {
-            if let Some(handle) = entries.get(alias) {
+            if let Some(handle) = entries.get(ledger_id) {
                 handle.touch();
                 return handle.clone();
             }
@@ -125,64 +125,64 @@ impl LedgerRegistry {
         // Slow path: write lock to create
         if let Ok(mut entries) = self.entries.write() {
             // Double-check after acquiring write lock
-            if let Some(handle) = entries.get(alias) {
+            if let Some(handle) = entries.get(ledger_id) {
                 handle.touch();
                 return handle.clone();
             }
 
-            let handle = Arc::new(LoadedLedgerHandle::new(alias));
-            entries.insert(alias.to_string(), handle.clone());
+            let handle = Arc::new(LoadedLedgerHandle::new(ledger_id));
+            entries.insert(ledger_id.to_string(), handle.clone());
             return handle;
         }
 
         // Fallback: create new handle without storing (lock poisoned)
-        Arc::new(LoadedLedgerHandle::new(alias))
+        Arc::new(LoadedLedgerHandle::new(ledger_id))
     }
 
     /// Touch a ledger to update its last access time
     ///
     /// No-op if the ledger is not tracked.
-    pub fn touch(&self, alias: &str) {
+    pub fn touch(&self, ledger_id: &str) {
         if let Ok(entries) = self.entries.read() {
-            if let Some(handle) = entries.get(alias) {
+            if let Some(handle) = entries.get(ledger_id) {
                 handle.touch();
             }
         }
     }
 
     /// Check if a ledger is currently being tracked
-    pub fn is_tracked(&self, alias: &str) -> bool {
+    pub fn is_tracked(&self, ledger_id: &str) -> bool {
         self.entries
             .read()
-            .map(|e| e.contains_key(alias))
+            .map(|e| e.contains_key(ledger_id))
             .unwrap_or(false)
     }
 
     /// Disconnect (remove) a ledger from tracking
     ///
     /// Returns the handle if it was tracked, None otherwise.
-    pub fn disconnect(&self, alias: &str) -> Option<Arc<LoadedLedgerHandle>> {
-        self.entries.write().ok()?.remove(alias)
+    pub fn disconnect(&self, ledger_id: &str) -> Option<Arc<LoadedLedgerHandle>> {
+        self.entries.write().ok()?.remove(ledger_id)
     }
 
-    /// Sweep idle entries and return the aliases that were removed
+    /// Sweep idle entries and return the ledger IDs that were removed
     pub fn sweep_idle(&self) -> Vec<String> {
         let Ok(mut entries) = self.entries.write() else {
             return Vec::new();
         };
         let ttl = self.idle_ttl;
 
-        let idle_aliases: Vec<String> = entries
+        let idle_ledger_ids: Vec<String> = entries
             .iter()
             .filter(|(_, handle)| handle.is_idle(ttl))
-            .map(|(alias, _)| alias.clone())
+            .map(|(ledger_id, _)| ledger_id.clone())
             .collect();
 
-        for alias in &idle_aliases {
-            entries.remove(alias);
+        for ledger_id in &idle_ledger_ids {
+            entries.remove(ledger_id);
         }
 
-        idle_aliases
+        idle_ledger_ids
     }
 
     /// Process a nameservice event to update watermarks
@@ -231,8 +231,8 @@ impl LedgerRegistry {
         self.entries.read().map(|e| e.is_empty()).unwrap_or(true)
     }
 
-    /// Get all tracked ledger aliases
-    pub fn aliases(&self) -> Vec<String> {
+    /// Get all tracked ledger IDs
+    pub fn ledger_ids(&self) -> Vec<String> {
         self.entries
             .read()
             .map(|e| e.keys().cloned().collect())
@@ -286,7 +286,7 @@ impl LedgerRegistry {
                         if !swept.is_empty() {
                             tracing::debug!(
                                 count = swept.len(),
-                                aliases = ?swept,
+                                ledger_ids = ?swept,
                                 "Swept idle ledger registry entries"
                             );
                         }

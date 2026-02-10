@@ -62,15 +62,15 @@ const COMMIT_DOMAIN_SEPARATOR: &[u8] = b"fluree/commit/v1";
 /// prevents cross-ledger replay. The commit hash binds the signature to
 /// the specific commit content.
 fn compute_commit_digest(commit_hash: &[u8; 32], ledger_id: &str) -> [u8; 32] {
-    let address_bytes = ledger_id.as_bytes();
+    let ledger_id_bytes = ledger_id.as_bytes();
     let mut hasher = Sha256::new();
     hasher.update(COMMIT_DOMAIN_SEPARATOR);
-    // Length-prefix the address (varint-style: single byte for len < 128)
-    let address_len = address_bytes.len();
+    // Length-prefix the ledger ID (varint-style: single byte for len < 128)
+    let ledger_id_len = ledger_id_bytes.len();
     let mut len_buf = [0u8; 10];
-    let len_bytes = encode_varint_to_buf(address_len as u64, &mut len_buf);
+    let len_bytes = encode_varint_to_buf(ledger_id_len as u64, &mut len_buf);
     hasher.update(len_bytes);
-    hasher.update(address_bytes);
+    hasher.update(ledger_id_bytes);
     hasher.update(commit_hash);
     hasher.finalize().into()
 }

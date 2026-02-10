@@ -26,14 +26,13 @@
 //! Note: this file-locking approach provides mutual exclusion, not a distributed CAS.
 
 use crate::{
-    parse_address, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher,
-    ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
-    NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
-    RefPublisher, RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
-    Subscription,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
+    NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher,
+    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
-use fluree_db_core::alias as core_alias;
+use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
 use fluree_db_core::ContentId;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -455,7 +454,7 @@ impl FileNameService {
 
         // Convert to NsRecord
         let mut record = NsRecord {
-            ledger_id: core_alias::format_alias(ledger_name, branch),
+            ledger_id: format_ledger_id(ledger_name, branch),
             name: main.ledger.id.clone(),
             branch: main.branch,
             commit_head_id: main
@@ -563,7 +562,7 @@ impl FileNameService {
 
         // Convert to GraphSourceRecord
         let mut record = GraphSourceRecord {
-            graph_source_id: core_alias::format_alias(name, branch),
+            graph_source_id: format_ledger_id(name, branch),
             name: main.name,
             branch: main.branch,
             source_type,
@@ -631,7 +630,7 @@ impl FileNameService {
 #[async_trait]
 impl NameService for FileNameService {
     async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         self.load_record(&ledger_name, &branch).await
     }
 
@@ -712,9 +711,9 @@ impl NameService for FileNameService {
 #[async_trait]
 impl Publisher for FileNameService {
     async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
-        let normalized_address = core_alias::format_alias(&ledger_name, &branch);
+        let normalized_address = format_ledger_id(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
         {
@@ -736,7 +735,7 @@ impl Publisher for FileNameService {
                     // Create minimal record with no commits
                     let file = NsFileV2 {
                         context: ns_context(),
-                        id: core_alias::format_alias(&ledger_name_for_file, &branch_for_file),
+                        id: format_ledger_id(&ledger_name_for_file, &branch_for_file),
                         record_type: vec!["f:LedgerSource".to_string()],
                         ledger: LedgerRef {
                             id: ledger_name_for_file.clone(),
@@ -796,7 +795,7 @@ impl Publisher for FileNameService {
         commit_t: i64,
         commit_id: &ContentId,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
@@ -806,7 +805,7 @@ impl Publisher for FileNameService {
             let commit_id_for_event = commit_id.clone();
             let ledger_name_for_file = ledger_name.clone();
             let branch_for_file = branch.clone();
-            let gs_id_for_event = core_alias::format_alias(&ledger_name, &branch);
+            let gs_id_for_event = format_ledger_id(&ledger_name, &branch);
 
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
@@ -831,10 +830,7 @@ impl Publisher for FileNameService {
                             // Create new record (always write)
                             let file = NsFileV2 {
                                 context: ns_context(),
-                                id: core_alias::format_alias(
-                                    &ledger_name_for_file,
-                                    &branch_for_file,
-                                ),
+                                id: format_ledger_id(&ledger_name_for_file, &branch_for_file),
                                 record_type: vec!["f:LedgerSource".to_string()],
                                 ledger: LedgerRef {
                                     id: ledger_name_for_file.clone(),
@@ -886,7 +882,7 @@ impl Publisher for FileNameService {
                 file
             } else {
                 let record = NsRecord {
-                    ledger_id: core_alias::format_alias(&ledger_name, &branch),
+                    ledger_id: format_ledger_id(&ledger_name, &branch),
                     name: ledger_name.clone(),
                     branch: branch.clone(),
                     commit_head_id: Some(commit_id.clone()),
@@ -904,7 +900,7 @@ impl Publisher for FileNameService {
             self.write_json_atomic(&main_path, &file).await?;
             if did_update {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                    ledger_id: core_alias::format_alias(&ledger_name, &branch),
+                    ledger_id: format_ledger_id(&ledger_name, &branch),
                     commit_id: commit_id.clone(),
                     commit_t,
                 });
@@ -919,7 +915,7 @@ impl Publisher for FileNameService {
         index_t: i64,
         index_id: &ContentId,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let index_path = self.index_path(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
@@ -927,7 +923,7 @@ impl Publisher for FileNameService {
             let path = index_path.clone();
             let index_id_for_event = index_id.clone();
             let cid_str = index_id.to_string();
-            let gs_id_for_event = core_alias::format_alias(&ledger_name, &branch);
+            let gs_id_for_event = format_ledger_id(&ledger_name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -980,7 +976,7 @@ impl Publisher for FileNameService {
             };
             self.write_json_atomic(&index_path, &file).await?;
             let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                ledger_id: core_alias::format_alias(&ledger_name, &branch),
+                ledger_id: format_ledger_id(&ledger_name, &branch),
                 index_id: index_id.clone(),
                 index_t,
             });
@@ -989,13 +985,13 @@ impl Publisher for FileNameService {
     }
 
     async fn retract(&self, ledger_id: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
         {
             let path = main_path.clone();
-            let gs_id_for_event = core_alias::format_alias(&ledger_name, &branch);
+            let gs_id_for_event = format_ledger_id(&ledger_name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1037,7 +1033,7 @@ impl Publisher for FileNameService {
                     file.status_v = Some(current_v + 1);
                     self.write_json_atomic(&main_path, &file).await?;
                     let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
-                        ledger_id: core_alias::format_alias(&ledger_name, &branch),
+                        ledger_id: format_ledger_id(&ledger_name, &branch),
                     });
                 }
             }
@@ -1045,9 +1041,9 @@ impl Publisher for FileNameService {
         }
     }
 
-    fn publishing_address(&self, ledger_id: &str) -> Option<String> {
-        // File nameservice returns the ledger ID as the publishing address
-        Some(core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string()))
+    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
+        // File nameservice returns the normalized ledger ID for publishing
+        Some(normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string()))
     }
 }
 
@@ -1059,9 +1055,9 @@ impl AdminPublisher for FileNameService {
         index_t: i64,
         index_id: &ContentId,
     ) -> Result<()> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let index_path = self.index_path(&ledger_name, &branch);
-        let gs_id_for_event = core_alias::format_alias(&ledger_name, &branch);
+        let gs_id_for_event = format_ledger_id(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
         {
@@ -1164,7 +1160,7 @@ impl GraphSourcePublisher for FileNameService {
             let source_type_str = source_type.to_type_string();
             let name_for_file = name.clone();
             let branch_for_file = branch.clone();
-            let gs_id_for_event = core_alias::format_alias(&name, &branch);
+            let gs_id_for_event = format_ledger_id(&name, &branch);
 
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
@@ -1181,7 +1177,7 @@ impl GraphSourcePublisher for FileNameService {
 
                     let file = GraphSourceNsFileV2 {
                         context: ns_context(),
-                        id: core_alias::format_alias(&name_for_file, &branch_for_file),
+                        id: format_ledger_id(&name_for_file, &branch_for_file),
                         record_type: vec![kind_type_str, source_type_str],
                         name: name_for_file,
                         branch: branch_for_file,
@@ -1216,7 +1212,7 @@ impl GraphSourcePublisher for FileNameService {
             };
             let file = GraphSourceNsFileV2 {
                 context: ns_context(),
-                id: core_alias::format_alias(&name, &branch),
+                id: format_ledger_id(&name, &branch),
                 record_type: vec![kind_type_str, source_type.to_type_string()],
                 name: name.to_string(),
                 branch: branch.to_string(),
@@ -1230,7 +1226,7 @@ impl GraphSourcePublisher for FileNameService {
             let _ = self
                 .event_tx
                 .send(NameServiceEvent::GraphSourceConfigPublished {
-                    address: core_alias::format_alias(&name, &branch),
+                    graph_source_id: format_ledger_id(&name, &branch),
                     source_type,
                     dependencies: dependencies.to_vec(),
                 });
@@ -1254,7 +1250,7 @@ impl GraphSourcePublisher for FileNameService {
             let index_id_for_event = index_id.clone();
             let name = name.to_string();
             let branch = branch.to_string();
-            let gs_id_for_event = core_alias::format_alias(&name, &branch);
+            let gs_id_for_event = format_ledger_id(&name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1269,7 +1265,7 @@ impl GraphSourcePublisher for FileNameService {
 
                     let file = GraphSourceIndexFileV2WithT {
                         context: ns_context(),
-                        id: core_alias::format_alias(&name, &branch),
+                        id: format_ledger_id(&name, &branch),
                         index: GraphSourceIndexRef { cid: cid_str },
                         index_t,
                     };
@@ -1302,7 +1298,7 @@ impl GraphSourcePublisher for FileNameService {
 
             let file = GraphSourceIndexFileV2WithT {
                 context: ns_context(),
-                id: core_alias::format_alias(name, branch),
+                id: format_ledger_id(name, branch),
                 index: GraphSourceIndexRef {
                     cid: index_id.to_string(),
                 },
@@ -1312,7 +1308,7 @@ impl GraphSourcePublisher for FileNameService {
             let _ = self
                 .event_tx
                 .send(NameServiceEvent::GraphSourceIndexPublished {
-                    address: core_alias::format_alias(name, branch),
+                    graph_source_id: format_ledger_id(name, branch),
                     index_id: index_id.clone(),
                     index_t,
                 });
@@ -1326,7 +1322,7 @@ impl GraphSourcePublisher for FileNameService {
         #[cfg(all(feature = "native", unix))]
         {
             let path = main_path.clone();
-            let gs_id_for_event = core_alias::format_alias(name, branch);
+            let gs_id_for_event = format_ledger_id(name, branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1361,15 +1357,18 @@ impl GraphSourcePublisher for FileNameService {
                 file.status = "retracted".to_string();
                 self.write_json_atomic(&main_path, &file).await?;
                 let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
-                    graph_source_id: core_alias::format_alias(&name, &branch),
+                    graph_source_id: format_ledger_id(&name, &branch),
                 });
             }
             Ok(())
         }
     }
 
-    async fn lookup_graph_source(&self, address: &str) -> Result<Option<GraphSourceRecord>> {
-        let (name, branch) = parse_address(address)?;
+    async fn lookup_graph_source(
+        &self,
+        graph_source_id: &str,
+    ) -> Result<Option<GraphSourceRecord>> {
+        let (name, branch) = split_ledger_id(graph_source_id)?;
 
         // First check if it's a graph source record
         if !self.is_graph_source_record(&name, &branch).await? {
@@ -1379,8 +1378,8 @@ impl GraphSourcePublisher for FileNameService {
         self.load_graph_source_record(&name, &branch).await
     }
 
-    async fn lookup_any(&self, address: &str) -> Result<NsLookupResult> {
-        let (name, branch) = parse_address(address)?;
+    async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult> {
+        let (name, branch) = split_ledger_id(resource_id)?;
         let main_path = self.ns_path(&name, &branch);
 
         if !main_path.exists() {
@@ -1472,7 +1471,7 @@ impl GraphSourcePublisher for FileNameService {
 #[async_trait]
 impl RefPublisher for FileNameService {
     async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         match kind {
             RefKind::CommitHead => {
                 let main_path = self.ns_path(&ledger_name, &branch);
@@ -1529,11 +1528,11 @@ impl RefPublisher for FileNameService {
         expected: Option<&RefValue>,
         new: &RefValue,
     ) -> Result<CasResult> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let expected_clone = expected.cloned();
         let new_clone = new.clone();
         let event_tx = self.event_tx.clone();
-        let normalized_address = core_alias::format_alias(&ledger_name, &branch);
+        let normalized_address = format_ledger_id(&ledger_name, &branch);
 
         match kind {
             RefKind::CommitHead => {
@@ -1630,7 +1629,7 @@ impl RefPublisher for FileNameService {
                 if result == CasResult::Updated {
                     if let Some(ref cid) = new.id {
                         let _ = event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                            ledger_id: core_alias::format_alias(&ledger_name, &branch),
+                            ledger_id: format_ledger_id(&ledger_name, &branch),
                             commit_id: cid.clone(),
                             commit_t: new.t,
                         });
@@ -1709,7 +1708,7 @@ impl RefPublisher for FileNameService {
                 if result == CasResult::Updated {
                     if let Some(ref cid) = new.id {
                         let _ = event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                            ledger_id: core_alias::format_alias(&ledger_name, &branch),
+                            ledger_id: format_ledger_id(&ledger_name, &branch),
                             index_id: cid.clone(),
                             index_t: new.t,
                         });
@@ -1734,7 +1733,7 @@ impl Publication for FileNameService {
         Ok(())
     }
 
-    async fn known_addresses(&self, _ledger_id: &str) -> Result<Vec<String>> {
+    async fn known_ledger_ids(&self, _ledger_id: &str) -> Result<Vec<String>> {
         // CID-only nameservice no longer stores storage addresses.
         Ok(vec![])
     }
@@ -1748,7 +1747,7 @@ impl Publication for FileNameService {
 #[async_trait]
 impl StatusPublisher for FileNameService {
     async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -1777,7 +1776,7 @@ impl StatusPublisher for FileNameService {
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> Result<StatusCasResult> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let path = self.ns_path(&ledger_name, &branch);
 
         // Clone values for the closure
@@ -1857,7 +1856,7 @@ impl StatusPublisher for FileNameService {
 #[async_trait]
 impl ConfigPublisher for FileNameService {
     async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -1906,7 +1905,7 @@ impl ConfigPublisher for FileNameService {
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let path = self.ns_path(&ledger_name, &branch);
 
         // Clone values for the closure
@@ -2019,7 +2018,7 @@ impl ConfigPublisher for FileNameService {
 #[async_trait]
 impl StatusPublisher for FileNameService {
     async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -2055,7 +2054,7 @@ impl StatusPublisher for FileNameService {
 #[async_trait]
 impl ConfigPublisher for FileNameService {
     async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
-        let (ledger_name, branch) = parse_address(ledger_id)?;
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
 
         let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
@@ -2130,7 +2129,7 @@ mod tests {
     async fn test_file_ns_emits_events_on_publish_commit_monotonic() {
         let (_temp, ns) = setup().await;
         let mut sub = ns
-            .subscribe(crate::SubscriptionScope::address("mydb:main"))
+            .subscribe(crate::SubscriptionScope::resource_id("mydb:main"))
             .await
             .unwrap();
 

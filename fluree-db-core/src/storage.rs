@@ -48,7 +48,7 @@
 //! }
 //! ```
 
-use crate::address_path::alias_to_path_prefix;
+use crate::address_path::ledger_id_to_path_prefix;
 use crate::error::Result;
 use async_trait::async_trait;
 use sha2::Digest;
@@ -476,22 +476,22 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(digest)
 }
 
-/// Convert a ledger alias to a path prefix.
+/// Convert a ledger ID to a path prefix.
 ///
-/// Handles the standard alias format (e.g., "mydb:main" -> "mydb/main").
-pub fn alias_prefix_for_path(alias: &str) -> String {
-    alias_to_path_prefix(alias).unwrap_or_else(|_| alias.replace(':', "/"))
+/// Handles the standard ledger ID format (e.g., "mydb:main" -> "mydb/main").
+pub fn ledger_id_prefix_for_path(ledger_id: &str) -> String {
+    ledger_id_to_path_prefix(ledger_id).unwrap_or_else(|_| ledger_id.replace(':', "/"))
 }
 
 /// Build a storage path for content-addressed data.
 ///
 /// This determines the directory structure for different content types:
-/// - Commits: `{alias}/commit/{hash}.fcv2`
-/// - Index nodes: `{alias}/index/{ordering}/{hash}.json`
-/// - Graph sources: `graph-sources/{alias}/snapshots/{hash}.gssnap`
+/// - Commits: `{ledger_id}/commit/{hash}.fcv2`
+/// - Index nodes: `{ledger_id}/index/{ordering}/{hash}.json`
+/// - Graph sources: `graph-sources/{ledger_id}/snapshots/{hash}.gssnap`
 /// - etc.
-pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
-    let prefix = alias_prefix_for_path(alias);
+pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> String {
+    let prefix = ledger_id_prefix_for_path(ledger_id);
     match kind {
         ContentKind::Commit => format!("{}/commit/{}.fcv2", prefix, hash_hex),
         ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
@@ -520,14 +520,14 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
 ///
 /// * `method` - Storage method identifier (e.g., "file", "s3", "memory")
 /// * `kind` - The type of content being stored
-/// * `alias` - Ledger alias (e.g., "mydb:main")
+/// * `ledger_id` - Ledger ID (e.g., "mydb:main")
 /// * `hash_hex` - Content hash as hex string
 ///
 /// # Returns
 ///
 /// A Fluree address like `fluree:file://mydb/main/commit/{hash}.fcv2`
-pub fn content_address(method: &str, kind: ContentKind, alias: &str, hash_hex: &str) -> String {
-    let path = content_path(kind, alias, hash_hex);
+pub fn content_address(method: &str, kind: ContentKind, ledger_id: &str, hash_hex: &str) -> String {
+    let path = content_path(kind, ledger_id, hash_hex);
     format!("fluree:{}://{}", method, path)
 }
 

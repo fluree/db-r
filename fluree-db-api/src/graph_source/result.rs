@@ -11,7 +11,7 @@ use fluree_db_core::ContentId;
 /// Result of creating a BM25 full-text index.
 #[derive(Debug, Clone)]
 pub struct Bm25CreateResult {
-    /// Graph source alias (name:branch)
+    /// Graph source ID (name:branch)
     pub graph_source_id: String,
 
     /// Number of documents indexed
@@ -30,7 +30,7 @@ pub struct Bm25CreateResult {
 /// Result of a sync operation.
 #[derive(Debug, Clone)]
 pub struct Bm25SyncResult {
-    /// Graph source alias
+    /// Graph source ID
     pub graph_source_id: String,
 
     /// Number of documents upserted
@@ -55,10 +55,10 @@ pub struct Bm25SyncResult {
 /// Staleness check result for a BM25 index.
 #[derive(Debug, Clone)]
 pub struct Bm25StalenessCheck {
-    /// Graph source alias
+    /// Graph source ID
     pub graph_source_id: String,
 
-    /// Source ledger alias
+    /// Source ledger ID
     pub source_ledger: String,
 
     /// Current index watermark (what the index has been synced to)
@@ -77,7 +77,7 @@ pub struct Bm25StalenessCheck {
 /// Result of dropping a BM25 full-text index.
 #[derive(Debug, Clone)]
 pub struct Bm25DropResult {
-    /// Graph source alias that was dropped
+    /// Graph source ID that was dropped
     pub graph_source_id: String,
 
     /// Number of snapshot files deleted from storage
@@ -90,7 +90,7 @@ pub struct Bm25DropResult {
 /// Result of selecting a snapshot for time-travel.
 #[derive(Debug, Clone)]
 pub struct SnapshotSelection {
-    /// Graph source alias
+    /// Graph source ID
     pub graph_source_id: String,
 
     /// The snapshot's index time (watermark)
@@ -108,7 +108,7 @@ pub struct SnapshotSelection {
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone)]
 pub struct VectorCreateResult {
-    /// Graph source alias (name:branch)
+    /// Graph source ID (name:branch)
     pub graph_source_id: String,
 
     /// Number of vectors indexed
@@ -131,7 +131,7 @@ pub struct VectorCreateResult {
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone)]
 pub struct VectorSyncResult {
-    /// Graph source alias
+    /// Graph source ID
     pub graph_source_id: String,
 
     /// Number of vectors upserted
@@ -157,10 +157,10 @@ pub struct VectorSyncResult {
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone)]
 pub struct VectorStalenessCheck {
-    /// Graph source alias
+    /// Graph source ID
     pub graph_source_id: String,
 
-    /// Source ledger alias
+    /// Source ledger ID
     pub source_ledger: String,
 
     /// Current index watermark
@@ -180,7 +180,7 @@ pub struct VectorStalenessCheck {
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone)]
 pub struct VectorDropResult {
-    /// Graph source alias that was dropped
+    /// Graph source ID that was dropped
     pub graph_source_id: String,
 
     /// Number of snapshot files deleted from storage
@@ -198,7 +198,7 @@ pub struct VectorDropResult {
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone)]
 pub struct IcebergCreateResult {
-    /// Graph source alias (name:branch)
+    /// Graph source ID (name:branch)
     pub graph_source_id: String,
 
     /// Table identifier that was registered
@@ -215,7 +215,7 @@ pub struct IcebergCreateResult {
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone)]
 pub struct R2rmlCreateResult {
-    /// Graph source alias (name:branch)
+    /// Graph source ID (name:branch)
     pub graph_source_id: String,
 
     /// Table identifier that was registered

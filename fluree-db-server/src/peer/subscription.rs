@@ -13,7 +13,7 @@ use crate::peer::state::PeerState;
 use crate::state::FlureeInstance;
 
 use fluree_db_api::{NotifyResult, NsNotify};
-use fluree_db_core::alias;
+use fluree_db_core::ledger_id::split_ledger_id;
 use fluree_db_core::ContentId;
 use fluree_db_nameservice::NsRecord;
 use fluree_db_peer::{GraphSourceRecord, LedgerRecord};
@@ -358,7 +358,7 @@ impl PeerSubscriptionTask {
 }
 
 fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String> {
-    let (name, branch) = alias::split_alias(&record.ledger_id)
+    let (name, branch) = split_ledger_id(&record.ledger_id)
         .map_err(|e| format!("invalid ledger ID '{}': {}", record.ledger_id, e))?;
 
     let commit_head_id = record

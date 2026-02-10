@@ -10,7 +10,9 @@
 //! available on read-only storage.
 
 use crate::{error::ApiError, tx::IndexingMode, Result};
-use fluree_db_core::{address_path::alias_to_path_prefix, alias as core_alias, Storage};
+use fluree_db_core::{
+    address_path::ledger_id_to_path_prefix, format_ledger_id, Storage, DEFAULT_BRANCH,
+};
 use fluree_db_indexer::{build_binary_index, clean_garbage, CleanGarbageConfig};
 use fluree_db_nameservice::{AdminPublisher, GraphSourcePublisher, NameService, Publisher};
 use std::time::Duration;
@@ -49,7 +51,7 @@ pub enum DropStatus {
     Dropped,
     /// Record was already marked as retracted
     AlreadyRetracted,
-    /// No record found for this address
+    /// No record found for this ledger_id or graph_source_id
     #[default]
     NotFound,
 }
@@ -180,7 +182,7 @@ pub struct IndexStatusResult {
 /// If the address already contains a colon (indicating a branch), it's returned as-is.
 /// Otherwise, `:main` is appended as the default branch.
 fn normalize_ledger_id(ledger_id: &str) -> String {
-    core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string())
+    fluree_db_core::normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string())
 }
 
 // =============================================================================
@@ -226,7 +228,7 @@ where
     /// (Lambda, etc.) **MUST** check `NsRecord.retracted` before indexing
     /// and before publishing to prevent recreating files after drop.
     pub async fn drop_ledger(&self, ledger_id: &str, mode: DropMode) -> Result<DropReport> {
-        // 1. Normalize address (ensure branch suffix)
+        // 1. Normalize ledger_id (ensure branch suffix)
         let ledger_id = normalize_ledger_id(ledger_id);
         info!(ledger_id = %ledger_id, mode = ?mode, "Dropping ledger");
 
@@ -259,7 +261,7 @@ where
         if matches!(mode, DropMode::Hard) {
             // Canonical storage layout: `ledger/branch/...` (no ':') for portability.
             // Note: this applies to commits, txns, and indexes.
-            let prefix = alias_to_path_prefix(&ledger_id).map_err(|e| {
+            let prefix = ledger_id_to_path_prefix(&ledger_id).map_err(|e| {
                 ApiError::config(format!("Invalid ledger ID '{}': {}", ledger_id, e))
             })?;
 
@@ -286,9 +288,9 @@ where
         }
 
         // 5. Retract from nameservice
-        // Always attempt retract on normalized address - safe to call even if already
+        // Always attempt retract on normalized ledger_id - safe to call even if already
         // retracted (idempotent) or NotFound (no-op). This handles cases where
-        // lookup used non-canonical address but retract needs the normalized form.
+        // lookup used non-canonical ledger_id but retract needs the normalized form.
         if let Err(e) = self.nameservice.retract(&ledger_id).await {
             // Log but don't fail - retract may fail if truly not found
             warn!(ledger_id = %ledger_id, error = %e, "Nameservice retract warning");
@@ -372,8 +374,8 @@ where
         branch: Option<&str>,
         mode: DropMode,
     ) -> Result<GraphSourceDropReport> {
-        let branch = branch.unwrap_or("main");
-        let address = format!("{}:{}", name, branch);
+        let branch = branch.unwrap_or(DEFAULT_BRANCH);
+        let graph_source_id = format_ledger_id(name, branch);
         info!(name = %name, branch = %branch, mode = ?mode, "Dropping graph source");
 
         let mut report = GraphSourceDropReport {
@@ -383,7 +385,10 @@ where
         };
 
         // 1. Lookup graph source record (for status)
-        let record = self.nameservice.lookup_graph_source(&address).await?;
+        let record = self
+            .nameservice
+            .lookup_graph_source(&graph_source_id)
+            .await?;
         let status = match &record {
             None => DropStatus::NotFound,
             Some(r) if r.retracted => DropStatus::AlreadyRetracted,

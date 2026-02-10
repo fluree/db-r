@@ -1,12 +1,12 @@
 //! SERVICE pattern operator - executes patterns against another ledger
 //!
 //! Implements SPARQL SERVICE semantics for local Fluree ledgers:
-//! - `SERVICE <fluree:ledger:alias:branch> { ... }`: Execute against a specific ledger
+//! - `SERVICE <fluree:ledger:name:branch> { ... }`: Execute against a specific ledger
 //! - `SERVICE SILENT <...> { ... }`: Errors produce empty results instead of failure
 //!
 //! # Semantics
 //!
-//! For local Fluree ledger queries using `fluree:ledger:<alias>` endpoints:
+//! For local Fluree ledger queries using `fluree:ledger:<name>` endpoints:
 //! - The endpoint IRI identifies a ledger in the current dataset
 //! - Inner patterns are executed against that ledger's view
 //! - Results are joined with the outer query on shared variables
@@ -29,7 +29,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, Storage};
+use fluree_db_core::{format_ledger_id, split_ledger_id, FlakeValue, Storage};
 use std::sync::Arc;
 
 /// Fluree ledger SERVICE endpoint prefix
@@ -103,9 +103,9 @@ impl<S: Storage + 'static> ServiceOperator<S> {
 
     /// Parse a Fluree ledger reference from an endpoint IRI
     ///
-    /// Format: `fluree:ledger:<alias>` or `fluree:ledger:<alias>:<branch>`
+    /// Format: `fluree:ledger:<name>` or `fluree:ledger:<name>:<branch>`
     ///
-    /// Returns the full ledger reference string that matches dataset storage format.
+    /// Returns the full ledger ID string that matches dataset storage format.
     /// - `fluree:ledger:orders` → `"orders:main"` (defaults to :main branch)
     /// - `fluree:ledger:orders:main` → `"orders:main"`
     /// - `fluree:ledger:orders:dev` → `"orders:dev"`
@@ -115,19 +115,8 @@ impl<S: Storage + 'static> ServiceOperator<S> {
             return None;
         }
 
-        // Split on first colon after the alias
-        if let Some(colon_pos) = rest.find(':') {
-            let alias = &rest[..colon_pos];
-            let branch = &rest[colon_pos + 1..];
-            if alias.is_empty() || branch.is_empty() {
-                return None;
-            }
-            // Return full "alias:branch" format
-            Some(format!("{}:{}", alias, branch))
-        } else {
-            // No branch specified, default to "main"
-            Some(format!("{}:main", rest))
-        }
+        let (name, branch) = split_ledger_id(rest).ok()?;
+        Some(format_ledger_id(&name, &branch))
     }
 
     /// Check if an endpoint is a local Fluree ledger reference

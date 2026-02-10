@@ -68,7 +68,7 @@ fn cid_from_write(kind: ContentKind, result: &ContentWriteResult) -> ContentId {
 ///
 /// # Algorithm
 ///
-/// 1. If the address contains `:`, use canonical parsing via `core_alias::normalize_alias`
+/// 1. If the address contains `:`, use canonical parsing via `normalize_ledger_id`
 ///    - If parsing fails, return the original string unchanged (don't manufacture addresses)
 /// 2. If the address has exactly one `/` (storage-path style), convert to `name:branch`
 /// 3. Falls back to treating the whole string as the name with default branch
@@ -78,13 +78,13 @@ fn cid_from_write(kind: ContentKind, result: &ContentWriteResult) -> ContentId {
 /// the canonical format with `:` must be used.
 #[cfg(test)]
 fn normalize_id_for_comparison(ledger_id: &str) -> String {
-    use fluree_db_core::alias as core_alias;
+    use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, DEFAULT_BRANCH};
 
     // If it has a colon, use canonical parsing
     if ledger_id.contains(':') {
         // If canonical parse succeeds, use it. If it fails (malformed address),
         // return the original string unchanged rather than manufacturing a new address.
-        return core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
+        return normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
     }
 
     // Check for storage-path style "name/branch" (exactly one slash, no colon)
@@ -94,13 +94,13 @@ fn normalize_id_for_comparison(ledger_id: &str) -> String {
             let name = &ledger_id[..slash_idx];
             let branch = &ledger_id[slash_idx + 1..];
             if !name.is_empty() && !branch.is_empty() {
-                return core_alias::format_alias(name, branch);
+                return format_ledger_id(name, branch);
             }
         }
     }
 
     // Last resort: treat entire string as name with default branch
-    core_alias::format_alias(ledger_id, core_alias::DEFAULT_BRANCH)
+    format_ledger_id(ledger_id, DEFAULT_BRANCH)
 }
 
 /// Result of building an index
@@ -215,7 +215,7 @@ where
     let data_dir = config
         .data_dir
         .unwrap_or_else(|| std::env::temp_dir().join("fluree-index"));
-    let ledger_id_path = fluree_db_core::address_path::alias_to_path_prefix(ledger_id)
+    let ledger_id_path = fluree_db_core::address_path::ledger_id_to_path_prefix(ledger_id)
         .unwrap_or_else(|_| ledger_id.replace(':', "/"));
     let session_id = uuid::Uuid::new_v4().to_string();
     let run_dir = data_dir

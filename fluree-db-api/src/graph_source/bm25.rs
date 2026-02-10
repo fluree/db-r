@@ -10,7 +10,7 @@ use crate::graph_source::result::{
 };
 use crate::{QueryResult as ApiQueryResult, Result};
 use fluree_db_core::{
-    alias as core_alias, ContentId, ContentStore, OverlayProvider, Storage, StorageWrite,
+    ledger_id::split_ledger_id, ContentId, ContentStore, OverlayProvider, Storage, StorageWrite,
 };
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
@@ -338,9 +338,9 @@ where
         manifest: &Bm25Manifest,
         index_t: i64,
     ) -> Result<ContentId> {
-        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
+        let (name, branch) = split_ledger_id(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
-                "Invalid graph source alias '{}': {}",
+                "Invalid graph source ID '{}': {}",
                 graph_source_id, e
             ))
         })?;

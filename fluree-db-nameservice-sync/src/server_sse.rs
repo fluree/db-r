@@ -118,7 +118,7 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
 fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
     use fluree_db_core::ContentId;
 
-    let (ledger_name, branch) = split_address_or_fallback(&record.ledger_id, &record.branch);
+    let (ledger_name, branch) = split_ledger_id_or_fallback(&record.ledger_id, &record.branch);
     NsRecord {
         ledger_id: record.ledger_id.clone(),
         name: ledger_name,
@@ -153,16 +153,12 @@ fn gs_sse_to_graph_source_record(record: GraphSourceSseRecord) -> GraphSourceRec
     }
 }
 
-/// Split canonical address into (name, branch) using the last ':' as delimiter.
+/// Split a ledger_id into (name, branch) using the canonical alias parser.
 ///
-/// Supports ledger names with '/' and other characters; branch delimiter is ':'.
-fn split_address_or_fallback(address: &str, fallback_branch: &str) -> (String, String) {
-    match address.rsplit_once(':') {
-        Some((name, branch)) if !name.is_empty() && !branch.is_empty() => {
-            (name.to_string(), branch.to_string())
-        }
-        _ => (address.to_string(), fallback_branch.to_string()),
-    }
+/// Falls back to (ledger_id, fallback_branch) if parsing fails.
+fn split_ledger_id_or_fallback(ledger_id: &str, fallback_branch: &str) -> (String, String) {
+    fluree_db_core::ledger_id::split_ledger_id(ledger_id)
+        .unwrap_or_else(|_| (ledger_id.to_string(), fallback_branch.to_string()))
 }
 
 #[cfg(test)]

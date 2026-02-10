@@ -129,7 +129,7 @@ fn now_iso8601() -> String {
 
 /// Convert a ledger NsRecord to an SSE Event
 fn ledger_to_sse_event(record: &NsRecord) -> Event {
-    let ledger_id = format!("{}:{}", record.name, record.branch);
+    let ledger_id = record.ledger_id.clone();
     let event_id = ledger_event_id(&ledger_id, record);
 
     let commit_head_id = record.commit_head_id.as_ref().map(|id| id.to_string());
@@ -219,11 +219,7 @@ where
     if params.all {
         // All ledger records (sorted by name)
         if let Ok(mut records) = ns.all_records().await {
-            records.sort_by(|a, b| {
-                let a_addr = format!("{}:{}", a.name, a.branch);
-                let b_addr = format!("{}:{}", b.name, b.branch);
-                a_addr.cmp(&b_addr)
-            });
+            records.sort_by(|a, b| a.ledger_id.cmp(&b.ledger_id));
             for r in records {
                 if !r.retracted {
                     events.push(ledger_to_sse_event(&r));

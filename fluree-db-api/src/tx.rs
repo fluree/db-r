@@ -1481,7 +1481,7 @@ where
     S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher,
 {
-    /// Update data using a transaction that specifies the ledger alias.
+    /// Update data using a transaction that specifies the ledger ID.
     ///
     /// This mirrors Clojure's `update!` API where the transaction payload includes
     /// a `ledger` field. The ledger is loaded by alias before executing the update.

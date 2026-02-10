@@ -28,7 +28,7 @@ use std::path::PathBuf;
 
 use fluree_db_core::db::{Db, DbMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{alias as core_alias, ContentId, ContentStore, Storage};
+use fluree_db_core::{ledger_id::normalize_ledger_id, ContentId, ContentStore, Storage};
 use fluree_db_indexer::run_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};
@@ -107,10 +107,10 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     /// Get the ledger name (without branch suffix)
     ///
     /// Returns the base ledger name (e.g., "mydb"), NOT the canonical form (e.g., "mydb:main").
-    /// For the canonical ledger:branch address, use `address()` instead.
+    /// For the canonical ledger_id, use `ledger_id()` instead.
     ///
-    /// Note: This matches Clojure's `NsRecord.name` semantics where "name" is the base name.
-    pub fn alias(&self) -> Option<&str> {
+    /// Note: This matches `NsRecord.name` semantics where "name" is the base name.
+    pub fn name(&self) -> Option<&str> {
         self.ns_record.as_ref().map(|r| r.name.as_str())
     }
 
@@ -118,7 +118,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     ///
     /// Returns the canonical form (e.g., "mydb:main") suitable for cache keys.
     /// This is the primary identifier for ledger lookups.
-    pub fn address(&self) -> Option<&str> {
+    pub fn ledger_id(&self) -> Option<&str> {
         self.ns_record.as_ref().map(|r| r.ledger_id.as_str())
     }
 
@@ -619,13 +619,13 @@ where
     /// Uses single-flight pattern: concurrent requests for same ledger ID
     /// will share one load operation, not stampede.
     ///
-    /// The address is normalized to canonical form (e.g., "mydb" -> "mydb:main")
+    /// The ledger_id is normalized to canonical form (e.g., "mydb" -> "mydb:main")
     /// before caching to ensure consistent cache keys regardless of input form.
     pub async fn get_or_load(&self, ledger_id: &str) -> Result<LedgerHandle<S>> {
-        // Normalize address to canonical form for consistent cache keys
+        // Normalize ledger_id to canonical form for consistent cache keys
         // This ensures "mydb" and "mydb:main" use the same cache entry
         let canonical_alias =
-            core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
+            normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
 
         // Fast path: already loaded
         {
@@ -757,9 +757,9 @@ where
     /// Note: If loading/reloading is in progress, waiters will receive
     /// cancellation errors. This is acceptable - disconnect is a "force evict."
     pub async fn disconnect(&self, ledger_id: &str) {
-        // Normalize address to match cache key format
+        // Normalize ledger_id to match cache key format
         let canonical_alias =
-            core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
+            normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
 
         let mut entries = self.entries.write().await;
         // Removal will drop any pending oneshot senders, causing waiters to get RecvError
@@ -796,9 +796,9 @@ where
     /// - Loading(waiters) → wait for initial load, then return Ok(())
     /// - None → Ok(()) (not loaded, nothing to reload)
     pub async fn reload(&self, ledger_id: &str) -> Result<()> {
-        // Normalize address to match cache key format
+        // Normalize ledger_id to match cache key format
         let canonical_alias =
-            core_alias::normalize_alias(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
+            normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
 
         enum ReloadAction<S> {
             BecomeLeader(LedgerHandle<S>),
@@ -984,7 +984,7 @@ where
             .count()
     }
 
-    /// Get list of cached ledger aliases (for introspection)
+    /// Get list of cached ledger IDs (for introspection)
     pub async fn cached_aliases(&self) -> Vec<String> {
         let entries = self.entries.read().await;
         entries

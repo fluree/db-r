@@ -25,6 +25,7 @@
 
 use async_trait::async_trait;
 use fluree_db_core::error::{Error as CoreError, Result};
+use fluree_db_core::format_ledger_id;
 use fluree_db_core::storage::ReadHint;
 use fluree_db_core::{
     ContentAddressedWrite, ContentId, ContentKind, ContentWriteResult, StorageRead, StorageWrite,
@@ -113,16 +114,16 @@ fn cid_and_ledger_from_address(address: &str) -> Option<(String, String)> {
         return None;
     }
 
-    // Reconstruct ledger alias: "mydb/main" → "mydb:main".
+    // Reconstruct ledger ID: "mydb/main" → "mydb:main".
     // Standard ledger format is "name:branch" where the branch is the last
-    // path segment of the alias prefix.
+    // path segment of the ledger ID prefix.
     let branch = parts[alias_end - 1];
     let name = parts[..alias_end - 1].join("/");
-    let alias = format!("{}:{}", name, branch);
+    let ledger_id = format_ledger_id(&name, branch);
 
     // Build CID from codec + hex digest
     let cid = ContentId::from_hex_digest(codec, hash_hex)?;
-    Some((cid.to_string(), alias))
+    Some((cid.to_string(), ledger_id))
 }
 
 /// Internal result type for fetch operations

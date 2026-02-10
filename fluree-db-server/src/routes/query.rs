@@ -198,11 +198,11 @@ pub async fn query(
         // Enforce bearer ledger scope for unsigned SPARQL requests
         if let Some(p) = bearer.0.as_ref() {
             if !credential.is_signed() {
-                // Extract ledger aliases from FROM/FROM NAMED clauses.
+                // Extract ledger IDs from FROM/FROM NAMED clauses.
                 // Parse failure → fall through (let the engine produce a proper error).
-                if let Ok(aliases) = fluree_db_api::sparql_dataset_aliases(&sparql) {
-                    for alias in &aliases {
-                        if !p.can_read(alias) {
+                if let Ok(ledger_ids) = fluree_db_api::sparql_dataset_ledger_ids(&sparql) {
+                    for ledger_id in &ledger_ids {
+                        if !p.can_read(ledger_id) {
                             return Err(ServerError::not_found("Ledger not found"));
                         }
                     }
@@ -237,11 +237,11 @@ pub async fn query(
             }
         }
 
-        // Get ledger alias
-        let alias = match get_ledger_id(None, &headers, &query_json) {
-            Ok(alias) => {
-                span.record("ledger_id", alias.as_str());
-                alias
+        // Get ledger id
+        let ledger_id = match get_ledger_id(None, &headers, &query_json) {
+            Ok(ledger_id) => {
+                span.record("ledger_id", ledger_id.as_str());
+                ledger_id
             }
             Err(e) => {
                 set_span_error_code(&span, "error:BadRequest");
@@ -255,7 +255,7 @@ pub async fn query(
 
         // Enforce bearer ledger scope for unsigned requests
         if let Some(p) = bearer.0.as_ref() {
-            if !credential.is_signed() && !p.can_read(&alias) {
+            if !credential.is_signed() && !p.can_read(&ledger_id) {
                 // Avoid existence leak
                 return Err(ServerError::not_found("Ledger not found"));
             }
@@ -266,7 +266,7 @@ pub async fn query(
         let policy_class = data_auth.default_policy_class.as_deref();
         force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
-        execute_query(&state, &alias, &query_json).await
+        execute_query(&state, &ledger_id, &query_json).await
     }
 }
 
@@ -351,11 +351,11 @@ pub async fn query_ledger(
         }
     }
 
-    // Get ledger alias (path takes precedence)
-    let alias = match get_ledger_id(Some(&ledger), &headers, &query_json) {
-        Ok(alias) => {
-            span.record("ledger_id", alias.as_str());
-            alias
+    // Get ledger id (path takes precedence)
+    let ledger_id = match get_ledger_id(Some(&ledger), &headers, &query_json) {
+        Ok(ledger_id) => {
+            span.record("ledger_id", ledger_id.as_str());
+            ledger_id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
@@ -379,7 +379,7 @@ pub async fn query_ledger(
     let policy_class = data_auth.default_policy_class.as_deref();
     force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
-    execute_query(&state, &alias, &query_json).await
+    execute_query(&state, &ledger_id, &query_json).await
 }
 
 /// Execute a query with ledger as greedy tail segment.
@@ -706,11 +706,11 @@ pub async fn explain(
         }
     }
 
-    // Get ledger alias
-    let alias = match get_ledger_id(None, &headers, &query_json) {
-        Ok(alias) => {
-            span.record("ledger_id", alias.as_str());
-            alias
+    // Get ledger id
+    let ledger_id = match get_ledger_id(None, &headers, &query_json) {
+        Ok(ledger_id) => {
+            span.record("ledger_id", ledger_id.as_str());
+            ledger_id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
@@ -724,7 +724,7 @@ pub async fn explain(
 
     // Enforce bearer ledger scope for unsigned requests
     if let Some(p) = bearer.0.as_ref() {
-        if !credential.is_signed() && !p.can_read(&alias) {
+        if !credential.is_signed() && !p.can_read(&ledger_id) {
             return Err(ServerError::not_found("Ledger not found"));
         }
     }
@@ -737,7 +737,7 @@ pub async fn explain(
     // Execute explain
     let result = if state.config.is_proxy_storage_mode() {
         // Proxy mode: use FlureeInstance wrapper
-        match state.fluree.explain_ledger(&alias, &query_json).await {
+        match state.fluree.explain_ledger(&ledger_id, &query_json).await {
             Ok(result) => {
                 tracing::info!(status = "success", "explain completed (proxy)");
                 result
@@ -751,7 +751,7 @@ pub async fn explain(
         }
     } else {
         // Shared storage mode: use load_ledger_for_query with freshness checking
-        let ledger = load_ledger_for_query(&state, &alias, &span).await?;
+        let ledger = load_ledger_for_query(&state, &ledger_id, &span).await?;
         match state.fluree.as_file().explain(&ledger, &query_json).await {
             Ok(result) => {
                 tracing::info!(status = "success", "explain completed");

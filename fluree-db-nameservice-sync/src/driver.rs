@@ -469,11 +469,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RemoteNameserviceClient for MockRemoteClient {
-        async fn lookup(&self, address: &str) -> Result<Option<NsRecord>> {
+        async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
             use fluree_db_nameservice::NameService;
             Ok(self
                 .ns
-                .lookup(address)
+                .lookup(ledger_id)
                 .await
                 .map_err(SyncError::Nameservice)?)
         }
@@ -493,18 +493,18 @@ mod tests {
 
         async fn push_ref(
             &self,
-            address: &str,
+            ledger_id: &str,
             kind: RefKind,
             expected: Option<&RefValue>,
             new: &RefValue,
         ) -> Result<CasResult> {
             self.ns
-                .compare_and_set_ref(address, kind, expected, new)
+                .compare_and_set_ref(ledger_id, kind, expected, new)
                 .await
                 .map_err(SyncError::Nameservice)
         }
 
-        async fn init_ledger(&self, _address: &str) -> Result<bool> {
+        async fn init_ledger(&self, _ledger_id: &str) -> Result<bool> {
             Ok(true)
         }
     }

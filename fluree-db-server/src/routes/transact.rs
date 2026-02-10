@@ -296,7 +296,7 @@ async fn transact_local(
         };
 
         // For Turtle/TriG, ledger must come from query param or header
-        let alias = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
+        let ledger_id = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
             Some(ledger) => {
                 span.record("ledger_id", ledger.as_str());
                 ledger.clone()
@@ -310,12 +310,12 @@ async fn transact_local(
 
         // /transact uses Update (upsert) semantics for Turtle/TriG
         // Enforce write access for unsigned requests when bearer is present/required
-        enforce_write_access(&state, &alias, bearer.as_ref(), &credential)?;
+        enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
 
         let author = effective_author(&credential, bearer.as_ref());
         return execute_turtle_transaction(
             &state,
-            &alias,
+            &ledger_id,
             TxnType::Upsert,
             &turtle,
             &credential,
@@ -335,10 +335,10 @@ async fn transact_local(
         }
     };
 
-    let alias = match get_ledger_id(None, &query_params, &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_id", alias.as_str());
-            alias
+    let ledger_id = match get_ledger_id(None, &query_params, &headers, &body_json) {
+        Ok(id) => {
+            span.record("ledger_id", id.as_str());
+            id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
@@ -347,11 +347,11 @@ async fn transact_local(
         }
     };
 
-    enforce_write_access(&state, &alias, bearer.as_ref(), &credential)?;
+    enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
     let author = effective_author(&credential, bearer.as_ref());
     execute_transaction(
         &state,
-        &alias,
+        &ledger_id,
         TxnType::Update,
         &body_json,
         &credential,
@@ -490,10 +490,10 @@ async fn transact_ledger_local(
         }
     };
 
-    let alias = match get_ledger_id(Some(&ledger), &query_params, &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_id", alias.as_str());
-            alias
+    let ledger_id = match get_ledger_id(Some(&ledger), &query_params, &headers, &body_json) {
+        Ok(id) => {
+            span.record("ledger_id", id.as_str());
+            id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
@@ -502,11 +502,11 @@ async fn transact_ledger_local(
         }
     };
 
-    enforce_write_access(&state, &alias, bearer.as_ref(), &credential)?;
+    enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
     let author = effective_author(&credential, bearer.as_ref());
     execute_transaction(
         &state,
-        &alias,
+        &ledger_id,
         TxnType::Update,
         &body_json,
         &credential,
@@ -586,7 +586,7 @@ async fn insert_local(
         };
 
         // For Turtle/TriG, ledger must come from query param or header
-        let alias = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
+        let ledger_id = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
             Some(ledger) => {
                 span.record("ledger_id", ledger.as_str());
                 ledger.clone()
@@ -598,11 +598,11 @@ async fn insert_local(
             }
         };
 
-        enforce_write_access(&state, &alias, bearer.as_ref(), &credential)?;
+        enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
         let author = effective_author(&credential, bearer.as_ref());
         return execute_turtle_transaction(
             &state,
-            &alias,
+            &ledger_id,
             TxnType::Insert,
             &turtle,
             &credential,
@@ -622,10 +622,10 @@ async fn insert_local(
         }
     };
 
-    let alias = match get_ledger_id(None, &query_params, &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_id", alias.as_str());
-            alias
+    let ledger_id = match get_ledger_id(None, &query_params, &headers, &body_json) {
+        Ok(id) => {
+            span.record("ledger_id", id.as_str());
+            id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
@@ -634,11 +634,11 @@ async fn insert_local(
         }
     };
 
-    enforce_write_access(&state, &alias, bearer.as_ref(), &credential)?;
+    enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
     let author = effective_author(&credential, bearer.as_ref());
     execute_transaction(
         &state,
-        &alias,
+        &ledger_id,
         TxnType::Insert,
         &body_json,
         &credential,
@@ -718,7 +718,7 @@ async fn upsert_local(
         };
 
         // For Turtle/TriG, ledger must come from query param or header
-        let alias = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
+        let ledger_id = match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
             Some(ledger) => {
                 span.record("ledger_id", ledger.as_str());
                 ledger.clone()
@@ -730,11 +730,11 @@ async fn upsert_local(
             }
         };
 
-        enforce_write_access(&state, &alias, bearer.as_ref(), &credential)?;
+        enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
         let author = effective_author(&credential, bearer.as_ref());
         return execute_turtle_transaction(
             &state,
-            &alias,
+            &ledger_id,
             TxnType::Upsert,
             &turtle,
             &credential,
@@ -754,10 +754,10 @@ async fn upsert_local(
         }
     };
 
-    let alias = match get_ledger_id(None, &query_params, &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_id", alias.as_str());
-            alias
+    let ledger_id = match get_ledger_id(None, &query_params, &headers, &body_json) {
+        Ok(id) => {
+            span.record("ledger_id", id.as_str());
+            id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
@@ -766,11 +766,11 @@ async fn upsert_local(
         }
     };
 
-    enforce_write_access(&state, &alias, bearer.as_ref(), &credential)?;
+    enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
     let author = effective_author(&credential, bearer.as_ref());
     execute_transaction(
         &state,
-        &alias,
+        &ledger_id,
         TxnType::Upsert,
         &body_json,
         &credential,
@@ -887,10 +887,10 @@ async fn insert_ledger_local(
         }
     };
 
-    let alias = match get_ledger_id(Some(&ledger), &query_params, &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_id", alias.as_str());
-            alias
+    let ledger_id = match get_ledger_id(Some(&ledger), &query_params, &headers, &body_json) {
+        Ok(id) => {
+            span.record("ledger_id", id.as_str());
+            id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
@@ -899,11 +899,11 @@ async fn insert_ledger_local(
         }
     };
 
-    enforce_write_access(&state, &alias, bearer.as_ref(), &credential)?;
+    enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
     let author = effective_author(&credential, bearer.as_ref());
     execute_transaction(
         &state,
-        &alias,
+        &ledger_id,
         TxnType::Insert,
         &body_json,
         &credential,
@@ -1020,10 +1020,10 @@ async fn upsert_ledger_local(
         }
     };
 
-    let alias = match get_ledger_id(Some(&ledger), &query_params, &headers, &body_json) {
-        Ok(alias) => {
-            span.record("ledger_id", alias.as_str());
-            alias
+    let ledger_id = match get_ledger_id(Some(&ledger), &query_params, &headers, &body_json) {
+        Ok(id) => {
+            span.record("ledger_id", id.as_str());
+            id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
@@ -1032,11 +1032,11 @@ async fn upsert_ledger_local(
         }
     };
 
-    enforce_write_access(&state, &alias, bearer.as_ref(), &credential)?;
+    enforce_write_access(&state, &ledger_id, bearer.as_ref(), &credential)?;
     let author = effective_author(&credential, bearer.as_ref());
     execute_transaction(
         &state,
-        &alias,
+        &ledger_id,
         TxnType::Upsert,
         &body_json,
         &credential,
@@ -1048,14 +1048,14 @@ async fn upsert_ledger_local(
 /// Execute a transaction with the given type
 async fn execute_transaction(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     txn_type: TxnType,
     body: &JsonValue,
     credential: &MaybeCredential,
     author: Option<&str>,
 ) -> Result<Json<TransactResponse>> {
     // Create execution span
-    let span = tracing::info_span!("transact_execute", ledger_id = alias, txn_type = ?txn_type);
+    let span = tracing::info_span!("transact_execute", ledger_id = ledger_id, txn_type = ?txn_type);
     let _guard = span.enter();
 
     // Compute tx-id from request body (before any modification)
@@ -1065,7 +1065,7 @@ async fn execute_transaction(
 
     // Get cached ledger handle (loads if not cached)
     // Transaction execution is only in transaction mode (peers forward)
-    let handle = match state.fluree.as_file().ledger_cached(alias).await {
+    let handle = match state.fluree.as_file().ledger_cached(ledger_id).await {
         Ok(handle) => handle,
         Err(e) => {
             let server_error = ServerError::Api(e);
@@ -1125,7 +1125,7 @@ async fn execute_transaction(
     };
 
     Ok(Json(TransactResponse {
-        ledger: alias.to_string(),
+        ledger: ledger_id.to_string(),
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {
@@ -1159,7 +1159,7 @@ fn compute_tx_id_turtle(turtle: &str) -> String {
 ///   are retracted before new values are asserted.
 async fn execute_turtle_transaction(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     txn_type: TxnType,
     turtle: &str,
     credential: &MaybeCredential,
@@ -1169,7 +1169,7 @@ async fn execute_turtle_transaction(
 
     // Create execution span
     let format = if is_trig { "trig" } else { "turtle" };
-    let span = tracing::info_span!("transact_execute", ledger_id = alias, txn_type = ?txn_type, format = format);
+    let span = tracing::info_span!("transact_execute", ledger_id = ledger_id, txn_type = ?txn_type, format = format);
     let _guard = span.enter();
 
     // TriG on /insert is not supported - named graphs require upsert path
@@ -1188,7 +1188,7 @@ async fn execute_turtle_transaction(
     tracing::debug!(tx_id = %tx_id, "computed transaction ID");
 
     // Get cached ledger handle (loads if not cached)
-    let handle = match state.fluree.as_file().ledger_cached(alias).await {
+    let handle = match state.fluree.as_file().ledger_cached(ledger_id).await {
         Ok(handle) => handle,
         Err(e) => {
             let server_error = ServerError::Api(e);
@@ -1255,7 +1255,7 @@ async fn execute_turtle_transaction(
     };
 
     Ok(Json(TransactResponse {
-        ledger: alias.to_string(),
+        ledger: ledger_id.to_string(),
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {
@@ -1295,8 +1295,8 @@ async fn execute_sparql_update_request(
     // Compute tx-id from SPARQL string
     let tx_id = compute_tx_id_sparql(&sparql);
 
-    // Get ledger alias from path, query param, or header (SPARQL UPDATE body doesn't contain ledger)
-    let alias = match path_ledger {
+    // Get ledger id from path, query param, or header (SPARQL UPDATE body doesn't contain ledger)
+    let ledger_id = match path_ledger {
         Some(ledger) => ledger.to_string(),
         None => match query_params.ledger.as_ref().or(headers.ledger.as_ref()) {
             Some(ledger) => ledger.clone(),
@@ -1308,10 +1308,10 @@ async fn execute_sparql_update_request(
         },
     };
 
-    parent_span.record("ledger_id", alias.as_str());
+    parent_span.record("ledger_id", ledger_id.as_str());
 
     // Enforce write access for unsigned requests when bearer is present/required
-    enforce_write_access(state, &alias, bearer, credential)?;
+    enforce_write_access(state, &ledger_id, bearer, credential)?;
 
     // Parse SPARQL
     let parse_output = parse_sparql(&sparql);
@@ -1351,7 +1351,7 @@ async fn execute_sparql_update_request(
     };
 
     // Get ledger handle
-    let handle = match state.fluree.as_file().ledger_cached(&alias).await {
+    let handle = match state.fluree.as_file().ledger_cached(&ledger_id).await {
         Ok(handle) => handle,
         Err(e) => {
             let server_error = ServerError::Api(e);
@@ -1426,7 +1426,7 @@ async fn execute_sparql_update_request(
     };
 
     Ok(Json(TransactResponse {
-        ledger: alias,
+        ledger: ledger_id,
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {
