@@ -146,4 +146,3 @@ impl Function {
         Ok(value.is_some_and(Into::into))
     }
 }
-

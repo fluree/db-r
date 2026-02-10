@@ -1190,7 +1190,11 @@ impl Expression {
     }
 
     /// Create an IF expression
-    pub fn if_then_else(condition: Expression, then_expr: Expression, else_expr: Expression) -> Self {
+    pub fn if_then_else(
+        condition: Expression,
+        then_expr: Expression,
+        else_expr: Expression,
+    ) -> Self {
         Expression::Call {
             func: Function::If,
             args: vec![condition, then_expr, else_expr],

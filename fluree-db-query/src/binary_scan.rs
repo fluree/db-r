@@ -310,6 +310,22 @@ impl BinaryScanOperator {
         }
     }
 
+    /// Check if a subject ID is ephemeral (from novelty overlay).
+    #[inline]
+    fn is_ephemeral_subject(&self, s_id: u64) -> bool {
+        self.dict_overlay
+            .as_ref()
+            .is_some_and(|ov| ov.is_ephemeral_subject(s_id))
+    }
+
+    /// Check if a predicate ID is ephemeral (from novelty overlay).
+    #[inline]
+    fn is_ephemeral_predicate(&self, p_id: u32) -> bool {
+        self.dict_overlay
+            .as_ref()
+            .is_some_and(|ov| ov.is_ephemeral_predicate(p_id))
+    }
+
     /// Resolve a predicate ID to Sid, handling ephemeral IDs via DictOverlay.
     ///
     /// Note: Used for early materialization of ephemeral predicates from novelty.
@@ -334,6 +350,252 @@ impl BinaryScanOperator {
         }
     }
 
+    // ========================================================================
+    // Row filtering helpers
+    // ========================================================================
+
+    /// Check if a row should be skipped based on all active filters.
+    ///
+    /// Returns `Ok(true)` if the row should be filtered out.
+    #[inline]
+    fn should_skip_row(&self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
+        let skip = self.is_internal_predicate(decoded.p_ids[row])
+            || !self.matches_bound_object(decoded, row)?
+            || !self.matches_object_bounds(decoded, row)?;
+        Ok(skip)
+    }
+
+    /// Check if a row's object matches the bound object filter.
+    ///
+    /// Returns `Ok(true)` if there's no filter or if the object matches.
+    /// Used for post-filtering when an object value couldn't be translated to an
+    /// (ObjKind, ObjKey) pair (e.g. string literal — no reverse string index).
+    #[inline]
+    fn matches_bound_object(&self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
+        let Some(filter_val) = &self.bound_o_filter else {
+            return Ok(true);
+        };
+        let decoded_val = self
+            .decode_obj(
+                decoded.o_kinds[row],
+                decoded.o_keys[row],
+                decoded.p_ids[row],
+            )
+            .map_err(|e| QueryError::Internal(format!("decode object for filter: {}", e)))?;
+        Ok(decoded_val == *filter_val)
+    }
+
+    /// Check if a row's object matches the ObjectBounds range filter.
+    ///
+    /// Returns `Ok(true)` if there are no bounds or if the object is within bounds.
+    /// POST key range provides coarse leaf filtering; this handles
+    /// inclusive/exclusive boundaries and cross-type comparisons exactly.
+    #[inline]
+    fn matches_object_bounds(&self, decoded: &DecodedBatch, row: usize) -> Result<bool> {
+        let Some(obj_bounds) = &self.object_bounds else {
+            return Ok(true);
+        };
+        let decoded_val = self
+            .decode_obj(
+                decoded.o_kinds[row],
+                decoded.o_keys[row],
+                decoded.p_ids[row],
+            )
+            .map_err(|e| QueryError::Internal(format!("decode object for bounds: {}", e)))?;
+        Ok(obj_bounds.matches(&decoded_val))
+    }
+
+    // ========================================================================
+    // Subject binding helpers
+    // ========================================================================
+
+    /// Build a subject binding if the subject is a variable.
+    ///
+    /// Emits `EncodedSid` for late materialization, or `Sid` for ephemeral subjects.
+    /// Returns `None` if the subject position is bound (not a variable).
+    #[inline]
+    fn build_subject_binding(&mut self, s_id: u64) -> Result<Option<Binding>> {
+        if self.s_var_pos.is_none() {
+            return Ok(None);
+        }
+
+        let is_ephemeral = self.is_ephemeral_subject(s_id);
+
+        tracing::trace!(
+            s_id,
+            is_ephemeral,
+            has_dict_overlay = self.dict_overlay.is_some(),
+            "binary_scan building subject binding"
+        );
+
+        let binding = if is_ephemeral {
+            // Ephemeral subject: resolve now while dict_overlay is available
+            let sid = self.resolve_s_id(s_id)?;
+            tracing::trace!(
+                ?sid,
+                s_id,
+                "binary_scan early-materializing ephemeral subject"
+            );
+            Binding::Sid(sid)
+        } else {
+            tracing::trace!(s_id, "binary_scan emitting EncodedSid for subject");
+            Binding::EncodedSid { s_id }
+        };
+
+        Ok(Some(binding))
+    }
+
+    // ========================================================================
+    // Predicate binding helpers
+    // ========================================================================
+
+    /// Build a predicate binding if the predicate is a variable.
+    ///
+    /// Emits `EncodedPid` for late materialization, or `Sid` for ephemeral predicates.
+    /// Returns `None` if the predicate position is bound (not a variable).
+    #[inline]
+    fn build_predicate_binding(&self, p_id: u32) -> Option<Binding> {
+        self.p_var_pos?;
+
+        let binding = if self.is_ephemeral_predicate(p_id) {
+            // Ephemeral predicate: resolve now while dict_overlay is available
+            let sid = self.resolve_p_id(p_id);
+            tracing::trace!(
+                ?sid,
+                p_id,
+                "binary_scan early-materializing ephemeral predicate"
+            );
+            Binding::Sid(sid)
+        } else {
+            tracing::trace!(p_id, "binary_scan emitting EncodedPid for predicate");
+            Binding::EncodedPid { p_id }
+        };
+
+        Some(binding)
+    }
+
+    // ========================================================================
+    // Object binding helpers
+    // ========================================================================
+
+    /// Build an object binding if the object is a variable.
+    ///
+    /// Handles three cases:
+    /// - Ref objects: `EncodedSid` for late materialization
+    /// - Ephemeral values: immediate materialization to `Sid` or `Lit`
+    /// - Literals: `EncodedLit` for late materialization
+    ///
+    /// Returns `None` if the object position is bound (not a variable).
+    #[inline]
+    fn build_object_binding(&self, decoded: &DecodedBatch, row: usize) -> Result<Option<Binding>> {
+        if self.o_var_pos.is_none() {
+            return Ok(None);
+        }
+
+        let o_kind = decoded.o_kinds[row];
+        let o_key = decoded.o_keys[row];
+        let p_id = decoded.p_ids[row];
+
+        // Check if early materialization is needed (ephemeral IDs from novelty)
+        let needs_early = self
+            .dict_overlay
+            .as_ref()
+            .map(|ov| ov.needs_early_materialize(o_kind, o_key))
+            .unwrap_or(false);
+
+        let binding = if o_kind == ObjKind::REF_ID.as_u8() && !needs_early {
+            // Ref object: use EncodedSid for late materialization
+            tracing::trace!(o_key, "binary_scan emitting EncodedSid for ref object");
+            Binding::EncodedSid { s_id: o_key }
+        } else if needs_early {
+            self.build_early_materialized_object(decoded, row)?
+        } else {
+            // Literal: use EncodedLit (avoids string dictionary lookups)
+            // This is the main late materialization win - literal strings
+            // are only decoded when needed for FILTER/ORDER BY/output.
+            Binding::EncodedLit {
+                o_kind,
+                o_key,
+                p_id,
+                dt_id: decoded.dt_values[row] as u16,
+                lang_id: decoded.lang_ids[row],
+                i_val: decoded.i_values[row],
+                t: decoded.t_values[row],
+            }
+        };
+
+        Ok(Some(binding))
+    }
+
+    /// Build an early-materialized object binding for ephemeral values.
+    ///
+    /// Called when the object contains ephemeral IDs from novelty that must
+    /// be resolved immediately while the dict_overlay is available.
+    #[inline]
+    fn build_early_materialized_object(
+        &self,
+        decoded: &DecodedBatch,
+        row: usize,
+    ) -> Result<Binding> {
+        let o_kind = decoded.o_kinds[row];
+        let o_key = decoded.o_keys[row];
+        let p_id = decoded.p_ids[row];
+        let dt_id = decoded.dt_values[row] as u16;
+        let lang_id = decoded.lang_ids[row];
+        let i_val = decoded.i_values[row];
+        let t = decoded.t_values[row];
+
+        let val = self
+            .decode_obj(o_kind, o_key, p_id)
+            .map_err(|e| QueryError::Internal(format!("early materialize: {}", e)))?;
+
+        let dt_sid = self.resolve_dt_sid(dt_id);
+        let lang = self.resolve_lang(lang_id, i_val);
+
+        tracing::trace!(?val, "binary_scan early-materializing ephemeral value");
+
+        let binding = match val {
+            FlakeValue::Ref(sid) => Binding::Sid(sid),
+            other => Binding::Lit {
+                val: other,
+                dt: dt_sid,
+                lang,
+                t: Some(t),
+                op: None,
+            },
+        };
+
+        Ok(binding)
+    }
+
+    /// Resolve a datatype ID to its Sid representation.
+    #[inline]
+    fn resolve_dt_sid(&self, dt_id: u16) -> Sid {
+        self.dict_overlay
+            .as_ref()
+            .map(|ov| ov.decode_dt_sid(dt_id))
+            .unwrap_or_else(|| {
+                self.store
+                    .dt_sids()
+                    .get(dt_id as usize)
+                    .cloned()
+                    .unwrap_or_else(|| Sid::new(0, ""))
+            })
+    }
+
+    /// Resolve a language tag from the lang_id and i_val metadata.
+    #[inline]
+    fn resolve_lang(&self, lang_id: u16, i_val: i32) -> Option<Arc<str>> {
+        self.dict_overlay
+            .as_ref()
+            .and_then(|ov| ov.decode_meta(lang_id, i_val))
+            .and_then(|m| m.lang.map(Arc::from))
+    }
+
+    // ========================================================================
+    // Main batch processing
+    // ========================================================================
+
     /// Convert a DecodedBatch into columnar Bindings.
     ///
     /// Processes all rows in the batch, converting integer IDs to Binding values.
@@ -347,179 +609,28 @@ impl BinaryScanOperator {
         let mut produced = 0;
 
         for row in 0..decoded.row_count {
-            // Filter out fluree:ledger internal predicates for wildcard patterns
-            if self.is_internal_predicate(decoded.p_ids[row]) {
+            if self.should_skip_row(decoded, row)? {
                 continue;
-            }
-
-            // Post-filter: when an object value couldn't be translated to an
-            // (ObjKind, ObjKey) pair (e.g. string literal — no reverse string index),
-            // decode each row's object and skip non-matching rows.
-            if let Some(ref filter_val) = self.bound_o_filter {
-                let decoded_val = self
-                    .decode_obj(
-                        decoded.o_kinds[row],
-                        decoded.o_keys[row],
-                        decoded.p_ids[row],
-                    )
-                    .map_err(|e| {
-                        QueryError::Internal(format!("decode object for filter: {}", e))
-                    })?;
-                if decoded_val != *filter_val {
-                    continue;
-                }
-            }
-
-            // Range post-filter: ObjectBounds applied after decoding.
-            // POST key range provides coarse leaf filtering; this handles
-            // inclusive/exclusive boundaries and cross-type comparisons exactly.
-            if let Some(ref obj_bounds) = self.object_bounds {
-                let decoded_val = self
-                    .decode_obj(
-                        decoded.o_kinds[row],
-                        decoded.o_keys[row],
-                        decoded.p_ids[row],
-                    )
-                    .map_err(|e| {
-                        QueryError::Internal(format!("decode object for bounds: {}", e))
-                    })?;
-                if !obj_bounds.matches(&decoded_val) {
-                    continue;
-                }
             }
 
             let mut col_idx = 0;
 
-            // Subject binding - emit EncodedSid for late materialization
-            // For ephemeral subjects (from novelty), materialize immediately.
-            if self.s_var_pos.is_some() {
-                let s_id = decoded.s_ids[row];
-                let is_ephemeral = self
-                    .dict_overlay
-                    .as_ref()
-                    .map(|ov| ov.is_ephemeral_subject(s_id))
-                    .unwrap_or(false);
-
-                tracing::trace!(
-                    s_id,
-                    is_ephemeral,
-                    has_dict_overlay = self.dict_overlay.is_some(),
-                    "batch_to_bindings: processing subject"
-                );
-
-                if is_ephemeral {
-                    // Ephemeral subject: resolve now while dict_overlay is available
-                    let sid = self.resolve_s_id(s_id)?;
-                    tracing::trace!(
-                        ?sid,
-                        s_id,
-                        "binary_scan early-materializing ephemeral subject"
-                    );
-                    columns[col_idx].push(Binding::Sid(sid));
-                } else {
-                    tracing::trace!(s_id, "binary_scan emitting EncodedSid for subject");
-                    columns[col_idx].push(Binding::EncodedSid { s_id });
-                }
-                col_idx += 1;
-            }
-
-            // Predicate binding - emit EncodedPid for late materialization
-            // For ephemeral predicates (from novelty), materialize immediately.
-            if self.p_var_pos.is_some() {
-                let p_id = decoded.p_ids[row];
-                let is_ephemeral = self
-                    .dict_overlay
-                    .as_ref()
-                    .map(|ov| ov.is_ephemeral_predicate(p_id))
-                    .unwrap_or(false);
-
-                if is_ephemeral {
-                    // Ephemeral predicate: resolve now while dict_overlay is available
-                    let sid = self.resolve_p_id(p_id);
-                    tracing::trace!(
-                        ?sid,
-                        p_id,
-                        "binary_scan early-materializing ephemeral predicate"
-                    );
-                    columns[col_idx].push(Binding::Sid(sid));
-                } else {
-                    tracing::trace!(p_id, "binary_scan emitting EncodedPid for predicate");
-                    columns[col_idx].push(Binding::EncodedPid { p_id });
-                }
-                col_idx += 1;
-            }
-
-            // Object binding - emit EncodedSid for refs, EncodedLit for literals
-            // For ephemeral values (from novelty overlay), materialize immediately
-            // since they can't be resolved by BinaryIndexStore at format time.
-            if self.o_var_pos.is_some() {
-                let o_kind = decoded.o_kinds[row];
-                let o_key = decoded.o_keys[row];
-                let p_id = decoded.p_ids[row];
-                let dt_id = decoded.dt_values[row] as u16;
-                let lang_id = decoded.lang_ids[row];
-                let i_val = decoded.i_values[row];
-                let t = decoded.t_values[row];
-
-                // Check if early materialization is needed (ephemeral IDs from novelty)
-                let needs_early = self
-                    .dict_overlay
-                    .as_ref()
-                    .map(|ov| ov.needs_early_materialize(o_kind, o_key))
-                    .unwrap_or(false);
-
-                let binding = if o_kind == ObjKind::REF_ID.as_u8() && !needs_early {
-                    // Ref object: use EncodedSid for late materialization
-                    tracing::trace!(o_key, "binary_scan emitting EncodedSid for ref object");
-                    Binding::EncodedSid { s_id: o_key }
-                } else if needs_early {
-                    // Ephemeral value: materialize now while dict_overlay is available
-                    let val = self
-                        .decode_obj(o_kind, o_key, p_id)
-                        .map_err(|e| QueryError::Internal(format!("early materialize: {}", e)))?;
-                    let dt_sid = self
-                        .dict_overlay
-                        .as_ref()
-                        .map(|ov| ov.decode_dt_sid(dt_id))
-                        .unwrap_or_else(|| {
-                            self.store
-                                .dt_sids()
-                                .get(dt_id as usize)
-                                .cloned()
-                                .unwrap_or_else(|| Sid::new(0, ""))
-                        });
-                    let lang = self
-                        .dict_overlay
-                        .as_ref()
-                        .and_then(|ov| ov.decode_meta(lang_id, i_val))
-                        .and_then(|m| m.lang.map(std::sync::Arc::from));
-                    tracing::trace!(?val, "binary_scan early-materializing ephemeral value");
-                    match val {
-                        FlakeValue::Ref(sid) => Binding::Sid(sid),
-                        other => Binding::Lit {
-                            val: other,
-                            dt: dt_sid,
-                            lang,
-                            t: Some(t),
-                            op: None,
-                        },
-                    }
-                } else {
-                    // Literal: use EncodedLit (avoids string dictionary lookups)
-                    // This is the main late materialization win - literal strings
-                    // are only decoded when needed for FILTER/ORDER BY/output.
-                    Binding::EncodedLit {
-                        o_kind,
-                        o_key,
-                        p_id,
-                        dt_id,
-                        lang_id,
-                        i_val,
-                        t,
-                    }
-                };
+            // Subject binding
+            if let Some(binding) = self.build_subject_binding(decoded.s_ids[row])? {
                 columns[col_idx].push(binding);
-                // col_idx += 1; // last column
+                col_idx += 1;
+            }
+
+            // Predicate binding
+            if let Some(binding) = self.build_predicate_binding(decoded.p_ids[row]) {
+                columns[col_idx].push(binding);
+                col_idx += 1;
+            }
+
+            // Object binding
+            if let Some(binding) = self.build_object_binding(decoded, row)? {
+                columns[col_idx].push(binding);
+                // col_idx += 1; // last column, not needed
             }
 
             produced += 1;
