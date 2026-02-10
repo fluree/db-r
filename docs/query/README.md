@@ -10,7 +10,7 @@ Fluree's native query language that uses JSON-LD syntax. JSON-LD Query provides 
 
 **Key Features:**
 - JSON-based syntax (no string parsing)
-- Full support for time travel (`@t:`, `@iso:`, `@sha:`)
+- Full support for time travel (`@t:`, `@iso:`, `@commit:`)
 - Graph source integration
 - Policy enforcement
 - History queries
@@ -78,18 +78,18 @@ Query metadata about all ledgers and graph sources in the system. The nameservic
 **JSON-LD Query:**
 ```json
 {
-  "@context": {"db": "https://ns.flur.ee/db#"},
+  "@context": {"f": "https://ns.flur.ee/db#"},
   "select": ["?ledger", "?t"],
   "where": [
-    { "@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:t": "?t" }
+    { "@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger", "f:t": "?t" }
   ]
 }
 ```
 
 **SPARQL:**
 ```sparql
-PREFIX db: <https://ns.flur.ee/db#>
-SELECT ?ledger ?t WHERE { ?ns a db:LedgerSource ; db:ledger ?ledger ; db:t ?t }
+PREFIX f: <https://ns.flur.ee/db#>
+SELECT ?ledger ?t WHERE { ?ns a f:LedgerSource ; f:ledger ?ledger ; f:t ?t }
 ```
 
 See the [Ledgers and Nameservice](../concepts/ledgers-and-nameservice.md) concept documentation for details.
@@ -108,9 +108,9 @@ ledger:main@t:100
 ledger:main@iso:2024-01-15T10:30:00Z
 ```
 
-**Commit SHA:**
+**Commit ContentId:**
 ```
-ledger:main@sha:abc123def456
+ledger:main@commit:bafybeig...
 ```
 
 See the [Time Travel](../concepts/time-travel.md) concept documentation for details.

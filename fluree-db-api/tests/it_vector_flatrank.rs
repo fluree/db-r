@@ -543,8 +543,8 @@ async fn vector_search_post_indexing() {
                 .expect("ns lookup")
                 .expect("ns record");
             assert!(
-                record.index_address.is_some(),
-                "expected index address after indexing"
+                record.index_head_id.is_some(),
+                "expected index id after indexing"
             );
 
             // Load indexed ledger and query

@@ -208,9 +208,9 @@ mod tests {
                     "ledger_id": "mydb:main",
                     "name": "mydb",
                     "branch": "main",
-                    "commit_address": "fluree:file://commit/abc",
+                    "commit_head_id": null,
                     "commit_t": 5,
-                    "index_address": "fluree:file://index/def",
+                    "index_head_id": null,
                     "index_t": 3,
                     "retracted": false
                 }

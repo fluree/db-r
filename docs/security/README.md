@@ -65,7 +65,7 @@ How policies affect write operations:
 ### [Programmatic Policy API (Rust)](programmatic-policy.md)
 
 Using policies in Rust applications:
-- `wrap_identity_policy_view` - Identity-based policy lookup via `db:policyClass`
+- `wrap_identity_policy_view` - Identity-based policy lookup via `f:policyClass`
 - `wrap_policy_view` - Inline policies with `QueryConnectionOptions`
 - Policy precedence rules
 - Transaction-side policy enforcement
@@ -104,17 +104,17 @@ Basic policy format:
 ```json
 {
   "@context": {
-    "db": "https://ns.flur.ee/db#",
+    "f": "https://ns.flur.ee/db#",
     "ex": "http://example.org/ns/"
   },
   "@id": "ex:read-policy",
-  "@type": "db:Policy",
-  "db:subject": "did:key:z6Mkh...",
-  "db:action": "query",
-  "db:resource": {
+  "@type": "f:Policy",
+  "f:subject": "did:key:z6Mkh...",
+  "f:action": "query",
+  "f:resource": {
     "@type": "schema:Person"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -159,9 +159,9 @@ Policy checks if user can modify ex:alice.
 ```json
 {
   "@id": "ex:allow-all",
-  "db:subject": "*",
-  "db:action": "*",
-  "db:allow": true
+  "f:subject": "*",
+  "f:action": "*",
+  "f:allow": true
 }
 ```
 
@@ -170,9 +170,9 @@ Policy checks if user can modify ex:alice.
 ```json
 {
   "@id": "ex:admin-policy",
-  "db:subject": { "ex:role": "admin" },
-  "db:action": "*",
-  "db:allow": true
+  "f:subject": { "ex:role": "admin" },
+  "f:action": "*",
+  "f:allow": true
 }
 ```
 
@@ -181,10 +181,10 @@ Policy checks if user can modify ex:alice.
 ```json
 {
   "@id": "ex:public-data-policy",
-  "db:subject": "*",
-  "db:action": "query",
-  "db:resource": { "@type": "ex:PublicData" },
-  "db:allow": true
+  "f:subject": "*",
+  "f:action": "query",
+  "f:resource": { "@type": "ex:PublicData" },
+  "f:allow": true
 }
 ```
 
@@ -193,12 +193,12 @@ Policy checks if user can modify ex:alice.
 ```json
 {
   "@id": "ex:sensitive-property-policy",
-  "db:subject": { "ex:role": "hr" },
-  "db:action": "query",
-  "db:resource": {
-    "db:predicate": "ex:salary"
+  "f:subject": { "ex:role": "hr" },
+  "f:action": "query",
+  "f:resource": {
+    "f:predicate": "ex:salary"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -207,12 +207,12 @@ Policy checks if user can modify ex:alice.
 ```json
 {
   "@id": "ex:owner-policy",
-  "db:subject": "?user",
-  "db:action": ["query", "transact"],
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": ["query", "transact"],
+  "f:resource": {
     "ex:owner": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -256,12 +256,12 @@ Policies have access to runtime context:
 **Example using context:**
 ```json
 {
-  "db:subject": "?user",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:resource": {
     "ex:department": "?dept"
   },
-  "db:condition": "?user ex:department ?dept",
-  "db:allow": true
+  "f:condition": "?user ex:department ?dept",
+  "f:allow": true
 }
 ```
 
@@ -274,13 +274,13 @@ Isolate data by tenant:
 ```json
 {
   "@id": "ex:tenant-isolation-policy",
-  "db:subject": "?user",
-  "db:action": "*",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "*",
+  "f:resource": {
     "ex:tenant": "?tenant"
   },
-  "db:condition": "?user ex:tenant ?tenant",
-  "db:allow": true
+  "f:condition": "?user ex:tenant ?tenant",
+  "f:allow": true
 }
 ```
 
@@ -293,17 +293,17 @@ Users can only access data from their tenant.
 Good (specific):
 ```json
 {
-  "db:resource": { "@type": "ex:PublicData" },
-  "db:allow": true
+  "f:resource": { "@type": "ex:PublicData" },
+  "f:allow": true
 }
 ```
 
 Less efficient (broad):
 ```json
 {
-  "db:resource": { "?pred": "?value" },
-  "db:condition": "complex graph pattern",
-  "db:allow": true
+  "f:resource": { "?pred": "?value" },
+  "f:condition": "complex graph pattern",
+  "f:allow": true
 }
 ```
 
@@ -327,10 +327,10 @@ curl -X POST "http://localhost:8090/transact?ledger=policies:main" \
     "@graph": [
       {
         "@id": "ex:new-policy",
-        "@type": "db:Policy",
-        "db:subject": "did:key:z6Mkh...",
-        "db:action": "query",
-        "db:allow": true
+        "@type": "f:Policy",
+        "f:subject": "did:key:z6Mkh...",
+        "f:action": "query",
+        "f:allow": true
       }
     ]
   }'
@@ -343,13 +343,13 @@ Update using WHERE/DELETE/INSERT:
 ```json
 {
   "where": [
-    { "@id": "ex:policy-1", "db:allow": "?oldValue" }
+    { "@id": "ex:policy-1", "f:allow": "?oldValue" }
   ],
   "delete": [
-    { "@id": "ex:policy-1", "db:allow": "?oldValue" }
+    { "@id": "ex:policy-1", "f:allow": "?oldValue" }
   ],
   "insert": [
-    { "@id": "ex:policy-1", "db:allow": false }
+    { "@id": "ex:policy-1", "f:allow": false }
   ]
 }
 ```
@@ -370,17 +370,17 @@ Grant minimum necessary permissions:
 ```json
 // Good: Specific permissions
 {
-  "db:subject": "did:key:z6Mkh...",
-  "db:action": "query",
-  "db:resource": { "@type": "ex:PublicData" },
-  "db:allow": true
+  "f:subject": "did:key:z6Mkh...",
+  "f:action": "query",
+  "f:resource": { "@type": "ex:PublicData" },
+  "f:allow": true
 }
 
 // Bad: Overly broad
 {
-  "db:subject": "did:key:z6Mkh...",
-  "db:action": "*",
-  "db:allow": true
+  "f:subject": "did:key:z6Mkh...",
+  "f:action": "*",
+  "f:allow": true
 }
 ```
 
@@ -392,18 +392,18 @@ Start with deny-all, add specific allows:
 // Default policy
 {
   "@id": "ex:default",
-  "db:subject": "*",
-  "db:action": "*",
-  "db:allow": false
+  "f:subject": "*",
+  "f:action": "*",
+  "f:allow": false
 }
 
 // Specific allows
 {
   "@id": "ex:public-read",
-  "db:subject": "*",
-  "db:action": "query",
-  "db:resource": { "@type": "ex:PublicData" },
-  "db:allow": true
+  "f:subject": "*",
+  "f:action": "query",
+  "f:resource": { "@type": "ex:PublicData" },
+  "f:allow": true
 }
 ```
 
@@ -420,9 +420,9 @@ Define roles, not individual permissions:
 
 {
   "@id": "ex:role-policy",
-  "db:subject": { "ex:hasRole": "ex:admin-role" },
-  "db:action": "*",
-  "db:allow": true
+  "f:subject": { "ex:hasRole": "ex:admin-role" },
+  "f:action": "*",
+  "f:allow": true
 }
 ```
 

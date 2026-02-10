@@ -10,7 +10,7 @@
 //!    finalization, streaming run generation via background resolver thread
 //! 3. **Build indexes** — `build_all_indexes()` from completed run files
 //! 4. **CAS upload** — dicts + indexes uploaded to content-addressed storage
-//! 5. **V2 root** — `BinaryIndexRootV2::from_cas_artifacts()` written to CAS
+//! 5. **V2 root** — `BinaryIndexRoot::from_cas_artifacts()` written to CAS
 //! 6. **Publish** — `nameservice.publish_index_allow_equal()`
 //! 7. **Cleanup** — remove tmp session directory (only on full success)
 //!
@@ -366,7 +366,7 @@ where
         .map_err(|e| ImportError::Storage(e.to_string()))?;
 
     if let Some(ref record) = ns_record {
-        if record.commit_t > 0 || record.commit_address.is_some() {
+        if record.commit_t > 0 || record.commit_head_id.is_some() {
             return Err(ImportError::Transact(format!(
                 "import requires a fresh ledger, but '{}' already has commits (t={})",
                 normalized_alias, record.commit_t
@@ -754,11 +754,11 @@ where
             "chunk 0 committed"
         );
 
-        // Feed to resolver
-        let addr = result.address.clone();
+        // Feed to resolver (pass content hash hex for metadata)
+        let hash_hex = result.commit_id.digest_hex();
         tokio::task::block_in_place(|| {
             run_tx
-                .send((result.commit_blob, addr))
+                .send((result.commit_blob, hash_hex))
                 .map_err(|_| ImportError::RunGeneration("resolver exited unexpectedly".into()))
         })?;
     }
@@ -852,10 +852,12 @@ where
                     "chunk committed"
                 );
 
-                // Feed to resolver
+                // Feed to resolver (pass content hash hex for metadata)
                 let resolver_send_failed = {
-                    let addr = result.address.clone();
-                    tokio::task::block_in_place(|| run_tx.send((result.commit_blob, addr)).is_err())
+                    let hash_hex = result.commit_id.digest_hex();
+                    tokio::task::block_in_place(|| {
+                        run_tx.send((result.commit_blob, hash_hex)).is_err()
+                    })
                 };
                 if resolver_send_failed {
                     // Drop sender so resolver thread exits, then join to get error
@@ -873,7 +875,7 @@ where
                     && (next_expected + 1).is_multiple_of(config.publish_every)
                 {
                     nameservice
-                        .publish_commit(alias, result.t, &result.commit_id, Some(&result.address))
+                        .publish_commit(alias, result.t, &result.commit_id)
                         .await
                         .map_err(|e| ImportError::Storage(e.to_string()))?;
                     tracing::info!(
@@ -907,9 +909,10 @@ where
                     .map_err(|e| ImportError::Transact(e.to_string()))?
             };
 
-            let addr = result.address.clone();
-            let send_failed =
-                tokio::task::block_in_place(|| run_tx.send((result.commit_blob, addr)).is_err());
+            let hash_hex = result.commit_id.digest_hex();
+            let send_failed = tokio::task::block_in_place(|| {
+                run_tx.send((result.commit_blob, hash_hex)).is_err()
+            });
             if send_failed {
                 drop(run_tx);
                 let err = match resolver_handle.join() {
@@ -922,7 +925,7 @@ where
 
             if config.publish_every > 0 && (i + 1).is_multiple_of(config.publish_every) {
                 nameservice
-                    .publish_commit(alias, result.t, &result.commit_id, Some(&result.address))
+                    .publish_commit(alias, result.t, &result.commit_id)
                     .await
                     .map_err(|e| ImportError::Storage(e.to_string()))?;
             }
@@ -938,7 +941,7 @@ where
     let commit_head_address = commit_head_id.to_string();
 
     nameservice
-        .publish_commit(alias, state.t, &commit_head_id, Some(&commit_head_address))
+        .publish_commit(alias, state.t, &commit_head_id)
         .await
         .map_err(|e| ImportError::Storage(e.to_string()))?;
     tracing::info!(t = state.t, "published final commit head");
@@ -1027,7 +1030,7 @@ where
     N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{
-        build_all_indexes, precompute_language_dict, BinaryIndexRootV2, CasArtifactsConfig,
+        build_all_indexes, precompute_language_dict, BinaryIndexRoot, CasArtifactsConfig,
         PrefixTrie, RunSortOrder,
     };
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
@@ -1103,7 +1106,7 @@ where
 
     // Upload index segments to CAS (needs build_results).
     // Dict upload may still be running — we overlap with it.
-    let graph_addresses = upload_indexes_to_cas(storage, alias, &build_results)
+    let graph_refs = upload_indexes_to_cas(storage, alias, &build_results)
         .await
         .map_err(|e| ImportError::Upload(e.to_string()))?;
 
@@ -1115,7 +1118,7 @@ where
 
     tracing::info!(
         elapsed = ?build_start.elapsed(),
-        graphs = graph_addresses.len(),
+        graphs = graph_refs.len(),
         "index build + CAS upload complete (overlapped)"
     );
 
@@ -1278,15 +1281,15 @@ where
     };
 
     // ---- Phase 5: Build V2 root ----
-    let mut root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
+    let mut root = BinaryIndexRoot::from_cas_artifacts(CasArtifactsConfig {
         ledger_id: alias,
         index_t: input.final_t,
         base_t: 0, // fresh import
         predicate_sids,
         namespace_codes: input.namespace_codes,
         subject_id_encoding: uploaded_dicts.subject_id_encoding,
-        dict_addresses: uploaded_dicts.dict_addresses,
-        graph_addresses,
+        dict_refs: uploaded_dicts.dict_refs,
+        graph_refs,
         stats: Some(stats_json),
         schema: None,
         prev_index: None, // fresh import
@@ -1322,7 +1325,7 @@ where
     // ---- Phase 6: Publish ----
     if config.publish {
         nameservice
-            .publish_index(alias, input.final_t, &root_id, Some(&write_result.address))
+            .publish_index(alias, input.final_t, &root_id)
             .await
             .map_err(|e| ImportError::Storage(format!("publish index: {}", e)))?;
         tracing::info!(

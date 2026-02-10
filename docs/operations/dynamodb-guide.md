@@ -12,7 +12,7 @@ Fluree supports Amazon DynamoDB as a nameservice backend for storing ledger and 
 
 ### Why DynamoDB for Nameservice?
 
-The nameservice stores metadata about ledgers and graph sources: commit addresses, index state, status, and configuration. In high-throughput scenarios, transactors and indexers may update this metadata concurrently.
+The nameservice stores metadata about ledgers and graph sources: commit IDs, index state, status, and configuration. In high-throughput scenarios, transactors and indexers may update this metadata concurrently.
 
 DynamoDB solves this because:
 
@@ -24,8 +24,8 @@ DynamoDB solves this because:
 
 Graph sources (BM25, Vector, Iceberg, etc.) are stored in the same nameservice table as ledgers. Under the **graph-source-owned manifest** design, the nameservice does **not** store snapshot history for graph sources.
 
-- For ledgers, `index_address` points to a ledger index root.
-- For graph sources, `index_address` points to a **graph-source-owned root/manifest** in storage (opaque to nameservice).
+- For ledgers, `index_id` points to a ledger index root.
+- For graph sources, `index_id` points to a **graph-source-owned root/manifest** in storage (opaque to nameservice).
 - Snapshot history (if any) is stored in storage and managed by the graph source implementation.
 
 This keeps DynamoDB schema stable: **no unbounded "snapshot history" list is stored in the DynamoDB item**.
@@ -190,9 +190,9 @@ Each ledger or graph source is represented as multiple items under the same `pk`
 | Sort Key (`sk`) | Description | Key Attributes |
 |-----------------|-------------|----------------|
 | `meta` | Identity and metadata | `kind`, `name`, `branch`, `retracted`, `schema` |
-| `head` | Commit head pointer | `commit_address`, `commit_t` |
-| `index` | Index head pointer | `index_address`, `index_t` |
-| `config` | Ledger configuration | `default_context_address`, `config_v`, `config_meta` |
+| `head` | Commit head pointer | `commit_id`, `commit_t` |
+| `index` | Index head pointer | `index_id`, `index_t` |
+| `config` | Ledger configuration | `default_context_id`, `config_v`, `config_meta` |
 | `status` | Operational status | `status`, `status_v`, `status_meta` |
 
 **Graph Source (4 items):**
@@ -201,7 +201,7 @@ Each ledger or graph source is represented as multiple items under the same `pk`
 |-----------------|-------------|----------------|
 | `meta` | Identity and metadata | `kind`, `source_type`, `name`, `branch`, `dependencies`, `retracted`, `schema` |
 | `config` | Source configuration | `config_json`, `config_v` |
-| `index` | Index head pointer | `index_address`, `index_t` |
+| `index` | Index head pointer | `index_id`, `index_t` |
 | `status` | Operational status | `status`, `status_v`, `status_meta` |
 
 ### Attribute Reference
@@ -223,28 +223,28 @@ All items share these common attributes:
 | `name` | String | Base name (reserved word — use `#name` in expressions) |
 | `branch` | String | Branch name |
 | `retracted` | Boolean | Soft-delete flag |
-| `source_type` | String (graph source only) | Graph-source type (e.g., `db:Bm25Index`) |
+| `source_type` | String (graph source only) | Graph-source type (e.g., `f:Bm25Index`) |
 | `dependencies` | List\<String\> (graph source only) | Dependent ledger IDs |
 
 **`head` item (ledgers only):**
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `commit_address` | String \| null | Latest commit storage address |
+| `commit_id` | String \| null | Latest commit ContentId (CIDv1) |
 | `commit_t` | Number | Commit watermark (`t`). `0` = unborn. |
 
 **`index` item (ledgers + graph sources):**
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `index_address` | String \| null | Latest index storage address |
+| `index_id` | String \| null | Latest index ContentId (CIDv1) |
 | `index_t` | Number | Index watermark (`t`). `0` = unborn. |
 
 **`config` item:**
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `default_context_address` | String \| null | Default JSON-LD context address (ledger) |
+| `default_context_id` | String \| null | Default JSON-LD context ContentId (ledger) |
 | `config_json` | String \| null | Opaque JSON config string (graph source) |
 | `config_v` | Number | Config version watermark |
 | `config_meta` | Map \| null | Extensible config metadata (ledger) |
@@ -283,14 +283,14 @@ All subsequent writes (`publish_commit`, `publish_index`, `push_status`, `push_c
 **Commit updates** (transactor):
 ```
 UpdateItem Key: { pk: "mydb:main", sk: "head" }
-UpdateExpression: SET commit_address = :addr, commit_t = :t, updated_at_ms = :now
+UpdateExpression: SET commit_id = :cid, commit_t = :t, updated_at_ms = :now
 ConditionExpression: attribute_exists(pk) AND commit_t < :t
 ```
 
 **Index updates** (indexer):
 ```
 UpdateItem Key: { pk: "mydb:main", sk: "index" }
-UpdateExpression: SET index_address = :addr, index_t = :t, updated_at_ms = :now
+UpdateExpression: SET index_id = :cid, index_t = :t, updated_at_ms = :now
 ConditionExpression: attribute_exists(pk) AND index_t < :t
 ```
 
@@ -306,7 +306,7 @@ ConditionExpression: status_v = :expected_v AND #st = :expected_state
 **Config updates** (CAS):
 ```
 UpdateItem Key: { pk: "mydb:main", sk: "config" }
-UpdateExpression: SET default_context_address = :ctx, config_v = :new_v, updated_at_ms = :now
+UpdateExpression: SET default_context_id = :ctx, config_v = :new_v, updated_at_ms = :now
 ConditionExpression: config_v = :expected_v
 ```
 

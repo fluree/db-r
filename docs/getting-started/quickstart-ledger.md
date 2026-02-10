@@ -73,8 +73,7 @@ Response:
 {
   "t": 1,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456...",
-  "address": "fluree:memory:abc123..."
+  "commit_id": "bafybeig...commitT1"
 }
 ```
 
@@ -234,8 +233,8 @@ Each ledger maintains metadata accessible via the nameservice:
 
 - **commit_t**: Latest transaction time
 - **index_t**: Latest indexed transaction time
-- **commit_address**: Storage address of latest commit
-- **index_address**: Storage address of latest index
+- **commit_id**: ContentId (CID) of the latest commit
+- **index_id**: ContentId (CID) of the latest index
 - **default_context**: Default JSON-LD @context for the ledger
 
 ### Checking Ledger Status
@@ -252,8 +251,8 @@ Response:
   "branch": "main",
   "commit_t": 1,
   "index_t": 1,
-  "commit_address": "fluree:memory:commit:abc123...",
-  "index_address": "fluree:memory:index:def456...",
+  "commit_id": "bafybeig...commitT1",
+  "index_id": "bafybeig...indexT1",
   "created": "2024-01-22T10:30:00.000Z",
   "last_updated": "2024-01-22T10:30:05.000Z"
 }

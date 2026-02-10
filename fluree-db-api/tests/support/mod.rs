@@ -57,6 +57,10 @@ pub fn genesis_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
 }
 
 /// Generic version of `genesis_ledger` for any `Fluree` storage backend.
+///
+/// The alias is normalized to canonical `name:branch` form (e.g., `"mydb"` → `"mydb:main"`)
+/// so that the `Db.ledger_id` matches the canonical form used by the nameservice and
+/// content-addressed storage paths.
 pub fn genesis_ledger_for_fluree<S, N>(
     fluree: &fluree_db_api::Fluree<S, N>,
     alias: &str,
@@ -65,7 +69,9 @@ where
     S: fluree_db_core::Storage + Clone,
     N: fluree_db_api::NameService,
 {
-    let db = Db::genesis(fluree.storage().clone(), alias);
+    let canonical =
+        fluree_db_core::alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+    let db = Db::genesis(fluree.storage().clone(), &canonical);
     LedgerState::new(db, Novelty::new(0))
 }
 

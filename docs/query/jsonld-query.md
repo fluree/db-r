@@ -92,7 +92,7 @@ Specifies which ledger(s) to query:
 
 ```json
 {
-  "from": "mydb:main@sha:abc123def456"
+  "from": "mydb:main@commit:bafybeig..."
 }
 ```
 
@@ -692,12 +692,12 @@ Query historical data using time specifiers in `from`:
 }
 ```
 
-**Commit SHA:**
+**Commit ContentId:**
 
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": "ledger:main@sha:abc123def456",
+  "from": "ledger:main@commit:bafybeig...",
   "select": ["?name"],
   "where": [
     { "@id": "?person", "ex:name": "?name" }
@@ -841,7 +841,7 @@ Query graph sources using the same syntax:
 {
   "@context": {
     "ex": "http://example.org/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "from": "documents:main",
   "select": ["?document", "?similarity"],
@@ -851,10 +851,10 @@ Query graph sources using the same syntax:
   ],
   "where": [
     {
-      "db:graphSource": "documents-vector:main",
-      "db:queryVector": "?queryVec",
-      "db:searchLimit": 5,
-      "db:searchResult": { "db:resultId": "?document", "db:resultScore": "?similarity" }
+      "f:graphSource": "documents-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 5,
+      "f:searchResult": { "f:resultId": "?document", "f:resultScore": "?similarity" }
     }
   ],
   "orderBy": [["desc", "?similarity"]],
@@ -862,7 +862,7 @@ Query graph sources using the same syntax:
 }
 ```
 
-Note: `db:*` keys used for graph source queries should be defined in your `@context` for clarity.
+Note: `f:*` keys used for graph source queries should be defined in your `@context` for clarity.
 
 ## Complete Examples
 

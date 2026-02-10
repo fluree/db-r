@@ -125,15 +125,9 @@ mod tests {
         let cid1 = ContentId::new(ContentKind::Commit, b"commit-1");
         let cid2 = ContentId::new(ContentKind::Commit, b"commit-2");
         let cid3 = ContentId::new(ContentKind::Commit, b"commit-3");
-        ns.publish_commit("db1:main", 10, &cid1, Some("commit-1"))
-            .await
-            .unwrap();
-        ns.publish_commit("db1:dev", 5, &cid2, Some("commit-2"))
-            .await
-            .unwrap();
-        ns.publish_commit("db2:main", 20, &cid3, Some("commit-3"))
-            .await
-            .unwrap();
+        ns.publish_commit("db1:main", 10, &cid1).await.unwrap();
+        ns.publish_commit("db1:dev", 5, &cid2).await.unwrap();
+        ns.publish_commit("db2:main", 20, &cid3).await.unwrap();
 
         // Create a graph source record
         ns.publish_graph_source(

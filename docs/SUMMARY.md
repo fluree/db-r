@@ -48,6 +48,7 @@
   - [Nameservice schema v2](design/nameservice-schema-v2.md)
   - [Graph source index manifests](design/graph-source-index-manifests.md)
   - [Storage-agnostic commits and sync](design/storage-agnostic-commits-and-sync.md)
+  - [ContentId and ContentStore](design/content-id-and-contentstore.md)
   - [Index format](design/index-format.md)
   - [Storage traits](design/storage-traits.md)
 

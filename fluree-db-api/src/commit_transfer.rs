@@ -235,9 +235,7 @@ where
 
         let final_head = stored_commits.last().expect("non-empty stored_commits");
         let new_ref = RefValue {
-            id: extract_hash_from_address(&final_head.address)
-                .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h)),
-            address: Some(final_head.address.clone()),
+            id: final_head.commit_id.clone(),
             t: final_head.t,
         };
 
@@ -293,6 +291,7 @@ struct PushCommitDecoded {
 struct StoredCommit {
     t: i64,
     address: String,
+    commit_id: Option<ContentId>,
 }
 
 #[derive(Debug)]
@@ -396,28 +395,8 @@ fn preflight_strict_next_t_and_prev(
         )));
     }
 
-    // Validate previous reference matches current head (transition):
-    // nameservice `RefValue` is still address-based, while commits are CID-based.
-    // Derive the expected previous CID from the current head address hash.
-    let expected_prev_id: Option<ContentId> = match current.address.as_deref() {
-        Some(addr) => {
-            let hex = extract_hash_from_address(addr).ok_or_else(|| {
-                PushError::Internal(format!(
-                    "current head is not a content-addressed commit address: {}",
-                    addr
-                ))
-            })?;
-            ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &hex)
-                .ok_or_else(|| {
-                    PushError::Internal(format!(
-                        "failed to derive commit CID from current head digest: {}",
-                        hex
-                    ))
-                })?
-                .into()
-        }
-        None => None,
-    };
+    // Validate previous reference matches current head via CID.
+    let expected_prev_id: Option<ContentId> = current.id.clone();
 
     let actual_prev_id = first.commit.previous_ref.as_ref().map(|r| r.id.clone());
 
@@ -645,9 +624,11 @@ async fn write_commit_blobs<S: Storage + ContentAddressedWrite + Clone + Send + 
                 idx, c.content_hash_hex, res.content_hash
             )));
         }
+        let commit_id = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &c.content_hash_hex);
         stored.push(StoredCommit {
             t: c.commit.t,
             address: res.address,
+            commit_id,
         });
     }
     Ok(stored)
@@ -688,16 +669,10 @@ fn apply_pushed_commits_to_state<S: Storage + Clone + 'static>(
 
     base.novelty = Arc::new(novelty);
     base.dict_novelty = dict_novelty;
-    base.head_commit = stored_commits.last().map(|c| c.address.clone());
-    // Derive head_commit_id from the stored commit address hash
-    base.head_commit_id = stored_commits.last().and_then(|c| {
-        fluree_db_core::storage::extract_hash_from_address(&c.address).and_then(|h| {
-            fluree_db_core::ContentId::from_hex_digest(fluree_db_core::CODEC_FLUREE_COMMIT, &h)
-        })
-    });
+    base.head_commit_id = stored_commits.last().and_then(|c| c.commit_id.clone());
     if let Some(ref mut r) = base.ns_record {
         if let Some(last) = stored_commits.last() {
-            r.commit_address = Some(last.address.clone());
+            r.commit_head_id = last.commit_id.clone();
             r.commit_t = last.t;
         }
     }
@@ -838,18 +813,6 @@ pub struct ExportCommitsResponse {
     pub effective_limit: usize,
 }
 
-fn storage_method_from_address(address: &str) -> Option<&str> {
-    // Expected format: `fluree:{method}://...`
-    let rest = address.strip_prefix("fluree:")?;
-    let scheme_idx = rest.find("://")?;
-    let method = &rest[..scheme_idx];
-    if method.is_empty() {
-        None
-    } else {
-        Some(method)
-    }
-}
-
 /// Export a paginated range of commits from a ledger.
 ///
 /// Uses address-cursor pagination: each page walks backward from the cursor
@@ -888,16 +851,19 @@ where
                 ledger_id
             )));
         };
-        let head_address = head_ref
-            .address
+        let head_commit_id = head_ref
+            .id
             .clone()
             .ok_or_else(|| ApiError::NotFound("Ledger has no commits".to_string()))?;
         let head_t = head_ref.t;
-        let head_commit_id = head_ref.id.clone().or_else(|| {
-            extract_hash_from_address(&head_address)
-                .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h))
-        });
-        let head_method = storage_method_from_address(&head_address).map(str::to_string);
+        let method = self.storage().storage_method().to_string();
+        let head_address = fluree_db_core::storage::content_address(
+            &method,
+            ContentKind::Commit,
+            ledger_id,
+            &head_commit_id.digest_hex(),
+        );
+        let head_method = Some(method);
 
         // Determine start cursor.
         let mut cursor_is_address = false;
@@ -1081,7 +1047,7 @@ where
         Ok(ExportCommitsResponse {
             ledger: ledger_id.to_string(),
             head_address,
-            head_commit_id,
+            head_commit_id: Some(head_commit_id),
             head_t,
             commits,
             blobs,
@@ -1195,7 +1161,7 @@ where
 
     /// Set the commit head after bulk import (clone finalization).
     ///
-    /// Points `CommitHead` at the given address/t. Used after all pages of a
+    /// Points `CommitHead` at the given CID/t. Used after all pages of a
     /// bulk clone have been imported to make the ledger loadable.
     pub async fn set_commit_head(
         &self,
@@ -1207,7 +1173,6 @@ where
         let new_ref = RefValue {
             id: extract_hash_from_address(head_address)
                 .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h)),
-            address: Some(head_address.to_string()),
             t: head_t,
         };
 
@@ -1301,9 +1266,7 @@ where
 
         let final_head = stored_commits.last().expect("non-empty stored_commits");
         let new_ref = RefValue {
-            id: extract_hash_from_address(&final_head.address)
-                .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h)),
-            address: Some(final_head.address.clone()),
+            id: final_head.commit_id.clone(),
             t: final_head.t,
         };
 

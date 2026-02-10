@@ -196,7 +196,7 @@ Useful for tracking which version of data was queried.
 
 ### X-Fluree-Commit
 
-The commit SHA of the data returned:
+The commit ContentId of the data returned:
 
 ```http
 X-Fluree-Commit: abc123def456789...

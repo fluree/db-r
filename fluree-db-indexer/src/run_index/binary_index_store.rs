@@ -15,7 +15,7 @@ use super::dict_io::{
     read_predicate_dict_from_bytes, read_subject_sid_map,
 };
 use super::global_dict::{LanguageTagDict, PredicateDict};
-use super::index_root::BinaryIndexRootV2;
+use super::index_root::BinaryIndexRoot;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::leaflet_cache::LeafletCache;
@@ -26,10 +26,10 @@ use crate::dict_tree::forward_leaf::ForwardEntry;
 use crate::dict_tree::reader::LeafSource;
 use crate::dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
 use crate::dict_tree::{DictBranch, DictTreeReader};
-use fluree_db_core::storage::{extract_hash_from_address, StorageRead};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::ListIndex;
+use fluree_db_core::{ContentId, ContentStore};
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, PrefixTrie, Sid};
 use std::collections::HashMap;
 use std::io;
@@ -523,21 +523,21 @@ impl BinaryIndexStore {
     }
 
     /// Load a BinaryIndexStore from CAS (content-addressed storage) using
-    /// a v2 index root.
+    /// a v3 index root with CID references.
     ///
-    /// Fetches dictionary and index artifacts via `storage.read_bytes()`,
+    /// Fetches dictionary and index artifacts via `ContentStore::get()`,
     /// materializes mmap-required files to `cache_dir`, and eagerly
     /// downloads all leaf files for sync cursor compatibility.
     ///
     /// # Arguments
     ///
-    /// * `storage` - Storage backend for reading CAS artifacts
-    /// * `root` - V2 index root with CAS addresses for all artifacts
+    /// * `cs` - Content store for reading CAS artifacts by CID
+    /// * `root` - V3 index root with CID references for all artifacts
     /// * `cache_dir` - Local directory for cached files (mmap'd dicts + leaves)
     /// * `leaflet_cache` - Optional shared LRU cache for decoded leaflets
-    pub async fn load_from_root<S: StorageRead>(
-        storage: &S,
-        root: &BinaryIndexRootV2,
+    pub async fn load_from_root(
+        cs: &dyn ContentStore,
+        root: &BinaryIndexRoot,
         cache_dir: &Path,
         leaflet_cache: Option<Arc<LeafletCache>>,
     ) -> io::Result<Self> {
@@ -573,8 +573,8 @@ impl BinaryIndexStore {
         // ---- Load subject dict trees from CAS ----
         let subject_forward_tree = Some(
             load_dict_tree_from_cas(
-                storage,
-                &root.dict_addresses.subject_forward,
+                cs,
+                &root.dict_refs.subject_forward,
                 cache_dir,
                 "sdl",
                 leaflet_cache.as_ref(),
@@ -583,8 +583,8 @@ impl BinaryIndexStore {
         );
         let subject_reverse_tree = Some(
             load_dict_tree_from_cas(
-                storage,
-                &root.dict_addresses.subject_reverse,
+                cs,
+                &root.dict_refs.subject_reverse,
                 cache_dir,
                 "srl",
                 leaflet_cache.as_ref(),
@@ -600,8 +600,8 @@ impl BinaryIndexStore {
         // ---- Load string dict trees from CAS ----
         let string_forward_tree = Some(
             load_dict_tree_from_cas(
-                storage,
-                &root.dict_addresses.string_forward,
+                cs,
+                &root.dict_refs.string_forward,
                 cache_dir,
                 "tfl",
                 leaflet_cache.as_ref(),
@@ -610,8 +610,8 @@ impl BinaryIndexStore {
         );
         let string_reverse_tree = Some(
             load_dict_tree_from_cas(
-                storage,
-                &root.dict_addresses.string_reverse,
+                cs,
+                &root.dict_refs.string_reverse,
                 cache_dir,
                 "trl",
                 leaflet_cache.as_ref(),
@@ -643,7 +643,7 @@ impl BinaryIndexStore {
 
         // ---- Load language tag dict (cache-aware) ----
         let lang_bytes =
-            fetch_cached_bytes(storage, &root.dict_addresses.languages, cache_dir, "dict").await?;
+            fetch_cached_bytes(cs, &root.dict_refs.languages, cache_dir, "dict").await?;
         let language_tags = if !lang_bytes.is_empty() {
             read_language_dict_from_bytes(&lang_bytes)?
         } else {
@@ -652,8 +652,7 @@ impl BinaryIndexStore {
         tracing::info!(tags = language_tags.len(), "loaded language dict");
 
         // ---- Load datatype dict → pre-compute dt_sids (cache-aware) ----
-        let dt_bytes =
-            fetch_cached_bytes(storage, &root.dict_addresses.datatypes, cache_dir, "dict").await?;
+        let dt_bytes = fetch_cached_bytes(cs, &root.dict_refs.datatypes, cache_dir, "dict").await?;
         let dt_dict = read_predicate_dict_from_bytes(&dt_bytes)?;
         let dt_sids: Vec<Sid> = (0..dt_dict.len())
             .map(|id| {
@@ -669,7 +668,7 @@ impl BinaryIndexStore {
         // ---- Load graphs dict (cache-aware) ----
         // Build reverse map: IRI → dict_index (0-based). g_id = dict_index + 1.
         let graphs_bytes =
-            fetch_cached_bytes(storage, &root.dict_addresses.graphs, cache_dir, "dict").await?;
+            fetch_cached_bytes(cs, &root.dict_refs.graphs, cache_dir, "dict").await?;
         let graphs_dict = read_predicate_dict_from_bytes(&graphs_bytes)?;
         let graphs_reverse: HashMap<String, u32> = (0..graphs_dict.len())
             .filter_map(|id| graphs_dict.resolve(id).map(|iri| (iri.to_string(), id)))
@@ -678,9 +677,9 @@ impl BinaryIndexStore {
 
         // ---- Load numbig arenas (cache-aware) ----
         let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> = HashMap::new();
-        for (p_id_str, addr) in &root.dict_addresses.numbig {
+        for (p_id_str, cid) in &root.dict_refs.numbig {
             if let Ok(p_id) = p_id_str.parse::<u32>() {
-                let bytes = fetch_cached_bytes(storage, addr, cache_dir, "nba").await?;
+                let bytes = fetch_cached_bytes(cs, cid, cache_dir, "nba").await?;
                 let arena = super::numbig_dict::read_numbig_arena_from_bytes(&bytes)?;
                 numbig_forward.insert(p_id, arena);
             }
@@ -695,18 +694,17 @@ impl BinaryIndexStore {
 
         // ---- Load vector arenas (cache-aware) ----
         let mut vector_forward: HashMap<u32, super::vector_arena::VectorArena> = HashMap::new();
-        for (p_id_str, entry) in &root.dict_addresses.vectors {
+        for (p_id_str, entry) in &root.dict_refs.vectors {
             if let Ok(p_id) = p_id_str.parse::<u32>() {
                 // Fetch and parse manifest (small JSON)
                 let manifest_bytes =
-                    fetch_cached_bytes(storage, &entry.manifest, cache_dir, "vam").await?;
+                    fetch_cached_bytes(cs, &entry.manifest, cache_dir, "vam").await?;
                 let manifest = super::vector_arena::read_vector_manifest(&manifest_bytes)?;
 
                 // Eagerly load all shards (like NumBig does)
                 let mut shards = Vec::with_capacity(entry.shards.len());
-                for shard_addr in &entry.shards {
-                    let shard_bytes =
-                        fetch_cached_bytes(storage, shard_addr, cache_dir, "vas").await?;
+                for shard_cid in &entry.shards {
+                    let shard_bytes = fetch_cached_bytes(cs, shard_cid, cache_dir, "vas").await?;
                     let shard = super::vector_arena::read_vector_shard_from_bytes(&shard_bytes)?;
                     shards.push(shard);
                 }
@@ -732,7 +730,7 @@ impl BinaryIndexStore {
         for graph_entry in &root.graphs {
             let mut order_indexes = HashMap::new();
 
-            for (order_name, order_addrs) in &graph_entry.orders {
+            for (order_name, order_refs) in &graph_entry.orders {
                 let order = RunSortOrder::from_dir_name(order_name).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -742,16 +740,14 @@ impl BinaryIndexStore {
 
                 // Load branch manifest, initially resolving leaf paths against cache_dir.
                 let branch_bytes =
-                    fetch_cached_bytes(storage, &order_addrs.branch, cache_dir, "fbr").await?;
+                    fetch_cached_bytes(cs, &order_refs.branch, cache_dir, "fbr").await?;
                 let mut branch = read_branch_manifest_from_bytes(&branch_bytes, Some(cache_dir))?;
 
-                // Build content_hash → CAS address map for local path resolution.
-                let mut hash_to_cas: HashMap<String, &str> =
-                    HashMap::with_capacity(order_addrs.leaves.len());
-                for leaf_addr in &order_addrs.leaves {
-                    if let Some(hash) = extract_hash_from_address(leaf_addr) {
-                        hash_to_cas.insert(hash, leaf_addr.as_str());
-                    }
+                // Build content_hash → CID map for local path resolution.
+                let mut hash_to_cas: HashMap<String, &ContentId> =
+                    HashMap::with_capacity(order_refs.leaves.len());
+                for leaf_cid in &order_refs.leaves {
+                    hash_to_cas.insert(leaf_cid.digest_hex(), leaf_cid);
                 }
 
                 // Resolve leaf paths: for file storage, point directly at CAS files
@@ -759,8 +755,8 @@ impl BinaryIndexStore {
                 let mut local_resolved = 0usize;
                 let mut cache_resolved = 0usize;
                 for leaf_entry in &mut branch.leaves {
-                    if let Some(cas_addr) = hash_to_cas.get(&leaf_entry.content_hash) {
-                        if let Some(local_path) = storage.resolve_local_path(cas_addr) {
+                    if let Some(cas_cid) = hash_to_cas.get(&leaf_entry.content_hash) {
+                        if let Some(local_path) = cs.resolve_local_path(cas_cid) {
                             leaf_entry.path = local_path;
                             local_resolved += 1;
                             continue;
@@ -768,8 +764,8 @@ impl BinaryIndexStore {
                     }
                     // Fall back: ensure leaf is in cache (download if needed)
                     if !leaf_entry.path.exists() {
-                        if let Some(cas_addr) = hash_to_cas.get(&leaf_entry.content_hash) {
-                            ensure_leaf_cached(storage, cas_addr, cache_dir).await?;
+                        if let Some(cas_cid) = hash_to_cas.get(&leaf_entry.content_hash) {
+                            ensure_leaf_cached(cs, cas_cid, cache_dir).await?;
                         }
                     }
                     cache_resolved += 1;
@@ -850,12 +846,12 @@ impl BinaryIndexStore {
         })
     }
 
-    /// Load from a v2 index root with default leaflet cache.
+    /// Load from a v3 index root with default leaflet cache.
     ///
     /// Uses 8 GiB cache (or `FLUREE_LEAFLET_CACHE_BYTES` env var).
-    pub async fn load_from_root_default<S: StorageRead>(
-        storage: &S,
-        root: &BinaryIndexRootV2,
+    pub async fn load_from_root_default(
+        cs: &dyn ContentStore,
+        root: &BinaryIndexRoot,
         cache_dir: &Path,
     ) -> io::Result<Self> {
         let leaflet_cache_bytes: u64 = std::env::var("FLUREE_LEAFLET_CACHE_BYTES")
@@ -863,7 +859,7 @@ impl BinaryIndexStore {
             .and_then(|s| u64::from_str(&s).ok())
             .unwrap_or(8 * 1024 * 1024 * 1024);
         let cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
-        Self::load_from_root(storage, root, cache_dir, cache).await
+        Self::load_from_root(cs, root, cache_dir, cache).await
     }
 
     /// Log dictionary tree I/O stats (disk reads vs cache hits).
@@ -2028,32 +2024,24 @@ fn cache_bytes_to_file(
     Ok(target)
 }
 
-/// Fetch artifact bytes: reads from local file if available (file storage),
-/// then local cache, otherwise downloads from storage and writes to cache.
-async fn fetch_cached_bytes<S: StorageRead>(
-    storage: &S,
-    address: &str,
+/// Fetch artifact bytes by CID: reads from local file if available (file storage),
+/// then local cache, otherwise downloads from content store and writes to cache.
+async fn fetch_cached_bytes(
+    cs: &dyn ContentStore,
+    id: &ContentId,
     cache_dir: &Path,
     ext: &str,
 ) -> io::Result<Vec<u8>> {
     // For file storage: read directly from the CAS file, no cache needed.
-    if let Some(local_path) = storage.resolve_local_path(address) {
+    if let Some(local_path) = cs.resolve_local_path(id) {
         return std::fs::read(&local_path);
     }
-    let hash = extract_hash_from_address(address).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("cannot extract hash from address: {}", address),
-        )
-    })?;
+    let hash = id.digest_hex();
     let cached = cache_dir.join(format!("{}.{}", hash, ext));
     if cached.exists() {
         return std::fs::read(&cached);
     }
-    let bytes = storage
-        .read_bytes(address)
-        .await
-        .map_err(storage_to_io_error)?;
+    let bytes = cs.get(id).await.map_err(storage_to_io_error)?;
     cache_bytes_to_file(cache_dir, &hash, ext, &bytes)?;
     Ok(bytes)
 }
@@ -2083,42 +2071,41 @@ fn build_dict_reader_reverse(entries: Vec<ReverseEntry>) -> io::Result<DictTreeR
     Ok(DictTreeReader::from_memory(result.branch, leaf_map))
 }
 
-/// Load a `DictTreeReader` from CAS by fetching branch + leaf artifacts.
+/// Load a `DictTreeReader` from CAS by fetching branch + leaf artifacts via CID.
 ///
 /// Downloads branch manifest, decodes it, validates that the branch's
-/// leaf addresses match the root's leaf list (GC integrity), then builds
+/// leaf addresses match the root's leaf CID list (GC integrity), then builds
 /// a demand-loading reader backed by `LeafSource::LocalFiles`.
 ///
-/// For storage backends with local files (e.g., `FileStorage`), leaf paths
+/// For storage backends with local files (e.g., `FileContentStore`), leaf paths
 /// are resolved directly via `resolve_local_path` — no download required.
 /// For remote backends, leaves are fetched to `cache_dir` on demand at
 /// lookup time.
 ///
 /// If `leaflet_cache` is provided, the reader will use it for in-memory
 /// caching of leaf blobs (keyed by `xxh3_128(cas_address)`, immutable).
-async fn load_dict_tree_from_cas<S: StorageRead>(
-    storage: &S,
-    addrs: &super::index_root::DictTreeAddresses,
+async fn load_dict_tree_from_cas(
+    cs: &dyn ContentStore,
+    refs: &super::index_root::DictTreeRefs,
     cache_dir: &Path,
     leaf_ext: &str,
     leaflet_cache: Option<&Arc<LeafletCache>>,
 ) -> io::Result<DictTreeReader> {
     // Fetch and decode branch
-    let branch_bytes = fetch_cached_bytes(storage, &addrs.branch, cache_dir, "dtb").await?;
+    let branch_bytes = fetch_cached_bytes(cs, &refs.branch, cache_dir, "dtb").await?;
     let branch = DictBranch::decode(&branch_bytes)?;
 
     // Validate branch/root leaf list consistency.
-    if branch.leaves.len() != addrs.leaves.len() {
+    if branch.leaves.len() != refs.leaves.len() {
         tracing::warn!(
             branch_leaves = branch.leaves.len(),
-            root_leaves = addrs.leaves.len(),
+            root_leaves = refs.leaves.len(),
             "dict tree: branch leaf count does not match root leaf list"
         );
     }
-    let root_leaf_set: std::collections::HashSet<&str> =
-        addrs.leaves.iter().map(|s| s.as_str()).collect();
+    // Branch leaf addresses are content hashes; check if any root CID has that digest.
     for bl in &branch.leaves {
-        if !root_leaf_set.contains(bl.address.as_str()) {
+        if !refs.leaves.iter().any(|cid| cid.digest_hex() == bl.address) {
             tracing::warn!(
                 address = %bl.address,
                 "dict tree: branch references leaf not in root's leaf list (GC may delete it)"
@@ -2133,32 +2120,21 @@ async fn load_dict_tree_from_cas<S: StorageRead>(
     let mut local_resolved = 0usize;
     let mut cache_resolved = 0usize;
 
-    for leaf in &branch.leaves {
+    for (cid, bl) in refs.leaves.iter().zip(branch.leaves.iter()) {
         // Try direct local resolution first (zero-copy for file storage)
-        if let Some(local_path) = storage.resolve_local_path(&leaf.address) {
-            file_map.insert(leaf.address.clone(), local_path);
+        if let Some(local_path) = cs.resolve_local_path(cid) {
+            file_map.insert(bl.address.clone(), local_path);
             local_resolved += 1;
         } else {
             // Remote storage: map to cache path (will be downloaded on first access)
-            let hash = extract_hash_from_address(&leaf.address).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "cannot extract hash from dict leaf address: {}",
-                        leaf.address
-                    ),
-                )
-            })?;
+            let hash = cid.digest_hex();
             let cached_path = cache_dir.join(format!("{}.{}", hash, leaf_ext));
             // Only download if not already cached
             if !cached_path.exists() {
-                let bytes = storage
-                    .read_bytes(&leaf.address)
-                    .await
-                    .map_err(storage_to_io_error)?;
+                let bytes = cs.get(cid).await.map_err(storage_to_io_error)?;
                 cache_bytes_to_file(cache_dir, &hash, leaf_ext, &bytes)?;
             }
-            file_map.insert(leaf.address.clone(), cached_path);
+            file_map.insert(bl.address.clone(), cached_path);
             cache_resolved += 1;
         }
     }
@@ -2181,26 +2157,18 @@ async fn load_dict_tree_from_cas<S: StorageRead>(
     }
 }
 
-/// Ensure a leaf file exists in the local cache. Skips download on cache hit.
-async fn ensure_leaf_cached<S: StorageRead>(
-    storage: &S,
-    address: &str,
+/// Ensure a leaf file exists in the local cache by CID. Skips download on cache hit.
+async fn ensure_leaf_cached(
+    cs: &dyn ContentStore,
+    id: &ContentId,
     cache_dir: &Path,
 ) -> io::Result<()> {
-    let hash = extract_hash_from_address(address).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("cannot extract hash from leaf address: {}", address),
-        )
-    })?;
+    let hash = id.digest_hex();
     let cached = cache_dir.join(format!("{}.fli", hash));
     if cached.exists() {
         return Ok(());
     }
-    let bytes = storage
-        .read_bytes(address)
-        .await
-        .map_err(storage_to_io_error)?;
+    let bytes = cs.get(id).await.map_err(storage_to_io_error)?;
     cache_bytes_to_file(cache_dir, &hash, "fli", &bytes)?;
     Ok(())
 }

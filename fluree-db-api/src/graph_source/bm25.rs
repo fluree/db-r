@@ -9,7 +9,9 @@ use crate::graph_source::result::{
     Bm25CreateResult, Bm25DropResult, Bm25StalenessCheck, Bm25SyncResult, SnapshotSelection,
 };
 use crate::{QueryResult as ApiQueryResult, Result};
-use fluree_db_core::{alias as core_alias, OverlayProvider, Storage, StorageWrite};
+use fluree_db_core::{
+    alias as core_alias, ContentId, ContentStore, OverlayProvider, Storage, StorageWrite,
+};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{
     GraphSourcePublisher, GraphSourceType, NameService, Publisher, STORAGE_SEGMENT_GRAPH_SOURCES,
@@ -162,7 +164,7 @@ where
             .await?;
 
         // 7. Publish manifest to CAS and head pointer to nameservice
-        let index_address = self
+        let index_id = self
             .publish_bm25_manifest(&graph_source_id, &manifest, source_t)
             .await?;
 
@@ -178,7 +180,7 @@ where
             doc_count,
             term_count,
             index_t: source_t,
-            index_address: Some(index_address),
+            index_id: Some(index_id),
         })
     }
 
@@ -321,7 +323,7 @@ where
         graph_source_id: &str,
         manifest: &Bm25Manifest,
         index_t: i64,
-    ) -> Result<String> {
+    ) -> Result<ContentId> {
         let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
             crate::ApiError::config(format!(
                 "Invalid graph source alias '{}': {}",
@@ -329,15 +331,19 @@ where
             ))
         })?;
 
-        let manifest_addr = Self::bm25_manifest_address(&name, &branch, index_t);
         let bytes = serde_json::to_vec(manifest)?;
-        self.storage().write_bytes(&manifest_addr, &bytes).await?;
 
-        self.nameservice
-            .publish_graph_source_index(&name, &branch, &manifest_addr, index_t)
+        // Write through the content store so it's stored at the CID-mapped address
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let index_id = cs
+            .put(fluree_db_core::ContentKind::IndexRoot, &bytes)
             .await?;
 
-        Ok(manifest_addr)
+        self.nameservice
+            .publish_graph_source_index(&name, &branch, &index_id, index_t)
+            .await?;
+
+        Ok(index_id)
     }
 }
 
@@ -350,19 +356,11 @@ where
     S: Storage + Clone + 'static,
     N: NameService + GraphSourcePublisher,
 {
-    /// Build the content-addressed CAS address for a BM25 manifest.
-    fn bm25_manifest_address(name: &str, branch: &str, index_t: i64) -> String {
-        format!(
-            "fluree:file://{STORAGE_SEGMENT_GRAPH_SOURCES}/{}/{}/bm25/manifest-t{}.json",
-            name, branch, index_t
-        )
-    }
-
     /// Load the current BM25 manifest from CAS, or create a new empty one.
     ///
     /// Reads the manifest address from the nameservice head pointer,
     /// then loads the manifest JSON from CAS. Returns an empty manifest
-    /// if the graph source has no index_address yet (e.g., during initial create).
+    /// if the graph source has no index yet (e.g., during initial create).
     pub(crate) async fn load_or_create_bm25_manifest(
         &self,
         graph_source_id: &str,
@@ -372,9 +370,10 @@ where
             .lookup_graph_source(graph_source_id)
             .await?
         {
-            Some(record) if record.index_address.is_some() => {
-                let manifest_addr = record.index_address.as_ref().unwrap();
-                let bytes = self.storage().read_bytes(manifest_addr).await?;
+            Some(record) if record.index_id.is_some() => {
+                let index_cid = record.index_id.as_ref().unwrap();
+                let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+                let bytes = cs.get(index_cid).await?;
                 let manifest: Bm25Manifest = serde_json::from_slice(&bytes)?;
                 Ok(manifest)
             }
@@ -384,7 +383,7 @@ where
 
     /// Load the current BM25 manifest from CAS.
     ///
-    /// Returns an error if the graph source is not found or has no index_address.
+    /// Returns an error if the graph source is not found or has no index.
     pub(crate) async fn load_bm25_manifest(&self, graph_source_id: &str) -> Result<Bm25Manifest> {
         let record = self
             .nameservice
@@ -394,11 +393,12 @@ where
                 crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
-        let manifest_addr = record.index_address.ok_or_else(|| {
+        let index_cid = record.index_id.ok_or_else(|| {
             crate::ApiError::NotFound(format!("No index for graph source: {}", graph_source_id))
         })?;
 
-        let bytes = self.storage().read_bytes(&manifest_addr).await?;
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let bytes = cs.get(&index_cid).await?;
         let manifest: Bm25Manifest = serde_json::from_slice(&bytes)?;
         Ok(manifest)
     }
@@ -547,7 +547,7 @@ where
     /// This operation performs incremental updates when possible,
     /// falling back to full resync if needed.
     pub async fn sync_bm25_index(&self, graph_source_id: &str) -> Result<Bm25SyncResult> {
-        use fluree_db_novelty::{trace_commits, trace_commits_by_id};
+        use fluree_db_novelty::trace_commits_by_id;
         use fluree_db_query::bm25::{deserialize, CompiledPropertyDeps, IncrementalUpdater};
         use futures::StreamExt;
 
@@ -570,7 +570,7 @@ where
             )));
         }
 
-        if record.index_address.is_none() {
+        if record.index_id.is_none() {
             // No index yet - need full resync
             return self.resync_bm25_index(graph_source_id).await;
         }
@@ -618,16 +618,12 @@ where
             });
         }
 
-        // 4. Get head commit info for tracing
-        let head_commit_address = ledger
-            .ns_record
-            .as_ref()
-            .and_then(|r| r.commit_address.clone())
-            .ok_or_else(|| crate::ApiError::NotFound("No commit address for ledger".to_string()))?;
+        // 4. Get head commit CID for tracing
         let head_commit_id = ledger
             .ns_record
             .as_ref()
-            .and_then(|r| r.commit_head_id.clone());
+            .and_then(|r| r.commit_head_id.clone())
+            .ok_or_else(|| crate::ApiError::NotFound("No commit head for ledger".to_string()))?;
 
         // 5. Compile property deps for this ledger's namespace
         let compiled_deps = CompiledPropertyDeps::compile(&index.property_deps, |iri: &str| {
@@ -636,29 +632,8 @@ where
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
-        let use_cid_path = head_commit_id.is_some()
-            && fluree_db_core::address::parse_fluree_address(&head_commit_address).is_some();
-        let stream: std::pin::Pin<
-            Box<
-                dyn futures::Stream<Item = fluree_db_novelty::Result<fluree_db_novelty::Commit>>
-                    + Send,
-            >,
-        > = if let (true, Some(cid)) = (use_cid_path, &head_commit_id) {
-            let parsed =
-                fluree_db_core::address::parse_fluree_address(&head_commit_address).unwrap();
-            let method = parsed.method.to_string();
-            let prefix = fluree_db_core::extract_ledger_prefix(&head_commit_address)
-                .unwrap_or_else(|| ledger.db.ledger_id.clone());
-            let store =
-                fluree_db_core::bridge_content_store(self.storage().clone(), &prefix, &method);
-            Box::pin(trace_commits_by_id(store, cid.clone(), old_watermark))
-        } else {
-            Box::pin(trace_commits(
-                self.storage().clone(),
-                head_commit_address.clone(),
-                old_watermark,
-            ))
-        };
+        let store = fluree_db_core::content_store_for(self.storage().clone(), &ledger.db.ledger_id);
+        let stream = trace_commits_by_id(store, head_commit_id.clone(), old_watermark);
         futures::pin_mut!(stream);
 
         while let Some(result) = stream.next().await {
@@ -776,7 +751,7 @@ where
             )));
         }
 
-        if record.index_address.is_none() {
+        if record.index_id.is_none() {
             return Err(crate::ApiError::NotFound(format!(
                 "No index for graph source: {}",
                 graph_source_id
@@ -1118,16 +1093,14 @@ where
         );
 
         // 4. Collect all addresses to delete (snapshot blobs + manifest itself)
-        let mut addresses_to_delete: HashSet<String> = manifest
+        let addresses_to_delete: HashSet<String> = manifest
             .all_snapshot_addresses()
             .into_iter()
             .map(|s| s.to_string())
             .collect();
 
-        // Also delete the manifest address
-        if let Some(manifest_addr) = &record.index_address {
-            addresses_to_delete.insert(manifest_addr.clone());
-        }
+        // Note: the manifest CID is tracked in the nameservice, but the
+        // storage address is derivable from the manifest snapshots already collected.
 
         // 5. Delete all snapshot files
         let mut deleted_snapshots = 0;

@@ -10,10 +10,8 @@ use crate::view::{FlureeView, ReasoningModePrecedence};
 use crate::{
     time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
 };
-use fluree_db_core::{DictNovelty, Flake, IndexType, OverlayProvider, Sid};
-use fluree_db_indexer::run_index::{
-    BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2,
-};
+use fluree_db_core::{ContentStore, DictNovelty, Flake, IndexType, OverlayProvider, Sid};
+use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION};
 use fluree_db_query::rewrite::ReasoningModes;
 use fluree_db_query::BinaryRangeProvider;
 
@@ -270,22 +268,25 @@ where
         // load the BinaryIndexStore and attach BinaryRangeProvider.
         // This handles the non-cached path (FlureeBuilder::file() without ledger_manager).
         if snapshot.binary_store.is_none() {
-            if let Some(index_addr) = snapshot
+            if let Some(index_cid) = snapshot
                 .ns_record
                 .as_ref()
-                .and_then(|r| r.index_address.as_ref())
+                .and_then(|r| r.index_head_id.as_ref())
                 .cloned()
             {
                 let storage = self.storage();
-                let bytes = storage
-                    .read_bytes(&index_addr)
+                let cs = fluree_db_core::content_store_for(storage.clone(), &snapshot.db.ledger_id);
+                let bytes = cs
+                    .get(&index_cid)
                     .await
                     .map_err(|e| ApiError::internal(format!("read index root: {}", e)))?;
-                if let Ok(root) = serde_json::from_slice::<BinaryIndexRootV2>(&bytes) {
-                    if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
+                if let Ok(root) = serde_json::from_slice::<BinaryIndexRoot>(&bytes) {
+                    if root.version == BINARY_INDEX_ROOT_VERSION {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
+                        let cs =
+                            fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
                         let store =
-                            BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
+                            BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
                                 .await
                                 .map_err(|e| {
                                     ApiError::internal(format!("load binary index: {}", e))
@@ -335,28 +336,31 @@ where
         // we intentionally skip attaching a binary store so the query engine
         // takes the overlay/range path instead of the binary scan path.
         if view.db.t > 0 {
-            // Use nameservice record (not cached handle) to avoid stale index_address.
+            // Use nameservice record (not cached handle) to avoid stale index.
             if let Some(record) = self.nameservice.lookup(ledger_id).await? {
-                if let Some(index_addr) = record.index_address.as_ref() {
+                if let Some(index_cid) = record.index_head_id.as_ref() {
                     let storage = self.storage();
-                    let bytes = storage.read_bytes(index_addr).await.map_err(|e| {
+                    let cs = fluree_db_core::content_store_for(storage.clone(), &record.ledger_id);
+                    let bytes = cs.get(index_cid).await.map_err(|e| {
                         ApiError::internal(format!(
                             "failed to read index root {}: {}",
-                            index_addr, e
+                            index_cid, e
                         ))
                     })?;
-                    let root: BinaryIndexRootV2 = serde_json::from_slice(&bytes).map_err(|e| {
-                        ApiError::internal(format!("failed to parse v2 root {}: {}", index_addr, e))
+                    let root: BinaryIndexRoot = serde_json::from_slice(&bytes).map_err(|e| {
+                        ApiError::internal(format!("failed to parse v2 root {}: {}", index_cid, e))
                     })?;
-                    if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
+                    if root.version == BINARY_INDEX_ROOT_VERSION {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
+                        let cs =
+                            fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
                         let store =
-                            BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
+                            BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
                                 .await
                                 .map_err(|e| {
                                     ApiError::internal(format!(
                                         "load binary index store from {}: {}",
-                                        index_addr, e
+                                        index_cid, e
                                     ))
                                 })?;
                         view.binary_store = Some(Arc::new(store));
@@ -370,7 +374,7 @@ where
 
     /// Load a view at a flexible time specification.
     ///
-    /// Resolves `@t:`, `@iso:`, `@sha:`, or `latest` time specifications.
+    /// Resolves `@t:`, `@iso:`, `@commit:`, or `latest` time specifications.
     pub(crate) async fn load_view_at(
         &self,
         ledger_id: &str,
@@ -408,15 +412,15 @@ where
                 .await?;
                 self.load_view_at_t(ledger_id, resolved_t).await
             }
-            TimeSpec::AtCommit(sha_prefix) => {
+            TimeSpec::AtCommit(commit_prefix) => {
                 let handle = self.ledger_cached(ledger_id).await?;
                 let snapshot = handle.snapshot().await;
                 let ledger = snapshot.to_ledger_state();
                 let current_t = ledger.t();
-                let resolved_t = time_resolve::sha_to_t(
+                let resolved_t = time_resolve::commit_to_t(
                     &ledger.db,
                     Some(ledger.novelty.as_ref()),
-                    &sha_prefix,
+                    &commit_prefix,
                     current_t,
                 )
                 .await?;

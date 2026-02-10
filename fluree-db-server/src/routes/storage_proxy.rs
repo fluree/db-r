@@ -180,11 +180,18 @@ fn build_json_flakes_response(
 pub struct NsRecordResponse {
     pub ledger_id: String,
     pub branch: String,
-    pub commit_address: Option<String>,
+    pub commit_head_id: Option<String>,
     pub commit_t: i64,
-    pub index_address: Option<String>,
+    pub index_head_id: Option<String>,
     pub index_t: i64,
     pub retracted: bool,
+    /// Computed storage address for the head commit (derived from CID + storage method).
+    /// Peers need this to fetch commit blobs via the block endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_address: Option<String>,
+    /// Computed storage address for the head index root (derived from CID + storage method).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_address: Option<String>,
 }
 
 /// Request body for block fetch endpoint
@@ -229,14 +236,35 @@ pub async fn get_ns_record(
         .map_err(|e| ServerError::internal(format!("Nameservice lookup failed: {}", e)))?
         .ok_or_else(|| ServerError::not_found("Ledger not found"))?;
 
+    // Derive storage addresses from CIDs so peers can fetch blobs via the block endpoint.
+    let method = fluree_db_core::StorageMethod::storage_method(state.fluree.as_file().storage());
+    let commit_address = ns_record.commit_head_id.as_ref().map(|cid| {
+        fluree_db_core::content_address(
+            method,
+            fluree_db_core::ContentKind::Commit,
+            &ns_record.ledger_id,
+            &cid.digest_hex(),
+        )
+    });
+    let index_address = ns_record.index_head_id.as_ref().map(|cid| {
+        fluree_db_core::content_address(
+            method,
+            fluree_db_core::ContentKind::IndexRoot,
+            &ns_record.ledger_id,
+            &cid.digest_hex(),
+        )
+    });
+
     Ok(Json(NsRecordResponse {
         ledger_id: ns_record.name.clone(),
         branch: ns_record.branch.clone(),
-        commit_address: ns_record.commit_address.clone(),
+        commit_head_id: ns_record.commit_head_id.as_ref().map(|id| id.to_string()),
         commit_t: ns_record.commit_t,
-        index_address: ns_record.index_address.clone(),
+        index_head_id: ns_record.index_head_id.as_ref().map(|id| id.to_string()),
         index_t: ns_record.index_t,
         retracted: ns_record.retracted,
+        commit_address,
+        index_address,
     }))
 }
 

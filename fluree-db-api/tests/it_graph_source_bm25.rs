@@ -33,10 +33,7 @@ async fn bm25_create_full_text_index_indexes_docs_and_is_loadable() {
     let cfg = Bm25CreateConfig::new("bm25-search", alias, query);
     let created = fluree.create_full_text_index(cfg).await.unwrap();
     assert!(created.doc_count > 0, "expected index to include documents");
-    assert!(
-        created.index_address.is_some(),
-        "expected persisted index address"
-    );
+    assert!(created.index_id.is_some(), "expected persisted index id");
 
     // Load the index back via nameservice+storage
     let idx = fluree
@@ -553,10 +550,7 @@ async fn bm25_file_backed_storage() {
         .await
         .expect("create index");
     assert_eq!(created.doc_count, 3, "expected 3 indexed docs");
-    assert!(
-        created.index_address.is_some(),
-        "expected persisted index address"
-    );
+    assert!(created.index_id.is_some(), "expected persisted index id");
 
     // Verify graph-sources directory exists
     let gs_dir = std::path::Path::new(&storage_path).join(STORAGE_SEGMENT_GRAPH_SOURCES);

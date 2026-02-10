@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 /// Metadata for creating a database from its index root.
 ///
-/// Bundles all the metadata fields extracted from a v2 BinaryIndexRootV2
+/// Bundles all the metadata fields extracted from a v2 BinaryIndexRoot
 /// for constructing a metadata-only `Db`.
 pub struct DbMetadata {
     /// Ledger ID (e.g., "mydb/main")
@@ -162,7 +162,7 @@ impl<S: Storage> Db<S> {
 
     /// Load a database from a v2 index root address.
     ///
-    /// Only v2 (BinaryIndexRootV2) roots are supported. The `"version"` field
+    /// Only v2 (BinaryIndexRoot) roots are supported. The `"version"` field
     /// in the JSON root must be `2`; any other value is rejected.
     ///
     /// The returned Db is metadata-only (`range_provider = None`). The caller
@@ -179,16 +179,16 @@ impl<S: Storage> Db<S> {
             .unwrap_or(0) as u32;
 
         match version {
-            2 => Self::from_v2_json(storage, &root_json),
+            2 | 3 => Self::from_v2_json(storage, &root_json),
             v => Err(Error::invalid_index(format!(
-                "unsupported index root version: {} (only v2 supported)",
+                "unsupported index root version: {} (only v2/v3 supported)",
                 v
             ))),
         }
     }
 
-    /// Extract metadata from a v2 BinaryIndexRootV2 JSON blob.
-    fn from_v2_json(storage: S, root: &serde_json::Value) -> Result<Self> {
+    /// Extract metadata from a v2 BinaryIndexRoot JSON blob.
+    pub fn from_v2_json(storage: S, root: &serde_json::Value) -> Result<Self> {
         let ledger_id = root["ledger_id"]
             .as_str()
             .ok_or_else(|| Error::invalid_index("v2 root missing ledger_id"))?

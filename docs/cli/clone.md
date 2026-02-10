@@ -69,8 +69,6 @@ Remote ledger 'mydb:main' has no commits (t=0), nothing to clone.
 
 ## Limitations
 
-- **Same ledger name locally:** The local ledger must use the same name as the remote. CAS addresses embed the ledger path, so renaming would break commit chain traversal. `--alias` is reserved for a future address-rewriting feature.
-- **Same storage backend required:** Client and server must use the same storage method (both `file`, both `s3`, etc.). Cross-backend clone (e.g., server on S3, client on file) is not yet supported.
 - **Post-clone indexing:** After cloning a large ledger, you may want to run `fluree reindex` to build a binary index. Without an index, queries must replay all novelty from commits, which can be slow for large ledgers.
 
 ## See Also

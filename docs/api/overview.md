@@ -56,7 +56,7 @@ Historical queries use time specifiers in ledger IDs:
 ```text
 ledger:branch@t:100           # Transaction number
 ledger:branch@iso:2024-01-15  # ISO timestamp
-ledger:branch@sha:abc123      # Commit SHA
+ledger:branch@commit:bafybeig...  # Commit ID
 ```
 
 These work in all query contexts (FROM clauses, dataset specs, etc.).
@@ -203,8 +203,7 @@ Successful operations return appropriate status codes with JSON bodies.
 {
   "t": 5,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456...",
-  "address": "fluree:memory:commit:abc123...",
+  "commit_id": "bafybeig...commitT5",
   "flakes_added": 3,
   "flakes_retracted": 1
 }
@@ -506,7 +505,7 @@ Combine related entities in single transactions for better performance.
 
 - `@t:NNN` is fastest (direct lookup)
 - `@iso:DATETIME` requires binary search
-- `@sha:PREFIX` requires scan (use 7+ character prefixes)
+- `@commit:CID` requires scan
 
 ### 3. Limit Result Sets
 

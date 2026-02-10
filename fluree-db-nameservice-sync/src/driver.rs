@@ -123,13 +123,11 @@ impl SyncDriver {
 
             let new_commit = Some(RefValue {
                 id: record.commit_head_id.clone(),
-                address: record.commit_address.clone(),
                 t: record.commit_t,
             });
-            let new_index = if record.index_t > 0 || record.index_address.is_some() {
+            let new_index = if record.index_t > 0 || record.index_head_id.is_some() {
                 Some(RefValue {
                     id: record.index_head_id.clone(),
-                    address: record.index_address.clone(),
                     t: record.index_t,
                 })
             } else {
@@ -226,11 +224,7 @@ impl SyncDriver {
 
                         Ok(PullResult::FastForwarded {
                             ledger_id: local_alias.to_string(),
-                            from: RefValue {
-                                id: None,
-                                address: None,
-                                t: 0,
-                            },
+                            from: RefValue { id: None, t: 0 },
                             to: remote_commit.clone(),
                         })
                     }
@@ -238,11 +232,7 @@ impl SyncDriver {
                         // Someone else created it concurrently
                         Ok(PullResult::Diverged {
                             ledger_id: local_alias.to_string(),
-                            local: actual.unwrap_or(RefValue {
-                                id: None,
-                                address: None,
-                                t: 0,
-                            }),
+                            local: actual.unwrap_or(RefValue { id: None, t: 0 }),
                             remote: remote_commit.clone(),
                         })
                     }
@@ -277,9 +267,7 @@ impl SyncDriver {
                             remote: remote_commit.clone(),
                         }),
                     }
-                } else if remote_commit.t == local_commit.t
-                    && remote_commit.address == local_commit.address
-                {
+                } else if remote_commit.t == local_commit.t && remote_commit.id == local_commit.id {
                     // Commit is current, but index may still be behind (reindex at same t).
                     if let Some(remote_index) = remote_index.as_ref() {
                         self.fast_forward_index(local_alias, remote_index, 3)
@@ -404,7 +392,7 @@ impl SyncDriver {
 
                 // Best-effort push of index head if we have one.
                 if let Some(local_index) = local_index.as_ref() {
-                    if local_index.address.is_some() {
+                    if local_index.id.is_some() {
                         if let Ok(CasResult::Updated) = client
                             .push_ref(
                                 &upstream.remote_alias,
@@ -427,11 +415,7 @@ impl SyncDriver {
                 })
             }
             CasResult::Conflict { actual } => {
-                let remote = actual.unwrap_or(RefValue {
-                    id: None,
-                    address: None,
-                    t: 0,
-                });
+                let remote = actual.unwrap_or(RefValue { id: None, t: 0 });
                 Ok(PushResult::Rejected {
                     ledger_id: local_alias.to_string(),
                     local: local_commit,
@@ -556,12 +540,7 @@ mod tests {
         // Publish something on the remote
         remote
             .ns
-            .publish_commit(
-                "mydb:main",
-                5,
-                &test_commit_id("commit-1"),
-                Some("commit-1"),
-            )
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
@@ -578,12 +557,7 @@ mod tests {
 
         remote
             .ns
-            .publish_commit(
-                "mydb:main",
-                5,
-                &test_commit_id("commit-1"),
-                Some("commit-1"),
-            )
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
@@ -612,24 +586,14 @@ mod tests {
 
         // Create local at t=1
         local
-            .publish_commit(
-                "mydb:main",
-                1,
-                &test_commit_id("commit-1"),
-                Some("commit-1"),
-            )
+            .publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
         // Remote at t=5
         remote
             .ns
-            .publish_commit(
-                "mydb:main",
-                5,
-                &test_commit_id("commit-5"),
-                Some("commit-5"),
-            )
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -670,22 +634,12 @@ mod tests {
 
         // Both at t=5 with same address
         local
-            .publish_commit(
-                "mydb:main",
-                5,
-                &test_commit_id("commit-5"),
-                Some("commit-5"),
-            )
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
         remote
             .ns
-            .publish_commit(
-                "mydb:main",
-                5,
-                &test_commit_id("commit-5"),
-                Some("commit-5"),
-            )
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -713,24 +667,14 @@ mod tests {
 
         // Local ahead at t=10
         local
-            .publish_commit(
-                "mydb:main",
-                10,
-                &test_commit_id("commit-10"),
-                Some("commit-10"),
-            )
+            .publish_commit("mydb:main", 10, &test_commit_id("commit-10"))
             .await
             .unwrap();
 
         // Remote at t=5
         remote
             .ns
-            .publish_commit(
-                "mydb:main",
-                5,
-                &test_commit_id("commit-5"),
-                Some("commit-5"),
-            )
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -774,12 +718,7 @@ mod tests {
             .unwrap();
 
         local
-            .publish_commit(
-                "mydb:main",
-                5,
-                &test_commit_id("commit-5"),
-                Some("commit-5"),
-            )
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -808,23 +747,13 @@ mod tests {
         // Remote has data already
         remote
             .ns
-            .publish_commit(
-                "mydb:main",
-                1,
-                &test_commit_id("commit-1"),
-                Some("commit-1"),
-            )
+            .publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
         // Local has different data
         local
-            .publish_commit(
-                "mydb:main",
-                5,
-                &test_commit_id("commit-5"),
-                Some("commit-5"),
-            )
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -847,12 +776,7 @@ mod tests {
         let (local, _remote, driver, _config) = setup_driver().await;
 
         local
-            .publish_commit(
-                "mydb:main",
-                1,
-                &test_commit_id("commit-1"),
-                Some("commit-1"),
-            )
+            .publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
             .await
             .unwrap();
 

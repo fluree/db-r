@@ -239,11 +239,9 @@ mod tests {
         let record = LedgerRecord {
             ledger_id: "books:main".to_string(),
             branch: Some("main".to_string()),
-            commit_head_id: None,
-            commit_address: Some("commit:1".to_string()),
+            commit_head_id: Some("commit-cid:1".to_string()),
             commit_t: 5,
-            index_head_id: None,
-            index_address: Some("index:1".to_string()),
+            index_head_id: Some("index-cid:1".to_string()),
             index_t: 3,
             retracted: false,
         };
@@ -268,11 +266,9 @@ mod tests {
         let record = LedgerRecord {
             ledger_id: "books:main".to_string(),
             branch: Some("main".to_string()),
-            commit_head_id: None,
-            commit_address: Some("commit:1".to_string()),
+            commit_head_id: Some("commit-cid:1".to_string()),
             commit_t: 5,
-            index_head_id: None,
-            index_address: Some("index:1".to_string()),
+            index_head_id: Some("index-cid:1".to_string()),
             index_t: 3,
             retracted: false,
         };
@@ -304,11 +300,9 @@ mod tests {
         let record = LedgerRecord {
             ledger_id: "books:main".to_string(),
             branch: Some("main".to_string()),
-            commit_head_id: None,
-            commit_address: Some("commit:1".to_string()),
+            commit_head_id: Some("commit-cid:1".to_string()),
             commit_t: 5,
-            index_head_id: None,
-            index_address: Some("index:1".to_string()),
+            index_head_id: Some("index-cid:1".to_string()),
             index_t: 3,
             retracted: false,
         };

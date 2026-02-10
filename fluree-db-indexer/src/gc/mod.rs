@@ -104,6 +104,7 @@ pub async fn write_garbage_record<S: ContentAddressedWrite>(
 
     Ok(Some(GarbageRef {
         address: res.address,
+        content_hash: res.content_hash,
     }))
 }
 

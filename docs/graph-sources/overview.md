@@ -113,13 +113,13 @@ Non-ledger graph sources are registered in nameservice:
   "from": "mydb:main",
   "where": [
     {
-      "db:graphSource": "products-vector:main",
-      "db:queryVector": [0.1, 0.2, ...],
-      "db:distanceMetric": "cosine",
-      "db:searchLimit": 10,
-      "db:searchResult": {
-        "db:resultId": "?product",
-        "db:resultScore": "?score"
+      "f:graphSource": "products-vector:main",
+      "f:queryVector": [0.1, 0.2, ...],
+      "f:distanceMetric": "cosine",
+      "f:searchLimit": 10,
+      "f:searchResult": {
+        "f:resultId": "?product",
+        "f:resultScore": "?score"
       }
     }
   ],
@@ -213,11 +213,11 @@ Define graph source as RDF:
   "@graph": [
     {
       "@id": "gs:products-search",
-      "@type": "db:IndexSource",
-      "db:type": "bm25",
-      "db:source": "products:main",
-      "db:config": {
-        "db:fields": [...]
+      "@type": "f:IndexSource",
+      "f:type": "bm25",
+      "f:source": "products:main",
+      "f:config": {
+        "f:fields": [...]
       }
     }
   ]
@@ -256,10 +256,10 @@ Combine multiple graph sources:
     { "@id": "?product", "bm25:matches": "laptop" },
     { "@id": "?product", "bm25:score": "?textScore" },
     {
-      "db:graphSource": "products-vector:main",
-      "db:queryVector": "?queryVec",
-      "db:searchLimit": 100,
-      "db:searchResult": { "db:resultId": "?product", "db:resultScore": "?vecScore" }
+      "f:graphSource": "products-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 100,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?vecScore" }
     }
   ]
 }

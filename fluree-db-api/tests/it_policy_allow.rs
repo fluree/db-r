@@ -734,14 +734,14 @@ async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
             let outcome =
                 support::trigger_index_and_wait_outcome(&handle, r1.ledger.ledger_id(), r1.receipt.t)
                     .await;
-            let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
+            let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
                 unreachable!("helper only returns Completed")
             };
 
             // Reload via `fluree.ledger()` so the returned state has a queryable
             // binary range provider + binary store attached when an index exists.
             let ledger1 = fluree.ledger(alias).await.expect("fluree.ledger after indexing");
-            let _ = root_address; // keep for debugging parity
+            let _ = root_id; // keep for debugging parity
 
             // txn2: update existing user, add SSN WITHOUT restating @type
             let txn2 = json!({

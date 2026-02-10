@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+fluree-db-core = { path = "../fluree-db-core" }
 fluree-db-nameservice = { path = "../fluree-db-nameservice" }
 fluree-sse = { path = "../fluree-sse" }
 

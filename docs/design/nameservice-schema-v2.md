@@ -76,7 +76,7 @@ With the item-per-concern layout, DynamoDB contention is limited to writers of t
 
 The `meta` item carries the record discriminator:
 - `kind`: `ledger` | `graph_source`
-- `source_type` (graph sources only): a type string (e.g., `db:Bm25Index`, `db:HnswIndex`, `db:IcebergSource`, `db:R2rmlSource`, `db:JdbcSource`)
+- `source_type` (graph sources only): a type string (e.g., `f:Bm25Index`, `f:HnswIndex`, `f:IcebergSource`, `f:R2rmlSource`, `f:JdbcSource`)
 
 Use `graph_source` naming consistently in `pk` values and type strings.
 
@@ -136,27 +136,29 @@ When a record is initialized but has no data yet for a concern:
 
 ```json
 {
-  "address": "fluree:s3://bucket/commits/abc123.json",
+  "id": "bafybeigdyr...commitCid",
   "t": 42
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `address` | String | Storage address of the commit |
+| `id` | String | ContentId (CIDv1) of the commit |
 | `t` | Number | Transaction time (redundant with `commit_t` but explicit) |
+
+> See [ContentId and ContentStore](content-id-and-contentstore.md) for details on the CID format.
 
 ### index (Ledger with Named Graphs)
 
 ```json
 {
   "default": {
-    "address": "fluree:s3://bucket/index/default-t42-r0.avro",
+    "id": "bafybeig...indexRootDefault",
     "t": 42,
     "rev": 0
   },
   "txn-metadata": {
-    "address": "fluree:s3://bucket/index/txn-meta-t42-r1.avro",
+    "id": "bafybeig...indexRootTxnMeta",
     "t": 42,
     "rev": 1
   },
@@ -167,7 +169,7 @@ When a record is initialized but has no data yet for a concern:
 | Field | Type | Description |
 |-------|------|-------------|
 | `{named-graph}` | Object \| null | Index state per named graph |
-| `.address` | String | Storage address of the index root |
+| `.id` | String | ContentId (CIDv1) of the index root |
 | `.t` | Number | Transaction time the index covers |
 | `.rev` | Number | Revision at that `t` (0, 1, 2... for reindex operations) |
 
@@ -175,11 +177,11 @@ When a record is initialized but has no data yet for a concern:
 
 ### index (Graph Source)
 
-For graph sources with index state (e.g., BM25, vector, spatial, Iceberg, etc.), the nameservice stores a **head pointer** to the graph source’s latest index root/manifest. The payload is intentionally **opaque** to nameservice: the graph source implementation defines what the address points to and how (or whether) it supports time travel.
+For graph sources with index state (e.g., BM25, vector, spatial, Iceberg, etc.), the nameservice stores a **head pointer** to the graph source's latest index root/manifest. The payload is intentionally **opaque** to nameservice: the graph source implementation defines what the ContentId points to and how (or whether) it supports time travel.
 
 ```json
 {
-  "address": "fluree:s3://bucket/graph-sources/products-search/main/bm25/root-manifest.json",
+  "id": "bafybeig...graphSourceIndexRoot",
   "index_t": 42
 }
 ```
@@ -241,7 +243,7 @@ For graph sources with no index concept (e.g., JDBC mappings): `null`.
 
 ```json
 {
-  "default_context": "fluree:s3://contexts/v1.json",
+  "default_context_id": "bafkreih...contextCid",
   "index_threshold": 1000,
   "replication": {
     "factor": 3,
@@ -254,7 +256,7 @@ Config is fully flexible JSON. Common fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `default_context` | String | Default JSON-LD context address |
+| `default_context_id` | String | ContentId (CIDv1) of default JSON-LD context |
 | `index_threshold` | Number | Commits before auto-index |
 | `replication` | Object | Replication settings |
 
@@ -325,7 +327,7 @@ ExpressionAttributeNames: {
 }
 ExpressionAttributeValues: {
   ":new_t": 42,
-  ":commit": { "address": "fluree:s3://...", "t": 42 }
+  ":commit": { "id": "bafybeig...commitT42", "t": 42 }
 }
 ```
 
@@ -350,9 +352,9 @@ ExpressionAttributeNames: {
 }
 ExpressionAttributeValues: {
   ":expected_t": 41,                                              // caller's last-known watermark
-  ":expected_commit": { "address": "fluree:s3://.../t41.json", "t": 41 },  // caller's last-known payload
+  ":expected_commit": { "id": "bafybeig...commitT41", "t": 41 },  // caller's last-known payload
   ":new_t": 42,
-  ":commit": { "address": "fluree:s3://.../t42.json", "t": 42 },
+  ":commit": { "id": "bafybeig...commitT42", "t": 42 },
   ":zero": 0,
   ":null_type": "NULL"
 }
@@ -381,8 +383,8 @@ ExpressionAttributeNames: {
 ExpressionAttributeValues: {
   ":new_t": 42,
   ":index": {
-    "default": { "address": "...", "t": 42, "rev": 0 },
-    "txn-metadata": { "address": "...", "t": 42, "rev": 1 }
+    "default": { "id": "bafybeig...indexDefault", "t": 42, "rev": 0 },
+    "txn-metadata": { "id": "bafybeig...indexTxnMeta", "t": 42, "rev": 1 }
   },
 }
 ```
@@ -429,7 +431,7 @@ ExpressionAttributeValues: {
   ":expected_v": 2,
   ":zero": 0,
   ":new_v": 3,
-  ":config": { "default_context": "...", "index_threshold": 500 },
+  ":config": { "default_context_id": "bafkreih...", "index_threshold": 500 },
   ":null_type": "NULL"
 }
 ```
@@ -475,7 +477,7 @@ ExpressionAttributeValues: { ":kind": "ledger" }
 
 To list graph sources, query `kind = graph_source`.
 
-To list graph sources of a specific type (optional GSI), query `source_type = db:Bm25Index`, etc.
+To list graph sources of a specific type (optional GSI), query `source_type = f:Bm25Index`, etc.
 
 ---
 
@@ -604,7 +606,7 @@ Ledger records are represented as multiple items under the same `pk`:
   "sk": "head",
   "schema": 2,
   "commit_t": 42,
-  "commit": { "address": "fluree:s3://bucket/commits/mydb/main/t42.json", "t": 42 }
+  "commit": { "id": "bafybeig...commitT42", "t": 42 }
 }
 ```
 
@@ -615,7 +617,7 @@ Ledger records are represented as multiple items under the same `pk`:
   "schema": 2,
   "index_t": 42,
   "index": {
-    "default": { "address": "fluree:s3://bucket/index/mydb/main/default-t42-r0.avro", "t": 42, "rev": 0 }
+    "default": { "id": "bafybeig...indexDefaultT42", "t": 42, "rev": 0 }
   }
 }
 ```
@@ -626,7 +628,7 @@ Ledger records are represented as multiple items under the same `pk`:
   "sk": "config",
   "schema": 2,
   "config_v": 2,
-  "config": { "default_context": "fluree:s3://bucket/contexts/v1.json", "index_threshold": 1000 }
+  "config": { "default_context_id": "bafkreih...contextCid", "index_threshold": 1000 }
 }
 ```
 
@@ -652,7 +654,7 @@ An "unborn" ledger has all 5 concern items created atomically at initialization.
   "sk": "meta",
   "schema": 2,
   "kind": "graph_source",
-  "source_type": "db:Bm25Index",
+  "source_type": "f:Bm25Index",
   "name": "search",
   "branch": "main",
   "dependencies": ["mydb:main"],
@@ -680,7 +682,7 @@ Additional concern items for the same `pk` (examples):
   "sk": "index",
   "schema": 2,
   "index_t": 42,
-  "index": { "address": "fluree:s3://bucket/graph-sources/search/main/bm25/root-manifest.json" }
+  "index": { "id": "bafybeig...bm25IndexRoot" }
 }
 ```
 
@@ -692,7 +694,7 @@ Additional concern items for the same `pk` (examples):
   "sk": "meta",
   "schema": 2,
   "kind": "graph_source",
-  "source_type": "db:IcebergSource",
+  "source_type": "f:IcebergSource",
   "name": "analytics",
   "branch": "main",
   "dependencies": ["mydb:main"],
@@ -711,7 +713,7 @@ Additional concern items for the same `pk` (examples):
   "sk": "meta",
   "schema": 2,
   "kind": "graph_source",
-  "source_type": "db:JdbcSource",
+  "source_type": "f:JdbcSource",
   "name": "erp",
   "branch": "main",
   "dependencies": null,
@@ -825,7 +827,7 @@ Clients track watermarks to detect changes:
     },
     "search:main": {
       "kind": "graph_source",
-      "source_type": "db:Bm25Index",
+      "source_type": "f:Bm25Index",
       "index_t": 42,
       "status_v": 12,
       "config_v": 1
@@ -859,10 +861,10 @@ The file-backed and storage-backed implementations in this repo use the **`ns@v2
 - Index record: `ns@v2/{name}/{branch}.index.json` (index head pointer only)
 
 Field names differ from the DynamoDB layout, but the **semantics match**:
-- logical `commit_t` is stored as `db:t`
-- logical `commit.address` is stored as `db:ledgerCommit.@id`
-- logical `index_t` is stored as `db:ledgerIndex.db:t` (or `db:indexT` for graph source index files)
-- logical `index.address` is stored as `db:ledgerIndex.@id` (or `db:indexAddress` for graph source index files)
+- logical `commit_t` is stored as `f:t`
+- logical `commit.id` is stored as `f:ledgerCommit.@id` (a CID string)
+- logical `index_t` is stored as `f:ledgerIndex.f:t` (or `f:indexT` for graph source index files)
+- logical `index.id` is stored as `f:ledgerIndex.@id` (a CID string, or `f:indexId` for graph source index files)
 
 ### Layout Options
 
@@ -928,23 +930,23 @@ Each file contains JSON matching the concern's payload plus metadata:
 **head file** (`{name}/{branch}.json`):
 ```json
 {
-  "@context": { "db": "https://ns.flur.ee/db#" },
+  "@context": { "f": "https://ns.flur.ee/db#" },
   "@id": "mydb:main",
-  "@type": ["db:Database", "db:LedgerSource"],
-  "db:ledger": { "@id": "mydb" },
-  "db:branch": "main",
-  "db:ledgerCommit": { "@id": "fluree:s3://.../t42.json" },
-  "db:t": 42,
-  "db:ledgerIndex": { "@id": "fluree:s3://.../index-t42.bin", "db:t": 42 },
-  "db:status": "ready"
+  "@type": ["f:Database", "f:LedgerSource"],
+  "f:ledger": { "@id": "mydb" },
+  "f:branch": "main",
+  "f:ledgerCommit": { "@id": "bafybeig...commitT42" },
+  "f:t": 42,
+  "f:ledgerIndex": { "@id": "bafybeig...indexRootT42", "f:t": 42 },
+  "f:status": "ready"
 }
 ```
 
 **index file** (`{name}/{branch}.index.json`):
 ```json
 {
-  "@context": { "db": "https://ns.flur.ee/db#" },
-  "db:ledgerIndex": { "@id": "fluree:s3://.../index-t42.bin", "db:t": 42 }
+  "@context": { "f": "https://ns.flur.ee/db#" },
+  "f:ledgerIndex": { "@id": "bafybeig...indexRootT42", "f:t": 42 }
 }
 ```
 
@@ -1014,7 +1016,7 @@ All items share:
 | `branch` | String | Branch name |
 | `retracted` | Boolean | Soft-delete flag |
 | `dependencies` | List\<String\> \| null | Graph-source dependencies (optional) |
-| `source_type` | String \| null | Graph-source type (e.g., `db:Bm25Index`) |
+| `source_type` | String \| null | Graph-source type (e.g., `f:Bm25Index`) |
 | `created_at` | Number | Creation timestamp (epoch seconds, optional) |
 | `updated_at_ms` | Number | Last update time (epoch millis, optional) |
 
@@ -1023,7 +1025,7 @@ All items share:
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `commit_t` | Number | Commit watermark (`t`) |
-| `commit` | Map \| null | `{ address, t }` |
+| `commit` | Map \| null | `{ id, t }` (id is a ContentId CID string) |
 
 ### `index` item (ledgers + graph sources)
 

@@ -27,11 +27,11 @@
 
 use crate::error::{LedgerError, Result};
 use fluree_db_core::{
-    address::parse_fluree_address, bridge_content_store, extract_ledger_prefix, ContentId, Db,
-    Flake, FlakeMeta, FlakeValue, IndexType, OverlayProvider, Sid, Storage,
+    content_store_for, ContentId, ContentStore, Db, Flake, FlakeMeta, FlakeValue, IndexType,
+    OverlayProvider, Sid, Storage,
 };
 use fluree_db_nameservice::NameService;
-use fluree_db_novelty::{generate_commit_flakes, trace_commits, trace_commits_by_id, Novelty};
+use fluree_db_novelty::{generate_commit_flakes, trace_commits_by_id, Novelty};
 use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB, JSON_LD, RDF, XSD};
 use fluree_vocab::{rdf_names, xsd_names};
 use futures::StreamExt;
@@ -97,6 +97,8 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
             return Err(LedgerError::future_time(alias, target_t, record.commit_t));
         }
 
+        let store = content_store_for(storage.clone(), &record.ledger_id);
+
         // If the requested time is *before* the latest index_t, we cannot assume the
         // binary index can answer time-travel purely via the index. Until the index
         // format guarantees history coverage for all updates, we fall back to an
@@ -104,12 +106,18 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         //
         // When target_t >= index_t, we can use the head index and only replay commits
         // after index_t (normal fast path).
-        let use_index = record.index_address.is_some() && target_t >= record.index_t;
+        let use_index = record.index_head_id.is_some() && target_t >= record.index_t;
 
         // Base db + baseline index_t for overlay range.
         let (mut db, index_t) = if use_index {
-            let addr = record.index_address.as_ref().unwrap();
-            (Db::load(storage.clone(), addr).await?, record.index_t)
+            let index_cid = record.index_head_id.as_ref().unwrap();
+            let root_bytes = store.get(index_cid).await?;
+            let root_json: serde_json::Value =
+                serde_json::from_slice(&root_bytes).map_err(|e| {
+                    fluree_db_core::Error::invalid_index(format!("invalid root JSON: {}", e))
+                })?;
+            let loaded = Db::from_v2_json(storage.clone(), &root_json)?;
+            (loaded, record.index_t)
         } else {
             (Db::genesis(storage.clone(), &record.ledger_id), 0)
         };
@@ -118,18 +126,12 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         // When we are in overlay-only mode (use_index=false), this replays *all*
         // commits up to target_t (index_t=0), producing a correct time-travel snapshot
         // without relying on index history coverage.
-        let overlay = if let Some(commit_addr) = &record.commit_address {
+        let overlay = if let Some(head_cid) = &record.commit_head_id {
             if target_t > index_t {
                 tracing::trace!(target_t, index_t, "HistoricalLedgerView: loading novelty");
-                let (novelty, ns_delta) = Self::load_novelty_range(
-                    storage,
-                    commit_addr,
-                    record.commit_head_id.as_ref(),
-                    index_t,
-                    target_t,
-                    &record.ledger_id,
-                )
-                .await?;
+                let (novelty, ns_delta) =
+                    Self::load_novelty_range(store, head_cid, index_t, target_t, &record.ledger_id)
+                        .await?;
 
                 // Apply namespace deltas to db
                 for (code, prefix) in ns_delta {
@@ -151,7 +153,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                 None
             }
         } else {
-            tracing::trace!("HistoricalLedgerView: no commit_address, no novelty");
+            tracing::trace!("HistoricalLedgerView: no commit_head_id, no novelty");
             None
         };
 
@@ -164,12 +166,11 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
 
     /// Load novelty from commits within a specific range
     ///
-    /// Loads commits from `head_address` backwards, including only commits
-    /// where `index_t < commit.t <= target_t`.
-    async fn load_novelty_range(
-        storage: S,
-        head_address: &str,
-        head_id: Option<&ContentId>,
+    /// Walks the commit chain backwards from `head_cid` using the content store,
+    /// including only commits where `index_t < commit.t <= target_t`.
+    async fn load_novelty_range<C: ContentStore + Clone + 'static>(
+        store: C,
+        head_cid: &ContentId,
         index_t: i64,
         target_t: i64,
         ledger_id: &str,
@@ -177,7 +178,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         use std::collections::HashMap;
 
         tracing::trace!(
-            head_address,
+            %head_cid,
             index_t,
             target_t,
             "load_novelty_range: starting"
@@ -186,25 +187,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         let mut novelty = Novelty::new(index_t);
         let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
 
-        // CID-first when parseable address available for method discovery
-        let use_cid_path = head_id.is_some() && parse_fluree_address(head_address).is_some();
-
-        // Use a type-erased stream to avoid duplicating the processing loop
-        let stream: std::pin::Pin<
-            Box<
-                dyn futures::Stream<Item = fluree_db_novelty::Result<fluree_db_novelty::Commit>>
-                    + Send,
-            >,
-        > = if let (true, Some(cid)) = (use_cid_path, head_id) {
-            let parsed = parse_fluree_address(head_address).unwrap();
-            let method = parsed.method.to_string();
-            let prefix =
-                extract_ledger_prefix(head_address).unwrap_or_else(|| ledger_id.to_string());
-            let store = bridge_content_store(storage, &prefix, &method);
-            Box::pin(trace_commits_by_id(store, cid.clone(), index_t))
-        } else {
-            Box::pin(trace_commits(storage, head_address.to_string(), index_t))
-        };
+        let stream = trace_commits_by_id(store, head_cid.clone(), index_t);
         futures::pin_mut!(stream);
 
         let mut commit_count = 0;
@@ -393,7 +376,9 @@ impl<S: Storage> OverlayProvider for HistoricalLedgerView<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{ContentId, ContentKind, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{
+        content_store_for, ContentKind, ContentStore, FlakeValue, MemoryStorage, Sid,
+    };
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_nameservice::Publisher;
 
@@ -478,21 +463,29 @@ mod tests {
         assert!(matches!(result, Err(LedgerError::NotFound(_))));
     }
 
+    /// Helper: serialize a commit, store via content store, and publish to nameservice.
+    /// Returns the CID of the stored commit.
+    async fn store_and_publish_commit(
+        storage: &MemoryStorage,
+        ns: &MemoryNameService,
+        ledger_id: &str,
+        commit: &fluree_db_novelty::Commit,
+    ) -> ContentId {
+        let store = content_store_for(storage.clone(), ledger_id);
+        let blob = fluree_db_novelty::commit_v2::write_commit(commit, false, None).unwrap();
+        let cid = store.put(ContentKind::Commit, &blob.bytes).await.unwrap();
+        ns.publish_commit(ledger_id, commit.t, &cid).await.unwrap();
+        cid
+    }
+
     #[tokio::test]
     async fn test_load_at_future_time() {
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
 
         // Create a ledger with commits up to t=5
-        let cid = ContentId::new(ContentKind::Commit, b"commit-5");
-        ns.publish_commit("test:main", 5, &cid, Some("commit-5"))
-            .await
-            .unwrap();
-
-        // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new(5, vec![make_flake(1, 1, 100, 5)]);
-        let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
-        storage.insert("commit-5", blob.bytes);
+        store_and_publish_commit(&storage, &ns, "test:main", &commit).await;
 
         // Try to load at t=10 (future)
         let result = HistoricalLedgerView::load_at(&ns, "test:main", storage, 10).await;
@@ -506,15 +499,8 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Create a ledger with commits but no index
-        let cid = ContentId::new(ContentKind::Commit, b"commit-5");
-        ns.publish_commit("test:main", 5, &cid, Some("commit-5"))
-            .await
-            .unwrap();
-
-        // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new(5, vec![make_flake(1, 1, 100, 5)]);
-        let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
-        storage.insert("commit-5", blob.bytes);
+        store_and_publish_commit(&storage, &ns, "test:main", &commit).await;
 
         // Load at t=5 - should use genesis db since no index exists
         let view = HistoricalLedgerView::load_at(&ns, "test:main", storage, 5)

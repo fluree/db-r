@@ -11,18 +11,12 @@ pub struct LedgerRecord {
     #[serde(default)]
     pub branch: Option<String>,
     /// Storage-agnostic identity of the head commit (CID string).
-    ///
-    /// This field is optional for backward compatibility with older servers.
     #[serde(default)]
     pub commit_head_id: Option<String>,
-    pub commit_address: Option<String>,
     pub commit_t: i64,
     /// Storage-agnostic identity of the head index root (CID string).
-    ///
-    /// This field is optional for backward compatibility with older servers.
     #[serde(default)]
     pub index_head_id: Option<String>,
-    pub index_address: Option<String>,
     pub index_t: i64,
     #[serde(default)]
     pub retracted: bool,
@@ -42,7 +36,7 @@ pub struct GraphSourceRecord {
     pub config: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
-    pub index_address: Option<String>,
+    pub index_id: Option<String>,
     pub index_t: i64,
     #[serde(default)]
     pub retracted: bool,
@@ -131,9 +125,9 @@ mod tests {
         let json = r#"{
             "ledger_id": "books:main",
             "branch": "main",
-            "commit_address": "fluree:file://commit/abc123",
+            "commit_head_id": "fluree:commit:abc123",
             "commit_t": 5,
-            "index_address": "fluree:file://index/def456",
+            "index_head_id": "fluree:index:def456",
             "index_t": 3,
             "retracted": false
         }"#;
@@ -153,7 +147,7 @@ mod tests {
             "source_type": "fulltext",
             "config": "{\"analyzer\": \"standard\"}",
             "dependencies": ["books:main"],
-            "index_address": "fluree:file://gs/search",
+            "index_id": "fluree:index:gs/search",
             "index_t": 2,
             "retracted": false
         }"#;
@@ -204,7 +198,7 @@ mod tests {
             source_type: None,
             config: Some("test config".to_string()),
             dependencies: vec![],
-            index_address: None,
+            index_id: None,
             index_t: 1,
             retracted: false,
         };
@@ -226,7 +220,7 @@ mod tests {
             source_type: None,
             config: None, // None config
             dependencies: vec![],
-            index_address: None,
+            index_id: None,
             index_t: 1,
             retracted: false,
         };

@@ -6,12 +6,12 @@ This guide covers how to use Fluree's policy system programmatically in Rust app
 
 There are two main approaches to applying policies programmatically:
 
-1. **Identity-based policies** (`wrap_identity_policy_view`): Policies stored in the database and loaded via `db:policyClass` on an identity subject
+1. **Identity-based policies** (`wrap_identity_policy_view`): Policies stored in the database and loaded via `f:policyClass` on an identity subject
 2. **Inline policies** (`wrap_policy_view` with `opts.policy`): Policies provided directly in the query/transaction options
 
 ## Identity-Based Policy Lookup
 
-The recommended approach for production systems. Policies are stored in the ledger and loaded dynamically based on the identity's `db:policyClass` property.
+The recommended approach for production systems. Policies are stored in the ledger and loaded dynamically based on the identity's `f:policyClass` property.
 
 ### Storing Policies in the Database
 
@@ -20,7 +20,7 @@ First, insert policies with types that will be referenced by identities:
 ```rust
 let policies = json!({
     "@context": {
-        "db": "https://ns.flur.ee/db#",
+        "f": "https://ns.flur.ee/db#",
         "ex": "http://example.org/ns/",
         "schema": "http://schema.org/"
     },
@@ -28,18 +28,18 @@ let policies = json!({
         // Identity with policy class assignment
         {
             "@id": "http://example.org/identity/alice",
-            "db:policyClass": [{"@id": "ex:EmployeePolicy"}],
+            "f:policyClass": [{"@id": "ex:EmployeePolicy"}],
             "ex:user": {"@id": "ex:alice"}
         },
 
         // SSN restriction policy - only see your own SSN
         {
             "@id": "ex:ssnRestriction",
-            "@type": ["db:AccessPolicy", "ex:EmployeePolicy"],
-            "db:required": true,
-            "db:onProperty": [{"@id": "schema:ssn"}],
-            "db:action": {"@id": "db:view"},
-            "db:query": serde_json::to_string(&json!({
+            "@type": ["f:AccessPolicy", "ex:EmployeePolicy"],
+            "f:required": true,
+            "f:onProperty": [{"@id": "schema:ssn"}],
+            "f:action": {"@id": "f:view"},
+            "f:query": serde_json::to_string(&json!({
                 "where": {
                     "@id": "?$identity",
                     "http://example.org/ns/user": {"@id": "?$this"}
@@ -50,9 +50,9 @@ let policies = json!({
         // Default allow policy for other properties
         {
             "@id": "ex:defaultAllowView",
-            "@type": ["db:AccessPolicy", "ex:EmployeePolicy"],
-            "db:action": {"@id": "db:view"},
-            "db:allow": true
+            "@type": ["f:AccessPolicy", "ex:EmployeePolicy"],
+            "f:action": {"@id": "f:view"},
+            "f:allow": true
         }
     ]
 });
@@ -108,18 +108,18 @@ let result = view.query(&fluree)
 
 When you call `wrap_identity_policy_view`:
 
-1. Fluree queries for policies via the identity's `db:policyClass`:
+1. Fluree queries for policies via the identity's `f:policyClass`:
    ```sparql
    SELECT ?policy WHERE {
-       <identity-iri> db:policyClass ?class .
+       <identity-iri> f:policyClass ?class .
        ?policy a ?class .
-       ?policy a db:AccessPolicy .
+       ?policy a f:AccessPolicy .
    }
    ```
 
-2. Each matching policy's properties are loaded (`db:action`, `db:allow`, `db:query`, `db:onProperty`, etc.)
+2. Each matching policy's properties are loaded (`f:action`, `f:allow`, `f:query`, `f:onProperty`, etc.)
 
-3. The `?$identity` variable is automatically bound to the identity IRI for use in `db:query` policies
+3. The `?$identity` variable is automatically bound to the identity IRI for use in `f:query` policies
 
 ## Inline Policies with policy-values
 
@@ -133,10 +133,10 @@ use std::collections::HashMap;
 
 let policy = json!([{
     "@id": "ex:inlineSsnPolicy",
-    "db:required": true,
-    "db:onProperty": [{"@id": "http://schema.org/ssn"}],
-    "db:action": "db:view",
-    "db:query": serde_json::to_string(&json!({
+    "f:required": true,
+    "f:onProperty": [{"@id": "http://schema.org/ssn"}],
+    "f:action": "f:view",
+    "f:query": serde_json::to_string(&json!({
         "where": {
             "@id": "?$identity",
             "http://example.org/ns/user": {"@id": "?$this"}
@@ -172,10 +172,10 @@ let query = json!({
         "default-allow": true,
         "policy": [{
             "@id": "inline-ssn-policy",
-            "db:required": true,
-            "db:onProperty": [{"@id": "http://schema.org/ssn"}],
-            "db:action": "db:view",
-            "db:query": serde_json::to_string(&json!({
+            "f:required": true,
+            "f:onProperty": [{"@id": "http://schema.org/ssn"}],
+            "f:action": "f:view",
+            "f:query": serde_json::to_string(&json!({
                 "where": {
                     "@id": "?$identity",
                     "http://example.org/ns/user": {"@id": "?$this"}
@@ -206,7 +206,7 @@ When multiple policy options are provided, they follow this precedence (matching
 
 | Priority | Option | Behavior |
 |----------|--------|----------|
-| 1 (highest) | `opts.identity` | Query `db:policyClass` policies, auto-bind `?$identity` |
+| 1 (highest) | `opts.identity` | Query `f:policyClass` policies, auto-bind `?$identity` |
 | 2 | `opts.policy_class` | Query policies of specified types |
 | 3 (lowest) | `opts.policy` | Use inline policy JSON directly |
 
@@ -214,27 +214,27 @@ When multiple policy options are provided, they follow this precedence (matching
 
 ## Policy Structure Reference
 
-### db:allow (Static Allow/Deny)
+### f:allow (Static Allow/Deny)
 
 ```json
 {
     "@id": "ex:allowAll",
-    "@type": ["db:AccessPolicy", "ex:MyPolicyClass"],
-    "db:action": {"@id": "db:view"},
-    "db:allow": true
+    "@type": ["f:AccessPolicy", "ex:MyPolicyClass"],
+    "f:action": {"@id": "f:view"},
+    "f:allow": true
 }
 ```
 
-### db:query (Dynamic Evaluation)
+### f:query (Dynamic Evaluation)
 
 ```json
 {
     "@id": "ex:ownerOnly",
-    "@type": ["db:AccessPolicy", "ex:MyPolicyClass"],
-    "db:action": {"@id": "db:view"},
-    "db:onProperty": [{"@id": "schema:ssn"}],
-    "db:required": true,
-    "db:query": "{\"where\": {\"@id\": \"?$identity\", \"ex:user\": {\"@id\": \"?$this\"}}}"
+    "@type": ["f:AccessPolicy", "ex:MyPolicyClass"],
+    "f:action": {"@id": "f:view"},
+    "f:onProperty": [{"@id": "schema:ssn"}],
+    "f:required": true,
+    "f:query": "{\"where\": {\"@id\": \"?$identity\", \"ex:user\": {\"@id\": \"?$this\"}}}"
 }
 ```
 
@@ -242,14 +242,14 @@ When multiple policy options are provided, they follow this precedence (matching
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `db:action` | `db:view` / `db:modify` | What action this policy applies to |
-| `db:allow` | boolean | Static allow (true) or deny (false) |
-| `db:query` | string (JSON) | Query that must return results for access to be granted |
-| `db:onProperty` | IRI(s) | Restrict policy to specific properties |
-| `db:onSubject` | IRI(s) | Restrict policy to specific subjects |
-| `db:onClass` | IRI(s) | Restrict policy to instances of specific classes |
-| `db:required` | boolean | If true, this policy MUST allow for access to be granted |
-| `db:exMessage` | string | Custom error message when policy denies access |
+| `f:action` | `f:view` / `f:modify` | What action this policy applies to |
+| `f:allow` | boolean | Static allow (true) or deny (false) |
+| `f:query` | string (JSON) | Query that must return results for access to be granted |
+| `f:onProperty` | IRI(s) | Restrict policy to specific properties |
+| `f:onSubject` | IRI(s) | Restrict policy to specific subjects |
+| `f:onClass` | IRI(s) | Restrict policy to instances of specific classes |
+| `f:required` | boolean | If true, this policy MUST allow for access to be granted |
+| `f:exMessage` | string | Custom error message when policy denies access |
 
 ### Special Variables
 
@@ -262,9 +262,9 @@ When multiple policy options are provided, they follow this precedence (matching
 
 When multiple policies match a flake, they are combined using **Deny Overrides**:
 
-1. If **any** matching policy explicitly denies (`db:allow: false`), access is **denied**
-2. If a targeted policy's `db:query` returns false, access is **denied** (doesn't fall through to Default policies)
-3. If any policy allows (`db:allow: true` or `db:query` returns true), access is **granted**
+1. If **any** matching policy explicitly denies (`f:allow: false`), access is **denied**
+2. If a targeted policy's `f:query` returns false, access is **denied** (doesn't fall through to Default policies)
+3. If any policy allows (`f:allow: true` or `f:query` returns true), access is **granted**
 4. If no policies match and `default_allow` is true, access is **granted**
 5. Otherwise, access is **denied**
 
@@ -346,11 +346,11 @@ pub async fn wrap_identity_policy_view<'a, S: Storage + Clone + 'static>(
 ) -> Result<PolicyWrappedView<'a, S>>
 ```
 
-Creates a policy-wrapped view using identity-based `db:policyClass` lookup.
+Creates a policy-wrapped view using identity-based `f:policyClass` lookup.
 
 **Parameters:**
 - `ledger`: The ledger state to wrap
-- `identity_iri`: IRI of the identity subject (will query `db:policyClass`)
+- `identity_iri`: IRI of the identity subject (will query `f:policyClass`)
 - `default_allow`: Whether to allow access when no policies match
 
 ### wrap_policy_view
@@ -365,7 +365,7 @@ pub async fn wrap_policy_view<'a, S: Storage + Clone + 'static>(
 Creates a policy-wrapped view from query connection options.
 
 **QueryConnectionOptions fields:**
-- `identity`: Identity IRI for `db:policyClass` lookup
+- `identity`: Identity IRI for `f:policyClass` lookup
 - `policy`: Inline policy JSON
 - `policy_class`: Policy class IRIs to query
 - `policy_values`: Variable bindings for policy queries

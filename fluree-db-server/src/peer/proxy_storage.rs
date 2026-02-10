@@ -287,6 +287,12 @@ impl ContentAddressedWrite for ProxyStorage {
     }
 }
 
+impl fluree_db_core::StorageMethod for ProxyStorage {
+    fn storage_method(&self) -> &str {
+        "proxy"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

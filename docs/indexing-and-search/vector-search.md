@@ -10,7 +10,7 @@ Vector search enables similarity search using embedding vectors, supporting use 
 Fluree supports two complementary approaches:
 
 1. **Inline similarity functions** -- compute `dotProduct`, `cosineSimilarity`, or `euclideanDistance` directly in queries using `bind`. No external index required.
-2. **HNSW vector indexes** -- build dedicated approximate-nearest-neighbor (ANN) indexes for large-scale similarity search using the `db:*` query pattern.
+2. **HNSW vector indexes** -- build dedicated approximate-nearest-neighbor (ANN) indexes for large-scale similarity search using the `f:*` query pattern.
 
 ## The `@vector` Datatype
 
@@ -18,7 +18,7 @@ Fluree supports two complementary approaches:
 
 In RDF, a plain JSON array like `[0.5, 0.5, 0.0]` is decomposed into individual values. Duplicate elements can be deduplicated, and ordering is not guaranteed. This breaks embedding vectors. The `@vector` datatype tells Fluree to store the array as a single, ordered, fixed-length vector.
 
-`@vector` is a shorthand for the full IRI `https://ns.flur.ee/db#embeddingVector`, which can also be written as `db:embeddingVector` when the Fluree namespace prefix is declared in your `@context`.
+`@vector` is a shorthand for the full IRI `https://ns.flur.ee/db#embeddingVector`, which can also be written as `f:embeddingVector` when the Fluree namespace prefix is declared in your `@context`.
 
 ### Storage: f32 precision contract
 
@@ -53,20 +53,20 @@ Use `"@type": "@vector"` to annotate a numeric array as a vector:
 }
 ```
 
-You can also use the full IRI or the `db:` prefix form, which is equivalent:
+You can also use the full IRI or the `f:` prefix form, which is equivalent:
 
 ```json
 {
   "@context": {
     "ex": "http://example.org/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "@graph": [
     {
       "@id": "ex:doc1",
       "ex:embedding": {
         "@value": [0.1, 0.2, 0.3, 0.4],
-        "@type": "db:embeddingVector"
+        "@type": "f:embeddingVector"
       }
     }
   ]
@@ -86,18 +86,18 @@ Plain arrays are decomposed into individual RDF values where duplicates may be r
 
 ### Inserting vectors (Turtle / SPARQL UPDATE)
 
-In Turtle and SPARQL UPDATE, the `@vector` shorthand is not available. Use the `db:embeddingVector` datatype IRI with the standard `^^` typed-literal syntax:
+In Turtle and SPARQL UPDATE, the `@vector` shorthand is not available. Use the `f:embeddingVector` datatype IRI with the standard `^^` typed-literal syntax:
 
 ```sparql
 PREFIX ex: <http://example.org/>
-PREFIX db: <https://ns.flur.ee/db#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 INSERT DATA {
-  ex:doc1 ex:embedding "[0.1, 0.2, 0.3, 0.4]"^^db:embeddingVector .
+  ex:doc1 ex:embedding "[0.1, 0.2, 0.3, 0.4]"^^f:embeddingVector .
 }
 ```
 
-The vector is represented as a JSON array string with the `^^db:embeddingVector` datatype annotation.
+The vector is represented as a JSON array string with the `^^f:embeddingVector` datatype annotation.
 
 ### Multiple vectors per entity
 
@@ -117,12 +117,12 @@ Each vector produces separate rows in query results.
 
 ### Vector literals in query VALUES clauses
 
-When passing a vector literal in a query `values` clause, use the full IRI or the `db:` prefix form -- the `@vector` shorthand is only resolved in the transaction parser:
+When passing a vector literal in a query `values` clause, use the full IRI or the `f:` prefix form -- the `@vector` shorthand is only resolved in the transaction parser:
 
 ```json
 "values": [
   ["?queryVec"],
-  [{"@value": [0.7, 0.6], "@type": "db:embeddingVector"}]
+  [{"@value": [0.7, 0.6], "@type": "f:embeddingVector"}]
 ]
 ```
 
@@ -149,12 +149,12 @@ Computes the dot product (inner product) of two vectors. Higher scores indicate 
 {
   "@context": {
     "ex": "http://example.org/ns/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?doc", "?score"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.7, 0.6], "@type": "db:embeddingVector"}]
+    [{"@value": [0.7, 0.6], "@type": "f:embeddingVector"}]
   ],
   "where": [
     {"@id": "?doc", "ex:embedding": "?vec"},
@@ -175,12 +175,12 @@ Computes the cosine of the angle between two vectors. Ignores magnitude, focusin
 {
   "@context": {
     "ex": "http://example.org/ns/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?doc", "?score"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.7, 0.6], "@type": "db:embeddingVector"}]
+    [{"@value": [0.7, 0.6], "@type": "f:embeddingVector"}]
   ],
   "where": [
     {"@id": "?doc", "ex:embedding": "?vec"},
@@ -201,12 +201,12 @@ Computes the L2 (straight-line) distance between two vectors. Lower scores indic
 {
   "@context": {
     "ex": "http://example.org/ns/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?doc", "?distance"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.7, 0.6], "@type": "db:embeddingVector"}]
+    [{"@value": [0.7, 0.6], "@type": "f:embeddingVector"}]
   ],
   "where": [
     {"@id": "?doc", "ex:embedding": "?vec"},
@@ -241,12 +241,12 @@ Combine `bind` with `filter` to return only results above a similarity threshold
 {
   "@context": {
     "ex": "http://example.org/ns/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?doc", "?score"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.7, 0.6], "@type": "db:embeddingVector"}]
+    [{"@value": [0.7, 0.6], "@type": "f:embeddingVector"}]
   ],
   "where": [
     {"@id": "?doc", "ex:embedding": "?vec"},
@@ -264,12 +264,12 @@ Vector similarity can be combined with standard graph patterns to filter by type
 {
   "@context": {
     "ex": "http://example.org/ns/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?doc", "?title", "?score"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.9, 0.1, 0.05], "@type": "db:embeddingVector"}]
+    [{"@value": [0.9, 0.1, 0.05], "@type": "f:embeddingVector"}]
   ],
   "where": [
     {"@id": "?doc", "@type": "ex:Article", "ex:title": "?title", "ex:embedding": "?vec"},
@@ -382,24 +382,24 @@ println!("Indexed {} vectors", result.vector_count);
 
 ### Query Syntax
 
-Vector index search uses the `db:*` pattern syntax in WHERE clauses:
+Vector index search uses the `f:*` pattern syntax in WHERE clauses:
 
 ```json
 {
   "@context": {
     "ex": "http://example.org/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "from": "mydb:main",
   "where": [
     {
-      "db:graphSource": "doc-embeddings:main",
-      "db:queryVector": [0.1, 0.2, 0.3],
-      "db:distanceMetric": "cosine",
-      "db:searchLimit": 10,
-      "db:searchResult": {
-        "db:resultId": "?doc",
-        "db:resultScore": "?score"
+      "f:graphSource": "doc-embeddings:main",
+      "f:queryVector": [0.1, 0.2, 0.3],
+      "f:distanceMetric": "cosine",
+      "f:searchLimit": 10,
+      "f:searchResult": {
+        "f:resultId": "?doc",
+        "f:resultScore": "?score"
       }
     }
   ],
@@ -411,27 +411,27 @@ Vector index search uses the `db:*` pattern syntax in WHERE clauses:
 
 | Parameter | Description | Required |
 |-----------|-------------|----------|
-| `db:graphSource` | Vector index alias | Yes |
-| `db:queryVector` | Query vector (array or variable) | Yes |
-| `db:distanceMetric` | Distance metric ("cosine", "dot", "euclidean") | No (uses index default) |
-| `db:searchLimit` | Maximum results | No |
-| `db:searchResult` | Result binding (variable or object) | Yes |
-| `db:syncBeforeQuery` | Wait for index sync before query | No (default: false) |
-| `db:timeoutMs` | Query timeout in ms | No |
+| `f:graphSource` | Vector index alias | Yes |
+| `f:queryVector` | Query vector (array or variable) | Yes |
+| `f:distanceMetric` | Distance metric ("cosine", "dot", "euclidean") | No (uses index default) |
+| `f:searchLimit` | Maximum results | No |
+| `f:searchResult` | Result binding (variable or object) | Yes |
+| `f:syncBeforeQuery` | Wait for index sync before query | No (default: false) |
+| `f:timeoutMs` | Query timeout in ms | No |
 
 #### Result Binding
 
 Simple variable binding:
 ```json
-"db:searchResult": "?doc"
+"f:searchResult": "?doc"
 ```
 
 Structured binding with score and ledger:
 ```json
-"db:searchResult": {
-  "db:resultId": "?doc",
-  "db:resultScore": "?similarity",
-  "db:resultLedger": "?source"
+"f:searchResult": {
+  "f:resultId": "?doc",
+  "f:resultScore": "?similarity",
+  "f:resultLedger": "?source"
 }
 ```
 
@@ -443,10 +443,10 @@ Query vector can be a variable bound earlier:
   "where": [
     { "@id": "ex:reference-doc", "ex:embedding": "?queryVec" },
     {
-      "db:graphSource": "embeddings:main",
-      "db:queryVector": "?queryVec",
-      "db:searchLimit": 5,
-      "db:searchResult": "?similar"
+      "f:graphSource": "embeddings:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 5,
+      "f:searchResult": "?similar"
     }
   ]
 }
@@ -516,7 +516,7 @@ Measures straight-line distance. Best for:
 
 Raw score range: [0, +inf). In HNSW index results, normalized to (0, 1] via `1 / (1 + distance)`.
 
-**Note**: In HNSW index results (`db:*` queries), all metrics are normalized to "higher is better". In inline similarity functions, `euclideanDistance` returns the raw L2 distance (lower = more similar).
+**Note**: In HNSW index results (`f:*` queries), all metrics are normalized to "higher is better". In inline similarity functions, `euclideanDistance` returns the raw L2 distance (lower = more similar).
 
 ## Deployment Modes
 
@@ -668,7 +668,7 @@ Inline similarity functions (`dotProduct`, `cosineSimilarity`, `euclideanDistanc
 {
   "@context": {
     "ex": "http://example.org/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "@graph": [
     {
@@ -699,12 +699,12 @@ Inline similarity functions (`dotProduct`, `cosineSimilarity`, `euclideanDistanc
 {
   "@context": {
     "ex": "http://example.org/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?title", "?score"],
   "values": [
     ["?queryVec"],
-    [{"@value": [0.88, 0.12, 0.08], "@type": "db:embeddingVector"}]
+    [{"@value": [0.88, 0.12, 0.08], "@type": "f:embeddingVector"}]
   ],
   "where": [
     {"@id": "?doc", "@type": "ex:Article", "ex:title": "?title", "ex:embedding": "?vec"},

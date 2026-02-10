@@ -94,7 +94,7 @@ When complete:
 
 ```text
   - Write index snapshot to storage
-  - Publish index_address to nameservice
+  - Publish index_id to nameservice
   - Update index_t to 42
 ```
 

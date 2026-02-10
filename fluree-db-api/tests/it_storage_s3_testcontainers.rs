@@ -310,13 +310,9 @@ async fn s3_testcontainers_indexing_test() {
                 .trigger(result.ledger.ledger_id(), result.receipt.t)
                 .await;
             match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed {
-                    index_t,
-                    root_address,
-                    ..
-                } => {
+                fluree_db_api::IndexOutcome::Completed { index_t, root_id } => {
                     assert!(index_t >= result.receipt.t);
-                    assert!(!root_address.is_empty());
+                    assert!(root_id.is_some(), "expected root_id after indexing");
                 }
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
@@ -329,10 +325,7 @@ async fn s3_testcontainers_indexing_test() {
                 .await
                 .expect("nameservice lookup")
                 .expect("record exists");
-            assert!(
-                rec.index_address.is_some(),
-                "expected published index address"
-            );
+            assert!(rec.index_head_id.is_some(), "expected published index id");
 
             // Verify bucket contains index artifacts and no double slashes
             let keys = list_object_keys(&sdk_config, bucket).await;

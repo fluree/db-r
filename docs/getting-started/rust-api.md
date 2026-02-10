@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
 
     println!(
         "import complete: t={}, flakes={}, root={:?}",
-        result.t, result.flake_count, result.root_address
+        result.t, result.flake_count, result.root_id
     );
 
     // Query normally after import (loads the published V2 root from CAS).
@@ -1562,7 +1562,7 @@ The response includes:
 | `nameservice` | NsRecord in JSON-LD format |
 | `namespace-codes` | Inverted mapping (prefix → code) for IRI expansion |
 | `stats` | Flake counts, size, property/class statistics with selectivity |
-| `index` | Index metadata (`t`, address, index ID) |
+| `index` | Index metadata (`t`, ContentId, index ID) |
 
 #### Stats freshness (real-time vs indexed)
 
@@ -1597,9 +1597,9 @@ async fn main() -> Result<()> {
 
     // Find all ledgers on main branch
     let query = json!({
-        "@context": {"db": "https://ns.flur.ee/db#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "select": ["?ledger", "?t"],
-        "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:branch": "main", "db:t": "?t"}],
+        "where": [{"@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger", "f:branch": "main", "f:t": "?t"}],
         "orderBy": [{"var": "?t", "desc": true}]
     });
 
@@ -1612,8 +1612,8 @@ async fn main() -> Result<()> {
 
     // SPARQL query
     let results = fluree.nameservice_query()
-        .sparql("PREFIX db: <https://ns.flur.ee/db#>
-                 SELECT ?ledger ?t WHERE { ?ns a db:LedgerSource ; db:ledger ?ledger ; db:t ?t }")
+        .sparql("PREFIX f: <https://ns.flur.ee/db#>
+                 SELECT ?ledger ?t WHERE { ?ns a f:LedgerSource ; f:ledger ?ledger ; f:t ?t }")
         .execute_formatted()
         .await?;
 
@@ -1628,27 +1628,27 @@ async fn main() -> Result<()> {
 
 ### Available Properties
 
-**Ledger Records** (`@type: "db:LedgerSource"`):
+**Ledger Records** (`@type: "f:LedgerSource"`):
 
 | Property | Description |
 |----------|-------------|
-| `db:ledger` | Ledger name (without branch suffix) |
-| `db:branch` | Branch name |
-| `db:t` | Current transaction number |
-| `db:status` | Status: "ready" or "retracted" |
-| `db:ledgerCommit` | Reference to latest commit address |
-| `db:ledgerIndex` | Index info with `@id` and `db:t` |
+| `f:ledger` | Ledger name (without branch suffix) |
+| `f:branch` | Branch name |
+| `f:t` | Current transaction number |
+| `f:status` | Status: "ready" or "retracted" |
+| `f:ledgerCommit` | Reference to latest commit ContentId |
+| `f:ledgerIndex` | Index info with `@id` and `f:t` |
 
-**Graph Source Records** (`@type: "db:GraphSourceDatabase"`):
+**Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
 
 | Property | Description |
 |----------|-------------|
-| `db:name` | Graph source name |
-| `db:branch` | Branch name |
-| `db:config` | Configuration JSON |
-| `db:dependencies` | Source ledger dependencies |
-| `db:indexAddress` | Index storage address |
-| `db:indexT` | Index transaction number |
+| `f:name` | Graph source name |
+| `f:branch` | Branch name |
+| `f:config` | Configuration JSON |
+| `f:dependencies` | Source ledger dependencies |
+| `f:indexAddress` | Index ContentId |
+| `f:indexT` | Index transaction number |
 
 ### Builder Methods
 
@@ -1666,17 +1666,17 @@ async fn main() -> Result<()> {
 ```rust
 // Find ledgers with t > 100
 let query = json!({
-    "@context": {"db": "https://ns.flur.ee/db#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?ledger", "?t"],
-    "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:t": "?t"}],
+    "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:t": "?t"}],
     "filter": ["(> ?t 100)"]
 });
 
 // Find all BM25 graph sources
 let query = json!({
-    "@context": {"db": "https://ns.flur.ee/db#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?name", "?deps"],
-    "where": [{"@id": "?gs", "@type": "db:Bm25Index", "db:name": "?name", "db:dependencies": "?deps"}]
+    "where": [{"@id": "?gs", "@type": "f:Bm25Index", "f:name": "?name", "f:dependencies": "?deps"}]
 });
 ```
 

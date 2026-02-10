@@ -1,7 +1,7 @@
 //! Index-based time travel resolution
 //!
 //! Replaces commit-chain walking with efficient O(log n) index queries for
-//! resolving `@iso:<datetime>` and `@sha:<prefix>` time travel specifiers.
+//! resolving `@iso:<datetime>` and `@commit:<prefix>` time travel specifiers.
 //!
 //! # Background
 //!
@@ -185,7 +185,7 @@ where
     Ok(resolved_t)
 }
 
-/// Resolve a SHA prefix to a transaction number using bounded SPOT index scan.
+/// Resolve a commit prefix to a transaction number using bounded SPOT index scan.
 ///
 /// # Algorithm
 ///
@@ -198,7 +198,7 @@ where
 ///
 /// * `db` - The database to query
 /// * `overlay` - Optional overlay provider (novelty) for uncommitted data
-/// * `sha_prefix` - SHA prefix to match (with or without standard prefixes)
+/// * `commit_prefix` - Commit CID prefix to match (hex digest, with or without standard prefixes)
 /// * `current_t` - Current head transaction number
 ///
 /// # Errors
@@ -206,47 +206,45 @@ where
 /// - If prefix is too short (< 6 chars) or too long (> 64 chars)
 /// - If no commit matches the prefix
 /// - If multiple commits match (ambiguous prefix)
-pub async fn sha_to_t<S, O>(
+pub async fn commit_to_t<S, O>(
     db: &Db<S>,
     overlay: Option<&O>,
-    sha_prefix: &str,
+    commit_prefix: &str,
     current_t: i64,
 ) -> Result<i64>
 where
     S: Storage,
     O: OverlayProvider + ?Sized,
 {
-    // Step 1: Normalize the SHA prefix
+    // Step 1: Normalize the commit prefix
     // Strip "fluree:commit:" prefix if present
-    let sha_normalized = sha_prefix
+    let normalized = commit_prefix
         .strip_prefix("fluree:commit:")
-        .unwrap_or(sha_prefix);
+        .unwrap_or(commit_prefix);
     // Strip "sha256:" prefix if present
-    let sha_normalized = sha_normalized
-        .strip_prefix("sha256:")
-        .unwrap_or(sha_normalized);
+    let normalized = normalized.strip_prefix("sha256:").unwrap_or(normalized);
 
     // Validation: minimum 6 characters for useful prefix matching
-    if sha_normalized.len() < 6 {
+    if normalized.len() < 6 {
         return Err(ApiError::query(format!(
-            "SHA prefix must be at least 6 characters, got {}",
-            sha_normalized.len()
+            "Commit prefix must be at least 6 characters, got {}",
+            normalized.len()
         )));
     }
 
     // SHA-256 in hex is 64 characters
-    if sha_normalized.len() > 64 {
+    if normalized.len() > 64 {
         return Err(ApiError::query(format!(
-            "SHA prefix too long ({} chars). SHA-256 in hex is 64 characters.",
-            sha_normalized.len()
+            "Commit prefix too long ({} chars). SHA-256 in hex is 64 characters.",
+            normalized.len()
         )));
     }
 
     // Step 2: Create bounded SPOT scan
     // Commit subjects use the FLUREE_COMMIT namespace with hex hash as name
-    let start_sid = Sid::new(FLUREE_COMMIT, sha_normalized);
+    let start_sid = Sid::new(FLUREE_COMMIT, normalized);
     // Use tilde (~) as end bound since it sorts after all hex characters (0-9, a-f)
-    let end_prefix = format!("{}~", sha_normalized);
+    let end_prefix = format!("{}~", normalized);
     let end_sid = Sid::new(FLUREE_COMMIT, &end_prefix);
 
     let start_bound = Flake::min_for_subject(start_sid);
@@ -283,7 +281,7 @@ where
         if flake.s.namespace_code != FLUREE_COMMIT {
             continue;
         }
-        if !flake.s.name.starts_with(sha_normalized) {
+        if !flake.s.name.starts_with(normalized) {
             continue;
         }
 
@@ -292,7 +290,7 @@ where
             matching_commits.push((&flake.s, flake.t));
 
             // Early exit if we find an exact match
-            if flake.s.name.as_ref() == sha_normalized {
+            if flake.s.name.as_ref() == normalized {
                 // Exact match - this is the one
                 return Ok(flake.t);
             }
@@ -307,8 +305,8 @@ where
     // Step 4: Return result based on match count
     match matching_commits.len() {
         0 => Err(ApiError::query(format!(
-            "No commit found with SHA prefix: {}",
-            sha_normalized
+            "No commit found with prefix: {}",
+            normalized
         ))),
         1 => {
             let (_, t) = matching_commits[0];
@@ -322,8 +320,8 @@ where
                 .map(|(sid, _)| format!("fluree:commit:sha256:{}", sid.name))
                 .collect();
             Err(ApiError::query(format!(
-                "Ambiguous SHA prefix: {}. Multiple commits match: {:?}{}",
-                sha_normalized,
+                "Ambiguous commit prefix: {}. Multiple commits match: {:?}{}",
+                normalized,
                 commit_ids,
                 if matching_commits.len() > 5 {
                     " ..."
@@ -338,7 +336,7 @@ where
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_sha_prefix_normalization() {
+    fn test_commit_prefix_normalization() {
         // Test various prefix formats
         let cases = [
             ("abc123", "abc123"),
@@ -355,18 +353,18 @@ mod tests {
     }
 
     #[test]
-    fn test_sha_prefix_validation() {
+    fn test_commit_prefix_validation() {
         // Too short
-        assert!(sha_prefix_valid("abc12").is_err());
+        assert!(commit_prefix_valid("abc12").is_err());
         // Minimum valid
-        assert!(sha_prefix_valid("abc123").is_ok());
+        assert!(commit_prefix_valid("abc123").is_ok());
         // Maximum valid (64 hex chars)
-        assert!(sha_prefix_valid(&"a".repeat(64)).is_ok());
+        assert!(commit_prefix_valid(&"a".repeat(64)).is_ok());
         // Too long
-        assert!(sha_prefix_valid(&"a".repeat(65)).is_err());
+        assert!(commit_prefix_valid(&"a".repeat(65)).is_err());
     }
 
-    fn sha_prefix_valid(prefix: &str) -> std::result::Result<(), &'static str> {
+    fn commit_prefix_valid(prefix: &str) -> std::result::Result<(), &'static str> {
         if prefix.len() < 6 {
             Err("too short")
         } else if prefix.len() > 64 {

@@ -84,14 +84,14 @@ Query using ISO 8601 datetime with `@iso:`:
 }
 ```
 
-### Query at Commit SHA
+### Query at Commit ContentId
 
-Query at a specific commit using `@sha:` with a commit hash prefix (minimum 6 characters):
+Query at a specific commit using `@commit:` with a commit ContentId:
 
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": "ledger:main@sha:abc123def456",
+  "from": "ledger:main@commit:bafybeig...",
   "select": ["?name"],
   "where": [
     { "@id": "?person", "ex:name": "?name" }
@@ -142,7 +142,7 @@ Fluree primarily uses **transaction time** (when the fact was recorded in the da
 ```
 
 This allows you to query by both:
-- **Transaction time**: When was this recorded? (using `@t:`, `@iso:`, `@sha:`)
+- **Transaction time**: When was this recorded? (using `@t:`, `@iso:`, `@commit:`)
 - **Valid time**: When was this true? (using standard WHERE clause filters on `ex:validFrom`/`ex:validTo`)
 
 ## Snapshot and Indexing
@@ -209,14 +209,14 @@ The same query in SPARQL uses RDF-star syntax with `FROM...TO`:
 
 ```sparql
 PREFIX ex: <http://example.org/ns/>
-PREFIX db: <https://ns.flur.ee/db#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?name ?t ?op
 FROM <ledger:main@t:1>
 TO <ledger:main@t:latest>
 WHERE {
-  << ex:alice ex:name ?name >> db:t ?t .
-  << ex:alice ex:name ?name >> db:op ?op .
+  << ex:alice ex:name ?name >> f:t ?t .
+  << ex:alice ex:name ?name >> f:op ?op .
 }
 ORDER BY ?t
 ```
@@ -313,7 +313,7 @@ Different time specifiers have different performance characteristics:
 
 - **@t:NNN** (fastest): Direct transaction number, no resolution needed
 - **@iso:DATETIME**: O(log n) binary search through commit timestamps using POST index
-- **@sha:PREFIX**: Bounded SPOT scan, O(k) where k is commits matching prefix (use longer prefixes for better performance)
+- **@commit:CID**: Bounded SPOT scan, O(k) where k is commits matching prefix (use longer prefixes for better performance)
 
 ### Index Selection
 
@@ -337,7 +337,7 @@ History queries scan flakes within the specified time range:
 1. **Use Transaction Numbers**: When possible, use `@t:NNN` instead of `@iso:DATETIME`
 2. **Narrow History Patterns**: Use `[subject, predicate]` instead of `[subject]` when you only need specific properties
 3. **Limit Time Ranges**: Specify realistic `from`/`to` bounds rather than querying all history
-4. **SHA Prefix Length**: Use 7+ character SHA prefixes to avoid ambiguity checks
+4. **ContentId Prefix Length**: Use sufficiently long ContentId prefixes to avoid ambiguity checks
 5. **Index Density**: More frequent indexing improves historical query performance for distant past
 
 ### Storage Implications
@@ -532,7 +532,7 @@ Find what changed after a specific commit:
 }
 ```
 
-This shows all configuration changes since transaction 50, useful for identifying what to rollback. You can first query `"from": "config:main@sha:abc123"` to find the transaction number (using point-in-time queries), then use that in the history query.
+This shows all configuration changes since transaction 50, useful for identifying what to rollback. You can first query `"from": "config:main@commit:bafybeig..."` to find the transaction number (using point-in-time queries), then use that in the history query.
 
 ### Reproduce a Bug at Specific Time
 
@@ -559,9 +559,9 @@ This recreates the exact state across multiple ledgers at the time the bug occur
 
 ### Time Travel Guidelines
 
-1. **Explicit Time References**: Always specify clear time references (`@t:`, `@iso:`, or `@sha:`) for reproducible queries
+1. **Explicit Time References**: Always specify clear time references (`@t:`, `@iso:`, or `@commit:`) for reproducible queries
 2. **Time Zone Awareness**: Use UTC for ISO timestamps to avoid ambiguity
-3. **SHA Prefix Length**: Use at least 7-character SHA prefixes to avoid collisions (minimum 6 required)
+3. **ContentId Length**: Use sufficiently long ContentId prefixes to avoid collisions
 4. **Performance Testing**: Test query performance across different time ranges and ledger sizes
 
 ### History Query Patterns
@@ -592,17 +592,17 @@ This recreates the exact state across multiple ledgers at the time the bug occur
 1. **Transaction Reception**: Assign new transaction time (`t`)
 2. **Validation**: Check against current state
 3. **Commitment**: Persist transaction with ISO timestamp
-4. **Commit Metadata**: Store commit SHA, timestamp, and optional transaction JSON
+4. **Commit Metadata**: Store commit ContentId, timestamp, and optional transaction JSON
 5. **Indexing**: Background process creates new indexes
 6. **Publication**: Update nameservice with new transaction time
 
 ### Time Travel Resolution
 
-When you query with `@t:`, `@iso:`, or `@sha:`:
+When you query with `@t:`, `@iso:`, or `@commit:`:
 
 1. **@t:NNN** - Direct transaction number (fastest)
 2. **@iso:DATETIME** - Binary search through commit timestamps using POST index
-3. **@sha:PREFIX** - Bounded SPOT scan to find matching commit (prefix >= 6 chars)
+3. **@commit:CID** - Bounded SPOT scan to find matching commit
 
 ### Query Execution
 

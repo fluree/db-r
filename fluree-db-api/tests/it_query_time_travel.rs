@@ -3,7 +3,7 @@
 //! Parity reference: `db-clojure/test/fluree/db/query/time_travel_test.clj`
 //!
 //! Focus:
-//! - `query_connection` `"from"` entries containing `@t:`, `@iso:`, `@sha:`
+//! - `query_connection` `"from"` entries containing `@t:`, `@iso:`, `@commit:`
 //! - Error cases for invalid formats and missing values
 //! - Branch interaction (`ledger:main@t:<t>`)
 
@@ -153,21 +153,21 @@ async fn time_travel_query_connection_at_t_iso_and_sha() {
         normalize_rows_array(&json!([["Alice"], ["Bob"], ["Carol"]]))
     );
 
-    // @sha: — uses hex SHA-256 digest from the ContentId
+    // @commit: — uses hex SHA-256 digest from the ContentId
     let sha_7 = &commit_hex_t1[..7];
     let sha_52 = &commit_hex_t1[..52];
     let sha_6 = &commit_hex_t1[..6];
 
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@sha:{sha_7}")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{alias}@commit:{sha_7}")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@sha:{sha_52}")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{alias}@commit:{sha_52}")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@sha:{sha_6}")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{alias}@commit:{sha_6}")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
 }
@@ -209,7 +209,7 @@ async fn time_travel_missing_value_errors() {
     for (spec, expect) in [
         ("@t:", "Missing value after '@t:'"),
         ("@iso:", "Missing value after '@iso:'"),
-        ("@sha:", "Missing value after '@sha:'"),
+        ("@commit:", "Missing value after '@commit:'"),
     ] {
         let q = json!({
             "@context": ctx_test(),
@@ -231,7 +231,7 @@ async fn time_travel_nonexistent_sha_errors() {
 
     let q = json!({
         "@context": ctx_test(),
-        "from": [format!("{alias}@sha:zzzzzz")],
+        "from": [format!("{alias}@commit:zzzzzz")],
         "select": ["?name"],
         "where": [{"@id":"?s","name":"?name"}],
         "orderBy": ["?name"]
@@ -329,15 +329,15 @@ async fn time_travel_iso_between_commits_resolves_to_previous_commit() {
 }
 
 #[tokio::test]
-async fn time_travel_sha_prefix_too_short_errors() {
+async fn time_travel_commit_prefix_too_short_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/time-travel-sha-too-short";
+    let alias = "it/time-travel-commit-too-short";
     let (_ledger3, _commit_hex_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
 
     let q = json!({
         "@context": ctx_test(),
-        "from": [format!("{alias}@sha:abcde")],
+        "from": [format!("{alias}@commit:abcde")],
         "select": ["?name"],
         "where": [{"@id":"?s","name":"?name"}],
         "orderBy": ["?name"]

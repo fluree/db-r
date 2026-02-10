@@ -275,15 +275,9 @@ pub struct LedgerInfoResponse {
     /// Head commit ContentId (storage-agnostic identity), if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_head_id: Option<fluree_db_core::ContentId>,
-    /// Commit address (if any)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
     /// Head index ContentId (storage-agnostic identity), if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_head_id: Option<fluree_db_core::ContentId>,
-    /// Index address (if any)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub index: Option<String>,
 }
 
 /// Get ledger information
@@ -435,9 +429,7 @@ async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) ->
         ledger: record.ledger_id.clone(),
         t: record.commit_t,
         commit_head_id: record.commit_head_id.clone(),
-        commit: record.commit_address.clone(),
         index_head_id: record.index_head_id.clone(),
-        index: record.index_address.clone(),
     })
     .into_response())
 }

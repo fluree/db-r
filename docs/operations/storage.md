@@ -233,8 +233,8 @@ See [Storage Encryption](../security/encryption.md) for full documentation.
   "ledger_id": "mydb:main",
   "commit_t": 150,
   "index_t": 145,
-  "commit_address": "fluree:file:commit:abc123...",
-  "index_address": "fluree:file:index:def456..."
+  "commit_id": "bafybeig...commitT150",
+  "index_id": "bafybeig...indexRootT145"
 }
 ```
 

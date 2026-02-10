@@ -152,7 +152,7 @@ impl CommitResolver {
     pub fn resolve_blob<W: RecordSink>(
         &mut self,
         bytes: &[u8],
-        commit_address: &str,
+        commit_hash_hex: &str,
         dicts: &mut GlobalDicts,
         writer: &mut W,
     ) -> Result<ResolvedCommit, ResolverError> {
@@ -161,7 +161,7 @@ impl CommitResolver {
         self.apply_namespace_delta(&commit_ops.envelope.namespace_delta);
         let (asserts, retracts) = self.resolve_commit_ops(&commit_ops, dicts, writer)?;
         let meta_count = self.emit_txn_meta(
-            commit_address,
+            commit_hash_hex,
             &commit_ops.envelope,
             commit_size,
             asserts,
@@ -190,11 +190,14 @@ impl CommitResolver {
     ///   t, size (commit blob bytes), asserts, retracts.
     /// - **User metadata**: any `txn_meta` entries from the envelope.
     ///
+    /// The `commit_hash_hex` parameter is the 64-char SHA-256 hex digest identifying
+    /// the commit (typically from `ContentId::digest_hex()`).
+    ///
     /// Returns the number of records emitted.
     #[allow(clippy::too_many_arguments)]
     pub fn emit_txn_meta<W: RecordSink>(
         &mut self,
-        commit_address: &str,
+        commit_hash_hex: &str,
         envelope: &CommitV2Envelope,
         commit_size: u64,
         asserts: u32,
@@ -202,17 +205,8 @@ impl CommitResolver {
         dicts: &mut GlobalDicts,
         writer: &mut W,
     ) -> Result<u32, ResolverError> {
-        // 1. Extract commit hash from address
-        let hex = match extract_commit_hex(commit_address) {
-            Some(h) => h,
-            None => {
-                tracing::warn!(
-                    address = commit_address,
-                    "cannot extract commit hash from address; skipping txn-meta"
-                );
-                return Ok(0);
-            }
-        };
+        // 1. Validate commit hash hex
+        let hex = commit_hash_hex;
 
         // 2. g_id=1 (pre-reserved in GlobalDicts::new())
         let g_id = dicts.graphs.get_or_insert_parts(fluree::DB, "txn-meta") + 1;
@@ -273,8 +267,8 @@ impl CommitResolver {
 
         // === Commit subject records ===
 
-        // ledger:address (STRING)
-        let addr_str_id = dicts.strings.get_or_insert(commit_address)?;
+        // ledger:address (STRING) — stores CID hex digest as the commit identifier
+        let addr_str_id = dicts.strings.get_or_insert(commit_hash_hex)?;
         push(
             commit_s_id,
             p_address,
@@ -891,37 +885,6 @@ impl std::error::Error for ResolverError {}
 // Helper functions
 // ============================================================================
 
-/// Extract the hex hash from a commit storage address.
-///
-/// Addresses look like `fluree:file://ledger/commit/<64-hex>.fcv2`.
-/// Returns the hex portion (without `sha256:` prefix) or `None` if unparseable.
-fn extract_commit_hex(address: &str) -> Option<&str> {
-    // Strip the scheme: "fluree:file://..." -> path after "://"
-    let path = if let Some(rest) = address.strip_prefix("fluree:") {
-        let pos = rest.find("://")?;
-        &rest[pos + 3..]
-    } else if let Some(pos) = address.find("://") {
-        &address[pos + 3..]
-    } else {
-        return None;
-    };
-
-    // Last path segment, strip any file extension
-    let filename = path.rsplit('/').next()?;
-    let dot = filename.rfind('.')?;
-    if dot == 0 {
-        return None;
-    }
-    let hex = &filename[..dot];
-
-    // Validate: must be 64 hex chars (SHA-256)
-    if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(hex)
-    } else {
-        None
-    }
-}
-
 /// Parse ISO-8601 timestamp to epoch milliseconds.
 ///
 /// Returns `None` if parsing fails (caller skips emission rather than
@@ -1321,42 +1284,6 @@ mod tests {
     // ---- Txn-meta tests ----
 
     #[test]
-    fn test_extract_commit_hex() {
-        // .fcv2 extension (new canonical)
-        assert_eq!(
-            super::extract_commit_hex(
-                "fluree:file://test/main/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.fcv2"
-            ),
-            Some("abc123def456abc123def456abc123def456abc123def456abc123def456abcd")
-        );
-        // .json extension (legacy)
-        assert_eq!(
-            super::extract_commit_hex(
-                "fluree:file://test/main/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.json"
-            ),
-            Some("abc123def456abc123def456abc123def456abc123def456abc123def456abcd")
-        );
-        assert_eq!(
-            super::extract_commit_hex(
-                "fluree:s3://bucket/ledger/commit/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.fcv2"
-            ),
-            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-        );
-        // Too short to be a valid SHA-256 hex
-        assert_eq!(
-            super::extract_commit_hex("fluree:file://test/commit/abc.fcv2"),
-            None
-        );
-        // No extension
-        assert_eq!(
-            super::extract_commit_hex(
-                "fluree:file://test/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
-            ),
-            None
-        );
-    }
-
-    #[test]
     fn test_iso_to_epoch_ms() {
         let ms = super::iso_to_epoch_ms("2025-01-20T12:00:00Z");
         assert!(ms.is_some());
@@ -1389,7 +1316,6 @@ mod tests {
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
         let prev_hex = "0000000000000000000000000000000000000000000000000000000000000000";
-        let commit_address = format!("fluree:file://test/main/commit/{}.fcv2", hex);
         let prev_commit_id = format!("fluree:commit:sha256:{}", prev_hex);
 
         let envelope = CommitV2Envelope {
@@ -1408,15 +1334,7 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(
-                &commit_address,
-                &envelope,
-                1024,
-                8,
-                2,
-                &mut dicts,
-                &mut writer,
-            )
+            .emit_txn_meta(hex, &envelope, 1024, 8, 2, &mut dicts, &mut writer)
             .unwrap();
 
         // 7 records on commit subject: address, time, t, size, asserts, retracts, previous
@@ -1522,7 +1440,6 @@ mod tests {
         let mut writer = RunWriter::new(config);
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
-        let commit_address = format!("fluree:file://test/main/commit/{}.fcv2", hex);
 
         let envelope = CommitV2Envelope {
             t: 1,
@@ -1537,15 +1454,7 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(
-                &commit_address,
-                &envelope,
-                512,
-                4,
-                1,
-                &mut dicts,
-                &mut writer,
-            )
+            .emit_txn_meta(hex, &envelope, 512, 4, 1, &mut dicts, &mut writer)
             .unwrap();
 
         // 5 records: address, t, size, asserts, retracts (no time, no previous)
@@ -1581,7 +1490,6 @@ mod tests {
         let mut writer = RunWriter::new(config);
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
-        let commit_address = format!("fluree:file://test/main/commit/{}.fcv2", hex);
 
         let envelope = CommitV2Envelope {
             t: 5,
@@ -1626,15 +1534,7 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(
-                &commit_address,
-                &envelope,
-                2048,
-                15,
-                5,
-                &mut dicts,
-                &mut writer,
-            )
+            .emit_txn_meta(hex, &envelope, 2048, 15, 5, &mut dicts, &mut writer)
             .unwrap();
 
         // 5 built-in records (address, t, size, asserts, retracts) + 7 user entries = 12

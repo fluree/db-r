@@ -160,7 +160,7 @@ pub use fluree_db_connection::{ConnectionConfig, StorageType};
 pub use fluree_db_core::FileStorage;
 pub use fluree_db_core::{
     ContentAddressedWrite, ContentKind, ContentWriteResult, MemoryStorage, OverlayProvider,
-    Storage, StorageRead, StorageWrite,
+    Storage, StorageMethod, StorageRead, StorageWrite,
 };
 pub use fluree_db_ledger::{
     HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore,
@@ -312,6 +312,12 @@ impl ContentAddressedWrite for AnyStorage {
     }
 }
 
+impl StorageMethod for AnyStorage {
+    fn storage_method(&self) -> &str {
+        self.0.storage_method()
+    }
+}
+
 /// A dynamically-dispatched nameservice + publisher.
 pub trait NameServicePublisher:
     fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher
@@ -373,11 +379,8 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
         alias: &str,
         commit_t: i64,
         commit_id: &fluree_db_core::ContentId,
-        address_hint: Option<&str>,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
-            .publish_commit(alias, commit_t, commit_id, address_hint)
-            .await
+        self.0.publish_commit(alias, commit_t, commit_id).await
     }
 
     async fn publish_index(
@@ -385,11 +388,8 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
         alias: &str,
         index_t: i64,
         index_id: &fluree_db_core::ContentId,
-        address_hint: Option<&str>,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
-            .publish_index(alias, index_t, index_id, address_hint)
-            .await
+        self.0.publish_index(alias, index_t, index_id).await
     }
 
     async fn retract(
@@ -404,56 +404,20 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
     }
 }
 
-/// Publisher wrapper that rewrites published addresses to include `addressIdentifier`.
+/// Transparent nameservice wrapper.
 ///
-/// This enables Clojure parity for configs that set `addressIdentifier` on storage nodes,
-/// without requiring every address generator in the Rust codebase to be parameterized.
+/// Historically this rewrote published addresses to include `addressIdentifier`.
+/// With CID-only addressing, the rewriting logic is no longer needed and has been
+/// removed. The wrapper is retained so that builder call-sites do not need
+/// restructuring — it simply delegates every call to `inner`.
 #[derive(Clone, Debug)]
 struct AddressRewritingNameService<N> {
     inner: N,
-    commit_id: Option<String>,
-    commit_method: &'static str,
-    index_id: Option<String>,
-    index_method: &'static str,
 }
 
 impl<N> AddressRewritingNameService<N> {
-    fn new(
-        inner: N,
-        commit_id: Option<String>,
-        commit_method: &'static str,
-        index_id: Option<String>,
-        index_method: &'static str,
-    ) -> Self {
-        Self {
-            inner,
-            commit_id,
-            commit_method,
-            index_id,
-            index_method,
-        }
-    }
-
-    fn extract_path(address: &str) -> &str {
-        if let Some(rest) = address.strip_prefix("fluree:") {
-            if let Some(pos) = rest.find("://") {
-                let path = &rest[pos + 3..];
-                return if path.is_empty() { address } else { path };
-            }
-        }
-        address
-    }
-
-    fn rewrite(address: &str, id: &Option<String>, method: &'static str) -> String {
-        let Some(id) = id else {
-            return address.to_string();
-        };
-        // If already has this identifier, preserve.
-        if address.starts_with(&format!("fluree:{}:", id)) {
-            return address.to_string();
-        }
-        let path = Self::extract_path(address);
-        format!("fluree:{}:{}://{}", id, method, path)
+    fn new(inner: N) -> Self {
+        Self { inner }
     }
 }
 
@@ -507,12 +471,8 @@ where
         alias: &str,
         commit_t: i64,
         commit_id: &fluree_db_core::ContentId,
-        address_hint: Option<&str>,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        let rewritten = address_hint.map(|a| Self::rewrite(a, &self.commit_id, self.commit_method));
-        self.inner
-            .publish_commit(alias, commit_t, commit_id, rewritten.as_deref())
-            .await
+        self.inner.publish_commit(alias, commit_t, commit_id).await
     }
 
     async fn publish_index(
@@ -520,12 +480,8 @@ where
         alias: &str,
         index_t: i64,
         index_id: &fluree_db_core::ContentId,
-        address_hint: Option<&str>,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        let rewritten = address_hint.map(|a| Self::rewrite(a, &self.index_id, self.index_method));
-        self.inner
-            .publish_index(alias, index_t, index_id, rewritten.as_deref())
-            .await
+        self.inner.publish_index(alias, index_t, index_id).await
     }
 
     async fn retract(
@@ -685,6 +641,14 @@ where
     }
 }
 
+impl<S: StorageMethod> StorageMethod for TieredStorage<S> {
+    fn storage_method(&self) -> &str {
+        // Use the index storage method as the canonical method — both tiers
+        // use the same method in practice (both S3, both file, etc.)
+        self.index.storage_method()
+    }
+}
+
 // ============================================================================
 // Address Identifier Resolver Storage
 // ============================================================================
@@ -820,6 +784,12 @@ impl ContentAddressedWrite for AddressIdentifierResolverStorage {
         self.default
             .content_write_bytes(kind, ledger_id, bytes)
             .await
+    }
+}
+
+impl StorageMethod for AddressIdentifierResolverStorage {
+    fn storage_method(&self) -> &str {
+        self.default.storage_method()
     }
 }
 
@@ -1071,29 +1041,8 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
 
         let connection = Connection::new(aws_handle.config().clone(), storage);
 
-        let commit_id = aws_handle
-            .config()
-            .commit_storage
-            .as_ref()
-            .and_then(|s| s.address_identifier.as_ref())
-            .or_else(|| {
-                aws_handle
-                    .config()
-                    .index_storage
-                    .address_identifier
-                    .as_ref()
-            })
-            .map(|s| s.to_string());
-        let index_id = aws_handle
-            .config()
-            .index_storage
-            .address_identifier
-            .as_ref()
-            .map(|s| s.to_string());
-
         let nameservice_inner = aws_handle.nameservice().clone();
-        let nameservice_wrapped =
-            AddressRewritingNameService::new(nameservice_inner, commit_id, "s3", index_id, "s3");
+        let nameservice_wrapped = AddressRewritingNameService::new(nameservice_inner);
         let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
 
         // Start background indexing if enabled in config
@@ -1133,19 +1082,9 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             };
 
             let connection = Connection::new(parsed, storage);
-            let id = connection
-                .config()
-                .index_storage
-                .address_identifier
-                .as_ref()
-                .map(|s| s.to_string());
             let nameservice_inner = MemoryNameService::new();
             let nameservice = AnyNameService::new(Arc::new(AddressRewritingNameService::new(
                 nameservice_inner,
-                id.clone(),
-                "memory",
-                id,
-                "memory",
             )));
 
             // Start background indexing if enabled in config
@@ -1206,19 +1145,9 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 };
 
                 let connection = Connection::new(parsed, storage);
-                let id = connection
-                    .config()
-                    .index_storage
-                    .address_identifier
-                    .as_ref()
-                    .map(|s| s.to_string());
                 let nameservice_inner = FileNameService::new(path.as_ref());
                 let nameservice = AnyNameService::new(Arc::new(AddressRewritingNameService::new(
                     nameservice_inner,
-                    id.clone(),
-                    "file",
-                    id,
-                    "file",
                 )));
 
                 // Start background indexing if enabled in config
@@ -2569,7 +2498,7 @@ mod tests {
         // Publish a record to nameservice directly (without caching the ledger)
         fluree
             .nameservice()
-            .publish_commit("mydb:main", 5, &cid, Some("commit-1"))
+            .publish_commit("mydb:main", 5, &cid)
             .await
             .unwrap();
 
@@ -2599,7 +2528,7 @@ mod tests {
         // Publish with canonical alias
         fluree
             .nameservice()
-            .publish_commit("mydb:main", 5, &cid, Some("commit-1"))
+            .publish_commit("mydb:main", 5, &cid)
             .await
             .unwrap();
 

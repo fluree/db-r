@@ -116,8 +116,8 @@ pub fn default_namespace_codes() -> HashMap<u16, String> {
     map.insert(OWL, fluree_vocab::owl::NS.to_string());
     map.insert(FLUREE_DB, fluree_vocab::fluree::DB.to_string());
     map.insert(DID_KEY, "did:key:".to_string());
-    map.insert(FLUREE_COMMIT, "fluree:commit:sha256:".to_string());
+    map.insert(FLUREE_COMMIT, fluree_vocab::fluree::COMMIT.to_string());
     map.insert(BLANK_NODE, "_:".to_string());
-    map.insert(OGC_GEO, "http://www.opengis.net/ont/geosparql#".to_string());
+    map.insert(OGC_GEO, fluree_vocab::geo::NS.to_string());
     map
 }

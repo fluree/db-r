@@ -45,9 +45,9 @@ Ledgers are created implicitly through the first transaction and persist until e
 
 1. First transaction to a ledger ID creates the ledger automatically
 2. Transaction is committed and assigned a transaction time (`t`)
-3. Commit address is published to the nameservice
+3. Commit ID is published to the nameservice
 4. Background indexing process creates queryable indexes
-5. Index address is published to the nameservice when complete
+5. Index ID is published to the nameservice when complete
 
 **Retraction:**
 
@@ -82,21 +82,21 @@ For each ledger, the nameservice maintains a **nameservice record** (`NsRecord`)
 
 #### Commit State
 
-- **`commit_address`**: Storage address of the latest commit
+- **`commit_id`**: ContentId (CIDv1) of the latest commit
 - **`commit_t`**: Transaction time of the latest commit
 
-The commit represents the most recent transaction that has been persisted. Commits are published immediately after each successful transaction.
+The commit represents the most recent transaction that has been persisted. Commits are published immediately after each successful transaction. The `commit_id` is a content-addressed identifier derived from the commit's bytes — it is storage-agnostic and does not depend on where the commit is physically stored.
 
 #### Index State
 
-- **`index_address`**: Storage address of the latest index snapshot
+- **`index_id`**: ContentId (CIDv1) of the latest index root
 - **`index_t`**: Transaction time of the latest index
 
-The index represents a queryable snapshot of the ledger state. Indexes are created by background processes and may lag behind commits.
+The index represents a queryable snapshot of the ledger state. Indexes are created by background processes and may lag behind commits. Like commits, the `index_id` is a content-addressed identifier.
 
 #### Additional Metadata
 
-- **`default_context_address`**: Default JSON-LD @context for the ledger
+- **`default_context_id`**: ContentId of the default JSON-LD @context for the ledger
 - **`retracted`**: Whether the ledger has been marked as inactive
 
 ### Commit vs Index: Understanding the Difference
@@ -142,15 +142,15 @@ Find ledger metadata by ledger ID:
 ```rust
 // Pseudo-code
 let record = nameservice.lookup("mydb:main").await?;
-// Returns: NsRecord with commit_address, index_address, timestamps, etc.
+// Returns: NsRecord with commit_id, index_id, timestamps, etc.
 ```
 
 #### Publishing
 
 Record new commits and indexes:
 
-- **`publish_commit(ledger_id, commit_address, commit_t)`**: Update commit state (monotonic: only if `new_t > existing_t`)
-- **`publish_index(ledger_id, index_address, index_t)`**: Update index state (monotonic: only if `new_t > existing_t`)
+- **`publish_commit(ledger_id, commit_id, commit_t)`**: Update commit state (monotonic: only if `new_t > existing_t`)
+- **`publish_index(ledger_id, index_id, index_t)`**: Update index state (monotonic: only if `new_t > existing_t`)
 
 Publishing is **monotonic**—the nameservice only accepts updates that advance time forward, ensuring consistency.
 
@@ -173,9 +173,9 @@ The nameservice can be queried using standard FQL (JSON-LD Query) or SPARQL synt
 ```rust
 // Find all ledgers on main branch
 let query = json!({
-    "@context": {"db": "https://ns.flur.ee/db#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?ledger"],
-    "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:branch": "main"}]
+    "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
 });
 
 let results = fluree.nameservice_query()
@@ -185,11 +185,11 @@ let results = fluree.nameservice_query()
 
 // Query with SPARQL
 let results = fluree.nameservice_query()
-    .sparql("PREFIX db: <https://ns.flur.ee/db#>
+    .sparql("PREFIX f: <https://ns.flur.ee/db#>
              SELECT ?ledger ?t WHERE {
-               ?ns a db:LedgerSource ;
-                   db:ledger ?ledger ;
-                   db:t ?t
+               ?ns a f:LedgerSource ;
+                   f:ledger ?ledger ;
+                   f:t ?t
              }")
     .execute_formatted()
     .await?;
@@ -205,48 +205,48 @@ let results = fluree.query_nameservice(&query).await?;
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
-    "@context": {"db": "https://ns.flur.ee/db#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?ledger", "?branch", "?t"],
-    "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:branch": "?branch", "db:t": "?t"}],
+    "where": [{"@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger", "f:branch": "?branch", "f:t": "?t"}],
     "orderBy": [{"var": "?t", "desc": true}]
   }'
 ```
 
 #### Available Properties
 
-**Ledger Records** (`@type: "db:LedgerSource"`):
+**Ledger Records** (`@type: "f:LedgerSource"`):
 
 | Property | Description |
 |----------|-------------|
-| `db:ledger` | Ledger name (without branch suffix) |
-| `db:branch` | Branch name (e.g., "main", "dev") |
-| `db:t` | Current transaction number |
-| `db:status` | Status: "ready" or "retracted" |
-| `db:ledgerCommit` | Reference to latest commit address |
-| `db:ledgerIndex` | Index info object with `@id` (address) and `db:t` |
-| `db:defaultContext` | Default JSON-LD context address (if set) |
+| `f:ledger` | Ledger name (without branch suffix) |
+| `f:branch` | Branch name (e.g., "main", "dev") |
+| `f:t` | Current transaction number |
+| `f:status` | Status: "ready" or "retracted" |
+| `f:ledgerCommit` | Reference to latest commit ContentId |
+| `f:ledgerIndex` | Index info object with `@id` (ContentId) and `f:t` |
+| `f:defaultContext` | Default JSON-LD context ContentId (if set) |
 
-**Graph Source Records** (`@type: "db:GraphSourceDatabase"`):
+**Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
 
 | Property | Description |
 |----------|-------------|
-| `db:name` | Graph source name |
-| `db:branch` | Branch name |
-| `db:status` | Status: "ready" or "retracted" |
-| `db:config` | Configuration JSON |
-| `db:dependencies` | Array of source ledger dependencies |
-| `db:indexAddress` | Index storage address |
-| `db:indexT` | Index transaction number |
+| `f:name` | Graph source name |
+| `f:branch` | Branch name |
+| `f:status` | Status: "ready" or "retracted" |
+| `f:config` | Configuration JSON |
+| `f:dependencies` | Array of source ledger dependencies |
+| `f:indexId` | Index ContentId |
+| `f:indexT` | Index transaction number |
 
 #### Example Queries
 
 **Find all ledgers with t > 100:**
 ```json
 {
-  "@context": {"db": "https://ns.flur.ee/db#"},
+  "@context": {"f": "https://ns.flur.ee/db#"},
   "select": ["?ledger", "?t"],
   "where": [
-    {"@id": "?ns", "db:ledger": "?ledger", "db:t": "?t"}
+    {"@id": "?ns", "f:ledger": "?ledger", "f:t": "?t"}
   ],
   "filter": ["(> ?t 100)"]
 }
@@ -255,10 +255,10 @@ curl -X POST http://localhost:8090/nameservice/query \
 **Find ledgers by name pattern (hierarchical):**
 ```json
 {
-  "@context": {"db": "https://ns.flur.ee/db#"},
+  "@context": {"f": "https://ns.flur.ee/db#"},
   "select": ["?ledger", "?branch"],
   "where": [
-    {"@id": "?ns", "db:ledger": "?ledger", "db:branch": "?branch"}
+    {"@id": "?ns", "f:ledger": "?ledger", "f:branch": "?branch"}
   ],
   "filter": ["(strStarts ?ledger \"tenant1/\")"]
 }
@@ -268,11 +268,11 @@ curl -X POST http://localhost:8090/nameservice/query \
 ```json
 {
   "@context": {
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?name", "?deps"],
   "where": [
-    {"@id": "?gs", "@type": "db:Bm25Index", "db:name": "?name", "db:dependencies": "?deps"}
+    {"@id": "?gs", "@type": "f:Bm25Index", "f:name": "?name", "f:dependencies": "?deps"}
   ]
 }
 ```
@@ -358,7 +358,7 @@ Content-Type: application/json
 **What Happens:**
 
 1. Transaction is processed and committed (assigned `t=1`)
-2. Commit is stored and address published to nameservice
+2. Commit is stored and its ContentId published to nameservice
 3. Nameservice record created/updated with `commit_t=1`
 4. Background indexing begins
 5. When indexing completes, `index_t=1` is published
@@ -382,7 +382,7 @@ WHERE {
 
 The `FROM <mydb:main>` clause specifies which ledger to query. The query engine:
 1. Looks up `mydb:main` in the nameservice
-2. Retrieves the index address for efficient querying
+2. Retrieves the index ContentId for efficient querying
 3. Combines indexed data with novelty layer for current results
 
 **JSON-LD Query:**
@@ -535,12 +535,12 @@ Understanding how records evolve:
 
 2. First Transaction
    - Transaction committed at t=1
-   - publish_commit("mydb:main", "addr1", 1)
+   - publish_commit("mydb:main", commit_cid_1, 1)
    - Record: commit_t=1, index_t=0
 
 3. Indexing Completes
    - Index created for t=1
-   - publish_index("mydb:main", "idx_addr1", 1)
+   - publish_index("mydb:main", index_cid_1, 1)
    - Record: commit_t=1, index_t=1
 
 4. More Transactions
@@ -550,7 +550,7 @@ Understanding how records evolve:
 
 5. Next Index
    - Index created for t=4
-   - publish_index("mydb:main", "idx_addr2", 4)
+   - publish_index("mydb:main", index_cid_2, 4)
    - Record: commit_t=4, index_t=4 (no novelty)
 ```
 

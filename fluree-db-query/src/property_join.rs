@@ -394,8 +394,7 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
             // try a batched subject probe for this predicate.
             let can_batched_probe = order_pos > 0
                 && driver_subject_ids.is_some()
-                && !ctx.is_multi_ledger()
-                && ctx.binary_store.is_some()
+                && ctx.has_binary_store()
                 && dt.is_none();
 
             if can_batched_probe {
@@ -534,11 +533,7 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
             scan.close();
 
             // After the first scan (driver), capture the subject IDs for batched probing.
-            if order_pos == 0
-                && driver_pred_idx.is_some()
-                && !ctx.is_multi_ledger()
-                && ctx.binary_store.is_some()
-            {
+            if order_pos == 0 && driver_pred_idx.is_some() && ctx.has_binary_store() {
                 let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
                 for k in all_subject_values.keys() {
                     if let SubjectKey::Id(s_id) = k {

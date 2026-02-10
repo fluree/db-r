@@ -59,24 +59,24 @@ A policy in Fluree consists of:
 ```json
 {
   "@id": "ex:policy1",
-  "@type": "db:Policy",
-  "db:target": {
-    "db:subject": "ex:patient",
-    "db:predicate": ["ex:medicalRecord", "ex:diagnosis"]
+  "@type": "f:Policy",
+  "f:target": {
+    "f:subject": "ex:patient",
+    "f:predicate": ["ex:medicalRecord", "ex:diagnosis"]
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:equals",
-      "db:path": ["db:auth", "db:role"],
-      "db:value": "doctor"
+      "f:rule": "f:equals",
+      "f:path": ["f:auth", "f:role"],
+      "f:value": "doctor"
     },
     {
-      "db:rule": "db:equals",
-      "db:path": ["db:auth", "db:subject"],
-      "db:path": ["ex:patient", "ex:assignedDoctor"]
+      "f:rule": "f:equals",
+      "f:path": ["f:auth", "f:subject"],
+      "f:path": ["ex:patient", "ex:assignedDoctor"]
     }
   ],
-  "db:actions": ["db:read"]
+  "f:actions": ["f:read"]
 }
 ```
 
@@ -147,14 +147,14 @@ Control access based on the subject being accessed:
 
 ```json
 {
-  "db:target": {
-    "db:subject": "ex:patient"
+  "f:target": {
+    "f:subject": "ex:patient"
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:equals",
-      "db:path": ["db:auth", "db:subject"],
-      "db:path": ["?subject", "ex:owner"]
+      "f:rule": "f:equals",
+      "f:path": ["f:auth", "f:subject"],
+      "f:path": ["?subject", "ex:owner"]
     }
   ]
 }
@@ -166,14 +166,14 @@ Control access to specific predicates:
 
 ```json
 {
-  "db:target": {
-    "db:predicate": ["ex:salary", "ex:bonus"]
+  "f:target": {
+    "f:predicate": ["ex:salary", "ex:bonus"]
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:equals",
-      "db:path": ["db:auth", "db:role"],
-      "db:value": "hr-manager"
+      "f:rule": "f:equals",
+      "f:path": ["f:auth", "f:role"],
+      "f:value": "hr-manager"
     }
   ]
 }
@@ -185,14 +185,14 @@ Control access based on object values:
 
 ```json
 {
-  "db:target": {
-    "db:predicate": "ex:classification"
+  "f:target": {
+    "f:predicate": "ex:classification"
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:notEquals",
-      "db:path": ["?object"],
-      "db:value": "top-secret"
+      "f:rule": "f:notEquals",
+      "f:path": ["?object"],
+      "f:value": "top-secret"
     }
   ]
 }
@@ -204,13 +204,13 @@ Control access based on graph relationships:
 
 ```json
 {
-  "db:target": {
-    "db:subject": "ex:document"
+  "f:target": {
+    "f:subject": "ex:document"
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:path",
-      "db:path": ["?subject", "ex:sharedWith", "db:auth", "db:subject"]
+      "f:rule": "f:path",
+      "f:path": ["?subject", "ex:sharedWith", "f:auth", "f:subject"]
     }
   ]
 }
@@ -224,14 +224,14 @@ Each tenant sees only their data:
 
 ```json
 {
-  "db:target": {
-    "db:subject": "?any"
+  "f:target": {
+    "f:subject": "?any"
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:equals",
-      "db:path": ["?subject", "ex:tenant"],
-      "db:path": ["db:auth", "db:tenant"]
+      "f:rule": "f:equals",
+      "f:path": ["?subject", "ex:tenant"],
+      "f:path": ["f:auth", "f:tenant"]
     }
   ]
 }
@@ -243,22 +243,22 @@ Doctors can only access patient data they're authorized for:
 
 ```json
 {
-  "db:target": {
-    "db:subject": "ex:patient",
-    "db:predicate": ["ex:medicalRecord", "ex:diagnosis"]
+  "f:target": {
+    "f:subject": "ex:patient",
+    "f:predicate": ["ex:medicalRecord", "ex:diagnosis"]
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:and",
-      "db:conditions": [
+      "f:rule": "f:and",
+      "f:conditions": [
         {
-          "db:rule": "db:equals",
-          "db:path": ["db:auth", "db:role"],
-          "db:value": "doctor"
+          "f:rule": "f:equals",
+          "f:path": ["f:auth", "f:role"],
+          "f:value": "doctor"
         },
         {
-          "db:rule": "db:path",
-          "db:path": ["?subject", "ex:assignedDoctor", "db:auth", "db:subject"]
+          "f:rule": "f:path",
+          "f:path": ["?subject", "ex:assignedDoctor", "f:auth", "f:subject"]
         }
       ]
     }
@@ -272,14 +272,14 @@ Users can only access their own personal data:
 
 ```json
 {
-  "db:target": {
-    "db:subject": "ex:user"
+  "f:target": {
+    "f:subject": "ex:user"
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:equals",
-      "db:path": ["?subject"],
-      "db:path": ["db:auth", "db:subject"]
+      "f:rule": "f:equals",
+      "f:path": ["?subject"],
+      "f:path": ["f:auth", "f:subject"]
     }
   ]
 }
@@ -291,14 +291,14 @@ Different roles have different access levels:
 
 ```json
 {
-  "db:target": {
-    "db:predicate": "ex:sensitiveData"
+  "f:target": {
+    "f:predicate": "ex:sensitiveData"
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:in",
-      "db:path": ["db:auth", "db:role"],
-      "db:value": ["admin", "auditor"]
+      "f:rule": "f:in",
+      "f:path": ["f:auth", "f:role"],
+      "f:value": ["admin", "auditor"]
     }
   ]
 }
@@ -340,17 +340,17 @@ Policies can also control write access:
 
 ```json
 {
-  "db:target": {
-    "db:predicate": "ex:salary"
+  "f:target": {
+    "f:predicate": "ex:salary"
   },
-  "db:conditions": [
+  "f:conditions": [
     {
-      "db:rule": "db:equals",
-      "db:path": ["db:auth", "db:role"],
-      "db:value": "hr-manager"
+      "f:rule": "f:equals",
+      "f:path": ["f:auth", "f:role"],
+      "f:value": "hr-manager"
     }
   ],
-  "db:actions": ["db:write"]
+  "f:actions": ["f:write"]
 }
 ```
 

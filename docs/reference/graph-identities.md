@@ -54,9 +54,9 @@ Fluree supports time pinning in graph references.
 **Current syntax (implemented today):**
 - `<ledger>:<branch>@t:<t>` — pin to transaction time
 - `<ledger>:<branch>@iso:<rfc3339>` — pin to ISO datetime
-- `<ledger>:<branch>@sha:<commit-sha>` — pin to commit SHA (prefix allowed)
+- `<ledger>:<branch>@commit:<commit-content-id>` — pin to commit ContentId (prefix allowed)
 
-Note: you may see an `=` form in older design notes (`@t=100`, etc.). That form is **not** the supported user-facing syntax today; use the `@t:` / `@iso:` / `@sha:` forms in docs and examples.
+Note: you may see an `=` form in older design notes (`@t=100`, etc.). That form is **not** the supported user-facing syntax today; use the `@t:` / `@iso:` / `@commit:` forms in docs and examples.
 
 From a user perspective:
 - The `@…` portion selects **which Db value** you mean for that ledger graph.
@@ -144,13 +144,13 @@ Internally we should distinguish:
 Even if these are initially just `struct LedgerId(Arc<str>)` newtypes, they prevent accidental mixing and make APIs self-documenting.
 
 ### Naming rules (make each word mean one thing)
-This repo reserves `_address` for **storage pointers** (dereferenceable URIs like `commit_address`, `index_address`) and uses `_id` for **identity/lookup keys** (`name:branch` tokens). The recommended rule set:
+This repo reserves `_id` for **content identifiers** (e.g. `commit_id`, `index_id`, `default_context_id`) and **identity/lookup keys** (`name:branch` tokens). The recommended rule set:
 
 - **`id`**: canonical identifier used as a cache key / stable identity.
   - For ledgers this is the full `name:branch` form (e.g., `people:main`).
   - For graph sources this is the full `name:branch` form (e.g., `products-search:main`).
-- **`address`**: a storage pointer (dereferenceable URI) used by the storage layer to fetch bytes.
-  - Examples: `commit_address`, `index_address`, `default_context_address`.
+- **`_id` (for content references)**: a content identifier (ContentId) used by the storage layer to fetch immutable artifacts.
+  - Examples: `commit_id`, `index_id`, `default_context_id`.
 - **`name`**: a base name without branch (e.g., `people`).
 - **`branch`**: the branch name (e.g., `main`).
 - **`alias`**: a human-friendly label, and only that.
@@ -159,7 +159,7 @@ This repo reserves `_address` for **storage pointers** (dereferenceable URIs lik
 Practical guidelines:
 - If a string is used to load/cache/lookup a ledger, call it **`ledger_id`** (not `ledger_alias`, not `ledger_address`).
 - If a string is used to load/cache/lookup a graph source by `name:branch`, call it **`graph_source_id`** (not `gs_alias`, not `graph_source_alias`, not `graph_source_address`).
-- If a string points to a storage location (commit, index, context), call it **`*_address`** (e.g., `commit_address`, `index_address`).
+- If a value identifies a content-addressed artifact (commit, index, context), call it **`*_id`** (e.g., `commit_id`, `index_id`, `default_context_id`).
 - If a string is used to identify a graph in SPARQL (`FROM`, `GRAPH`), call it **`graph_iri`** (canonical) or **`graph_ref`** (user input).
 - Avoid having two different meanings for the same field name across crates. Prefer longer, explicit names.
 

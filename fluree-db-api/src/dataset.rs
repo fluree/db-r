@@ -846,7 +846,7 @@ impl QueryConnectionOptions {
 /// - `ledger:main@t:42` → identifier="ledger:main", TimeSpec::AtT(42)
 /// - `ledger:main@t:latest` → identifier="ledger:main", TimeSpec::Latest
 /// - `ledger:main@iso:2025-01-01T00:00:00Z` → identifier="ledger:main", TimeSpec::AtTime(...)
-/// - `ledger:main@sha:abc123` → identifier="ledger:main", TimeSpec::AtCommit(...)
+/// - `ledger:main@commit:abc123` → identifier="ledger:main", TimeSpec::AtCommit(...)
 ///
 /// Returns (identifier, Option<TimeSpec>).
 fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), DatasetParseError> {
@@ -884,7 +884,7 @@ fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), Da
     let time_spec = time.map(|spec| match spec {
         core_alias::AliasTimeSpec::AtT(t) => TimeSpec::AtT(t),
         core_alias::AliasTimeSpec::AtIso(value) => TimeSpec::AtTime(value),
-        core_alias::AliasTimeSpec::AtSha(value) => TimeSpec::AtCommit(value),
+        core_alias::AliasTimeSpec::AtCommit(value) => TimeSpec::AtCommit(value),
     });
 
     Ok((format!("{identifier}{fragment_suffix}"), time_spec))
@@ -893,7 +893,7 @@ fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), Da
 /// Parse graph sources from a JSON value
 ///
 /// Accepts:
-/// - String: single graph source (may include @t:/@iso:/@sha: time-travel syntax)
+/// - String: single graph source (may include @t:/@iso:/@commit: time-travel syntax)
 /// - Array: multiple graph sources
 /// - Object: single graph source with time spec
 fn parse_graph_sources(
@@ -923,7 +923,7 @@ fn parse_graph_sources(
 /// Parse a single graph source from a JSON value
 ///
 /// Accepts:
-/// - String: identifier (may include @t:/@iso:/@sha: time-travel syntax and #txn-meta fragment)
+/// - String: identifier (may include @t:/@iso:/@commit: time-travel syntax and #txn-meta fragment)
 /// - Object: Extended graph source object with optional fields:
 ///   - `@id` / `id`: ledger reference (required)
 ///   - `t` / `at`: time specification
@@ -1299,7 +1299,7 @@ mod tests {
         ));
     }
 
-    // Ledger alias time-travel syntax tests (@t:, @iso:, @sha:)
+    // Ledger alias time-travel syntax tests (@t:, @iso:, @commit:)
 
     #[test]
     fn test_parse_alias_at_t() {
@@ -1353,9 +1353,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_sha() {
+    fn test_parse_alias_at_commit() {
         let query = json!({
-            "from": "ledger:main@sha:abc123def456",
+            "from": "ledger:main@commit:abc123def456",
             "select": ["?s"],
             "where": {"@id": "?s"}
         });
@@ -1370,9 +1370,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_sha_too_short() {
+    fn test_parse_alias_at_commit_too_short() {
         let query = json!({
-            "from": "ledger:main@sha:abc",
+            "from": "ledger:main@commit:abc",
             "select": ["?s"],
             "where": {"@id": "?s"}
         });
@@ -1608,7 +1608,7 @@ mod tests {
                 Iri::full("ledger:main@t:42", make_span()),
                 Iri::full("ledger:main@iso:2025-01-01T00:00:00Z", make_span()),
             ],
-            named_graphs: vec![Iri::full("ledger:main@sha:abc123def456", make_span())],
+            named_graphs: vec![Iri::full("ledger:main@commit:abc123def456", make_span())],
             to_graph: None,
             span: make_span(),
         };
@@ -1713,9 +1713,9 @@ mod tests {
 
     #[test]
     fn test_history_mode_mixed_time_types_explicit() {
-        // Different time types (sha and t) for same ledger with explicit "to"
+        // Different time types (commit and t) for same ledger with explicit "to"
         let query = json!({
-            "from": "ledger:main@sha:abc123def456",
+            "from": "ledger:main@commit:abc123def456",
             "to": "ledger:main@t:latest",
             "select": ["?t", "?age"]
         });

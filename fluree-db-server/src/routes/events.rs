@@ -141,10 +141,8 @@ fn ledger_to_sse_event(record: &NsRecord) -> Event {
             "branch": record.branch,
             // Identity (storage-agnostic): preferred for sync logic.
             "commit_head_id": commit_head_id,
-            "commit_address": record.commit_address,
             "commit_t": record.commit_t,
             "index_head_id": index_head_id,
-            "index_address": record.index_address,
             "index_t": record.index_t,
             "retracted": record.retracted,
         }),
@@ -163,6 +161,8 @@ fn graph_source_to_sse_event(record: &GraphSourceRecord) -> Event {
     let graph_source_id = record.address.clone();
     let event_id = graph_source_event_id(&graph_source_id, record);
 
+    let index_id = record.index_id.as_ref().map(|id| id.to_string());
+
     let data = NsRecordData {
         action: "ns-record",
         kind: SSE_KIND_GRAPH_SOURCE,
@@ -174,7 +174,7 @@ fn graph_source_to_sse_event(record: &GraphSourceRecord) -> Event {
             "source_type": record.source_type.to_type_string(),
             "config": record.config,
             "dependencies": record.dependencies,
-            "index_address": record.index_address,
+            "index_id": index_id,
             "index_t": record.index_t,
             "retracted": record.retracted,
         }),
@@ -520,10 +520,8 @@ mod tests {
             ledger_id: "test:main".to_string(),
             name: "test".to_string(),
             branch: "main".to_string(),
-            commit_address: Some("commit-addr".to_string()),
             commit_head_id: None,
             commit_t: 42,
-            index_address: Some("index-addr".to_string()),
             index_head_id: None,
             index_t: 40,
             default_context: None,

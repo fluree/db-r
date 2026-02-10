@@ -124,7 +124,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
                 .expect("nameservice lookup")
                 .expect("ns record");
             assert!(
-                record.index_address.is_none(),
+                record.index_head_id.is_none(),
                 "expected no index before manual trigger"
             );
             assert_eq!(record.commit_t, 10);
@@ -143,8 +143,8 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
                 .expect("nameservice lookup")
                 .expect("ns record");
             assert!(
-                record2.index_address.is_some(),
-                "expected index address after trigger"
+                record2.index_head_id.is_some(),
+                "expected index id after trigger"
             );
             assert!(
                 record2.index_t >= record2.commit_t,
@@ -236,12 +236,8 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
             let c1 = handle.trigger(alias, t1).await;
             let c2 = handle.trigger(alias, t2).await;
 
-            let (index_t2, _root2) = match c2.wait().await {
-                fluree_db_api::IndexOutcome::Completed {
-                    index_t,
-                    root_address,
-                    ..
-                } => (index_t, root_address),
+            let (index_t2, _root_id2) = match c2.wait().await {
+                fluree_db_api::IndexOutcome::Completed { index_t, root_id } => (index_t, root_id),
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             };

@@ -139,13 +139,13 @@ Use the `#txn-meta` fragment on a ledger reference:
 ```json
 {
   "@context": {
-    "db": "https://ns.flur.ee/db#",
+    "f": "https://ns.flur.ee/db#",
     "ex": "http://example.org/ns/"
   },
   "from": "mydb:main#txn-meta",
   "select": ["?commit", "?t", "?machine"],
   "where": [
-    { "@id": "?commit", "db:t": "?t" },
+    { "@id": "?commit", "f:t": "?t" },
     { "@id": "?commit", "ex:machine": "?machine" }
   ]
 }
@@ -154,13 +154,13 @@ Use the `#txn-meta` fragment on a ledger reference:
 **SPARQL Query:**
 
 ```sparql
-PREFIX db: <https://ns.flur.ee/db#>
+PREFIX f: <https://ns.flur.ee/db#>
 PREFIX ex: <http://example.org/ns/>
 
 SELECT ?commit ?t ?machine
 FROM <mydb:main#txn-meta>
 WHERE {
-  ?commit db:t ?t .
+  ?commit f:t ?t .
   OPTIONAL { ?commit ex:machine ?machine }
 }
 ```
@@ -255,7 +255,7 @@ When using object syntax for `from` or `from-named`, the following fields are av
 | `graph` | string | No | Graph selector: `"default"`, `"txn-meta"`, or full IRI |
 | `t` | integer | No | Time-travel: specific transaction number |
 | `iso` | string | No | Time-travel: ISO-8601 timestamp |
-| `sha` | string | No | Time-travel: commit SHA prefix |
+| `commit_id` | string | No | Time-travel: commit ContentId |
 | `policy` | object | No | Per-source policy override (see below) |
 
 ### Dataset-Local Aliases
@@ -450,7 +450,7 @@ Combine default and named graph patterns:
 **SPARQL:**
 
 ```sparql
-PREFIX db: <https://ns.flur.ee/db#>
+PREFIX f: <https://ns.flur.ee/db#>
 PREFIX ex: <http://example.org/ns/>
 
 SELECT ?name ?commit ?t
@@ -459,7 +459,7 @@ FROM NAMED <mydb:main#txn-meta>
 WHERE {
   ?person ex:name ?name .
   GRAPH <mydb:main#txn-meta> {
-    ?commit db:t ?t .
+    ?commit f:t ?t .
   }
 }
 ```

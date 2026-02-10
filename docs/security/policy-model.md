@@ -9,17 +9,17 @@ A policy consists of four main components:
 ```json
 {
   "@context": {
-    "db": "https://ns.flur.ee/db#",
+    "f": "https://ns.flur.ee/db#",
     "ex": "http://example.org/ns/"
   },
   "@id": "ex:example-policy",
-  "@type": "db:Policy",
-  "db:subject": "did:key:z6Mkh...",
-  "db:action": "query",
-  "db:resource": {
+  "@type": "f:Policy",
+  "f:subject": "did:key:z6Mkh...",
+  "f:action": "query",
+  "f:resource": {
     "@type": "schema:Person"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -30,28 +30,28 @@ Specifies who the policy applies to:
 **Specific DID:**
 ```json
 {
-  "db:subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+  "f:subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
 }
 ```
 
 **Any Subject (wildcard):**
 ```json
 {
-  "db:subject": "*"
+  "f:subject": "*"
 }
 ```
 
 **Variable (for conditions):**
 ```json
 {
-  "db:subject": "?user"
+  "f:subject": "?user"
 }
 ```
 
 **Role-Based:**
 ```json
 {
-  "db:subject": {
+  "f:subject": {
     "ex:role": "admin"
   }
 }
@@ -60,7 +60,7 @@ Specifies who the policy applies to:
 **Group-Based:**
 ```json
 {
-  "db:subject": {
+  "f:subject": {
     "ex:memberOf": "ex:engineering-team"
   }
 }
@@ -73,28 +73,28 @@ Specifies which operation:
 **Query:**
 ```json
 {
-  "db:action": "query"
+  "f:action": "query"
 }
 ```
 
 **Transact:**
 ```json
 {
-  "db:action": "transact"
+  "f:action": "transact"
 }
 ```
 
 **Multiple Actions:**
 ```json
 {
-  "db:action": ["query", "transact"]
+  "f:action": ["query", "transact"]
 }
 ```
 
 **All Actions:**
 ```json
 {
-  "db:action": "*"
+  "f:action": "*"
 }
 ```
 
@@ -105,7 +105,7 @@ Specifies what data the policy applies to:
 **By Type:**
 ```json
 {
-  "db:resource": {
+  "f:resource": {
     "@type": "schema:Person"
   }
 }
@@ -114,8 +114,8 @@ Specifies what data the policy applies to:
 **By Predicate:**
 ```json
 {
-  "db:resource": {
-    "db:predicate": "ex:salary"
+  "f:resource": {
+    "f:predicate": "ex:salary"
   }
 }
 ```
@@ -123,7 +123,7 @@ Specifies what data the policy applies to:
 **Specific Entity:**
 ```json
 {
-  "db:resource": {
+  "f:resource": {
     "@id": "ex:alice"
   }
 }
@@ -132,7 +132,7 @@ Specifies what data the policy applies to:
 **Pattern with Variables:**
 ```json
 {
-  "db:resource": {
+  "f:resource": {
     "@type": "ex:Document",
     "ex:department": "?dept"
   }
@@ -142,7 +142,7 @@ Specifies what data the policy applies to:
 **All Resources:**
 ```json
 {
-  "db:resource": "*"
+  "f:resource": "*"
 }
 ```
 
@@ -153,14 +153,14 @@ Specifies whether to grant or deny access:
 **Allow:**
 ```json
 {
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
 **Deny:**
 ```json
 {
-  "db:allow": false
+  "f:allow": false
 }
 ```
 
@@ -171,16 +171,16 @@ Policies can include conditions that must be satisfied:
 ```json
 {
   "@id": "ex:same-department-policy",
-  "db:subject": "?user",
-  "db:action": "query",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "query",
+  "f:resource": {
     "@type": "schema:Person",
     "ex:department": "?dept"
   },
-  "db:condition": [
+  "f:condition": [
     { "@id": "?user", "ex:department": "?dept" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -190,17 +190,17 @@ This allows users to query people in their own department.
 
 ```json
 {
-  "db:subject": "?user",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:resource": {
     "@id": "?doc",
     "ex:status": "published"
   },
-  "db:condition": [
+  "f:condition": [
     { "@id": "?user", "ex:clearanceLevel": "?level" },
     { "@id": "?doc", "ex:requiredClearance": "?reqLevel" },
-    { "db:filter": "?level >= ?reqLevel" }
+    { "f:filter": "?level >= ?reqLevel" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -257,10 +257,10 @@ Context:
 **Policy:**
 ```json
 {
-  "db:subject": "did:key:z6Mkhabc...",
-  "db:action": "query",
-  "db:resource": { "@type": "ex:PublicData" },
-  "db:allow": true
+  "f:subject": "did:key:z6Mkhabc...",
+  "f:action": "query",
+  "f:resource": { "@type": "ex:PublicData" },
+  "f:allow": true
 }
 ```
 
@@ -330,11 +330,11 @@ Recommended for production:
 ```json
 {
   "@id": "ex:default-deny",
-  "db:subject": "*",
-  "db:action": "*",
-  "db:resource": "*",
-  "db:allow": false,
-  "db:priority": -1000
+  "f:subject": "*",
+  "f:action": "*",
+  "f:resource": "*",
+  "f:allow": false,
+  "f:priority": -1000
 }
 ```
 
@@ -347,10 +347,10 @@ For development only:
 ```json
 {
   "@id": "ex:default-allow",
-  "db:subject": "*",
-  "db:action": "*",
-  "db:resource": "*",
-  "db:allow": true
+  "f:subject": "*",
+  "f:action": "*",
+  "f:resource": "*",
+  "f:allow": true
 }
 ```
 
@@ -363,10 +363,10 @@ Control policy evaluation order with priority:
 ```json
 {
   "@id": "ex:admin-override",
-  "db:subject": { "ex:role": "admin" },
-  "db:action": "*",
-  "db:allow": true,
-  "db:priority": 1000
+  "f:subject": { "ex:role": "admin" },
+  "f:action": "*",
+  "f:allow": true,
+  "f:priority": 1000
 }
 ```
 
@@ -378,11 +378,11 @@ Variables in policies bind to values from context:
 
 ```json
 {
-  "db:subject": "?user",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:resource": {
     "ex:owner": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -403,14 +403,14 @@ Policies can match patterns:
 
 ```json
 {
-  "db:resource": {
+  "f:resource": {
     "@type": "?type",
     "ex:visibility": "public"
   },
-  "db:condition": [
-    { "db:filter": "?type != ex:SensitiveData" }
+  "f:condition": [
+    { "f:filter": "?type != ex:SensitiveData" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -422,16 +422,16 @@ Policies can be time-dependent:
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "query",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "query",
+  "f:resource": {
     "ex:availableFrom": "?startDate",
     "ex:availableUntil": "?endDate"
   },
-  "db:condition": [
-    { "db:filter": "NOW() >= ?startDate && NOW() <= ?endDate" }
+  "f:condition": [
+    { "f:filter": "NOW() >= ?startDate && NOW() <= ?endDate" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -442,24 +442,24 @@ Control access to specific properties:
 ```json
 {
   "@id": "ex:hide-salary",
-  "db:subject": "*",
-  "db:action": "query",
-  "db:resource": {
-    "db:predicate": "ex:salary"
+  "f:subject": "*",
+  "f:action": "query",
+  "f:resource": {
+    "f:predicate": "ex:salary"
   },
-  "db:allow": false
+  "f:allow": false
 }
 ```
 
 ```json
 {
   "@id": "ex:show-salary-to-hr",
-  "db:subject": { "ex:role": "hr" },
-  "db:action": "query",
-  "db:resource": {
-    "db:predicate": "ex:salary"
+  "f:subject": { "ex:role": "hr" },
+  "f:action": "query",
+  "f:resource": {
+    "f:predicate": "ex:salary"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -469,13 +469,13 @@ Control access to specific entities:
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "*",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "*",
+  "f:resource": {
     "@id": "?entity",
     "ex:owner": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -489,18 +489,18 @@ Users can access entities they own.
 [
   {
     "@id": "ex:public-read",
-    "db:subject": "*",
-    "db:action": "query",
-    "db:allow": true
+    "f:subject": "*",
+    "f:action": "query",
+    "f:allow": true
   },
   {
     "@id": "ex:authenticated-write",
-    "db:subject": "?user",
-    "db:action": "transact",
-    "db:condition": [
+    "f:subject": "?user",
+    "f:action": "transact",
+    "f:condition": [
       { "@id": "?user", "@type": "ex:AuthenticatedUser" }
     ],
-    "db:allow": true
+    "f:allow": true
   }
 ]
 ```
@@ -510,15 +510,15 @@ Users can access entities they own.
 ```json
 {
   "@id": "ex:department-isolation",
-  "db:subject": "?user",
-  "db:action": "*",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "*",
+  "f:resource": {
     "ex:department": "?dept"
   },
-  "db:condition": [
+  "f:condition": [
     { "@id": "?user", "ex:department": "?dept" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -527,12 +527,12 @@ Users can access entities they own.
 ```json
 {
   "@id": "ex:manager-access",
-  "db:subject": "?manager",
-  "db:action": "*",
-  "db:resource": {
+  "f:subject": "?manager",
+  "f:action": "*",
+  "f:resource": {
     "ex:reportsTo": "?manager"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -543,12 +543,12 @@ Managers can access data of their reports.
 ```json
 {
   "@id": "ex:business-hours-only",
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:condition": [
-    { "db:filter": "HOUR(NOW()) >= 9 && HOUR(NOW()) <= 17" }
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:condition": [
+    { "f:filter": "HOUR(NOW()) >= 9 && HOUR(NOW()) <= 17" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -557,15 +557,15 @@ Managers can access data of their reports.
 ```json
 {
   "@id": "ex:clearance-policy",
-  "db:subject": "?user",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:resource": {
     "ex:classificationLevel": "?docLevel"
   },
-  "db:condition": [
+  "f:condition": [
     { "@id": "?user", "ex:clearance": "?userLevel" },
-    { "db:filter": "?userLevel >= ?docLevel" }
+    { "f:filter": "?userLevel >= ?docLevel" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -630,10 +630,10 @@ async function testPolicy(policyId, testCases) {
 
 ```json
 {
-  "db:subject": "*",
-  "db:action": "*",
-  "db:allow": false,
-  "db:priority": -1000
+  "f:subject": "*",
+  "f:action": "*",
+  "f:allow": false,
+  "f:priority": -1000
 }
 ```
 
@@ -644,16 +644,16 @@ Prefer specific over general:
 Good:
 ```json
 {
-  "db:resource": { "@type": "ex:PublicDocument" },
-  "db:allow": true
+  "f:resource": { "@type": "ex:PublicDocument" },
+  "f:allow": true
 }
 ```
 
 Less secure:
 ```json
 {
-  "db:resource": "*",
-  "db:allow": true
+  "f:resource": "*",
+  "f:allow": true
 }
 ```
 
@@ -682,10 +682,10 @@ Add descriptions:
   "@id": "ex:policy-1",
   "rdfs:label": "Public read access",
   "rdfs:comment": "Allows anyone to read public documents",
-  "db:subject": "*",
-  "db:action": "query",
-  "db:resource": { "ex:visibility": "public" },
-  "db:allow": true
+  "f:subject": "*",
+  "f:action": "query",
+  "f:resource": { "ex:visibility": "public" },
+  "f:allow": true
 }
 ```
 

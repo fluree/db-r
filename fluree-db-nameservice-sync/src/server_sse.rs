@@ -57,9 +57,11 @@ struct LedgerSseRecord {
     #[serde(rename = "ledger_id")]
     address: String,
     branch: String,
-    commit_address: Option<String>,
+    #[serde(default)]
+    commit_head_id: Option<String>,
     commit_t: i64,
-    index_address: Option<String>,
+    #[serde(default)]
+    index_head_id: Option<String>,
     index_t: i64,
     retracted: bool,
 }
@@ -75,7 +77,7 @@ struct GraphSourceSseRecord {
     source_type: String,
     config: String,
     dependencies: Vec<String>,
-    index_address: Option<String>,
+    index_id: Option<String>,
     index_t: i64,
     retracted: bool,
 }
@@ -116,16 +118,20 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
 }
 
 fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
+    use fluree_db_core::ContentId;
+
     let (ledger_name, branch) = split_address_or_fallback(&record.address, &record.branch);
     NsRecord {
         ledger_id: record.address.clone(),
         name: ledger_name,
         branch,
-        commit_address: record.commit_address,
-        commit_head_id: None,
+        commit_head_id: record
+            .commit_head_id
+            .and_then(|s| s.parse::<ContentId>().ok()),
         commit_t: record.commit_t,
-        index_address: record.index_address,
-        index_head_id: None,
+        index_head_id: record
+            .index_head_id
+            .and_then(|s| s.parse::<ContentId>().ok()),
         index_t: record.index_t,
         default_context: None,
         retracted: record.retracted,
@@ -133,6 +139,8 @@ fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
 }
 
 fn gs_sse_to_graph_source_record(record: GraphSourceSseRecord) -> GraphSourceRecord {
+    use fluree_db_core::ContentId;
+
     GraphSourceRecord {
         address: record.address,
         name: record.name,
@@ -140,7 +148,7 @@ fn gs_sse_to_graph_source_record(record: GraphSourceSseRecord) -> GraphSourceRec
         source_type: GraphSourceType::from_type_string(&record.source_type),
         config: record.config,
         dependencies: record.dependencies,
-        index_address: record.index_address,
+        index_id: record.index_id.and_then(|s| s.parse::<ContentId>().ok()),
         index_t: record.index_t,
         retracted: record.retracted,
     }
@@ -174,9 +182,9 @@ mod tests {
                 "record": {
                     "ledger_id": "mydb:main",
                     "branch": "main",
-                    "commit_address": "fluree:file://commit/abc",
+                    "commit_head_id": null,
                     "commit_t": 5,
-                    "index_address": null,
+                    "index_head_id": null,
                     "index_t": 0,
                     "retracted": false
                 },
@@ -232,7 +240,7 @@ mod tests {
                     "source_type": "f:Bm25Index",
                     "config": "{\"k1\":1.2}",
                     "dependencies": ["books:main"],
-                    "index_address": null,
+                    "index_head_id": null,
                     "index_t": 0,
                     "retracted": false
                 },

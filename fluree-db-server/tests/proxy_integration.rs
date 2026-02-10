@@ -1243,7 +1243,7 @@ fn create_storage_proxy_token_no_identity(signing_key: &SigningKey, storage_all:
 /// This test:
 /// - creates a ledger and transacts some data
 /// - reindexes (producing binary `FLI1` leaves)
-/// - fetches a real leaf address from the BinaryIndexRootV2 JSON root
+/// - fetches a real leaf address from the BinaryIndexRoot JSON root
 /// - requests that leaf with `Accept: application/x-fluree-flakes`
 /// - verifies the response is FLKB and decodes to at least one flake
 #[tokio::test]
@@ -1331,7 +1331,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
 
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&root_bytes).expect("db root should be valid JSON");
-    let leaf_address = extract_spot_leaf_address(&db_root_json);
+    let leaf_address = extract_spot_leaf_address(&db_root_json, "leaf:test");
 
     // Request the leaf with flakes format - should return FLKB
     let block_body = serde_json::json!({ "address": leaf_address });
@@ -1494,7 +1494,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     let root_bytes = root_resp.bytes().await.expect("read root bytes");
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&root_bytes).expect("db root should be valid JSON");
-    let leaf_address = extract_spot_leaf_address(&db_root_json);
+    let leaf_address = extract_spot_leaf_address(&db_root_json, "peer:test");
 
     // Create ProxyStorage pointing to our test server
     let proxy_storage = ProxyStorage::new(server_url.clone(), token);
@@ -1638,7 +1638,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
     let root_bytes = root_resp.bytes().await.expect("read root bytes");
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&root_bytes).expect("db root should be valid JSON");
-    let leaf_address = extract_spot_leaf_address(&db_root_json);
+    let leaf_address = extract_spot_leaf_address(&db_root_json, "raw:test");
 
     // Create ProxyStorage pointing to our test server
     let proxy_storage = ProxyStorage::new(server_url.clone(), token);
@@ -1700,7 +1700,7 @@ fn tx_server_state_with_policy(
     (tmp, state)
 }
 
-/// Extract the first SPOT leaf address from a BinaryIndexRootV2 JSON structure.
+/// Extract the first SPOT leaf address from a BinaryIndexRoot JSON structure.
 ///
 /// The root format is:
 /// ```json
@@ -1708,12 +1708,15 @@ fn tx_server_state_with_policy(
 ///   "graphs": [{
 ///     "g_id": 0,
 ///     "orders": {
-///       "spot": { "branch": "...", "leaves": ["leaf1", "leaf2", ...] }
+///       "spot": { "branch": "...", "leaves": ["cid1", "cid2", ...] }
 ///     }
 ///   }]
 /// }
 /// ```
-fn extract_spot_leaf_address(db_root_json: &serde_json::Value) -> String {
+///
+/// Leaf entries are CID strings (base32-lower multibase). This function parses
+/// the CID and derives the storage address using `content_address()`.
+fn extract_spot_leaf_address(db_root_json: &serde_json::Value, ledger_id: &str) -> String {
     let graphs = db_root_json
         .get("graphs")
         .and_then(|g| g.as_array())
@@ -1730,11 +1733,19 @@ fn extract_spot_leaf_address(db_root_json: &serde_json::Value) -> String {
         .and_then(|l| l.as_array())
         .expect("spot should have leaves array");
 
-    leaves
+    let cid_str = leaves
         .first()
         .and_then(|l| l.as_str())
-        .expect("should have at least one leaf")
-        .to_string()
+        .expect("should have at least one leaf");
+
+    // Parse the CID and derive the storage address
+    let cid: fluree_db_core::ContentId = cid_str.parse().expect("leaf should be a valid CID");
+    fluree_db_core::content_address(
+        "file",
+        fluree_db_core::ContentKind::IndexLeaf,
+        ledger_id,
+        &cid.digest_hex(),
+    )
 }
 
 /// Test that policy filtering is applied to binary leaves (FLI1 → FLKB)
@@ -1905,8 +1916,8 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&db_root_bytes).expect("db root should be valid JSON");
 
-    // Extract the first SPOT leaf address from BinaryIndexRootV2 format
-    let leaf_address = extract_spot_leaf_address(&db_root_json);
+    // Extract the first SPOT leaf address from BinaryIndexRoot format
+    let leaf_address = extract_spot_leaf_address(&db_root_json, alias);
 
     let leaf_block_body = serde_json::json!({ "address": &leaf_address });
     // Fetch the leaf FILTERED (x-fluree-flakes) with policy
@@ -2052,8 +2063,8 @@ async fn test_no_policy_flkb_returns_all_flakes() {
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&db_root_bytes).expect("db root should be valid JSON");
 
-    // Extract the first SPOT leaf address from BinaryIndexRootV2 format
-    let leaf_address = extract_spot_leaf_address(&db_root_json);
+    // Extract the first SPOT leaf address from BinaryIndexRoot format
+    let leaf_address = extract_spot_leaf_address(&db_root_json, alias);
 
     let block_body = serde_json::json!({ "address": &leaf_address });
     // Fetch leaf in flakes format (no policy configured → should return all flakes, still FLKB)

@@ -1300,11 +1300,11 @@ async fn dataset_time_travel_alias_syntax_at_t() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_at_commit_sha() {
+async fn dataset_time_travel_at_commit() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // Commit 1: Alice (capture its commit ID / SHA)
+    // Commit 1: Alice (capture its commit ID)
     let ledger0 = genesis_ledger(&fluree, "people:main");
     let insert1 = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
@@ -1316,8 +1316,8 @@ async fn dataset_time_travel_at_commit_sha() {
         .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract the SHA-256 hex digest from the ContentId
-    let sha_prefix = commit_id.digest_hex();
+    // Extract the hex digest from the ContentId
+    let commit_prefix = commit_id.digest_hex();
 
     // Commit 2: Bob
     let insert2 = json!({
@@ -1326,9 +1326,9 @@ async fn dataset_time_travel_at_commit_sha() {
     });
     let _tx2 = fluree.insert(tx1.ledger, &insert2).await.unwrap();
 
-    // Dataset pinned at commit1 SHA should only see Alice (t=1).
+    // Dataset pinned at commit1 should only see Alice (t=1).
     let spec = DatasetSpec::new().with_default(
-        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.clone())),
+        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(commit_prefix.clone())),
     );
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
@@ -1349,11 +1349,11 @@ async fn dataset_time_travel_at_commit_sha() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_at_commit_sha_short_prefix() {
+async fn dataset_time_travel_at_commit_short_prefix() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // Commit 1: Alice (capture its commit ID / SHA)
+    // Commit 1: Alice (capture its commit ID)
     let ledger0 = genesis_ledger(&fluree, "people:main");
     let insert1 = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
@@ -1365,10 +1365,10 @@ async fn dataset_time_travel_at_commit_sha_short_prefix() {
         .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract the SHA-256 hex digest from the ContentId
-    let sha_full = commit_id.digest_hex();
+    // Extract the hex digest from the ContentId
+    let digest_full = commit_id.digest_hex();
     // Use just the first 10 characters as a prefix
-    let sha_prefix = &sha_full[..10.min(sha_full.len())];
+    let commit_prefix = &digest_full[..10.min(digest_full.len())];
 
     // Commit 2: Bob
     let insert2 = json!({
@@ -1377,9 +1377,9 @@ async fn dataset_time_travel_at_commit_sha_short_prefix() {
     });
     let _tx2 = fluree.insert(tx1.ledger, &insert2).await.unwrap();
 
-    // Dataset pinned at commit1 SHA prefix should only see Alice (t=1).
+    // Dataset pinned at commit1 prefix should only see Alice (t=1).
     let spec = DatasetSpec::new().with_default(
-        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.to_string())),
+        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(commit_prefix.to_string())),
     );
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
@@ -1400,11 +1400,11 @@ async fn dataset_time_travel_at_commit_sha_short_prefix() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_alias_syntax_sha() {
+async fn dataset_time_travel_alias_syntax_commit() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // Commit 1: Alice (capture its commit ID / SHA)
+    // Commit 1: Alice (capture its commit ID)
     let ledger0 = genesis_ledger(&fluree, "people:main");
     let insert1 = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
@@ -1416,8 +1416,8 @@ async fn dataset_time_travel_alias_syntax_sha() {
         .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract the SHA-256 hex digest from the ContentId
-    let sha_prefix = commit_id.digest_hex();
+    // Extract the hex digest from the ContentId
+    let commit_prefix = commit_id.digest_hex();
 
     // Commit 2: Bob
     let insert2 = json!({
@@ -1426,11 +1426,11 @@ async fn dataset_time_travel_alias_syntax_sha() {
     });
     let _tx2 = fluree.insert(tx1.ledger, &insert2).await.unwrap();
 
-    // Use @sha: alias syntax in "from" string
-    let alias_with_sha = format!("people:main@sha:{}", sha_prefix);
+    // Use @commit: alias syntax in "from" string
+    let alias_with_commit = format!("people:main@commit:{}", commit_prefix);
     let query = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
-        "from": alias_with_sha,
+        "from": alias_with_commit,
         "select": ["?name"],
         "where": {"@id": "?s", "schema:name": "?name"}
     });
@@ -1456,7 +1456,7 @@ async fn dataset_time_travel_alias_syntax_sha() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_sha_not_found_errors() {
+async fn dataset_time_travel_commit_not_found_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
@@ -1468,12 +1468,12 @@ async fn dataset_time_travel_sha_not_found_errors() {
     });
     let _tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
 
-    // Request a non-existent SHA - should error
+    // Request a non-existent commit prefix - should error
     let spec = DatasetSpec::new().with_default(
         GraphSource::new("people:main").with_time(TimeSpec::AtCommit("bxxxxxx".to_string())),
     );
     let result = fluree.build_dataset_view(&spec).await;
-    assert!(result.is_err(), "non-existent SHA should error");
+    assert!(result.is_err(), "non-existent commit should error");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("No commit found"),
@@ -1483,7 +1483,7 @@ async fn dataset_time_travel_sha_not_found_errors() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_sha_too_short_errors() {
+async fn dataset_time_travel_commit_too_short_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
@@ -1495,12 +1495,12 @@ async fn dataset_time_travel_sha_too_short_errors() {
     });
     let _tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
 
-    // SHA too short (less than 6 chars) - should error
+    // Commit prefix too short (less than 6 chars) - should error
     let spec = DatasetSpec::new().with_default(
         GraphSource::new("people:main").with_time(TimeSpec::AtCommit("babc".to_string())),
     );
     let result = fluree.build_dataset_view(&spec).await;
-    assert!(result.is_err(), "SHA too short should error");
+    assert!(result.is_err(), "commit prefix too short should error");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("at least 6 characters"),

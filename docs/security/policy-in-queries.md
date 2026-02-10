@@ -41,12 +41,12 @@ Result (all people):
 Policy:
 ```json
 {
-  "db:subject": "did:key:z6Mkhabc...",
-  "db:action": "query",
-  "db:resource": {
+  "f:subject": "did:key:z6Mkhabc...",
+  "f:action": "query",
+  "f:resource": {
     "ex:department": "engineering"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -68,12 +68,12 @@ Policy limiting to specific type:
 
 ```json
 {
-  "db:subject": "*",
-  "db:action": "query",
-  "db:resource": {
+  "f:subject": "*",
+  "f:action": "query",
+  "f:resource": {
     "@type": "ex:PublicDocument"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -102,12 +102,12 @@ Policy on specific property:
 
 ```json
 {
-  "db:subject": { "ex:role": "hr" },
-  "db:action": "query",
-  "db:resource": {
-    "db:predicate": "ex:salary"
+  "f:subject": { "ex:role": "hr" },
+  "f:action": "query",
+  "f:resource": {
+    "f:predicate": "ex:salary"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -136,12 +136,12 @@ Policy for entity ownership:
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "query",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "query",
+  "f:resource": {
     "ex:owner": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -170,15 +170,15 @@ Policies can match complex patterns:
 
 ```json
 {
-  "db:subject": "?user",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:resource": {
     "@type": "ex:Document",
     "ex:department": "?dept"
   },
-  "db:condition": [
+  "f:condition": [
     { "@id": "?user", "ex:department": "?dept" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -219,17 +219,17 @@ Multiple policies can apply:
 **Policy 1 (allow public):**
 ```json
 {
-  "db:resource": { "ex:visibility": "public" },
-  "db:allow": true
+  "f:resource": { "ex:visibility": "public" },
+  "f:allow": true
 }
 ```
 
 **Policy 2 (allow owned):**
 ```json
 {
-  "db:subject": "?user",
-  "db:resource": { "ex:owner": "?user" },
-  "db:allow": true
+  "f:subject": "?user",
+  "f:resource": { "ex:owner": "?user" },
+  "f:allow": true
 }
 ```
 
@@ -244,16 +244,16 @@ Deny policies override allow:
 **Policy 1 (allow department):**
 ```json
 {
-  "db:resource": { "ex:department": "engineering" },
-  "db:allow": true
+  "f:resource": { "ex:department": "engineering" },
+  "f:allow": true
 }
 ```
 
 **Policy 2 (deny sensitive):**
 ```json
 {
-  "db:resource": { "ex:classification": "confidential" },
-  "db:allow": false
+  "f:resource": { "ex:classification": "confidential" },
+  "f:allow": false
 }
 ```
 
@@ -328,16 +328,16 @@ Type-based policies are efficient:
 Good:
 ```json
 {
-  "db:resource": { "@type": "ex:PublicData" }
+  "f:resource": { "@type": "ex:PublicData" }
 }
 ```
 
 Less efficient:
 ```json
 {
-  "db:resource": { "?pred": "?val" },
-  "db:condition": [
-    { "db:filter": "complex condition" }
+  "f:resource": { "?pred": "?val" },
+  "f:condition": [
+    { "f:filter": "complex condition" }
   ]
 }
 ```
@@ -370,12 +370,12 @@ Hide specific properties:
 Policy:
 ```json
 {
-  "db:subject": "*",
-  "db:action": "query",
-  "db:resource": {
-    "db:predicate": "ex:ssn"
+  "f:subject": "*",
+  "f:action": "query",
+  "f:resource": {
+    "f:predicate": "ex:ssn"
   },
-  "db:allow": false
+  "f:allow": false
 }
 ```
 
@@ -508,17 +508,17 @@ Response includes augmented query showing policy filters.
 [
   {
     "@id": "ex:public-read",
-    "db:subject": "*",
-    "db:action": "query",
-    "db:resource": { "ex:visibility": "public" },
-    "db:allow": true
+    "f:subject": "*",
+    "f:action": "query",
+    "f:resource": { "ex:visibility": "public" },
+    "f:allow": true
   },
   {
     "@id": "ex:owner-full-access",
-    "db:subject": "?user",
-    "db:action": "*",
-    "db:resource": { "ex:owner": "?user" },
-    "db:allow": true
+    "f:subject": "?user",
+    "f:action": "*",
+    "f:resource": { "ex:owner": "?user" },
+    "f:allow": true
   }
 ]
 ```
@@ -527,12 +527,12 @@ Response includes augmented query showing policy filters.
 
 ```json
 {
-  "db:subject": "?user",
-  "db:resource": { "ex:department": "?dept" },
-  "db:condition": [
+  "f:subject": "?user",
+  "f:resource": { "ex:department": "?dept" },
+  "f:condition": [
     { "@id": "?user", "ex:department": "?dept" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -542,17 +542,17 @@ Response includes augmented query showing policy filters.
 [
   {
     "@id": "ex:manager-view",
-    "db:subject": { "ex:role": "manager" },
-    "db:action": "query",
-    "db:resource": { "ex:visibility": ["public", "internal"] },
-    "db:allow": true
+    "f:subject": { "ex:role": "manager" },
+    "f:action": "query",
+    "f:resource": { "ex:visibility": ["public", "internal"] },
+    "f:allow": true
   },
   {
     "@id": "ex:employee-view",
-    "db:subject": { "ex:role": "employee" },
-    "db:action": "query",
-    "db:resource": { "ex:visibility": "public" },
-    "db:allow": true
+    "f:subject": { "ex:role": "employee" },
+    "f:action": "query",
+    "f:resource": { "ex:visibility": "public" },
+    "f:allow": true
   }
 ]
 ```

@@ -179,11 +179,7 @@ mod tests {
     async fn test_set_and_get_tracking() {
         let store = MemoryTrackingStore::new();
         let mut record = TrackingRecord::new(origin(), "mydb:main");
-        record.commit_ref = Some(RefValue {
-            id: None,
-            address: Some("commit-1".to_string()),
-            t: 5,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 5 });
         record.last_fetched = Some("2025-01-01T00:00:00Z".to_string());
 
         store.set_tracking(&record).await.unwrap();
@@ -207,19 +203,11 @@ mod tests {
         let store = MemoryTrackingStore::new();
 
         let mut record = TrackingRecord::new(origin(), "mydb:main");
-        record.commit_ref = Some(RefValue {
-            id: None,
-            address: Some("commit-1".to_string()),
-            t: 1,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 1 });
         store.set_tracking(&record).await.unwrap();
 
         // Overwrite with newer data
-        record.commit_ref = Some(RefValue {
-            id: None,
-            address: Some("commit-2".to_string()),
-            t: 5,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 5 });
         store.set_tracking(&record).await.unwrap();
 
         let fetched = store
@@ -290,16 +278,8 @@ mod tests {
     #[test]
     fn test_tracking_record_serde_roundtrip() {
         let mut record = TrackingRecord::new(origin(), "mydb:main");
-        record.commit_ref = Some(RefValue {
-            id: None,
-            address: Some("commit-1".to_string()),
-            t: 5,
-        });
-        record.index_ref = Some(RefValue {
-            id: None,
-            address: Some("index-1".to_string()),
-            t: 3,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 5 });
+        record.index_ref = Some(RefValue { id: None, t: 3 });
         record.retracted = false;
         record.last_fetched = Some("2025-06-15T12:00:00Z".to_string());
 

@@ -41,7 +41,7 @@ let fluree = FlureeBuilder::file("/path/to/data")
 let result: ReindexResult = fluree.reindex("mydb:main", ReindexOptions::default()).await?;
 
 println!("Reindexed to t={}", result.index_t);
-println!("Root address: {}", result.root_address);
+println!("Root ID: {}", result.root_id);
 ```
 
 ### Reindex with Custom Options
@@ -98,8 +98,8 @@ pub struct ReindexResult {
     pub alias: String,
     /// Transaction time the index was built to
     pub index_t: i64,
-    /// Storage address of the new index root
-    pub root_address: String,
+    /// ContentId of the new index root
+    pub root_id: ContentId,
     /// Index build statistics
     pub stats: IndexStats,
 }

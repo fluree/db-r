@@ -268,11 +268,7 @@ mod tests {
         let store = FileTrackingStore::new(tmp.path());
 
         let mut record = TrackingRecord::new(origin(), "mydb:main");
-        record.commit_ref = Some(RefValue {
-            id: None,
-            address: Some("commit-1".to_string()),
-            t: 5,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 5 });
 
         store.set_tracking(&record).await.unwrap();
 
@@ -382,18 +378,10 @@ mod tests {
         let store = FileTrackingStore::new(tmp.path());
 
         let mut record = TrackingRecord::new(origin(), "mydb:main");
-        record.commit_ref = Some(RefValue {
-            id: None,
-            address: Some("commit-1".to_string()),
-            t: 1,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 1 });
         store.set_tracking(&record).await.unwrap();
 
-        record.commit_ref = Some(RefValue {
-            id: None,
-            address: Some("commit-2".to_string()),
-            t: 5,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 5 });
         store.set_tracking(&record).await.unwrap();
 
         let fetched = store

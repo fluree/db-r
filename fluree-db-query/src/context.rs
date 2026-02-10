@@ -5,6 +5,7 @@
 
 use crate::bm25::{Bm25IndexProvider, Bm25SearchProvider};
 use crate::dataset::{ActiveGraph, ActiveGraphs, DataSet};
+use crate::error::QueryError;
 use crate::policy::QueryPolicyEnforcer;
 use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
@@ -283,7 +284,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     }
 
     /// Get the effective overlay (NoOverlay if none set)
-    pub fn overlay(&self) -> &dyn OverlayProvider {
+    pub fn overlay(&self) -> &'a dyn OverlayProvider {
         self.overlay.unwrap_or(&NoOverlay)
     }
 
@@ -377,6 +378,37 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
                 ActiveGraphs::Many(ds.named_graph(iri).into_iter().collect())
             }
         }
+    }
+
+    /// Require that the query targets exactly one graph.
+    ///
+    /// Returns `(db, overlay, to_t)` for the single active graph — either from
+    /// single-db mode or a dataset with exactly one active graph. Returns
+    /// `QueryError::InvalidQuery` if multiple graphs are active.
+    pub fn require_single_graph(
+        &self,
+    ) -> Result<(&'a Db<S>, &'a dyn OverlayProvider, i64), QueryError> {
+        match self.active_graphs() {
+            ActiveGraphs::Single => Ok((self.db, self.overlay(), self.to_t)),
+            ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
+                let g = graphs[0];
+                Ok((g.db, g.overlay, g.to_t))
+            }
+            ActiveGraphs::Many(_) => Err(QueryError::InvalidQuery(
+                "Property paths over multi-graph datasets are not supported; \
+                 use GRAPH to select a single graph"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Check whether the binary index fast path is available.
+    ///
+    /// Returns `true` when a binary store is present and the query is in
+    /// single-ledger mode. Individual call sites may layer additional
+    /// conditions (e.g. `to_t >= base_t`, `!history_mode`).
+    pub fn has_binary_store(&self) -> bool {
+        !self.is_multi_ledger() && self.binary_store.is_some()
     }
 
     /// Get the default graphs slice without allocation (for scan hot path).

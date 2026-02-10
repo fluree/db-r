@@ -14,8 +14,8 @@ pub struct RemoteLedgerWatermark {
     pub ledger_id: String,
     pub commit_t: i64,
     pub index_t: i64,
-    pub commit_address: Option<String>,
-    pub index_address: Option<String>,
+    pub commit_head_id: Option<String>,
+    pub index_head_id: Option<String>,
     pub last_updated: Instant,
 }
 
@@ -25,7 +25,7 @@ pub struct RemoteGraphSourceWatermark {
     pub graph_source_id: String,
     pub index_t: i64,
     pub config_hash: String,
-    pub index_address: Option<String>,
+    pub index_id: Option<String>,
     pub last_updated: Instant,
 }
 
@@ -71,7 +71,7 @@ impl PeerState {
                     NeedsRefresh::Yes {
                         local_index_t,
                         remote_index_t: remote.index_t,
-                        remote_index_address: remote.index_address.clone(),
+                        remote_index_id: remote.index_head_id.clone(),
                     }
                 } else {
                     NeedsRefresh::No
@@ -117,8 +117,8 @@ impl PeerState {
         ledger_id: &str,
         commit_t: i64,
         index_t: i64,
-        commit_address: Option<String>,
-        index_address: Option<String>,
+        commit_head_id: Option<String>,
+        index_head_id: Option<String>,
     ) -> bool {
         let mut ledgers = self.ledgers.write().await;
 
@@ -134,8 +134,8 @@ impl PeerState {
                     ledger_id: ledger_id.to_string(),
                     commit_t,
                     index_t,
-                    commit_address,
-                    index_address,
+                    commit_head_id,
+                    index_head_id,
                     last_updated: Instant::now(),
                 },
             );
@@ -155,7 +155,7 @@ impl PeerState {
         graph_source_id: &str,
         index_t: i64,
         config_hash: String,
-        index_address: Option<String>,
+        index_id: Option<String>,
     ) -> bool {
         let mut graph_sources = self.graph_sources.write().await;
 
@@ -171,7 +171,7 @@ impl PeerState {
                     graph_source_id: graph_source_id.to_string(),
                     index_t,
                     config_hash,
-                    index_address,
+                    index_id,
                     last_updated: Instant::now(),
                 },
             );
@@ -236,7 +236,7 @@ pub enum NeedsRefresh {
     Yes {
         local_index_t: i64,
         remote_index_t: i64,
-        remote_index_address: Option<String>,
+        remote_index_id: Option<String>,
     },
     /// SSE hasn't reported this ledger yet
     /// Caller must decide: proceed with local state or reject query
@@ -272,7 +272,10 @@ impl fluree_db_api::FreshnessSource for PeerState {
         Some(fluree_db_api::RemoteWatermark {
             commit_t: w.commit_t,
             index_t: w.index_t,
-            index_address: w.index_address.clone(),
+            index_head_id: w
+                .index_head_id
+                .as_deref()
+                .and_then(|s| s.parse::<fluree_db_core::ContentId>().ok()),
             updated_at: w.last_updated,
         })
     }
@@ -291,8 +294,8 @@ mod tests {
                 "books:main",
                 5,
                 3,
-                Some("commit:5".to_string()),
-                Some("index:3".to_string()),
+                Some("commit-cid:5".to_string()),
+                Some("index-cid:3".to_string()),
             )
             .await;
 

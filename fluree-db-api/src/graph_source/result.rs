@@ -2,6 +2,8 @@
 //!
 //! These structs represent the outcome of creating, syncing, and managing graph sources.
 
+use fluree_db_core::ContentId;
+
 // =============================================================================
 // BM25 Results
 // =============================================================================
@@ -21,8 +23,8 @@ pub struct Bm25CreateResult {
     /// The commit t of the source ledger at index creation time
     pub index_t: i64,
 
-    /// Storage address where the index was persisted (if any)
-    pub index_address: Option<String>,
+    /// Content identifier of the persisted index root
+    pub index_id: Option<ContentId>,
 }
 
 /// Result of a sync operation.
@@ -121,8 +123,8 @@ pub struct VectorCreateResult {
     /// The commit t of the source ledger at index creation time
     pub index_t: i64,
 
-    /// Storage address where the index was persisted (if any)
-    pub index_address: Option<String>,
+    /// Content identifier of the persisted index root
+    pub index_id: Option<ContentId>,
 }
 
 /// Result of a vector index sync operation.

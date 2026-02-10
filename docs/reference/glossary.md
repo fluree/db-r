@@ -108,11 +108,11 @@ Example: Retracting `ex:alice schema:age 30` removes this triple.
 
 A persisted transaction with assigned transaction time and cryptographic signature.
 
-### Commit SHA
+### Commit ContentId
 
-Cryptographic hash of a commit, providing content-addressable reference and integrity verification.
+Content-addressed identifier (CIDv1) for a commit, providing storage-agnostic identity and integrity verification. The SHA-256 digest is embedded in the CID.
 
-Example: `abc123def456789...`
+Example: `bafybeig...commitT42`
 
 ### Replace Mode
 
@@ -253,17 +253,31 @@ Cryptographic key used to create signatures, kept secret.
 
 ## Storage Terms
 
-### Commit Address
+### ContentId
 
-Storage location of a committed transaction.
+A CIDv1 (multiformats) value that uniquely identifies any immutable artifact in Fluree. Encodes the content kind (multicodec) and a SHA-256 digest. The canonical string form is base32-lower multibase (e.g., `bafybeig...`).
 
-Example: `fluree:file:commit:abc123...`
+See [ContentId and ContentStore](../design/content-id-and-contentstore.md) for details.
 
-### Index Address
+### ContentKind
 
-Storage location of an index snapshot.
+An enum identifying the type of content a ContentId refers to: `Commit`, `Txn`, `IndexRoot`, `IndexBranch`, `IndexLeaf`, `DictBlob`, or `DefaultContext`. Encoded as a multicodec tag within the CID.
 
-Example: `fluree:file:index:def456...`
+### ContentStore
+
+The content-addressed storage trait providing `get(ContentId)`, `put(ContentKind, bytes)`, and `has(ContentId)` operations. All immutable artifacts are stored and retrieved via ContentStore.
+
+### Commit ID
+
+A ContentId identifying a committed transaction. Derived by hashing the canonical commit bytes with SHA-256.
+
+Example: `bafybeig...commitT42`
+
+### Index ID
+
+A ContentId identifying an index root snapshot. Derived by hashing the index root descriptor bytes with SHA-256.
+
+Example: `bafybeig...indexRootT145`
 
 ### Storage Backend
 
@@ -271,7 +285,7 @@ The underlying system storing Fluree data (memory, file system, AWS S3/DynamoDB)
 
 ### Nameservice Record
 
-Metadata about a ledger stored in the nameservice, including commit and index locations.
+Metadata about a ledger stored in the nameservice, including commit and index ContentIds.
 
 ## Time Travel Terms
 
@@ -279,7 +293,7 @@ Metadata about a ledger stored in the nameservice, including commit and index lo
 
 A suffix on a ledger reference indicating which point in time to query.
 
-Examples: `@t:100`, `@iso:2024-01-22`, `@sha:abc123`
+Examples: `@t:100`, `@iso:2024-01-22`, `@commit:bafybeig...`
 
 ### Point-in-Time Query
 
@@ -382,6 +396,7 @@ The result of tracking, containing time (formatted as "12.34ms"), fuel (total co
 - **API:** Application Programming Interface
 - **CORS:** Cross-Origin Resource Sharing
 - **CAS:** Compare-And-Swap
+- **CID:** Content Identifier (multiformats)
 - **DID:** Decentralized Identifier
 - **HTTP:** Hypertext Transfer Protocol
 - **HNSW:** Hierarchical Navigable Small World

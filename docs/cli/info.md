@@ -17,7 +17,7 @@ fluree info [LEDGER]
 ## Description
 
 Displays detailed information about a ledger including:
-- Ledger alias and address
+- Ledger alias and ID
 - Current transaction number (t)
 - Branch information
 - Commit details
@@ -38,9 +38,8 @@ fluree info production
 Ledger: mydb
   Alias:    mydb
   Branch:   main
-  Address:  fluree:file://storage/mydb
   t:        5
-  Commit:   fluree:file://storage/mydb/commit/abc123...
+  Commit ID: bafybeig...
 ```
 
 ## See Also

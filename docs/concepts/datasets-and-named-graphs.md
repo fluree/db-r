@@ -35,13 +35,13 @@ The `txn-meta` graph contains per-commit metadata stored as triples. This is use
 **Querying txn-meta via SPARQL:**
 
 ```sparql
-PREFIX db: <https://ns.flur.ee/db#>
+PREFIX f: <https://ns.flur.ee/db#>
 PREFIX ex: <http://example.org/ns/>
 
 SELECT ?commit ?t ?machine
 FROM <mydb:main#txn-meta>
 WHERE {
-  ?commit db:t ?t .
+  ?commit f:t ?t .
   OPTIONAL { ?commit ex:machine ?machine }
 }
 ```

@@ -48,8 +48,18 @@ pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 // - build_binary_index (direct entry point given an NsRecord)
 // - CURRENT_INDEX_VERSION
 
-use fluree_db_core::Storage;
+use fluree_db_core::{ContentId, ContentKind, ContentStore, ContentWriteResult, Storage};
 use fluree_db_nameservice::{NameService, Publisher};
+
+/// Derive a `ContentId` from a `ContentWriteResult`.
+///
+/// Every `content_write_bytes{,_with_hash}` call returns a SHA-256 hex digest.
+/// This helper wraps `ContentId::from_hex_digest` so callers don't repeat
+/// the pattern.
+fn cid_from_write(kind: ContentKind, result: &ContentWriteResult) -> ContentId {
+    ContentId::from_hex_digest(kind.to_codec(), &result.content_hash)
+        .expect("storage produced a valid SHA-256 hex digest")
+}
 
 /// Normalize a ledger ID for comparison purposes
 ///
@@ -133,7 +143,7 @@ pub const CURRENT_INDEX_VERSION: i32 = 2;
 /// Builds a binary columnar index from the commit chain. The pipeline:
 /// 1. Walks the commit chain and generates sorted run files
 /// 2. Builds per-graph leaf/branch indexes for all sort orders
-/// 3. Creates a `BinaryIndexRootV2` descriptor and writes it to storage
+/// 3. Creates a `BinaryIndexRoot` descriptor and writes it to storage
 ///
 /// Returns early if the index is already current (no work needed).
 /// Use `build_binary_index` directly to force a rebuild regardless.
@@ -158,27 +168,22 @@ where
         .ok_or_else(|| IndexerError::LedgerNotFound(ledger_id.to_string()))?;
 
     // If index is already current, return it
-    if let Some(ref index_addr) = record.index_address {
+    if let Some(ref root_id) = record.index_head_id {
         if record.index_t >= record.commit_t {
-            // Prefer persisted CID; fall back to extracting hash from the address
-            let root_id = record.index_head_id.clone().or_else(|| {
-                fluree_db_core::storage::extract_hash_from_address(index_addr).and_then(|h| {
-                    fluree_db_core::ContentId::from_hex_digest(
-                        fluree_db_core::CODEC_FLUREE_INDEX_ROOT,
-                        &h,
-                    )
-                })
+            // Derive the storage address for callers that need it
+            let root_address = fluree_db_core::storage::content_address(
+                storage.storage_method(),
+                fluree_db_core::ContentKind::IndexRoot,
+                ledger_id,
+                &root_id.digest_hex(),
+            );
+            return Ok(IndexResult {
+                root_address,
+                root_id: root_id.clone(),
+                index_t: record.index_t,
+                ledger_id: ledger_id.to_string(),
+                stats: IndexStats::default(),
             });
-            if let Some(root_id) = root_id {
-                return Ok(IndexResult {
-                    root_address: index_addr.clone(),
-                    root_id,
-                    index_t: record.index_t,
-                    ledger_id: ledger_id.to_string(),
-                    stats: IndexStats::default(),
-                });
-            }
-            // Neither persisted CID nor address hash available; fall through to rebuild
         }
     }
 
@@ -200,7 +205,7 @@ where
 /// 2. Resolve commits in forward order using `MultiOrderRunWriter` to produce
 ///    per-order sorted run files (SPOT, PSOT, POST, OPST)
 /// 3. Build per-graph leaf/branch indexes from run files
-/// 4. Write `BinaryIndexRootV2` descriptor to storage
+/// 4. Write `BinaryIndexRoot` descriptor to storage
 pub async fn build_binary_index<S>(
     storage: &S,
     ledger_id: &str,
@@ -212,8 +217,8 @@ where
 {
     use fluree_db_novelty::commit_v2::read_commit_envelope;
 
-    let head_commit_addr = record
-        .commit_address
+    let head_commit_id = record
+        .commit_head_id
         .clone()
         .ok_or(IndexerError::NoCommits)?;
 
@@ -231,7 +236,7 @@ where
     let index_dir = data_dir.join(&ledger_id_path).join("index");
 
     tracing::info!(
-        %head_commit_addr,
+        %head_commit_id,
         ?run_dir,
         ?index_dir,
         "starting binary index build"
@@ -240,7 +245,7 @@ where
     // Capture values for the blocking task
     let storage = storage.clone();
     let ledger_id = ledger_id.to_string();
-    let prev_root_address = record.index_address.clone();
+    let prev_root_id = record.index_head_id.clone();
     let handle = tokio::runtime::Handle::current();
 
     tokio::task::spawn_blocking(move || {
@@ -248,26 +253,27 @@ where
             std::fs::create_dir_all(&run_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // ---- Phase A: Walk commit chain backward to collect addresses ----
-            let addresses = {
-                let mut addrs = Vec::new();
-                let mut current = Some(head_commit_addr.clone());
+            // Build a content store bridge for CID → address resolution
+            let content_store = fluree_db_core::storage::content_store_for(storage.clone(), &ledger_id);
 
-                while let Some(addr) = current {
-                    let bytes = storage
-                        .read_bytes(&addr)
+            // ---- Phase A: Walk commit chain backward to collect CIDs ----
+            let commit_cids = {
+                let mut cids = Vec::new();
+                let mut current = Some(head_commit_id.clone());
+
+                while let Some(cid) = current {
+                    let bytes = content_store
+                        .get(&cid)
                         .await
-                        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", addr, e)))?;
+                        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
                     let envelope = read_commit_envelope(&bytes)
                         .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
-                    current = envelope.previous_id().map(|cid| {
-                        run_index::derive_commit_address_from_template(&addr, &cid.digest_hex())
-                    });
-                    addrs.push(addr);
+                    current = envelope.previous_id().cloned();
+                    cids.push(cid);
                 }
 
-                addrs.reverse(); // chronological order (genesis first)
-                addrs
+                cids.reverse(); // chronological order (genesis first)
+                cids
             };
 
             // ---- Phase B: Resolve commits with multi-order run writer ----
@@ -295,14 +301,14 @@ where
             let mut total_asserts = 0u64;
             let mut total_retracts = 0u64;
 
-            for (i, addr) in addresses.iter().enumerate() {
-                let bytes = storage
-                    .read_bytes(addr)
+            for (i, cid) in commit_cids.iter().enumerate() {
+                let bytes = content_store
+                    .get(cid)
                     .await
-                    .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", addr, e)))?;
+                    .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
 
                 let resolved = resolver
-                    .resolve_blob(&bytes, addr, &mut dicts, &mut writer)
+                    .resolve_blob(&bytes, &cid.digest_hex(), &mut dicts, &mut writer)
                     .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
 
                 // Accumulate totals
@@ -557,15 +563,15 @@ where
             let string_watermark = dicts.strings.len().saturating_sub(1);
 
             let mut root =
-                run_index::BinaryIndexRootV2::from_cas_artifacts(run_index::CasArtifactsConfig {
+                run_index::BinaryIndexRoot::from_cas_artifacts(run_index::CasArtifactsConfig {
                     ledger_id: &ledger_id,
                     index_t: store.max_t(),
                     base_t: store.base_t(),
                     predicate_sids,
                     namespace_codes: store.namespace_codes(),
                     subject_id_encoding: sid_encoding,
-                    dict_addresses,
-                    graph_addresses,
+                    dict_refs: dict_addresses,
+                    graph_refs: graph_addresses,
                     stats: Some(stats_json),
                     schema: None,     // schema: requires predicate definitions (future)
                     prev_index: None, // set below after garbage computation
@@ -581,37 +587,50 @@ where
 
             // D.5.1: Compute garbage and link prev_index for GC chain.
             //
-            // Strategy: use all_cas_addresses() on both old and new roots to
+            // Strategy: use all_cas_ids() on both old and new roots to
             // compute the set difference. This guarantees both sides use the
             // same enumeration method, eliminating divergence risk.
-            if let Some(prev_addr) = prev_root_address.as_deref() {
-                // Try to load the previous root as a v2 binary root.
-                // If it's a v1 or legacy DbRoot, skip GC linking — mixed-format
+            //
+            // Note: The GC chain breaks at the v2→v3 boundary because v2 roots
+            // won't parse via `from_json_bytes` (version check). New v3 chains
+            // start fresh. The GC collector needs updating for v3 format (future work).
+            if let Some(prev_id) = prev_root_id.as_ref() {
+                // Try to load the previous root as a v3 binary root.
+                // If it's a v2 or legacy format, skip GC linking — mixed-format
                 // chains will start a fresh GC chain from this root.
-                let prev_bytes = storage.read_bytes(prev_addr).await.ok();
+                let prev_bytes = content_store.get(prev_id).await.ok();
                 let prev_root = prev_bytes
                     .as_deref()
-                    .and_then(|b| run_index::BinaryIndexRootV2::from_json_bytes(b).ok());
+                    .and_then(|b| run_index::BinaryIndexRoot::from_json_bytes(b).ok());
 
                 if let Some(prev) = prev_root {
-                    let old_addrs: std::collections::HashSet<String> =
-                        prev.all_cas_addresses().into_iter().collect();
-                    let new_addrs: std::collections::HashSet<String> =
-                        root.all_cas_addresses().into_iter().collect();
-                    let garbage_addrs: Vec<String> =
-                        old_addrs.difference(&new_addrs).cloned().collect();
+                    let old_ids: std::collections::HashSet<ContentId> =
+                        prev.all_cas_ids().into_iter().collect();
+                    let new_ids: std::collections::HashSet<ContentId> =
+                        root.all_cas_ids().into_iter().collect();
+                    let garbage_cids: Vec<ContentId> =
+                        old_ids.difference(&new_ids).cloned().collect();
 
-                    let garbage_count = garbage_addrs.len();
+                    let garbage_count = garbage_cids.len();
 
+                    // Write garbage record with CID string representations.
+                    let garbage_strings: Vec<String> =
+                        garbage_cids.iter().map(|c| c.to_string()).collect();
                     root.garbage =
-                        gc::write_garbage_record(&storage, &ledger_id, store.max_t(), garbage_addrs)
+                        gc::write_garbage_record(&storage, &ledger_id, store.max_t(), garbage_strings)
                             .await
                             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-                            .map(|r| run_index::BinaryGarbageRef { address: r.address });
+                            .and_then(|r| {
+                                ContentId::from_hex_digest(
+                                    fluree_db_core::CODEC_FLUREE_GARBAGE,
+                                    &r.content_hash,
+                                )
+                                .map(|id| run_index::BinaryGarbageRef { id })
+                            });
 
                     root.prev_index = Some(run_index::BinaryPrevIndexRef {
                         t: prev.index_t,
-                        address: prev_addr.to_string(),
+                        id: prev_id.clone(),
                     });
 
                     tracing::info!(
@@ -692,7 +711,7 @@ async fn upload_dicts_to_cas<S: Storage>(
     dicts: &run_index::GlobalDicts,
     numbig_p_ids: &[u32],
     namespace_codes: &std::collections::HashMap<u16, String>,
-) -> Result<run_index::DictAddresses> {
+) -> Result<run_index::DictRefs> {
     use dict_tree::builder::{self, TreeBuildResult};
     use dict_tree::forward_leaf::ForwardEntry;
     use dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
@@ -700,17 +719,18 @@ async fn upload_dicts_to_cas<S: Storage>(
     use fluree_db_core::{ContentKind, DictKind};
     use std::collections::BTreeMap;
 
-    /// Read a file and upload to CAS, returning the address.
+    /// Read a file and upload to CAS, returning write result + derived CID.
     async fn upload_flat<S: Storage>(
         storage: &S,
         ledger_id: &str,
         path: &std::path::Path,
         dict: DictKind,
-    ) -> Result<String> {
+    ) -> Result<(ContentId, ContentWriteResult)> {
+        let kind = ContentKind::DictBlob { dict };
         let bytes = std::fs::read(path)
             .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
         let result = storage
-            .content_write_bytes(ContentKind::DictBlob { dict }, ledger_id, &bytes)
+            .content_write_bytes(kind, ledger_id, &bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         tracing::debug!(
@@ -719,25 +739,27 @@ async fn upload_dicts_to_cas<S: Storage>(
             bytes = result.size_bytes,
             "dict artifact uploaded to CAS"
         );
-        Ok(result.address)
+        let cid = cid_from_write(kind, &result);
+        Ok((cid, result))
     }
 
-    /// Upload a tree build result (branch + leaves) to CAS.
+    /// Upload a tree build result (branch + leaves) to CAS, returning CID refs.
     async fn upload_tree<S: Storage>(
         storage: &S,
         ledger_id: &str,
         result: TreeBuildResult,
         dict: DictKind,
-    ) -> Result<run_index::DictTreeAddresses> {
-        let mut leaf_addresses = Vec::with_capacity(result.leaves.len());
+    ) -> Result<run_index::DictTreeRefs> {
+        let kind = ContentKind::DictBlob { dict };
+        let mut leaf_cids = Vec::with_capacity(result.leaves.len());
         let mut hash_to_address = std::collections::HashMap::new();
 
         for leaf in &result.leaves {
             let cas_result = storage
-                .content_write_bytes(ContentKind::DictBlob { dict }, ledger_id, &leaf.bytes)
+                .content_write_bytes(kind, ledger_id, &leaf.bytes)
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            leaf_addresses.push(cas_result.address.clone());
+            leaf_cids.push(cid_from_write(kind, &cas_result));
             hash_to_address.insert(leaf.hash.clone(), cas_result.address);
         }
 
@@ -745,32 +767,32 @@ async fn upload_dicts_to_cas<S: Storage>(
         let (_, branch_bytes, _) = builder::finalize_branch(result.branch, &hash_to_address)
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         let branch_result = storage
-            .content_write_bytes(ContentKind::DictBlob { dict }, ledger_id, &branch_bytes)
+            .content_write_bytes(kind, ledger_id, &branch_bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-        Ok(run_index::DictTreeAddresses {
-            branch: branch_result.address,
-            leaves: leaf_addresses,
+        Ok(run_index::DictTreeRefs {
+            branch: cid_from_write(kind, &branch_result),
+            leaves: leaf_cids,
         })
     }
 
     // Small flat dicts
-    let graphs = upload_flat(
+    let (graphs, _) = upload_flat(
         storage,
         ledger_id,
         &run_dir.join("graphs.dict"),
         DictKind::Graphs,
     )
     .await?;
-    let datatypes = upload_flat(
+    let (datatypes, _) = upload_flat(
         storage,
         ledger_id,
         &run_dir.join("datatypes.dict"),
         DictKind::Datatypes,
     )
     .await?;
-    let languages = upload_flat(
+    let (languages, _) = upload_flat(
         storage,
         ledger_id,
         &run_dir.join("languages.dict"),
@@ -869,8 +891,9 @@ async fn upload_dicts_to_cas<S: Storage>(
     for &p_id in numbig_p_ids {
         let path = nb_dir.join(format!("p_{}.nba", p_id));
         if path.exists() {
-            let addr = upload_flat(storage, ledger_id, &path, DictKind::NumBig { p_id }).await?;
-            numbig.insert(p_id.to_string(), addr);
+            let (cid, _) =
+                upload_flat(storage, ledger_id, &path, DictKind::NumBig { p_id }).await?;
+            numbig.insert(p_id.to_string(), cid);
         }
     }
 
@@ -886,12 +909,12 @@ async fn upload_dicts_to_cas<S: Storage>(
             let cap = run_index::vector_arena::SHARD_CAPACITY as usize;
             let total = arena.len() as usize;
             let num_shards = total.div_ceil(cap);
-            let mut shard_addrs = Vec::with_capacity(num_shards);
+            let mut shard_cids = Vec::with_capacity(num_shards);
             let mut shard_infos = Vec::with_capacity(num_shards);
 
             for shard_idx in 0..num_shards {
                 let shard_path = vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                let addr = upload_flat(
+                let (shard_cid, shard_wr) = upload_flat(
                     storage,
                     ledger_id,
                     &shard_path,
@@ -901,17 +924,17 @@ async fn upload_dicts_to_cas<S: Storage>(
                 let start_vec = shard_idx * cap;
                 let count = (total - start_vec).min(cap) as u32;
                 shard_infos.push(run_index::vector_arena::ShardInfo {
-                    cas: addr.clone(),
+                    cas: shard_wr.address,
                     count,
                 });
-                shard_addrs.push(addr);
+                shard_cids.push(shard_cid);
             }
 
             // Write final manifest with real CAS addresses, then upload
             let manifest_path = vec_dir.join(format!("p_{}.vam", p_id));
             run_index::vector_arena::write_vector_manifest(&manifest_path, arena, &shard_infos)
                 .map_err(|e| IndexerError::StorageWrite(format!("write vector manifest: {}", e)))?;
-            let manifest_addr = upload_flat(
+            let (manifest_cid, _) = upload_flat(
                 storage,
                 ledger_id,
                 &manifest_path,
@@ -921,9 +944,9 @@ async fn upload_dicts_to_cas<S: Storage>(
 
             vectors.insert(
                 p_id.to_string(),
-                run_index::VectorDictEntry {
-                    manifest: manifest_addr,
-                    shards: shard_addrs,
+                run_index::VectorDictRef {
+                    manifest: manifest_cid,
+                    shards: shard_cids,
                 },
             );
         }
@@ -937,7 +960,7 @@ async fn upload_dicts_to_cas<S: Storage>(
         "dictionary trees built and uploaded to CAS"
     );
 
-    Ok(run_index::DictAddresses {
+    Ok(run_index::DictRefs {
         graphs,
         datatypes,
         languages,
@@ -959,12 +982,11 @@ pub async fn upload_indexes_to_cas<S: Storage>(
     storage: &S,
     ledger_id: &str,
     build_results: &[(run_index::RunSortOrder, run_index::IndexBuildResult)],
-) -> Result<Vec<run_index::GraphAddresses>> {
+) -> Result<Vec<run_index::GraphRefs>> {
     use fluree_db_core::ContentKind;
     use std::collections::BTreeMap;
 
-    let mut graph_map: BTreeMap<u32, BTreeMap<String, run_index::GraphOrderAddresses>> =
-        BTreeMap::new();
+    let mut graph_map: BTreeMap<u32, BTreeMap<String, run_index::GraphOrderRefs>> = BTreeMap::new();
 
     let total_order_count = build_results.len();
     for (order_idx, (order, result)) in build_results.iter().enumerate() {
@@ -1010,7 +1032,7 @@ pub async fn upload_indexes_to_cas<S: Storage>(
 
             // Upload each leaf file
             let total_leaves = branch_manifest.leaves.len();
-            let mut leaf_addresses = Vec::with_capacity(total_leaves);
+            let mut leaf_cids = Vec::with_capacity(total_leaves);
             for (leaf_idx, leaf_entry) in branch_manifest.leaves.iter().enumerate() {
                 let leaf_bytes = std::fs::read(&leaf_entry.path).map_err(|e| {
                     IndexerError::StorageRead(format!(
@@ -1028,7 +1050,7 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                     )
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                leaf_addresses.push(leaf_write.address);
+                leaf_cids.push(cid_from_write(ContentKind::IndexLeaf, &leaf_write));
 
                 if total_leaves >= 100 && (leaf_idx + 1) % 500 == 0 {
                     tracing::info!(
@@ -1041,27 +1063,28 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                 }
             }
 
+            let branch_cid = cid_from_write(ContentKind::IndexBranch, &branch_write);
             tracing::info!(
                 g_id,
                 order = %order_name,
-                leaves = leaf_addresses.len(),
-                branch = %branch_write.address,
+                leaves = leaf_cids.len(),
+                branch = %branch_cid,
                 "graph/order index uploaded to CAS"
             );
 
             graph_map.entry(g_id).or_default().insert(
                 order_name.clone(),
-                run_index::GraphOrderAddresses {
-                    branch: branch_write.address,
-                    leaves: leaf_addresses,
+                run_index::GraphOrderRefs {
+                    branch: branch_cid,
+                    leaves: leaf_cids,
                 },
             );
         }
     }
 
-    let graph_addresses: Vec<run_index::GraphAddresses> = graph_map
+    let graph_addresses: Vec<run_index::GraphRefs> = graph_map
         .into_iter()
-        .map(|(g_id, orders)| run_index::GraphAddresses { g_id, orders })
+        .map(|(g_id, orders)| run_index::GraphRefs { g_id, orders })
         .collect();
 
     let total_artifacts: usize = graph_addresses
@@ -1081,10 +1104,10 @@ pub async fn upload_indexes_to_cas<S: Storage>(
 /// Result of uploading persisted dict flat files to CAS.
 ///
 /// Contains the CAS addresses for all dictionary artifacts plus derived metadata
-/// needed for `BinaryIndexRootV2::from_cas_artifacts`.
+/// needed for `BinaryIndexRoot::from_cas_artifacts`.
 #[derive(Debug)]
 pub struct UploadedDicts {
-    pub dict_addresses: run_index::DictAddresses,
+    pub dict_refs: run_index::DictRefs,
     pub subject_id_encoding: fluree_db_core::SubjectIdEncoding,
     pub subject_watermarks: Vec<u64>,
     pub string_watermark: u32,
@@ -1127,11 +1150,12 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         ledger_id: &str,
         path: &std::path::Path,
         dict: DictKind,
-    ) -> Result<String> {
+    ) -> Result<(ContentId, ContentWriteResult)> {
+        let kind = ContentKind::DictBlob { dict };
         let bytes = std::fs::read(path)
             .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
         let result = storage
-            .content_write_bytes(ContentKind::DictBlob { dict }, ledger_id, &bytes)
+            .content_write_bytes(kind, ledger_id, &bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         tracing::debug!(
@@ -1140,7 +1164,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             bytes = result.size_bytes,
             "dict artifact uploaded to CAS (from disk)"
         );
-        Ok(result.address)
+        let cid = cid_from_write(kind, &result);
+        Ok((cid, result))
     }
 
     async fn upload_tree<S: Storage>(
@@ -1148,49 +1173,50 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         ledger_id: &str,
         result: TreeBuildResult,
         dict: DictKind,
-    ) -> Result<run_index::DictTreeAddresses> {
-        let mut leaf_addresses = Vec::with_capacity(result.leaves.len());
+    ) -> Result<run_index::DictTreeRefs> {
+        let kind = ContentKind::DictBlob { dict };
+        let mut leaf_cids = Vec::with_capacity(result.leaves.len());
         let mut hash_to_address = std::collections::HashMap::new();
 
         for leaf in &result.leaves {
             let cas_result = storage
-                .content_write_bytes(ContentKind::DictBlob { dict }, ledger_id, &leaf.bytes)
+                .content_write_bytes(kind, ledger_id, &leaf.bytes)
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            leaf_addresses.push(cas_result.address.clone());
+            leaf_cids.push(cid_from_write(kind, &cas_result));
             hash_to_address.insert(leaf.hash.clone(), cas_result.address);
         }
 
         let (_, branch_bytes, _) = builder::finalize_branch(result.branch, &hash_to_address)
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         let branch_result = storage
-            .content_write_bytes(ContentKind::DictBlob { dict }, ledger_id, &branch_bytes)
+            .content_write_bytes(kind, ledger_id, &branch_bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-        Ok(run_index::DictTreeAddresses {
-            branch: branch_result.address,
-            leaves: leaf_addresses,
+        Ok(run_index::DictTreeRefs {
+            branch: cid_from_write(kind, &branch_result),
+            leaves: leaf_cids,
         })
     }
 
     // ---- 1. Upload flat dicts ----
     tracing::info!("uploading flat dictionary artifacts (graphs, datatypes, languages)");
-    let graphs = upload_flat(
+    let (graphs, _) = upload_flat(
         storage,
         ledger_id,
         &run_dir.join("graphs.dict"),
         DictKind::Graphs,
     )
     .await?;
-    let datatypes = upload_flat(
+    let (datatypes, _) = upload_flat(
         storage,
         ledger_id,
         &run_dir.join("datatypes.dict"),
         DictKind::Datatypes,
     )
     .await?;
-    let languages = upload_flat(
+    let (languages, _) = upload_flat(
         storage,
         ledger_id,
         &run_dir.join("languages.dict"),
@@ -1386,14 +1412,14 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             if let Some(rest) = name_str.strip_prefix("p_") {
                 if let Some(id_str) = rest.strip_suffix(".nba") {
                     if let Ok(p_id) = id_str.parse::<u32>() {
-                        let addr = upload_flat(
+                        let (cid, _) = upload_flat(
                             storage,
                             ledger_id,
                             &entry.path(),
                             DictKind::NumBig { p_id },
                         )
                         .await?;
-                        numbig.insert(p_id.to_string(), addr);
+                        numbig.insert(p_id.to_string(), cid);
                     }
                 }
             }
@@ -1429,12 +1455,12 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 })?;
 
                         // Upload each shard
-                        let mut shard_addrs = Vec::with_capacity(manifest.shards.len());
+                        let mut shard_cids = Vec::with_capacity(manifest.shards.len());
                         let mut shard_infos = Vec::with_capacity(manifest.shards.len());
                         for (shard_idx, shard_info) in manifest.shards.iter().enumerate() {
                             let shard_path =
                                 vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                            let addr = upload_flat(
+                            let (shard_cid, shard_wr) = upload_flat(
                                 storage,
                                 ledger_id,
                                 &shard_path,
@@ -1442,10 +1468,10 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                             )
                             .await?;
                             shard_infos.push(run_index::vector_arena::ShardInfo {
-                                cas: addr.clone(),
+                                cas: shard_wr.address,
                                 count: shard_info.count,
                             });
-                            shard_addrs.push(addr);
+                            shard_cids.push(shard_cid);
                         }
 
                         // Re-write manifest with real CAS addresses, then upload
@@ -1467,7 +1493,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 e
                             ))
                         })?;
-                        let manifest_addr = upload_flat(
+                        let (manifest_cid, _) = upload_flat(
                             storage,
                             ledger_id,
                             &final_manifest_path,
@@ -1477,9 +1503,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 
                         vectors.insert(
                             p_id.to_string(),
-                            run_index::VectorDictEntry {
-                                manifest: manifest_addr,
-                                shards: shard_addrs,
+                            run_index::VectorDictRef {
+                                manifest: manifest_cid,
+                                shards: shard_cids,
                             },
                         );
                     }
@@ -1554,7 +1580,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     );
 
     Ok(UploadedDicts {
-        dict_addresses: run_index::DictAddresses {
+        dict_refs: run_index::DictRefs {
             graphs,
             datatypes,
             languages,
@@ -1574,12 +1600,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 /// Publish index result to nameservice
 pub async fn publish_index_result<P: Publisher>(publisher: &P, result: &IndexResult) -> Result<()> {
     publisher
-        .publish_index(
-            &result.ledger_id,
-            result.index_t,
-            &result.root_id,
-            Some(&result.root_address),
-        )
+        .publish_index(&result.ledger_id, result.index_t, &result.root_id)
         .await
         .map_err(|e| IndexerError::NameService(e.to_string()))
 }

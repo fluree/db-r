@@ -9,12 +9,12 @@ https://ns.flur.ee/db#
 Users declare a prefix in their JSON-LD `@context` to use compact forms:
 
 ```json
-{ "@context": { "db": "https://ns.flur.ee/db#" } }
+{ "@context": { "f": "https://ns.flur.ee/db#" } }
 ```
 
-Any prefix works (`db:`, `f:`, `fluree:`, etc.) as long as it expands to the canonical IRI. Internally, Fluree always compares on fully expanded IRIs.
+Any prefix works (`f:`, `db:`, `fluree:`, etc.) as long as it expands to the canonical IRI. Internally, Fluree always compares on fully expanded IRIs.
 
-The `@vector` shorthand is the one exception: it is a JSON-LD convenience alias that resolves to `db:embeddingVector` without requiring a prefix declaration.
+The `@vector` shorthand is the one exception: it is a JSON-LD convenience alias that resolves to `f:embeddingVector` without requiring a prefix declaration.
 
 > **Source of truth**: All constants are defined in the [`fluree-vocab`](../../fluree-vocab/src/lib.rs) crate. This document is the user-facing reference.
 
@@ -26,19 +26,19 @@ These predicates appear on commit subjects in the txn-meta graph. Each commit pr
 
 | Predicate | Full IRI | Datatype | Description |
 |-----------|----------|----------|-------------|
-| `db:address` | `https://ns.flur.ee/db#address` | `xsd:string` | CAS storage address of the commit |
-| `db:alias` | `https://ns.flur.ee/db#alias` | `xsd:string` | Ledger alias (e.g. `mydb:main`) |
-| `db:v` | `https://ns.flur.ee/db#v` | `xsd:int` | Commit format version |
-| `db:time` | `https://ns.flur.ee/db#time` | `xsd:long` | Commit timestamp (epoch milliseconds) |
-| `db:t` | `https://ns.flur.ee/db#t` | `xsd:int` | Transaction number (watermark) |
-| `db:size` | `https://ns.flur.ee/db#size` | `xsd:long` | Cumulative data size in bytes |
-| `db:flakes` | `https://ns.flur.ee/db#flakes` | `xsd:long` | Cumulative flake count |
-| `db:previous` | `https://ns.flur.ee/db#previous` | `@id` (ref) | Reference to previous commit (optional) |
-| `db:author` | `https://ns.flur.ee/db#author` | `xsd:string` | Transaction signer DID (optional) |
-| `db:txn` | `https://ns.flur.ee/db#txn` | `xsd:string` | Transaction storage address (optional) |
-| `db:message` | `https://ns.flur.ee/db#message` | `xsd:string` | Commit message (optional) |
-| `db:asserts` | `https://ns.flur.ee/db#asserts` | `xsd:long` | Assertion count in this commit |
-| `db:retracts` | `https://ns.flur.ee/db#retracts` | `xsd:long` | Retraction count in this commit |
+| `f:address` | `https://ns.flur.ee/db#address` | `xsd:string` | ContentId of the commit |
+| `f:alias` | `https://ns.flur.ee/db#alias` | `xsd:string` | Ledger alias (e.g. `mydb:main`) |
+| `f:v` | `https://ns.flur.ee/db#v` | `xsd:int` | Commit format version |
+| `f:time` | `https://ns.flur.ee/db#time` | `xsd:long` | Commit timestamp (epoch milliseconds) |
+| `f:t` | `https://ns.flur.ee/db#t` | `xsd:int` | Transaction number (watermark) |
+| `f:size` | `https://ns.flur.ee/db#size` | `xsd:long` | Cumulative data size in bytes |
+| `f:flakes` | `https://ns.flur.ee/db#flakes` | `xsd:long` | Cumulative flake count |
+| `f:previous` | `https://ns.flur.ee/db#previous` | `@id` (ref) | Reference to previous commit (optional) |
+| `f:author` | `https://ns.flur.ee/db#author` | `xsd:string` | Transaction signer DID (optional) |
+| `f:txn` | `https://ns.flur.ee/db#txn` | `xsd:string` | Transaction storage address (optional) |
+| `f:message` | `https://ns.flur.ee/db#message` | `xsd:string` | Commit message (optional) |
+| `f:asserts` | `https://ns.flur.ee/db#asserts` | `xsd:long` | Assertion count in this commit |
+| `f:retracts` | `https://ns.flur.ee/db#retracts` | `xsd:long` | Retraction count in this commit |
 
 ### Querying commit metadata
 
@@ -46,20 +46,20 @@ Commit metadata lives in the `#txn-meta` named graph within each ledger. To quer
 
 ```json
 {
-  "@context": { "db": "https://ns.flur.ee/db#" },
+  "@context": { "f": "https://ns.flur.ee/db#" },
   "select": ["?t", "?time", "?author"],
   "where": {
     "@graph": "mydb:main#txn-meta",
-    "db:t": "?t",
-    "db:time": "?time",
-    "db:author": "?author"
+    "f:t": "?t",
+    "f:time": "?time",
+    "f:author": "?author"
   }
 }
 ```
 
 ### Commit subject identifiers
 
-Commit subjects use the scheme `fluree:commit:sha256:<hex>`. This is a subject identifier scheme, not part of the `db#` predicate vocabulary.
+Commit subjects use the scheme `fluree:commit:<content-id>` (e.g. `fluree:commit:bafybeig...`). This is a subject identifier scheme, not part of the `db#` predicate vocabulary.
 
 ---
 
@@ -67,7 +67,7 @@ Commit subjects use the scheme `fluree:commit:sha256:<hex>`. This is a subject i
 
 | Predicate | Full IRI | Description |
 |-----------|----------|-------------|
-| `db:rule` | `https://ns.flur.ee/db#rule` | Datalog rule definition predicate |
+| `f:rule` | `https://ns.flur.ee/db#rule` | Datalog rule definition predicate |
 
 ---
 
@@ -75,17 +75,17 @@ Commit subjects use the scheme `fluree:commit:sha256:<hex>`. This is a subject i
 
 | Term | IRI | Description |
 |------|-----|-------------|
-| `db:embeddingVector` | `https://ns.flur.ee/db#embeddingVector` | f32-precision embedding vector datatype |
-| `@vector` | (shorthand) | JSON-LD alias that resolves to `db:embeddingVector` |
+| `f:embeddingVector` | `https://ns.flur.ee/db#embeddingVector` | f32-precision embedding vector datatype |
+| `@vector` | (shorthand) | JSON-LD alias that resolves to `f:embeddingVector` |
 
 Example usage in a transaction:
 
 ```json
 {
-  "@context": { "db": "https://ns.flur.ee/db#", "ex": "http://example.org/" },
+  "@context": { "f": "https://ns.flur.ee/db#", "ex": "http://example.org/" },
   "insert": {
     "@id": "ex:doc1",
-    "ex:embedding": { "@value": [0.1, 0.2, 0.3], "@type": "db:embeddingVector" }
+    "ex:embedding": { "@value": [0.1, 0.2, 0.3], "@type": "f:embeddingVector" }
   }
 }
 ```
@@ -105,30 +105,30 @@ Or with the `@vector` shorthand:
 
 ## Search query vocabulary
 
-These predicates are used in WHERE clause patterns for BM25 and vector search. Users write compact forms like `"db:searchText"` (with `"db"` in their `@context`) or full IRIs.
+These predicates are used in WHERE clause patterns for BM25 and vector search. Users write compact forms like `"f:searchText"` (with `"f"` in their `@context`) or full IRIs.
 
 ### BM25 search
 
 | Predicate | Full IRI | Required | Description |
 |-----------|----------|----------|-------------|
-| `db:graphSource` | `https://ns.flur.ee/db#graphSource` | Yes | Graph source ID (`name:branch`, e.g. `"my-search:main"`) |
-| `db:searchText` | `https://ns.flur.ee/db#searchText` | Yes | Search query text (string or variable) |
-| `db:searchResult` | `https://ns.flur.ee/db#searchResult` | Yes | Result binding (variable or nested object) |
-| `db:searchLimit` | `https://ns.flur.ee/db#searchLimit` | No | Maximum results |
-| `db:syncBeforeQuery` | `https://ns.flur.ee/db#syncBeforeQuery` | No | Wait for index sync before querying (boolean) |
-| `db:timeoutMs` | `https://ns.flur.ee/db#timeoutMs` | No | Query timeout in milliseconds |
+| `f:graphSource` | `https://ns.flur.ee/db#graphSource` | Yes | Graph source ID (`name:branch`, e.g. `"my-search:main"`) |
+| `f:searchText` | `https://ns.flur.ee/db#searchText` | Yes | Search query text (string or variable) |
+| `f:searchResult` | `https://ns.flur.ee/db#searchResult` | Yes | Result binding (variable or nested object) |
+| `f:searchLimit` | `https://ns.flur.ee/db#searchLimit` | No | Maximum results |
+| `f:syncBeforeQuery` | `https://ns.flur.ee/db#syncBeforeQuery` | No | Wait for index sync before querying (boolean) |
+| `f:timeoutMs` | `https://ns.flur.ee/db#timeoutMs` | No | Query timeout in milliseconds |
 
 ### Vector search
 
 | Predicate | Full IRI | Required | Description |
 |-----------|----------|----------|-------------|
-| `db:graphSource` | `https://ns.flur.ee/db#graphSource` | Yes | Graph source ID (`name:branch`) |
-| `db:queryVector` | `https://ns.flur.ee/db#queryVector` | Yes | Query vector (array of numbers or variable) |
-| `db:searchResult` | `https://ns.flur.ee/db#searchResult` | Yes | Result binding |
-| `db:distanceMetric` | `https://ns.flur.ee/db#distanceMetric` | No | Distance metric: `"cosine"`, `"dot"`, `"euclidean"` (default: `"cosine"`) |
-| `db:searchLimit` | `https://ns.flur.ee/db#searchLimit` | No | Maximum results |
-| `db:syncBeforeQuery` | `https://ns.flur.ee/db#syncBeforeQuery` | No | Wait for index sync (boolean) |
-| `db:timeoutMs` | `https://ns.flur.ee/db#timeoutMs` | No | Query timeout in milliseconds |
+| `f:graphSource` | `https://ns.flur.ee/db#graphSource` | Yes | Graph source ID (`name:branch`) |
+| `f:queryVector` | `https://ns.flur.ee/db#queryVector` | Yes | Query vector (array of numbers or variable) |
+| `f:searchResult` | `https://ns.flur.ee/db#searchResult` | Yes | Result binding |
+| `f:distanceMetric` | `https://ns.flur.ee/db#distanceMetric` | No | Distance metric: `"cosine"`, `"dot"`, `"euclidean"` (default: `"cosine"`) |
+| `f:searchLimit` | `https://ns.flur.ee/db#searchLimit` | No | Maximum results |
+| `f:syncBeforeQuery` | `https://ns.flur.ee/db#syncBeforeQuery` | No | Wait for index sync (boolean) |
+| `f:timeoutMs` | `https://ns.flur.ee/db#timeoutMs` | No | Query timeout in milliseconds |
 
 ### Nested result objects
 
@@ -136,23 +136,23 @@ Both BM25 and vector search support nested result bindings:
 
 | Predicate | Full IRI | Description |
 |-----------|----------|-------------|
-| `db:resultId` | `https://ns.flur.ee/db#resultId` | Document/subject ID binding |
-| `db:resultScore` | `https://ns.flur.ee/db#resultScore` | Search score binding |
-| `db:resultLedger` | `https://ns.flur.ee/db#resultLedger` | Source ledger ID (multi-ledger disambiguation) |
+| `f:resultId` | `https://ns.flur.ee/db#resultId` | Document/subject ID binding |
+| `f:resultScore` | `https://ns.flur.ee/db#resultScore` | Search score binding |
+| `f:resultLedger` | `https://ns.flur.ee/db#resultLedger` | Source ledger ID (multi-ledger disambiguation) |
 
 Example BM25 search with nested result:
 
 ```json
 {
-  "@context": { "db": "https://ns.flur.ee/db#" },
+  "@context": { "f": "https://ns.flur.ee/db#" },
   "select": ["?doc", "?score"],
   "where": {
-    "db:graphSource": "my-search:main",
-    "db:searchText": "software engineer",
-    "db:searchLimit": 10,
-    "db:searchResult": {
-      "db:resultId": "?doc",
-      "db:resultScore": "?score"
+    "f:graphSource": "my-search:main",
+    "f:searchText": "software engineer",
+    "f:searchLimit": 10,
+    "f:searchResult": {
+      "f:resultId": "?doc",
+      "f:resultScore": "?score"
     }
   }
 }
@@ -168,26 +168,26 @@ These predicates appear on ledger nameservice records (the metadata Fluree store
 
 | Predicate | Full IRI | Description |
 |-----------|----------|-------------|
-| `db:ledger` | `https://ns.flur.ee/db#ledger` | Ledger name/identifier |
-| `db:branch` | `https://ns.flur.ee/db#branch` | Branch name (e.g. `main`) |
-| `db:t` | `https://ns.flur.ee/db#t` | Current transaction watermark |
-| `db:ledgerCommit` | `https://ns.flur.ee/db#ledgerCommit` | Pointer to latest commit address |
-| `db:ledgerIndex` | `https://ns.flur.ee/db#ledgerIndex` | Pointer to latest index root |
-| `db:status` | `https://ns.flur.ee/db#status` | Record status (`ready`, etc.) |
-| `db:defaultContext` | `https://ns.flur.ee/db#defaultContext` | Default JSON-LD context CAS address |
+| `f:ledger` | `https://ns.flur.ee/db#ledger` | Ledger name/identifier |
+| `f:branch` | `https://ns.flur.ee/db#branch` | Branch name (e.g. `main`) |
+| `f:t` | `https://ns.flur.ee/db#t` | Current transaction watermark |
+| `f:ledgerCommit` | `https://ns.flur.ee/db#ledgerCommit` | Pointer to latest commit ContentId |
+| `f:ledgerIndex` | `https://ns.flur.ee/db#ledgerIndex` | Pointer to latest index root |
+| `f:status` | `https://ns.flur.ee/db#status` | Record status (`ready`, etc.) |
+| `f:defaultContext` | `https://ns.flur.ee/db#defaultContext` | Default JSON-LD context ContentId |
 
 ### Graph source record fields
 
 | Predicate | Full IRI | Description |
 |-----------|----------|-------------|
-| `db:name` | `https://ns.flur.ee/db#name` | Graph source base name |
-| `db:branch` | `https://ns.flur.ee/db#branch` | Branch |
-| `db:status` | `https://ns.flur.ee/db#status` | Status |
-| `db:graphSourceConfig` | `https://ns.flur.ee/db#graphSourceConfig` | Configuration JSON |
-| `db:graphSourceDependencies` | `https://ns.flur.ee/db#graphSourceDependencies` | Dependent ledger IDs |
-| `db:graphSourceIndex` | `https://ns.flur.ee/db#graphSourceIndex` | Index address reference |
-| `db:graphSourceIndexT` | `https://ns.flur.ee/db#graphSourceIndexT` | Index watermark (commit t) |
-| `db:graphSourceIndexAddress` | `https://ns.flur.ee/db#graphSourceIndexAddress` | Index address (string) |
+| `f:name` | `https://ns.flur.ee/db#name` | Graph source base name |
+| `f:branch` | `https://ns.flur.ee/db#branch` | Branch |
+| `f:status` | `https://ns.flur.ee/db#status` | Status |
+| `f:graphSourceConfig` | `https://ns.flur.ee/db#graphSourceConfig` | Configuration JSON |
+| `f:graphSourceDependencies` | `https://ns.flur.ee/db#graphSourceDependencies` | Dependent ledger IDs |
+| `f:graphSourceIndex` | `https://ns.flur.ee/db#graphSourceIndex` | Index ContentId reference |
+| `f:graphSourceIndexT` | `https://ns.flur.ee/db#graphSourceIndexT` | Index watermark (commit t) |
+| `f:graphSourceIndexAddress` | `https://ns.flur.ee/db#graphSourceIndexAddress` | Index ContentId (string form) |
 
 ### Record type taxonomy
 
@@ -197,19 +197,19 @@ Nameservice records use `@type` to classify what kind of graph source a record r
 
 | Type | Full IRI | Description |
 |------|----------|-------------|
-| `db:LedgerSource` | `https://ns.flur.ee/db#LedgerSource` | Ledger-backed knowledge graph |
-| `db:IndexSource` | `https://ns.flur.ee/db#IndexSource` | Index-backed graph source (BM25/HNSW/GEO) |
-| `db:MappedSource` | `https://ns.flur.ee/db#MappedSource` | Mapped database (Iceberg, R2RML) |
+| `f:LedgerSource` | `https://ns.flur.ee/db#LedgerSource` | Ledger-backed knowledge graph |
+| `f:IndexSource` | `https://ns.flur.ee/db#IndexSource` | Index-backed graph source (BM25/HNSW/GEO) |
+| `f:MappedSource` | `https://ns.flur.ee/db#MappedSource` | Mapped database (Iceberg, R2RML) |
 
 **Optional subtype `@type` values** (further classify the record):
 
 | Type | Full IRI | Description |
 |------|----------|-------------|
-| `db:Bm25Index` | `https://ns.flur.ee/db#Bm25Index` | BM25 full-text search index |
-| `db:HnswIndex` | `https://ns.flur.ee/db#HnswIndex` | HNSW vector similarity search index |
-| `db:GeoIndex` | `https://ns.flur.ee/db#GeoIndex` | Geospatial index |
-| `db:IcebergMapping` | `https://ns.flur.ee/db#IcebergMapping` | Iceberg-mapped database |
-| `db:R2rmlMapping` | `https://ns.flur.ee/db#R2rmlMapping` | R2RML relational mapping |
+| `f:Bm25Index` | `https://ns.flur.ee/db#Bm25Index` | BM25 full-text search index |
+| `f:HnswIndex` | `https://ns.flur.ee/db#HnswIndex` | HNSW vector similarity search index |
+| `f:GeoIndex` | `https://ns.flur.ee/db#GeoIndex` | Geospatial index |
+| `f:IcebergMapping` | `https://ns.flur.ee/db#IcebergMapping` | Iceberg-mapped database |
+| `f:R2rmlMapping` | `https://ns.flur.ee/db#R2rmlMapping` | R2RML relational mapping |
 
 ---
 
@@ -219,17 +219,17 @@ These predicates are used to define access control policies.
 
 | Predicate | Full IRI | Description |
 |-----------|----------|-------------|
-| `db:policyClass` | `https://ns.flur.ee/db#policyClass` | Marks a class as policy-governed |
-| `db:allow` | `https://ns.flur.ee/db#allow` | Allow/deny flag on a policy rule |
-| `db:action` | `https://ns.flur.ee/db#action` | Action this rule governs (view or modify) |
-| `db:view` | `https://ns.flur.ee/db#view` | View action IRI |
-| `db:modify` | `https://ns.flur.ee/db#modify` | Modify action IRI |
-| `db:onProperty` | `https://ns.flur.ee/db#onProperty` | Property-level policy targeting |
-| `db:onSubject` | `https://ns.flur.ee/db#onSubject` | Subject-level policy targeting |
-| `db:onClass` | `https://ns.flur.ee/db#onClass` | Class-level policy targeting |
-| `db:query` | `https://ns.flur.ee/db#query` | Policy query (determines applicability) |
-| `db:required` | `https://ns.flur.ee/db#required` | Whether the policy is required (boolean) |
-| `db:exMessage` | `https://ns.flur.ee/db#exMessage` | Error message when policy denies access |
+| `f:policyClass` | `https://ns.flur.ee/db#policyClass` | Marks a class as policy-governed |
+| `f:allow` | `https://ns.flur.ee/db#allow` | Allow/deny flag on a policy rule |
+| `f:action` | `https://ns.flur.ee/db#action` | Action this rule governs (view or modify) |
+| `f:view` | `https://ns.flur.ee/db#view` | View action IRI |
+| `f:modify` | `https://ns.flur.ee/db#modify` | Modify action IRI |
+| `f:onProperty` | `https://ns.flur.ee/db#onProperty` | Property-level policy targeting |
+| `f:onSubject` | `https://ns.flur.ee/db#onSubject` | Subject-level policy targeting |
+| `f:onClass` | `https://ns.flur.ee/db#onClass` | Class-level policy targeting |
+| `f:query` | `https://ns.flur.ee/db#query` | Policy query (determines applicability) |
+| `f:required` | `https://ns.flur.ee/db#required` | Whether the policy is required (boolean) |
+| `f:exMessage` | `https://ns.flur.ee/db#exMessage` | Error message when policy denies access |
 
 See [Policy model and inputs](../security/policy-model.md) for usage details.
 
@@ -241,8 +241,8 @@ Fluree supports RDF-Star annotations for transaction metadata. These predicates 
 
 | Predicate | Full IRI | Description |
 |-----------|----------|-------------|
-| `db:t` | `https://ns.flur.ee/db#t` | Transaction number on an annotated triple |
-| `db:op` | `https://ns.flur.ee/db#op` | Operation type (assert/retract) |
+| `f:t` | `https://ns.flur.ee/db#t` | Transaction number on an annotated triple |
+| `f:op` | `https://ns.flur.ee/db#op` | Operation type (assert/retract) |
 
 ---
 
@@ -261,7 +261,7 @@ Fluree encodes namespace IRIs as integer codes for compact storage. These are in
 | 6 | OWL | `http://www.w3.org/2002/07/owl#` |
 | 7 | Fluree DB | `https://ns.flur.ee/db#` |
 | 8 | DID Key | `did:key:` |
-| 9 | Fluree Commit | `fluree:commit:sha256:` |
+| 9 | Fluree Commit | `fluree:commit:` |
 | 10 | Blank Node | `_:` |
 | 11 | OGC GeoSPARQL | `http://www.opengis.net/ont/geosparql#` |
 | 100+ | User-defined | (allocated at first use) |

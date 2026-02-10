@@ -235,10 +235,10 @@ curl -H "Authorization: Bearer token" ...
 # Query policies
 SELECT ?policy ?subject ?action ?allow
 WHERE {
-  ?policy a db:Policy .
-  ?policy db:subject ?subject .
-  ?policy db:action ?action .
-  ?policy db:allow ?allow .
+  ?policy a f:Policy .
+  ?policy f:subject ?subject .
+  ?policy f:action ?action .
+  ?policy f:allow ?allow .
 }
 ```
 

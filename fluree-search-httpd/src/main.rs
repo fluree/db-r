@@ -33,7 +33,7 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
-use fluree_db_core::{FileStorage, StorageRead};
+use fluree_db_core::{ContentStore, FileStorage, StorageRead};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::GraphSourcePublisher;
 use fluree_db_query::bm25::{deserialize, Bm25Index, Bm25Manifest};
@@ -142,14 +142,14 @@ impl FileIndexLoader {
             None => return Ok(Bm25Manifest::new(graph_source_id)),
         };
 
-        let manifest_address = match &record.index_address {
-            Some(addr) => addr.clone(),
+        let index_cid = match &record.index_id {
+            Some(cid) => cid,
             None => return Ok(Bm25Manifest::new(graph_source_id)),
         };
 
-        let bytes = self
-            .storage
-            .read_bytes(&manifest_address)
+        let cs = fluree_db_core::content_store_for(self.storage.clone(), graph_source_id);
+        let bytes = cs
+            .get(index_cid)
             .await
             .map_err(|e| ServiceError::Internal {
                 message: format!("Storage error loading manifest: {}", e),
@@ -254,20 +254,17 @@ impl VectorIndexLoader for FileVectorIndexLoader {
             address: graph_source_id.to_string(),
         })?;
 
-        let index_address = record.index_address.ok_or_else(|| ServiceError::Internal {
-            message: format!(
-                "No index address for vector graph source: {}",
-                graph_source_id
-            ),
+        let index_cid = record.index_id.ok_or_else(|| ServiceError::Internal {
+            message: format!("No index CID for vector graph source: {}", graph_source_id),
         })?;
 
-        let bytes =
-            self.storage
-                .read_bytes(&index_address)
-                .await
-                .map_err(|e| ServiceError::Internal {
-                    message: format!("Storage error: {}", e),
-                })?;
+        let cs = fluree_db_core::content_store_for(self.storage.clone(), graph_source_id);
+        let bytes = cs
+            .get(&index_cid)
+            .await
+            .map_err(|e| ServiceError::Internal {
+                message: format!("Storage error: {}", e),
+            })?;
 
         let index = vector_deserialize(&bytes).map_err(|e| ServiceError::Internal {
             message: format!("Vector index deserialize error: {}", e),
@@ -286,7 +283,7 @@ impl VectorIndexLoader for FileVectorIndexLoader {
             })?;
 
         Ok(record.and_then(|r| {
-            if r.index_address.is_some() {
+            if r.index_id.is_some() {
                 Some(r.index_t)
             } else {
                 None

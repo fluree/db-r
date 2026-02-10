@@ -134,11 +134,11 @@ curl http://localhost:8090/fluree/ledger-info \
   "ledger": "mydb:main",
   "t": 150,
   "commit": {
-    "address": "fluree:file://mydb/main/commit/abc123...",
+    "commit_id": "bafybeig...commitT150",
     "t": 150
   },
   "index": {
-    "address": "fluree:file://mydb/main/index/def456...",
+    "index_id": "bafybeig...indexRootT145",
     "t": 145
   },
   "stats": {
@@ -225,8 +225,7 @@ curl -X POST http://localhost:8090/fluree/create \
   "t": 0,
   "tx-id": "fluree:tx:sha256:abc123...",
   "commit": {
-    "address": "fluree:file://mydb/main/head",
-    "hash": ""
+    "commit_id": "bafybeig...commitT0"
   }
 }
 ```

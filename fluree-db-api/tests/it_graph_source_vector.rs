@@ -62,10 +62,7 @@ async fn vector_create_index_indexes_docs_and_is_loadable() {
         "expected index to include documents"
     );
     assert_eq!(created.vector_count, 2, "expected 2 vectors");
-    assert!(
-        created.index_address.is_some(),
-        "expected persisted index address"
-    );
+    assert!(created.index_id.is_some(), "expected persisted index id");
 
     // Load the index back via nameservice+storage
     let idx = fluree

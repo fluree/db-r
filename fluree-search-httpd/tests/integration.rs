@@ -7,7 +7,7 @@
 
 use axum::body::Body;
 use fluree_db_api::{Bm25CreateConfig, FlureeBuilder};
-use fluree_db_core::FileStorage;
+use fluree_db_core::{ContentStore, FileStorage};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_query::bm25::{Analyzer, Bm25Scorer};
 use fluree_search_protocol::{SearchHit, SearchRequest, SearchResponse, PROTOCOL_VERSION};
@@ -120,14 +120,14 @@ mod http_tests {
                 None => return Ok(Bm25Manifest::new(graph_source_id)),
             };
 
-            let manifest_address = match &record.index_address {
-                Some(addr) => addr.clone(),
+            let index_cid = match &record.index_id {
+                Some(cid) => cid,
                 None => return Ok(Bm25Manifest::new(graph_source_id)),
             };
 
-            let bytes = self
-                .storage
-                .read_bytes(&manifest_address)
+            let cs = fluree_db_core::content_store_for(self.storage.clone(), graph_source_id);
+            let bytes = cs
+                .get(index_cid)
                 .await
                 .map_err(|e| ServiceError::Internal {
                     message: format!("Storage error loading manifest: {}", e),

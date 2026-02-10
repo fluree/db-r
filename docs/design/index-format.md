@@ -22,7 +22,7 @@ A binary index build produces:
   - large dictionaries (subjects, strings) stored as **CoW single-level B-tree-like trees**
     (a branch manifest `DTB1` + multiple leaf blobs `DLF1`/`DLR1`)
 - **Manifests / roots** that describe how to load the above either from a local directory layout
-  or from content-addressed storage (CAS) via `BinaryIndexRootV2`.
+  or from the content store via `BinaryIndexRootV2` (all artifacts referenced by ContentId).
 
 Fact indexes exist in up to four sort orders (see `RunSortOrder`):
 
@@ -51,7 +51,7 @@ Fact indexes exist in up to four sort orders (see `RunSortOrder`):
 - **Branch manifest**: maps key ranges to leaf files; used for routing.
 - **Region**: a separately compressed section inside a leaflet.
 - **Dictionary tree**: a `DTB1` branch + `DLF1`/`DLR1` leaves for large keyspaces (subjects/strings).
-- **CAS address**: a storage address whose identity includes a content hash (e.g., `cas://…` or `fluree:file://…`).
+- **ContentId**: a CIDv1 value that uniquely identifies a content-addressed artifact by its hash and type. See [ContentId and ContentStore](content-id-and-contentstore.md).
 
 ## Physical layout (local build output)
 
@@ -95,17 +95,17 @@ When publishing an index to nameservice / CAS, the canonical entrypoint is the *
 
 Key properties:
 
-- **Explicit CAS addresses** for every artifact (dicts, branches, leaves).
-- Deterministic JSON serialization (uses `BTreeMap`) so the root itself is suitable for content hashing.
+- **Explicit ContentId references** for every artifact (dicts, branches, leaves).
+- Deterministic JSON serialization (uses `BTreeMap`) so the root itself is suitable for content hashing to derive its own ContentId.
 - Tracks `index_t` (max transaction covered) and `base_t` (earliest time for which Region 3 history is valid).
 
 At a high level the root references:
 
-- **Dictionary addresses**:
+- **Dictionary ContentIds**:
   - flat blobs: `graphs`, `datatypes`, `languages`
   - tree blobs: subject/string forward & reverse (`DTB1` branch + `DLF1`/`DLR1` leaves)
   - optional per-predicate numbig arenas
-- **Per-graph fact index addresses**:
+- **Per-graph fact index ContentIds**:
   - for each graph: a map of order name → `{ branch, leaves[] }`
 
 ## Branch manifest (`FBR1`, `.fbr`)
@@ -334,7 +334,7 @@ The forward file itself is a raw concatenation of bytes; access is via `(offset,
 
 Subjects and strings are large enough that we represent them as single-level CoW trees:
 
-- **Branch**: `DTB1` mapping key ranges to leaf CAS addresses
+- **Branch**: `DTB1` mapping key ranges to leaf ContentIds
 - **Leaves**:
   - forward leaf (`DLF1`): numeric ID → value bytes
   - reverse leaf (`DLR1`): key bytes → numeric ID
@@ -350,7 +350,7 @@ Subjects and strings are large enough that we represent them as single-level CoW
     [first_key_len: u32] [first_key_bytes]
     [last_key_len: u32]  [last_key_bytes]
     [entry_count: u32]
-    [address_len: u16]   [address_bytes]
+    [content_id_len: u16]   [content_id_bytes]
 ```
 
 Keys are treated as raw bytes and compared lexicographically. For forward trees keyed by numeric ID,
@@ -393,8 +393,8 @@ The `u16` big-endian prefix ensures that lexicographic byte comparisons match lo
 
 ## Integrity, caching, and lifecycle
 
-- Leaf and branch filenames (local) and CAS addresses (remote) are derived from **SHA-256** content hashes.
-- Content-addressed artifacts are immutable; caches can key by CAS address (e.g., `xxh3_128(address)`).
+- Leaf and branch filenames (local) are derived from **SHA-256** content hashes; remote references use ContentId (CIDv1).
+- Content-addressed artifacts are immutable; caches can key by ContentId.
 - `BinaryIndexRootV2` provides a GC chain (`prev_index`) and an optional garbage manifest pointer to
   support retention-based cleanup of replaced artifacts.
 

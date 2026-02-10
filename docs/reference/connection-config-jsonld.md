@@ -190,7 +190,7 @@ Guidance:
 #### addressIdentifier
 
 Rust parses `addressIdentifier` on storage nodes and uses it to rewrite **published**
-commit/index addresses so they include the identifier segment (Clojure parity), e.g.:
+commit/index ContentIds so they include the identifier segment (Clojure parity), e.g.:
 `fluree:{addressIdentifier}:s3://...`.
 
 This is mainly useful when you have multiple storage backends and want addresses to

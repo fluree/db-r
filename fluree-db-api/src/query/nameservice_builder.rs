@@ -340,17 +340,17 @@ mod tests {
         let cid3 = ContentId::new(ContentKind::Commit, b"commit-3");
         fluree
             .nameservice
-            .publish_commit("db1:main", 10, &cid1, Some("commit-1"))
+            .publish_commit("db1:main", 10, &cid1)
             .await
             .unwrap();
         fluree
             .nameservice
-            .publish_commit("db1:dev", 5, &cid2, Some("commit-2"))
+            .publish_commit("db1:dev", 5, &cid2)
             .await
             .unwrap();
         fluree
             .nameservice
-            .publish_commit("db2:main", 20, &cid3, Some("commit-3"))
+            .publish_commit("db2:main", 20, &cid3)
             .await
             .unwrap();
 

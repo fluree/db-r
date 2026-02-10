@@ -83,6 +83,8 @@ fluree-db/
 - Range query operations
 - Database snapshot representation
 - Statistics and cardinality tracking
+- Content-addressed identity (`ContentId`, `ContentKind`)
+- Content store trait (`ContentStore`)
 
 **Key Types:**
 - `Flake` - Indexed triple representation
@@ -90,6 +92,9 @@ fluree-db/
 - `Db` - Database snapshot
 - `IndexType` - Index selection enum
 - `StatsView` - Query statistics
+- `ContentId` - CIDv1 content-addressed identifier
+- `ContentKind` - Content type enum (Commit, Txn, IndexRoot, etc.)
+- `ContentStore` - Content-addressed storage trait
 
 **Dependencies:**
 - fluree-vocab

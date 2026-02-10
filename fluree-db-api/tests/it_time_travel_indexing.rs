@@ -1,6 +1,6 @@
 //! Time travel + indexing integration tests
 //!
-//! Tests time travel queries (`@t:N`, `@iso:`, `@sha:`) across all 3 indexing scenarios:
+//! Tests time travel queries (`@t:N`, `@iso:`, `@commit:`) across all 3 indexing scenarios:
 //!
 //! - Scenario (a): No index - all data in novelty only
 //! - Scenario (b): Index current - index covers latest t
@@ -356,7 +356,7 @@ async fn time_travel_index_plus_novelty() {
                 .expect("ns record");
             eprintln!(
                 "After tx3: commit_t={}, index_t={}, commit_addr={:?}",
-                ns_record_after.commit_t, ns_record_after.index_t, ns_record_after.commit_address
+                ns_record_after.commit_t, ns_record_after.index_t, ns_record_after.commit_head_id
             );
 
             // Verify index is at t=2, commits at t=3

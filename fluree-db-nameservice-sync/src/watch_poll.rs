@@ -62,8 +62,8 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                             } else if let Some(prev) = prev_ledgers.get(&key) {
                                 if prev.commit_t != record.commit_t
                                     || prev.index_t != record.index_t
-                                    || prev.commit_address != record.commit_address
-                                    || prev.index_address != record.index_address
+                                    || prev.commit_head_id != record.commit_head_id
+                                    || prev.index_head_id != record.index_head_id
                                 {
                                     yield RemoteEvent::LedgerUpdated(record.clone());
                                 }
@@ -93,7 +93,7 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                                 }
                             } else if let Some(prev) = prev_graph_sources.get(&key) {
                                 if prev.index_t != record.index_t
-                                    || prev.index_address != record.index_address
+                                    || prev.index_id != record.index_id
                                 {
                                     yield RemoteEvent::GraphSourceUpdated(record.clone());
                                 }
@@ -199,10 +199,8 @@ mod tests {
             ledger_id: format!("{}:main", ledger_name),
             name: ledger_name.to_string(),
             branch: "main".to_string(),
-            commit_address: Some(format!("commit-{}", commit_t)),
             commit_head_id: None,
             commit_t,
-            index_address: None,
             index_head_id: None,
             index_t: 0,
             retracted: false,

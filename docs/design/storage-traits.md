@@ -5,10 +5,11 @@ This document describes the storage trait architecture in Fluree DB, explaining 
 ## Overview
 
 Fluree uses a layered storage abstraction that separates:
-- **Core traits** (`fluree-db-core`): Runtime-agnostic storage operations with standard `Result<T>` error handling
-- **Extension traits** (`fluree-db-nameservice`): Nameservice-specific operations with `StorageExtResult<T>` for richer error semantics
+- **Content-addressed access** (`fluree-db-core`): The `ContentStore` trait provides get/put/has operations keyed by `ContentId` (CIDv1). This is the primary interface for all immutable artifact access (commits, index roots, leaves, dicts).
+- **Physical storage traits** (`fluree-db-core`): Runtime-agnostic storage operations (`StorageRead`, `StorageWrite`, `ContentAddressedWrite`) with standard `Result<T>` error handling. These handle the physical I/O layer beneath ContentStore.
+- **Extension traits** (`fluree-db-nameservice`): Nameservice-specific operations with `StorageExtResult<T>` for richer error semantics (CAS operations, pagination, etc.).
 
-This separation allows the core library to remain simple while nameservice implementations can leverage advanced storage features (CAS operations, pagination, etc.).
+See [ContentId and ContentStore](content-id-and-contentstore.md) for the content-addressed identity model.
 
 ## Quick Start: The Prelude
 
@@ -38,24 +39,58 @@ use fluree_db_api::{Storage, StorageRead, MemoryStorage};
 ## Trait Hierarchy
 
 ```text
-                    ┌─────────────────┐
-                    │   StorageRead   │  read_bytes, exists, list_prefix
-                    └────────┬────────┘
-                             │
-                    ┌────────┴────────┐
-                    │  StorageWrite   │  write_bytes, delete
-                    └────────┬────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              │   ContentAddressedWrite     │  content_write_bytes[_with_hash]
-              └──────────────┬──────────────┘
-                             │
-                    ┌────────┴────────┐
-                    │     Storage     │  (marker trait - blanket impl)
-                    └─────────────────┘
+              ┌──────────────────────┐
+              │    ContentStore      │  get(ContentId), put(ContentKind, bytes), has(ContentId)
+              └──────────────────────┘
+                    (primary interface for immutable artifacts)
+
+              ┌─────────────────┐
+              │   StorageRead   │  read_bytes, exists, list_prefix
+              └────────┬────────┘
+                       │
+              ┌────────┴────────┐
+              │  StorageWrite   │  write_bytes, delete
+              └────────┬────────┘
+                       │
+        ┌──────────────┴──────────────┐
+        │   ContentAddressedWrite     │  content_write_bytes[_with_hash]
+        └──────────────┬──────────────┘
+                       │
+              ┌────────┴────────┐
+              │     Storage     │  (marker trait - blanket impl)
+              └─────────────────┘
+                    (physical I/O layer)
 ```
 
-## Core Traits (fluree-db-core)
+`ContentStore` is the content-addressed layer that sits above the physical storage traits. It maps `ContentId` values to physical storage locations via the underlying `Storage` implementation.
+
+## ContentStore (fluree-db-core)
+
+The `ContentStore` trait is the primary interface for accessing immutable, content-addressed artifacts (commits, index roots, leaves, dictionaries, etc.).
+
+```rust
+#[async_trait]
+pub trait ContentStore: Debug + Send + Sync {
+    /// Retrieve bytes by content ID
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>>;
+
+    /// Store bytes, returning the computed ContentId
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId>;
+
+    /// Check whether an object exists
+    async fn has(&self, id: &ContentId) -> Result<bool>;
+}
+```
+
+**Design notes:**
+- `ContentId` is a CIDv1 value encoding the hash function, digest, and content kind (multicodec). See [ContentId and ContentStore](content-id-and-contentstore.md).
+- `ContentKind` enables routing to different storage tiers (commit store vs index store) without parsing URL paths.
+- `put` computes the content hash and returns the derived `ContentId`.
+- Implementations include `MemoryContentStore` (for testing) and `BridgeContentStore` (adapts a `Storage` backend).
+
+## Physical Storage Traits (fluree-db-core)
+
+The physical storage traits handle raw byte I/O against storage backends (filesystem, S3, memory). `ContentStore` implementations typically wrap these.
 
 ### StorageRead
 
@@ -374,7 +409,7 @@ pub struct EncryptedStorage<S, K> {
 
 ### AddressIdentifierResolverStorage
 
-Routes reads based on address format (e.g., different storage for legacy addresses):
+Routes reads based on address format (e.g., different storage backends by identifier segment):
 
 ```rust
 pub struct AddressIdentifierResolverStorage {
@@ -403,12 +438,13 @@ Extended errors for nameservice operations:
 
 | Trait | Crate | Purpose | Error Type |
 |-------|-------|---------|------------|
-| `StorageRead` | core | Read operations | `Result<T>` |
-| `StorageWrite` | core | Write + delete | `Result<T>` |
-| `ContentAddressedWrite` | core | Hash-based writes | `Result<T>` |
-| `Storage` | core | Marker (full capability) | - |
+| `ContentStore` | core | Content-addressed get/put/has by `ContentId` | `Result<T>` |
+| `StorageRead` | core | Physical read operations | `Result<T>` |
+| `StorageWrite` | core | Physical write + delete | `Result<T>` |
+| `ContentAddressedWrite` | core | Hash-based physical writes | `Result<T>` |
+| `Storage` | core | Marker (full physical capability) | - |
 | `StorageList` | nameservice | Paginated listing | `StorageExtResult<T>` |
 | `StorageCas` | nameservice | Compare-and-swap | `StorageExtResult<T>` |
 | `StorageDelete` | nameservice | Delete with ext errors | `StorageExtResult<T>` |
 
-For most use cases, implement the core traits (`StorageRead`, `StorageWrite`, `ContentAddressedWrite`) and the `Storage` marker trait will be automatically satisfied.
+Application code typically interacts with `ContentStore` for immutable artifact access. Storage backend implementors implement the physical traits (`StorageRead`, `StorageWrite`, `ContentAddressedWrite`) and the `Storage` marker trait is automatically satisfied.

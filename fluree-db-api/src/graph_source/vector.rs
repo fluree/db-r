@@ -16,13 +16,11 @@ use crate::graph_source::result::{
 #[cfg(feature = "vector")]
 use crate::{QueryResult as ApiQueryResult, Result};
 #[cfg(feature = "vector")]
-use fluree_db_core::{alias as core_alias, Storage, StorageWrite};
+use fluree_db_core::{alias as core_alias, ContentId, ContentStore, Storage, StorageWrite};
 #[cfg(feature = "vector")]
 use fluree_db_ledger::LedgerState;
 #[cfg(feature = "vector")]
-use fluree_db_nameservice::{
-    GraphSourcePublisher, GraphSourceType, NameService, Publisher, STORAGE_SEGMENT_GRAPH_SOURCES,
-};
+use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
 #[cfg(feature = "vector")]
 use fluree_db_query::parse::parse_query;
 #[cfg(feature = "vector")]
@@ -177,12 +175,12 @@ where
         );
 
         // 4. Persist index snapshot
-        let index_address = self
+        let index_id = self
             .write_vector_snapshot_blob(&graph_source_id, &index, source_t)
             .await?;
 
         info!(
-            index_address = %index_address,
+            index_id = %index_id,
             index_t = source_t,
             "Persisted versioned index snapshot"
         );
@@ -210,12 +208,12 @@ where
             )
             .await?;
 
-        // Publish index location and watermark
+        // Publish index CID and watermark
         self.nameservice
             .publish_graph_source_index(
                 &config.name,
                 config.effective_branch(),
-                &index_address,
+                &index_id,
                 source_t,
             )
             .await?;
@@ -233,7 +231,7 @@ where
             skipped_count,
             dimensions: config.dimensions,
             index_t: source_t,
-            index_address: Some(index_address),
+            index_id: Some(index_id),
         })
     }
 
@@ -290,33 +288,25 @@ where
     /// Creates a snapshot at `graph-sources/{name}/{branch}/vector/t{index_t}/snapshot.bin`.
     /// Returns the storage address. Caller is responsible for publishing
     /// the head pointer via nameservice.
+    /// Returns (storage_address, ContentId) tuple.
     pub(crate) async fn write_vector_snapshot_blob(
         &self,
         graph_source_id: &str,
         index: &VectorIndex,
-        index_t: i64,
-    ) -> Result<String> {
+        _index_t: i64,
+    ) -> Result<ContentId> {
         use fluree_db_query::vector::usearch::serialize;
 
         // Serialize the index
         let bytes = serialize(index)?;
 
-        // Build versioned storage address
-        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
-            crate::ApiError::config(format!(
-                "Invalid graph source alias '{}': {}",
-                graph_source_id, e
-            ))
-        })?;
-        let address = format!(
-            "fluree:file://{STORAGE_SEGMENT_GRAPH_SOURCES}/{}/{}/vector/t{}/snapshot.bin",
-            name, branch, index_t
-        );
+        // Write through the content store so it's stored at the CID-mapped address
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let index_id = cs
+            .put(fluree_db_core::ContentKind::IndexRoot, &bytes)
+            .await?;
 
-        // Write to storage
-        self.storage().write_bytes(&address, &bytes).await?;
-
-        Ok(address)
+        Ok(index_id)
     }
 }
 
@@ -345,13 +335,14 @@ where
                 crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
             })?;
 
-        // Get index address
-        let index_address = record.index_address.ok_or_else(|| {
+        // Get index CID
+        let index_cid = record.index_id.ok_or_else(|| {
             crate::ApiError::NotFound(format!("No index for graph source: {}", graph_source_id))
         })?;
 
-        // Load from storage
-        let bytes = self.storage().read_bytes(&index_address).await?;
+        // Load from content store
+        let store = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let bytes = store.get(&index_cid).await?;
 
         // Deserialize
         let index = deserialize(&bytes)?;
@@ -427,7 +418,7 @@ where
     /// This operation performs incremental updates when possible,
     /// falling back to full resync if needed.
     pub async fn sync_vector_index(&self, graph_source_id: &str) -> Result<VectorSyncResult> {
-        use fluree_db_novelty::{trace_commits, trace_commits_by_id};
+        use fluree_db_novelty::trace_commits_by_id;
         use fluree_db_query::bm25::CompiledPropertyDeps;
         use fluree_db_query::vector::usearch::deserialize;
         use futures::StreamExt;
@@ -451,8 +442,8 @@ where
             )));
         }
 
-        let index_address = match &record.index_address {
-            Some(addr) => addr.clone(),
+        let index_cid = match &record.index_id {
+            Some(cid) => cid.clone(),
             None => {
                 // No index yet - need full resync
                 return self.resync_vector_index(graph_source_id).await;
@@ -479,8 +470,9 @@ where
         let ledger = self.ledger(&source_ledger_alias).await?;
         let ledger_t = ledger.t();
 
-        // 3. Load existing index
-        let bytes = self.storage().read_bytes(&index_address).await?;
+        // 3. Load existing index by CID
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let bytes = cs.get(&index_cid).await?;
         let mut index = deserialize(&bytes)?;
         let old_watermark = index.watermark.get(&source_ledger_alias).unwrap_or(0);
 
@@ -498,16 +490,12 @@ where
             });
         }
 
-        // 4. Get head commit info for tracing
-        let head_commit_address = ledger
-            .ns_record
-            .as_ref()
-            .and_then(|r| r.commit_address.clone())
-            .ok_or_else(|| crate::ApiError::NotFound("No commit address for ledger".to_string()))?;
+        // 4. Get head commit CID for tracing
         let head_commit_id = ledger
             .ns_record
             .as_ref()
-            .and_then(|r| r.commit_head_id.clone());
+            .and_then(|r| r.commit_head_id.clone())
+            .ok_or_else(|| crate::ApiError::NotFound("No commit head for ledger".to_string()))?;
 
         // 5. Compile property deps for this ledger's namespace
         // Convert VectorPropertyDeps to PropertyDeps for compilation
@@ -518,29 +506,9 @@ where
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
-        let use_cid_path = head_commit_id.is_some()
-            && fluree_db_core::address::parse_fluree_address(&head_commit_address).is_some();
-        let stream: std::pin::Pin<
-            Box<
-                dyn futures::Stream<Item = fluree_db_novelty::Result<fluree_db_novelty::Commit>>
-                    + Send,
-            >,
-        > = if let (true, Some(cid)) = (use_cid_path, &head_commit_id) {
-            let parsed =
-                fluree_db_core::address::parse_fluree_address(&head_commit_address).unwrap();
-            let method = parsed.method.to_string();
-            let prefix = fluree_db_core::extract_ledger_prefix(&head_commit_address)
-                .unwrap_or_else(|| ledger.db.ledger_id.clone());
-            let store =
-                fluree_db_core::bridge_content_store(self.storage().clone(), &prefix, &method);
-            Box::pin(trace_commits_by_id(store, cid.clone(), old_watermark))
-        } else {
-            Box::pin(trace_commits(
-                self.storage().clone(),
-                head_commit_address.clone(),
-                old_watermark,
-            ))
-        };
+        let commit_store =
+            fluree_db_core::content_store_for(self.storage().clone(), &ledger.db.ledger_id);
+        let stream = trace_commits_by_id(commit_store, head_commit_id.clone(), old_watermark);
         futures::pin_mut!(stream);
 
         while let Some(result) = stream.next().await {
@@ -608,7 +576,7 @@ where
         );
 
         // 10. Persist updated index and update head pointer
-        let new_address = self
+        let new_index_id = self
             .write_vector_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
@@ -621,12 +589,12 @@ where
 
         // 11. Update graph source index record (head pointer)
         self.nameservice
-            .publish_graph_source_index(&name, &branch, &new_address, ledger_t)
+            .publish_graph_source_index(&name, &branch, &new_index_id, ledger_t)
             .await?;
 
         info!(
             graph_source_id = %graph_source_id,
-            new_address = %new_address,
+            index_id = %new_index_id,
             ledger_t = ledger_t,
             "Persisted synced vector index"
         );
@@ -701,8 +669,9 @@ where
         let ledger_t = ledger.t();
 
         // 3. Load existing index to get old watermark
-        let old_watermark = if let Some(addr) = &record.index_address {
-            let bytes = self.storage().read_bytes(addr).await?;
+        let old_watermark = if let Some(cid) = &record.index_id {
+            let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+            let bytes = cs.get(cid).await?;
             let old_index = deserialize(&bytes)?;
             old_index.watermark.get(&source_ledger_alias).unwrap_or(0)
         } else {
@@ -765,7 +734,7 @@ where
         );
 
         // 6. Persist new index and update head pointer
-        let new_address = self
+        let new_index_id = self
             .write_vector_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
@@ -778,12 +747,12 @@ where
 
         // 7. Update graph source index record (head pointer)
         self.nameservice
-            .publish_graph_source_index(&name, &branch, &new_address, ledger_t)
+            .publish_graph_source_index(&name, &branch, &new_index_id, ledger_t)
             .await?;
 
         info!(
             graph_source_id = %graph_source_id,
-            new_address = %new_address,
+            index_id = %new_index_id,
             ledger_t = ledger_t,
             "Completed full vector index resync"
         );

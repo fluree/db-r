@@ -29,7 +29,6 @@
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
-use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
 use crate::ir::{PathModifier, PropertyPathPattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
@@ -169,19 +168,7 @@ impl<S: Storage + 'static> PropertyPathOperator<S> {
 
             // In dataset mode, property paths must run against a single active graph.
             // There is no meaningful dataset-wide `to_t` for multi-ledger datasets.
-            let (db, overlay, to_t) = match ctx.active_graphs() {
-                ActiveGraphs::Single => (ctx.db, ctx.overlay(), ctx.to_t),
-                ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
-                    let g = graphs[0];
-                    (g.db, g.overlay, g.to_t)
-                }
-                ActiveGraphs::Many(_) => {
-                    return Err(QueryError::InvalidQuery(
-                        "Property paths over multi-graph datasets are not supported; use GRAPH to select a single graph"
-                            .to_string(),
-                    ));
-                }
-            };
+            let (db, overlay, to_t) = ctx.require_single_graph()?;
 
             let opts = RangeOptions::new().with_to_t(to_t);
 
@@ -258,19 +245,7 @@ impl<S: Storage + 'static> PropertyPathOperator<S> {
                 .with_predicate(self.pattern.predicate.clone())
                 .with_object(FlakeValue::Ref(current.clone()));
 
-            let (db, overlay, to_t) = match ctx.active_graphs() {
-                ActiveGraphs::Single => (ctx.db, ctx.overlay(), ctx.to_t),
-                ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
-                    let g = graphs[0];
-                    (g.db, g.overlay, g.to_t)
-                }
-                ActiveGraphs::Many(_) => {
-                    return Err(QueryError::InvalidQuery(
-                        "Property paths over multi-graph datasets are not supported; use GRAPH to select a single graph"
-                            .to_string(),
-                    ));
-                }
-            };
+            let (db, overlay, to_t) = ctx.require_single_graph()?;
 
             let opts = RangeOptions::new().with_to_t(to_t);
 
@@ -310,19 +285,7 @@ impl<S: Storage + 'static> PropertyPathOperator<S> {
     async fn compute_closure(&self, ctx: &ExecutionContext<'_, S>) -> Result<Vec<(Sid, Sid)>> {
         // Pull all edges with this predicate using PSOT (predicate-indexed).
         let range_match = RangeMatch::predicate(self.pattern.predicate.clone());
-        let (db, overlay, to_t) = match ctx.active_graphs() {
-            ActiveGraphs::Single => (ctx.db, ctx.overlay(), ctx.to_t),
-            ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
-                let g = graphs[0];
-                (g.db, g.overlay, g.to_t)
-            }
-            ActiveGraphs::Many(_) => {
-                return Err(QueryError::InvalidQuery(
-                    "Property paths over multi-graph datasets are not supported; use GRAPH to select a single graph"
-                        .to_string(),
-                ));
-            }
-        };
+        let (db, overlay, to_t) = ctx.require_single_graph()?;
         let opts = RangeOptions::new().with_to_t(to_t);
         let flakes = range_with_overlay(
             db,
@@ -481,19 +444,7 @@ impl<S: Storage + 'static> PropertyPathOperator<S> {
         let obj_binding = obj_var.and_then(|v| child_batch.column(v).map(|col| &col[row_idx]));
 
         // Resolve the active graph (property paths require a single active graph).
-        let (db_for_encode, _overlay, _to_t) = match ctx.active_graphs() {
-            ActiveGraphs::Single => (ctx.db, ctx.overlay(), ctx.to_t),
-            ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
-                let g = graphs[0];
-                (g.db, g.overlay, g.to_t)
-            }
-            ActiveGraphs::Many(_) => {
-                return Err(QueryError::InvalidQuery(
-                    "Property paths over multi-graph datasets are not supported; use GRAPH to select a single graph"
-                        .to_string(),
-                ));
-            }
-        };
+        let (db_for_encode, _overlay, _to_t) = ctx.require_single_graph()?;
 
         // Extract SIDs from constants or child bindings (if bound).
         //

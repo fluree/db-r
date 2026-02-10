@@ -17,6 +17,8 @@
 //!   to a remote search service via HTTP.
 
 use async_trait::async_trait;
+#[cfg(feature = "vector")]
+use fluree_db_core::ContentStore;
 use fluree_db_core::{Storage, StorageWrite};
 use fluree_db_nameservice::{GraphSourcePublisher, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25Index, Bm25IndexProvider, Bm25SearchProvider, Bm25SearchResult};
@@ -453,8 +455,8 @@ where
             QueryError::InvalidQuery(format!("Graph source not found: {}", graph_source_id))
         })?;
 
-        let index_address = match &record.index_address {
-            Some(addr) => addr.clone(),
+        let index_id = match &record.index_id {
+            Some(id) => id.clone(),
             None => {
                 // No index yet -- try to sync if requested
                 if params.sync {
@@ -477,7 +479,7 @@ where
                             ))
                         })?;
 
-                    record.index_address.ok_or_else(|| {
+                    record.index_id.ok_or_else(|| {
                         QueryError::InvalidQuery(format!(
                             "No vector index available for {} after sync",
                             graph_source_id
@@ -492,11 +494,10 @@ where
             }
         };
 
-        // Load and deserialize
-        let bytes = self
-            .fluree
-            .storage()
-            .read_bytes(&index_address)
+        // Load and deserialize via content store
+        let cs = fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+        let bytes = cs
+            .get(&index_id)
             .await
             .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
 

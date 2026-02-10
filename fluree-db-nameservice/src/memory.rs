@@ -140,7 +140,6 @@ impl Publisher for MemoryNameService {
         ledger_id: &str,
         commit_t: i64,
         commit_id: &ContentId,
-        address_hint: Option<&str>,
     ) -> Result<()> {
         let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
@@ -150,7 +149,6 @@ impl Publisher for MemoryNameService {
             // Only update if new_t > existing_t (strictly monotonic)
             if commit_t > record.commit_t {
                 record.commit_head_id = Some(commit_id.clone());
-                record.commit_address = address_hint.map(|s| s.to_string());
                 record.commit_t = commit_t;
                 did_update = true;
             }
@@ -160,7 +158,6 @@ impl Publisher for MemoryNameService {
             let (ledger_name, branch) = parse_address(ledger_id)?;
             let mut record = NsRecord::new(ledger_name, branch);
             record.commit_head_id = Some(commit_id.clone());
-            record.commit_address = address_hint.map(|s| s.to_string());
             record.commit_t = commit_t;
             records.insert(key, record);
             did_update = true;
@@ -181,7 +178,6 @@ impl Publisher for MemoryNameService {
         ledger_id: &str,
         index_t: i64,
         index_id: &ContentId,
-        address_hint: Option<&str>,
     ) -> Result<()> {
         let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
@@ -191,7 +187,6 @@ impl Publisher for MemoryNameService {
             // Only update if new_t > existing_t (strictly monotonic)
             if index_t > record.index_t {
                 record.index_head_id = Some(index_id.clone());
-                record.index_address = address_hint.map(|s| s.to_string());
                 record.index_t = index_t;
                 did_update = true;
             }
@@ -201,7 +196,6 @@ impl Publisher for MemoryNameService {
             let (ledger_name, branch) = parse_address(ledger_id)?;
             let mut record = NsRecord::new(ledger_name, branch);
             record.index_head_id = Some(index_id.clone());
-            record.index_address = address_hint.map(|s| s.to_string());
             record.index_t = index_t;
             records.insert(key, record);
             did_update = true;
@@ -258,7 +252,6 @@ impl AdminPublisher for MemoryNameService {
         ledger_id: &str,
         index_t: i64,
         index_id: &ContentId,
-        address_hint: Option<&str>,
     ) -> Result<()> {
         let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
@@ -267,7 +260,6 @@ impl AdminPublisher for MemoryNameService {
             // Allow update when new_t >= existing_t (not strictly monotonic)
             if index_t >= record.index_t {
                 record.index_head_id = Some(index_id.clone());
-                record.index_address = address_hint.map(|s| s.to_string());
                 record.index_t = index_t;
 
                 // Emit event (preserve semantics with regular publish_index)
@@ -283,7 +275,6 @@ impl AdminPublisher for MemoryNameService {
             let (ledger_name, branch) = parse_address(ledger_id)?;
             let mut record = NsRecord::new(ledger_name, branch);
             record.index_head_id = Some(index_id.clone());
-            record.index_address = address_hint.map(|s| s.to_string());
             record.index_t = index_t;
             records.insert(key.clone(), record);
 
@@ -309,12 +300,10 @@ impl RefPublisher for MemoryNameService {
             Some(record) => match kind {
                 RefKind::CommitHead => Ok(Some(RefValue {
                     id: record.commit_head_id.clone(),
-                    address: record.commit_address.clone(),
                     t: record.commit_t,
                 })),
                 RefKind::IndexHead => Ok(Some(RefValue {
                     id: record.index_head_id.clone(),
-                    address: record.index_address.clone(),
                     t: record.index_t,
                 })),
             },
@@ -334,12 +323,10 @@ impl RefPublisher for MemoryNameService {
         let current_ref = records.get(&key).map(|r| match kind {
             RefKind::CommitHead => RefValue {
                 id: r.commit_head_id.clone(),
-                address: r.commit_address.clone(),
                 t: r.commit_t,
             },
             RefKind::IndexHead => RefValue {
                 id: r.index_head_id.clone(),
-                address: r.index_address.clone(),
                 t: r.index_t,
             },
         });
@@ -354,12 +341,10 @@ impl RefPublisher for MemoryNameService {
                 match kind {
                     RefKind::CommitHead => {
                         record.commit_head_id = new.id.clone();
-                        record.commit_address = new.address.clone();
                         record.commit_t = new.t;
                     }
                     RefKind::IndexHead => {
                         record.index_head_id = new.id.clone();
-                        record.index_address = new.address.clone();
                         record.index_t = new.t;
                     }
                 }
@@ -398,11 +383,11 @@ impl RefPublisher for MemoryNameService {
                 return Ok(CasResult::Conflict { actual: None });
             }
             (Some(exp), Some(actual)) => {
-                // Priority rule: compare `id` (ContentId) when both sides have it,
-                // fall back to `address` comparison otherwise.
+                // Compare `id` (ContentId) for identity.
                 let identity_matches = match (&exp.id, &actual.id) {
                     (Some(a), Some(b)) => a == b,
-                    _ => exp.address == actual.address,
+                    (None, None) => true,
+                    _ => false,
                 };
                 if !identity_matches {
                     return Ok(CasResult::Conflict {
@@ -429,7 +414,6 @@ impl RefPublisher for MemoryNameService {
         match kind {
             RefKind::CommitHead => {
                 record.commit_head_id = new.id.clone();
-                record.commit_address = new.address.clone();
                 record.commit_t = new.t;
                 // Emit event.
                 if let Some(cid) = &new.id {
@@ -442,7 +426,6 @@ impl RefPublisher for MemoryNameService {
             }
             RefKind::IndexHead => {
                 record.index_head_id = new.id.clone();
-                record.index_address = new.address.clone();
                 record.index_t = new.t;
                 if let Some(cid) = &new.id {
                     let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
@@ -471,22 +454,9 @@ impl Publication for MemoryNameService {
         Ok(())
     }
 
-    async fn known_addresses(&self, ledger_id: &str) -> Result<Vec<String>> {
-        let key = self.normalize_ledger_id(ledger_id);
-        let records = self.records.read();
-
-        if let Some(record) = records.get(&key) {
-            let mut addresses = Vec::new();
-            if let Some(addr) = &record.commit_address {
-                addresses.push(addr.clone());
-            }
-            if let Some(addr) = &record.index_address {
-                addresses.push(addr.clone());
-            }
-            Ok(addresses)
-        } else {
-            Ok(vec![])
-        }
+    async fn known_addresses(&self, _ledger_id: &str) -> Result<Vec<String>> {
+        // Addresses no longer stored on NsRecord; return empty.
+        Ok(vec![])
     }
 }
 
@@ -534,7 +504,7 @@ impl GraphSourcePublisher for MemoryNameService {
         &self,
         name: &str,
         branch: &str,
-        index_addr: &str,
+        index_id: &ContentId,
         index_t: i64,
     ) -> Result<()> {
         let key = core_alias::format_alias(name, branch);
@@ -544,7 +514,7 @@ impl GraphSourcePublisher for MemoryNameService {
         if let Some(record) = graph_source_records.get_mut(&key) {
             // Strictly monotonic: only update if new_t > existing_t
             if index_t > record.index_t {
-                record.index_address = Some(index_addr.to_string());
+                record.index_id = Some(index_id.clone());
                 record.index_t = index_t;
                 did_update = true;
             }
@@ -556,7 +526,7 @@ impl GraphSourcePublisher for MemoryNameService {
                 .event_tx
                 .send(NameServiceEvent::GraphSourceIndexPublished {
                     address: key,
-                    index_address: index_addr.to_string(),
+                    index_id: index_id.clone(),
                     index_t,
                 });
         }
@@ -801,45 +771,30 @@ mod tests {
         let ns = MemoryNameService::new();
 
         // First publish
-        ns.publish_commit(
-            "mydb:main",
-            1,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.commit_address, Some("commit-1".to_string()));
+        assert_eq!(record.commit_head_id, Some(test_commit_id("commit-1")));
         assert_eq!(record.commit_t, 1);
 
         // Higher t should update
-        ns.publish_commit(
-            "mydb:main",
-            5,
-            &test_commit_id("commit-2"),
-            Some("commit-2"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-2"))
+            .await
+            .unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.commit_address, Some("commit-2".to_string()));
+        assert_eq!(record.commit_head_id, Some(test_commit_id("commit-2")));
         assert_eq!(record.commit_t, 5);
 
         // Lower t should be ignored (monotonic)
-        ns.publish_commit(
-            "mydb:main",
-            3,
-            &test_commit_id("commit-old"),
-            Some("commit-old"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 3, &test_commit_id("commit-old"))
+            .await
+            .unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.commit_address, Some("commit-2".to_string()));
+        assert_eq!(record.commit_head_id, Some(test_commit_id("commit-2")));
         assert_eq!(record.commit_t, 5);
     }
 
@@ -848,17 +803,12 @@ mod tests {
         let ns = MemoryNameService::new();
 
         // Publish commit first
-        ns.publish_commit(
-            "mydb:main",
-            10,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 10, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         // Publish index (can lag behind commit)
-        ns.publish_index("mydb:main", 5, &test_index_id("index-1"), Some("index-1"))
+        ns.publish_index("mydb:main", 5, &test_index_id("index-1"))
             .await
             .unwrap();
 
@@ -872,14 +822,9 @@ mod tests {
     async fn test_memory_ns_lookup_default_branch() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit(
-            "mydb:main",
-            1,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         // Lookup without branch should find default
         let record = ns.lookup("mydb").await.unwrap();
@@ -894,14 +839,9 @@ mod tests {
     async fn test_memory_ns_retract() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit(
-            "mydb:main",
-            1,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert!(!record.retracted);
@@ -916,13 +856,13 @@ mod tests {
     async fn test_memory_ns_all_records() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit("db1:main", 1, &test_commit_id("commit-1"), Some("commit-1"))
+        ns.publish_commit("db1:main", 1, &test_commit_id("commit-1"))
             .await
             .unwrap();
-        ns.publish_commit("db2:main", 1, &test_commit_id("commit-2"), Some("commit-2"))
+        ns.publish_commit("db2:main", 1, &test_commit_id("commit-2"))
             .await
             .unwrap();
-        ns.publish_commit("db3:dev", 1, &test_commit_id("commit-3"), Some("commit-3"))
+        ns.publish_commit("db3:dev", 1, &test_commit_id("commit-3"))
             .await
             .unwrap();
 
@@ -949,14 +889,9 @@ mod tests {
             .await
             .unwrap();
 
-        ns.publish_commit(
-            "mydb:main",
-            1,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
         let evt = sub.receiver.recv().await.unwrap();
         assert_eq!(
             evt,
@@ -968,14 +903,9 @@ mod tests {
         );
 
         // Lower t should not emit a new event.
-        ns.publish_commit(
-            "mydb:main",
-            0,
-            &test_commit_id("commit-old"),
-            Some("commit-old"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 0, &test_commit_id("commit-old"))
+            .await
+            .unwrap();
         assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
@@ -1015,25 +945,29 @@ mod tests {
             .await
             .unwrap();
 
-        ns.publish_graph_source_index("gs", "main", "index-v1", 10)
+        let id_v1 = ContentId::new(ContentKind::IndexRoot, b"index-v1");
+        let id_v2 = ContentId::new(ContentKind::IndexRoot, b"index-v2");
+        let id_old = ContentId::new(ContentKind::IndexRoot, b"index-old");
+
+        ns.publish_graph_source_index("gs", "main", &id_v1, 10)
             .await
             .unwrap();
 
-        ns.publish_graph_source_index("gs", "main", "index-v2", 20)
+        ns.publish_graph_source_index("gs", "main", &id_v2, 20)
             .await
             .unwrap();
 
         let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
-        assert_eq!(record.index_address, Some("index-v2".to_string()));
+        assert_eq!(record.index_id, Some(id_v2.clone()));
         assert_eq!(record.index_t, 20);
 
         // Lower t should be ignored
-        ns.publish_graph_source_index("gs", "main", "index-old", 15)
+        ns.publish_graph_source_index("gs", "main", &id_old, 15)
             .await
             .unwrap();
 
         let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
-        assert_eq!(record.index_address, Some("index-v2".to_string()));
+        assert_eq!(record.index_id, Some(id_v2));
         assert_eq!(record.index_t, 20);
     }
 
@@ -1055,14 +989,9 @@ mod tests {
     async fn test_memory_graph_source_lookup_any() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit(
-            "ledger:main",
-            1,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("ledger:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
         ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
@@ -1100,30 +1029,25 @@ mod tests {
     #[tokio::test]
     async fn test_ref_get_ref_after_publish() {
         let ns = MemoryNameService::new();
-        ns.publish_commit(
-            "mydb:main",
-            5,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let commit = ns
             .get_ref("mydb:main", RefKind::CommitHead)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(commit.address, Some("commit-1".to_string()));
+        assert_eq!(commit.id, Some(test_commit_id("commit-1")));
         assert_eq!(commit.t, 5);
 
-        // Index should exist but be at t=0 with no address (unborn-like)
+        // Index should exist but be at t=0 with no id (unborn-like)
         let index = ns
             .get_ref("mydb:main", RefKind::IndexHead)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(index.address, None);
+        assert_eq!(index.id, None);
         assert_eq!(index.t, 0);
     }
 
@@ -1132,7 +1056,6 @@ mod tests {
         let ns = MemoryNameService::new();
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-1")),
-            address: Some("commit-1".to_string()),
             t: 1,
         };
 
@@ -1147,25 +1070,19 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(current.address, Some("commit-1".to_string()));
+        assert_eq!(current.id, Some(test_commit_id("commit-1")));
         assert_eq!(current.t, 1);
     }
 
     #[tokio::test]
     async fn test_ref_cas_conflict_already_exists() {
         let ns = MemoryNameService::new();
-        ns.publish_commit(
-            "mydb:main",
-            1,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-2")),
-            address: Some("commit-2".to_string()),
             t: 2,
         };
         // expected=None but record exists → conflict
@@ -1176,7 +1093,7 @@ mod tests {
         match result {
             CasResult::Conflict { actual } => {
                 let a = actual.unwrap();
-                assert_eq!(a.address, Some("commit-1".to_string()));
+                assert_eq!(a.id, Some(test_commit_id("commit-1")));
                 assert_eq!(a.t, 1);
             }
             _ => panic!("expected conflict"),
@@ -1184,25 +1101,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ref_cas_conflict_address_mismatch() {
+    async fn test_ref_cas_conflict_id_mismatch() {
         let ns = MemoryNameService::new();
-        ns.publish_commit(
-            "mydb:main",
-            1,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let expected = RefValue {
-            id: Some(test_commit_id("wrong-address")),
-            address: Some("wrong-address".to_string()),
+            id: Some(test_commit_id("wrong-id")),
             t: 1,
         };
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-2")),
-            address: Some("commit-2".to_string()),
             t: 2,
         };
         let result = ns
@@ -1211,32 +1121,25 @@ mod tests {
             .unwrap();
         match result {
             CasResult::Conflict { actual } => {
-                assert_eq!(actual.unwrap().address, Some("commit-1".to_string()));
+                assert_eq!(actual.unwrap().id, Some(test_commit_id("commit-1")));
             }
             _ => panic!("expected conflict"),
         }
     }
 
     #[tokio::test]
-    async fn test_ref_cas_success_address_matches() {
+    async fn test_ref_cas_success_id_matches() {
         let ns = MemoryNameService::new();
-        ns.publish_commit(
-            "mydb:main",
-            1,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let expected = RefValue {
             id: Some(test_commit_id("commit-1")),
-            address: Some("commit-1".to_string()),
             t: 1,
         };
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-2")),
-            address: Some("commit-2".to_string()),
             t: 2,
         };
         let result = ns
@@ -1250,31 +1153,24 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(current.address, Some("commit-2".to_string()));
+        assert_eq!(current.id, Some(test_commit_id("commit-2")));
         assert_eq!(current.t, 2);
     }
 
     #[tokio::test]
     async fn test_ref_cas_commit_strict_monotonic() {
         let ns = MemoryNameService::new();
-        ns.publish_commit(
-            "mydb:main",
-            5,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let expected = RefValue {
             id: Some(test_commit_id("commit-1")),
-            address: Some("commit-1".to_string()),
             t: 5,
         };
         // Same t should fail (strict for CommitHead)
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-2")),
-            address: Some("commit-2".to_string()),
             t: 5,
         };
         let result = ns
@@ -1289,7 +1185,6 @@ mod tests {
         // Lower t should also fail
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-2")),
-            address: Some("commit-2".to_string()),
             t: 3,
         };
         let result = ns
@@ -1305,27 +1200,20 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_index_allows_equal_t() {
         let ns = MemoryNameService::new();
-        ns.publish_commit(
-            "mydb:main",
-            5,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
-        ns.publish_index("mydb:main", 5, &test_index_id("index-1"), Some("index-1"))
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
+        ns.publish_index("mydb:main", 5, &test_index_id("index-1"))
             .await
             .unwrap();
 
         let expected = RefValue {
             id: Some(test_index_id("index-1")),
-            address: Some("index-1".to_string()),
             t: 5,
         };
         // Same t should succeed for IndexHead (non-strict)
         let new_ref = RefValue {
             id: Some(test_index_id("index-2")),
-            address: Some("index-2".to_string()),
             t: 5,
         };
         let result = ns
@@ -1338,18 +1226,12 @@ mod tests {
     #[tokio::test]
     async fn test_ref_fast_forward_commit_success() {
         let ns = MemoryNameService::new();
-        ns.publish_commit(
-            "mydb:main",
-            1,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-5")),
-            address: Some("commit-5".to_string()),
             t: 5,
         };
         let result = ns
@@ -1369,18 +1251,12 @@ mod tests {
     #[tokio::test]
     async fn test_ref_fast_forward_commit_rejected_stale() {
         let ns = MemoryNameService::new();
-        ns.publish_commit(
-            "mydb:main",
-            10,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 10, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-old")),
-            address: Some("commit-old".to_string()),
             t: 5,
         };
         let result = ns
@@ -1400,12 +1276,10 @@ mod tests {
         let ns = MemoryNameService::new();
         let expected = RefValue {
             id: Some(test_commit_id("commit-1")),
-            address: Some("commit-1".to_string()),
             t: 1,
         };
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-2")),
-            address: Some("commit-2".to_string()),
             t: 2,
         };
         let result = ns
@@ -1430,7 +1304,6 @@ mod tests {
 
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-1")),
-            address: Some("commit-1".to_string()),
             t: 1,
         };
         ns.compare_and_set_ref("mydb:main", RefKind::CommitHead, None, &new_ref)
@@ -1454,27 +1327,17 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_emits_index_event() {
         let ns = MemoryNameService::new();
-        ns.publish_commit(
-            "mydb:main",
-            5,
-            &test_commit_id("commit-1"),
-            Some("commit-1"),
-        )
-        .await
-        .unwrap();
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
         let mut sub = ns
             .subscribe(crate::SubscriptionScope::address("mydb:main"))
             .await
             .unwrap();
 
-        let expected = RefValue {
-            id: None,
-            address: None,
-            t: 0,
-        };
+        let expected = RefValue { id: None, t: 0 };
         let new_ref = RefValue {
             id: Some(test_index_id("index-1")),
-            address: Some("index-1".to_string()),
             t: 5,
         };
         ns.compare_and_set_ref("mydb:main", RefKind::IndexHead, Some(&expected), &new_ref)

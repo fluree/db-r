@@ -125,8 +125,8 @@ fn format_time_spec(alias: &str, spec: &str) -> String {
         // ISO-8601 timestamp
         format!("{alias}:main@iso:{spec}")
     } else {
-        // Assume commit hash
-        format!("{alias}:main@sha:{spec}")
+        // Assume commit CID prefix
+        format!("{alias}:main@commit:{spec}")
     }
 }
 

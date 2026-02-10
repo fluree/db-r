@@ -37,7 +37,7 @@ Approximate nearest neighbor (ANN) search for embeddings:
 - Vector index configuration
 - Embedded HNSW indexes (in-process) or remote via dedicated search service
 - Embedding storage with `@vector` datatype (resolves to `https://ns.flur.ee/db#embeddingVector`)
-- Similarity queries via `db:*` syntax
+- Similarity queries via `f:*` syntax
 - Deployment modes (embedded / remote)
 - Use cases (semantic search, recommendations)
 
@@ -126,7 +126,7 @@ See [BM25](bm25.md) for details.
 
 Similarity search using vector embeddings via HNSW indexes (embedded or remote).
 
-**Important**: Embeddings must be stored with the vector datatype (`@type: "@vector"`, `@type: "db:embeddingVector"`, or full IRI `https://ns.flur.ee/db#embeddingVector`) to preserve array structure.
+**Important**: Embeddings must be stored with the vector datatype (`@type: "@vector"`, `@type: "f:embeddingVector"`, or full IRI `https://ns.flur.ee/db#embeddingVector`) to preserve array structure.
 
 **Creating Index (Rust API):**
 ```rust
@@ -143,12 +143,12 @@ fluree.create_vector_index(config).await?;
   "select": ["?product", "?score"],
   "where": [
     {
-      "db:graphSource": "products-vector:main",
-      "db:queryVector": [0.1, 0.2, ..., 0.9],
-      "db:searchLimit": 10,
-      "db:searchResult": {
-        "db:resultId": "?product",
-        "db:resultScore": "?score"
+      "f:graphSource": "products-vector:main",
+      "f:queryVector": [0.1, 0.2, ..., 0.9],
+      "f:searchLimit": 10,
+      "f:searchResult": {
+        "f:resultId": "?product",
+        "f:resultScore": "?score"
       }
     }
   ]
@@ -281,12 +281,12 @@ Query optimizer handles joins efficiently.
   ],
   "where": [
     {
-      "db:graphSource": "articles-vector:main",
-      "db:queryVector": "?queryVec",
-      "db:searchLimit": 10,
-      "db:searchResult": {
-        "db:resultId": "?article",
-        "db:resultScore": "?vecScore"
+      "f:graphSource": "articles-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 10,
+      "f:searchResult": {
+        "f:resultId": "?article",
+        "f:resultScore": "?vecScore"
       }
     }
   ],
@@ -305,10 +305,10 @@ Query optimizer handles joins efficiently.
       "ex:embedding": "?queryVec"
     },
     {
-      "db:graphSource": "products-vector:main",
-      "db:queryVector": "?queryVec",
-      "db:searchLimit": 5,
-      "db:searchResult": { "db:resultId": "?similar", "db:resultScore": "?vecScore" }
+      "f:graphSource": "products-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 5,
+      "f:searchResult": { "f:resultId": "?similar", "f:resultScore": "?vecScore" }
     }
   ],
   "select": ["?similar", "?vecScore"],
@@ -331,10 +331,10 @@ Combine text and vector search:
     { "@id": "?product", "bm25:matches": "laptop" },
     { "@id": "?product", "bm25:score": "?textScore" },
     {
-      "db:graphSource": "products-vector:main",
-      "db:queryVector": "?queryVec",
-      "db:searchLimit": 100,
-      "db:searchResult": { "db:resultId": "?product", "db:resultScore": "?vecScore" }
+      "f:graphSource": "products-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 100,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?vecScore" }
     }
   ],
   "bind": {

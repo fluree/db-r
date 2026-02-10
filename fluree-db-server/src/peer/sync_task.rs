@@ -93,7 +93,7 @@ impl PeerSyncTask {
                             &graph_source_id,
                             record.index_t,
                             config_hash,
-                            record.index_address.clone(),
+                            record.index_id.as_ref().map(|id| id.to_string()),
                         )
                         .await;
 
@@ -133,10 +133,9 @@ impl PeerSyncTask {
         }
 
         // 2. Fast-forward commit head (if record has a commit)
-        if record.commit_address.is_some() {
+        if record.commit_head_id.is_some() {
             let commit_ref = RefValue {
                 id: record.commit_head_id.clone(),
-                address: record.commit_address.clone(),
                 t: record.commit_t,
             };
             match ns
@@ -213,10 +212,9 @@ impl PeerSyncTask {
         }
 
         // 3. Update index head — read current first, NOT expected=None
-        if record.index_address.is_some() {
+        if record.index_head_id.is_some() {
             let index_ref = RefValue {
                 id: record.index_head_id.clone(),
-                address: record.index_address.clone(),
                 t: record.index_t,
             };
             let current = ns
@@ -263,8 +261,8 @@ impl PeerSyncTask {
                 &record.ledger_id,
                 record.commit_t,
                 record.index_t,
-                record.commit_address.clone(),
-                record.index_address.clone(),
+                record.commit_head_id.as_ref().map(|id| id.to_string()),
+                record.index_head_id.as_ref().map(|id| id.to_string()),
             )
             .await;
 

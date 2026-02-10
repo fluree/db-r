@@ -9,14 +9,14 @@
 //! - transact (capture `receipt.t`)
 //! - `handle.trigger(alias, receipt.t)`
 //! - `completion.wait().await`
-//! - then load `Db` from `root_address` and assert `db.t >= receipt.t`
+//! - then load `Db` from the index root and assert `db.t >= receipt.t`
 
 #![cfg(feature = "native")]
 
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig};
-use fluree_db_core::Db;
+use fluree_db_core::{Db, StorageMethod};
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
 use support::start_background_indexer_local;
@@ -81,20 +81,19 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
 
             // 3) Wait + assert we can load the persisted root
             match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed {
-                    index_t,
-                    root_address,
-                    ..
-                } => {
+                fluree_db_api::IndexOutcome::Completed { index_t, root_id } => {
                     assert!(
                         index_t >= commit_t,
                         "index_t ({index_t}) should be >= commit_t ({commit_t})"
                     );
-                    assert!(
-                        !root_address.is_empty(),
-                        "expected a non-empty root_address after indexing"
-                    );
+                    assert!(root_id.is_some(), "expected a root_id after indexing");
 
+                    let root_address = fluree_db_core::storage::content_address(
+                        fluree.storage().storage_method(),
+                        fluree_db_core::ContentKind::IndexRoot,
+                        "it/index-wait:main",
+                        &root_id.unwrap().digest_hex(),
+                    );
                     let loaded = Db::load(fluree.storage().clone(), &root_address)
                         .await
                         .expect("Db::load(root_address)");

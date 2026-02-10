@@ -163,8 +163,8 @@ impl PeerSubscriptionTask {
                                 &record.ledger_id,
                                 record.commit_t,
                                 record.index_t,
-                                record.commit_address.clone(),
-                                record.index_address.clone(),
+                                record.commit_head_id.clone(),
+                                record.index_head_id.clone(),
                             )
                             .await;
 
@@ -189,7 +189,7 @@ impl PeerSubscriptionTask {
                                 &record.graph_source_id,
                                 record.index_t,
                                 record.config_hash(),
-                                record.index_address.clone(),
+                                record.index_id.clone(),
                             )
                             .await;
 
@@ -374,10 +374,8 @@ fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String>
         ledger_id: record.ledger_id.clone(),
         name,
         branch,
-        commit_address: record.commit_address.clone(),
         commit_head_id,
         commit_t: record.commit_t,
-        index_address: record.index_address.clone(),
         index_head_id,
         index_t: record.index_t,
         default_context: None,

@@ -143,11 +143,11 @@ Graph sources are created through administrative operations, specifying:
 
 ```json
 {
-  "@type": "db:Bm25Index",
-  "db:name": "products-search",
-  "db:branch": "main",
-  "db:sourceLedger": "products:main",
-  "db:config": {
+  "@type": "f:Bm25Index",
+  "f:name": "products-search",
+  "f:branch": "main",
+  "f:sourceLedger": "products:main",
+  "f:config": {
     "k1": 1.2,
     "b": 0.75,
     "fields": ["name", "description"]
@@ -213,7 +213,7 @@ Graph sources are tracked in the nameservice alongside ledgers:
 - **Metadata**: Configuration and status stored in nameservice
 - **Coordination**: Index state tracked separately from source ledgers
 
-**Important**: for graph sources, the nameservice stores only **configuration** and a **head pointer** to the graph source's latest index root/manifest. Snapshot history (if any) lives in graph-source-owned manifests in storage.
+**Important**: for graph sources, the nameservice stores only **configuration** and a **head pointer** (as a ContentId) to the graph source's latest index root/manifest. Snapshot history (if any) lives in graph-source-owned manifests in the content store.
 
 ### Query Execution
 
@@ -256,7 +256,7 @@ WHERE {
 ORDER BY DESC(?textScore + ?vectorScore)
 ```
 
-Vector/HNSW graph sources are currently queried via JSON-LD Query using `db:*` patterns (e.g. `db:graphSource`, `db:queryVector`, `db:searchResult`). SPARQL query syntax for HNSW vector indexes is not currently available.
+Vector/HNSW graph sources are currently queried via JSON-LD Query using `f:*` patterns (e.g. `f:graphSource`, `f:queryVector`, `f:searchResult`). SPARQL query syntax for HNSW vector indexes is not currently available.
 
 Example (JSON-LD Query):
 
@@ -264,7 +264,7 @@ Example (JSON-LD Query):
 {
   "@context": {
     "ex": "http://example.org/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "from": ["products:main", "products-search:main"],
   "select": ["?product", "?textScore", "?vectorScore"],
@@ -277,10 +277,10 @@ Example (JSON-LD Query):
     { "@id": "?product", "bm25:matches": "wireless" },
     { "@id": "?product", "bm25:score": "?textScore" },
     {
-      "db:graphSource": "products-vector:main",
-      "db:queryVector": "?queryVec",
-      "db:searchLimit": 10,
-      "db:searchResult": { "db:resultId": "?product", "db:resultScore": "?vectorScore" }
+      "f:graphSource": "products-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 10,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?vectorScore" }
     }
   ],
   "orderBy": [["desc", "(?textScore + ?vectorScore)"]]
@@ -324,7 +324,7 @@ WHERE {
 }
 ```
 
-Semantic similarity via HNSW vector indexes is currently queried via JSON-LD Query using `db:*` patterns. SPARQL syntax for vector index search is not currently available.
+Semantic similarity via HNSW vector indexes is currently queried via JSON-LD Query using `f:*` patterns. SPARQL syntax for vector index search is not currently available.
 
 ## Best Practices
 

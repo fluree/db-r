@@ -11,7 +11,7 @@ use std::path::Path;
 /// Accepts:
 /// - Integer → `TimeSpec::AtT(n)`
 /// - ISO-8601 datetime string (contains `-` and `:`) → `TimeSpec::AtTime(s)`
-/// - Otherwise → `TimeSpec::AtCommit(s)` (commit hash prefix)
+/// - Otherwise → `TimeSpec::AtCommit(s)` (commit CID prefix)
 pub fn parse_time_spec(at: &str) -> fluree_db_api::TimeSpec {
     if let Ok(t) = at.parse::<i64>() {
         fluree_db_api::TimeSpec::at_t(t)
@@ -19,7 +19,7 @@ pub fn parse_time_spec(at: &str) -> fluree_db_api::TimeSpec {
         // Looks like ISO-8601 timestamp (e.g., "2024-01-15T10:30:00Z")
         fluree_db_api::TimeSpec::at_time(at.to_string())
     } else {
-        // Treat as commit hash prefix
+        // Treat as commit CID prefix
         fluree_db_api::TimeSpec::at_commit(at.to_string())
     }
 }

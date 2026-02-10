@@ -166,14 +166,14 @@ async fn localstack_s3_and_dynamodb_smoke() {
         .expect("publish_ledger_init should succeed");
 
     // Publish commit head
-    let commit_addr = "fluree:s3://mydb/main/commit/1.fcv2";
-    aws.publish_commit(alias, 1, &test_commit_id("commit:1"), Some(commit_addr))
+    let commit_id = test_commit_id("commit:1");
+    aws.publish_commit(alias, 1, &commit_id)
         .await
         .expect("publish_commit should succeed");
 
     // Publish index head
-    let index_addr = "fluree:s3://mydb/main/index/root.json";
-    aws.publish_index(alias, 1, &test_index_id("index:1"), Some(index_addr))
+    let index_id = test_index_id("index:1");
+    aws.publish_index(alias, 1, &index_id)
         .await
         .expect("publish_index should succeed");
 
@@ -183,18 +183,18 @@ async fn localstack_s3_and_dynamodb_smoke() {
         .await
         .expect("lookup should succeed")
         .expect("record should exist after publish");
-    assert_eq!(record.commit_address.as_deref(), Some(commit_addr));
-    assert_eq!(record.index_address.as_deref(), Some(index_addr));
+    assert_eq!(record.commit_head_id.as_ref(), Some(&commit_id));
+    assert_eq!(record.index_head_id.as_ref(), Some(&index_id));
     assert_eq!(record.index_t, 1);
 
     // Monotonic: older t should be silently ignored
-    aws.publish_commit(alias, 0, &test_commit_id("old-addr"), Some("old-addr"))
+    aws.publish_commit(alias, 0, &test_commit_id("old-commit"))
         .await
         .expect("stale commit publish should succeed (no-op)");
     let record2 = aws.lookup(alias).await.expect("lookup").expect("exists");
     assert_eq!(
-        record2.commit_address.as_deref(),
-        Some(commit_addr),
+        record2.commit_head_id.as_ref(),
+        Some(&commit_id),
         "stale publish should not overwrite"
     );
 
@@ -284,16 +284,14 @@ async fn nameservice_ledger_lifecycle() {
 
     // ── publish_commit on uninitialized alias → error ──────────────────────
     let err = ns
-        .publish_commit(alias, 1, &test_commit_id("commit:1"), Some("commit:1"))
+        .publish_commit(alias, 1, &test_commit_id("commit:1"))
         .await;
     assert!(
         err.is_err(),
         "publish_commit on uninitialized alias should fail"
     );
 
-    let err = ns
-        .publish_index(alias, 1, &test_index_id("index:1"), Some("index:1"))
-        .await;
+    let err = ns.publish_index(alias, 1, &test_index_id("index:1")).await;
     assert!(
         err.is_err(),
         "publish_index on uninitialized alias should fail"
@@ -310,8 +308,8 @@ async fn nameservice_ledger_lifecycle() {
         "name is the ledger-name-only part"
     );
     assert_eq!(rec.branch, "main");
-    assert!(rec.commit_address.is_none());
-    assert!(rec.index_address.is_none());
+    assert!(rec.commit_head_id.is_none());
+    assert!(rec.index_head_id.is_none());
     assert_eq!(rec.index_t, 0);
 
     // Double init → should succeed (idempotent or conflict suppressed)
@@ -324,39 +322,35 @@ async fn nameservice_ledger_lifecycle() {
     );
 
     // ── publish_commit + publish_index ─────────────────────────────────────
-    ns.publish_commit(alias, 1, &test_commit_id("commit:1"), Some("commit:1"))
-        .await
-        .unwrap();
-    ns.publish_index(alias, 1, &test_index_id("index:1"), Some("index:1"))
-        .await
-        .unwrap();
+    let commit_id_1 = test_commit_id("commit:1");
+    let index_id_1 = test_index_id("index:1");
+    ns.publish_commit(alias, 1, &commit_id_1).await.unwrap();
+    ns.publish_index(alias, 1, &index_id_1).await.unwrap();
 
     let rec = ns.lookup(alias).await.unwrap().unwrap();
-    assert_eq!(rec.commit_address.as_deref(), Some("commit:1"));
-    assert_eq!(rec.index_address.as_deref(), Some("index:1"));
+    assert_eq!(rec.commit_head_id.as_ref(), Some(&commit_id_1));
+    assert_eq!(rec.index_head_id.as_ref(), Some(&index_id_1));
     assert_eq!(rec.index_t, 1);
 
     // Monotonic: stale commit/index silently ignored
-    ns.publish_commit(alias, 0, &test_commit_id("stale:0"), Some("stale:0"))
+    ns.publish_commit(alias, 0, &test_commit_id("stale:0"))
         .await
         .unwrap();
-    ns.publish_index(alias, 0, &test_index_id("stale:0"), Some("stale:0"))
+    ns.publish_index(alias, 0, &test_index_id("stale:0"))
         .await
         .unwrap();
     let rec = ns.lookup(alias).await.unwrap().unwrap();
-    assert_eq!(rec.commit_address.as_deref(), Some("commit:1"));
-    assert_eq!(rec.index_address.as_deref(), Some("index:1"));
+    assert_eq!(rec.commit_head_id.as_ref(), Some(&commit_id_1));
+    assert_eq!(rec.index_head_id.as_ref(), Some(&index_id_1));
 
     // Advance
-    ns.publish_commit(alias, 2, &test_commit_id("commit:2"), Some("commit:2"))
-        .await
-        .unwrap();
-    ns.publish_index(alias, 2, &test_index_id("index:2"), Some("index:2"))
-        .await
-        .unwrap();
+    let commit_id_2 = test_commit_id("commit:2");
+    let index_id_2 = test_index_id("index:2");
+    ns.publish_commit(alias, 2, &commit_id_2).await.unwrap();
+    ns.publish_index(alias, 2, &index_id_2).await.unwrap();
     let rec = ns.lookup(alias).await.unwrap().unwrap();
-    assert_eq!(rec.commit_address.as_deref(), Some("commit:2"));
-    assert_eq!(rec.index_address.as_deref(), Some("index:2"));
+    assert_eq!(rec.commit_head_id.as_ref(), Some(&commit_id_2));
+    assert_eq!(rec.index_head_id.as_ref(), Some(&index_id_2));
     assert_eq!(rec.index_t, 2);
 
     // ── all_records() ──────────────────────────────────────────────────────
@@ -380,35 +374,30 @@ async fn nameservice_admin_publisher() {
 
     let alias = "admin-test:main";
     ns.publish_ledger_init(alias).await.unwrap();
-    ns.publish_index(alias, 5, &test_index_id("index:5"), Some("index:5"))
-        .await
-        .unwrap();
+    let index_id_5 = test_index_id("index:5");
+    ns.publish_index(alias, 5, &index_id_5).await.unwrap();
 
     // AdminPublisher: publish_index_allow_equal — same t succeeds
-    ns.publish_index_allow_equal(
-        alias,
-        5,
-        &test_index_id("index:5-rebuild"),
-        Some("index:5-rebuild"),
-    )
-    .await
-    .unwrap();
+    let index_id_5_rebuild = test_index_id("index:5-rebuild");
+    ns.publish_index_allow_equal(alias, 5, &index_id_5_rebuild)
+        .await
+        .unwrap();
     let rec = ns.lookup(alias).await.unwrap().unwrap();
     assert_eq!(
-        rec.index_address.as_deref(),
-        Some("index:5-rebuild"),
+        rec.index_head_id.as_ref(),
+        Some(&index_id_5_rebuild),
         "allow_equal should overwrite at same t"
     );
     assert_eq!(rec.index_t, 5);
 
     // Still rejects lower t
-    ns.publish_index_allow_equal(alias, 3, &test_index_id("stale:3"), Some("stale:3"))
+    ns.publish_index_allow_equal(alias, 3, &test_index_id("stale:3"))
         .await
         .unwrap();
     let rec = ns.lookup(alias).await.unwrap().unwrap();
     assert_eq!(
-        rec.index_address.as_deref(),
-        Some("index:5-rebuild"),
+        rec.index_head_id.as_ref(),
+        Some(&index_id_5_rebuild),
         "allow_equal should reject lower t"
     );
 }
@@ -428,19 +417,19 @@ async fn nameservice_ref_publisher() {
 
     ns.publish_ledger_init(alias).await.unwrap();
 
-    // get_ref after init → unborn (address=None, t=0)
+    // get_ref after init → unborn (id=None, t=0)
     let ref_val = ns
         .get_ref(alias, RefKind::CommitHead)
         .await
         .unwrap()
         .expect("exists after init");
-    assert!(ref_val.address.is_none());
+    assert!(ref_val.id.is_none());
     assert_eq!(ref_val.t, 0);
 
     // CAS: unborn → first commit
+    let commit_id_1 = test_commit_id("commit:1");
     let new_ref = RefValue {
-        id: None,
-        address: Some("commit:1".to_string()),
+        id: Some(commit_id_1.clone()),
         t: 1,
     };
     let result = ns
@@ -458,13 +447,13 @@ async fn nameservice_ref_publisher() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(ref_val.address.as_deref(), Some("commit:1"));
+    assert_eq!(ref_val.id.as_ref(), Some(&commit_id_1));
     assert_eq!(ref_val.t, 1);
 
     // CAS: commit:1 → commit:2
+    let commit_id_2 = test_commit_id("commit:2");
     let new_ref2 = RefValue {
-        id: None,
-        address: Some("commit:2".to_string()),
+        id: Some(commit_id_2.clone()),
         t: 2,
     };
     let result = ns
@@ -475,13 +464,12 @@ async fn nameservice_ref_publisher() {
 
     // CAS with stale expected → Conflict
     let stale_expected = RefValue {
-        id: None,
-        address: Some("commit:1".to_string()),
+        id: Some(commit_id_1.clone()),
         t: 1,
     };
+    let commit_id_3 = test_commit_id("commit:3");
     let new_ref3 = RefValue {
-        id: None,
-        address: Some("commit:3".to_string()),
+        id: Some(commit_id_3),
         t: 3,
     };
     let result = ns
@@ -501,12 +489,12 @@ async fn nameservice_ref_publisher() {
         .await
         .unwrap()
         .unwrap();
-    assert!(idx_ref.address.is_none());
+    assert!(idx_ref.id.is_none());
     assert_eq!(idx_ref.t, 0);
 
+    let index_id_1 = test_index_id("index:1");
     let new_idx = RefValue {
-        id: None,
-        address: Some("index:1".to_string()),
+        id: Some(index_id_1),
         t: 1,
     };
     let result = ns
@@ -519,9 +507,9 @@ async fn nameservice_ref_publisher() {
     let new_alias = "cas-create-test:main";
     assert!(ns.lookup(new_alias).await.unwrap().is_none());
 
+    let create_commit_id = test_commit_id("create-commit:1");
     let create_ref = RefValue {
-        id: None,
-        address: Some("commit:1".to_string()),
+        id: Some(create_commit_id.clone()),
         t: 1,
     };
     let result = ns
@@ -539,13 +527,12 @@ async fn nameservice_ref_publisher() {
         .await
         .unwrap()
         .expect("ledger should exist after CAS create");
-    assert_eq!(rec.commit_address.as_deref(), Some("commit:1"));
+    assert_eq!(rec.commit_head_id.as_ref(), Some(&create_commit_id));
     assert_eq!(rec.index_t, 0, "index should be unborn");
 
     // CAS expected=None on existing alias → Conflict
     let create_ref2 = RefValue {
-        id: None,
-        address: Some("commit:99".to_string()),
+        id: Some(test_commit_id("commit:99")),
         t: 99,
     };
     let result = ns
@@ -694,11 +681,12 @@ async fn nameservice_graph_source_publisher() {
     assert!(matches!(gs.source_type, GraphSourceType::Bm25));
     assert_eq!(gs.config, r#"{"analyzer":"english"}"#);
     assert_eq!(gs.dependencies, vec!["source-ledger:main".to_string()]);
-    assert!(gs.index_address.is_none());
+    assert!(gs.index_id.is_none());
     assert_eq!(gs.index_t, 0);
 
     // publish_graph_source_index
-    ns.publish_graph_source_index("search-bm25", "main", "gs-index:1", 1)
+    let gs_index_id_1 = test_index_id("gs-index:1");
+    ns.publish_graph_source_index("search-bm25", "main", &gs_index_id_1, 1)
         .await
         .unwrap();
     let gs = ns
@@ -706,11 +694,11 @@ async fn nameservice_graph_source_publisher() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(gs.index_address.as_deref(), Some("gs-index:1"));
+    assert_eq!(gs.index_id.as_ref(), Some(&gs_index_id_1));
     assert_eq!(gs.index_t, 1);
 
     // Monotonic: stale index ignored
-    ns.publish_graph_source_index("search-bm25", "main", "stale:0", 0)
+    ns.publish_graph_source_index("search-bm25", "main", &test_index_id("stale:0"), 0)
         .await
         .unwrap();
     let gs = ns
@@ -718,7 +706,7 @@ async fn nameservice_graph_source_publisher() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(gs.index_address.as_deref(), Some("gs-index:1"));
+    assert_eq!(gs.index_id.as_ref(), Some(&gs_index_id_1));
 
     // lookup_any → ledger or graph source
     let any = ns.lookup_any(graph_source_id).await.unwrap();
@@ -773,5 +761,5 @@ async fn nameservice_graph_source_publisher() {
         .unwrap();
     assert_eq!(gs.config, r#"{"analyzer":"english_v2"}"#);
     // Index should be preserved from before retraction
-    assert_eq!(gs.index_address.as_deref(), Some("gs-index:1"));
+    assert_eq!(gs.index_id.as_ref(), Some(&gs_index_id_1));
 }

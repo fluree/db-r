@@ -63,7 +63,7 @@ Committed t=1 (42 flakes)
 With verbose mode:
 ```
 Committed t=1 (42 flakes)
-Address: fluree:file://storage/mydb/commit/abc123...
+Commit ID: bafybeig...
 ```
 
 ## Data Format Detection

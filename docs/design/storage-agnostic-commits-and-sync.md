@@ -1,8 +1,8 @@
-# Storage-agnostic commits and sync (design note)
+# Storage-agnostic commits and sync
 
-This repo’s current implementation historically used storage addresses (e.g., `fluree:s3://...`, `fluree:file://...`) inside commit chains and nameservice refs, which couples replication to a specific backend.
+Fluree uses **ContentId** (CIDv1) values as the primary identifiers for commits, index roots, and other immutable artifacts. This decouples the commit chain and nameservice references from any specific storage backend, enabling replication across different storage systems (filesystem, S3, IPFS, etc.) without rewriting commit data.
 
-For the “architecturally right” design that makes commits **purely content-addressed** (IDs only), supports shared backends like **IPFS** without rewriting, and enables pluggable nameservices including **Ethereum**, see the full design document in the repo root:
+For the full design document, see:
 
-- `STORAGE_AGNOSTIC_COMMITS_AND_SYNC.md`
+- `STORAGE_AGNOSTIC_COMMITS_AND_SYNC.md` (repo root)
 

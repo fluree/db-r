@@ -15,8 +15,8 @@ pub enum AliasTimeSpec {
     AtT(i64),
     /// @iso:<timestamp>
     AtIso(String),
-    /// @sha:<commit>
-    AtSha(String),
+    /// @commit:<cid>
+    AtCommit(String),
 }
 
 /// Parsed alias parts with optional time-travel spec.
@@ -83,7 +83,7 @@ pub fn format_alias(name: &str, branch: &str) -> String {
     format!("{}:{}", name, branch)
 }
 
-/// Parse a ledger alias with optional `@t:`, `@iso:`, or `@sha:` time-travel suffix.
+/// Parse a ledger alias with optional `@t:`, `@iso:`, or `@commit:` time-travel suffix.
 pub fn parse_alias_with_time(alias: &str) -> Result<ParsedAlias, AliasParseError> {
     let (base, time) = split_time_travel_suffix(alias)?;
 
@@ -94,7 +94,7 @@ pub fn parse_alias_with_time(alias: &str) -> Result<ParsedAlias, AliasParseError
 
 /// Split an alias string into its base and optional time-travel suffix.
 ///
-/// This does not interpret `:`; it only handles `@t:`, `@iso:`, and `@sha:`.
+/// This does not interpret `:`; it only handles `@t:`, `@iso:`, and `@commit:`.
 pub fn split_time_travel_suffix(
     alias: &str,
 ) -> Result<(String, Option<AliasTimeSpec>), AliasParseError> {
@@ -121,19 +121,19 @@ pub fn split_time_travel_suffix(
                 return Err(AliasParseError::new("Missing value after '@iso:'"));
             }
             Some(AliasTimeSpec::AtIso(val.to_string()))
-        } else if let Some(val) = time_str.strip_prefix("sha:") {
+        } else if let Some(val) = time_str.strip_prefix("commit:") {
             if val.is_empty() {
-                return Err(AliasParseError::new("Missing value after '@sha:'"));
+                return Err(AliasParseError::new("Missing value after '@commit:'"));
             }
             if val.len() < 6 {
                 return Err(AliasParseError::new(
-                    "SHA prefix must be at least 6 characters",
+                    "Commit prefix must be at least 6 characters",
                 ));
             }
-            Some(AliasTimeSpec::AtSha(val.to_string()))
+            Some(AliasTimeSpec::AtCommit(val.to_string()))
         } else {
             return Err(AliasParseError::new(format!(
-                "Invalid time travel format: '{}'. Expected @t:, @iso:, or @sha: prefix",
+                "Invalid time travel format: '{}'. Expected @t:, @iso:, or @commit: prefix",
                 time_str
             )));
         };
@@ -179,10 +179,10 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_with_time_sha() {
-        let parsed = parse_alias_with_time("ledger@sha:abc123").unwrap();
+    fn test_parse_alias_with_time_commit() {
+        let parsed = parse_alias_with_time("ledger@commit:abc123").unwrap();
         assert_eq!(parsed.name, "ledger");
         assert_eq!(parsed.branch, DEFAULT_BRANCH);
-        assert!(matches!(parsed.time, Some(AliasTimeSpec::AtSha(_))));
+        assert!(matches!(parsed.time, Some(AliasTimeSpec::AtCommit(_))));
     }
 }

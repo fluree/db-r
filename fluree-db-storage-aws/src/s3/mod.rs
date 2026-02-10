@@ -316,6 +316,12 @@ impl StorageWrite for S3Storage {
     }
 }
 
+impl fluree_db_core::StorageMethod for S3Storage {
+    fn storage_method(&self) -> &str {
+        "s3"
+    }
+}
+
 #[async_trait]
 impl ContentAddressedWrite for S3Storage {
     async fn content_write_bytes_with_hash(

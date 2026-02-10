@@ -137,24 +137,20 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         let dt_iri = self.expand_iri(datatype)?;
 
         match dt_iri.as_str() {
-            "http://www.w3.org/2001/XMLSchema#string" => Ok(FlakeValue::String(value.to_string())),
-            "http://www.w3.org/2001/XMLSchema#integer"
-            | "http://www.w3.org/2001/XMLSchema#int"
-            | "http://www.w3.org/2001/XMLSchema#long" => {
+            xsd::STRING => Ok(FlakeValue::String(value.to_string())),
+            xsd::INTEGER | xsd::INT | xsd::LONG => {
                 let i: i64 = value
                     .parse()
                     .map_err(|_| LowerError::invalid_integer(value, datatype.span))?;
                 Ok(FlakeValue::Long(i))
             }
-            "http://www.w3.org/2001/XMLSchema#decimal"
-            | "http://www.w3.org/2001/XMLSchema#double"
-            | "http://www.w3.org/2001/XMLSchema#float" => {
+            xsd::DECIMAL | xsd::DOUBLE | xsd::FLOAT => {
                 let d: f64 = value
                     .parse()
                     .map_err(|_| LowerError::invalid_decimal(value, datatype.span))?;
                 Ok(FlakeValue::Double(d))
             }
-            "http://www.w3.org/2001/XMLSchema#boolean" => {
+            xsd::BOOLEAN => {
                 let b = value == "true" || value == "1";
                 Ok(FlakeValue::Boolean(b))
             }

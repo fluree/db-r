@@ -18,7 +18,7 @@ fluree pull [LEDGER]
 
 Downloads commit blobs from the configured upstream remote and applies them to the local ledger:
 
-1. Queries the remote for its current head (`t` and commit address)
+1. Queries the remote for its current head (`t` and commit ContentId)
 2. Compares with the local head
 3. Fetches commit pages (newest → oldest) until local history is reached
 4. Filters and reorders commits (oldest → newest)
@@ -66,10 +66,6 @@ error: no upstream configured for 'mydb:main'
 | No upstream configured | Run `fluree upstream set <ledger> <remote>` first |
 | Ancestry mismatch | Remote chain does not descend from local head (histories diverged) |
 | Import validation failure | Commit chain or retraction invariant violation |
-
-## Limitations
-
-- **Same storage backend required:** Client and server must use the same storage method (both `file`, both `s3`, etc.). Cross-backend pull (e.g., server on S3, client on file) is not yet supported.
 
 ## See Also
 

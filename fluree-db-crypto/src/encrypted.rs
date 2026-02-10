@@ -210,6 +210,16 @@ impl<S: Clone, K> Clone for EncryptedStorage<S, K> {
 // Storage Trait Implementations
 // ============================================================================
 
+impl<S, K> fluree_db_core::StorageMethod for EncryptedStorage<S, K>
+where
+    S: fluree_db_core::StorageMethod,
+    K: KeyProvider,
+{
+    fn storage_method(&self) -> &str {
+        self.inner.storage_method()
+    }
+}
+
 #[async_trait]
 impl<S, K> StorageRead for EncryptedStorage<S, K>
 where

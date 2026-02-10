@@ -204,7 +204,7 @@ Signed transactions include author information in commit metadata:
 {
   "t": 42,
   "timestamp": "2024-01-22T10:30:00Z",
-  "commit_sha": "abc123...",
+  "commit_id": "bafybeig...commitT42",
   "author": "did:key:z6Mkh...",
   "signature": "z58DAdFfa9...",
   "flakes_added": 3,
@@ -215,13 +215,13 @@ Signed transactions include author information in commit metadata:
 Query provenance:
 
 ```sparql
-PREFIX db: <https://ns.flur.ee/db#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?t ?author ?timestamp
 WHERE {
-  ?commit db:t ?t ;
-          db:author ?author ;
-          db:timestamp ?timestamp .
+  ?commit f:t ?t ;
+          f:author ?author ;
+          f:timestamp ?timestamp .
 }
 ORDER BY DESC(?t)
 ```
@@ -234,14 +234,14 @@ Use signed transaction author for authorization:
 {
   "@context": {
     "ex": "http://example.org/ns/",
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "@id": "ex:admin-policy",
-  "db:policy": [
+  "f:policy": [
     {
-      "db:subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-      "db:action": "transact",
-      "db:allow": true
+      "f:subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+      "f:action": "transact",
+      "f:allow": true
     }
   ]
 }
@@ -460,10 +460,10 @@ Signed transactions provide complete audit trail:
 ```sparql
 SELECT ?t ?author ?timestamp ?action
 WHERE {
-  ?commit db:t ?t ;
-          db:author ?author ;
-          db:timestamp ?timestamp .
-  ?commit db:assert ?assertion .
+  ?commit f:t ?t ;
+          f:author ?author ;
+          f:timestamp ?timestamp .
+  ?commit f:assert ?assertion .
   ?assertion ?predicate ?object .
 }
 ORDER BY DESC(?t)

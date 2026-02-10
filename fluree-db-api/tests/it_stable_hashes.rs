@@ -141,16 +141,15 @@ async fn commit_id_consistent_within_session() {
 
     let result = fluree.update(ledger0, &tx).await.expect("insert");
     let commit_id = result.receipt.commit_id.clone();
-    let address = result.receipt.address.clone();
 
     // Reload the ledger from the same Fluree instance
     let reloaded = fluree.ledger(alias).await.expect("reload ledger");
 
-    // The head commit address should match what we got from the transaction
+    // The head commit CID should match what we got from the transaction
     assert_eq!(
-        reloaded.head_commit.as_ref(),
-        address.as_ref(),
-        "reloaded ledger should have the same head commit address"
+        reloaded.head_commit_id.as_ref(),
+        Some(&commit_id),
+        "reloaded ledger should have the same head commit CID"
     );
 
     // Verify the commit ID format is still valid after reload

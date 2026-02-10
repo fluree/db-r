@@ -9,7 +9,7 @@ mod support;
 use fluree_db_api::{
     tx::IndexingMode, CommitOpts, FlureeBuilder, IndexConfig, LedgerState, Novelty,
 };
-use fluree_db_core::Db;
+use fluree_db_core::{Db, StorageMethod};
 use fluree_db_transact::TxnOpts;
 use serde_json::json;
 use support::start_background_indexer_local;
@@ -23,14 +23,23 @@ async fn index_and_load_db(
     ledger: LedgerState<fluree_db_core::MemoryStorage>,
     t: i64,
 ) -> LedgerState<fluree_db_core::MemoryStorage> {
+    let ledger_id = ledger.ledger_id().to_string();
     let completion = handle.trigger(ledger.ledger_id(), t).await;
-    let root = match completion.wait().await {
-        fluree_db_api::IndexOutcome::Completed { root_address, .. } => root_address,
+    let root_id = match completion.wait().await {
+        fluree_db_api::IndexOutcome::Completed { root_id, .. } => {
+            root_id.expect("expected root_id after indexing")
+        }
         fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
         fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
     };
 
-    let loaded = Db::load(fluree.storage().clone(), &root)
+    let root_address = fluree_db_core::storage::content_address(
+        fluree.storage().storage_method(),
+        fluree_db_core::ContentKind::IndexRoot,
+        &ledger_id,
+        &root_id.digest_hex(),
+    );
+    let loaded = Db::load(fluree.storage().clone(), &root_address)
         .await
         .expect("Db::load(root)");
     LedgerState::new(loaded, Novelty::new(0))

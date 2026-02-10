@@ -74,13 +74,8 @@ pub struct NsRecord {
     /// Branch name (e.g., "main")
     pub branch: String,
 
-    /// Latest commit address (transitional storage location hint).
-    /// Used by read paths that still require `storage.read_bytes(address)`.
-    /// Will be removed once ContentStore is the primary interface.
-    pub commit_address: Option<String>,
-
-    /// Content identifier for the head commit (primary identity).
-    /// When present, this is the authoritative identity for CAS comparisons
+    /// Content identifier for the head commit.
+    /// This is the authoritative identity for CAS comparisons
     /// and commit-chain integrity checks.
     #[serde(default)]
     pub commit_head_id: Option<ContentId>,
@@ -88,13 +83,8 @@ pub struct NsRecord {
     /// Transaction time of latest commit
     pub commit_t: i64,
 
-    /// Latest index address (transitional storage location hint).
-    /// Used by read paths that still require `storage.read_bytes(address)`.
-    /// Will be removed once ContentStore is the primary interface.
-    pub index_address: Option<String>,
-
-    /// Content identifier for the head index root (primary identity).
-    /// When present, this is the authoritative identity for index lookups.
+    /// Content identifier for the head index root.
+    /// This is the authoritative identity for index lookups.
     #[serde(default)]
     pub index_head_id: Option<ContentId>,
 
@@ -119,10 +109,8 @@ impl NsRecord {
             ledger_id,
             name,
             branch,
-            commit_address: None,
             commit_head_id: None,
             commit_t: 0,
-            index_address: None,
             index_head_id: None,
             index_t: 0,
             default_context: None,
@@ -132,7 +120,7 @@ impl NsRecord {
 
     /// Check if this record has an index
     pub fn has_index(&self) -> bool {
-        self.index_address.is_some()
+        self.index_head_id.is_some()
     }
 
     /// Check if there are commits newer than the index
@@ -266,8 +254,8 @@ pub struct GraphSourceRecord {
     /// Dependent ledger IDs (e.g., ["source-ledger:main"])
     pub dependencies: Vec<String>,
 
-    /// Index snapshot address (if any)
-    pub index_address: Option<String>,
+    /// Content identifier for the index snapshot (if any)
+    pub index_id: Option<ContentId>,
 
     /// Index watermark (transaction time of indexed data)
     pub index_t: i64,
@@ -296,7 +284,7 @@ impl GraphSourceRecord {
             source_type,
             config: config.into(),
             dependencies,
-            index_address: None,
+            index_id: None,
             index_t: 0,
             retracted: false,
         }
@@ -314,7 +302,7 @@ impl GraphSourceRecord {
 
     /// Check if this graph source has an index
     pub fn has_index(&self) -> bool {
-        self.index_address.is_some()
+        self.index_id.is_some()
     }
 }
 
@@ -369,24 +357,17 @@ pub trait Publisher: Debug + Send + Sync {
     ///
     /// Only updates if: `(not exists) OR (new_t > existing_t)`
     ///
-    /// `commit_id` is the primary identity (ContentId). `address_hint` is an optional
-    /// transitional storage location for backends that still use address-based reads.
-    ///
     /// This is called by the transactor after each successful commit.
     async fn publish_commit(
         &self,
         ledger_id: &str,
         commit_t: i64,
         commit_id: &ContentId,
-        address_hint: Option<&str>,
     ) -> Result<()>;
 
     /// Publish a new index
     ///
     /// Only updates if: `(not exists) OR (new_t > existing_t)` - STRICTLY monotonic.
-    ///
-    /// `index_id` is the primary identity (ContentId). `address_hint` is an optional
-    /// transitional storage location for backends that still use address-based reads.
     ///
     /// This is called by the indexer after successfully writing new index roots.
     /// The index is published to a separate file/attribute to avoid contention
@@ -398,7 +379,6 @@ pub trait Publisher: Debug + Send + Sync {
         ledger_id: &str,
         index_t: i64,
         index_id: &ContentId,
-        address_hint: Option<&str>,
     ) -> Result<()>;
 
     /// Retract a ledger
@@ -424,10 +404,7 @@ pub trait AdminPublisher: Publisher {
     ///
     /// Unlike `publish_index()` which enforces strict monotonicity (new_t > existing_t),
     /// this method allows overwriting when t == existing_t. This is needed for admin
-    /// operations like `reindex()` where we rebuild to the same t with a new root address.
-    ///
-    /// `index_id` is the primary identity (ContentId). `address_hint` is an optional
-    /// transitional storage location.
+    /// operations like `reindex()` where we rebuild to the same t with a new root.
     ///
     /// Note: This does NOT allow t < existing_t to preserve invariants for time-travel
     /// and snapshot history.
@@ -436,7 +413,6 @@ pub trait AdminPublisher: Publisher {
         ledger_id: &str,
         index_t: i64,
         index_id: &ContentId,
-        address_hint: Option<&str>,
     ) -> Result<()>;
 }
 
@@ -461,7 +437,7 @@ pub trait GraphSourcePublisher: Debug + Send + Sync {
         dependencies: &[String],
     ) -> Result<()>;
 
-    /// Update graph source index address (head pointer)
+    /// Update graph source index head pointer
     ///
     /// Only updates if: `new_index_t > existing_index_t` (strictly monotonic).
     ///
@@ -474,7 +450,7 @@ pub trait GraphSourcePublisher: Debug + Send + Sync {
         &self,
         name: &str,
         branch: &str,
-        index_addr: &str,
+        index_id: &ContentId,
         index_t: i64,
     ) -> Result<()>;
 
@@ -564,7 +540,7 @@ pub enum NameServiceEvent {
     /// A graph source index head pointer was advanced.
     GraphSourceIndexPublished {
         address: String,
-        index_address: String,
+        index_id: ContentId,
         index_t: i64,
     },
     /// A graph source was retracted.
@@ -615,27 +591,17 @@ pub enum RefKind {
     IndexHead,
 }
 
-/// A ref value: identity + optional address + transaction-time watermark.
-///
-/// **Priority rule**: If `id` is present, it is the authoritative identity for CAS
-/// comparisons. `address` is a best-effort location hint for storage backends that
-/// still use address-based reads. All RefPublisher implementations must compare `id`
-/// fields when both sides have them.
+/// A ref value: identity + transaction-time watermark.
 ///
 /// Semantics when returned from [`RefPublisher::get_ref`]:
-/// - `Some(RefValue { id: None, address: None, t: 0 })` — ref exists but is "unborn"
+/// - `Some(RefValue { id: None, t: 0 })` — ref exists but is "unborn"
 ///   (ledger initialised, no commit yet — analogous to git's unborn HEAD).
 /// - `Some(RefValue { id: Some(..), .. })` — ref exists with a CID identity.
 /// - `None` (at the `Option` level) — ledger ID/ref is completely unknown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefValue {
     /// Content identifier — the **identity** of the referenced object.
-    /// When present, this is the authoritative comparison key for CAS operations.
     pub id: Option<ContentId>,
-    /// Storage address — transitional location hint for the current backend.
-    /// Used by read paths that still require `storage.read_bytes(address)`.
-    /// Will be removed once ContentStore is the primary interface.
-    pub address: Option<String>,
     /// Monotonic watermark (transaction time).
     pub t: i64,
 }
@@ -656,8 +622,7 @@ pub enum CasResult {
 
 /// Explicit ref-level CAS operations for sync.
 ///
-/// CAS compares on **identity** — preferring `id` (ContentId) when both sides
-/// have it, falling back to `address` comparison otherwise. `t` serves as a
+/// CAS compares on **identity** via `id` (ContentId). `t` serves as a
 /// **kind-dependent monotonic guard**:
 ///
 /// | Kind         | Guard             | Rationale                          |
@@ -673,14 +638,14 @@ pub trait RefPublisher: Debug + Send + Sync {
     /// Read the current ref value for a ledger ID + kind.
     ///
     /// Returns:
-    /// - `Some(RefValue { address: None, .. })` — ref exists, unborn
-    /// - `Some(RefValue { address: Some(..), .. })` — ref exists with value
+    /// - `Some(RefValue { id: None, t: 0 })` — ref exists, unborn
+    /// - `Some(RefValue { id: Some(..), .. })` — ref exists with CID identity
     /// - `None` — ledger ID/ref completely unknown
     async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>>;
 
     /// Atomic compare-and-set.
     ///
-    /// Updates the ref **only if** the current address matches `expected`.
+    /// Updates the ref **only if** the current identity matches `expected`.
     /// Pass `expected = None` for initial creation (ref must not exist).
     ///
     /// The kind-dependent monotonic guard is also checked:
@@ -1031,6 +996,7 @@ pub trait ConfigPublisher: Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::ContentKind;
 
     #[test]
     fn test_parse_address_with_branch() {
@@ -1173,7 +1139,7 @@ mod tests {
         assert_eq!(record.source_type, GraphSourceType::Bm25);
         assert_eq!(record.config, r#"{"k1": 1.2, "b": 0.75}"#);
         assert_eq!(record.dependencies, vec!["source-ledger:main".to_string()]);
-        assert_eq!(record.index_address, None);
+        assert_eq!(record.index_id, None);
         assert_eq!(record.index_t, 0);
         assert!(!record.retracted);
     }
@@ -1193,7 +1159,10 @@ mod tests {
             GraphSourceRecord::new("search", "main", GraphSourceType::Bm25, "{}", vec![]);
         assert!(!record.has_index());
 
-        record.index_address = Some("fluree:file://graph-sources/search/snapshot.bin".to_string());
+        record.index_id = Some(ContentId::new(
+            ContentKind::IndexRoot,
+            b"test-graph-source-index",
+        ));
         record.index_t = 42;
         assert!(record.has_index());
     }

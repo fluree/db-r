@@ -18,15 +18,15 @@
 //!
 //! Items per alias (ledger):
 //!   - (pk, "meta")   — kind, name, branch, retracted
-//!   - (pk, "head")   — commit_address, commit_t
-//!   - (pk, "index")  — index_address, index_t
+//!   - (pk, "head")   — commit_id, commit_t
+//!   - (pk, "index")  — index_id, index_t
 //!   - (pk, "config") — default_context_address, config_v, config_meta
 //!   - (pk, "status") — status, status_v, status_meta
 //!
 //! Items per alias (graph source):
 //!   - (pk, "meta")   — kind, source_type, name, branch, dependencies, retracted
 //!   - (pk, "config") — config_json, config_v
-//!   - (pk, "index")  — index_address, index_t
+//!   - (pk, "index")  — index_id, index_t
 //!   - (pk, "status") — status, status_v, status_meta
 //! ```
 
@@ -62,12 +62,10 @@ pub const KIND_LEDGER: &str = "ledger";
 pub const KIND_GRAPH_SOURCE: &str = "graph_source";
 
 // ── Head item attributes (ledger only) ──────────────────────────────────────
-pub const ATTR_COMMIT_ADDRESS: &str = "commit_address";
 pub const ATTR_COMMIT_ID: &str = "commit_id";
 pub const ATTR_COMMIT_T: &str = "commit_t";
 
 // ── Index item attributes (ledger + graph source) ───────────────────────────
-pub const ATTR_INDEX_ADDRESS: &str = "index_address";
 pub const ATTR_INDEX_ID: &str = "index_id";
 pub const ATTR_INDEX_T: &str = "index_t";
 

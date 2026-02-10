@@ -293,15 +293,7 @@ where
     }
 
     // Build previous commit reference from the head commit's ContentId.
-    // Prefer the direct ContentId (set during commit or load); fall back
-    // to deriving one from the address hash during the transition period.
-    let prev_cid = base.head_commit_id.clone().or_else(|| {
-        base.head_commit.as_ref().and_then(|addr| {
-            fluree_db_core::storage::extract_hash_from_address(addr)
-                .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h))
-        })
-    });
-    if let Some(cid) = prev_cid {
+    if let Some(cid) = base.head_commit_id.clone() {
         commit_record = commit_record.with_previous_ref(CommitRef::new(cid));
     }
 
@@ -342,7 +334,7 @@ where
         let span = tracing::info_span!("commit_publish_nameservice");
         let _g = span.enter();
         nameservice
-            .publish_commit(base.ledger_id(), new_t, &commit_cid, Some(&address))
+            .publish_commit(base.ledger_id(), new_t, &commit_cid)
             .await?;
     }
 
@@ -382,7 +374,6 @@ where
         db: base.db,
         novelty: new_novelty,
         dict_novelty,
-        head_commit: Some(address.clone()),
         head_commit_id: Some(commit_cid.clone()),
         head_index_id: base.head_index_id,
         ns_record: base.ns_record,
@@ -446,8 +437,8 @@ where
     match current {
         None => {
             // Genesis case: no record exists yet
-            // Base should have no head_commit and t=0
-            if base.head_commit.is_some() {
+            // Base should have no head_commit_id and t=0
+            if base.head_commit_id.is_some() {
                 return Err(TransactError::CommitConflict {
                     expected_t: 0,
                     head_t: base.t(),
@@ -470,13 +461,9 @@ where
                 });
             }
 
-            // Verify previous commit identity matches.
-            // CID-primary: if both sides have CIDs, compare directly.
-            // Mixed state (one has CID, other doesn't) signals a bug — warn and
-            // fall back to address comparison.
-            // Neither has CID: genesis edge case, compare addresses.
+            // Verify previous commit identity matches via CID comparison.
             match (&base.head_commit_id, &record.commit_head_id) {
-                // Primary path: both have CIDs
+                // Both have CIDs: compare directly
                 (Some(base_cid), Some(record_cid)) => {
                     if base_cid != record_cid {
                         return Err(TransactError::AddressMismatch {
@@ -485,48 +472,25 @@ where
                         });
                     }
                 }
-                // Neither has CID (genesis or legacy edge case): compare addresses
-                (None, None) => {
-                    verify_address_match(
-                        base.head_commit.as_deref(),
-                        record.commit_address.as_deref(),
-                    )?;
+                // Neither has CID: genesis edge case, both are at t=0 with no commits
+                (None, None) => {}
+                // Mixed state: one side has CID, the other doesn't
+                (Some(base_cid), None) => {
+                    return Err(TransactError::AddressMismatch {
+                        expected: "None".to_string(),
+                        found: base_cid.to_string(),
+                    });
                 }
-                // Mixed state: one side has CID, the other doesn't — programmer error
-                _ => {
-                    tracing::warn!(
-                        base_has_cid = base.head_commit_id.is_some(),
-                        record_has_cid = record.commit_head_id.is_some(),
-                        "verify_sequencing: mixed CID state — falling back to address comparison"
-                    );
-                    verify_address_match(
-                        base.head_commit.as_deref(),
-                        record.commit_address.as_deref(),
-                    )?;
+                (None, Some(record_cid)) => {
+                    return Err(TransactError::AddressMismatch {
+                        expected: record_cid.to_string(),
+                        found: "None".to_string(),
+                    });
                 }
             }
 
             Ok(())
         }
-    }
-}
-
-/// Address-based fallback comparison for verify_sequencing.
-fn verify_address_match(base_addr: Option<&str>, record_addr: Option<&str>) -> Result<()> {
-    match (base_addr, record_addr) {
-        (Some(base), Some(record)) if base != record => Err(TransactError::AddressMismatch {
-            expected: record.to_string(),
-            found: base.to_string(),
-        }),
-        (None, Some(record)) => Err(TransactError::AddressMismatch {
-            expected: record.to_string(),
-            found: "None".to_string(),
-        }),
-        (Some(base), None) => Err(TransactError::AddressMismatch {
-            expected: "None".to_string(),
-            found: base.to_string(),
-        }),
-        _ => Ok(()),
     }
 }
 
@@ -578,7 +542,7 @@ mod tests {
         // commit_id is now a ContentId with CODEC_FLUREE_COMMIT
         assert_eq!(receipt.commit_id.codec(), CODEC_FLUREE_COMMIT);
         assert_eq!(new_state.t(), 1);
-        assert!(new_state.head_commit.is_some());
+        assert!(new_state.head_commit_id.is_some());
     }
 
     #[tokio::test]

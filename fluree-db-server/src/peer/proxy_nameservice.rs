@@ -36,9 +36,9 @@ impl Debug for ProxyNameService {
 struct NsRecordResponse {
     ledger_id: String,
     branch: String,
-    commit_address: Option<String>,
+    commit_head_id: Option<String>,
     commit_t: i64,
-    index_address: Option<String>,
+    index_head_id: Option<String>,
     index_t: i64,
     retracted: bool,
 }
@@ -46,16 +46,18 @@ struct NsRecordResponse {
 impl NsRecordResponse {
     /// Convert to NsRecord, using the original lookup key as the ledger_id
     fn into_ns_record(self, lookup_key: &str) -> NsRecord {
+        use fluree_db_core::ContentId;
+
         NsRecord {
             // ledger_id is the key used for lookup (may differ from name)
             ledger_id: lookup_key.to_string(),
             name: self.ledger_id,
             branch: self.branch,
-            commit_address: self.commit_address,
-            commit_head_id: None,
+            commit_head_id: self
+                .commit_head_id
+                .and_then(|s| s.parse::<ContentId>().ok()),
             commit_t: self.commit_t,
-            index_address: self.index_address,
-            index_head_id: None,
+            index_head_id: self.index_head_id.and_then(|s| s.parse::<ContentId>().ok()),
             index_t: self.index_t,
             default_context: None, // Not exposed via proxy API
             retracted: self.retracted,
@@ -214,9 +216,9 @@ mod tests {
         let response = NsRecordResponse {
             ledger_id: "books:main".to_string(),
             branch: "main".to_string(),
-            commit_address: Some("fluree:file://books:main/commit/abc.fcv2".to_string()),
+            commit_head_id: None,
             commit_t: 42,
-            index_address: Some("fluree:file://books/main/index/def.json".to_string()),
+            index_head_id: None,
             index_t: 40,
             retracted: false,
         };

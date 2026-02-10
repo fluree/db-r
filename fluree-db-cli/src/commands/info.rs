@@ -36,11 +36,11 @@ pub async fn run(
             if let Some(t) = info.get("t").and_then(|v| v.as_i64()) {
                 println!("t:              {}", t);
             }
-            if let Some(commit) = info.get("commit_address").and_then(|v| v.as_str()) {
-                println!("Commit address: {}", commit);
+            if let Some(commit) = info.get("commit_head_id").and_then(|v| v.as_str()) {
+                println!("Commit ID:      {}", commit);
             }
-            if let Some(index) = info.get("index_address").and_then(|v| v.as_str()) {
-                println!("Index address:  {}", index);
+            if let Some(index) = info.get("index_head_id").and_then(|v| v.as_str()) {
+                println!("Index ID:       {}", index);
             }
 
             // Print full JSON if there are stats
@@ -65,13 +65,23 @@ pub async fn run(
             println!("Ledger ID:      {}", record.ledger_id);
             println!("Commit t:       {}", record.commit_t);
             println!(
-                "Commit address: {}",
-                record.commit_address.as_deref().unwrap_or("(none)")
+                "Commit ID:      {}",
+                record
+                    .commit_head_id
+                    .as_ref()
+                    .map(|id| id.to_string())
+                    .as_deref()
+                    .unwrap_or("(none)")
             );
             println!("Index t:        {}", record.index_t);
             println!(
-                "Index address:  {}",
-                record.index_address.as_deref().unwrap_or("(none)")
+                "Index ID:       {}",
+                record
+                    .index_head_id
+                    .as_ref()
+                    .map(|id| id.to_string())
+                    .as_deref()
+                    .unwrap_or("(none)")
             );
         }
     }

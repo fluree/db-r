@@ -1,89 +1,90 @@
-//! Binary index root descriptor (v2, CAS-based).
+//! Binary index root descriptor (v3, CID-based).
 //!
-//! The `BinaryIndexRootV2` is the canonical metadata record for a binary
-//! columnar index. It is published to the nameservice via `index_address`
+//! The `BinaryIndexRoot` is the canonical metadata record for a binary
+//! columnar index. It is published to the nameservice via `index_head_id`
 //! and serves as the entry point for loading a `BinaryIndexStore`.
 //!
-//! All artifact references use content-addressed storage (CAS) addresses.
+//! All artifact references use `ContentId` (CIDv1) values.
 
+use fluree_db_core::ContentId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
-/// Schema version for `BinaryIndexRootV2` with CAS addresses.
-pub const BINARY_INDEX_ROOT_VERSION_V2: u32 = 2;
+/// Schema version for `BinaryIndexRoot` with CID references.
+pub const BINARY_INDEX_ROOT_VERSION: u32 = 3;
 
 // ============================================================================
-// CAS address types (CAS-2 / CAS-3)
+// CID reference types
 // ============================================================================
 
-/// CAS addresses for a dictionary CoW tree (branch + leaves).
+/// CID references for a dictionary CoW tree (branch + leaves).
 ///
-/// Mirrors `GraphOrderAddresses` — a branch manifest that references
+/// Mirrors `GraphOrderRefs` — a branch manifest that references
 /// a set of leaf blobs. The branch holds the key-range index; leaves
 /// hold the actual dictionary entries.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DictTreeAddresses {
-    /// CAS address of the branch manifest (DTB1).
-    pub branch: String,
-    /// CAS addresses of leaf blobs, ordered by leaf index.
-    pub leaves: Vec<String>,
+pub struct DictTreeRefs {
+    /// CID of the branch manifest (DTB1).
+    pub branch: ContentId,
+    /// CIDs of leaf blobs, ordered by leaf index.
+    pub leaves: Vec<ContentId>,
 }
 
-/// CAS addresses for a per-predicate vector arena (manifest + shards).
+/// CID references for a per-predicate vector arena (manifest + shards).
 ///
-/// Stored explicitly so GC can reach all shard addresses without
+/// Stored explicitly so GC can reach all shard CIDs without
 /// parsing manifests during retention walks.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VectorDictEntry {
-    /// CAS address of the manifest JSON (VAM1).
-    pub manifest: String,
-    /// CAS addresses of all shard blobs (VAS1), ordered by shard index.
-    pub shards: Vec<String>,
+pub struct VectorDictRef {
+    /// CID of the manifest JSON (VAM1).
+    pub manifest: ContentId,
+    /// CIDs of all shard blobs (VAS1), ordered by shard index.
+    pub shards: Vec<ContentId>,
 }
 
-/// CAS addresses for all dictionary artifacts.
+/// CID references for all dictionary artifacts.
 ///
 /// Small-cardinality dictionaries (graphs, datatypes, languages) use a
 /// single flat blob. Large dictionaries (subjects, strings) use CoW
 /// trees with a branch + leaves structure.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DictAddresses {
-    pub graphs: String,
-    pub datatypes: String,
-    pub languages: String,
+pub struct DictRefs {
+    pub graphs: ContentId,
+    pub datatypes: ContentId,
+    pub languages: ContentId,
     /// Subject forward tree: sid64 → suffix (ns-compressed, prefix stripped).
-    pub subject_forward: DictTreeAddresses,
+    pub subject_forward: DictTreeRefs,
     /// Subject reverse tree: [ns_code BE][suffix] → sid64 (ns-compressed).
-    pub subject_reverse: DictTreeAddresses,
+    pub subject_reverse: DictTreeRefs,
     /// String forward tree: string_id → value.
-    pub string_forward: DictTreeAddresses,
+    pub string_forward: DictTreeRefs,
     /// String reverse tree: value → string_id.
-    pub string_reverse: DictTreeAddresses,
+    pub string_reverse: DictTreeRefs,
     /// Per-predicate numbig arenas. Key is `p_id` as string (for JSON
     /// compatibility with integer map keys).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub numbig: BTreeMap<String, String>,
+    pub numbig: BTreeMap<String, ContentId>,
     /// Per-predicate vector arena metadata. Key is `p_id` as string.
-    /// Value contains manifest CAS address + all shard CAS addresses.
+    /// Value contains manifest CID + all shard CIDs.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub vectors: BTreeMap<String, VectorDictEntry>,
+    pub vectors: BTreeMap<String, VectorDictRef>,
 }
 
-/// CAS addresses for a single graph + sort order (one branch + its leaves).
+/// CID references for a single graph + sort order (one branch + its leaves).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct GraphOrderAddresses {
-    /// CAS address of the branch manifest (FBR1).
-    pub branch: String,
-    /// CAS addresses of leaf files (FLI1), ordered by leaf index.
-    pub leaves: Vec<String>,
+pub struct GraphOrderRefs {
+    /// CID of the branch manifest (FBR1).
+    pub branch: ContentId,
+    /// CIDs of leaf files (FLI1), ordered by leaf index.
+    pub leaves: Vec<ContentId>,
 }
 
-/// CAS addresses for all sort orders within a single graph.
+/// CID references for all sort orders within a single graph.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct GraphAddresses {
+pub struct GraphRefs {
     pub g_id: u32,
-    /// Order name (e.g. `"spot"`) → branch + leaves addresses.
-    pub orders: BTreeMap<String, GraphOrderAddresses>,
+    /// Order name (e.g. `"spot"`) → branch + leaves CIDs.
+    pub orders: BTreeMap<String, GraphOrderRefs>,
 }
 
 // ============================================================================
@@ -98,37 +99,37 @@ pub struct GraphAddresses {
 pub struct BinaryPrevIndexRef {
     /// `index_t` of the previous root.
     pub t: i64,
-    /// CAS address of the previous root JSON blob.
-    pub address: String,
+    /// CID of the previous root JSON blob.
+    pub id: ContentId,
 }
 
 /// Reference to this root's garbage manifest.
 ///
-/// The garbage manifest lists CAS addresses that were replaced when building
+/// The garbage manifest lists CIDs that were replaced when building
 /// this root from the previous one. The GC collector reads this to know which
 /// objects to delete when this root ages out of the retention window.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BinaryGarbageRef {
-    /// CAS address of the garbage record JSON blob.
-    pub address: String,
+    /// CID of the garbage record JSON blob.
+    pub id: ContentId,
 }
 
 // ============================================================================
-// BinaryIndexRootV2 (CAS-4)
+// BinaryIndexRoot (v3, CID-based)
 // ============================================================================
 
-/// V2 graph entry: references CAS addresses per sort order.
+/// Graph entry: references CIDs per sort order.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct GraphEntryV2 {
+pub struct GraphEntry {
     /// Graph dictionary ID (0 = default graph).
     pub g_id: u32,
-    /// Per-order CAS addresses.
-    pub orders: BTreeMap<String, GraphOrderAddresses>,
+    /// Per-order CID references.
+    pub orders: BTreeMap<String, GraphOrderRefs>,
 }
 
-/// Configuration for building a `BinaryIndexRootV2` from CAS artifacts.
+/// Configuration for building a `BinaryIndexRoot` from CAS artifacts.
 ///
-/// Bundles all parameters needed by `BinaryIndexRootV2::from_cas_artifacts`.
+/// Bundles all parameters needed by `BinaryIndexRoot::from_cas_artifacts`.
 pub struct CasArtifactsConfig<'a> {
     /// Ledger ID (e.g. `"mydb:main"`).
     pub ledger_id: &'a str,
@@ -142,10 +143,10 @@ pub struct CasArtifactsConfig<'a> {
     pub namespace_codes: &'a HashMap<u16, String>,
     /// Subject ID encoding mode.
     pub subject_id_encoding: fluree_db_core::SubjectIdEncoding,
-    /// CAS addresses for all dictionary artifacts.
-    pub dict_addresses: DictAddresses,
-    /// CAS addresses for all graph × order combinations.
-    pub graph_addresses: Vec<GraphAddresses>,
+    /// CID references for all dictionary artifacts.
+    pub dict_refs: DictRefs,
+    /// CID references for all graph × order combinations.
+    pub graph_refs: Vec<GraphRefs>,
     /// Optional stats JSON blob.
     pub stats: Option<serde_json::Value>,
     /// Optional schema JSON blob.
@@ -160,15 +161,14 @@ pub struct CasArtifactsConfig<'a> {
     pub string_watermark: u32,
 }
 
-/// V2 binary index root with full CAS addresses.
+/// Binary index root with CID-based artifact references.
 ///
-/// Replaces v1's `runs_addr_prefix` / `index_addr_prefix` with explicit
-/// per-artifact CAS addresses in `dict_addresses` and per-graph `orders`.
+/// All artifact references use [`ContentId`] instead of address strings.
 /// All map types use [`BTreeMap`] for deterministic JSON serialization,
 /// ensuring the canonical form is suitable for content hashing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BinaryIndexRootV2 {
-    /// Schema version (must equal [`BINARY_INDEX_ROOT_VERSION_V2`]).
+pub struct BinaryIndexRoot {
+    /// Schema version (must equal [`BINARY_INDEX_ROOT_VERSION`]).
     pub version: u32,
 
     /// Ledger ID (e.g. `"mydb:main"`).
@@ -180,8 +180,8 @@ pub struct BinaryIndexRootV2 {
     /// Earliest transaction time for Region 3 history.
     pub base_t: i64,
 
-    /// Per-graph index entries with CAS addresses.
-    pub graphs: Vec<GraphEntryV2>,
+    /// Per-graph index entries with CID references.
+    pub graphs: Vec<GraphEntry>,
 
     /// Predicate/property ID → (namespace_code, suffix) mapping.
     ///
@@ -205,8 +205,8 @@ pub struct BinaryIndexRootV2 {
     #[serde(default)]
     pub subject_id_encoding: fluree_db_core::SubjectIdEncoding,
 
-    /// CAS addresses of all dictionary artifacts.
-    pub dict_addresses: DictAddresses,
+    /// CID references of all dictionary artifacts.
+    pub dict_refs: DictRefs,
 
     /// Inline index statistics.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -220,7 +220,7 @@ pub struct BinaryIndexRootV2 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prev_index: Option<BinaryPrevIndexRef>,
 
-    /// Link to this root's garbage manifest (CAS addresses replaced by this build).
+    /// Link to this root's garbage manifest (CIDs replaced by this build).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub garbage: Option<BinaryGarbageRef>,
 
@@ -254,7 +254,7 @@ pub struct BinaryIndexRootV2 {
     pub total_retracts: u64,
 }
 
-impl BinaryIndexRootV2 {
+impl BinaryIndexRoot {
     /// Serialize to canonical compact JSON bytes.
     ///
     /// The combination of `serde_json::to_vec` (compact) and `BTreeMap` keys
@@ -263,19 +263,19 @@ impl BinaryIndexRootV2 {
         serde_json::to_vec(self)
     }
 
-    /// Deserialize from JSON bytes, accepting only v2.
+    /// Deserialize from JSON bytes, accepting only v3.
     pub fn from_json_bytes(bytes: &[u8]) -> serde_json::Result<Self> {
         let root: Self = serde_json::from_slice(bytes)?;
-        if root.version != BINARY_INDEX_ROOT_VERSION_V2 {
+        if root.version != BINARY_INDEX_ROOT_VERSION {
             return Err(serde::de::Error::custom(format!(
                 "unsupported binary index root version: {} (expected {})",
-                root.version, BINARY_INDEX_ROOT_VERSION_V2,
+                root.version, BINARY_INDEX_ROOT_VERSION,
             )));
         }
         Ok(root)
     }
 
-    /// Build a v2 root from CAS upload results.
+    /// Build a root from CAS upload results.
     ///
     /// `stats` and `schema` are optional JSON blobs matching the
     /// `RawDbRootStats`/`RawDbRootSchema` format from `fluree-db-core`.
@@ -289,16 +289,16 @@ impl BinaryIndexRootV2 {
             .collect();
 
         let graphs = cfg
-            .graph_addresses
+            .graph_refs
             .into_iter()
-            .map(|ga| GraphEntryV2 {
-                g_id: ga.g_id,
-                orders: ga.orders,
+            .map(|gr| GraphEntry {
+                g_id: gr.g_id,
+                orders: gr.orders,
             })
             .collect();
 
         Self {
-            version: BINARY_INDEX_ROOT_VERSION_V2,
+            version: BINARY_INDEX_ROOT_VERSION,
             ledger_id: cfg.ledger_id.to_string(),
             index_t: cfg.index_t,
             base_t: cfg.base_t,
@@ -306,7 +306,7 @@ impl BinaryIndexRootV2 {
             predicate_sids: cfg.predicate_sids,
             namespace_codes: ns_codes,
             subject_id_encoding: cfg.subject_id_encoding,
-            dict_addresses: cfg.dict_addresses,
+            dict_refs: cfg.dict_refs,
             stats: cfg.stats,
             schema: cfg.schema,
             prev_index: cfg.prev_index,
@@ -319,23 +319,23 @@ impl BinaryIndexRootV2 {
         }
     }
 
-    /// Collect all CAS content-artifact addresses referenced by this root.
+    /// Collect all CAS content-artifact CIDs referenced by this root.
     ///
     /// Includes: dict artifacts (3 flat + 4 tree branches + tree leaves +
     /// numbig), branch manifests, and leaf files for every graph × order.
-    /// Does NOT include the root's own address or the garbage manifest
-    /// address — those are managed by the GC chain (prev_index / garbage
+    /// Does NOT include the root's own CID or the garbage manifest
+    /// CID — those are managed by the GC chain (prev_index / garbage
     /// pointers).
     ///
-    /// Returns a sorted, deduplicated `Vec<String>`.
-    pub fn all_cas_addresses(&self) -> Vec<String> {
-        let mut addrs = Vec::new();
+    /// Returns a sorted, deduplicated `Vec<ContentId>`.
+    pub fn all_cas_ids(&self) -> Vec<ContentId> {
+        let mut ids = Vec::new();
 
         // Dict artifacts: 3 flat dicts + 4 trees (branch + leaves each)
-        let d = &self.dict_addresses;
-        addrs.push(d.graphs.clone());
-        addrs.push(d.datatypes.clone());
-        addrs.push(d.languages.clone());
+        let d = &self.dict_refs;
+        ids.push(d.graphs.clone());
+        ids.push(d.datatypes.clone());
+        ids.push(d.languages.clone());
         // Subject & string dictionary trees
         for tree in [
             &d.subject_forward,
@@ -343,61 +343,72 @@ impl BinaryIndexRootV2 {
             &d.string_forward,
             &d.string_reverse,
         ] {
-            addrs.push(tree.branch.clone());
-            addrs.extend(tree.leaves.iter().cloned());
+            ids.push(tree.branch.clone());
+            ids.extend(tree.leaves.iter().cloned());
         }
 
         // Per-predicate numbig arenas
-        for addr in d.numbig.values() {
-            addrs.push(addr.clone());
+        for cid in d.numbig.values() {
+            ids.push(cid.clone());
         }
 
         // Per-predicate vector arenas (manifest + shards)
         for entry in d.vectors.values() {
-            addrs.push(entry.manifest.clone());
-            addrs.extend(entry.shards.iter().cloned());
+            ids.push(entry.manifest.clone());
+            ids.extend(entry.shards.iter().cloned());
         }
 
         // Per-graph, per-order branches + leaves
         for graph in &self.graphs {
-            for order_addrs in graph.orders.values() {
-                addrs.push(order_addrs.branch.clone());
-                for leaf in &order_addrs.leaves {
-                    addrs.push(leaf.clone());
+            for order_refs in graph.orders.values() {
+                ids.push(order_refs.branch.clone());
+                for leaf in &order_refs.leaves {
+                    ids.push(leaf.clone());
                 }
             }
         }
 
-        addrs.sort();
-        addrs.dedup();
-        addrs
+        ids.sort();
+        ids.dedup();
+        ids
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::ContentKind;
 
-    fn sample_dict_addresses() -> DictAddresses {
-        DictAddresses {
-            graphs: "fluree:file://t/main/objects/dicts/g.dict".into(),
-            datatypes: "fluree:file://t/main/objects/dicts/d.dict".into(),
-            languages: "fluree:file://t/main/objects/dicts/l.dict".into(),
-            subject_forward: DictTreeAddresses {
-                branch: "fluree:file://t/main/objects/dicts/sf.br".into(),
-                leaves: vec!["fluree:file://t/main/objects/dicts/sf_l0.leaf".into()],
+    /// Shorthand for `ContentKind::DictBlob` in tests (DictKind doesn't affect codec).
+    const DICT: ContentKind = ContentKind::DictBlob {
+        dict: fluree_db_core::DictKind::Graphs,
+    };
+
+    /// Helper: create a test ContentId with a deterministic hash from a label.
+    fn test_cid(kind: ContentKind, label: &str) -> ContentId {
+        ContentId::new(kind, label.as_bytes())
+    }
+
+    fn sample_dict_refs() -> DictRefs {
+        DictRefs {
+            graphs: test_cid(DICT, "graphs"),
+            datatypes: test_cid(DICT, "datatypes"),
+            languages: test_cid(DICT, "languages"),
+            subject_forward: DictTreeRefs {
+                branch: test_cid(DICT, "sf_branch"),
+                leaves: vec![test_cid(DICT, "sf_l0")],
             },
-            subject_reverse: DictTreeAddresses {
-                branch: "fluree:file://t/main/objects/dicts/sr.br".into(),
-                leaves: vec!["fluree:file://t/main/objects/dicts/sr_l0.leaf".into()],
+            subject_reverse: DictTreeRefs {
+                branch: test_cid(DICT, "sr_branch"),
+                leaves: vec![test_cid(DICT, "sr_l0")],
             },
-            string_forward: DictTreeAddresses {
-                branch: "fluree:file://t/main/objects/dicts/stf.br".into(),
-                leaves: vec!["fluree:file://t/main/objects/dicts/stf_l0.leaf".into()],
+            string_forward: DictTreeRefs {
+                branch: test_cid(DICT, "stf_branch"),
+                leaves: vec![test_cid(DICT, "stf_l0")],
             },
-            string_reverse: DictTreeAddresses {
-                branch: "fluree:file://t/main/objects/dicts/str.br".into(),
-                leaves: vec!["fluree:file://t/main/objects/dicts/str_l0.leaf".into()],
+            string_reverse: DictTreeRefs {
+                branch: test_cid(DICT, "str_branch"),
+                leaves: vec![test_cid(DICT, "str_l0")],
             },
             numbig: BTreeMap::new(),
             vectors: BTreeMap::new(),
@@ -411,7 +422,7 @@ mod tests {
         base_t: i64,
         predicate_sids: Vec<(u16, String)>,
         namespace_codes: &'a HashMap<u16, String>,
-        graph_addresses: Vec<GraphAddresses>,
+        graph_refs: Vec<GraphRefs>,
         stats: Option<serde_json::Value>,
     ) -> CasArtifactsConfig<'a> {
         CasArtifactsConfig {
@@ -421,8 +432,8 @@ mod tests {
             predicate_sids,
             namespace_codes,
             subject_id_encoding: fluree_db_core::SubjectIdEncoding::Narrow,
-            dict_addresses: sample_dict_addresses(),
-            graph_addresses,
+            dict_refs: sample_dict_refs(),
+            graph_refs,
             stats,
             schema: None,
             prev_index: None,
@@ -433,21 +444,21 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_v2_json() {
-        let root = BinaryIndexRootV2 {
-            version: BINARY_INDEX_ROOT_VERSION_V2,
+    fn round_trip_json() {
+        let root = BinaryIndexRoot {
+            version: BINARY_INDEX_ROOT_VERSION,
             ledger_id: "test:main".to_string(),
             index_t: 42,
             base_t: 1,
-            graphs: vec![GraphEntryV2 {
+            graphs: vec![GraphEntry {
                 g_id: 0,
                 orders: {
                     let mut m = BTreeMap::new();
                     m.insert(
                         "spot".to_string(),
-                        GraphOrderAddresses {
-                            branch: "fluree:file://t/main/objects/branches/abc.fbr".into(),
-                            leaves: vec!["fluree:file://t/main/objects/leaves/def.fli".into()],
+                        GraphOrderRefs {
+                            branch: test_cid(ContentKind::IndexBranch, "spot_br"),
+                            leaves: vec![test_cid(ContentKind::IndexLeaf, "spot_l0")],
                         },
                     );
                     m
@@ -461,7 +472,7 @@ mod tests {
                 m
             },
             subject_id_encoding: fluree_db_core::SubjectIdEncoding::Narrow,
-            dict_addresses: sample_dict_addresses(),
+            dict_refs: sample_dict_refs(),
             stats: None,
             schema: None,
             prev_index: None,
@@ -474,27 +485,27 @@ mod tests {
         };
 
         let bytes = root.to_json_bytes().expect("serialize");
-        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).expect("deserialize");
+        let parsed = BinaryIndexRoot::from_json_bytes(&bytes).expect("deserialize");
         assert_eq!(root, parsed);
     }
 
     #[test]
-    fn v2_canonical_hash_is_deterministic() {
+    fn canonical_hash_is_deterministic() {
         let ns = {
             let mut m = HashMap::new();
             m.insert(0, String::new());
             m.insert(1, "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string());
             m
         };
-        let graph_addrs = vec![GraphAddresses {
+        let graph_refs = vec![GraphRefs {
             g_id: 0,
             orders: {
                 let mut m = BTreeMap::new();
                 m.insert(
                     "spot".to_string(),
-                    GraphOrderAddresses {
-                        branch: "fluree:file://b1.fbr".into(),
-                        leaves: vec!["fluree:file://l1.fli".into()],
+                    GraphOrderRefs {
+                        branch: test_cid(ContentKind::IndexBranch, "b1"),
+                        leaves: vec![test_cid(ContentKind::IndexLeaf, "l1")],
                     },
                 );
                 m
@@ -503,22 +514,22 @@ mod tests {
 
         let predicate_sids: Vec<(u16, String)> = vec![(0, "p0".to_string())];
 
-        let root1 = BinaryIndexRootV2::from_cas_artifacts(test_config(
+        let root1 = BinaryIndexRoot::from_cas_artifacts(test_config(
             "test:main",
             42,
             1,
             predicate_sids.clone(),
             &ns,
-            graph_addrs.clone(),
+            graph_refs.clone(),
             None,
         ));
-        let root2 = BinaryIndexRootV2::from_cas_artifacts(test_config(
+        let root2 = BinaryIndexRoot::from_cas_artifacts(test_config(
             "test:main",
             42,
             1,
             predicate_sids,
             &ns,
-            graph_addrs,
+            graph_refs,
             None,
         ));
 
@@ -532,14 +543,14 @@ mod tests {
     }
 
     #[test]
-    fn v2_stats_round_trip() {
+    fn stats_round_trip() {
         let stats = serde_json::json!({
             "flakes": 12345,
             "size": 0,
             "graphs": [{"g_id": 1, "flakes": 10000, "size": 0}]
         });
         let ns = HashMap::new();
-        let root = BinaryIndexRootV2::from_cas_artifacts(test_config(
+        let root = BinaryIndexRoot::from_cas_artifacts(test_config(
             "test:main",
             42,
             1,
@@ -551,13 +562,13 @@ mod tests {
 
         // Round-trip through JSON
         let bytes = root.to_json_bytes().unwrap();
-        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
+        let parsed = BinaryIndexRoot::from_json_bytes(&bytes).unwrap();
         assert_eq!(parsed.stats, Some(stats));
         assert_eq!(parsed.schema, None);
     }
 
     #[test]
-    fn v2_stats_parseable_as_raw_db_root_stats() {
+    fn stats_parseable_as_raw_db_root_stats() {
         // Verify the stats JSON we produce is compatible with RawDbRootStats
         let stats = serde_json::json!({
             "flakes": 12345,
@@ -573,51 +584,54 @@ mod tests {
     }
 
     #[test]
-    fn all_cas_addresses_collects_all_artifacts() {
+    fn all_cas_ids_collects_all_artifacts() {
         let mut numbig = BTreeMap::new();
-        numbig.insert("5".to_string(), "cas://numbig_5".into());
-        numbig.insert("12".to_string(), "cas://numbig_12".into());
+        numbig.insert("5".to_string(), test_cid(DICT, "numbig_5"));
+        numbig.insert("12".to_string(), test_cid(DICT, "numbig_12"));
 
-        let dicts = DictAddresses {
-            graphs: "cas://graphs".into(),
-            datatypes: "cas://dt".into(),
-            languages: "cas://lang".into(),
-            subject_forward: DictTreeAddresses {
-                branch: "cas://sf_br".into(),
-                leaves: vec!["cas://sf_l0".into()],
+        let dicts = DictRefs {
+            graphs: test_cid(DICT, "graphs"),
+            datatypes: test_cid(DICT, "dt"),
+            languages: test_cid(DICT, "lang"),
+            subject_forward: DictTreeRefs {
+                branch: test_cid(DICT, "sf_br"),
+                leaves: vec![test_cid(DICT, "sf_l0")],
             },
-            subject_reverse: DictTreeAddresses {
-                branch: "cas://sr_br".into(),
-                leaves: vec!["cas://sr_l0".into()],
+            subject_reverse: DictTreeRefs {
+                branch: test_cid(DICT, "sr_br"),
+                leaves: vec![test_cid(DICT, "sr_l0")],
             },
-            string_forward: DictTreeAddresses {
-                branch: "cas://stf_br".into(),
-                leaves: vec!["cas://stf_l0".into()],
+            string_forward: DictTreeRefs {
+                branch: test_cid(DICT, "stf_br"),
+                leaves: vec![test_cid(DICT, "stf_l0")],
             },
-            string_reverse: DictTreeAddresses {
-                branch: "cas://str_br".into(),
-                leaves: vec!["cas://str_l0".into()],
+            string_reverse: DictTreeRefs {
+                branch: test_cid(DICT, "str_br"),
+                leaves: vec![test_cid(DICT, "str_l0")],
             },
             numbig,
             vectors: BTreeMap::new(),
         };
 
-        let graph_addrs = vec![GraphAddresses {
+        let graph_refs = vec![GraphRefs {
             g_id: 0,
             orders: {
                 let mut m = BTreeMap::new();
                 m.insert(
                     "spot".into(),
-                    GraphOrderAddresses {
-                        branch: "cas://g0_spot_br".into(),
-                        leaves: vec!["cas://g0_spot_l0".into(), "cas://g0_spot_l1".into()],
+                    GraphOrderRefs {
+                        branch: test_cid(ContentKind::IndexBranch, "g0_spot_br"),
+                        leaves: vec![
+                            test_cid(ContentKind::IndexLeaf, "g0_spot_l0"),
+                            test_cid(ContentKind::IndexLeaf, "g0_spot_l1"),
+                        ],
                     },
                 );
                 m.insert(
                     "psot".into(),
-                    GraphOrderAddresses {
-                        branch: "cas://g0_psot_br".into(),
-                        leaves: vec!["cas://g0_psot_l0".into()],
+                    GraphOrderRefs {
+                        branch: test_cid(ContentKind::IndexBranch, "g0_psot_br"),
+                        leaves: vec![test_cid(ContentKind::IndexLeaf, "g0_psot_l0")],
                     },
                 );
                 m
@@ -625,15 +639,15 @@ mod tests {
         }];
 
         let ns = HashMap::new();
-        let root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
+        let root = BinaryIndexRoot::from_cas_artifacts(CasArtifactsConfig {
             ledger_id: "test:main",
             index_t: 10,
             base_t: 1,
             predicate_sids: vec![],
             namespace_codes: &ns,
             subject_id_encoding: fluree_db_core::SubjectIdEncoding::Narrow,
-            dict_addresses: dicts,
-            graph_addresses: graph_addrs,
+            dict_refs: dicts,
+            graph_refs,
             stats: None,
             schema: None,
             prev_index: None,
@@ -642,69 +656,69 @@ mod tests {
             string_watermark: 0,
         });
 
-        let addrs = root.all_cas_addresses();
+        let ids = root.all_cas_ids();
 
         // 3 flat dicts + 4 tree branches + 4 tree leaves + 2 numbig
         //   + 2 graph branches + 3 graph leaves = 18
-        assert_eq!(addrs.len(), 18);
+        assert_eq!(ids.len(), 18);
 
         // Verify sorted
-        for w in addrs.windows(2) {
+        for w in ids.windows(2) {
             assert!(w[0] <= w[1], "not sorted: {} > {}", w[0], w[1]);
         }
 
-        // Spot-check specific addresses
-        assert!(addrs.contains(&"cas://numbig_5".to_string()));
-        assert!(addrs.contains(&"cas://sf_br".to_string()));
-        assert!(addrs.contains(&"cas://sf_l0".to_string()));
-        assert!(addrs.contains(&"cas://g0_spot_br".to_string()));
-        assert!(addrs.contains(&"cas://g0_spot_l1".to_string()));
-        assert!(addrs.contains(&"cas://g0_psot_l0".to_string()));
+        // Spot-check specific CIDs
+        assert!(ids.contains(&test_cid(DICT, "numbig_5")));
+        assert!(ids.contains(&test_cid(DICT, "sf_br")));
+        assert!(ids.contains(&test_cid(DICT, "sf_l0")));
+        assert!(ids.contains(&test_cid(ContentKind::IndexBranch, "g0_spot_br")));
+        assert!(ids.contains(&test_cid(ContentKind::IndexLeaf, "g0_spot_l1")));
+        assert!(ids.contains(&test_cid(ContentKind::IndexLeaf, "g0_psot_l0")));
     }
 
     #[test]
-    fn v2_round_trip_with_gc_fields() {
+    fn round_trip_with_gc_fields() {
         let ns = HashMap::new();
-        let root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
+        let root = BinaryIndexRoot::from_cas_artifacts(CasArtifactsConfig {
             ledger_id: "test:main",
             index_t: 42,
             base_t: 1,
             predicate_sids: vec![],
             namespace_codes: &ns,
             subject_id_encoding: fluree_db_core::SubjectIdEncoding::Narrow,
-            dict_addresses: sample_dict_addresses(),
-            graph_addresses: vec![],
+            dict_refs: sample_dict_refs(),
+            graph_refs: vec![],
             stats: None,
             schema: None,
             prev_index: Some(BinaryPrevIndexRef {
                 t: 40,
-                address: "cas://prev_root".into(),
+                id: test_cid(ContentKind::IndexRoot, "prev_root"),
             }),
             garbage: Some(BinaryGarbageRef {
-                address: "cas://garbage_record".into(),
+                id: test_cid(ContentKind::GarbageRecord, "garbage_record"),
             }),
             subject_watermarks: vec![],
             string_watermark: 0,
         });
 
         let bytes = root.to_json_bytes().unwrap();
-        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
+        let parsed = BinaryIndexRoot::from_json_bytes(&bytes).unwrap();
         assert_eq!(parsed.prev_index.as_ref().unwrap().t, 40);
         assert_eq!(
-            parsed.prev_index.as_ref().unwrap().address,
-            "cas://prev_root"
+            parsed.prev_index.as_ref().unwrap().id,
+            test_cid(ContentKind::IndexRoot, "prev_root")
         );
         assert_eq!(
-            parsed.garbage.as_ref().unwrap().address,
-            "cas://garbage_record"
+            parsed.garbage.as_ref().unwrap().id,
+            test_cid(ContentKind::GarbageRecord, "garbage_record")
         );
     }
 
     #[test]
-    fn v2_round_trip_without_gc_fields() {
+    fn round_trip_without_gc_fields() {
         // When prev_index and garbage are None, they should not appear in JSON
         let ns = HashMap::new();
-        let root = BinaryIndexRootV2::from_cas_artifacts(test_config(
+        let root = BinaryIndexRoot::from_cas_artifacts(test_config(
             "test:main",
             42,
             1,
@@ -725,7 +739,7 @@ mod tests {
             "None garbage should be skipped"
         );
 
-        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
+        let parsed = BinaryIndexRoot::from_json_bytes(&bytes).unwrap();
         assert_eq!(parsed.prev_index, None);
         assert_eq!(parsed.garbage, None);
     }
@@ -733,15 +747,15 @@ mod tests {
     #[test]
     fn watermarks_round_trip() {
         let ns = HashMap::new();
-        let root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
+        let root = BinaryIndexRoot::from_cas_artifacts(CasArtifactsConfig {
             ledger_id: "test:main",
             index_t: 42,
             base_t: 1,
             predicate_sids: vec![],
             namespace_codes: &ns,
             subject_id_encoding: fluree_db_core::SubjectIdEncoding::Narrow,
-            dict_addresses: sample_dict_addresses(),
-            graph_addresses: vec![],
+            dict_refs: sample_dict_refs(),
+            graph_refs: vec![],
             stats: None,
             schema: None,
             prev_index: None,
@@ -751,7 +765,7 @@ mod tests {
         });
 
         let bytes = root.to_json_bytes().unwrap();
-        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
+        let parsed = BinaryIndexRoot::from_json_bytes(&bytes).unwrap();
 
         assert_eq!(parsed.subject_watermarks, vec![100, 200, 300]);
         assert_eq!(parsed.string_watermark, 500);
@@ -762,7 +776,7 @@ mod tests {
         // Old roots without watermark fields should deserialize with defaults
         // (empty vec / 0) — equivalent to "everything is novel", safe and conservative.
         let ns = HashMap::new();
-        let root = BinaryIndexRootV2::from_cas_artifacts(test_config(
+        let root = BinaryIndexRoot::from_cas_artifacts(test_config(
             "test:main",
             42,
             1,
@@ -783,7 +797,7 @@ mod tests {
         // string_watermark 0 still appears (no skip_serializing_if for it)
 
         // Re-parse: defaults kick in for missing fields
-        let parsed = BinaryIndexRootV2::from_json_bytes(&bytes).unwrap();
+        let parsed = BinaryIndexRoot::from_json_bytes(&bytes).unwrap();
         assert!(parsed.subject_watermarks.is_empty());
         assert_eq!(parsed.string_watermark, 0);
 
@@ -792,7 +806,7 @@ mod tests {
         let mut json_val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         json_val.as_object_mut().unwrap().remove("string_watermark");
         let stripped_bytes = serde_json::to_vec(&json_val).unwrap();
-        let parsed2 = BinaryIndexRootV2::from_json_bytes(&stripped_bytes).unwrap();
+        let parsed2 = BinaryIndexRoot::from_json_bytes(&stripped_bytes).unwrap();
         assert!(parsed2.subject_watermarks.is_empty());
         assert_eq!(parsed2.string_watermark, 0);
     }

@@ -33,12 +33,12 @@ Result: Success (no restrictions)
 Policy (owner-only writes):
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:resource": {
     "ex:owner": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -64,10 +64,10 @@ Creating new entities:
 Policy:
 ```json
 {
-  "db:subject": { "ex:role": "admin" },
-  "db:action": "transact",
-  "db:resource": { "@type": "ex:User" },
-  "db:allow": true
+  "f:subject": { "ex:role": "admin" },
+  "f:action": "transact",
+  "f:resource": { "@type": "ex:User" },
+  "f:allow": true
 }
 ```
 
@@ -80,13 +80,13 @@ Updating existing properties:
 Policy:
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:resource": {
     "@id": "?entity",
     "ex:owner": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -99,12 +99,12 @@ Adding new properties:
 Policy:
 ```json
 {
-  "db:subject": "*",
-  "db:action": "transact",
-  "db:resource": {
-    "db:predicate": "ex:verified"
+  "f:subject": "*",
+  "f:action": "transact",
+  "f:resource": {
+    "f:predicate": "ex:verified"
   },
-  "db:allow": false
+  "f:allow": false
 }
 ```
 
@@ -117,10 +117,10 @@ Removing data:
 Policy:
 ```json
 {
-  "db:subject": { "ex:role": "admin" },
-  "db:action": "transact",
-  "db:operation": "retract",
-  "db:allow": true
+  "f:subject": { "ex:role": "admin" },
+  "f:action": "transact",
+  "f:operation": "retract",
+  "f:allow": true
 }
 ```
 
@@ -159,11 +159,11 @@ Policy for inserts:
 
 ```json
 {
-  "db:subject": "*",
-  "db:action": "transact",
-  "db:operation": "assert",
-  "db:resource": { "@type": "ex:PublicData" },
-  "db:allow": true
+  "f:subject": "*",
+  "f:action": "transact",
+  "f:operation": "assert",
+  "f:resource": { "@type": "ex:PublicData" },
+  "f:allow": true
 }
 ```
 
@@ -175,13 +175,13 @@ Policy for updates (retract + assert):
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:operation": ["retract", "assert"],
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:operation": ["retract", "assert"],
+  "f:resource": {
     "ex:author": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -193,10 +193,10 @@ Policy for retractions:
 
 ```json
 {
-  "db:subject": { "ex:role": "moderator" },
-  "db:action": "transact",
-  "db:operation": "retract",
-  "db:allow": true
+  "f:subject": { "ex:role": "moderator" },
+  "f:action": "transact",
+  "f:operation": "retract",
+  "f:allow": true
 }
 ```
 
@@ -210,12 +210,12 @@ Prevent writes to sensitive properties:
 
 ```json
 {
-  "db:subject": "*",
-  "db:action": "transact",
-  "db:resource": {
-    "db:predicate": "ex:balance"
+  "f:subject": "*",
+  "f:action": "transact",
+  "f:resource": {
+    "f:predicate": "ex:balance"
   },
-  "db:allow": false
+  "f:allow": false
 }
 ```
 
@@ -227,13 +227,13 @@ Allow only specific properties:
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:resource": {
     "@id": "?user",
-    "db:predicate": ["schema:name", "schema:email", "schema:telephone"]
+    "f:predicate": ["schema:name", "schema:email", "schema:telephone"]
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -245,13 +245,13 @@ Users can only update their name, email, and phone.
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:resource": {
     "@id": "?entity",
     "ex:owner": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -259,13 +259,13 @@ Users can only update their name, email, and phone.
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:resource": {
     "@id": "?entity",
     "ex:createdBy": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -273,12 +273,12 @@ Users can only update their name, email, and phone.
 
 ```json
 {
-  "db:subject": "?manager",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?manager",
+  "f:action": "transact",
+  "f:resource": {
     "ex:reportsTo": "?manager"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -290,16 +290,16 @@ Managers can modify records of their reports.
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:resource": {
     "@id": "?doc",
     "ex:status": "draft"
   },
-  "db:condition": [
+  "f:condition": [
     { "@id": "?doc", "ex:author": "?user" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -309,15 +309,15 @@ Authors can modify documents only while in draft status.
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:resource": {
     "ex:submittedAt": "?submitTime"
   },
-  "db:condition": [
-    { "db:filter": "NOW() - ?submitTime < 3600" }
+  "f:condition": [
+    { "f:filter": "NOW() - ?submitTime < 3600" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -327,17 +327,17 @@ Can modify submission within 1 hour.
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:resource": {
     "ex:amount": "?amount"
   },
-  "db:condition": [
-    { "db:filter": "?amount <= 1000" },
+  "f:condition": [
+    { "f:filter": "?amount <= 1000" },
     { "@id": "?user", "ex:approvalLimit": "?limit" },
-    { "db:filter": "?amount <= ?limit" }
+    { "f:filter": "?amount <= ?limit" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -359,13 +359,13 @@ Fluree checks:
 Policy:
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:operation": ["retract", "assert"],
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:operation": ["retract", "assert"],
+  "f:resource": {
     "ex:owner": "?user"
   },
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -462,16 +462,16 @@ Policy can enforce provenance:
 
 ```json
 {
-  "db:subject": "?user",
-  "db:action": "transact",
-  "db:resource": {
+  "f:subject": "?user",
+  "f:action": "transact",
+  "f:resource": {
     "@id": "?entity"
   },
-  "db:condition": [
+  "f:condition": [
     { "@id": "?entity", "ex:createdBy": "?user" }
   ],
-  "db:allow": true,
-  "db:augment": [
+  "f:allow": true,
+  "f:augment": [
     { "@id": "?entity", "ex:modifiedBy": "?user" },
     { "@id": "?entity", "ex:modifiedAt": "NOW()" }
   ]
@@ -488,23 +488,23 @@ Automatically adds modification metadata.
 [
   {
     "@id": "ex:create-policy",
-    "db:subject": "*",
-    "db:action": "transact",
-    "db:operation": "assert",
-    "db:resource": { "@type": "ex:Document" },
-    "db:allow": true,
-    "db:augment": [
+    "f:subject": "*",
+    "f:action": "transact",
+    "f:operation": "assert",
+    "f:resource": { "@type": "ex:Document" },
+    "f:allow": true,
+    "f:augment": [
       { "@id": "?newEntity", "ex:owner": "?subject" }
     ]
   },
   {
     "@id": "ex:edit-own-policy",
-    "db:subject": "?user",
-    "db:action": "transact",
-    "db:resource": {
+    "f:subject": "?user",
+    "f:action": "transact",
+    "f:resource": {
       "ex:owner": "?user"
     },
-    "db:allow": true
+    "f:allow": true
   }
 ]
 ```
@@ -515,23 +515,23 @@ Automatically adds modification metadata.
 [
   {
     "@id": "ex:submit-policy",
-    "db:subject": "*",
-    "db:action": "transact",
-    "db:resource": {
+    "f:subject": "*",
+    "f:action": "transact",
+    "f:resource": {
       "@type": "ex:Request",
       "ex:status": "pending"
     },
-    "db:allow": true
+    "f:allow": true
   },
   {
     "@id": "ex:approve-policy",
-    "db:subject": { "ex:role": "approver" },
-    "db:action": "transact",
-    "db:resource": {
+    "f:subject": { "ex:role": "approver" },
+    "f:action": "transact",
+    "f:resource": {
       "@type": "ex:Request",
       "ex:status": "approved"
     },
-    "db:allow": true
+    "f:allow": true
   }
 ]
 ```
@@ -540,11 +540,11 @@ Automatically adds modification metadata.
 
 ```json
 {
-  "db:subject": "*",
-  "db:action": "transact",
-  "db:operation": "retract",
-  "db:resource": { "@type": "ex:AuditLog" },
-  "db:allow": false
+  "f:subject": "*",
+  "f:action": "transact",
+  "f:operation": "retract",
+  "f:resource": { "@type": "ex:AuditLog" },
+  "f:allow": false
 }
 ```
 
@@ -621,10 +621,10 @@ Fluree caches compiled policies:
 
 ```json
 {
-  "db:subject": "*",
-  "db:action": "transact",
-  "db:allow": false,
-  "db:priority": -1000
+  "f:subject": "*",
+  "f:action": "transact",
+  "f:allow": false,
+  "f:priority": -1000
 }
 ```
 
@@ -634,12 +634,12 @@ Fluree caches compiled policies:
 [
   {
     "@id": "ex:create-policy",
-    "db:operation": "assert",
+    "f:operation": "assert",
     ...
   },
   {
     "@id": "ex:update-policy",
-    "db:operation": ["retract", "assert"],
+    "f:operation": ["retract", "assert"],
     ...
   }
 ]
@@ -649,13 +649,13 @@ Fluree caches compiled policies:
 
 ```json
 {
-  "db:resource": {
+  "f:resource": {
     "ex:price": "?price"
   },
-  "db:condition": [
-    { "db:filter": "?price > 0" }
+  "f:condition": [
+    { "f:filter": "?price > 0" }
   ],
-  "db:allow": true
+  "f:allow": true
 }
 ```
 
@@ -663,7 +663,7 @@ Fluree caches compiled policies:
 
 ```json
 {
-  "db:augment": [
+  "f:augment": [
     { "@id": "?entity", "ex:lastModifiedBy": "?subject" },
     { "@id": "?entity", "ex:lastModifiedAt": "NOW()" }
   ]

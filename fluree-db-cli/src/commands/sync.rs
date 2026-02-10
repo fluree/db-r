@@ -413,12 +413,18 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
     }
 
     // Collect commits to push (oldest -> newest), ensuring the remote head is in our history.
-    let local_head_addr = local_ref.address.clone().ok_or_else(|| {
+    let local_head_cid = local_ref.id.clone().ok_or_else(|| {
         CliError::Config(format!(
             "local ledger '{}' has no commit head; nothing to push",
             ledger_id
         ))
     })?;
+    let local_head_addr = fluree_db_core::content_address(
+        "file",
+        fluree_db_core::ContentKind::Commit,
+        &ledger_id,
+        &local_head_cid.digest_hex(),
+    );
 
     let mut to_push: Vec<String> = Vec::new();
     let mut found_base = remote_t == 0 && remote_commit.is_none();

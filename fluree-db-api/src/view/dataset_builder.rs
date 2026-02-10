@@ -262,11 +262,11 @@ async fn resolve_history_endpoint_t<S: Storage + Clone + Send + Sync + 'static>(
             )
             .await
         }
-        dataset::TimeSpec::AtCommit(sha_prefix) => {
-            time_resolve::sha_to_t(
+        dataset::TimeSpec::AtCommit(commit_prefix) => {
+            time_resolve::commit_to_t(
                 &ledger.db,
                 Some(ledger.novelty.as_ref()),
-                sha_prefix,
+                commit_prefix,
                 latest_t,
             )
             .await

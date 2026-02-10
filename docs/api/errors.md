@@ -45,7 +45,7 @@ The request succeeded.
 {
   "t": 5,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123..."
+  "commit_id": "bafybeig...commitT5"
 }
 ```
 

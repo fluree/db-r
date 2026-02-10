@@ -529,11 +529,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ns_present = ns_record.is_some(),
             commit_t = ns_record.as_ref().map(|r| r.commit_t).unwrap_or(0),
             index_t = ns_record.as_ref().map(|r| r.index_t).unwrap_or(0),
-            index_address = ns_record
+            index_head_id = %ns_record
                 .as_ref()
-                .and_then(|r| r.index_address.as_ref())
-                .map(|s| s.as_str())
-                .unwrap_or(""),
+                .and_then(|r| r.index_head_id.as_ref())
+                .map(|cid| cid.to_string())
+                .unwrap_or_default(),
             "Nameservice ledger record"
         );
 
@@ -572,13 +572,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        if let Some(index_addr) = ns_record.and_then(|r| r.index_address) {
-            use fluree_db_indexer::run_index::BinaryIndexRootV2;
+        if let Some(index_cid) = ns_record.and_then(|r| r.index_head_id) {
+            use fluree_db_core::ContentStore;
+            use fluree_db_indexer::run_index::BinaryIndexRoot;
 
-            match storage.read_bytes(&index_addr).await {
+            let cs = fluree_db_core::content_store_for(storage.clone(), &args.ledger);
+            match cs.get(&index_cid).await {
                 Ok(bytes) => {
                     info!(
-                        index_addr = %index_addr,
+                        index_cid = %index_cid,
                         bytes = bytes.len(),
                         "Loaded index root descriptor"
                     );
@@ -588,10 +590,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("{}", s);
                         }
                     } else {
-                        match BinaryIndexRootV2::from_json_bytes(&bytes) {
+                        match BinaryIndexRoot::from_json_bytes(&bytes) {
                             Ok(root) => {
                                 info!(
-                                    index_addr = %index_addr,
+                                    index_cid = %index_cid,
                                     schema_version = root.version,
                                     index_t = root.index_t,
                                     base_t = root.base_t,
@@ -604,7 +606,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             Err(e) => {
                                 info!(
-                                    index_addr = %index_addr,
+                                    index_cid = %index_cid,
                                     "Failed to parse index root as V2: {}", e
                                 );
                             }
@@ -612,11 +614,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Err(e) => {
-                    info!(index_addr = %index_addr, "Failed to read index root descriptor: {}", e);
+                    info!(index_cid = %index_cid, "Failed to read index root descriptor: {}", e);
                 }
             }
         } else {
-            info!("No index_address in nameservice; cannot load db-root stats");
+            info!("No index_head_id in nameservice; cannot load db-root stats");
         }
 
         if args.dump_stats_only {

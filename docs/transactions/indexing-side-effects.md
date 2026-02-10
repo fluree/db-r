@@ -99,7 +99,7 @@ For each flake in t=41, t=42:
 When complete, publish new index:
 ```text
   - Write index snapshot to storage
-  - Publish index_address to nameservice
+  - Publish index_id to nameservice
   - Update index_t to 42
 ```
 

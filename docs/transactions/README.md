@@ -70,7 +70,7 @@ Cryptographically signed transactions:
 Understanding transaction receipts:
 - Receipt structure
 - Transaction ID (t)
-- Commit SHA
+- Commit ID
 - Timestamps
 - Flake counts
 

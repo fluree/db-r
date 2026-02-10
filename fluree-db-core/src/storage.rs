@@ -197,16 +197,13 @@ pub enum DictKind {
 }
 
 /// File extension for a given [`DictKind`] (used in CAS paths).
-fn dict_kind_extension(dict: DictKind) -> &'static str {
-    match dict {
-        DictKind::Graphs | DictKind::Datatypes | DictKind::Languages => "dict",
-        DictKind::SubjectForward | DictKind::StringForward => "fwd",
-        DictKind::SubjectIndex | DictKind::StringIndex => "idx",
-        DictKind::SubjectReverse | DictKind::StringReverse => "rev",
-        DictKind::NumBig { .. } => "nba",
-        DictKind::VectorShard { .. } => "vas",
-        DictKind::VectorManifest { .. } => "vam",
-    }
+///
+/// All dict blob sub-kinds use a single extension because the CID codec
+/// (`CODEC_FLUREE_DICT_BLOB`) cannot distinguish sub-kinds. Using a uniform
+/// extension ensures that `cid_to_address()` resolves to the same path
+/// regardless of whether the caller knows the exact `DictKind`.
+fn dict_kind_extension(_dict: DictKind) -> &'static str {
+    "dict"
 }
 
 /// What a blob "is", so storage can choose its layout.
@@ -281,15 +278,27 @@ pub trait ContentAddressedWrite: StorageWrite {
 // Marker Trait
 // ============================================================================
 
+/// Identifies the storage method/scheme for CID-to-address mapping.
+///
+/// Every storage backend must declare its method name (e.g., `"file"`, `"memory"`,
+/// `"s3"`). This is used by [`StorageContentStore`] to map `ContentId` values to
+/// physical storage addresses via [`content_address`].
+///
+/// This trait is a supertrait of [`Storage`], ensuring that any type-erased
+/// `dyn Storage` (e.g., [`AnyStorage`]) automatically includes `storage_method()`.
+pub trait StorageMethod {
+    /// Return the storage method identifier (e.g., `"file"`, `"memory"`, `"s3"`).
+    fn storage_method(&self) -> &str;
+}
+
 /// Full storage capability marker
 ///
-/// This trait combines `StorageRead` and `ContentAddressedWrite` (which itself
-/// requires `StorageWrite`), providing a single bound for storage backends
-/// that support all operations.
+/// This trait combines `StorageRead`, `ContentAddressedWrite`, and `StorageMethod`,
+/// providing a single bound for storage backends that support all operations.
 ///
 /// Used for type erasure in `AnyStorage`.
-pub trait Storage: StorageRead + ContentAddressedWrite {}
-impl<T: StorageRead + ContentAddressedWrite> Storage for T {}
+pub trait Storage: StorageRead + ContentAddressedWrite + StorageMethod {}
+impl<T: StorageRead + ContentAddressedWrite + StorageMethod> Storage for T {}
 
 // ============================================================================
 // ContentStore Trait (CID-first storage abstraction)
@@ -441,12 +450,8 @@ impl<S: Storage> StorageContentStore<S> {
             crate::error::Error::storage(format!("unknown codec {} in CID {}", id.codec(), id))
         })?;
         let hex_digest = id.digest_hex();
-        Ok(content_address(
-            &self.method,
-            kind,
-            &self.ledger_id,
-            &hex_digest,
-        ))
+        let addr = content_address(&self.method, kind, &self.ledger_id, &hex_digest);
+        Ok(addr)
     }
 }
 
@@ -500,6 +505,20 @@ pub fn bridge_content_store<S: Storage>(
     method: &str,
 ) -> StorageContentStore<S> {
     StorageContentStore::new(storage, ledger_id, method)
+}
+
+/// Construct a `ContentStore` from a `Storage` backend using its declared method.
+///
+/// This is the preferred way to obtain a `ContentStore` — the method is derived
+/// from the storage's [`StorageMethod::storage_method()`] implementation, so
+/// callers never need to supply a method string manually.
+///
+/// The `namespace_id` is typically a ledger ID (e.g., `"mydb:main"`) or a
+/// graph source ID (e.g., `"my-search:main"`) — it determines the CAS
+/// namespace prefix for physical key layout.
+pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageContentStore<S> {
+    let method = storage.storage_method().to_string();
+    StorageContentStore::new(storage, namespace_id, method)
 }
 
 // ============================================================================
@@ -685,6 +704,12 @@ impl StorageWrite for MemoryStorage {
         // Idempotent: ok even if not found
         self.data.write().expect("RwLock poisoned").remove(address);
         Ok(())
+    }
+}
+
+impl StorageMethod for MemoryStorage {
+    fn storage_method(&self) -> &str {
+        "memory"
     }
 }
 
@@ -936,6 +961,13 @@ impl StorageWrite for FileStorage {
                 e
             ))),
         }
+    }
+}
+
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+impl StorageMethod for FileStorage {
+    fn storage_method(&self) -> &str {
+        "file"
     }
 }
 

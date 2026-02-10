@@ -79,16 +79,15 @@ Example: `t=42`
 
 Transaction is committed to storage:
 - Flakes written to transaction log
-- Commit metadata created (SHA, timestamp, etc.)
-- Commit address published to nameservice
+- Commit metadata created (ContentId, timestamp, etc.)
+- Commit ID published to nameservice
 
 **Commit Data:**
 ```json
 {
   "t": 42,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456...",
-  "address": "fluree:memory:commit:abc123...",
+  "commit_id": "bafybeig...commitT42",
   "flakes_added": 2,
   "flakes_retracted": 0
 }
@@ -98,7 +97,7 @@ Transaction is committed to storage:
 
 Nameservice is updated with new commit:
 - `commit_t` updated to 42
-- `commit_address` updated
+- `commit_id` updated
 - Other processes can see new commit
 
 ### 8. Indexing (Asynchronous)
@@ -112,7 +111,7 @@ Background process indexes the transaction:
 
 When indexing completes:
 - `index_t` updated to 42
-- `index_address` published
+- `index_id` published
 - Novelty layer reduced
 
 ## Transaction Components
@@ -279,8 +278,7 @@ Each commit includes rich metadata:
 **Core Fields:**
 - `t`: Transaction time
 - `timestamp`: ISO 8601 timestamp
-- `commit_sha`: Cryptographic hash
-- `address`: Storage address
+- `commit_id`: Content-addressed identifier (CIDv1)
 
 **Counts:**
 - `flakes_added`: Number of assertions
@@ -289,7 +287,7 @@ Each commit includes rich metadata:
 **Provenance:**
 - `author`: DID of transaction author (if signed)
 - `message`: Optional commit message
-- `previous_commit`: SHA of previous commit
+- `previous_commit_id`: ContentId of previous commit
 
 See [Commit Receipts](commit-receipts.md) for details.
 

@@ -235,7 +235,7 @@ See [Geospatial](../indexing-and-search/geospatial.md) for complete documentatio
 }
 ```
 
-**@vector** (full IRI: `https://ns.flur.ee/db#embeddingVector`, prefix form: `db:embeddingVector`) stores numeric arrays as embedding vectors. Values are quantized to IEEE-754 f32 at ingest for compact storage and SIMD-accelerated similarity computation. In Turtle/SPARQL, use `db:embeddingVector` with the `^^` typed-literal syntax.
+**@vector** (full IRI: `https://ns.flur.ee/db#embeddingVector`, prefix form: `f:embeddingVector`) stores numeric arrays as embedding vectors. Values are quantized to IEEE-754 f32 at ingest for compact storage and SIMD-accelerated similarity computation. In Turtle/SPARQL, use `f:embeddingVector` with the `^^` typed-literal syntax.
 
 Without this type annotation, plain JSON arrays are decomposed into individual RDF values where duplicates may be removed and ordering is lost.
 

@@ -36,9 +36,9 @@ pub enum LedgerError {
     #[error("Index at t={index_t} is older than current index at t={current_t}")]
     StaleIndex { index_t: i64, current_t: i64 },
 
-    /// Missing index address in nameservice record
-    #[error("Nameservice has index_t={index_t} for '{ledger_id}' but no index_address")]
-    MissingIndexAddress { ledger_id: String, index_t: i64 },
+    /// Missing index CID in nameservice record
+    #[error("Nameservice has index_t={index_t} for '{ledger_id}' but no index_head_id")]
+    MissingIndexId { ledger_id: String, index_t: i64 },
 
     /// No index exists at or before the requested time
     #[error("No index available at or before t={target_t} for '{ledger_id}' (earliest index at t={earliest_t})")]
@@ -76,9 +76,9 @@ impl LedgerError {
         Self::StaleIndex { index_t, current_t }
     }
 
-    /// Create a missing index address error
-    pub fn missing_index_address(ledger_id: impl Into<String>, index_t: i64) -> Self {
-        Self::MissingIndexAddress {
+    /// Create a missing index CID error
+    pub fn missing_index_id(ledger_id: impl Into<String>, index_t: i64) -> Self {
+        Self::MissingIndexId {
             ledger_id: ledger_id.into(),
             index_t,
         }

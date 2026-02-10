@@ -466,6 +466,8 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
 pub struct GarbageRef {
     /// Address of the garbage record file
     pub address: String,
+    /// Content hash (SHA-256 hex) of the garbage record
+    pub content_hash: String,
 }
 
 // === Index Schema (JSON parsing) ===

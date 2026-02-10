@@ -255,10 +255,10 @@ async fn run_status(store: &TomlSyncConfigStore, ledger: Option<&str>) -> CliRes
                 if let Some(t_val) = info.get("t").and_then(|v| v.as_i64()) {
                     println!("  t: {}", t_val);
                 }
-                if let Some(commit) = info.get("commit_address").and_then(|v| v.as_str()) {
+                if let Some(commit) = info.get("commit_head_id").and_then(|v| v.as_str()) {
                     println!("  commit: {}", commit);
                 }
-                if let Some(index) = info.get("index_address").and_then(|v| v.as_str()) {
+                if let Some(index) = info.get("index_head_id").and_then(|v| v.as_str()) {
                     println!("  index:  {}", index);
                 }
                 println!("  status: {}", "reachable".green());

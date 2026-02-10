@@ -85,11 +85,8 @@ struct NsFileV2 {
     #[serde(rename = "f:branch")]
     branch: String,
 
-    #[serde(rename = "f:ledgerCommit", skip_serializing_if = "Option::is_none")]
-    commit: Option<AddressRef>,
-
     /// Content identifier for the head commit (CID string, e.g. "bafy...").
-    /// Primary identity — persisted alongside the address for CAS comparisons.
+    /// This is the authoritative identity for the commit head pointer.
     #[serde(
         rename = "f:commitCid",
         skip_serializing_if = "Option::is_none",
@@ -152,11 +149,6 @@ struct AddressRef {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct IndexRef {
-    /// Storage address for this index root. `None` when only a CID is available
-    /// (CID-only nameservice records). Callers must not assume this is always present.
-    #[serde(rename = "@id", skip_serializing_if = "Option::is_none", default)]
-    id: Option<String>,
-
     /// Content identifier for this index root (CID string).
     #[serde(rename = "f:cid", skip_serializing_if = "Option::is_none", default)]
     cid: Option<String>,
@@ -212,14 +204,12 @@ struct ConfigRef {
     value: String,
 }
 
-/// Reference to a graph source index address with typed value
+/// Reference to a graph source index CID
 #[derive(Debug, Serialize, Deserialize)]
 struct GraphSourceIndexRef {
-    #[serde(rename = "@type")]
-    ref_type: String,
-
-    #[serde(rename = "@value")]
-    address: String,
+    /// Content identifier string for the graph source index snapshot
+    #[serde(rename = "f:graphSourceIndexCid")]
+    cid: String,
 }
 
 /// JSON structure for graph source index record (separate from config)
@@ -460,13 +450,11 @@ impl FileNameService {
             ledger_id: core_alias::format_alias(ledger_name, branch),
             name: main.ledger.id.clone(),
             branch: main.branch,
-            commit_address: main.commit.map(|c| c.id),
             commit_head_id: main
                 .commit_cid
                 .as_deref()
                 .and_then(|s| s.parse::<ContentId>().ok()),
             commit_t: main.t,
-            index_address: main.index.as_ref().and_then(|i| i.id.clone()),
             index_head_id: main
                 .index
                 .as_ref()
@@ -480,7 +468,6 @@ impl FileNameService {
         // Merge index file if it has equal or higher t (READ-TIME merge rule)
         if let Some(index_data) = index_file {
             if index_data.index.t >= record.index_t {
-                record.index_address = index_data.index.id;
                 record.index_head_id = index_data
                     .index
                     .cid
@@ -570,7 +557,7 @@ impl FileNameService {
             source_type,
             config: main.config.value,
             dependencies: main.dependencies,
-            index_address: None,
+            index_id: None,
             index_t: 0,
             retracted: main.status == "retracted",
         };
@@ -579,7 +566,7 @@ impl FileNameService {
         let index_file: Option<GraphSourceIndexFileV2WithT> = self.read_json(&index_path).await?;
         if let Some(index_data) = index_file {
             if index_data.index_t > record.index_t {
-                record.index_address = Some(index_data.index.address);
+                record.index_id = index_data.index.cid.parse::<ContentId>().ok();
                 record.index_t = index_data.index_t;
             }
         }
@@ -600,15 +587,10 @@ impl FileNameService {
                 id: record.name.clone(),
             },
             branch: record.branch.clone(),
-            commit: record
-                .commit_address
-                .as_ref()
-                .map(|a| AddressRef { id: a.clone() }),
             commit_cid: record.commit_head_id.as_ref().map(|cid| cid.to_string()),
             t: record.commit_t,
-            index: if record.index_address.is_some() || record.index_head_id.is_some() {
+            index: if record.index_head_id.is_some() {
                 Some(IndexRef {
-                    id: record.index_address.clone(),
                     cid: record.index_head_id.as_ref().map(|cid| cid.to_string()),
                     t: record.index_t,
                 })
@@ -747,7 +729,6 @@ impl Publisher for FileNameService {
                             id: ledger_name_for_file.clone(),
                         },
                         branch: branch_for_file.clone(),
-                        commit: None,
                         commit_cid: None,
                         t: 0,
                         index: None,
@@ -779,7 +760,6 @@ impl Publisher for FileNameService {
                     id: ledger_name.clone(),
                 },
                 branch: branch.clone(),
-                commit: None,
                 commit_cid: None,
                 t: 0,
                 index: None,
@@ -801,7 +781,6 @@ impl Publisher for FileNameService {
         ledger_id: &str,
         commit_t: i64,
         commit_id: &ContentId,
-        #[allow(unused_variables)] address_hint: Option<&str>,
     ) -> Result<()> {
         let (ledger_name, branch) = parse_address(ledger_id)?;
         let main_path = self.ns_path(&ledger_name, &branch);
@@ -811,7 +790,6 @@ impl Publisher for FileNameService {
             let path = main_path.clone();
             let commit_id_for_file = commit_id.clone();
             let commit_id_for_event = commit_id.clone();
-            let address_hint_owned = address_hint.map(|s| s.to_string());
             let ledger_name_for_file = ledger_name.clone();
             let branch_for_file = branch.clone();
             let address_for_event = core_alias::format_alias(&ledger_name, &branch);
@@ -821,16 +799,12 @@ impl Publisher for FileNameService {
 
             let res = self
                 .swap_json_locked::<NsFileV2, _>(path, move |existing| {
-                    // Address field: always use the storage address hint.
-                    // CID field: always persist the content identifier.
-                    let commit_ref = address_hint_owned.clone().map(|a| AddressRef { id: a });
                     let cid_str = Some(commit_id_for_file.to_string());
 
                     match existing {
                         Some(mut file) => {
                             // Strictly monotonic update
                             if commit_t > file.t {
-                                file.commit = commit_ref;
                                 file.commit_cid = cid_str;
                                 file.t = commit_t;
                                 did_update2.store(true, Ordering::SeqCst);
@@ -852,7 +826,6 @@ impl Publisher for FileNameService {
                                     id: ledger_name_for_file.clone(),
                                 },
                                 branch: branch_for_file.clone(),
-                                commit: commit_ref,
                                 commit_cid: cid_str,
                                 t: commit_t,
                                 index: None,
@@ -891,7 +864,6 @@ impl Publisher for FileNameService {
 
             let file = if let Some(mut file) = existing {
                 if commit_t > file.t {
-                    file.commit = address_hint.map(|a| AddressRef { id: a.to_string() });
                     file.commit_cid = Some(commit_id.to_string());
                     file.t = commit_t;
                     did_update = true;
@@ -902,10 +874,8 @@ impl Publisher for FileNameService {
                     ledger_id: core_alias::format_alias(&ledger_name, &branch),
                     name: ledger_name.clone(),
                     branch: branch.clone(),
-                    commit_address: address_hint.map(|s| s.to_string()),
                     commit_head_id: Some(commit_id.clone()),
                     commit_t,
-                    index_address: None,
                     index_head_id: None,
                     index_t: 0,
                     default_context: None,
@@ -932,7 +902,6 @@ impl Publisher for FileNameService {
         ledger_id: &str,
         index_t: i64,
         index_id: &ContentId,
-        #[allow(unused_variables)] address_hint: Option<&str>,
     ) -> Result<()> {
         let (ledger_name, branch) = parse_address(ledger_id)?;
         let index_path = self.index_path(&ledger_name, &branch);
@@ -942,7 +911,6 @@ impl Publisher for FileNameService {
             let path = index_path.clone();
             let index_id_for_event = index_id.clone();
             let cid_str = index_id.to_string();
-            let address_hint_owned = address_hint.map(|s| s.to_string());
             let address_for_event = core_alias::format_alias(&ledger_name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
@@ -958,7 +926,6 @@ impl Publisher for FileNameService {
                     let file = NsIndexFileV2 {
                         context: ns_context(),
                         index: IndexRef {
-                            id: address_hint_owned.clone(),
                             cid: Some(cid_str.clone()),
                             t: index_t,
                         },
@@ -991,7 +958,6 @@ impl Publisher for FileNameService {
             let file = NsIndexFileV2 {
                 context: ns_context(),
                 index: IndexRef {
-                    id: address_hint.map(|s| s.to_string()),
                     cid: Some(index_id.to_string()),
                     t: index_t,
                 },
@@ -1076,7 +1042,6 @@ impl AdminPublisher for FileNameService {
         ledger_id: &str,
         index_t: i64,
         index_id: &ContentId,
-        #[allow(unused_variables)] address_hint: Option<&str>,
     ) -> Result<()> {
         let (ledger_name, branch) = parse_address(ledger_id)?;
         let index_path = self.index_path(&ledger_name, &branch);
@@ -1086,7 +1051,6 @@ impl AdminPublisher for FileNameService {
         {
             let index_id_for_event = index_id.clone();
             let cid_str = index_id.to_string();
-            let address_hint_owned = address_hint.map(|s| s.to_string());
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1102,7 +1066,6 @@ impl AdminPublisher for FileNameService {
                         Ok(Some(NsIndexFileV2 {
                             context: ns_context(),
                             index: IndexRef {
-                                id: address_hint_owned.clone(),
                                 cid: Some(cid_str.clone()),
                                 t: index_t,
                             },
@@ -1138,7 +1101,6 @@ impl AdminPublisher for FileNameService {
                 let file = NsIndexFileV2 {
                     context: ns_context(),
                     index: IndexRef {
-                        id: address_hint.map(|s| s.to_string()),
                         cid: Some(index_id.to_string()),
                         t: index_t,
                     },
@@ -1264,7 +1226,7 @@ impl GraphSourcePublisher for FileNameService {
         &self,
         name: &str,
         branch: &str,
-        index_addr: &str,
+        index_id: &ContentId,
         index_t: i64,
     ) -> Result<()> {
         let index_path = self.index_path(name, branch);
@@ -1272,10 +1234,10 @@ impl GraphSourcePublisher for FileNameService {
         #[cfg(all(feature = "native", unix))]
         {
             let path = index_path.clone();
-            let index_addr = index_addr.to_string();
+            let cid_str = index_id.to_string();
+            let index_id_for_event = index_id.clone();
             let name = name.to_string();
             let branch = branch.to_string();
-            let index_addr_for_event = index_addr.clone();
             let address_for_event = core_alias::format_alias(&name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
@@ -1292,10 +1254,7 @@ impl GraphSourcePublisher for FileNameService {
                     let file = GraphSourceIndexFileV2WithT {
                         context: ns_context(),
                         id: core_alias::format_alias(&name, &branch),
-                        index: GraphSourceIndexRef {
-                            ref_type: "f:Address".to_string(),
-                            address: index_addr,
-                        },
+                        index: GraphSourceIndexRef { cid: cid_str },
                         index_t,
                     };
                     did_update2.store(true, Ordering::SeqCst);
@@ -1308,7 +1267,7 @@ impl GraphSourcePublisher for FileNameService {
                     .event_tx
                     .send(NameServiceEvent::GraphSourceIndexPublished {
                         address: address_for_event,
-                        index_address: index_addr_for_event,
+                        index_id: index_id_for_event,
                         index_t,
                     });
             }
@@ -1327,10 +1286,9 @@ impl GraphSourcePublisher for FileNameService {
 
             let file = GraphSourceIndexFileV2WithT {
                 context: ns_context(),
-                id: core_alias::format_alias(&name, &branch),
+                id: core_alias::format_alias(name, branch),
                 index: GraphSourceIndexRef {
-                    ref_type: "f:Address".to_string(),
-                    address: index_addr.to_string(),
+                    cid: index_id.to_string(),
                 },
                 index_t,
             };
@@ -1338,8 +1296,8 @@ impl GraphSourcePublisher for FileNameService {
             let _ = self
                 .event_tx
                 .send(NameServiceEvent::GraphSourceIndexPublished {
-                    address: core_alias::format_alias(&name, &branch),
-                    index_address: index_addr.to_string(),
+                    address: core_alias::format_alias(name, branch),
+                    index_id: index_id.clone(),
                     index_t,
                 });
             Ok(())
@@ -1510,7 +1468,6 @@ impl RefPublisher for FileNameService {
                             .commit_cid
                             .as_deref()
                             .and_then(|s| s.parse::<ContentId>().ok()),
-                        address: f.commit.map(|c| c.id),
                         t: f.t,
                     })),
                 }
@@ -1527,7 +1484,6 @@ impl RefPublisher for FileNameService {
                             .cid
                             .as_deref()
                             .and_then(|s| s.parse::<ContentId>().ok()),
-                        address: idx.index.id,
                         t: idx.index.t,
                     }));
                 }
@@ -1543,7 +1499,6 @@ impl RefPublisher for FileNameService {
                             .as_ref()
                             .and_then(|i| i.cid.as_deref())
                             .and_then(|s| s.parse::<ContentId>().ok()),
-                        address: f.index.as_ref().and_then(|i| i.id.clone()),
                         t: f.index.as_ref().map(|i| i.t).unwrap_or(0),
                     })),
                 }
@@ -1581,7 +1536,6 @@ impl RefPublisher for FileNameService {
                             .commit_cid
                             .as_deref()
                             .and_then(|s| s.parse::<ContentId>().ok()),
-                        address: f.commit.as_ref().map(|c| c.id.clone()),
                         t: f.t,
                     });
 
@@ -1599,11 +1553,11 @@ impl RefPublisher for FileNameService {
                             return Ok(None);
                         }
                         (Some(exp), Some(actual)) => {
-                            // Prefer id comparison when both sides have it,
-                            // fall back to address comparison otherwise.
+                            // Compare on ContentId identity.
                             let identity_matches = match (&exp.id, &actual.id) {
                                 (Some(a), Some(b)) => a == b,
-                                _ => exp.address == actual.address,
+                                (None, None) => true,
+                                _ => false,
                             };
                             if !identity_matches {
                                 *result_cell2.lock().unwrap() = CasResult::Conflict {
@@ -1634,7 +1588,6 @@ impl RefPublisher for FileNameService {
                                 id: ledger_name_c.clone(),
                             },
                             branch: branch_c.clone(),
-                            commit: None,
                             commit_cid: None,
                             t: 0,
                             index: None,
@@ -1648,12 +1601,7 @@ impl RefPublisher for FileNameService {
                         }
                     });
 
-                    // Address goes into the AddressRef (@id field);
-                    // CID goes into the separate commit_cid field.
-                    file.commit = new_clone
-                        .address
-                        .as_ref()
-                        .map(|a| AddressRef { id: a.clone() });
+                    // CID goes into the commit_cid field.
                     file.commit_cid = new_clone.id.as_ref().map(|cid| cid.to_string());
                     file.t = new_clone.t;
 
@@ -1686,7 +1634,6 @@ impl RefPublisher for FileNameService {
                             .cid
                             .as_deref()
                             .and_then(|s| s.parse::<ContentId>().ok()),
-                        address: f.index.id.clone(),
                         t: f.index.t,
                     });
 
@@ -1704,11 +1651,11 @@ impl RefPublisher for FileNameService {
                             return Ok(None);
                         }
                         (Some(exp), Some(actual)) => {
-                            // Prefer id comparison when both sides have it,
-                            // fall back to address comparison otherwise.
+                            // Compare on ContentId identity.
                             let identity_matches = match (&exp.id, &actual.id) {
                                 (Some(a), Some(b)) => a == b,
-                                _ => exp.address == actual.address,
+                                (None, None) => true,
+                                _ => false,
                             };
                             if !identity_matches {
                                 *result_cell2.lock().unwrap() = CasResult::Conflict {
@@ -1729,12 +1676,10 @@ impl RefPublisher for FileNameService {
                         }
                     }
 
-                    // Apply update: address goes into IndexRef.id (@id field);
-                    // CID goes into IndexRef.cid (f:cid field).
+                    // Apply update: CID goes into IndexRef.cid.
                     let file = NsIndexFileV2 {
                         context: ns_context(),
                         index: IndexRef {
-                            id: new_clone.address.clone(),
                             cid: new_clone.id.as_ref().map(|cid| cid.to_string()),
                             t: new_clone.t,
                         },
@@ -1772,21 +1717,9 @@ impl Publication for FileNameService {
         Ok(())
     }
 
-    async fn known_addresses(&self, ledger_id: &str) -> Result<Vec<String>> {
-        let (name, branch) = parse_address(ledger_id)?;
-        match self.load_record(&name, &branch).await? {
-            Some(record) => {
-                let mut addresses = Vec::new();
-                if let Some(addr) = record.commit_address {
-                    addresses.push(addr);
-                }
-                if let Some(addr) = record.index_address {
-                    addresses.push(addr);
-                }
-                Ok(addresses)
-            }
-            None => Ok(vec![]),
-        }
+    async fn known_addresses(&self, _ledger_id: &str) -> Result<Vec<String>> {
+        // CID-only nameservice no longer stores storage addresses.
+        Ok(vec![])
     }
 }
 
@@ -2160,9 +2093,7 @@ mod tests {
             .unwrap();
 
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1, None)
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
         let evt = sub.receiver.recv().await.unwrap();
         assert_eq!(
             evt,
@@ -2175,9 +2106,7 @@ mod tests {
 
         // Lower t should not emit a new event.
         let cid_old = test_cid("commit-old");
-        ns.publish_commit("mydb:main", 0, &cid_old, None)
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 0, &cid_old).await.unwrap();
         assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
@@ -2189,33 +2118,24 @@ mod tests {
         let cid2 = test_cid("commit-2");
         let cid_old = test_cid("commit-old");
 
-        // First publish (with address hint)
-        ns.publish_commit("mydb:main", 1, &cid1, Some("addr-1"))
-            .await
-            .unwrap();
+        // First publish
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.commit_address, Some("addr-1".to_string()));
         assert_eq!(record.commit_head_id, Some(cid1.clone()));
         assert_eq!(record.commit_t, 1);
 
         // Higher t should update
-        ns.publish_commit("mydb:main", 5, &cid2, Some("addr-2"))
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 5, &cid2).await.unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.commit_address, Some("addr-2".to_string()));
         assert_eq!(record.commit_head_id, Some(cid2.clone()));
         assert_eq!(record.commit_t, 5);
 
         // Lower t should be ignored
-        ns.publish_commit("mydb:main", 3, &cid_old, Some("addr-old"))
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 3, &cid_old).await.unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.commit_address, Some("addr-2".to_string()));
         assert_eq!(record.commit_head_id, Some(cid2.clone()));
         assert_eq!(record.commit_t, 5);
     }
@@ -2228,19 +2148,16 @@ mod tests {
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-1");
 
         // Publish commit
-        ns.publish_commit("mydb:main", 10, &commit_cid, Some("commit-addr"))
+        ns.publish_commit("mydb:main", 10, &commit_cid)
             .await
             .unwrap();
 
-        // Publish index (written to separate file, with address hint)
-        ns.publish_index("mydb:main", 5, &index_cid, Some("index-addr"))
-            .await
-            .unwrap();
+        // Publish index (written to separate file)
+        ns.publish_index("mydb:main", 5, &index_cid).await.unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_t, 10);
         assert_eq!(record.index_t, 5);
-        assert_eq!(record.index_address, Some("index-addr".to_string()));
         assert_eq!(record.index_head_id, Some(index_cid));
         assert!(record.has_novelty());
     }
@@ -2253,31 +2170,30 @@ mod tests {
         let index_new_cid = ContentId::new(ContentKind::IndexRoot, b"index-new");
 
         // Publish commit with embedded index
-        ns.publish_commit("mydb:main", 10, &commit_cid, Some("commit-addr"))
+        ns.publish_commit("mydb:main", 10, &commit_cid)
             .await
             .unwrap();
 
         // Manually add index to main file
         let main_path = temp.path().join("ns@v2/mydb/main.json");
+        let index_old_cid = ContentId::new(ContentKind::IndexRoot, b"index-old");
         let mut content: NsFileV2 =
             serde_json::from_str(&tokio::fs::read_to_string(&main_path).await.unwrap()).unwrap();
         content.index = Some(IndexRef {
-            id: Some("index-old-addr".to_string()),
-            cid: None,
+            cid: Some(index_old_cid.to_string()),
             t: 5,
         });
         tokio::fs::write(&main_path, serde_json::to_string_pretty(&content).unwrap())
             .await
             .unwrap();
 
-        // Publish newer index to separate file (with address hint)
-        ns.publish_index("mydb:main", 8, &index_new_cid, Some("index-new-addr"))
+        // Publish newer index to separate file
+        ns.publish_index("mydb:main", 8, &index_new_cid)
             .await
             .unwrap();
 
         // Lookup should prefer the index file (8 >= 5)
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.index_address, Some("index-new-addr".to_string()));
         assert_eq!(record.index_head_id, Some(index_new_cid));
         assert_eq!(record.index_t, 8);
     }
@@ -2286,13 +2202,13 @@ mod tests {
     async fn test_file_ns_all_records() {
         let (_temp, ns) = setup().await;
 
-        ns.publish_commit("db1:main", 1, &test_cid("commit-1"), None)
+        ns.publish_commit("db1:main", 1, &test_cid("commit-1"))
             .await
             .unwrap();
-        ns.publish_commit("db2:main", 1, &test_cid("commit-2"), None)
+        ns.publish_commit("db2:main", 1, &test_cid("commit-2"))
             .await
             .unwrap();
-        ns.publish_commit("db3:dev", 1, &test_cid("commit-3"), None)
+        ns.publish_commit("db3:dev", 1, &test_cid("commit-3"))
             .await
             .unwrap();
 
@@ -2304,7 +2220,7 @@ mod tests {
     async fn test_file_ns_ledger_with_slash() {
         let (_temp, ns) = setup().await;
 
-        ns.publish_commit("tenant/customers:main", 1, &test_cid("commit-1"), None)
+        ns.publish_commit("tenant/customers:main", 1, &test_cid("commit-1"))
             .await
             .unwrap();
 
@@ -2336,7 +2252,7 @@ mod tests {
         assert_eq!(record.source_type, GraphSourceType::Bm25);
         assert_eq!(record.config, config);
         assert_eq!(record.dependencies, deps);
-        assert_eq!(record.index_address, None);
+        assert_eq!(record.index_id, None);
         assert_eq!(record.index_t, 0);
         assert!(!record.retracted);
     }
@@ -2354,17 +2270,15 @@ mod tests {
             .unwrap();
 
         // Publish graph source index
-        ns.publish_graph_source_index("my-gs", "main", "fluree:file://index/snapshot.bin", 42)
+        let gs_index_cid = ContentId::new(ContentKind::IndexRoot, b"gs-index-1");
+        ns.publish_graph_source_index("my-gs", "main", &gs_index_cid, 42)
             .await
             .unwrap();
 
         // Lookup should merge config + index
         let record = ns.lookup_graph_source("my-gs:main").await.unwrap().unwrap();
         assert_eq!(record.config, config);
-        assert_eq!(
-            record.index_address,
-            Some("fluree:file://index/snapshot.bin".to_string())
-        );
+        assert_eq!(record.index_id, Some(gs_index_cid));
         assert_eq!(record.index_t, 42);
     }
 
@@ -2378,35 +2292,40 @@ mod tests {
             .unwrap();
 
         // First index publish
-        ns.publish_graph_source_index("gs", "main", "index-v1", 10)
+        let gs_cid_v1 = ContentId::new(ContentKind::IndexRoot, b"index-v1");
+        let gs_cid_v2 = ContentId::new(ContentKind::IndexRoot, b"index-v2");
+        let gs_cid_old = ContentId::new(ContentKind::IndexRoot, b"index-old");
+        let gs_cid_same = ContentId::new(ContentKind::IndexRoot, b"index-same");
+
+        ns.publish_graph_source_index("gs", "main", &gs_cid_v1, 10)
             .await
             .unwrap();
 
         // Higher t should update
-        ns.publish_graph_source_index("gs", "main", "index-v2", 20)
+        ns.publish_graph_source_index("gs", "main", &gs_cid_v2, 20)
             .await
             .unwrap();
 
         let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
-        assert_eq!(record.index_address, Some("index-v2".to_string()));
+        assert_eq!(record.index_id, Some(gs_cid_v2.clone()));
         assert_eq!(record.index_t, 20);
 
         // Lower t should be ignored (monotonic rule)
-        ns.publish_graph_source_index("gs", "main", "index-old", 15)
+        ns.publish_graph_source_index("gs", "main", &gs_cid_old, 15)
             .await
             .unwrap();
 
         let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
-        assert_eq!(record.index_address, Some("index-v2".to_string()));
+        assert_eq!(record.index_id, Some(gs_cid_v2.clone()));
         assert_eq!(record.index_t, 20);
 
         // Equal t should also be ignored
-        ns.publish_graph_source_index("gs", "main", "index-same", 20)
+        ns.publish_graph_source_index("gs", "main", &gs_cid_same, 20)
             .await
             .unwrap();
 
         let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
-        assert_eq!(record.index_address, Some("index-v2".to_string()));
+        assert_eq!(record.index_id, Some(gs_cid_v2));
     }
 
     #[tokio::test]
@@ -2431,7 +2350,7 @@ mod tests {
         let (_temp, ns) = setup().await;
 
         // Create a regular ledger
-        ns.publish_commit("ledger:main", 1, &test_cid("commit-1"), None)
+        ns.publish_commit("ledger:main", 1, &test_cid("commit-1"))
             .await
             .unwrap();
 
@@ -2463,7 +2382,7 @@ mod tests {
         let (_temp, ns) = setup().await;
 
         // Create a regular ledger
-        ns.publish_commit("ledger:main", 1, &test_cid("commit-1"), None)
+        ns.publish_commit("ledger:main", 1, &test_cid("commit-1"))
             .await
             .unwrap();
 
@@ -2482,7 +2401,8 @@ mod tests {
             .unwrap();
 
         // Publish index
-        ns.publish_graph_source_index("gs", "main", "index-1", 10)
+        let gs_idx_cid = ContentId::new(ContentKind::IndexRoot, b"gs-index-1");
+        ns.publish_graph_source_index("gs", "main", &gs_idx_cid, 10)
             .await
             .unwrap();
 
@@ -2494,7 +2414,7 @@ mod tests {
         let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert_eq!(record.config, r#"{"v":2}"#);
         // Index should still be present (from separate file)
-        assert_eq!(record.index_address, Some("index-1".to_string()));
+        assert_eq!(record.index_id, Some(gs_idx_cid));
         assert_eq!(record.index_t, 10);
     }
 
@@ -2574,9 +2494,7 @@ mod tests {
     async fn test_file_ref_get_ref_after_publish() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 5, &cid1, Some("commit-addr"))
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 5, &cid1).await.unwrap();
 
         let commit = ns
             .get_ref("mydb:main", RefKind::CommitHead)
@@ -2584,18 +2502,13 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(commit.id, Some(cid1));
-        assert_eq!(commit.address, Some("commit-addr".to_string()));
         assert_eq!(commit.t, 5);
     }
 
     #[tokio::test]
     async fn test_file_ref_cas_create_new() {
         let (_dir, ns) = setup().await;
-        let new_ref = RefValue {
-            id: None,
-            address: Some("commit-1".to_string()),
-            t: 1,
-        };
+        let new_ref = RefValue { id: None, t: 1 };
 
         let result = ns
             .compare_and_set_ref("mydb:main", RefKind::CommitHead, None, &new_ref)
@@ -2608,7 +2521,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(current.address, Some("commit-1".to_string()));
+        assert_eq!(current.id, None);
         assert_eq!(current.t, 1);
     }
 
@@ -2616,15 +2529,9 @@ mod tests {
     async fn test_file_ref_cas_conflict_already_exists() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1, Some("addr-1"))
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
-        let new_ref = RefValue {
-            id: None,
-            address: Some("commit-2".to_string()),
-            t: 2,
-        };
+        let new_ref = RefValue { id: None, t: 2 };
         let result = ns
             .compare_and_set_ref("mydb:main", RefKind::CommitHead, None, &new_ref)
             .await
@@ -2633,28 +2540,24 @@ mod tests {
             CasResult::Conflict { actual } => {
                 let a = actual.unwrap();
                 assert_eq!(a.id, Some(cid1));
-                assert_eq!(a.address, Some("addr-1".to_string()));
             }
             _ => panic!("expected conflict"),
         }
     }
 
     #[tokio::test]
-    async fn test_file_ref_cas_address_mismatch() {
+    async fn test_file_ref_cas_cid_mismatch() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1, None)
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
+        let wrong_cid = test_cid("wrong");
         let expected = RefValue {
-            id: None,
-            address: Some("wrong".to_string()),
+            id: Some(wrong_cid),
             t: 1,
         };
         let new_ref = RefValue {
-            id: None,
-            address: Some("commit-2".to_string()),
+            id: Some(test_cid("commit-2")),
             t: 2,
         };
         let result = ns
@@ -2671,19 +2574,16 @@ mod tests {
     async fn test_file_ref_cas_success() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1, Some("addr-1"))
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
-        // Expected must match what's stored: id from CID, address from hint
+        // Expected must match what's stored: id from CID
         let expected = RefValue {
             id: Some(cid1.clone()),
-            address: Some("addr-1".to_string()),
             t: 1,
         };
+        let cid2 = test_cid("commit-2");
         let new_ref = RefValue {
-            id: None,
-            address: Some("commit-2".to_string()),
+            id: Some(cid2.clone()),
             t: 2,
         };
         let result = ns
@@ -2697,7 +2597,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(current.address, Some("commit-2".to_string()));
+        assert_eq!(current.id, Some(cid2));
         assert_eq!(current.t, 2);
     }
 
@@ -2705,18 +2605,14 @@ mod tests {
     async fn test_file_ref_cas_commit_strict_monotonic() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 5, &cid1, None)
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 5, &cid1).await.unwrap();
 
         let expected = RefValue {
-            id: None,
-            address: Some(cid1.to_string()),
+            id: Some(cid1),
             t: 5,
         };
         let new_ref = RefValue {
-            id: None,
-            address: Some("commit-2".to_string()),
+            id: Some(test_cid("commit-2")),
             t: 5,
         };
         let result = ns
@@ -2734,22 +2630,19 @@ mod tests {
         let (_dir, ns) = setup().await;
         let commit_cid = test_cid("commit-1");
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-1");
-        ns.publish_commit("mydb:main", 5, &commit_cid, Some("commit-addr"))
+        ns.publish_commit("mydb:main", 5, &commit_cid)
             .await
             .unwrap();
-        ns.publish_index("mydb:main", 5, &index_cid, Some("index-addr"))
-            .await
-            .unwrap();
+        ns.publish_index("mydb:main", 5, &index_cid).await.unwrap();
 
-        // Expected must match stored: id from CID, address from hint
+        // Expected must match stored: id from CID
         let expected = RefValue {
             id: Some(index_cid),
-            address: Some("index-addr".to_string()),
             t: 5,
         };
+        let index_cid2 = ContentId::new(ContentKind::IndexRoot, b"index-2");
         let new_ref = RefValue {
-            id: None,
-            address: Some("index-2".to_string()),
+            id: Some(index_cid2),
             t: 5,
         };
         let result = ns
@@ -2763,13 +2656,10 @@ mod tests {
     async fn test_file_ref_fast_forward_commit() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1, None)
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
         let new_ref = RefValue {
-            id: None,
-            address: Some("commit-5".to_string()),
+            id: Some(test_cid("commit-5")),
             t: 5,
         };
         let result = ns
@@ -2790,13 +2680,10 @@ mod tests {
     async fn test_file_ref_fast_forward_rejected_stale() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 10, &cid1, None)
-            .await
-            .unwrap();
+        ns.publish_commit("mydb:main", 10, &cid1).await.unwrap();
 
         let new_ref = RefValue {
-            id: None,
-            address: Some("old".to_string()),
+            id: Some(test_cid("old")),
             t: 5,
         };
         let result = ns
@@ -2816,12 +2703,10 @@ mod tests {
         let (_dir, ns) = setup().await;
         let commit_cid = test_cid("commit-1");
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-1");
-        ns.publish_commit("mydb:main", 5, &commit_cid, Some("addr://commit-1"))
+        ns.publish_commit("mydb:main", 5, &commit_cid)
             .await
             .unwrap();
-        ns.publish_index("mydb:main", 3, &index_cid, Some("addr://index-1"))
-            .await
-            .unwrap();
+        ns.publish_index("mydb:main", 3, &index_cid).await.unwrap();
 
         let index = ns
             .get_ref("mydb:main", RefKind::IndexHead)
@@ -2829,7 +2714,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(index.id, Some(index_cid));
-        assert_eq!(index.address, Some("addr://index-1".to_string()));
         assert_eq!(index.t, 3);
     }
 

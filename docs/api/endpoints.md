@@ -149,11 +149,10 @@ WHERE {
 {
   "t": 5,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456789...",
-  "address": "fluree:memory:commit:abc123...",
+  "commit_id": "bafybeig...commitT5",
   "flakes_added": 3,
   "flakes_retracted": 1,
-  "previous_commit": "def456abc789..."
+  "previous_commit_id": "bafybeig...commitT4"
 }
 ```
 
@@ -340,14 +339,13 @@ Export commit blobs from a ledger using stable cursors. Pages walk backward via 
 **URL:**
 
 ```
-GET /commits/<ledger...>?limit=100&cursor=<address>
+GET /commits/<ledger...>?limit=100&cursor_id=<cid>
 ```
 
 **Query Parameters:**
 
 - `limit` (optional): Max commits per page (default 100, server clamps to max 500)
-- `cursor` (optional): Backward-compatible cursor. Accepts either a legacy commit address or a commit CID string. Omit for first page (starts from head). Use `next_cursor` / `next_cursor_id` from previous response for subsequent pages.
-- `cursor_id` (optional): Preferred cursor as a commit CID string (storage-agnostic identity). If both `cursor` and `cursor_id` are provided, `cursor_id` wins.
+- `cursor_id` (optional): Commit CID cursor for pagination. Omit for first page (starts from head). Use `next_cursor_id` from the previous response for subsequent pages.
 
 **Request Headers:**
 
@@ -360,14 +358,12 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 ```json
 {
   "ledger": "mydb:main",
-  "head_address": "fluree:file://mydb:main/commit/abc123.fcv2",
   "head_commit_id": "bafy...headCommit",
   "head_t": 42,
   "commits": ["<base64>", "<base64>"],
   "blobs": { "bafy...txnBlob": "<base64>" },
   "newest_t": 42,
   "oldest_t": 41,
-  "next_cursor": "fluree:file://mydb:main/commit/prev789.fcv2",
   "next_cursor_id": "bafy...prevCommit",
   "count": 2,
   "effective_limit": 100
@@ -376,8 +372,7 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 
 - `commits`: Raw commit v2 blobs, newest → oldest within each page.
 - `blobs`: Referenced txn blobs keyed by CID string.
-- `next_cursor`: Legacy address for the next page (may be omitted by future servers); `null` when genesis is reached.
-- `next_cursor_id`: Preferred CID cursor for the next page; omitted/`null` when genesis is reached.
+- `next_cursor_id`: CID cursor for the next page; `null` when genesis is reached.
 - `effective_limit`: Actual limit used (after server clamping).
 
 **Responses:**
@@ -388,7 +383,7 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 
 **Pagination:**
 
-Commit CIDs in the immutable CAS chain are stable cursors. New commits appended to the head do not affect backward pointers, so cursors remain valid across pages even when new commits arrive between requests. Legacy address cursors remain supported for backward compatibility but are transport/location hints rather than identity.
+Commit CIDs in the immutable chain are stable cursors. New commits appended to the head do not affect backward pointers, so cursors remain valid across pages even when new commits arrive between requests.
 
 ## Query Endpoints
 
@@ -553,14 +548,14 @@ curl -X POST http://localhost:8090/query \
 curl -X POST http://localhost:8090/query \
   -H "Content-Type: application/sparql-query" \
   -d 'PREFIX ex: <http://example.org/ns/>
-PREFIX db: <https://ns.flur.ee/db#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?name ?t ?op
 FROM <mydb:main@t:1>
 TO <mydb:main@t:latest>
 WHERE {
-  << ex:alice ex:name ?name >> db:t ?t .
-  << ex:alice ex:name ?name >> db:op ?op .
+  << ex:alice ex:name ?name >> f:t ?t .
+  << ex:alice ex:name ?name >> f:op ?op .
 }
 ORDER BY ?t'
 ```
@@ -593,11 +588,11 @@ Accept: application/sparql-results+json
 ```json
 {
   "@context": {
-    "db": "https://ns.flur.ee/db#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?ledger", "?branch", "?t"],
   "where": [
-    { "@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:branch": "?branch", "db:t": "?t" }
+    { "@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger", "f:branch": "?branch", "f:t": "?t" }
   ],
   "orderBy": [{"var": "?t", "desc": true}]
 }
@@ -606,14 +601,14 @@ Accept: application/sparql-results+json
 **Request Body (SPARQL):**
 
 ```sparql
-PREFIX db: <https://ns.flur.ee/db#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?ledger ?branch ?t
 WHERE {
-  ?ns a db:LedgerSource ;
-      db:ledger ?ledger ;
-      db:branch ?branch ;
-      db:t ?t .
+  ?ns a f:LedgerSource ;
+      f:ledger ?ledger ;
+      f:branch ?branch ;
+      f:t ?t .
 }
 ORDER BY DESC(?t)
 ```
@@ -649,21 +644,21 @@ ORDER BY DESC(?t)
 
 **Available Properties:**
 
-Ledger records (`@type: "db:LedgerSource"`):
-- `db:ledger` - Ledger name
-- `db:branch` - Branch name
-- `db:t` - Transaction number
-- `db:status` - "ready" or "retracted"
-- `db:ledgerCommit` - Commit address reference
-- `db:ledgerIndex` - Index info with address and t
+Ledger records (`@type: "f:LedgerSource"`):
+- `f:ledger` - Ledger name
+- `f:branch` - Branch name
+- `f:t` - Transaction number
+- `f:status` - "ready" or "retracted"
+- `f:ledgerCommit` - Commit ContentId reference
+- `f:ledgerIndex` - Index info with ContentId and t
 
-Graph source records (`@type: "db:GraphSourceDatabase"`):
-- `db:name` - Graph source name
-- `db:branch` - Branch name
-- `db:config` - Configuration JSON
-- `db:dependencies` - Source ledger dependencies
-- `db:indexAddress` - Index address
-- `db:indexT` - Index t value
+Graph source records (`@type: "f:GraphSourceDatabase"`):
+- `f:name` - Graph source name
+- `f:branch` - Branch name
+- `f:config` - Configuration JSON
+- `f:dependencies` - Source ledger dependencies
+- `f:indexId` - Index ContentId
+- `f:indexT` - Index t value
 
 **Status Codes:**
 - `200 OK` - Query successful
@@ -677,18 +672,18 @@ Graph source records (`@type: "db:GraphSourceDatabase"`):
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
-    "@context": {"db": "https://ns.flur.ee/db#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?ledger"],
-    "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:branch": "main"}]
+    "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
   }'
 
 # Find all graph sources
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
-    "@context": {"db": "https://ns.flur.ee/db#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?name", "?type"],
-    "where": [{"@id": "?gs", "@type": "db:GraphSourceDatabase", "db:name": "?name"}]
+    "where": [{"@id": "?gs", "@type": "f:GraphSourceDatabase", "f:name": "?name"}]
   }'
 ```
 
@@ -754,8 +749,8 @@ GET /ledgers/{ledger-id}
   "branch": "main",
   "commit_t": 5,
   "index_t": 5,
-  "commit_address": "fluree:memory:commit:abc123...",
-  "index_address": "fluree:memory:index:def456...",
+  "commit_id": "bafybeig...commitT5",
+  "index_id": "bafybeig...indexRootT5",
   "created": "2024-01-22T10:00:00.000Z",
   "last_updated": "2024-01-22T10:30:00.000Z",
   "retracted": false
@@ -837,11 +832,7 @@ POST /fluree/create
 {
   "ledger": "mydb:main",
   "t": 0,
-  "tx-id": "fluree:tx:sha256:abc123...",
-  "commit": {
-    "address": "fluree:memory://mydb/main/head",
-    "hash": ""
-  }
+  "commit_id": "bafybeig...commitT0"
 }
 ```
 
@@ -849,8 +840,7 @@ POST /fluree/create
 |-------|-------------|
 | `ledger` | Normalized ledger ID |
 | `t` | Transaction time (0 for new ledger) |
-| `tx-id` | Transaction ID (SHA-256 hash of request) |
-| `commit` | Commit information |
+| `commit_id` | ContentId of the initial commit |
 
 **Status Codes:**
 - `201 Created` - Ledger created successfully

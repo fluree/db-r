@@ -4,9 +4,8 @@ use crate::{
     ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage,
     TypeErasedStore,
 };
-use fluree_db_indexer::run_index::{
-    BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2,
-};
+use fluree_db_core::ContentStore;
+use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION};
 use fluree_db_nameservice::{NameServiceError, Publisher};
 use fluree_db_query::BinaryRangeProvider;
 
@@ -33,41 +32,43 @@ where
         //
         // Note: we may already have a `Db.range_provider` (e.g. created during Db::load),
         // but we still want `binary_store` so query execution can use `BinaryScanOperator`.
-        if let Some(index_addr) = state
+        if let Some(index_cid) = state
             .ns_record
             .as_ref()
-            .and_then(|r| r.index_address.as_ref())
+            .and_then(|r| r.index_head_id.as_ref())
             .cloned()
         {
             if state.db.range_provider.is_none() || state.binary_store.is_none() {
                 let storage = self.connection.storage();
-                let bytes = storage.read_bytes(&index_addr).await.map_err(|e| {
+                let cs =
+                    fluree_db_core::content_store_for(storage.clone(), state.db.ledger_id.as_str());
+                let bytes = cs.get(&index_cid).await.map_err(|e| {
                     ApiError::internal(format!(
-                        "failed to read binary index root at {}: {}",
-                        index_addr, e
+                        "failed to read binary index root for {}: {}",
+                        index_cid, e
                     ))
                 })?;
 
-                let root = serde_json::from_slice::<BinaryIndexRootV2>(&bytes).map_err(|e| {
+                let root = serde_json::from_slice::<BinaryIndexRoot>(&bytes).map_err(|e| {
                     ApiError::internal(format!(
-                        "failed to parse binary index root at {}: {}",
-                        index_addr, e
+                        "failed to parse binary index root for {}: {}",
+                        index_cid, e
                     ))
                 })?;
-                if root.version != BINARY_INDEX_ROOT_VERSION_V2 {
+                if root.version != BINARY_INDEX_ROOT_VERSION {
                     return Err(ApiError::internal(format!(
-                        "unsupported binary index root version {} at {} (expected {})",
-                        root.version, index_addr, BINARY_INDEX_ROOT_VERSION_V2
+                        "unsupported binary index root version {} for {} (expected {})",
+                        root.version, index_cid, BINARY_INDEX_ROOT_VERSION
                     )));
                 }
 
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
-                let store = BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
+                let store = BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
                     .await
                     .map_err(|e| {
                         ApiError::internal(format!(
-                            "failed to load binary index store from {}: {}",
-                            index_addr, e
+                            "failed to load binary index store for {}: {}",
+                            index_cid, e
                         ))
                     })?;
 

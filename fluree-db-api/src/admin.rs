@@ -512,7 +512,7 @@ where
         }
 
         // Handle no-commit ledgers (nothing to index)
-        if record.commit_address.is_none() {
+        if record.commit_head_id.is_none() {
             info!(ledger_id = %ledger_id, "No commits to index");
             return Ok(TriggerIndexResult {
                 ledger_id,
@@ -534,12 +534,19 @@ where
             tokio::time::timeout(Duration::from_millis(timeout_ms), completion.wait()).await;
 
         match result {
-            Ok(IndexOutcome::Completed {
-                index_t,
-                root_address,
-                root_id,
-            }) => {
+            Ok(IndexOutcome::Completed { index_t, root_id }) => {
                 info!(ledger_id = %ledger_id, index_t = index_t, "Indexing completed");
+                let root_address = root_id
+                    .as_ref()
+                    .map(|cid| {
+                        fluree_db_core::storage::content_address(
+                            self.storage().storage_method(),
+                            fluree_db_core::ContentKind::IndexRoot,
+                            &ledger_id,
+                            &cid.digest_hex(),
+                        )
+                    })
+                    .unwrap_or_default();
                 Ok(TriggerIndexResult {
                     ledger_id,
                     index_t,
@@ -598,7 +605,7 @@ where
         }
 
         let initial_commit_t = record.commit_t;
-        if record.commit_address.is_none() {
+        if record.commit_head_id.is_none() {
             return Err(ApiError::NotFound("No commits to reindex".to_string()));
         }
 
@@ -637,12 +644,7 @@ where
 
         // 5. Publish new index (allows same t for reindex via AdminPublisher)
         self.nameservice
-            .publish_index_allow_equal(
-                &ledger_id,
-                index_result.index_t,
-                &index_result.root_id,
-                Some(&index_result.root_address),
-            )
+            .publish_index_allow_equal(&ledger_id, index_result.index_t, &index_result.root_id)
             .await?;
 
         info!(

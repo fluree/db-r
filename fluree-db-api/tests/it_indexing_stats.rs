@@ -18,8 +18,8 @@ use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState};
 use fluree_db_core::serde::json::{
     raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
 };
-use fluree_db_core::{Db, DbMetadata, DictNovelty, Storage};
-use fluree_db_indexer::run_index::{BinaryIndexRootV2, BinaryIndexStore};
+use fluree_db_core::{Db, DbMetadata, DictNovelty, Storage, StorageMethod};
+use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore};
 use fluree_db_query::BinaryRangeProvider;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
@@ -31,17 +31,25 @@ use support::{
 /// and attaching a BinaryRangeProvider so subsequent queries work correctly.
 async fn apply_index_v2<S: Storage + Clone + 'static>(
     ledger: &mut LedgerState<S>,
-    root_address: &str,
+    root_id: &fluree_db_core::ContentId,
+    ledger_id: &str,
     storage: &S,
     cache_dir: &std::path::Path,
 ) {
+    let root_address = fluree_db_core::storage::content_address(
+        storage.storage_method(),
+        fluree_db_core::ContentKind::IndexRoot,
+        ledger_id,
+        &root_id.digest_hex(),
+    );
     let bytes = storage
-        .read_bytes(root_address)
+        .read_bytes(&root_address)
         .await
         .expect("read index root");
-    let root: BinaryIndexRootV2 = serde_json::from_slice(&bytes).expect("parse v2 root");
+    let root: BinaryIndexRoot = serde_json::from_slice(&bytes).expect("parse v2 root");
 
-    let store = BinaryIndexStore::load_from_root(storage, &root, cache_dir, None)
+    let cs = fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
+    let store = BinaryIndexStore::load_from_root(&cs, &root, cache_dir, None)
         .await
         .expect("load binary index");
     let arc_store = Arc::new(store);
@@ -72,7 +80,7 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
     db.range_provider = Some(Arc::new(provider));
 
     ledger
-        .apply_loaded_db(db, root_address, None)
+        .apply_loaded_db(db, Some(root_id))
         .expect("apply_loaded_db");
 }
 
@@ -154,15 +162,20 @@ async fn property_and_class_statistics_persist_in_db_root() {
                 trigger_index_and_wait_outcome(&handle, result.ledger.ledger_id(), commit_t).await;
             let fluree_db_api::IndexOutcome::Completed {
                 index_t,
-                root_address,
-                ..
+                root_id,
             } = outcome
             else {
                 unreachable!("helper only returns Completed")
             };
 
             assert!(index_t >= commit_t);
-            assert!(!root_address.is_empty());
+            let root_cid = root_id.expect("expected root_id after indexing");
+            let root_address = fluree_db_core::storage::content_address(
+                fluree.storage().storage_method(),
+                fluree_db_core::ContentKind::IndexRoot,
+                alias,
+                &root_cid.digest_hex(),
+            );
 
             let loaded = Db::load(
                 fluree.storage().clone(),
@@ -256,10 +269,16 @@ async fn class_statistics_decrement_after_delete_refresh() {
 
             let outcome =
                 trigger_index_and_wait_outcome(&handle, r2.ledger.ledger_id(), r2.receipt.t).await;
-            let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
+            let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
                 unreachable!("helper only returns Completed")
             };
-            let root2 = root_address;
+            let root_cid = root_id.expect("expected root_id");
+            let root2 = fluree_db_core::storage::content_address(
+                fluree.storage().storage_method(),
+                fluree_db_core::ContentKind::IndexRoot,
+                alias,
+                &root_cid.digest_hex(),
+            );
 
             let loaded2 = Db::load(fluree.storage().clone(), &root2)
                 .await
@@ -311,10 +330,16 @@ async fn statistics_work_with_memory_storage_when_indexed() {
 
             let outcome =
                 trigger_index_and_wait_outcome(&handle, r.ledger.ledger_id(), r.receipt.t).await;
-            let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
+            let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
                 unreachable!("helper only returns Completed")
             };
-            let root = root_address;
+            let root_cid = root_id.expect("expected root_id");
+            let root = fluree_db_core::storage::content_address(
+                fluree.storage().storage_method(),
+                fluree_db_core::ContentKind::IndexRoot,
+                alias,
+                &root_cid.digest_hex(),
+            );
 
             let loaded = Db::load(fluree.storage().clone(), &root)
                 .await
@@ -434,8 +459,8 @@ async fn ledger_info_api_returns_expected_structure() {
                 "commit.type should be ['Commit']"
             );
             assert!(
-                json_path_exists(commit, &["address"]),
-                "commit should have address"
+                json_path_exists(commit, &["id"]),
+                "commit should have id"
             );
             assert!(
                 json_path_exists(commit, &["ledger_id"]),
@@ -586,7 +611,7 @@ async fn ledger_info_api_returns_expected_structure() {
             // ================================================================
             let index = &info["index"];
             assert!(index.get("t").is_some(), "index should have t");
-            assert!(index.get("address").is_some(), "index should have address");
+            assert!(index.get("id").is_some(), "index should have id");
             // index.id is optional but should be present if commit has index.id
         })
         .await;
@@ -1037,10 +1062,16 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 result.receipt.t,
             )
             .await;
-            let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
+            let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
                 unreachable!("helper only returns Completed")
             };
-            let root = root_address;
+            let root_cid = root_id.expect("expected root_id");
+            let root = fluree_db_core::storage::content_address(
+                fluree.storage().storage_method(),
+                fluree_db_core::ContentKind::IndexRoot,
+                alias,
+                &root_cid.digest_hex(),
+            );
 
             let loaded = Db::load(fluree.storage().clone(), &root)
                 .await
@@ -1572,29 +1603,31 @@ async fn large_dataset_statistics_accuracy() {
                 // next batch starts from the newly indexed db (true "across indexes").
                 let outcome =
                     trigger_index_and_wait_outcome(&handle, ledger.ledger_id(), commit_t).await;
-                let fluree_db_api::IndexOutcome::Completed {
-                    index_t,
-                    root_address,
-                    ..
-                } = outcome
-                else {
+                let fluree_db_api::IndexOutcome::Completed { index_t, root_id } = outcome else {
                     unreachable!("helper only returns Completed")
                 };
                 assert!(
                     index_t >= commit_t,
                     "index_t ({index_t}) should be >= commit_t ({commit_t})"
                 );
-                apply_index_v2(&mut ledger, &root_address, fluree.storage(), &cache_dir).await;
+                let root_cid = root_id.expect("expected root_id");
+                apply_index_v2(&mut ledger, &root_cid, alias, fluree.storage(), &cache_dir).await;
             }
 
             // Final sync point (should already be indexed, but keep this to ensure
             // we load stats from a persisted index root).
             let outcome =
                 trigger_index_and_wait_outcome(&handle, ledger.ledger_id(), ledger.t()).await;
-            let fluree_db_api::IndexOutcome::Completed { root_address, .. } = outcome else {
+            let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
                 unreachable!("helper only returns Completed")
             };
-            let root = root_address;
+            let root_cid = root_id.expect("expected root_id");
+            let root = fluree_db_core::storage::content_address(
+                fluree.storage().storage_method(),
+                fluree_db_core::ContentKind::IndexRoot,
+                alias,
+                &root_cid.digest_hex(),
+            );
 
             let loaded = Db::load(fluree.storage().clone(), &root)
                 .await

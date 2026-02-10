@@ -109,6 +109,7 @@ pub use storage::{
     bridge_content_store,
     content_address,
     content_path,
+    content_store_for,
     sha256_hex,
     ContentAddressedWrite,
     ContentKind,
@@ -120,6 +121,7 @@ pub use storage::{
     ReadHint,
     Storage,
     StorageContentStore,
+    StorageMethod,
     StorageRead,
     StorageWrite,
 };
