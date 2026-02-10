@@ -23,7 +23,6 @@ use crate::error::{ApiError, Result};
 use crate::policy_builder::build_policy_context_from_opts;
 use crate::{Fluree, IndexConfig, LedgerHandle};
 use base64::Engine as _;
-use fluree_db_core::storage::extract_hash_from_address;
 use fluree_db_core::ContentId;
 use fluree_db_core::{
     range_with_overlay, ContentAddressedWrite, ContentKind, DictNovelty, Flake, IndexType,
@@ -100,7 +99,8 @@ pub struct PushCommitsResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushedHead {
     pub t: i64,
-    pub address: String,
+    /// Content identifier for the new head commit.
+    pub commit_id: ContentId,
 }
 
 /// Push precomputed commits to a ledger handle (transaction server mode).
@@ -235,7 +235,7 @@ where
 
         let final_head = stored_commits.last().expect("non-empty stored_commits");
         let new_ref = RefValue {
-            id: final_head.commit_id.clone(),
+            id: Some(final_head.commit_id.clone()),
             t: final_head.t,
         };
 
@@ -272,7 +272,7 @@ where
             accepted: decoded.len(),
             head: PushedHead {
                 t: final_head.t,
-                address: final_head.address.clone(),
+                commit_id: final_head.commit_id.clone(),
             },
         })
     }
@@ -290,8 +290,7 @@ struct PushCommitDecoded {
 #[derive(Debug, Clone)]
 struct StoredCommit {
     t: i64,
-    address: String,
-    commit_id: Option<ContentId>,
+    commit_id: ContentId,
 }
 
 #[derive(Debug)]
@@ -579,29 +578,6 @@ async fn write_required_blobs<
     Ok(())
 }
 
-/// Derive the legacy txn blob address from a commit blob address and txn digest hex.
-///
-/// Assumes the current storage layout where commits live under `/commit/<hash>.fcv2`
-/// and txns under `/txn/<hash>.json` for the same ledger prefix and storage method.
-fn txn_address_from_commit_address(commit_address: &str, txn_hash_hex: &str) -> Option<String> {
-    let (prefix, _rest) = commit_address.split_once("/commit/")?;
-    Some(format!("{}/txn/{}.json", prefix, txn_hash_hex))
-}
-
-/// Replace the filename stem (between the last `/` and last `.`) with `new_hash_hex`.
-fn replace_hash_in_address(address: &str, new_hash_hex: &str) -> Option<String> {
-    let slash = address.rfind('/')?;
-    let dot = address.rfind('.')?;
-    if dot <= slash + 1 {
-        return None;
-    }
-    let mut out = String::with_capacity(address.len() - (dot - (slash + 1)) + new_hash_hex.len());
-    out.push_str(&address[..slash + 1]);
-    out.push_str(new_hash_hex);
-    out.push_str(&address[dot..]);
-    Some(out)
-}
-
 async fn write_commit_blobs<S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static>(
     storage: &S,
     ledger_id: &str,
@@ -624,10 +600,15 @@ async fn write_commit_blobs<S: Storage + ContentAddressedWrite + Clone + Send + 
                 idx, c.content_hash_hex, res.content_hash
             )));
         }
-        let commit_id = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &c.content_hash_hex);
+        let commit_id = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &c.content_hash_hex)
+            .ok_or_else(|| {
+                PushError::Internal(format!(
+                    "commit[{}]: invalid content hash hex '{}'",
+                    idx, c.content_hash_hex
+                ))
+            })?;
         stored.push(StoredCommit {
             t: c.commit.t,
-            address: res.address,
             commit_id,
         });
     }
@@ -669,10 +650,10 @@ fn apply_pushed_commits_to_state<S: Storage + Clone + 'static>(
 
     base.novelty = Arc::new(novelty);
     base.dict_novelty = dict_novelty;
-    base.head_commit_id = stored_commits.last().and_then(|c| c.commit_id.clone());
+    base.head_commit_id = stored_commits.last().map(|c| c.commit_id.clone());
     if let Some(ref mut r) = base.ns_record {
         if let Some(last) = stored_commits.last() {
-            r.commit_head_id = last.commit_id.clone();
+            r.commit_head_id = Some(last.commit_id.clone());
             r.commit_t = last.t;
         }
     }
@@ -712,6 +693,17 @@ fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
     }
 }
 
+/// Extract and **verify** the canonical content hash from a commit-v2 blob.
+///
+/// The commit-v2 format stores a 32-byte SHA-256 hash as a trailer (before the
+/// optional signature block). This function:
+/// 1. Locates the embedded hash in the blob layout.
+/// 2. Recomputes SHA-256 over the canonical payload (`bytes[0..hash_offset]`).
+/// 3. Compares the recomputed hash to the embedded hash.
+/// 4. Returns the verified hex digest, or an error if they don't match.
+///
+/// This prevents a malicious client from altering payload bytes and the embedded
+/// hash in tandem — the server independently verifies the hash.
 fn commit_hash_hex_from_bytes(bytes: &[u8]) -> std::result::Result<String, String> {
     use fluree_db_novelty::commit_v2::format::{
         CommitV2Header, FLAG_HAS_COMMIT_SIG, HASH_LEN, HEADER_LEN,
@@ -731,8 +723,18 @@ fn commit_hash_hex_from_bytes(bytes: &[u8]) -> std::result::Result<String, Strin
     } else {
         blob_len - HASH_LEN
     };
-    let hash_bytes = &bytes[hash_offset..hash_offset + HASH_LEN];
-    Ok(hex::encode(hash_bytes))
+    let embedded_hex = hex::encode(&bytes[hash_offset..hash_offset + HASH_LEN]);
+
+    // Recompute the canonical hash over the payload before the trailing hash.
+    let recomputed_hex = fluree_db_core::sha256_hex(&bytes[..hash_offset]);
+    if recomputed_hex != embedded_hex {
+        return Err(format!(
+            "commit hash mismatch: embedded {} vs recomputed {}",
+            embedded_hex, recomputed_hex,
+        ));
+    }
+
+    Ok(recomputed_hex)
 }
 
 trait LedgerStateCloneExt<S> {
@@ -784,11 +786,8 @@ pub struct ExportCommitsRequest {
 pub struct ExportCommitsResponse {
     /// Ledger identifier.
     pub ledger: String,
-    /// Head address at time of export (informational; clone uses this for final head).
-    pub head_address: String,
     /// Head commit CID at time of export (storage-agnostic identity).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub head_commit_id: Option<ContentId>,
+    pub head_commit_id: ContentId,
     /// Head `t` at time of export (informational).
     pub head_t: i64,
     /// Raw commit v2 blobs, newest → oldest within this page.
@@ -800,12 +799,8 @@ pub struct ExportCommitsResponse {
     pub newest_t: i64,
     /// Lowest `t` in this page.
     pub oldest_t: i64,
-    /// Cursor for the next page (legacy: previous commit address).
-    /// `None` when genesis has been reached.
-    pub next_cursor: Option<String>,
     /// Cursor for the next page (previous commit CID).
     /// `None` when genesis has been reached.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor_id: Option<ContentId>,
     /// Number of commits in this page.
     pub count: usize,
@@ -830,6 +825,8 @@ where
         handle: &LedgerHandle<S>,
         request: &ExportCommitsRequest,
     ) -> Result<ExportCommitsResponse> {
+        use fluree_db_core::storage::content_store_for;
+        use fluree_db_core::ContentStore;
         use fluree_db_novelty::commit_v2::envelope::decode_envelope;
         use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};
 
@@ -856,113 +853,50 @@ where
             .clone()
             .ok_or_else(|| ApiError::NotFound("Ledger has no commits".to_string()))?;
         let head_t = head_ref.t;
-        let method = self.storage().storage_method().to_string();
-        let head_address = fluree_db_core::storage::content_address(
-            &method,
-            ContentKind::Commit,
-            ledger_id,
-            &head_commit_id.digest_hex(),
-        );
-        let head_method = Some(method);
 
-        // Determine start cursor.
-        let mut cursor_is_address = false;
-        let mut start_cursor_id: Option<ContentId> = request.cursor_id.clone();
-        let mut start_address_opt: Option<String> = None;
+        // Build a ContentStore bridge for CID-based reads.
+        let content_store = content_store_for(self.storage().clone(), ledger_id);
 
-        if start_cursor_id.is_none() {
-            if let Some(raw) = request.cursor.as_deref() {
-                // Accept CID in the legacy `cursor` field for convenience.
-                if let Ok(cid) = raw.parse::<ContentId>() {
-                    start_cursor_id = Some(cid);
-                } else {
-                    cursor_is_address = true;
-                    start_address_opt = Some(raw.to_string());
-                }
-            }
-        }
-
-        let start_address: String = if let Some(cid) = &start_cursor_id {
-            let method = head_method.as_deref().ok_or_else(|| {
-                ApiError::internal(format!(
-                    "cannot resolve cursor_id without a fluree head address (got '{}')",
-                    head_address
-                ))
-            })?;
-            fluree_db_core::storage::content_address(
-                method,
-                ContentKind::Commit,
-                ledger_id,
-                &cid.digest_hex(),
-            )
-        } else if let Some(addr) = start_address_opt {
-            addr
+        // Determine start cursor CID.
+        let start_cid: ContentId = if let Some(cid) = &request.cursor_id {
+            cid.clone()
+        } else if let Some(raw) = request.cursor.as_deref() {
+            raw.parse::<ContentId>()
+                .map_err(|e| ApiError::http(400, format!("invalid cursor: {}", e)))?
         } else {
-            head_address.clone()
+            head_commit_id.clone()
         };
 
-        // Validate cursor belongs to this ledger (address embeds alias path).
-        if cursor_is_address {
-            use fluree_db_core::storage::alias_prefix_for_path;
-            let alias_path = alias_prefix_for_path(ledger_id);
-            // Address format: "fluree:{method}://{alias_path}/commit/{hash}.ext"
-            // Check that the alias_path segment appears after the "://" separator.
-            let after_scheme = start_address
-                .find("://")
-                .map(|i| &start_address[i + 3..])
-                .unwrap_or(&start_address);
-            // Important: require a path boundary to avoid prefix collisions
-            // (e.g. "mydb/main2/..." must not match "mydb/main").
-            let expected_prefix = format!("{}/", alias_path);
-            if !after_scheme.starts_with(&expected_prefix) {
-                return Err(ApiError::http(
-                    400,
-                    format!(
-                        "cursor address does not belong to ledger '{}': {}",
-                        ledger_id, start_address
-                    ),
-                ));
-            }
-        }
-
-        let storage = self.storage().clone();
         let mut commits = Vec::with_capacity(effective_limit);
         let mut blobs: HashMap<String, Base64Bytes> = HashMap::new();
         let mut newest_t: Option<i64> = None;
         let mut oldest_t: Option<i64> = None;
-        let mut next_cursor: Option<String> = None;
         let mut next_cursor_id: Option<ContentId> = None;
-        let mut current_address = start_address;
+        let mut current_cid = start_cid;
 
         for _ in 0..effective_limit {
-            // Read raw commit bytes from CAS.
-            let raw_bytes = storage.read_bytes(&current_address).await.map_err(|e| {
-                ApiError::internal(format!(
-                    "failed to read commit at '{}': {}",
-                    current_address, e
-                ))
+            // Read raw commit bytes from ContentStore by CID.
+            let raw_bytes = content_store.get(&current_cid).await.map_err(|e| {
+                ApiError::internal(format!("failed to read commit {}: {}", current_cid, e))
             })?;
 
             // Lightweight decode: header + envelope only (skip ops decompression).
             let header = CommitV2Header::read_from(&raw_bytes).map_err(|e| {
-                ApiError::internal(format!(
-                    "invalid commit header at '{}': {}",
-                    current_address, e
-                ))
+                ApiError::internal(format!("invalid commit header for {}: {}", current_cid, e))
             })?;
 
             let envelope_start = HEADER_LEN;
             let envelope_end = envelope_start + header.envelope_len as usize;
             if envelope_end > raw_bytes.len() {
                 return Err(ApiError::internal(format!(
-                    "commit envelope extends past blob at '{}'",
-                    current_address
+                    "commit envelope extends past blob for {}",
+                    current_cid
                 )));
             }
             let env = decode_envelope(&raw_bytes[envelope_start..envelope_end]).map_err(|e| {
                 ApiError::internal(format!(
-                    "failed to decode envelope at '{}': {}",
-                    current_address, e
+                    "failed to decode envelope for {}: {}",
+                    current_cid, e
                 ))
             })?;
 
@@ -975,85 +909,40 @@ where
 
             commits.push(Base64Bytes(raw_bytes));
 
-            // Collect referenced txn blob.
+            // Collect referenced txn blob via ContentStore.
             if let Some(ref txn_cid) = env.txn {
-                let txn_hash_hex = txn_cid.digest_hex();
-                let txn_address = match head_method.as_deref() {
-                    Some(method) => fluree_db_core::storage::content_address(
-                        method,
-                        ContentKind::Txn,
-                        ledger_id,
-                        &txn_hash_hex,
-                    ),
-                    None => txn_address_from_commit_address(&current_address, &txn_hash_hex)
-                        .ok_or_else(|| {
-                            ApiError::internal(format!(
-                                "failed to derive txn address from commit address '{}'",
-                                current_address
-                            ))
-                        })?,
-                };
-
-                // Response blobs are keyed by CID string (logical identity), but bytes are read from legacy address.
                 let txn_key = txn_cid.to_string();
                 if let std::collections::hash_map::Entry::Vacant(e) = blobs.entry(txn_key.clone()) {
-                    let txn_bytes = storage.read_bytes(&txn_address).await.map_err(|e| {
-                        ApiError::internal(format!(
-                            "failed to read txn blob '{}' (addr '{}'): {}",
-                            txn_key, txn_address, e
-                        ))
+                    let txn_bytes = content_store.get(txn_cid).await.map_err(|e| {
+                        ApiError::internal(format!("failed to read txn blob {}: {}", txn_key, e))
                     })?;
                     e.insert(Base64Bytes(txn_bytes));
                 }
             }
 
-            // Follow chain backward.
+            // Follow chain backward via CID.
             match env.previous_ref {
                 Some(prev) => {
-                    let prev_hash_hex = prev.id.digest_hex();
-                    let prev_address = match head_method.as_deref() {
-                        Some(method) => fluree_db_core::storage::content_address(
-                            method,
-                            ContentKind::Commit,
-                            ledger_id,
-                            &prev_hash_hex,
-                        ),
-                        None => replace_hash_in_address(&current_address, &prev_hash_hex)
-                            .ok_or_else(|| {
-                                ApiError::internal(format!(
-                                    "failed to derive previous commit address from '{}'",
-                                    current_address
-                                ))
-                            })?,
-                    };
-                    next_cursor = Some(prev_address.clone());
-                    next_cursor_id = Some(prev.id);
-                    current_address = prev_address;
+                    next_cursor_id = Some(prev.id.clone());
+                    current_cid = prev.id;
                 }
                 None => {
-                    // Reached genesis — no more commits.
-                    next_cursor = None;
                     next_cursor_id = None;
                     break;
                 }
             }
         }
 
-        // If we exited the loop by hitting the limit (not genesis), next_cursor
-        // is already set to the address of the next commit to read.
-
         let count = commits.len();
 
         Ok(ExportCommitsResponse {
             ledger: ledger_id.to_string(),
-            head_address,
-            head_commit_id: Some(head_commit_id),
+            head_commit_id,
             head_t,
             commits,
             blobs,
             newest_t: newest_t.unwrap_or(0),
             oldest_t: oldest_t.unwrap_or(0),
-            next_cursor,
             next_cursor_id,
             count,
             effective_limit,
@@ -1081,8 +970,8 @@ pub struct CommitImportResult {
     pub imported: usize,
     /// New local head `t`.
     pub head_t: i64,
-    /// New local head address.
-    pub head_address: String,
+    /// New local head commit CID.
+    pub head_commit_id: ContentId,
 }
 
 impl<S, N> Fluree<S, N>
@@ -1166,13 +1055,12 @@ where
     pub async fn set_commit_head(
         &self,
         handle: &LedgerHandle<S>,
-        head_address: &str,
+        head_commit_id: &ContentId,
         head_t: i64,
     ) -> Result<()> {
         let ledger_id = handle.ledger_id();
         let new_ref = RefValue {
-            id: extract_hash_from_address(head_address)
-                .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h)),
+            id: Some(head_commit_id.clone()),
             t: head_t,
         };
 
@@ -1266,7 +1154,7 @@ where
 
         let final_head = stored_commits.last().expect("non-empty stored_commits");
         let new_ref = RefValue {
-            id: final_head.commit_id.clone(),
+            id: Some(final_head.commit_id.clone()),
             t: final_head.t,
         };
 
@@ -1311,7 +1199,7 @@ where
         Ok(CommitImportResult {
             imported: decoded.len(),
             head_t: final_head.t,
-            head_address: final_head.address.clone(),
+            head_commit_id: final_head.commit_id.clone(),
         })
     }
 }

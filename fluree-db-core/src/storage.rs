@@ -329,6 +329,12 @@ pub trait ContentStore: Debug + Send + Sync {
     /// Store bytes with a caller-provided CID (for imports/replication).
     ///
     /// Implementations MUST call `id.verify(bytes)` and reject mismatches.
+    ///
+    /// **Not for commit-v2 blobs.** Commit CIDs are derived from a
+    /// canonical sub-range of the blob, not the full bytes, so
+    /// `id.verify(bytes)` will fail. Commit blobs should be written via
+    /// `Storage::content_write_bytes_with_hash()` with the pre-verified
+    /// canonical hash instead.
     async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()>;
 
     /// Resolve a CID to a local filesystem path, if available.
@@ -586,22 +592,6 @@ pub fn content_address(method: &str, kind: ContentKind, alias: &str, hash_hex: &
 
 /// Extract the content hash (filename stem) from a CAS address.
 ///
-/// Given an address like `"fluree:file://mydb/main/index/objects/leaves/abc123.fli"`,
-/// returns `Some("abc123".to_string())`. Works by extracting the last path segment
-/// and stripping the file extension.
-///
-/// Returns `None` if the address has no path segment or no file extension.
-pub fn extract_hash_from_address(address: &str) -> Option<String> {
-    // Find the last path segment (after the last '/')
-    let filename = address.rsplit('/').next()?;
-    // Strip the file extension (after the last '.')
-    let dot_pos = filename.rfind('.')?;
-    if dot_pos == 0 {
-        return None; // hidden file with no stem
-    }
-    Some(filename[..dot_pos].to_string())
-}
-
 /// Decode JSON from bytes
 ///
 /// Helper function for storage implementations.

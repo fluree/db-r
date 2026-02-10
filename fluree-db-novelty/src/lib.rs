@@ -31,7 +31,7 @@ mod error;
 mod stats;
 
 pub use commit::{
-    load_commit, load_commit_by_id, load_commit_envelope, trace_commit_envelopes, trace_commits,
+    load_commit_by_id, load_commit_envelope_by_id, trace_commit_envelopes_by_id,
     trace_commits_by_id, Commit, CommitEnvelope, CommitRef, IndexRef, TxnMetaEntry, TxnMetaValue,
     TxnSignature, MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES,
 };

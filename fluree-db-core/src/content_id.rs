@@ -194,6 +194,14 @@ impl ContentId {
     ///
     /// Use this when accepting objects from untrusted sources (push,
     /// replication, `put_with_id`).
+    ///
+    /// **Commit blobs**: This method computes `SHA-256(full_bytes)`, which
+    /// is correct for all content kinds *except* commit-v2 blobs. Commit
+    /// CIDs are derived from `SHA-256(bytes[0..hash_offset])` — the
+    /// canonical payload excluding the trailing embedded hash and optional
+    /// signature block. For commit verification, use
+    /// [`commit_hash_hex_from_bytes()`](fluree_db_novelty) in the push /
+    /// import path instead of this method.
     pub fn verify(&self, bytes: &[u8]) -> bool {
         let mh = self.0.hash();
         if mh.code() != SHA2_256 {

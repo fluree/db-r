@@ -848,93 +848,52 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
         self.flush_batched_accumulator_binary(ctx).await
     }
 
-    /// Binary-index variant of flush_batched_accumulator.
+    /// Clear all batched accumulator state after a flush or early return.
+    fn clear_batched_state(&mut self) {
+        self.batched_accumulator.clear();
+        self.stored_left_batches.clear();
+        self.current_left_batch_stored_idx = None;
+    }
+
+    /// Phase 1: Resolve the batched predicate SID to a binary-index p_id.
     ///
-    /// Implements a true batched scan over SPOT leaf files:
-    /// - Translate all subject Sids to s_id
-    /// - Compute the leaf range for [min_s_id, max_s_id]
-    /// - Scan each candidate leaf once, extracting rows where (s_id ∈ set && p_id == fixed_p)
+    /// Returns `None` if the predicate is not in the binary index (no results possible).
+    fn resolve_batched_predicate(&self, store: &BinaryIndexStore) -> Option<u32> {
+        let pred_sid = self.batched_predicate.as_ref().unwrap();
+        store.sid_to_p_id(pred_sid)
+    }
+
+    /// Phase 2: Group accumulator entries by subject ID.
     ///
-    /// This avoids opening/decompressing leaflets once per subject, which can be
-    /// catastrophically slow for large left batches.
-    async fn flush_batched_accumulator_binary(
-        &mut self,
-        ctx: &ExecutionContext<'_, S>,
-    ) -> Result<()> {
-        use fluree_db_core::ListIndex;
-        use fluree_db_indexer::run_index::leaf::read_leaf_header;
-        use fluree_db_indexer::run_index::leaflet::{
-            decode_leaflet_region1, decode_leaflet_region2, LeafletHeader,
-        };
-        use fluree_db_indexer::run_index::leaflet_cache::{
-            CachedRegion1, CachedRegion2, LeafletCacheKey,
-        };
-        use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord, RunSortOrder};
-        use memmap2::Mmap;
-        use std::sync::Arc as StdArc;
-        use xxhash_rust::xxh3::xxh3_128;
-
-        if self.batched_accumulator.is_empty() {
-            return Ok(());
-        }
-
-        let overall_start = Instant::now();
-
-        let store = ctx.binary_store.as_ref().unwrap().clone();
-        let g_id = ctx.binary_g_id;
-        let batch_size = ctx.batch_size;
-        let pred_sid = self.batched_predicate.as_ref().unwrap().clone();
-        let cache = store.leaflet_cache();
-
-        let p_id = match store.sid_to_p_id(&pred_sid) {
-            Some(id) => id,
-            None => {
-                // Predicate not in binary index — no results
-                self.batched_accumulator.clear();
-                self.stored_left_batches.clear();
-                self.current_left_batch_stored_idx = None;
-                return Ok(());
-            }
-        };
-
-        // 1. Group accumulator indices by s_id (already stored as u64, no lookup needed)
-        let mut s_id_to_accum_indices: HashMap<u64, Vec<usize>> = HashMap::new();
+    /// Returns `(s_id → accumulator indices, sorted unique s_ids)`.
+    /// The s_ids are already stored as raw u64 in the accumulator — no dictionary lookup needed.
+    fn group_accumulator_by_subject(&self) -> (HashMap<u64, Vec<usize>>, Vec<u64>) {
+        let mut s_id_to_accum: HashMap<u64, Vec<usize>> = HashMap::new();
         let mut unique_s_ids: Vec<u64> = Vec::new();
         for (accum_idx, (_, _, s_id)) in self.batched_accumulator.iter().enumerate() {
-            // s_id is already available from the accumulator - no dictionary lookup!
-            s_id_to_accum_indices
-                .entry(*s_id)
-                .or_default()
-                .push(accum_idx);
+            s_id_to_accum.entry(*s_id).or_default().push(accum_idx);
             unique_s_ids.push(*s_id);
-        }
-        if unique_s_ids.is_empty() {
-            self.batched_accumulator.clear();
-            self.stored_left_batches.clear();
-            self.current_left_batch_stored_idx = None;
-            return Ok(());
         }
         unique_s_ids.sort_unstable();
         unique_s_ids.dedup();
-        let min_s_id = unique_s_ids[0];
-        let max_s_id = *unique_s_ids.last().unwrap();
+        (s_id_to_accum, unique_s_ids)
+    }
 
-        // 2. Scatter buffer indexed by accumulator position
-        let accum_len = self.batched_accumulator.len();
-        let mut scatter: Vec<Vec<Vec<Binding>>> = Vec::with_capacity(accum_len);
-        scatter.resize_with(accum_len, Vec::new);
+    /// Phase 3: Compute the PSOT leaf range for a predicate + subject range.
+    ///
+    /// Restricts the scan to the predicate's PSOT partition AND the subject range
+    /// of the current left batch. Without subject bounds we'd scan the entire
+    /// predicate partition even when subjects fall into a narrow range.
+    fn find_psot_leaf_range(
+        branch: &fluree_db_indexer::run_index::branch::BranchManifest,
+        g_id: u32,
+        p_id: u32,
+        min_s_id: u64,
+        max_s_id: u64,
+    ) -> std::ops::Range<usize> {
+        use fluree_db_core::ListIndex;
+        use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord};
 
-        // 3. PSOT for batched property joins: contiguous predicate partition.
-        let branch = store
-            .branch_for_order(g_id, RunSortOrder::Psot)
-            .expect("PSOT index must exist for every graph");
-
-        // Restrict scan to the predicate's PSOT range (contiguous partition),
-        // AND the subject range of the current left batch.
-        //
-        // This is critical: without subject bounds we'd scan the entire predicate
-        // partition (potentially many leaves/leaflets) even when the left batch's
-        // subject ids fall into a very narrow range.
         let min_key = RunRecord {
             g_id,
             s_id: SubjectId::from_u64(min_s_id),
@@ -959,14 +918,46 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             lang_id: u16::MAX,
             i: i32::MAX,
         };
-        let leaf_range = branch.find_leaves_in_range(&min_key, &max_key, cmp_psot);
+        branch.find_leaves_in_range(&min_key, &max_key, cmp_psot)
+    }
+
+    /// Phase 4: Scan PSOT leaves, matching accumulated subjects and scattering results.
+    ///
+    /// Iterates candidate leaves, decodes region1/region2 (with cache), binary-searches
+    /// for matching subjects within each leaflet's p_id segment, builds late-materialized
+    /// bindings, and scatters them to accumulator positions.
+    #[allow(clippy::too_many_arguments)]
+    fn scan_leaves_into_scatter(
+        &self,
+        ctx: &ExecutionContext<'_, S>,
+        store: &BinaryIndexStore,
+        branch: &fluree_db_indexer::run_index::branch::BranchManifest,
+        leaf_range: std::ops::Range<usize>,
+        p_id: u32,
+        unique_s_ids: &[u64],
+        s_id_to_accum: &HashMap<u64, Vec<usize>>,
+        scatter: &mut [Vec<Vec<Binding>>],
+    ) -> Result<()> {
+        use fluree_db_indexer::run_index::leaf::read_leaf_header;
+        use fluree_db_indexer::run_index::leaflet::{
+            decode_leaflet_region1, decode_leaflet_region2, LeafletHeader,
+        };
+        use fluree_db_indexer::run_index::leaflet_cache::{
+            CachedRegion1, CachedRegion2, LeafletCacheKey,
+        };
+        use fluree_db_indexer::run_index::run_record::RunSortOrder;
+        use memmap2::Mmap;
+        use std::sync::Arc as StdArc;
+        use xxhash_rust::xxh3::xxh3_128;
+
+        let cache = store.leaflet_cache();
         let total_leaf_count: usize = leaf_range.end.saturating_sub(leaf_range.start);
 
         let scan_span = tracing::info_span!(
             "join_flush_scan_spot",
             unique_subjects = unique_s_ids.len(),
-            s_id_min = min_s_id,
-            s_id_max = max_s_id,
+            s_id_min = unique_s_ids.first().copied().unwrap_or(0),
+            s_id_max = unique_s_ids.last().copied().unwrap_or(0),
             order = "psot",
             leaf_start = leaf_range.start,
             leaf_end = leaf_range.end,
@@ -1151,7 +1142,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
 
                 for &s_id in &unique_s_ids[subj_start..subj_end] {
                     // fast reject (should always be true, but keep it safe)
-                    if !s_id_to_accum_indices.contains_key(&s_id) {
+                    if !s_id_to_accum.contains_key(&s_id) {
                         continue;
                     }
                     let row_start = lower_bound_s_id(&s_ids, p_start, p_end, s_id);
@@ -1260,7 +1251,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
                         }
                     };
 
-                    if let Some(accum_indices) = s_id_to_accum_indices.get(&s_id) {
+                    if let Some(accum_indices) = s_id_to_accum.get(&s_id) {
                         for &accum_idx in accum_indices {
                             let (batch_idx, row_idx, _) = &self.batched_accumulator[accum_idx];
                             let left_batch = &self.stored_left_batches[*batch_idx];
@@ -1299,7 +1290,19 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             "join batched binary scan complete"
         );
 
-        // 4. Emit in left-row order (same scatter-gather as B-tree path)
+        Ok(())
+    }
+
+    /// Phase 5: Assemble scattered results into output batches in left-row order.
+    ///
+    /// Drains the scatter buffer (indexed by accumulator position) into columnar
+    /// output batches, respecting `batch_size`. Clears accumulator state when done.
+    fn emit_scatter_to_output(
+        &mut self,
+        mut scatter: Vec<Vec<Vec<Binding>>>,
+        batch_size: usize,
+    ) -> Result<()> {
+        let accum_len = scatter.len();
         let num_cols = self.combined_schema.len();
         let mut output_columns: Vec<Vec<Binding>> = (0..num_cols)
             .map(|_| Vec::with_capacity(batch_size))
@@ -1339,9 +1342,77 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             }
         }
 
-        self.batched_accumulator.clear();
-        self.stored_left_batches.clear();
-        self.current_left_batch_stored_idx = None;
+        self.clear_batched_state();
+        Ok(())
+    }
+
+    /// Binary-index batched scan orchestrator.
+    ///
+    /// Implements a true batched scan over PSOT leaf files:
+    /// 1. Resolve the fixed predicate to a binary-index p_id
+    /// 2. Group accumulated subjects by s_id
+    /// 3. Compute the PSOT leaf range for the subject range
+    /// 4. Scan candidate leaves, matching subjects and scattering results
+    /// 5. Emit output batches in left-row order
+    ///
+    /// This avoids opening/decompressing leaflets once per subject, which can be
+    /// catastrophically slow for large left batches.
+    async fn flush_batched_accumulator_binary(
+        &mut self,
+        ctx: &ExecutionContext<'_, S>,
+    ) -> Result<()> {
+        use fluree_db_indexer::run_index::run_record::RunSortOrder;
+
+        if self.batched_accumulator.is_empty() {
+            return Ok(());
+        }
+
+        let overall_start = Instant::now();
+        let store = ctx.binary_store.as_ref().unwrap().clone();
+
+        // Phase 1: Resolve predicate
+        let p_id = match self.resolve_batched_predicate(&store) {
+            Some(id) => id,
+            None => {
+                self.clear_batched_state();
+                return Ok(());
+            }
+        };
+
+        // Phase 2: Group by subject
+        let (s_id_to_accum, unique_s_ids) = self.group_accumulator_by_subject();
+        if unique_s_ids.is_empty() {
+            self.clear_batched_state();
+            return Ok(());
+        }
+
+        // Phase 3: Find leaf range
+        let branch = store
+            .branch_for_order(ctx.binary_g_id, RunSortOrder::Psot)
+            .expect("PSOT index must exist for every graph");
+        let leaf_range = Self::find_psot_leaf_range(
+            branch,
+            ctx.binary_g_id,
+            p_id,
+            unique_s_ids[0],
+            *unique_s_ids.last().unwrap(),
+        );
+
+        // Phase 4: Scan leaves → scatter buffer
+        let mut scatter: Vec<Vec<Vec<Binding>>> = vec![Vec::new(); self.batched_accumulator.len()];
+        self.scan_leaves_into_scatter(
+            ctx,
+            &store,
+            branch,
+            leaf_range,
+            p_id,
+            &unique_s_ids,
+            &s_id_to_accum,
+            &mut scatter,
+        )?;
+
+        // Phase 5: Emit output batches
+        self.emit_scatter_to_output(scatter, ctx.batch_size)?;
 
         tracing::debug!(
             total_ms = (overall_start.elapsed().as_secs_f64() * 1000.0) as u64,

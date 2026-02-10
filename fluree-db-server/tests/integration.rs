@@ -49,14 +49,10 @@ fn json_contains_string(v: &JsonValue, needle: &str) -> bool {
     }
 }
 
-fn make_commit_bytes(t: i64, previous: Option<&str>, flakes: Vec<Flake>) -> Vec<u8> {
+fn make_commit_bytes(t: i64, previous: Option<&ContentId>, flakes: Vec<Flake>) -> Vec<u8> {
     let mut c = Commit::new(t, flakes);
-    if let Some(prev) = previous {
-        let hex = fluree_db_core::storage::extract_hash_from_address(prev)
-            .expect("valid fluree address for previous ref");
-        let prev_cid = ContentId::from_hex_digest(fluree_db_core::CODEC_FLUREE_COMMIT, &hex)
-            .expect("valid hex digest");
-        c = c.with_previous_ref(CommitRef::new(prev_cid));
+    if let Some(prev_cid) = previous {
+        c = c.with_previous_ref(CommitRef::new(prev_cid.clone()));
     }
     let res = fluree_db_novelty::commit_v2::write_commit(&c, true, None).expect("write_commit");
     res.bytes
@@ -377,10 +373,10 @@ async fn push_endpoint_accepts_single_commit_and_advances_head() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json.get("accepted").and_then(|v| v.as_u64()), Some(1));
     assert_eq!(json.pointer("/head/t").and_then(|v| v.as_i64()), Some(1));
-    let head_addr = json
-        .pointer("/head/address")
+    let head_cid = json
+        .pointer("/head/commit_id")
         .and_then(|v| v.as_str())
-        .expect("head.address")
+        .expect("head.commit_id")
         .to_string();
 
     // Re-pushing the same commit should now be rejected (next-t mismatch).
@@ -399,7 +395,7 @@ async fn push_endpoint_accepts_single_commit_and_advances_head() {
         resp.status(),
         StatusCode::CONFLICT,
         "expected conflict when re-pushing commit already applied (head={})",
-        head_addr
+        head_cid
     );
 }
 
@@ -551,15 +547,16 @@ async fn push_rejects_list_retraction_missing_meta_with_422() {
         .unwrap();
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    let head_addr = json
-        .pointer("/head/address")
+    let head_cid: ContentId = json
+        .pointer("/head/commit_id")
         .and_then(|v| v.as_str())
         .unwrap()
-        .to_string();
+        .parse()
+        .expect("parse head commit_id");
 
     // Push commit t=2 attempting to retract the value but WITHOUT list meta.
     let retract = Flake::new(s, p, o, dt, 2, false, None);
-    let bytes = make_commit_bytes(2, Some(&head_addr), vec![retract]);
+    let bytes = make_commit_bytes(2, Some(&head_cid), vec![retract]);
     let push_req = PushCommitsRequest {
         commits: vec![fluree_db_api::Base64Bytes(bytes)],
         blobs: std::collections::HashMap::new(),
@@ -1393,7 +1390,11 @@ fn test_state_with_storage_proxy() -> (TempDir, Arc<AppState>) {
 }
 
 /// Helper: create a ledger and push N commits, returning head address after each push.
-async fn create_and_push_commits(app: &axum::Router, ledger: &str, n: usize) -> Vec<(String, i64)> {
+async fn create_and_push_commits(
+    app: &axum::Router,
+    ledger: &str,
+    n: usize,
+) -> Vec<(ContentId, i64)> {
     // Create ledger.
     let create_body = serde_json::json!({ "ledger": ledger });
     let resp = app
@@ -1414,8 +1415,8 @@ async fn create_and_push_commits(app: &axum::Router, ledger: &str, n: usize) -> 
     let p = Sid::new(FLUREE_DB, "seq");
     let dt = Sid::new(XSD, xsd_names::INTEGER);
 
-    let mut heads: Vec<(String, i64)> = Vec::new();
-    let mut prev_addr: Option<String> = None;
+    let mut heads: Vec<(ContentId, i64)> = Vec::new();
+    let mut prev_cid: Option<ContentId> = None;
 
     for i in 1..=n {
         let t = i as i64;
@@ -1429,7 +1430,7 @@ async fn create_and_push_commits(app: &axum::Router, ledger: &str, n: usize) -> 
             true,
             None,
         )];
-        let bytes = make_commit_bytes(t, prev_addr.as_deref(), flakes);
+        let bytes = make_commit_bytes(t, prev_cid.as_ref(), flakes);
         let push_req = PushCommitsRequest {
             commits: vec![fluree_db_api::Base64Bytes(bytes)],
             blobs: std::collections::HashMap::new(),
@@ -1456,13 +1457,14 @@ async fn create_and_push_commits(app: &axum::Router, ledger: &str, n: usize) -> 
             json
         );
 
-        let addr = json
-            .pointer("/head/address")
+        let cid: ContentId = json
+            .pointer("/head/commit_id")
             .and_then(|v| v.as_str())
             .unwrap()
-            .to_string();
-        heads.push((addr.clone(), t));
-        prev_addr = Some(addr);
+            .parse()
+            .expect("valid commit CID in push response");
+        heads.push((cid.clone(), t));
+        prev_cid = Some(cid);
     }
 
     heads
@@ -1521,28 +1523,28 @@ async fn commits_endpoint_returns_paginated_commits() {
     assert_eq!(page1.oldest_t, 4);
     assert_eq!(page1.head_t, 5);
     assert_eq!(page1.effective_limit, 2);
-    assert!(page1.next_cursor.is_some(), "should have next page");
+    assert!(page1.next_cursor_id.is_some(), "should have next page");
 
     // Page 2: cursor from page 1 → 2 commits (t=3, t=2).
-    let cursor = page1.next_cursor.as_deref().unwrap();
-    let (status, json) = fetch_commits(&app, "export:main", Some(cursor), Some(2)).await;
+    let cursor = page1.next_cursor_id.as_ref().unwrap().to_string();
+    let (status, json) = fetch_commits(&app, "export:main", Some(&cursor), Some(2)).await;
     assert_eq!(status, StatusCode::OK, "page 2 failed: {}", json);
     let page2: ExportCommitsResponse = serde_json::from_value(json).expect("parse page 2");
     assert_eq!(page2.count, 2);
     assert_eq!(page2.newest_t, 3);
     assert_eq!(page2.oldest_t, 2);
-    assert!(page2.next_cursor.is_some(), "should have page 3");
+    assert!(page2.next_cursor_id.is_some(), "should have page 3");
 
     // Page 3: cursor from page 2 → 1 commit (t=1, genesis).
-    let cursor = page2.next_cursor.as_deref().unwrap();
-    let (status, json) = fetch_commits(&app, "export:main", Some(cursor), Some(2)).await;
+    let cursor = page2.next_cursor_id.as_ref().unwrap().to_string();
+    let (status, json) = fetch_commits(&app, "export:main", Some(&cursor), Some(2)).await;
     assert_eq!(status, StatusCode::OK, "page 3 failed: {}", json);
     let page3: ExportCommitsResponse = serde_json::from_value(json).expect("parse page 3");
     assert_eq!(page3.count, 1);
     assert_eq!(page3.newest_t, 1);
     assert_eq!(page3.oldest_t, 1);
     assert!(
-        page3.next_cursor.is_none(),
+        page3.next_cursor_id.is_none(),
         "genesis reached, no more pages"
     );
 }
@@ -1560,18 +1562,21 @@ async fn commits_endpoint_cursor_stability() {
     assert_eq!(status, StatusCode::OK);
     let page1: ExportCommitsResponse = serde_json::from_value(json).expect("parse page 1");
     assert_eq!(page1.newest_t, 4);
-    let cursor = page1.next_cursor.clone().expect("need cursor for page 2");
+    let cursor = page1
+        .next_cursor_id
+        .clone()
+        .expect("need cursor for page 2");
 
     // Push a NEW commit (t=5) between page fetches.
     let s = Sid::new(FLUREE_DB, "entity");
     let p = Sid::new(FLUREE_DB, "seq");
     let o = FlakeValue::Long(5);
     let dt = Sid::new(XSD, xsd_names::INTEGER);
-    // Need head address of t=4 for previous ref.
-    let head_addr = page1.head_address.clone();
+    // Need head CID of t=4 for previous ref.
+    let head_cid = &page1.head_commit_id;
     let bytes = make_commit_bytes(
         5,
-        Some(&head_addr),
+        Some(head_cid),
         vec![Flake::new(s, p, o, dt, 5, true, None)],
     );
     let push_req = PushCommitsRequest {
@@ -1593,12 +1598,13 @@ async fn commits_endpoint_cursor_stability() {
     assert_eq!(resp.status(), StatusCode::OK, "push t=5 should succeed");
 
     // Page 2 with old cursor: should still see (t=2, t=1) — unaffected by new head.
-    let (status, json) = fetch_commits(&app, "cursor:main", Some(&cursor), Some(2)).await;
+    let cursor_str = cursor.to_string();
+    let (status, json) = fetch_commits(&app, "cursor:main", Some(&cursor_str), Some(2)).await;
     assert_eq!(status, StatusCode::OK);
     let page2: ExportCommitsResponse = serde_json::from_value(json).expect("parse page 2");
     assert_eq!(page2.newest_t, 2, "cursor should resume at t=2");
     assert_eq!(page2.oldest_t, 1, "should reach genesis");
-    assert!(page2.next_cursor.is_none(), "genesis reached");
+    assert!(page2.next_cursor_id.is_none(), "genesis reached");
 }
 
 #[tokio::test]

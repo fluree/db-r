@@ -11,7 +11,7 @@
 //! - No branching, rebasing, or merge commits
 //!
 //! This matches Fluree's current commit model. The stop condition for
-//! [`trace_commits`] uses `t <= stop_at_t`, which relies on `t` being
+//! [`trace_commits_by_id`] uses `t <= stop_at_t`, which relies on `t` being
 //! monotonic to correctly identify which commits are already indexed.
 //!
 //! For future support of git-like branching semantics, the stop condition
@@ -20,7 +20,7 @@
 
 use crate::commit_v2::format::CommitSignature;
 use crate::{NoveltyError, Result};
-use fluree_db_core::{ContentId, ContentStore, Flake, Storage, CODEC_FLUREE_COMMIT};
+use fluree_db_core::{ContentId, ContentStore, Flake};
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -342,65 +342,6 @@ impl Commit {
 }
 
 // =============================================================================
-// V2 backward compatibility helpers
-// =============================================================================
-
-/// Extract the SHA-256 hex hash from a legacy storage address.
-///
-/// Supports formats like `fluree:file:///path/to/HASH.fcv2` (current) and
-/// `fluree:s3://bucket/path/to/HASH.json` (legacy, backward compat).
-fn hash_hex_from_address(address: &str) -> Option<&str> {
-    // Extract path portion after :// if present
-    let path = if let Some(rest) = address.strip_prefix("fluree:") {
-        let pos = rest.find("://")?;
-        &rest[pos + 3..]
-    } else if let Some(pos) = address.find("://") {
-        &address[pos + 3..]
-    } else {
-        return None;
-    };
-
-    let last_segment = path.rsplit('/').next()?;
-    let hash = last_segment
-        .strip_suffix(".fcv2")
-        .or_else(|| last_segment.strip_suffix(".json"))?;
-    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(hash)
-    } else {
-        None
-    }
-}
-
-/// Derive a `ContentId` from a legacy v2 commit address or id string.
-///
-/// Tries the `id` string first (format: `fluree:commit:sha256:HEX`),
-/// then falls back to extracting the hash from the `address`.
-#[cfg(test)]
-fn content_id_from_v2_commit_ref(
-    id_str: Option<&str>,
-    address: &str,
-    codec: u64,
-) -> Option<ContentId> {
-    // Try the id string first: "fluree:commit:sha256:HEX"
-    if let Some(id) = id_str {
-        let hex = id
-            .strip_prefix("fluree:commit:sha256:")
-            .or_else(|| id.strip_prefix("fluree:commit:"))
-            .or_else(|| id.strip_prefix("fluree:index:sha256:"))
-            .or_else(|| id.strip_prefix("fluree:index:"));
-        if let Some(hex) = hex {
-            if let Some(cid) = ContentId::from_hex_digest(codec, hex) {
-                return Some(cid);
-            }
-        }
-    }
-
-    // Fall back to extracting hash from address
-    let hex = hash_hex_from_address(address)?;
-    ContentId::from_hex_digest(codec, hex)
-}
-
-// =============================================================================
 // Loading
 // =============================================================================
 
@@ -417,31 +358,6 @@ pub async fn load_commit_by_id<C: ContentStore>(store: &C, id: &ContentId) -> Re
 
     // Set the commit's id from the CID we used to load it
     commit.id = Some(id.clone());
-
-    Ok(commit)
-}
-
-/// Load a single commit from legacy storage by address string.
-///
-/// This is a backward-compatible entry point for code that still uses
-/// address-based storage. The commit's `id` is derived from the v2
-/// blob hash.
-pub async fn load_commit<S: Storage>(storage: &S, address: &str) -> Result<Commit> {
-    let data = storage
-        .read_bytes(address)
-        .await
-        .map_err(|e| NoveltyError::storage(format!("Failed to read commit {}: {}", address, e)))?;
-
-    let _span = tracing::debug_span!("load_commit_v2", blob_bytes = data.len()).entered();
-    let mut commit = crate::commit_v2::read_commit(&data)
-        .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?;
-
-    // Derive id from address hash if not already set
-    if commit.id.is_none() {
-        if let Some(hex) = hash_hex_from_address(address) {
-            commit.id = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, hex);
-        }
-    }
 
     Ok(commit)
 }
@@ -492,22 +408,21 @@ impl CommitEnvelope {
     }
 }
 
-/// Load a commit envelope (metadata only, no flakes) from storage
+/// Load a commit envelope (metadata only, no flakes) from a content store by CID.
 ///
-/// More memory-efficient than `load_commit` when you only need metadata
-/// for scanning commit history. Only reads the header + envelope section
-/// of the v2 binary blob.
-pub async fn load_commit_envelope<S: Storage>(
-    storage: &S,
-    address: &str,
+/// More memory-efficient than [`load_commit_by_id`] when you only need
+/// metadata for scanning.
+pub async fn load_commit_envelope_by_id<C: ContentStore>(
+    store: &C,
+    id: &ContentId,
 ) -> Result<CommitEnvelope> {
-    let data = storage.read_bytes(address).await.map_err(|e| {
-        NoveltyError::storage(format!("Failed to read commit envelope {}: {}", address, e))
+    let data = store.get(id).await.map_err(|e| {
+        NoveltyError::storage(format!("Failed to read commit envelope {}: {}", id, e))
     })?;
 
     let envelope = {
         let _span =
-            tracing::debug_span!("load_commit_envelope_v2", blob_bytes = data.len()).entered();
+            tracing::debug_span!("load_commit_envelope_by_id", blob_bytes = data.len()).entered();
         crate::commit_v2::read_commit_envelope(&data)
             .map_err(|e| NoveltyError::invalid_commit(e.to_string()))?
     };
@@ -515,102 +430,49 @@ pub async fn load_commit_envelope<S: Storage>(
     Ok(envelope)
 }
 
-/// Stream commit envelopes from head backwards, stopping when t <= stop_at_t
+/// Stream commit envelopes from head backwards using CID-based chain walking.
 ///
-/// Like `trace_commits` but only loads metadata (no flakes), making it more
-/// memory-efficient for scanning large commit histories.
-///
-/// Returns `(address, envelope)` pairs so callers know the address of each commit.
+/// Returns `(ContentId, envelope)` pairs. Uses a [`ContentStore`] to load
+/// commits by CID, following `envelope.previous_id()` CID links.
 ///
 /// # Arguments
 ///
-/// * `storage` - Storage backend (must implement Clone for async stream)
-/// * `head_address` - Address of the most recent commit to start from
+/// * `store` - Content store for loading commits by CID
+/// * `head_id` - CID of the most recent commit to start from
 /// * `stop_at_t` - Stop when `commit.t <= stop_at_t` (typically 0 for full scan)
-pub fn trace_commit_envelopes<S: Storage + Clone + 'static>(
-    storage: S,
-    head_address: String,
+pub fn trace_commit_envelopes_by_id<C: ContentStore + Clone + 'static>(
+    store: C,
+    head_id: ContentId,
     stop_at_t: i64,
-) -> impl Stream<Item = Result<(String, CommitEnvelope)>> {
-    stream::unfold(Some(head_address), move |addr| {
-        let storage = storage.clone();
+) -> impl Stream<Item = Result<(ContentId, CommitEnvelope)>> {
+    stream::unfold(Some(head_id), move |cid| {
+        let store = store.clone();
         async move {
-            let addr = addr?;
-            let envelope = match load_commit_envelope(&storage, &addr).await {
+            let cid = cid?;
+            let envelope = match load_commit_envelope_by_id(&store, &cid).await {
                 Ok(e) => e,
                 Err(e) => return Some((Err(e), None)),
             };
 
-            // Stop if this commit's t is at or below the stop point
             if envelope.t <= stop_at_t {
                 return None;
             }
 
-            // Transition: storage is still address-based, but commit chain references are CID-based.
-            // Derive the previous commit's legacy address by swapping the filename stem in-place.
-            let next = envelope
-                .previous_id()
-                .and_then(|cid| replace_hash_in_address(&addr, &cid.digest_hex()));
-            Some((Ok((addr, envelope)), next))
-        }
-    })
-}
-
-/// Stream commits from head backwards, stopping when t <= stop_at_t
-///
-/// This is used to load novelty incrementally - we trace commits backwards
-/// from the head commit until we reach commits that are already in the index.
-///
-/// # Linear History Required
-///
-/// This function assumes linear commit history with monotonically increasing `t`.
-/// See [module documentation](self) for details on this constraint.
-///
-/// # Arguments
-///
-/// * `storage` - Storage backend (must implement Clone for async stream)
-/// * `head_address` - Address of the most recent commit to start from
-/// * `stop_at_t` - Stop when `commit.t <= stop_at_t` (typically the index t)
-pub fn trace_commits<S: Storage + Clone + 'static>(
-    storage: S,
-    head_address: String,
-    stop_at_t: i64,
-) -> impl Stream<Item = Result<Commit>> {
-    stream::unfold(Some(head_address), move |addr| {
-        let storage = storage.clone();
-        async move {
-            let addr = addr?;
-            let commit = match load_commit(&storage, &addr).await {
-                Ok(c) => c,
-                Err(e) => return Some((Err(e), None)),
-            };
-
-            // Stop if this commit's t is at or below the index t
-            if commit.t <= stop_at_t {
-                return None;
-            }
-
-            // Transition: storage is still address-based, but commit chain references are CID-based.
-            // Derive the previous commit's legacy address by swapping the filename stem in-place.
-            let next = commit
-                .previous_id()
-                .and_then(|cid| replace_hash_in_address(&addr, &cid.digest_hex()));
-            Some((Ok(commit), next))
+            let next = envelope.previous_id().cloned();
+            Some((Ok((cid, envelope)), next))
         }
     })
 }
 
 /// Stream commits from head backwards using CID-based chain walking.
 ///
-/// This is the CID-first replacement for [`trace_commits`]. Instead of
-/// address-based loading with `replace_hash_in_address()` hacks, it uses
-/// a [`ContentStore`] to load commits by their content identifier directly,
+/// Loads commits by their content identifier via a [`ContentStore`],
 /// following `commit.previous_id()` CID links.
 ///
 /// # Linear History Required
 ///
-/// Same constraint as [`trace_commits`]: assumes linear commit history with
-/// monotonically increasing `t`. See [module documentation](self) for details.
+/// Assumes linear commit history with monotonically increasing `t`.
+/// See [module documentation](self) for details.
 ///
 /// # Arguments
 ///
@@ -641,31 +503,10 @@ pub fn trace_commits_by_id<C: ContentStore + Clone + 'static>(
     })
 }
 
-/// Replace the filename stem (between the last `/` and last `.`) with `new_hash_hex`.
-///
-/// Used to derive the previous commit address from the current commit address
-/// during the transition where storage is still legacy-address-based.
-fn replace_hash_in_address(address: &str, new_hash_hex: &str) -> Option<String> {
-    let slash = address.rfind('/')?;
-    let dot = address.rfind('.')?;
-    if dot <= slash + 1 {
-        return None;
-    }
-
-    let mut out = String::with_capacity(address.len() - (dot - (slash + 1)) + new_hash_hex.len());
-    out.push_str(&address[..slash + 1]);
-    out.push_str(new_hash_hex);
-    out.push_str(&address[dot..]);
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{
-        ContentKind, Flake, FlakeValue, MemoryContentStore, Sid, CODEC_FLUREE_COMMIT,
-        CODEC_FLUREE_INDEX_ROOT,
-    };
+    use fluree_db_core::{ContentKind, Flake, FlakeValue, MemoryContentStore, Sid};
 
     fn make_test_content_id(kind: ContentKind, label: &str) -> ContentId {
         ContentId::new(kind, label.as_bytes())
@@ -755,65 +596,6 @@ mod tests {
         };
         assert!(envelope.index_ref().is_none());
         assert!(envelope.index_id().is_none());
-    }
-
-    // =========================================================================
-    // V2 backward compat helpers
-    // =========================================================================
-
-    #[test]
-    fn test_hash_hex_from_address_fcv2() {
-        let hash = "a".repeat(64);
-        let addr = format!("fluree:file:///data/ledger/commit/{}.fcv2", hash);
-        assert_eq!(hash_hex_from_address(&addr), Some(hash.as_str()));
-
-        let s3_addr = format!("fluree:s3://bucket/path/commit/{}.fcv2", hash);
-        assert_eq!(hash_hex_from_address(&s3_addr), Some(hash.as_str()));
-
-        assert_eq!(hash_hex_from_address("not-an-address"), None);
-        assert_eq!(hash_hex_from_address("fluree:file:///short.fcv2"), None);
-    }
-
-    #[test]
-    fn test_hash_hex_from_address_json_backward_compat() {
-        // Backward compat: .json commit addresses should still parse
-        let hash = "a".repeat(64);
-        let addr = format!("fluree:file:///data/ledger/commit/{}.json", hash);
-        assert_eq!(hash_hex_from_address(&addr), Some(hash.as_str()));
-
-        let s3_addr = format!("fluree:s3://bucket/path/commit/{}.json", hash);
-        assert_eq!(hash_hex_from_address(&s3_addr), Some(hash.as_str()));
-
-        assert_eq!(hash_hex_from_address("fluree:file:///short.json"), None);
-    }
-
-    #[test]
-    fn test_content_id_from_v2_commit_ref() {
-        let hash = "a".repeat(64);
-        let id_str = format!("fluree:commit:sha256:{}", hash);
-        let address = format!("fluree:file:///path/commit/{}.fcv2", hash);
-
-        // From id string
-        let cid =
-            content_id_from_v2_commit_ref(Some(&id_str), &address, CODEC_FLUREE_COMMIT).unwrap();
-        assert_eq!(cid.digest_hex(), hash);
-        assert_eq!(cid.codec(), CODEC_FLUREE_COMMIT);
-
-        // From address only (.fcv2)
-        let cid = content_id_from_v2_commit_ref(None, &address, CODEC_FLUREE_COMMIT).unwrap();
-        assert_eq!(cid.digest_hex(), hash);
-
-        // From address only (.json backward compat)
-        let json_address = format!("fluree:file:///path/commit/{}.json", hash);
-        let cid = content_id_from_v2_commit_ref(None, &json_address, CODEC_FLUREE_COMMIT).unwrap();
-        assert_eq!(cid.digest_hex(), hash);
-
-        // Index ref
-        let idx_id_str = format!("fluree:index:sha256:{}", hash);
-        let cid =
-            content_id_from_v2_commit_ref(Some(&idx_id_str), &address, CODEC_FLUREE_INDEX_ROOT)
-                .unwrap();
-        assert_eq!(cid.codec(), CODEC_FLUREE_INDEX_ROOT);
     }
 
     // =========================================================================

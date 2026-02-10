@@ -11,7 +11,8 @@ mod support;
 
 use fluree_db_api::TimeSpec;
 use fluree_db_api::{DatasetSpec, FlureeBuilder, FlureeDataSetView, FlureeView, GraphSource};
-use fluree_db_novelty::load_commit;
+use fluree_db_core::StorageContentStore;
+use fluree_db_novelty::load_commit_by_id;
 use serde_json::json;
 use support::{
     assert_index_defaults, genesis_ledger, normalize_flat_results, normalize_rows_array,
@@ -1140,7 +1141,8 @@ async fn dataset_time_travel_at_time_iso() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), tx1.receipt.address.as_ref().unwrap())
+    let content_store = StorageContentStore::new(fluree.storage().clone(), "people:main", "memory");
+    let commit1 = load_commit_by_id(&content_store, &tx1.receipt.commit_id)
         .await
         .unwrap();
     let time1 = commit1.time.expect("commit should have ISO timestamp");
@@ -1311,13 +1313,9 @@ async fn dataset_time_travel_at_commit() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), tx1.receipt.address.as_ref().unwrap())
-        .await
-        .unwrap();
-    let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract the hex digest from the ContentId
-    let commit_prefix = commit_id.digest_hex();
+    // Extract the hex digest directly from the receipt's ContentId
+    let commit_prefix = tx1.receipt.commit_id.digest_hex();
 
     // Commit 2: Bob
     let insert2 = json!({
@@ -1360,13 +1358,9 @@ async fn dataset_time_travel_at_commit_short_prefix() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), tx1.receipt.address.as_ref().unwrap())
-        .await
-        .unwrap();
-    let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract the hex digest from the ContentId
-    let digest_full = commit_id.digest_hex();
+    // Extract the hex digest directly from the receipt's ContentId
+    let digest_full = tx1.receipt.commit_id.digest_hex();
     // Use just the first 10 characters as a prefix
     let commit_prefix = &digest_full[..10.min(digest_full.len())];
 
@@ -1411,13 +1405,9 @@ async fn dataset_time_travel_alias_syntax_commit() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), tx1.receipt.address.as_ref().unwrap())
-        .await
-        .unwrap();
-    let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract the hex digest from the ContentId
-    let commit_prefix = commit_id.digest_hex();
+    // Extract the hex digest directly from the receipt's ContentId
+    let commit_prefix = tx1.receipt.commit_id.digest_hex();
 
     // Commit 2: Bob
     let insert2 = json!({
