@@ -86,7 +86,7 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                         // Diff graph sources
                         let mut current_graph_sources: HashMap<String, GraphSourceRecord> = HashMap::new();
                         for record in snapshot.graph_sources {
-                            let key = record.address.clone();
+                            let key = record.graph_source_id.clone();
                             if record.retracted {
                                 if prev_graph_sources.contains_key(&key) {
                                     yield RemoteEvent::GraphSourceRetracted { graph_source_id: key.clone() };

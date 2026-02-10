@@ -1145,7 +1145,7 @@ mod tests {
         use fluree_db_core::{ContentId, ContentKind};
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"snapshot-data");
         let record = GraphSourceRecord {
-            address: "my-search:main".to_string(),
+            graph_source_id: "my-search:main".to_string(),
             name: "my-search".to_string(),
             branch: "main".to_string(),
             source_type: fluree_db_nameservice::GraphSourceType::Bm25,

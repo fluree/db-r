@@ -161,7 +161,7 @@ fn ledger_to_sse_event(record: &NsRecord) -> Event {
 
 /// Convert a graph source record to an SSE Event
 fn graph_source_to_sse_event(record: &GraphSourceRecord) -> Event {
-    let graph_source_id = record.address.clone();
+    let graph_source_id = record.graph_source_id.clone();
     let event_id = graph_source_event_id(&graph_source_id, record);
 
     let index_id = record.index_id.as_ref().map(|id| id.to_string());
@@ -230,9 +230,9 @@ where
                 }
             }
         }
-        // All graph source records (sorted by address)
+        // All graph source records (sorted by graph_source_id)
         if let Ok(mut records) = ns.all_graph_source_records().await {
-            records.sort_by_key(|a| a.address.clone());
+            records.sort_by_key(|a| a.graph_source_id.clone());
             for r in records {
                 if !r.retracted {
                     events.push(graph_source_to_sse_event(&r));
@@ -274,9 +274,13 @@ fn event_resource_id(event: &NameServiceEvent) -> &str {
         NameServiceEvent::LedgerCommitPublished { ledger_id, .. } => ledger_id,
         NameServiceEvent::LedgerIndexPublished { ledger_id, .. } => ledger_id,
         NameServiceEvent::LedgerRetracted { ledger_id } => ledger_id,
-        NameServiceEvent::GraphSourceConfigPublished { address, .. } => address,
-        NameServiceEvent::GraphSourceIndexPublished { address, .. } => address,
-        NameServiceEvent::GraphSourceRetracted { address } => address,
+        NameServiceEvent::GraphSourceConfigPublished {
+            graph_source_id, ..
+        } => graph_source_id,
+        NameServiceEvent::GraphSourceIndexPublished {
+            graph_source_id, ..
+        } => graph_source_id,
+        NameServiceEvent::GraphSourceRetracted { graph_source_id } => graph_source_id,
     }
 }
 
@@ -313,8 +317,8 @@ where
             let record = ns.lookup_graph_source(&resource_id).await.ok()??;
             Some(graph_source_to_sse_event(&record))
         }
-        NameServiceEvent::GraphSourceRetracted { address } => {
-            Some(retracted_sse_event(SSE_KIND_GRAPH_SOURCE, &address))
+        NameServiceEvent::GraphSourceRetracted { graph_source_id } => {
+            Some(retracted_sse_event(SSE_KIND_GRAPH_SOURCE, &graph_source_id))
         }
     }
 }

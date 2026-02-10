@@ -245,8 +245,8 @@ impl GraphSourceType {
 /// follow a similar ns@v2 storage pattern.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphSourceRecord {
-    /// The address used to look up this record (e.g., "my-search:main")
-    pub address: String,
+    /// Canonical identifier for this graph source (e.g., "my-search:main")
+    pub graph_source_id: String,
 
     /// Base name of the graph source (e.g., "my-search")
     pub name: String,
@@ -284,10 +284,10 @@ impl GraphSourceRecord {
     ) -> Self {
         let name = name.into();
         let branch = branch.into();
-        let address = format!("{}:{}", name, branch);
+        let graph_source_id = format!("{}:{}", name, branch);
 
         Self {
-            address,
+            graph_source_id,
             name,
             branch,
             source_type,
@@ -542,18 +542,18 @@ pub enum NameServiceEvent {
     LedgerRetracted { ledger_id: String },
     /// A graph source config was published/updated.
     GraphSourceConfigPublished {
-        address: String,
+        graph_source_id: String,
         source_type: GraphSourceType,
         dependencies: Vec<String>,
     },
     /// A graph source index head pointer was advanced.
     GraphSourceIndexPublished {
-        address: String,
+        graph_source_id: String,
         index_id: ContentId,
         index_t: i64,
     },
     /// A graph source was retracted.
-    GraphSourceRetracted { address: String },
+    GraphSourceRetracted { graph_source_id: String },
 }
 
 /// Subscription handle for receiving ledger updates
@@ -1149,7 +1149,7 @@ mod tests {
 
         assert_eq!(record.name, "my-search");
         assert_eq!(record.branch, "main");
-        assert_eq!(record.address, "my-search:main");
+        assert_eq!(record.graph_source_id, "my-search:main");
         assert_eq!(record.source_type, GraphSourceType::Bm25);
         assert_eq!(record.config, r#"{"k1": 1.2, "b": 0.75}"#);
         assert_eq!(record.dependencies, vec!["source-ledger:main".to_string()]);

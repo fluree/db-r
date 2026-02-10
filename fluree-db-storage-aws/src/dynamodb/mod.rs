@@ -264,7 +264,7 @@ impl DynamoDbNameService {
             .unwrap_or(0);
 
         Some(GraphSourceRecord {
-            address: pk.to_string(),
+            graph_source_id: pk.to_string(),
             name,
             branch,
             source_type,
@@ -2014,7 +2014,7 @@ mod tests {
         ];
 
         let record = DynamoDbNameService::items_to_gs_record(pk, &items).unwrap();
-        assert_eq!(record.address, "search:main");
+        assert_eq!(record.graph_source_id, "search:main");
         assert_eq!(record.name, "search");
         assert_eq!(record.branch, "main");
         assert_eq!(record.source_type, GraphSourceType::Bm25);

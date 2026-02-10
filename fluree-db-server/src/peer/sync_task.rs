@@ -85,7 +85,7 @@ impl PeerSyncTask {
                     self.handle_ledger_retracted(&ledger_id).await;
                 }
                 RemoteEvent::GraphSourceUpdated(record) => {
-                    let graph_source_id = record.address.clone();
+                    let graph_source_id = record.graph_source_id.clone();
                     let config_hash = graph_source_config_hash(&record.config);
                     let changed = self
                         .peer_state

@@ -345,7 +345,7 @@ where
                 vec![]
             }
             NameServiceEvent::GraphSourceConfigPublished {
-                address,
+                graph_source_id,
                 source_type,
                 dependencies,
                 ..
@@ -356,15 +356,17 @@ where
                 {
                     self.state
                         .borrow_mut()
-                        .register_graph_source(address, dependencies);
-                    info!(graph_source = %address, "Auto-registered vector graph source for maintenance");
+                        .register_graph_source(graph_source_id, dependencies);
+                    info!(graph_source = %graph_source_id, "Auto-registered vector graph source for maintenance");
                 }
                 vec![]
             }
-            NameServiceEvent::GraphSourceRetracted { address } => {
+            NameServiceEvent::GraphSourceRetracted { graph_source_id } => {
                 // Unregister retracted graph source
-                self.state.borrow_mut().unregister_graph_source(address);
-                info!(graph_source = %address, "Unregistered retracted vector graph source");
+                self.state
+                    .borrow_mut()
+                    .unregister_graph_source(graph_source_id);
+                info!(graph_source = %graph_source_id, "Unregistered retracted vector graph source");
                 vec![]
             }
             _ => vec![], // Other events don't trigger sync

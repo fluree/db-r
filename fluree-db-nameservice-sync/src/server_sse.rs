@@ -141,7 +141,7 @@ fn gs_sse_to_graph_source_record(record: GraphSourceSseRecord) -> GraphSourceRec
     use fluree_db_core::ContentId;
 
     GraphSourceRecord {
-        address: record.graph_source_id,
+        graph_source_id: record.graph_source_id,
         name: record.name,
         branch: record.branch,
         source_type: GraphSourceType::from_type_string(&record.source_type),
@@ -251,7 +251,7 @@ mod tests {
 
         match parse_server_sse_event(&event).unwrap() {
             Some(RemoteEvent::GraphSourceUpdated(record)) => {
-                assert_eq!(record.address, "search:main");
+                assert_eq!(record.graph_source_id, "search:main");
                 assert_eq!(record.name, "search");
                 assert_eq!(record.branch, "main");
                 assert_eq!(record.index_t, 0);

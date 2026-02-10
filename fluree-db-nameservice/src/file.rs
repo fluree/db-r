@@ -563,7 +563,7 @@ impl FileNameService {
 
         // Convert to GraphSourceRecord
         let mut record = GraphSourceRecord {
-            address: core_alias::format_alias(name, branch),
+            graph_source_id: core_alias::format_alias(name, branch),
             name: main.name,
             branch: main.branch,
             source_type,
@@ -806,7 +806,7 @@ impl Publisher for FileNameService {
             let commit_id_for_event = commit_id.clone();
             let ledger_name_for_file = ledger_name.clone();
             let branch_for_file = branch.clone();
-            let address_for_event = core_alias::format_alias(&ledger_name, &branch);
+            let gs_id_for_event = core_alias::format_alias(&ledger_name, &branch);
 
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
@@ -861,7 +861,7 @@ impl Publisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                    ledger_id: address_for_event,
+                    ledger_id: gs_id_for_event,
                     commit_id: commit_id_for_event,
                     commit_t,
                 });
@@ -927,7 +927,7 @@ impl Publisher for FileNameService {
             let path = index_path.clone();
             let index_id_for_event = index_id.clone();
             let cid_str = index_id.to_string();
-            let address_for_event = core_alias::format_alias(&ledger_name, &branch);
+            let gs_id_for_event = core_alias::format_alias(&ledger_name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -953,7 +953,7 @@ impl Publisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_id: address_for_event,
+                    ledger_id: gs_id_for_event,
                     index_id: index_id_for_event,
                     index_t,
                 });
@@ -995,7 +995,7 @@ impl Publisher for FileNameService {
         #[cfg(all(feature = "native", unix))]
         {
             let path = main_path.clone();
-            let address_for_event = core_alias::format_alias(&ledger_name, &branch);
+            let gs_id_for_event = core_alias::format_alias(&ledger_name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1019,7 +1019,7 @@ impl Publisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
-                    ledger_id: address_for_event,
+                    ledger_id: gs_id_for_event,
                 });
             }
 
@@ -1061,7 +1061,7 @@ impl AdminPublisher for FileNameService {
     ) -> Result<()> {
         let (ledger_name, branch) = parse_address(ledger_id)?;
         let index_path = self.index_path(&ledger_name, &branch);
-        let address_for_event = core_alias::format_alias(&ledger_name, &branch);
+        let gs_id_for_event = core_alias::format_alias(&ledger_name, &branch);
 
         #[cfg(all(feature = "native", unix))]
         {
@@ -1095,7 +1095,7 @@ impl AdminPublisher for FileNameService {
             // Only emit event if update actually happened
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_id: address_for_event,
+                    ledger_id: gs_id_for_event,
                     index_id: index_id_for_event,
                     index_t,
                 });
@@ -1124,7 +1124,7 @@ impl AdminPublisher for FileNameService {
                 self.write_json_atomic(&index_path, &file).await?;
 
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_id: address_for_event,
+                    ledger_id: gs_id_for_event,
                     index_id: index_id.clone(),
                     index_t,
                 });
@@ -1164,7 +1164,7 @@ impl GraphSourcePublisher for FileNameService {
             let source_type_str = source_type.to_type_string();
             let name_for_file = name.clone();
             let branch_for_file = branch.clone();
-            let address_for_event = core_alias::format_alias(&name, &branch);
+            let gs_id_for_event = core_alias::format_alias(&name, &branch);
 
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
@@ -1198,7 +1198,7 @@ impl GraphSourcePublisher for FileNameService {
                 let _ = self
                     .event_tx
                     .send(NameServiceEvent::GraphSourceConfigPublished {
-                        address: address_for_event,
+                        graph_source_id: gs_id_for_event,
                         source_type: source_type_for_event,
                         dependencies: dependencies_for_event,
                     });
@@ -1254,7 +1254,7 @@ impl GraphSourcePublisher for FileNameService {
             let index_id_for_event = index_id.clone();
             let name = name.to_string();
             let branch = branch.to_string();
-            let address_for_event = core_alias::format_alias(&name, &branch);
+            let gs_id_for_event = core_alias::format_alias(&name, &branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1282,7 +1282,7 @@ impl GraphSourcePublisher for FileNameService {
                 let _ = self
                     .event_tx
                     .send(NameServiceEvent::GraphSourceIndexPublished {
-                        address: address_for_event,
+                        graph_source_id: gs_id_for_event,
                         index_id: index_id_for_event,
                         index_t,
                     });
@@ -1326,7 +1326,7 @@ impl GraphSourcePublisher for FileNameService {
         #[cfg(all(feature = "native", unix))]
         {
             let path = main_path.clone();
-            let address_for_event = core_alias::format_alias(name, branch);
+            let gs_id_for_event = core_alias::format_alias(name, branch);
             let did_update = Arc::new(AtomicBool::new(false));
             let did_update2 = did_update.clone();
 
@@ -1347,7 +1347,7 @@ impl GraphSourcePublisher for FileNameService {
 
             if res.is_ok() && did_update.load(Ordering::SeqCst) {
                 let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
-                    address: address_for_event,
+                    graph_source_id: gs_id_for_event,
                 });
             }
 
@@ -1361,7 +1361,7 @@ impl GraphSourcePublisher for FileNameService {
                 file.status = "retracted".to_string();
                 self.write_json_atomic(&main_path, &file).await?;
                 let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
-                    address: core_alias::format_alias(&name, &branch),
+                    graph_source_id: core_alias::format_alias(&name, &branch),
                 });
             }
             Ok(())

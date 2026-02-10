@@ -493,7 +493,7 @@ impl GraphSourcePublisher for MemoryNameService {
         let _ = self
             .event_tx
             .send(NameServiceEvent::GraphSourceConfigPublished {
-                address: core_alias::format_alias(name, branch),
+                graph_source_id: core_alias::format_alias(name, branch),
                 source_type,
                 dependencies: dependencies.to_vec(),
             });
@@ -525,7 +525,7 @@ impl GraphSourcePublisher for MemoryNameService {
             let _ = self
                 .event_tx
                 .send(NameServiceEvent::GraphSourceIndexPublished {
-                    address: key,
+                    graph_source_id: key,
                     index_id: index_id.clone(),
                     index_t,
                 });
@@ -546,9 +546,9 @@ impl GraphSourcePublisher for MemoryNameService {
         }
 
         if did_update {
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::GraphSourceRetracted { address: key });
+            let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
+                graph_source_id: key,
+            });
         }
         Ok(())
     }

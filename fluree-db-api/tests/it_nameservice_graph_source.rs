@@ -58,7 +58,7 @@ async fn create_graph_source_test() {
         .filter(|r| matches!(r.source_type, fluree_db_nameservice::GraphSourceType::Bm25))
         .collect();
     assert_eq!(sources.len(), 1);
-    assert_eq!(sources[0].address, "article-search:main");
+    assert_eq!(sources[0].graph_source_id, "article-search:main");
 
     // Clean up
     let drop_result = fluree.drop_full_text_index(gs_name).await.unwrap();

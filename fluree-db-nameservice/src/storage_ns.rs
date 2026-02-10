@@ -381,7 +381,7 @@ where
 
         // Convert to GraphSourceRecord
         let mut record = GraphSourceRecord {
-            address: core_alias::format_alias(name, branch),
+            graph_source_id: core_alias::format_alias(name, branch),
             name: main.name,
             branch: main.branch,
             source_type,
