@@ -20,7 +20,6 @@
 //! - Auth scopes are sorted and deduplicated within each origin
 //! - `Origin` has an explicit `Ord` impl that is a total order (stable across sort implementations)
 
-use crate::error::{Result, SyncError};
 use fluree_db_core::storage::ContentKind;
 use fluree_db_core::ContentId;
 use serde::{Deserialize, Serialize};
@@ -171,8 +170,8 @@ impl LedgerConfig {
     }
 
     /// Deserialize from JSON bytes.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes).map_err(SyncError::from)
+    pub fn from_bytes(bytes: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(bytes)
     }
 
     /// Compute the content identifier (CID) for this config.

@@ -269,12 +269,23 @@ pub enum Commands {
     },
 
     /// Clone a ledger from a remote server (downloads all commits)
+    ///
+    /// Usage:
+    ///   fluree clone <remote> <ledger>                        # named-remote clone
+    ///   fluree clone --origin <uri> <ledger>                  # CID-based clone
+    ///   fluree clone --origin <uri> --token <tok> <ledger>    # with auth
     Clone {
-        /// Remote name (e.g., "origin")
-        remote: String,
+        /// Positional args: <remote> <ledger> (named-remote) or <ledger> (with --origin)
+        #[arg(num_args = 1..=2)]
+        args: Vec<String>,
 
-        /// Ledger name on remote (e.g., "mydb:main")
-        ledger: String,
+        /// Bootstrap URI (e.g., "http://localhost:8090") — CID-based clone
+        #[arg(long)]
+        origin: Option<String>,
+
+        /// Auth token for the origin server
+        #[arg(long, requires = "origin")]
+        token: Option<String>,
 
         /// Local alias for the cloned ledger (defaults to remote ledger name).
         /// Not yet supported: CAS addresses embed ledger paths, so aliasing
@@ -341,6 +352,16 @@ pub enum ConfigAction {
 
     /// List all configuration values
     List,
+
+    /// Set origin configuration for a ledger (content origins for CID-based fetch)
+    SetOrigins {
+        /// Ledger name
+        ledger: String,
+
+        /// Path to origins config JSON file
+        #[arg(long)]
+        file: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]

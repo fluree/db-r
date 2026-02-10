@@ -24,8 +24,8 @@ pub mod client;
 pub mod config;
 pub mod driver;
 pub mod error;
-pub mod ledger_config;
 pub mod origin;
+pub mod pack_client;
 mod server_sse;
 pub mod watch;
 pub mod watch_poll;
@@ -38,8 +38,10 @@ pub use config::{
 };
 pub use driver::{FetchResult, PullResult, PushResult, SyncDriver};
 pub use error::{Result, SyncError};
-pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
+// Re-export LedgerConfig types from fluree-db-nameservice (canonical home)
+pub use fluree_db_nameservice::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
 pub use origin::{HttpOriginFetcher, MultiOriginFetcher};
+pub use pack_client::{fetch_and_ingest_pack, ingest_pack_stream, PackIngestResult};
 pub use watch::{RemoteEvent, RemoteWatch};
 pub use watch_poll::PollRemoteWatch;
 pub use watch_sse::SseRemoteWatch;

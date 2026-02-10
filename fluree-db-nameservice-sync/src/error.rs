@@ -32,6 +32,15 @@ pub enum SyncError {
     /// Bytes returned but hash doesn't verify — always terminal, never retry
     #[error("Integrity verification failed for CID {0}")]
     IntegrityFailed(String),
+
+    /// Pack protocol error (malformed stream, invalid frame, server-side error)
+    #[error("Pack protocol error: {0}")]
+    PackProtocol(String),
+
+    /// Remote server does not support pack endpoint (404 or 406).
+    /// Caller should fall back to paginated export.
+    #[error("Pack endpoint not supported by server")]
+    PackNotSupported,
 }
 
 impl From<reqwest::Error> for SyncError {

@@ -345,6 +345,9 @@ pub struct CommitEnvelope {
     /// Previous commit reference (CID-based)
     pub previous_ref: Option<CommitRef>,
 
+    /// Transaction blob CID (content-addressed reference to original txn JSON)
+    pub txn: Option<ContentId>,
+
     /// New namespace codes introduced by this commit (code → prefix)
     pub namespace_delta: HashMap<u16, String>,
 
@@ -510,6 +513,7 @@ mod tests {
         let envelope = CommitEnvelope {
             t: 5,
             previous_ref: Some(CommitRef::new(prev_id.clone())),
+            txn: None,
             namespace_delta: HashMap::from([(100, "ex:".to_string())]),
             txn_meta: Vec::new(),
         };

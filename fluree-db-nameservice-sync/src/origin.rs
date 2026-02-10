@@ -8,9 +8,10 @@
 //! by CID without needing pre-configured storage credentials.
 
 use crate::error::{Result, SyncError};
-use crate::ledger_config::{LedgerConfig, Origin};
+use fluree_db_core::pack::PackRequest;
 use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
 use fluree_db_nameservice::NsRecord;
+use fluree_db_nameservice::{LedgerConfig, Origin};
 use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,7 @@ use tracing::{debug, warn};
 /// commit format uses `CODEC_FLUREE_COMMIT` but has different hashing rules,
 /// add its magic-byte check here — the `id.verify(bytes)` fallback assumes
 /// full-bytes SHA-256 and will reject non-standard hash preimages.
-fn verify_object_integrity(id: &ContentId, bytes: &[u8]) -> bool {
+pub(crate) fn verify_object_integrity(id: &ContentId, bytes: &[u8]) -> bool {
     const COMMIT_V2_MAGIC: &[u8] = b"FCV2";
 
     if id.codec() == CODEC_FLUREE_COMMIT && bytes.starts_with(COMMIT_V2_MAGIC) {
@@ -132,6 +133,46 @@ impl HttpOriginFetcher {
                         "Object fetch failed with status {status} for {url}: {body}"
                     )))
                 }
+            }
+        }
+    }
+
+    /// Attempt to fetch a pack stream from this origin.
+    ///
+    /// Returns `Ok(Some(response))` on 200 — the caller feeds it to
+    /// [`ingest_pack_stream`](crate::pack_client::ingest_pack_stream).
+    /// Returns `Ok(None)` on 404/405/406 (server doesn't support pack).
+    pub async fn fetch_pack_response(
+        &self,
+        ledger: &str,
+        request: &PackRequest,
+    ) -> Result<Option<reqwest::Response>> {
+        let url = format!("{}/pack/{}", self.base_url, urlencoding::encode(ledger),);
+
+        debug!(url = %url, "requesting pack stream");
+        let body = serde_json::to_vec(request).map_err(|e| {
+            SyncError::PackProtocol(format!("failed to serialize pack request: {}", e))
+        })?;
+
+        let resp = self
+            .add_auth(
+                self.http
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/x-fluree-pack"),
+            )
+            .body(body)
+            .send()
+            .await?;
+
+        match resp.status().as_u16() {
+            200 => Ok(Some(resp)),
+            404 | 405 | 406 => Ok(None),
+            status => {
+                let body = resp.text().await.unwrap_or_default();
+                Err(SyncError::Remote(format!(
+                    "pack request failed ({status}): {body}"
+                )))
             }
         }
     }
@@ -361,6 +402,61 @@ impl MultiOriginFetcher {
             })
         }
     }
+
+    /// Attempt to fetch a pack stream, trying origins in order.
+    ///
+    /// Returns `Ok(Some(response))` on the first origin that returns 200.
+    /// Returns `Ok(None)` when **every** origin returns 404/405 (pack not supported).
+    /// If any origin returns a non-404/405 error, the overall result is
+    /// `Err(FetchFailed)`.
+    pub async fn fetch_pack_response(
+        &self,
+        ledger: &str,
+        request: &PackRequest,
+    ) -> Result<Option<reqwest::Response>> {
+        if self.fetchers.is_empty() {
+            return Err(SyncError::FetchFailed {
+                cid: format!("pack:{ledger}"),
+                details: format!(
+                    "no eligible origins (skipped {} due to unsatisfied auth)",
+                    self.skipped_origins
+                ),
+            });
+        }
+
+        let mut errors = Vec::new();
+        let mut all_not_supported = true;
+
+        for fetcher in &self.fetchers {
+            match fetcher.fetch_pack_response(ledger, request).await {
+                Ok(Some(resp)) => return Ok(Some(resp)),
+                Ok(None) => {
+                    debug!(
+                        origin = %fetcher.base_url,
+                        "pack not supported on origin, trying next"
+                    );
+                }
+                Err(e) => {
+                    all_not_supported = false;
+                    warn!(
+                        origin = %fetcher.base_url,
+                        error = %e,
+                        "pack request failed, trying next"
+                    );
+                    errors.push(format!("{}: {}", fetcher.base_url, e));
+                }
+            }
+        }
+
+        if all_not_supported {
+            Ok(None)
+        } else {
+            Err(SyncError::FetchFailed {
+                cid: format!("pack:{ledger}"),
+                details: errors.join("; "),
+            })
+        }
+    }
 }
 
 // ===========================================================================
@@ -370,8 +466,8 @@ impl MultiOriginFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger_config::{AuthRequirement, ReplicationDefaults};
     use fluree_db_core::storage::ContentKind;
+    use fluree_db_nameservice::{AuthRequirement, ReplicationDefaults};
 
     // -----------------------------------------------------------------------
     // URL normalization

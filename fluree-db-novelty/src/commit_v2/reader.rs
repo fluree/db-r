@@ -247,6 +247,7 @@ pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Erro
     Ok(CommitEnvelope {
         t: header.t,
         previous_ref: env.previous_ref,
+        txn: env.txn,
         namespace_delta: env.namespace_delta,
         txn_meta: env.txn_meta,
     })

@@ -668,6 +668,74 @@ where
     }
 }
 
+// =============================================================================
+// Ledger Config
+// =============================================================================
+
+impl<S, N> crate::Fluree<S, N>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    N: NameService + fluree_db_nameservice::ConfigPublisher,
+{
+    /// Store a `LedgerConfig` blob in CAS and update the config_id on the
+    /// NsRecord via ConfigPublisher.
+    ///
+    /// Returns the `ContentId` of the stored config blob.
+    pub async fn set_ledger_config(
+        &self,
+        ledger_id: &str,
+        config: &fluree_db_nameservice::LedgerConfig,
+    ) -> Result<fluree_db_core::ContentId> {
+        use fluree_db_core::storage::ContentKind;
+        use fluree_db_core::ContentStore;
+        use fluree_db_nameservice::{ConfigCasResult, ConfigPayload, ConfigValue};
+
+        let ledger_id = normalize_ledger_id(ledger_id);
+        let canonical_bytes = config.to_bytes();
+
+        // Store blob in CAS.
+        let content_store =
+            fluree_db_core::storage::content_store_for(self.storage().clone(), &ledger_id);
+        let cid = content_store
+            .put(ContentKind::LedgerConfig, &canonical_bytes)
+            .await?;
+
+        // Update config_id via ConfigPublisher (preserving existing payload fields).
+        let current = self.nameservice.get_config(&ledger_id).await?;
+        let existing_payload = current
+            .as_ref()
+            .and_then(|c| c.payload.clone())
+            .unwrap_or_default();
+        let new_config = ConfigValue::new(
+            current.as_ref().map_or(1, |c| c.v + 1),
+            Some(ConfigPayload {
+                config_id: Some(cid.clone()),
+                default_context: existing_payload.default_context,
+                extra: existing_payload.extra,
+            }),
+        );
+        match self
+            .nameservice
+            .push_config(&ledger_id, current.as_ref(), &new_config)
+            .await?
+        {
+            ConfigCasResult::Updated => {}
+            ConfigCasResult::Conflict { .. } => {
+                return Err(ApiError::Http {
+                    status: 409,
+                    message: format!(
+                        "config for '{}' was modified concurrently; retry",
+                        ledger_id
+                    ),
+                });
+            }
+        }
+
+        info!(ledger_id = %ledger_id, %cid, "LedgerConfig set");
+        Ok(cid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -180,7 +180,7 @@ No address rewriting is needed because commits contain no storage addresses.
 
 - `ContentId` type and `ContentKind` enum: `fluree-db-core/src/content_id.rs`
 - `ContentStore` trait + `MemoryContentStore` + bridge adapter: `fluree-db-core/src/storage.rs`
-- `Commit`, `CommitRef`, `IndexRef` use `ContentId` for all references
+- `Commit` and `CommitRef` use `ContentId` for all references (index pointers are tracked exclusively via nameservice, not embedded in commits)
 - Nameservice records use `head_commit_id` / `index_head_id` as ContentId values
 - `BinaryIndexRootV2` references all artifacts by ContentId
 - Transact and indexer paths use `ContentStore` for all object I/O

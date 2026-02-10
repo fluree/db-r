@@ -184,6 +184,51 @@ Add design docs to:
 5. Get approval before implementing
 6. Update doc as implementation progresses
 
+## Internal Naming Conventions (Graph Identities)
+
+These conventions govern how we name types and variables in Rust code related to graphs, ledgers, and identifiers. See [Graph Identities and Naming](../reference/graph-identities.md) for the user-facing naming.
+
+### Canonical identities: prefer explicit types, not raw `String`
+Internally we should distinguish:
+- **`LedgerId`**: the durable ledger identifier (e.g., `acme/people:main`)
+- **`GraphIri`**: canonical graph identity used by SPARQL (`Arc<str>` or validated URL/IRI type)
+- **`GraphRef`**: user input token, resolved to a `GraphIri` using base rules
+
+Even if these are initially just `struct LedgerId(Arc<str>)` newtypes, they prevent accidental mixing and make APIs self-documenting.
+
+### Naming rules (make each word mean one thing)
+This repo reserves `_id` for **content identifiers** (e.g. `commit_id`, `index_id`, `default_context_id`) and **identity/lookup keys** (`name:branch` tokens). The recommended rule set:
+
+- **`id`**: canonical identifier used as a cache key / stable identity.
+  - For ledgers this is the full `name:branch` form (e.g., `people:main`).
+  - For graph sources this is the full `name:branch` form (e.g., `products-search:main`).
+- **`_id` (for content references)**: a content identifier (ContentId) used by the storage layer to fetch immutable artifacts.
+  - Examples: `commit_id`, `index_id`, `default_context_id`.
+- **`name`**: a base name without branch (e.g., `people`).
+- **`branch`**: the branch name (e.g., `main`).
+- **`alias`**: a human-friendly label, and only that.
+
+Practical guidelines:
+- If a string is used to load/cache/lookup a ledger, call it **`ledger_id`** (not `ledger_alias`, not `ledger_address`).
+- If a string is used to load/cache/lookup a graph source by `name:branch`, call it **`graph_source_id`** (not `gs_alias`, not `graph_source_alias`).
+- If a value identifies a content-addressed artifact (commit, index, context), call it **`*_id`** (e.g., `commit_id`, `index_id`, `default_context_id`).
+- If a string is used to identify a graph in SPARQL (`FROM`, `GRAPH`), call it **`graph_iri`** (canonical) or **`graph_ref`** (user input).
+- Avoid having two different meanings for the same field name across crates.
+
+### Ledger vs Db vs Graph (internal meaning)
+- **Ledger**: the durable identity + commit chain + publication state (nameservice record).
+- **Db**: the indexed snapshot value used for range/scan (hot path).
+- **Graph**: query scoping mechanism (active graph, dataset graph selection, `GRAPH` operator).
+
+Avoid using "graph" as a synonym for "db" in code comments. Prefer:
+- "ledger graph" (RDF graph inside a ledger)
+- "graph IRI" (identifier)
+- "graph source" (registry/resolution concept)
+
+### "Dataset" naming internally
+SPARQL calls the set-of-graphs a "dataset", and the code already models a `DataSet`.
+For product-facing APIs and docs, prefer "federation", but internally keep `DataSet` as the SPARQL-aligned term.
+
 ## Architectural Principles
 
 ### Separation of Concerns

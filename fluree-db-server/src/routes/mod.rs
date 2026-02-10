@@ -6,6 +6,7 @@ mod commits;
 mod events;
 mod ledger;
 mod nameservice_refs;
+mod pack;
 mod push;
 mod query;
 mod storage_proxy;
@@ -66,6 +67,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/push/*ledger", post(push::push_ledger_tail))
         // Commit export endpoint (paginated, replication-grade auth)
         .route("/commits/*ledger", get(commits::commits_ledger_tail))
+        // Binary pack stream endpoint (efficient clone/pull)
+        .route("/pack/*ledger", post(pack::pack_ledger_tail))
         // SSE event streaming
         .route("/events", get(events::events))
         // Storage proxy endpoints (for peer mode)

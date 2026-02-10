@@ -16,7 +16,7 @@ Any prefix works (`f:`, `db:`, `fluree:`, etc.) as long as it expands to the can
 
 The `@vector` shorthand is the one exception: it is a JSON-LD convenience alias that resolves to `f:embeddingVector` without requiring a prefix declaration.
 
-> **Source of truth**: All constants are defined in the [`fluree-vocab`](../../fluree-vocab/src/lib.rs) crate. This document is the user-facing reference.
+> **Source of truth**: All constants are defined in the `fluree-vocab` crate. This document is the user-facing reference.
 
 ---
 

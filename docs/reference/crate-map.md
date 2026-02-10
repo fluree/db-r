@@ -283,11 +283,22 @@ fluree-db/
 **Purpose:** Git-like remote sync for nameservice
 
 **Responsibilities:**
-- Remote nameservice synchronization
+- Remote nameservice synchronization (fetch/push refs)
+- Multi-origin CAS object fetching with integrity verification
+- Pack protocol client (streaming binary transport for clone/pull)
 - SSE-based change streaming
+- Sync driver (fetch/pull/push orchestration)
+
+**Key Types:**
+- `MultiOriginFetcher` - Priority-ordered HTTP origin fallback
+- `HttpOriginFetcher` - Single-origin CAS object + pack fetcher
+- `SyncDriver` - Orchestrates fetch/pull/push with remote clients
+- `PackIngestResult` - Result of streaming pack import
 
 **Dependencies:**
+- fluree-db-core
 - fluree-db-nameservice
+- fluree-db-novelty
 - fluree-sse
 
 ## Indexing Crates

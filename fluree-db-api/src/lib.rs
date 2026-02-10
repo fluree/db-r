@@ -51,6 +51,7 @@ mod ledger;
 pub mod ledger_info;
 pub mod nameservice_query;
 mod overlay;
+pub mod pack;
 pub mod policy_builder;
 pub mod policy_view;
 mod query;
@@ -106,6 +107,10 @@ pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{
     FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager, LedgerManagerConfig,
     LedgerSnapshot, LedgerWriteGuard, NotifyResult, NsNotify, RemoteWatermark, UpdatePlan,
+};
+pub use pack::{
+    compute_missing_index_artifacts, validate_pack_request, PackChunk, PackStreamError,
+    PackStreamResult,
 };
 pub use policy_view::{
     build_policy_context, wrap_identity_policy_view, wrap_policy_view, wrap_policy_view_historical,

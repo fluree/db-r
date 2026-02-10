@@ -704,7 +704,7 @@ fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
 ///
 /// This prevents a malicious client from altering payload bytes and the embedded
 /// hash in tandem — the server independently verifies the hash.
-fn commit_hash_hex_from_bytes(bytes: &[u8]) -> std::result::Result<String, String> {
+pub(crate) fn commit_hash_hex_from_bytes(bytes: &[u8]) -> std::result::Result<String, String> {
     use fluree_db_novelty::commit_v2::format::{
         CommitV2Header, FLAG_HAS_COMMIT_SIG, HASH_LEN, HEADER_LEN,
     };

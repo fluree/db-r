@@ -17,6 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fluree_db_api::{ExportCommitsResponse, PushCommitsResponse};
+use fluree_db_core::pack::PackRequest;
+use fluree_db_nameservice::NsRecord;
 
 /// Configuration for automatic token refresh on 401.
 #[derive(Clone, Debug)]
@@ -312,6 +314,41 @@ impl RemoteLedgerClient {
         Err(Self::map_error(resp).await)
     }
 
+    /// Execute a request, returning the raw response. On 401, attempt
+    /// token refresh and retry once. Returns the response for caller to
+    /// interpret status codes (except 401, which is handled here).
+    async fn send_raw(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        content_type: &str,
+        accept: Option<&str>,
+        body: Option<RequestBody<'_>>,
+    ) -> Result<reqwest::Response, RemoteLedgerError> {
+        let mut req = self.build_request(method.clone(), url, content_type, &body);
+        if let Some(a) = accept {
+            req = req.header("Accept", a);
+        }
+        let resp = req.send().await.map_err(Self::map_network_error)?;
+
+        if resp.status() == StatusCode::UNAUTHORIZED {
+            if self.try_refresh().await {
+                let mut req2 = self.build_request(method, url, content_type, &body);
+                if let Some(a) = accept {
+                    req2 = req2.header("Accept", a);
+                }
+                let resp2 = req2.send().await.map_err(Self::map_network_error)?;
+                if resp2.status() == StatusCode::UNAUTHORIZED {
+                    return Err(RemoteLedgerError::Unauthorized);
+                }
+                return Ok(resp2);
+            }
+            return Err(RemoteLedgerError::Unauthorized);
+        }
+
+        Ok(resp)
+    }
+
     fn build_request(
         &self,
         method: reqwest::Method,
@@ -569,6 +606,77 @@ impl RemoteLedgerClient {
             .await?;
 
         serde_json::from_value(resp).map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))
+    }
+
+    // =========================================================================
+    // Pack / Sync
+    // =========================================================================
+
+    /// Attempt to fetch a pack stream from the remote.
+    ///
+    /// Returns `Ok(Some(response))` on 200 (caller feeds to `ingest_pack_stream`),
+    /// `Ok(None)` on 404/405/406 (pack not supported by server).
+    pub async fn fetch_pack_response(
+        &self,
+        ledger: &str,
+        request: &PackRequest,
+    ) -> Result<Option<reqwest::Response>, RemoteLedgerError> {
+        let url = self.op_url("pack", ledger);
+        let body = serde_json::to_value(request)
+            .map_err(|e| RemoteLedgerError::InvalidRequest(e.to_string()))?;
+
+        let resp = self
+            .send_raw(
+                reqwest::Method::POST,
+                &url,
+                "application/json",
+                Some("application/x-fluree-pack"),
+                Some(RequestBody::Json(&body)),
+            )
+            .await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            Ok(Some(resp))
+        } else if status == StatusCode::NOT_FOUND
+            || status == StatusCode::METHOD_NOT_ALLOWED
+            || status == StatusCode::NOT_ACCEPTABLE
+        {
+            Ok(None)
+        } else {
+            Err(Self::map_error(resp).await)
+        }
+    }
+
+    /// Fetch the NsRecord via the storage proxy.
+    ///
+    /// Returns `Ok(Some(record))` on 200, `Ok(None)` on 404.
+    pub async fn fetch_ns_record(
+        &self,
+        ledger: &str,
+    ) -> Result<Option<NsRecord>, RemoteLedgerError> {
+        let url = format!(
+            "{}/storage/ns/{}",
+            self.base_url,
+            urlencoding::encode(ledger)
+        );
+
+        let resp = self
+            .send_raw(reqwest::Method::GET, &url, "application/json", None, None)
+            .await?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let record: NsRecord = resp
+                .json()
+                .await
+                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))?;
+            Ok(Some(record))
+        } else if status == StatusCode::NOT_FOUND {
+            Ok(None)
+        } else {
+            Err(Self::map_error(resp).await)
+        }
     }
 
     // =========================================================================

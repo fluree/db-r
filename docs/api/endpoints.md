@@ -385,6 +385,87 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 
 Commit CIDs in the immutable chain are stable cursors. New commits appended to the head do not affect backward pointers, so cursors remain valid across pages even when new commits arrive between requests.
 
+### POST /pack/*ledger
+
+Stream all missing CAS objects for a ledger in a single binary response. This is the primary transport for `fluree clone` and `fluree pull`, replacing multiple paginated `GET /commits` requests or per-object `GET /storage/objects` fetches with a single streaming request.
+
+**Requires replication-grade permissions** (`fluree.storage.*`). The storage proxy must be enabled on the server.
+
+**URL:**
+
+```
+POST /pack/<ledger...>
+```
+
+**Request Headers:**
+
+```http
+Content-Type: application/json
+Accept: application/x-fluree-pack
+Authorization: Bearer <token>   (requires fluree.storage.* claims)
+```
+
+**Request Body:**
+
+```json
+{
+  "protocol": "fluree-pack-v1",
+  "want": ["bafy...remoteHead"],
+  "have": ["bafy...localHead"],
+  "include_indexes": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `protocol` | string | Yes | Must be `"fluree-pack-v1"` |
+| `want` | string[] | Yes | ContentId CIDs the client wants (typically the remote commit head) |
+| `have` | string[] | No | ContentId CIDs the client already has (typically the local commit head). Server stops walking the commit chain when it reaches a `have` CID. Empty for full clone. |
+| `include_indexes` | bool | No | Include index artifacts in the stream (default: `false`). Currently only commit + txn blobs are streamed. |
+
+**Response:**
+
+Binary stream using the `fluree-pack-v1` wire format (`Content-Type: application/x-fluree-pack`):
+
+```
+[Preamble: FPK1 + version(1)] [Header frame] [Data frames...] [End frame]
+```
+
+| Frame | Type byte | Content |
+|-------|-----------|---------|
+| Header | `0x00` | JSON metadata: protocol version, capabilities, commit count |
+| Data | `0x01` | CID binary + raw object bytes (commit or txn blob) |
+| Error | `0x02` | UTF-8 error message (terminates stream) |
+| End | `0xFF` | End of stream (no payload) |
+
+Data frames are streamed in **oldest-first topological order** (parents before children), so the client can write objects to CAS as they arrive without buffering the entire stream.
+
+**Status Codes:**
+
+- `200 OK`: Binary pack stream
+- `401 Unauthorized`: Missing or invalid storage token
+- `404 Not Found`: Storage proxy not enabled, ledger not found, or not authorized for this ledger
+
+**Example:**
+
+```bash
+# Download all commits for a ledger (full clone)
+curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/x-fluree-pack" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...head"],"have":[]}' \
+  --output pack.bin
+
+# Download only missing commits (incremental pull)
+curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/x-fluree-pack" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...remoteHead"],"have":["bafy...localHead"]}' \
+  --output pack.bin
+```
+
 ## Storage Proxy Endpoints
 
 These endpoints are intended for peer mode and `fluree clone`/`pull` workflows. They require the storage proxy to be enabled on the server and use replication-grade Bearer tokens (`fluree.storage.*` claims).

@@ -26,6 +26,7 @@
 mod error;
 #[cfg(feature = "native")]
 pub mod file;
+pub mod ledger_config;
 pub mod memory;
 pub mod storage_ns;
 pub mod storage_traits;
@@ -34,6 +35,7 @@ pub mod tracking;
 pub mod tracking_file;
 
 pub use error::{NameServiceError, Result};
+pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
 
 /// Storage path segment for graph source artifacts.
 ///

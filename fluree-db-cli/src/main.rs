@@ -158,7 +158,12 @@ async fn run(cli: Cli) -> error::CliResult<()> {
 
         Commands::Config { action } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
-            commands::config_cmd::run(action, &fluree_dir)
+            match action {
+                cli::ConfigAction::SetOrigins { ledger, file } => {
+                    commands::config_cmd::run_set_origins(&ledger, &file, &fluree_dir).await
+                }
+                other => commands::config_cmd::run(other, &fluree_dir),
+            }
         }
 
         Commands::Prefix { action } => {
@@ -204,12 +209,36 @@ async fn run(cli: Cli) -> error::CliResult<()> {
         }
 
         Commands::Clone {
-            remote,
-            ledger,
+            args,
+            origin,
+            token,
             alias,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
-            commands::sync::run_clone(&remote, &ledger, alias.as_deref(), &fluree_dir).await
+            if let Some(origin_uri) = origin {
+                // --origin mode: args = [ledger]
+                if args.len() != 1 {
+                    return Err(error::CliError::Usage(
+                        "with --origin, provide exactly one positional arg: <ledger>".into(),
+                    ));
+                }
+                commands::sync::run_clone_origin(
+                    &origin_uri,
+                    token.as_deref(),
+                    &args[0],
+                    alias.as_deref(),
+                    &fluree_dir,
+                )
+                .await
+            } else {
+                // Named-remote mode: args = [remote, ledger]
+                if args.len() != 2 {
+                    return Err(error::CliError::Usage(
+                        "usage: fluree clone <remote> <ledger>  or  fluree clone --origin <uri> <ledger>".into(),
+                    ));
+                }
+                commands::sync::run_clone(&args[0], &args[1], alias.as_deref(), &fluree_dir).await
+            }
         }
 
         Commands::Track { action } => {

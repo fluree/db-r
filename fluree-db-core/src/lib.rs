@@ -42,6 +42,7 @@ pub mod index_stats;
 pub mod namespaces;
 pub mod ns_vec_bi_dict;
 pub mod overlay;
+pub mod pack;
 pub mod prefix_trie;
 pub mod query_bounds;
 pub mod range;

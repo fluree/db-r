@@ -1,15 +1,21 @@
-//! Sync commands: fetch, pull, push
+//! Sync commands: fetch, pull, push, clone (named-remote and origin-based)
 
 use crate::config::{storage_path, TomlSyncConfigStore};
 use crate::context;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
+use fluree_db_core::pack::PackRequest;
+use fluree_db_core::storage::{ContentAddressedWrite, ContentKind};
+use fluree_db_core::ContentStore;
 use fluree_db_nameservice::{
-    FileTrackingStore, RefKind, RefPublisher, RemoteName, RemoteTrackingStore,
+    ConfigPayload, ConfigPublisher, ConfigValue, FileTrackingStore, LedgerConfig, NameService,
+    RefKind, RefPublisher, RemoteName, RemoteTrackingStore,
 };
 use fluree_db_nameservice_sync::{
-    FetchResult, HttpRemoteClient, RemoteEndpoint, SyncConfigStore, SyncDriver,
+    ingest_pack_stream, FetchResult, HttpRemoteClient, MultiOriginFetcher, RemoteEndpoint,
+    SyncConfigStore, SyncDriver,
 };
+use fluree_db_novelty::commit_v2::{read_commit_envelope, verify_commit_v2_blob};
 use futures::StreamExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -167,6 +173,9 @@ fn print_fetch_result(result: &FetchResult) {
 ///
 /// Downloads commit blobs page-by-page (newest→oldest) until we reach local
 /// history, then applies them oldest→newest via `import_commits_incremental`.
+///
+/// Falls back to origin-based pull (CID chain walk via LedgerConfig) when
+/// no upstream remote is configured.
 pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
     let ledger_id = context::resolve_ledger(ledger, fluree_dir)?;
     let ledger_id = context::to_ledger_id(&ledger_id);
@@ -178,12 +187,8 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
         .map_err(|e| CliError::Config(e.to_string()))?;
 
     let Some(upstream) = upstream else {
-        return Err(CliError::Config(format!(
-            "no upstream configured for '{}'\n  {} fluree upstream set {} <remote>",
-            ledger_id,
-            "hint:".cyan().bold(),
-            ledger_id
-        )));
+        // No named upstream — try origin-based pull via LedgerConfig.
+        return run_pull_via_origins(&ledger_id, fluree_dir).await;
     };
 
     // Resolve remote config → build client.
@@ -248,6 +253,69 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
         local_ref.t,
         remote_t
     );
+
+    // Try pack protocol first (needs NsRecord for head CID).
+    match client.fetch_ns_record(remote_ledger_id).await {
+        Ok(Some(remote_ns)) => {
+            if let Some(ref remote_head_cid) = remote_ns.commit_head_id {
+                let have: Vec<fluree_db_core::ContentId> =
+                    local_ref.id.clone().into_iter().collect();
+                let pack_request = PackRequest::commits(vec![remote_head_cid.clone()], have);
+                match client.fetch_pack_response(remote_ledger_id, &pack_request).await {
+                    Ok(Some(response)) => {
+                        match ingest_pack_stream(response, fluree.storage(), &ledger_id).await {
+                            Ok(result) => {
+                                let count = result.commits_stored;
+                                let handle = fluree.ledger_cached(&ledger_id).await.map_err(
+                                    |e| CliError::Config(format!("failed to load ledger: {e}")),
+                                )?;
+                                fluree
+                                    .set_commit_head(&handle, remote_head_cid, remote_ns.commit_t)
+                                    .await
+                                    .map_err(|e| {
+                                        CliError::Config(format!("pull failed (set head): {e}"))
+                                    })?;
+                                println!(
+                                    "{} '{}' pulled {} commit(s) via pack (new head t={})",
+                                    "✓".green(),
+                                    ledger_id,
+                                    count,
+                                    remote_ns.commit_t
+                                );
+                                context::persist_refreshed_tokens(
+                                    &client,
+                                    upstream.remote.as_str(),
+                                    fluree_dir,
+                                )
+                                .await;
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "  {} pack import failed: {e}, falling back to paginated export",
+                                    "warning:".yellow().bold()
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {} // server doesn't support pack — fall through
+                    Err(e) => {
+                        eprintln!(
+                            "  {} pack request failed: {e}, falling back to paginated export",
+                            "warning:".yellow().bold()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(None) => {} // ledger not found via proxy (unexpected); fall back to export
+        Err(e) => {
+            eprintln!(
+                "  {} pack preflight failed: {e}, falling back to paginated export",
+                "warning:".yellow().bold()
+            );
+        }
+    }
 
     // Fetch pages (newest→oldest) until we reach local history.
     let mut all_commits: Vec<fluree_db_api::Base64Bytes> = Vec::new();
@@ -588,44 +656,92 @@ pub async fn run_clone(
         .await
         .map_err(|e| CliError::Config(format!("failed to create local ledger: {e}")))?;
 
-    // Fetch all pages (bulk mode).
+    // Fetch all commit objects from the remote.
     let mut head_commit_id: Option<fluree_db_core::ContentId> = None;
     let mut head_t: i64 = 0;
-    let mut total: usize = 0;
-    let mut cursor: Option<String> = None;
+    let mut total_commits: usize = 0;
 
     let handle = fluree
         .ledger_cached(&local_id)
         .await
         .map_err(|e| CliError::Config(format!("failed to load ledger: {e}")))?;
 
-    loop {
-        let page = client
-            .fetch_commits(&ledger_id, cursor.as_deref(), 500)
-            .await
-            .map_err(|e| {
-                let msg = e.to_string();
-                map_sync_auth_error(remote_name, &msg).unwrap_or_else(|| {
-                    CliError::Config(format!("clone failed (fetch commits): {msg}"))
-                })
-            })?;
-
-        if head_commit_id.is_none() {
-            head_commit_id = Some(page.head_commit_id.clone());
-            head_t = page.head_t;
+    // Try pack protocol first (needs NsRecord for head CID).
+    let mut used_pack = false;
+    match client.fetch_ns_record(&ledger_id).await {
+        Ok(Some(ns)) => {
+            if let Some(ref hcid) = ns.commit_head_id {
+                let pack_request = PackRequest::commits(vec![hcid.clone()], vec![]);
+                match client.fetch_pack_response(&ledger_id, &pack_request).await {
+                    Ok(Some(response)) => {
+                        match ingest_pack_stream(response, fluree.storage(), &local_id).await {
+                            Ok(result) => {
+                                total_commits = result.commits_stored;
+                                head_commit_id = Some(hcid.clone());
+                                head_t = ns.commit_t;
+                                used_pack = true;
+                                let objects = result.commits_stored
+                                    + result.txn_blobs_stored
+                                    + result.index_artifacts_stored;
+                                eprint!("  fetched {} object(s) via pack\r", objects);
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "  {} pack import failed: {e}, falling back to paginated export",
+                                    "warning:".yellow().bold()
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {} // server doesn't support pack — fall through
+                    Err(e) => {
+                        eprintln!(
+                            "  {} pack request failed: {e}, falling back to paginated export",
+                            "warning:".yellow().bold()
+                        );
+                    }
+                }
+            }
         }
+        Ok(None) => {} // ledger not found via proxy; fall back
+        Err(e) => {
+            eprintln!(
+                "  {} pack preflight failed: {e}, falling back to paginated export",
+                "warning:".yellow().bold()
+            );
+        }
+    };
 
-        fluree
-            .import_commits_bulk(&handle, &page)
-            .await
-            .map_err(|e| CliError::Config(format!("clone failed (import): {e}")))?;
+    if !used_pack {
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = client
+                .fetch_commits(&ledger_id, cursor.as_deref(), 500)
+                .await
+                .map_err(|e| {
+                    let msg = e.to_string();
+                    map_sync_auth_error(remote_name, &msg).unwrap_or_else(|| {
+                        CliError::Config(format!("clone failed (fetch commits): {msg}"))
+                    })
+                })?;
 
-        total += page.count;
-        eprint!("  fetched {} commits...\r", total);
+            if head_commit_id.is_none() {
+                head_commit_id = Some(page.head_commit_id.clone());
+                head_t = page.head_t;
+            }
 
-        match page.next_cursor_id {
-            Some(cid) => cursor = Some(cid.to_string()),
-            None => break,
+            fluree
+                .import_commits_bulk(&handle, &page)
+                .await
+                .map_err(|e| CliError::Config(format!("clone failed (import): {e}")))?;
+
+            total_commits += page.count;
+            eprint!("  fetched {} commits...\r", total_commits);
+
+            match page.next_cursor_id {
+                Some(cid) => cursor = Some(cid.to_string()),
+                None => break,
+            }
         }
     }
 
@@ -656,7 +772,7 @@ pub async fn run_clone(
         "{} Cloned '{}' ({} commits, head t={})",
         "✓".green(),
         local_id,
-        total,
+        total_commits,
         head_t
     );
     println!(
@@ -668,5 +784,499 @@ pub async fn run_clone(
 
     // Persist refreshed token if auto-refresh happened.
     context::persist_refreshed_tokens(&client, remote_name, fluree_dir).await;
+    Ok(())
+}
+
+/// Clone a ledger from an origin URI using CID-based chain walking.
+///
+/// Downloads all commits by following the previous_ref chain from the head
+/// commit backwards, fetching each commit + txn blob via MultiOriginFetcher.
+///
+/// Usage: `fluree clone --origin http://localhost:8090 mydb:main`
+pub async fn run_clone_origin(
+    origin_uri: &str,
+    token: Option<&str>,
+    ledger: &str,
+    alias: Option<&str>,
+    fluree_dir: &Path,
+) -> CliResult<()> {
+    let ledger_id = context::to_ledger_id(ledger);
+    let local_id = alias.map_or_else(|| ledger_id.clone(), context::to_ledger_id);
+
+    // 1. Build bootstrap fetcher from the single origin URI.
+    let mut fetcher = MultiOriginFetcher::from_bootstrap(origin_uri, token.map(String::from));
+
+    // 2. Fetch NsRecord from the remote to discover the head commit.
+    let ns_record = fetcher
+        .fetch_ns_record(&ledger_id)
+        .await
+        .map_err(|e| CliError::Config(format!("clone failed (fetch ns record): {e}")))?
+        .ok_or_else(|| CliError::NotFound(format!("ledger '{}' not found on origin", ledger_id)))?;
+
+    let head_t = ns_record.commit_t;
+
+    // 3. Optionally upgrade fetcher via LedgerConfig (if advertised in NsRecord).
+    let mut config_bytes_for_storage: Option<(fluree_db_core::ContentId, Vec<u8>)> = None;
+    if let Some(config_cid) = &ns_record.config_id {
+        match fetcher.fetch(config_cid, &ledger_id).await {
+            Ok(config_bytes) => {
+                if !config_cid.verify(&config_bytes) {
+                    return Err(CliError::Config(
+                        "LedgerConfig integrity verification failed".into(),
+                    ));
+                }
+                let config: LedgerConfig = serde_json::from_slice(&config_bytes)
+                    .map_err(|e| CliError::Config(format!("invalid LedgerConfig: {e}")))?;
+                fetcher = MultiOriginFetcher::from_config(&config, token.map(String::from));
+                config_bytes_for_storage = Some((config_cid.clone(), config_bytes));
+            }
+            Err(e) => {
+                // Non-fatal: fall back to bootstrap fetcher.
+                eprintln!(
+                    "  {} could not fetch LedgerConfig: {e}",
+                    "warning:".yellow().bold()
+                );
+            }
+        }
+    }
+
+    // 4. Create the local ledger.
+    let fluree = context::build_fluree(fluree_dir)?;
+    fluree
+        .create_ledger(&local_id)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to create local ledger: {e}")))?;
+
+    // Handle empty remote ledger: local ledger created but nothing to fetch.
+    let head_cid = match &ns_record.commit_head_id {
+        Some(cid) => cid.clone(),
+        None => {
+            println!(
+                "{} Created '{}' (remote is empty, nothing to fetch)",
+                "✓".green(),
+                local_id,
+            );
+            return Ok(());
+        }
+    };
+
+    println!(
+        "Cloning '{}' from '{}' (remote t={})...",
+        local_id.cyan(),
+        origin_uri.cyan(),
+        head_t
+    );
+
+    // 5. Fetch commit chain — try pack protocol first (single round-trip).
+    let content_store =
+        fluree_db_core::storage::content_store_for(fluree.storage().clone(), &local_id);
+    let mut commits_fetched = 0usize;
+
+    let pack_request = PackRequest::commits(vec![head_cid.clone()], vec![]);
+    let used_pack = match fetcher.fetch_pack_response(&ledger_id, &pack_request).await {
+        Ok(Some(response)) => {
+            match ingest_pack_stream(response, fluree.storage(), &local_id).await {
+                Ok(result) => {
+                    commits_fetched = result.commits_stored;
+                    let objects =
+                        result.commits_stored + result.txn_blobs_stored + result.index_artifacts_stored;
+                    eprint!("  fetched {} object(s) via pack\r", objects);
+                    true
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  {} pack import failed: {e}, falling back to object fetch",
+                        "warning:".yellow().bold()
+                    );
+                    false
+                }
+            }
+        }
+        Ok(None) => false,
+        Err(e) => {
+            eprintln!(
+                "  {} pack not available: {e}, falling back to object fetch",
+                "warning:".yellow().bold()
+            );
+            false
+        }
+    };
+
+    if !used_pack {
+        // Walk the commit chain backwards from head, fetching + storing blobs.
+        //
+        // If a commit already exists locally (e.g., from a previously interrupted
+        // clone), we skip fetching but still read the local bytes to continue
+        // chain traversal — this ensures all ancestors and txn blobs are present.
+        let mut current_cid = Some(head_cid.clone());
+
+        while let Some(cid) = current_cid.take() {
+            let commit_bytes = if content_store.has(&cid).await.unwrap_or(false) {
+                // Already have this commit — read local bytes for chain traversal.
+                content_store.get(&cid).await.map_err(|e| {
+                    CliError::Config(format!("clone failed (read local commit): {e}"))
+                })?
+            } else {
+                // Fetch commit blob from origin.
+                let bytes = fetcher
+                    .fetch(&cid, &ledger_id)
+                    .await
+                    .map_err(|e| CliError::Config(format!("clone failed (fetch commit): {e}")))?;
+
+                // Verify integrity + derive CID from the commit-v2 blob.
+                let derived_id = verify_commit_v2_blob(&bytes).map_err(|e| {
+                    CliError::Config(format!("clone failed (commit integrity): {e}"))
+                })?;
+                if derived_id != cid {
+                    return Err(CliError::Config(format!(
+                        "clone failed: commit CID mismatch (expected {cid}, got {derived_id})"
+                    )));
+                }
+
+                // Store commit blob locally (uses pre-verified hash; commits use sub-range hashing).
+                fluree
+                    .storage()
+                    .content_write_bytes_with_hash(
+                        ContentKind::Commit,
+                        &local_id,
+                        &derived_id.digest_hex(),
+                        &bytes,
+                    )
+                    .await
+                    .map_err(|e| CliError::Config(format!("clone failed (store commit): {e}")))?;
+
+                commits_fetched += 1;
+                eprint!("  fetched {} commit(s)...\r", commits_fetched);
+
+                bytes
+            };
+
+            // Parse envelope-only (no flake decode) for previous_ref + txn CID.
+            let envelope = read_commit_envelope(&commit_bytes)
+                .map_err(|e| CliError::Config(format!("clone failed (read envelope): {e}")))?;
+
+            // Fetch + store txn blob (if present).
+            if let Some(txn_cid) = &envelope.txn {
+                if !content_store.has(txn_cid).await.unwrap_or(false) {
+                    let txn_bytes = fetcher.fetch(txn_cid, &ledger_id).await.map_err(|e| {
+                        CliError::Config(format!("clone failed (fetch txn blob): {e}"))
+                    })?;
+                    // Txn blobs use full-bytes SHA-256, so put_with_id is safe.
+                    content_store
+                        .put_with_id(txn_cid, &txn_bytes)
+                        .await
+                        .map_err(|e| {
+                            CliError::Config(format!("clone failed (store txn blob): {e}"))
+                        })?;
+                }
+            }
+
+            // Follow the chain backwards.
+            current_cid = envelope.previous_id().cloned();
+        }
+    }
+
+    eprintln!(); // Clear progress line.
+
+    // 6. Set the commit head on the local ledger.
+    let handle = fluree
+        .ledger_cached(&local_id)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to load ledger: {e}")))?;
+
+    fluree
+        .set_commit_head(&handle, &head_cid, head_t)
+        .await
+        .map_err(|e| CliError::Config(format!("clone failed (set head): {e}")))?;
+
+    // 7. Store LedgerConfig blob + update config_id on local NsRecord (if fetched).
+    if let Some((config_cid, config_bytes)) = config_bytes_for_storage {
+        use fluree_db_nameservice::ConfigCasResult;
+
+        // Store the LedgerConfig blob in CAS.
+        content_store
+            .put_with_id(&config_cid, &config_bytes)
+            .await
+            .map_err(|e| CliError::Config(format!("clone failed (store LedgerConfig): {e}")))?;
+
+        // Update the config_id on the local NsRecord via ConfigPublisher.
+        let current = fluree
+            .nameservice()
+            .get_config(&local_id)
+            .await
+            .map_err(|e| CliError::Config(format!("clone failed (get config): {e}")))?;
+        let existing_payload = current
+            .as_ref()
+            .and_then(|c| c.payload.clone())
+            .unwrap_or_default();
+        let new_config = ConfigValue::new(
+            current.as_ref().map_or(1, |c| c.v + 1),
+            Some(ConfigPayload {
+                config_id: Some(config_cid),
+                default_context: existing_payload.default_context,
+                extra: existing_payload.extra,
+            }),
+        );
+        match fluree
+            .nameservice()
+            .push_config(&local_id, current.as_ref(), &new_config)
+            .await
+            .map_err(|e| CliError::Config(format!("clone failed (push config): {e}")))?
+        {
+            ConfigCasResult::Updated => {}
+            ConfigCasResult::Conflict { .. } => {
+                // During clone this is unexpected (we just created the ledger), but
+                // handle it gracefully — the config blob is already in CAS, so a
+                // retry via `fluree config set-origins` will work.
+                eprintln!(
+                    "  {} config was modified concurrently; LedgerConfig blob stored but config_id not set",
+                    "warning:".yellow().bold()
+                );
+            }
+        }
+    }
+
+    println!(
+        "{} Cloned '{}' ({} commit(s), head t={})",
+        "✓".green(),
+        local_id,
+        commits_fetched,
+        head_t
+    );
+
+    Ok(())
+}
+
+/// Pull via origins (CID chain walk) when no named upstream is configured.
+///
+/// Loads the local LedgerConfig from CAS, builds a MultiOriginFetcher,
+/// fetches the remote NsRecord, then walks the commit chain from the remote
+/// head to the local head, storing blobs along the way.
+async fn run_pull_via_origins(ledger_id: &str, fluree_dir: &Path) -> CliResult<()> {
+    let fluree = context::build_fluree(fluree_dir)?;
+
+    let ns_record = fluree
+        .nameservice()
+        .lookup(ledger_id)
+        .await?
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
+
+    let config_id = ns_record.config_id.ok_or_else(|| {
+        CliError::Config(format!(
+            "no upstream and no LedgerConfig for '{}'; cannot pull\n  {} set an upstream: fluree upstream set {} <remote>\n  {} or set origins: fluree config set-origins {} --file origins.json",
+            ledger_id,
+            "hint:".cyan().bold(),
+            ledger_id,
+            "hint:".cyan().bold(),
+            ledger_id,
+        ))
+    })?;
+
+    // Load LedgerConfig from local CAS.
+    let content_store =
+        fluree_db_core::storage::content_store_for(fluree.storage().clone(), ledger_id);
+    let config_bytes = content_store.get(&config_id).await.map_err(|e| {
+        CliError::Config(format!("failed to load LedgerConfig from local CAS: {e}"))
+    })?;
+    let config: LedgerConfig = serde_json::from_slice(&config_bytes)
+        .map_err(|e| CliError::Config(format!("invalid LedgerConfig: {e}")))?;
+
+    // Build fetcher from config (no token for now; future: credential store).
+    let fetcher = MultiOriginFetcher::from_config(&config, None);
+    if fetcher.is_empty() {
+        return Err(CliError::Config(
+            "LedgerConfig has no satisfiable origins".into(),
+        ));
+    }
+
+    // Fetch remote NsRecord to discover current head.
+    let remote_ns = fetcher
+        .fetch_ns_record(ledger_id)
+        .await
+        .map_err(|e| CliError::Config(format!("pull failed (fetch ns record): {e}")))?
+        .ok_or_else(|| {
+            CliError::NotFound(format!(
+                "ledger '{}' not found on any configured origin",
+                ledger_id
+            ))
+        })?;
+
+    let remote_head_cid = remote_ns.commit_head_id.ok_or_else(|| {
+        CliError::Config(format!(
+            "remote ledger '{}' is empty (no commits)",
+            ledger_id
+        ))
+    })?;
+    let remote_t = remote_ns.commit_t;
+
+    // Resolve local head.
+    let local_ref = fluree
+        .nameservice()
+        .get_ref(ledger_id, RefKind::CommitHead)
+        .await
+        .map_err(|e| CliError::Config(e.to_string()))?
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
+
+    if remote_t <= local_ref.t {
+        println!("{} '{}' is already up to date", "✓".green(), ledger_id);
+        return Ok(());
+    }
+
+    println!(
+        "Pulling '{}' via origins (local t={}, remote t={})...",
+        ledger_id.cyan(),
+        local_ref.t,
+        remote_t
+    );
+
+    // Try pack protocol first (single round-trip).
+    let have: Vec<fluree_db_core::ContentId> = local_ref.id.clone().into_iter().collect();
+    let pack_request = PackRequest::commits(vec![remote_head_cid.clone()], have);
+    match fetcher.fetch_pack_response(ledger_id, &pack_request).await {
+        Ok(Some(response)) => {
+            let result = ingest_pack_stream(response, fluree.storage(), ledger_id)
+                .await
+                .map_err(|e| CliError::Config(format!("pull failed (pack import): {e}")))?;
+            let count = result.commits_stored;
+            let handle = fluree
+                .ledger_cached(ledger_id)
+                .await
+                .map_err(|e| CliError::Config(format!("failed to load ledger: {e}")))?;
+            fluree
+                .set_commit_head(&handle, &remote_head_cid, remote_t)
+                .await
+                .map_err(|e| CliError::Config(format!("pull failed (set head): {e}")))?;
+            println!(
+                "{} '{}' pulled {} commit(s) via pack (new head t={})",
+                "✓".green(),
+                ledger_id,
+                count,
+                remote_t
+            );
+            return Ok(());
+        }
+        Ok(None) => {} // server doesn't support pack — fall through
+        Err(e) => {
+            eprintln!(
+                "  {} pack not available: {e}, falling back to CID walk",
+                "warning:".yellow().bold()
+            );
+        }
+    }
+
+    // Walk chain from remote head toward local head.
+    struct FetchedCommit {
+        cid: fluree_db_core::ContentId,
+        bytes: Vec<u8>,
+        txn: Option<fluree_db_core::ContentId>,
+    }
+    let mut fetched: Vec<FetchedCommit> = Vec::new();
+    let mut current_cid = Some(remote_head_cid.clone());
+
+    while let Some(cid) = current_cid.take() {
+        // Primary stop: hit local head CID — its ancestry is complete.
+        if local_ref.id.as_ref() == Some(&cid) {
+            break;
+        }
+
+        // If commit already exists locally (e.g., from an interrupted pull),
+        // read local bytes to continue chain traversal but skip re-fetching.
+        if content_store.has(&cid).await.unwrap_or(false) {
+            let local_bytes = content_store
+                .get(&cid)
+                .await
+                .map_err(|e| CliError::Config(format!("pull failed (read local commit): {e}")))?;
+            let envelope = read_commit_envelope(&local_bytes)
+                .map_err(|e| CliError::Config(format!("pull failed (read envelope): {e}")))?;
+            if envelope.t <= local_ref.t {
+                break;
+            }
+            current_cid = envelope.previous_id().cloned();
+            continue;
+        }
+
+        let commit_bytes = fetcher
+            .fetch(&cid, ledger_id)
+            .await
+            .map_err(|e| CliError::Config(format!("pull failed (fetch commit): {e}")))?;
+
+        // Verify integrity.
+        let derived_id = verify_commit_v2_blob(&commit_bytes)
+            .map_err(|e| CliError::Config(format!("pull failed (commit integrity): {e}")))?;
+        if derived_id != cid {
+            return Err(CliError::Config(format!(
+                "pull failed: commit CID mismatch (expected {cid}, got {derived_id})"
+            )));
+        }
+
+        let envelope = read_commit_envelope(&commit_bytes)
+            .map_err(|e| CliError::Config(format!("pull failed (read envelope): {e}")))?;
+
+        // Secondary stop: t-based early exit (reached or passed local history).
+        if envelope.t <= local_ref.t {
+            break;
+        }
+
+        current_cid = envelope.previous_id().cloned();
+        fetched.push(FetchedCommit {
+            cid,
+            bytes: commit_bytes,
+            txn: envelope.txn,
+        });
+    }
+
+    if fetched.is_empty() {
+        println!("{} '{}' is already up to date", "✓".green(), ledger_id);
+        return Ok(());
+    }
+
+    // Reverse to oldest→newest, store blobs.
+    fetched.reverse();
+    for fc in &fetched {
+        fluree
+            .storage()
+            .content_write_bytes_with_hash(
+                ContentKind::Commit,
+                ledger_id,
+                &fc.cid.digest_hex(),
+                &fc.bytes,
+            )
+            .await
+            .map_err(|e| CliError::Config(format!("pull failed (store commit): {e}")))?;
+
+        if let Some(txn_cid) = &fc.txn {
+            if !content_store.has(txn_cid).await.unwrap_or(false) {
+                let txn_bytes = fetcher
+                    .fetch(txn_cid, ledger_id)
+                    .await
+                    .map_err(|e| CliError::Config(format!("pull failed (fetch txn blob): {e}")))?;
+                content_store
+                    .put_with_id(txn_cid, &txn_bytes)
+                    .await
+                    .map_err(|e| CliError::Config(format!("pull failed (store txn blob): {e}")))?;
+            }
+        }
+    }
+
+    let count = fetched.len();
+
+    // Set new commit head.
+    let handle = fluree
+        .ledger_cached(ledger_id)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to load ledger: {e}")))?;
+    fluree
+        .set_commit_head(&handle, &remote_head_cid, remote_t)
+        .await
+        .map_err(|e| CliError::Config(format!("pull failed (set head): {e}")))?;
+
+    println!(
+        "{} '{}' pulled {} commit(s) (new head t={})",
+        "✓".green(),
+        ledger_id,
+        count,
+        remote_t
+    );
+
     Ok(())
 }

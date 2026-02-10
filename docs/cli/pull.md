@@ -16,17 +16,26 @@ fluree pull [LEDGER]
 
 ## Description
 
-Downloads commit blobs from the configured upstream remote and applies them to the local ledger:
+Downloads new commits from the configured upstream and applies them to the local ledger:
 
 1. Queries the remote for its current head (`t` and commit ContentId)
-2. Compares with the local head
-3. Fetches commit pages (newest → oldest) until local history is reached
-4. Filters and reorders commits (oldest → newest)
-5. Imports incrementally: validates chain, checks ancestry, writes blobs, advances head, updates novelty
+2. Compares with the local head; exits early if already up to date
+3. Attempts bulk download of missing commits via the **pack protocol** (single streaming request)
+4. Falls back to paginated JSON export if the server does not support pack
+5. Stores all commit and transaction blobs to local CAS
+6. Advances the local head to the remote head
+
+### Transport
+
+Pull uses the same pack protocol as clone -- see [clone: Transport](clone.md#transport) for details.
+
+### Origin-based pull
+
+When no upstream remote is configured, pull falls back to **origin-based fetching** if a LedgerConfig with origins is set on the ledger (see `fluree config set-origins`). This uses the same pack-first / CID-walk-fallback transport as `fluree clone --origin`.
 
 This is a **replication** operation. It requires a Bearer token with **root / storage-proxy** permissions (`fluree.storage.*`). If you only have permissioned/query access to a ledger, you should use `fluree track` (or `--remote`) and run queries/transactions against the remote instead.
 
-The ledger must have an upstream configured (see `fluree upstream set`).
+The ledger must have an upstream configured (see `fluree upstream set`), **or** a LedgerConfig with origins (see `fluree config set-origins`).
 
 **Restart safety:** If interrupted, the local head reflects the last successful import. The next pull resumes from the local head automatically.
 
@@ -63,7 +72,7 @@ error: no upstream configured for 'mydb:main'
 
 | Error | Description |
 |-------|-------------|
-| No upstream configured | Run `fluree upstream set <ledger> <remote>` first |
+| No upstream configured | Run `fluree upstream set <ledger> <remote>` first, or configure origins via `fluree config set-origins` |
 | Ancestry mismatch | Remote chain does not descend from local head (histories diverged) |
 | Import validation failure | Commit chain or retraction invariant violation |
 
