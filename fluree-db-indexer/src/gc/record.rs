@@ -4,13 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
-// Re-export GarbageRef from core (used in DbRoot)
-pub use fluree_db_core::serde::GarbageRef;
-
-/// Garbage record containing obsolete addresses from a refresh operation.
+/// Garbage record containing obsolete CAS artifacts from an index refresh.
 ///
-/// Extends Clojure format with `created_at_ms` for time-based GC:
-/// `{ :ledger_id "...", :t N, :garbage [...], :created_at_ms N }`
+/// JSON format: `{ "ledger_id": "...", "t": N, "garbage": [...], "created_at_ms": N }`
 ///
 /// The garbage list is sorted and deduplicated for determinism.
 /// Note: `created_at_ms` is safe to include because the garbage record is NOT
@@ -21,7 +17,11 @@ pub struct GarbageRecord {
     pub ledger_id: String,
     /// Transaction time this record was created for
     pub t: i64,
-    /// Sorted, deduped list of obsolete addresses (index nodes + sketch files)
+    /// Sorted, deduped list of obsolete CID strings (base32-lower multibase).
+    ///
+    /// Each entry is a `ContentId.to_string()` value identifying an obsolete
+    /// CAS artifact (index leaf, branch, dict, etc.) that was replaced during
+    /// this index refresh. Legacy records may contain raw address strings.
     pub garbage: Vec<String>,
     /// Wall-clock timestamp when this record was created (milliseconds since epoch)
     /// Used for time-based GC retention checks

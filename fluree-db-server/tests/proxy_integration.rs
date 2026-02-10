@@ -844,14 +844,14 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
     let (status, ns_json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Extract commit address (now should exist after transaction)
-    let commit_address = ns_json
-        .get("commit_address")
+    // Extract commit head CID (should exist after transaction)
+    let commit_head_id = ns_json
+        .get("commit_head_id")
         .and_then(|v| v.as_str())
-        .expect("commit_address should exist after transaction");
+        .expect("commit_head_id should exist after transaction");
 
-    // Request the commit with flakes format — server returns raw bytes anyway
-    let block_body = serde_json::json!({ "address": commit_address });
+    // Request the commit via CID — server returns raw bytes anyway
+    let block_body = serde_json::json!({ "cid": commit_head_id, "ledger": "flkb:test" });
     let resp = app
         .clone()
         .oneshot(
@@ -957,14 +957,14 @@ async fn test_block_content_negotiation_octet_stream_success() {
     let (status, ns_json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Extract commit address (now should exist after transaction)
-    let commit_address = ns_json
-        .get("commit_address")
+    // Extract commit head CID (should exist after transaction)
+    let commit_head_id = ns_json
+        .get("commit_head_id")
         .and_then(|v| v.as_str())
-        .expect("commit_address should exist after transaction");
+        .expect("commit_head_id should exist after transaction");
 
-    // Request the commit with octet-stream format - should succeed
-    let block_body = serde_json::json!({ "address": commit_address });
+    // Request the commit via CID with octet-stream format - should succeed
+    let block_body = serde_json::json!({ "cid": commit_head_id, "ledger": "octet:test" });
     let resp = app
         .oneshot(
             Request::builder()
@@ -1063,14 +1063,14 @@ async fn test_block_content_negotiation_default_accept() {
     let (status, ns_json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Extract commit address (now should exist after transaction)
-    let commit_address = ns_json
-        .get("commit_address")
+    // Extract commit head CID (should exist after transaction)
+    let commit_head_id = ns_json
+        .get("commit_head_id")
         .and_then(|v| v.as_str())
-        .expect("commit_address should exist after transaction");
+        .expect("commit_head_id should exist after transaction");
 
-    // Request with NO Accept header - should default to octet-stream and succeed
-    let block_body = serde_json::json!({ "address": commit_address });
+    // Request via CID with NO Accept header - should default to octet-stream and succeed
+    let block_body = serde_json::json!({ "cid": commit_head_id, "ledger": "default:test" });
     let resp = app
         .oneshot(
             Request::builder()
@@ -1161,14 +1161,14 @@ async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
     let (status, ns_json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Extract commit address (now should exist after transaction)
-    let commit_address = ns_json
-        .get("commit_address")
+    // Extract commit head CID (should exist after transaction)
+    let commit_head_id = ns_json
+        .get("commit_head_id")
         .and_then(|v| v.as_str())
-        .expect("commit_address should exist after transaction");
+        .expect("commit_head_id should exist after transaction");
 
-    // Request with JSON flakes debug format — server returns raw bytes anyway
-    let block_body = serde_json::json!({ "address": commit_address });
+    // Request via CID with JSON flakes debug format — server returns raw bytes anyway
+    let block_body = serde_json::json!({ "cid": commit_head_id, "ledger": "json:test" });
     let resp = app
         .oneshot(
             Request::builder()

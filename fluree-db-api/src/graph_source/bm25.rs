@@ -24,6 +24,22 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+/// Best-effort deletion of old snapshot blobs from storage.
+/// Logs warnings on failure but does not propagate errors.
+async fn delete_old_snapshots<S: Storage>(storage: &S, addresses: &[String]) {
+    for addr in addresses {
+        if let Err(e) = storage.delete(addr).await {
+            warn!(address = %addr, error = %e, "failed to delete old BM25 snapshot");
+        }
+    }
+}
+
+/// Default snapshot retention for BM25 manifests.
+/// Uses the same default as index GC (`gc_max_old_indexes` + 1 for current).
+fn snapshot_retention() -> usize {
+    (fluree_db_indexer::DEFAULT_MAX_OLD_INDEXES as usize) + 1
+}
+
 // =============================================================================
 // BM25 Index Creation
 // =============================================================================
@@ -702,15 +718,20 @@ where
             .write_bm25_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
-        // 11. Update manifest and publish
+        // 11. Update manifest, trim old snapshots, and publish
         let mut manifest = manifest;
         manifest.append(Bm25SnapshotEntry::new(ledger_t, &new_address));
+        let removed = manifest.trim(snapshot_retention());
         self.publish_bm25_manifest(graph_source_id, &manifest, ledger_t)
             .await?;
+
+        // Best-effort cleanup of old snapshot blobs
+        delete_old_snapshots(self.storage(), &removed).await;
 
         info!(
             graph_source_id = %graph_source_id,
             new_address = %new_address,
+            trimmed = removed.len(),
             ledger_t = ledger_t,
             "Incremental sync complete"
         );
@@ -804,15 +825,20 @@ where
             .write_bm25_snapshot_blob(graph_source_id, &index, ledger_t)
             .await?;
 
-        // 7. Update manifest and publish
+        // 7. Update manifest, trim old snapshots, and publish
         let mut manifest = manifest;
         manifest.append(Bm25SnapshotEntry::new(ledger_t, &new_address));
+        let removed = manifest.trim(snapshot_retention());
         self.publish_bm25_manifest(graph_source_id, &manifest, ledger_t)
             .await?;
+
+        // Best-effort cleanup of old snapshot blobs
+        delete_old_snapshots(self.storage(), &removed).await;
 
         info!(
             graph_source_id = %graph_source_id,
             new_address = %new_address,
+            trimmed = removed.len(),
             ledger_t = ledger_t,
             "Full resync complete"
         );
@@ -992,16 +1018,21 @@ where
             .write_bm25_snapshot_blob(graph_source_id, &index, target_t)
             .await?;
 
-        // 7. Update manifest and publish (only advances head if target_t is newest)
+        // 7. Update manifest, trim old snapshots, and publish
         let mut manifest = manifest;
         manifest.append(Bm25SnapshotEntry::new(target_t, &address));
+        let removed = manifest.trim(snapshot_retention());
         let effective_t = manifest.head().map(|h| h.index_t).unwrap_or(target_t);
         self.publish_bm25_manifest(graph_source_id, &manifest, effective_t)
             .await?;
 
+        // Best-effort cleanup of old snapshot blobs
+        delete_old_snapshots(self.storage(), &removed).await;
+
         info!(
             graph_source_id = %graph_source_id,
             target_t = target_t,
+            trimmed = removed.len(),
             upserted = update_result.upserted,
             "Sync to specific t complete"
         );

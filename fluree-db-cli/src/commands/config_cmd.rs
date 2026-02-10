@@ -131,7 +131,7 @@ fn print_toml_flat(prefix: &str, val: &toml::Value) {
 /// Set origin configuration for a ledger (stores LedgerConfig blob in CAS
 /// and updates the config_id on the NsRecord).
 pub async fn run_set_origins(ledger: &str, file: &Path, fluree_dir: &Path) -> CliResult<()> {
-    use fluree_db_core::storage::ContentKind;
+    use fluree_db_core::ContentKind;
     use fluree_db_core::ContentStore;
     use fluree_db_nameservice::{
         ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, LedgerConfig,

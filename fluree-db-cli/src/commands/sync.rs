@@ -5,7 +5,8 @@ use crate::context;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use fluree_db_core::pack::PackRequest;
-use fluree_db_core::storage::{ContentAddressedWrite, ContentKind};
+use fluree_db_core::storage::ContentAddressedWrite;
+use fluree_db_core::ContentKind;
 use fluree_db_core::ContentStore;
 use fluree_db_nameservice::{
     ConfigPayload, ConfigPublisher, ConfigValue, FileTrackingStore, LedgerConfig, NameService,
@@ -261,14 +262,18 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
                 let have: Vec<fluree_db_core::ContentId> =
                     local_ref.id.clone().into_iter().collect();
                 let pack_request = PackRequest::commits(vec![remote_head_cid.clone()], have);
-                match client.fetch_pack_response(remote_ledger_id, &pack_request).await {
+                match client
+                    .fetch_pack_response(remote_ledger_id, &pack_request)
+                    .await
+                {
                     Ok(Some(response)) => {
                         match ingest_pack_stream(response, fluree.storage(), &ledger_id).await {
                             Ok(result) => {
                                 let count = result.commits_stored;
-                                let handle = fluree.ledger_cached(&ledger_id).await.map_err(
-                                    |e| CliError::Config(format!("failed to load ledger: {e}")),
-                                )?;
+                                let handle =
+                                    fluree.ledger_cached(&ledger_id).await.map_err(|e| {
+                                        CliError::Config(format!("failed to load ledger: {e}"))
+                                    })?;
                                 fluree
                                     .set_commit_head(&handle, remote_head_cid, remote_ns.commit_t)
                                     .await
@@ -878,8 +883,9 @@ pub async fn run_clone_origin(
             match ingest_pack_stream(response, fluree.storage(), &local_id).await {
                 Ok(result) => {
                     commits_fetched = result.commits_stored;
-                    let objects =
-                        result.commits_stored + result.txn_blobs_stored + result.index_artifacts_stored;
+                    let objects = result.commits_stored
+                        + result.txn_blobs_stored
+                        + result.index_artifacts_stored;
                     eprint!("  fetched {} object(s) via pack\r", objects);
                     true
                 }

@@ -576,20 +576,24 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 
 **Kind Allowlist:**
 
-Only replication-essential content kinds are served:
+All replication-relevant content kinds are served:
 
 | Kind | Description |
 |------|-------------|
 | `commit` | Commit chain blobs |
 | `txn` | Transaction data blobs |
 | `config` | LedgerConfig origin discovery objects |
+| `index-root` | Binary index root JSON |
+| `index-branch` | Index branch manifests |
+| `index-leaf` | Index leaf files |
+| `dict` | Dictionary artifacts (predicates, subjects, strings, etc.) |
 
-Index artifacts (branches, leaves, dicts, garbage records) return 404. Use `/storage/block` for policy-filtered index access.
+Only `GarbageRecord` (internal GC metadata) returns 404.
 
 **Response Headers:**
 
 - `Content-Type: application/octet-stream`
-- `X-Fluree-Content-Kind`: Content kind label (`commit`, `txn`, or `config`)
+- `X-Fluree-Content-Kind`: Content kind label (`commit`, `txn`, `config`, `index-root`, `index-branch`, `index-leaf`, `dict`)
 
 **Response Body:**
 
@@ -621,6 +625,10 @@ curl -H "Authorization: Bearer $TOKEN" \
 # Fetch a config blob by CID
 curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/v1/fluree/storage/objects/bafybeig...configCid?ledger=mydb:main"
+
+# Fetch an index leaf by CID
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/v1/fluree/storage/objects/bafybeig...leafCid?ledger=mydb:main"
 ```
 
 ## Query Endpoints

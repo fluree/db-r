@@ -27,7 +27,7 @@ use axum::{
 use fluree_db_api::block_fetch::{self, BlockContent, EnforcementMode, LedgerBlockContext};
 use fluree_db_api::{verify_commit_v2_blob, NameService, StorageRead};
 use fluree_db_core::flake::Flake;
-use fluree_db_core::storage::ContentKind;
+use fluree_db_core::ContentKind;
 use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -177,7 +177,10 @@ fn build_json_flakes_response(
 // Request/Response Types
 // ============================================================================
 
-/// Response for nameservice record endpoint
+/// Response for nameservice record endpoint.
+///
+/// All identity fields are CID-based. Peers use CIDs directly with the
+/// `/storage/block` endpoint (via the `cid` + `ledger` request body fields).
 #[derive(Debug, Clone, Serialize)]
 pub struct NsRecordResponse {
     /// Canonical ledger id (e.g., "mydb:main")
@@ -194,19 +197,28 @@ pub struct NsRecordResponse {
     pub retracted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_id: Option<String>,
-    /// Computed storage address for the head commit (derived from CID + storage method).
-    /// Peers need this to fetch commit blobs via the block endpoint.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub commit_address: Option<String>,
-    /// Computed storage address for the head index root (derived from CID + storage method).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub index_address: Option<String>,
 }
 
-/// Request body for block fetch endpoint
+/// Request body for block fetch endpoint.
+///
+/// Supports two modes:
+/// 1. **CID-based** (`cid` + `ledger`): preferred path — the server derives the
+///    storage address internally. Clients never need to know the address layout.
+/// 2. **Address-based** (`address`): legacy path — address string is parsed to
+///    infer the ledger context. Retained for backward compatibility.
+///
+/// If `cid` is provided, `ledger` is required and `address` is ignored.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BlockRequest {
-    pub address: String,
+    /// Legacy: full storage address (e.g., `"fluree:file://mydb/main/commit/abc.fcv2"`)
+    #[serde(default)]
+    pub address: Option<String>,
+    /// CID-based: content identifier string (e.g., `"bafybeig..."`)
+    #[serde(default)]
+    pub cid: Option<String>,
+    /// CID-based: ledger alias (e.g., `"mydb:main"`). Required when `cid` is set.
+    #[serde(default)]
+    pub ledger: Option<String>,
 }
 
 // ============================================================================
@@ -245,25 +257,6 @@ pub async fn get_ns_record(
         .map_err(|e| ServerError::internal(format!("Nameservice lookup failed: {}", e)))?
         .ok_or_else(|| ServerError::not_found("Ledger not found"))?;
 
-    // Derive storage addresses from CIDs so peers can fetch blobs via the block endpoint.
-    let method = fluree_db_core::StorageMethod::storage_method(state.fluree.as_file().storage());
-    let commit_address = ns_record.commit_head_id.as_ref().map(|cid| {
-        fluree_db_core::content_address(
-            method,
-            fluree_db_core::ContentKind::Commit,
-            &ns_record.ledger_id,
-            &cid.digest_hex(),
-        )
-    });
-    let index_address = ns_record.index_head_id.as_ref().map(|cid| {
-        fluree_db_core::content_address(
-            method,
-            fluree_db_core::ContentKind::IndexRoot,
-            &ns_record.ledger_id,
-            &cid.digest_hex(),
-        )
-    });
-
     Ok(Json(NsRecordResponse {
         // IMPORTANT: this endpoint is consumed by `fluree-db-nameservice-sync` which
         // deserializes into `NsRecord`. Therefore we must include all required
@@ -278,9 +271,58 @@ pub async fn get_ns_record(
         default_context: ns_record.default_context.clone(),
         retracted: ns_record.retracted,
         config_id: ns_record.config_id.as_ref().map(|id| id.to_string()),
-        commit_address,
-        index_address,
     }))
+}
+
+/// Resolve a [`BlockRequest`] to a `(storage_address, AddressContext)` pair.
+///
+/// - **CID path** (`cid` + `ledger`): parses the CID, resolves its content kind,
+///   and derives the storage address via [`fluree_db_core::content_address`].
+/// - **Address path** (`address`): legacy fallback — parses the address to infer context.
+fn resolve_block_request(
+    body: &BlockRequest,
+    storage_method: &str,
+) -> Result<(String, block_fetch::AddressContext), ServerError> {
+    if let Some(cid_str) = &body.cid {
+        // CID-based path: require `ledger`
+        let ledger = body
+            .ledger
+            .as_ref()
+            .ok_or_else(|| ServerError::bad_request("'ledger' is required when using 'cid'"))?;
+
+        let id: ContentId = cid_str
+            .parse()
+            .map_err(|_| ServerError::bad_request(format!("Invalid CID: {cid_str}")))?;
+
+        let kind = id.content_kind().ok_or_else(|| {
+            // Unknown codec → 404 (no existence leak, same as address-path Unknown)
+            ServerError::not_found("Block not found")
+        })?;
+
+        let address =
+            fluree_db_core::content_address(storage_method, kind, ledger, &id.digest_hex());
+
+        // Derive context from the computed address — not from the client-supplied `ledger`.
+        // This ensures the same authorization rules apply regardless of request mode
+        // (e.g., graph-source prefixes are correctly detected and blocked).
+        let context = block_fetch::parse_address_context(&address);
+
+        // Reject if the derived address doesn't resolve to a known context.
+        // This catches invalid ledger strings and reserved-prefix tricks.
+        if matches!(context, block_fetch::AddressContext::Unknown) {
+            return Err(ServerError::not_found("Block not found"));
+        }
+
+        Ok((address, context))
+    } else if let Some(address) = &body.address {
+        // Legacy address-based path
+        let context = block_fetch::parse_address_context(address);
+        Ok((address.clone(), context))
+    } else {
+        Err(ServerError::bad_request(
+            "Request must include either 'cid'+'ledger' or 'address'",
+        ))
+    }
 }
 
 /// POST /fluree/storage/block
@@ -310,8 +352,11 @@ pub async fn get_block(
     headers: HeaderMap,
     Json(body): Json<BlockRequest>,
 ) -> Result<Response, ServerError> {
-    // Parse address context and authorize
-    let context = block_fetch::parse_address_context(&body.address);
+    // Resolve request to (address, context) — supports both CID-based and address-based
+    let method = fluree_db_core::StorageMethod::storage_method(state.fluree.as_file().storage());
+    let (address, context) = resolve_block_request(&body, method)?;
+
+    // Authorize
     block_fetch::authorize_address(&principal.to_block_access_scope(), &context)
         .map_err(|_| ServerError::not_found("Block not found"))?;
 
@@ -358,7 +403,7 @@ pub async fn get_block(
     // Fetch and decode with enforcement
     let fetched = block_fetch::fetch_and_decode_block(
         fluree.storage(),
-        &body.address,
+        &address,
         &context,
         ledger_ctx.as_ref(),
         &mode,
@@ -408,13 +453,23 @@ pub struct ObjectQuery {
 
 /// Content kinds allowed through the CID object endpoint.
 ///
-/// Only replication-essential kinds are served. Index artifacts (branches,
-/// leaves, dicts) are NOT included — they go through `/storage/block` with
-/// policy enforcement, or a future `/storage/objects-index/:cid` endpoint.
+/// All replication-relevant kinds are served (commits, txns, config, and
+/// index artifacts). Only `GarbageRecord` (internal GC metadata) is excluded.
+///
+/// **Security note:** This endpoint requires a `fluree.storage.*` bearer
+/// token (peer-replication scope). Raw index leaves and dict blobs bypass
+/// policy filtering — this is intentional for peer-to-peer replication but
+/// means `fluree.storage.*` tokens must not be issued to untrusted callers.
 fn is_allowed_object_kind(kind: ContentKind) -> bool {
     matches!(
         kind,
-        ContentKind::Commit | ContentKind::Txn | ContentKind::LedgerConfig
+        ContentKind::Commit
+            | ContentKind::Txn
+            | ContentKind::LedgerConfig
+            | ContentKind::IndexRoot
+            | ContentKind::IndexBranch
+            | ContentKind::IndexLeaf
+            | ContentKind::DictBlob { .. }
     )
 }
 
@@ -445,12 +500,16 @@ fn verify_object_integrity(id: &ContentId, bytes: &[u8]) -> bool {
 ///
 /// # Kind Allowlist
 ///
-/// Only replication-essential kinds are served:
+/// All replication-relevant kinds are served:
 /// - `Commit` — commit chain blobs
 /// - `Txn` — transaction data blobs
 /// - `LedgerConfig` — origin discovery config
+/// - `IndexRoot` — binary index root JSON
+/// - `IndexBranch` — index branch manifests
+/// - `IndexLeaf` — index leaf files
+/// - `DictBlob` — dictionary artifacts (predicates, subjects, strings, etc.)
 ///
-/// All other kinds (index artifacts, dicts, garbage records) return 404.
+/// Only `GarbageRecord` (internal GC metadata) returns 404.
 ///
 /// # Path Parameters
 /// - `cid`: CIDv1 string (base32-lower, e.g., `"bafybeig..."`)
@@ -460,7 +519,7 @@ fn verify_object_integrity(id: &ContentId, bytes: &[u8]) -> bool {
 ///
 /// # Response Headers
 /// - `Content-Type: application/octet-stream`
-/// - `X-Fluree-Content-Kind`: content kind label (commit, txn, config)
+/// - `X-Fluree-Content-Kind`: content kind label (commit, txn, config, index-root, etc.)
 ///
 /// # Errors
 /// - 400: Invalid CID string

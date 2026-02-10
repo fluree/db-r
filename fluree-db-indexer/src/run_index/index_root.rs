@@ -155,6 +155,8 @@ pub struct CasArtifactsConfig<'a> {
     pub prev_index: Option<BinaryPrevIndexRef>,
     /// Garbage manifest reference.
     pub garbage: Option<BinaryGarbageRef>,
+    /// Optional CID of the HLL sketch blob.
+    pub sketch_ref: Option<ContentId>,
     /// Per-graph subject ID watermarks.
     pub subject_watermarks: Vec<u64>,
     /// String dictionary watermark.
@@ -223,6 +225,14 @@ pub struct BinaryIndexRoot {
     /// Link to this root's garbage manifest (CIDs replaced by this build).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub garbage: Option<BinaryGarbageRef>,
+
+    /// CID of the HLL stats sketch blob (per-property HyperLogLog registers).
+    ///
+    /// When present, the referenced blob contains per-(graph, property) HLL
+    /// register arrays for incremental stats refresh. Included in
+    /// [`all_cas_ids()`] for GC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sketch_ref: Option<ContentId>,
 
     /// Per-namespace max assigned local_id at index build time.
     ///
@@ -311,6 +321,7 @@ impl BinaryIndexRoot {
             schema: cfg.schema,
             prev_index: cfg.prev_index,
             garbage: cfg.garbage,
+            sketch_ref: cfg.sketch_ref,
             subject_watermarks: cfg.subject_watermarks,
             string_watermark: cfg.string_watermark,
             total_commit_size: 0,
@@ -366,6 +377,11 @@ impl BinaryIndexRoot {
                     ids.push(leaf.clone());
                 }
             }
+        }
+
+        // HLL sketch blob
+        if let Some(ref sketch) = self.sketch_ref {
+            ids.push(sketch.clone());
         }
 
         ids.sort();
@@ -438,6 +454,7 @@ mod tests {
             schema: None,
             prev_index: None,
             garbage: None,
+            sketch_ref: None,
             subject_watermarks: vec![],
             string_watermark: 0,
         }
@@ -477,6 +494,7 @@ mod tests {
             schema: None,
             prev_index: None,
             garbage: None,
+            sketch_ref: None,
             subject_watermarks: vec![100, 200],
             string_watermark: 50,
             total_commit_size: 0,
@@ -652,6 +670,7 @@ mod tests {
             schema: None,
             prev_index: None,
             garbage: None,
+            sketch_ref: None,
             subject_watermarks: vec![],
             string_watermark: 0,
         });
@@ -697,6 +716,7 @@ mod tests {
             garbage: Some(BinaryGarbageRef {
                 id: test_cid(ContentKind::GarbageRecord, "garbage_record"),
             }),
+            sketch_ref: None,
             subject_watermarks: vec![],
             string_watermark: 0,
         });
@@ -760,6 +780,7 @@ mod tests {
             schema: None,
             prev_index: None,
             garbage: None,
+            sketch_ref: None,
             subject_watermarks: vec![100, 200, 300],
             string_watermark: 500,
         });
@@ -809,5 +830,56 @@ mod tests {
         let parsed2 = BinaryIndexRoot::from_json_bytes(&stripped_bytes).unwrap();
         assert!(parsed2.subject_watermarks.is_empty());
         assert_eq!(parsed2.string_watermark, 0);
+    }
+
+    #[test]
+    fn all_cas_ids_includes_sketch_ref() {
+        let ns = HashMap::new();
+        let sketch_cid = test_cid(ContentKind::StatsSketch, "sketch_blob");
+        let mut config = test_config("test:main", 10, 1, vec![], &ns, vec![], None);
+        config.sketch_ref = Some(sketch_cid.clone());
+
+        let root = BinaryIndexRoot::from_cas_artifacts(config);
+        let ids = root.all_cas_ids();
+
+        assert!(
+            ids.contains(&sketch_cid),
+            "sketch_ref CID missing from all_cas_ids"
+        );
+    }
+
+    #[test]
+    fn sketch_ref_round_trip() {
+        let ns = HashMap::new();
+        let sketch_cid = test_cid(ContentKind::StatsSketch, "sketch_blob");
+        let mut config = test_config("test:main", 10, 1, vec![], &ns, vec![], None);
+        config.sketch_ref = Some(sketch_cid.clone());
+
+        let root = BinaryIndexRoot::from_cas_artifacts(config);
+        let bytes = root.to_json_bytes().unwrap();
+        let parsed = BinaryIndexRoot::from_json_bytes(&bytes).unwrap();
+
+        assert_eq!(parsed.sketch_ref, Some(sketch_cid));
+    }
+
+    #[test]
+    fn sketch_ref_none_omitted_from_json() {
+        let ns = HashMap::new();
+        let root = BinaryIndexRoot::from_cas_artifacts(test_config(
+            "test:main",
+            10,
+            1,
+            vec![],
+            &ns,
+            vec![],
+            None,
+        ));
+
+        let bytes = root.to_json_bytes().unwrap();
+        let json_str = std::str::from_utf8(&bytes).unwrap();
+        assert!(
+            !json_str.contains("sketch_ref"),
+            "sketch_ref: None should be omitted from JSON"
+        );
     }
 }

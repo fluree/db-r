@@ -167,7 +167,7 @@ impl HttpOriginFetcher {
 
         match resp.status().as_u16() {
             200 => Ok(Some(resp)),
-            404 | 405 | 406 => Ok(None),
+            404..=406 => Ok(None),
             status => {
                 let body = resp.text().await.unwrap_or_default();
                 Err(SyncError::Remote(format!(
@@ -466,7 +466,7 @@ impl MultiOriginFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::storage::ContentKind;
+    use fluree_db_core::ContentKind;
     use fluree_db_nameservice::{AuthRequirement, ReplicationDefaults};
 
     // -----------------------------------------------------------------------

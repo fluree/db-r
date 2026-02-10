@@ -238,20 +238,27 @@ pub struct FetchedBlock {
 /// This function is security-critical: it determines what ledger/graph source
 /// an address belongs to for authorization decisions.
 ///
+/// Accepts any `fluree:{method}://` prefix (file, s3, memory, proxy, etc.).
+///
 /// # Examples
 /// ```ignore
-/// parse_address_context("fluree:file://books:main/commit/abc.fcv2")
+/// parse_address_context("fluree:file://books/main/commit/abc.fcv2")
 ///     // => LedgerCommit { ledger_id: "books:main" }
 ///
-/// parse_address_context("fluree:file://books/main/index/abc.json")
+/// parse_address_context("fluree:s3://books/main/index/abc.json")
 ///     // => LedgerIndex { ledger: "books", branch: "main" }
 ///
 /// parse_address_context("fluree:file://graph-sources/search/main/snapshot.bin")
 ///     // => GraphSourceArtifact { name: "search", branch: "main" }
 /// ```
 pub fn parse_address_context(address: &str) -> AddressContext {
-    let Some(path) = address.strip_prefix("fluree:file://") else {
-        return AddressContext::Unknown;
+    // Strip `fluree:{method}://` prefix for any storage method (file, s3, memory, proxy, etc.)
+    let path = match address.strip_prefix("fluree:") {
+        Some(rest) => match rest.find("://") {
+            Some(pos) => &rest[pos + 3..],
+            None => return AddressContext::Unknown,
+        },
+        None => return AddressContext::Unknown,
     };
 
     // Graph source format: graph-sources/{name}/{branch}/...
@@ -729,6 +736,47 @@ mod tests {
         let addr = "fluree:file:///main/index/abc.json";
         let ctx = parse_address_context(addr);
         assert_eq!(ctx, AddressContext::Unknown);
+    }
+
+    #[test]
+    fn test_parse_s3_commit_address() {
+        // parse_address_context should work with any storage method, not just "file"
+        let addr = "fluree:s3://books/main/commit/abc123.fcv2";
+        let ctx = parse_address_context(addr);
+        assert_eq!(
+            ctx,
+            AddressContext::LedgerCommit {
+                ledger_id: "books:main".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_memory_index_address() {
+        let addr = "fluree:memory://books/main/index/def456.json";
+        let ctx = parse_address_context(addr);
+        assert_eq!(
+            ctx,
+            AddressContext::LedgerIndex {
+                ledger: "books".to_string(),
+                branch: "main".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_graph_source_s3_address() {
+        // Graph source blocking must work regardless of storage method
+        let addr = "fluree:s3://graph-sources/search/main/snapshot.bin";
+        let ctx = parse_address_context(addr);
+        assert_eq!(
+            ctx,
+            AddressContext::GraphSourceArtifact {
+                name: "search".to_string(),
+                branch: "main".to_string()
+            }
+        );
+        assert!(ctx.is_graph_source());
     }
 
     // --- Authorization tests (bool form) ---

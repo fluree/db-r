@@ -686,7 +686,7 @@ where
         ledger_id: &str,
         config: &fluree_db_nameservice::LedgerConfig,
     ) -> Result<fluree_db_core::ContentId> {
-        use fluree_db_core::storage::ContentKind;
+        use fluree_db_core::ContentKind;
         use fluree_db_core::ContentStore;
         use fluree_db_nameservice::{ConfigCasResult, ConfigPayload, ConfigValue};
 

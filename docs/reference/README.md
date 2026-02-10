@@ -32,6 +32,14 @@ Standards and feature-flag reference:
 - Experimental features
 - Deprecated features
 
+### [Graph Identities and Naming](graph-identities.md)
+
+Naming conventions for graphs, ledgers, and identifiers:
+- User-facing terminology (ledger, graph IRI, graph source, graph snapshot)
+- Time pinning syntax (`@t:`, `@iso:`, `@commit:`)
+- Named graphs within a ledger
+- Base resolution for graph references
+
 ### [Crate Map](crate-map.md)
 
 Overview of Fluree's Rust crate architecture:

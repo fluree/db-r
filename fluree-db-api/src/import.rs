@@ -1294,6 +1294,7 @@ where
         schema: None,
         prev_index: None, // fresh import
         garbage: None,    // fresh import
+        sketch_ref: None, // sketches persisted on next incremental index build
         subject_watermarks: uploaded_dicts.subject_watermarks,
         string_watermark: uploaded_dicts.string_watermark,
     });

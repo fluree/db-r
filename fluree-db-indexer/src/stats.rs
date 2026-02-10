@@ -4,24 +4,16 @@
 //! - `NoOpStatsHook`: Minimal implementation that only counts flakes
 //! - `HllStatsHook`: Full HLL-based per-property NDV tracking
 //!
-//! ## HLL Sketch Persistence
+//! ## HLL Sketch Persistence (CID-based)
 //!
-//! HLL sketches are persisted to storage
-//! using T-based filenames. This enables true incremental stats updates during refresh:
+//! Per-property HLL sketches are serialized into a single `HllSketchBlob` and
+//! stored in content-addressed storage (CAS) via `ContentKind::StatsSketch`.
+//! The blob's `ContentId` is stored in `BinaryIndexRoot.sketch_ref`.
 //!
-//! - Path: `<alias>/index/stats-sketches/{values|subjects}/<ns>_<name>_<t>.hll`
-//! - On refresh: load prior sketches, merge with novelty, persist new sketches
-//! - NDV is monotone: never decreases even with retractions
+//! GC is automatic: `all_cas_ids()` includes the sketch CID, so the existing
+//! set-difference garbage collection handles superseded blobs.
 //!
-//! ## Sketch Persistence API
-//!
-//! ```ignore
-//! // Write sketches to storage (uses each property's last_modified_t)
-//! let addresses = persist_hll_sketches(&storage, &alias, &properties).await?;
-//!
-//! // Load sketches from storage (uses each property's last_modified_t from entries)
-//! let properties = load_hll_sketches(&storage, &alias, &property_entries).await?;
-//! ```
+//! For incremental refresh, use `load_sketch_blob()` + `IdStatsHook::with_prior_properties()`.
 
 use fluree_db_core::Flake;
 use fluree_db_core::Sid;
@@ -32,7 +24,6 @@ use std::collections::HashSet;
 use crate::error::{IndexerError, Result};
 use crate::hll::HllSketch256;
 use fluree_db_core::PropertyStatEntry;
-use fluree_db_core::StorageWrite;
 use std::collections::HashMap;
 
 use fluree_db_core::value_id::ValueTypeTag;
@@ -349,6 +340,194 @@ impl IdPropertyHll {
     }
 }
 
+// =============================================================================
+// CID-Based HLL Sketch Blob (CAS Persistence)
+// =============================================================================
+
+use serde::{Deserialize, Serialize};
+
+/// CAS-persisted HLL sketch blob.
+///
+/// Contains all per-(graph, property) HLL sketches produced by `IdStatsHook`.
+/// Written to CAS as a single JSON blob; its `ContentId` is stored in
+/// `BinaryIndexRoot.sketch_ref`. Counts are clamped to ≥ 0 (snapshot state,
+/// not raw signed deltas).
+///
+/// Entries are sorted by `(g_id, p_id)` for deterministic serialization and
+/// thus deterministic CID computation.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HllSketchBlob {
+    /// Schema version for forward compatibility.
+    pub version: u32,
+    /// The maximum transaction time covered (equals `index_t`).
+    pub index_t: i64,
+    /// Per-(graph, property) HLL entries, sorted by `(g_id, p_id)`.
+    pub entries: Vec<HllPropertyEntry>,
+}
+
+/// A single property's HLL state within an [`HllSketchBlob`].
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HllPropertyEntry {
+    /// Graph dictionary ID (0 = default graph).
+    pub g_id: u32,
+    /// Predicate dictionary ID.
+    pub p_id: u32,
+    /// Flake count (clamped to ≥ 0; snapshot state, not raw delta).
+    pub count: u64,
+    /// Hex-encoded 256-byte values HLL register array.
+    pub values_hll: String,
+    /// Hex-encoded 256-byte subjects HLL register array.
+    pub subjects_hll: String,
+    /// Most recent transaction time for this property.
+    pub last_modified_t: i64,
+    /// Per-datatype flake counts, sorted by tag, clamped to ≥ 0.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub datatypes: Vec<(u8, u64)>,
+}
+
+impl HllSketchBlob {
+    const CURRENT_VERSION: u32 = 1;
+
+    /// Serialize from the `IdStatsHook`'s properties map.
+    ///
+    /// Must be called BEFORE `finalize_with_aggregate_properties()` consumes the
+    /// hook, by borrowing `hook.properties()`. Counts and per-datatype deltas are
+    /// clamped to ≥ 0 (the blob represents snapshot state, not raw signed deltas).
+    pub fn from_properties(
+        index_t: i64,
+        properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
+    ) -> Self {
+        let mut entries: Vec<HllPropertyEntry> = properties
+            .iter()
+            .map(|(key, hll)| {
+                let mut dt_vec: Vec<(u8, u64)> = hll
+                    .datatypes
+                    .iter()
+                    .filter(|(_, &v)| v > 0)
+                    .map(|(&k, &v)| (k, v.max(0) as u64))
+                    .collect();
+                dt_vec.sort_by_key(|&(tag, _)| tag);
+
+                HllPropertyEntry {
+                    g_id: key.g_id,
+                    p_id: key.p_id,
+                    count: hll.count.max(0) as u64,
+                    values_hll: hex::encode(hll.values_hll.to_bytes()),
+                    subjects_hll: hex::encode(hll.subjects_hll.to_bytes()),
+                    last_modified_t: hll.last_modified_t,
+                    datatypes: dt_vec,
+                }
+            })
+            .collect();
+        entries.sort_by(|a, b| (a.g_id, a.p_id).cmp(&(b.g_id, b.p_id)));
+
+        Self {
+            version: Self::CURRENT_VERSION,
+            index_t,
+            entries,
+        }
+    }
+
+    /// Serialize to canonical JSON bytes (deterministic via sorted `entries`).
+    pub fn to_json_bytes(&self) -> serde_json::Result<Vec<u8>> {
+        serde_json::to_vec(self)
+    }
+
+    /// Deserialize from JSON bytes.
+    ///
+    /// Returns an error if the version is not supported.
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self> {
+        let blob: Self = serde_json::from_slice(bytes)
+            .map_err(|e| IndexerError::Serialization(e.to_string()))?;
+        if blob.version != 1 {
+            return Err(IndexerError::Serialization(format!(
+                "unsupported sketch blob version {} (expected 1)",
+                blob.version
+            )));
+        }
+        Ok(blob)
+    }
+
+    /// Reconstruct the `HashMap<GraphPropertyKey, IdPropertyHll>` from the blob.
+    ///
+    /// Used to load prior sketches for incremental refresh.
+    pub fn into_properties(self) -> Result<HashMap<GraphPropertyKey, IdPropertyHll>> {
+        let mut map = HashMap::with_capacity(self.entries.len());
+        for entry in self.entries {
+            let values_bytes = hex::decode(&entry.values_hll).map_err(|e| {
+                IndexerError::Serialization(format!(
+                    "bad hex values_hll for g{}:p{}: {}",
+                    entry.g_id, entry.p_id, e
+                ))
+            })?;
+            let subjects_bytes = hex::decode(&entry.subjects_hll).map_err(|e| {
+                IndexerError::Serialization(format!(
+                    "bad hex subjects_hll for g{}:p{}: {}",
+                    entry.g_id, entry.p_id, e
+                ))
+            })?;
+
+            let values_hll = decode_hll_registers(&values_bytes, entry.g_id, entry.p_id)?;
+            let subjects_hll = decode_hll_registers(&subjects_bytes, entry.g_id, entry.p_id)?;
+            let datatypes: HashMap<u8, i64> = entry
+                .datatypes
+                .into_iter()
+                .map(|(k, v)| (k, v as i64))
+                .collect();
+
+            map.insert(
+                GraphPropertyKey {
+                    g_id: entry.g_id,
+                    p_id: entry.p_id,
+                },
+                IdPropertyHll::from_sketches(
+                    entry.count as i64,
+                    values_hll,
+                    subjects_hll,
+                    entry.last_modified_t,
+                    datatypes,
+                ),
+            );
+        }
+        Ok(map)
+    }
+}
+
+/// Decode hex-decoded bytes into an `HllSketch256`, validating 256-byte length.
+fn decode_hll_registers(bytes: &[u8], g_id: u32, p_id: u32) -> Result<HllSketch256> {
+    if bytes.len() != 256 {
+        return Err(IndexerError::Serialization(format!(
+            "HLL registers must be 256 bytes for g{}:p{}, got {}",
+            g_id,
+            p_id,
+            bytes.len()
+        )));
+    }
+    let mut registers = [0u8; 256];
+    registers.copy_from_slice(bytes);
+    Ok(HllSketch256::from_bytes(&registers))
+}
+
+/// Load an HLL sketch blob from CAS by its `ContentId`.
+///
+/// Returns `None` if the blob is not found (first build, or storage migration).
+/// Propagates real I/O errors.
+pub async fn load_sketch_blob(
+    content_store: &dyn fluree_db_core::ContentStore,
+    sketch_id: &fluree_db_core::ContentId,
+) -> Result<Option<HllSketchBlob>> {
+    match content_store.get(sketch_id).await {
+        Ok(bytes) => {
+            let blob = HllSketchBlob::from_json_bytes(&bytes)?;
+            Ok(Some(blob))
+        }
+        Err(e) if matches!(e, fluree_db_core::Error::NotFound(_)) => Ok(None),
+        Err(e) => Err(IndexerError::StorageRead(format!(
+            "sketch blob {sketch_id}: {e}"
+        ))),
+    }
+}
+
 // --- Domain-separated hashing for HLL ---
 
 /// Domain separator for object value hashing.
@@ -461,6 +640,18 @@ pub struct IdStatsHook {
 impl IdStatsHook {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a hook seeded with prior per-property HLL sketches.
+    ///
+    /// Enables incremental refresh: load prior sketches from a CAS blob,
+    /// then process only novelty commits. The hook's `on_record()` will
+    /// merge new observations into the existing registers.
+    pub fn with_prior_properties(properties: HashMap<GraphPropertyKey, IdPropertyHll>) -> Self {
+        Self {
+            properties,
+            ..Self::default()
+        }
     }
 
     /// Set the predicate ID for rdf:type to enable class tracking.
@@ -800,502 +991,6 @@ impl IdStatsHook {
     }
 }
 
-// === HLL Sketch Persistence (Sid-based, legacy) ===
-
-/// Number of registers in HLL sketch (2^8 = 256)
-const HLL_REGISTER_COUNT: usize = 256;
-
-/// Generate storage address for HLL sketch
-///
-/// Uses pattern: `fluree:file://{alias}/index/stats-sketches/{kind}/{ns}_{name}_{t}.hll`
-///
-/// - `kind`: "values" or "subjects"
-/// - `ns`: namespace code (u16)
-/// - `name`: predicate local name (URL-encoded if needed)
-/// - `t`: transaction time
-fn hll_sketch_address(alias: &str, ns_code: u16, name: &str, t: i64, kind: &str) -> String {
-    // Sanitize name for use in path (replace problematic characters)
-    let safe_name: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-
-    format!(
-        "fluree:file://{}/index/stats-sketches/{}/{}_{}_t{}.hll",
-        alias.replace(':', "/"),
-        kind,
-        ns_code,
-        safe_name,
-        t
-    )
-}
-
-/// Persist HLL sketches to storage
-///
-/// Writes all property HLL sketches to storage with T-based filenames.
-/// Each property's sketch is stored at its own `last_modified_t` (matching Clojure semantics).
-/// Returns the list of addresses written.
-///
-/// # Arguments
-/// * `storage` - Storage backend to write to
-/// * `alias` - Ledger alias (e.g., "mydb:main")
-/// * `properties` - Map of property SIDs to their HLL data (includes last_modified_t)
-pub async fn persist_hll_sketches<S: StorageWrite>(
-    storage: &S,
-    alias: &str,
-    properties: &HashMap<Sid, PropertyHll>,
-) -> Result<Vec<String>> {
-    persist_hll_sketches_iter(storage, alias, properties.iter()).await
-}
-
-/// Persist HLL sketches to storage from an iterator
-///
-/// Like `persist_hll_sketches` but accepts an iterator of (&Sid, &PropertyHll) references.
-/// This avoids cloning when persisting a filtered subset of properties.
-pub async fn persist_hll_sketches_iter<'a, S, I>(
-    storage: &S,
-    alias: &str,
-    properties: I,
-) -> Result<Vec<String>>
-where
-    S: StorageWrite,
-    I: Iterator<Item = (&'a Sid, &'a PropertyHll)>,
-{
-    let mut addresses = Vec::new();
-
-    for (sid, hll) in properties {
-        // Use the property's last_modified_t for the filename
-        let t = hll.last_modified_t;
-
-        // Write values sketch
-        let values_addr = hll_sketch_address(alias, sid.namespace_code, &sid.name, t, "values");
-        let values_bytes = hll.values_hll.to_bytes();
-        storage
-            .write_bytes(&values_addr, &values_bytes)
-            .await
-            .map_err(|e| {
-                IndexerError::StorageWrite(format!("Failed to write values HLL: {}", e))
-            })?;
-        addresses.push(values_addr);
-
-        // Write subjects sketch
-        let subjects_addr = hll_sketch_address(alias, sid.namespace_code, &sid.name, t, "subjects");
-        let subjects_bytes = hll.subjects_hll.to_bytes();
-        storage
-            .write_bytes(&subjects_addr, &subjects_bytes)
-            .await
-            .map_err(|e| {
-                IndexerError::StorageWrite(format!("Failed to write subjects HLL: {}", e))
-            })?;
-        addresses.push(subjects_addr);
-    }
-
-    Ok(addresses)
-}
-
-/// Load HLL sketches from storage
-///
-/// Reads all property HLL sketches from storage using each property's `last_modified_t`
-/// to locate the correct sketch file (matching Clojure semantics).
-/// Returns a map of property SIDs to their HLL data.
-///
-/// # Arguments
-/// * `storage` - Storage backend to read from
-/// * `alias` - Ledger alias (e.g., "mydb:main")
-/// * `property_entries` - Property stat entries from DbRoot (contains SID, count, last_modified_t)
-///
-/// # Returns
-/// Map of property SIDs to their PropertyHll data with loaded sketches.
-/// Properties whose sketches cannot be loaded are still included with empty sketches
-/// but their prior count and last_modified_t are preserved (for monotonicity).
-pub async fn load_hll_sketches<S: Storage>(
-    storage: &S,
-    alias: &str,
-    property_entries: &[PropertyStatEntry],
-) -> Result<HashMap<Sid, PropertyHll>> {
-    let mut properties = HashMap::with_capacity(property_entries.len());
-
-    for entry in property_entries {
-        let sid = Sid::new(entry.sid.0, &entry.sid.1);
-
-        // Use the property's last_modified_t for the filename
-        let t = entry.last_modified_t;
-
-        // Load values sketch
-        let values_addr = hll_sketch_address(alias, entry.sid.0, &entry.sid.1, t, "values");
-        let values_hll = match storage.read_bytes(&values_addr).await {
-            Ok(bytes) if bytes.len() == HLL_REGISTER_COUNT => {
-                let mut registers = [0u8; HLL_REGISTER_COUNT];
-                registers.copy_from_slice(&bytes);
-                HllSketch256::from_bytes(&registers)
-            }
-            Ok(bytes) => {
-                // Wrong size - log warning and use empty sketch
-                // Preserving prior stats (count, last_modified_t) maintains monotonicity
-                tracing::warn!(
-                    sid = ?sid,
-                    expected = HLL_REGISTER_COUNT,
-                    got = bytes.len(),
-                    "Values HLL sketch has wrong size"
-                );
-                HllSketch256::new()
-            }
-            Err(_) => {
-                // Sketch not found - use empty sketch but preserve prior stats
-                HllSketch256::new()
-            }
-        };
-
-        // Load subjects sketch
-        let subjects_addr = hll_sketch_address(alias, entry.sid.0, &entry.sid.1, t, "subjects");
-        let subjects_hll = match storage.read_bytes(&subjects_addr).await {
-            Ok(bytes) if bytes.len() == HLL_REGISTER_COUNT => {
-                let mut registers = [0u8; HLL_REGISTER_COUNT];
-                registers.copy_from_slice(&bytes);
-                HllSketch256::from_bytes(&registers)
-            }
-            Ok(bytes) => {
-                tracing::warn!(
-                    sid = ?sid,
-                    expected = HLL_REGISTER_COUNT,
-                    got = bytes.len(),
-                    "Subjects HLL sketch has wrong size"
-                );
-                HllSketch256::new()
-            }
-            Err(_) => HllSketch256::new(),
-        };
-
-        // Create PropertyHll with loaded sketches (or empty sketches with prior stats)
-        // This preserves count and last_modified_t for monotonicity even if sketches were lost
-        let hll = PropertyHll::from_sketches(
-            entry.count,
-            values_hll,
-            subjects_hll,
-            entry.last_modified_t,
-        );
-
-        properties.insert(sid, hll);
-    }
-
-    Ok(properties)
-}
-
-/// List all HLL sketch addresses for the given properties
-///
-/// Each property's sketch address uses its own `last_modified_t`.
-/// Useful for cleanup/garbage collection.
-pub fn list_hll_sketch_addresses(
-    alias: &str,
-    properties: &HashMap<Sid, PropertyHll>,
-) -> Vec<String> {
-    let mut addresses = Vec::with_capacity(properties.len() * 2);
-
-    for (sid, hll) in properties {
-        let t = hll.last_modified_t;
-        addresses.push(hll_sketch_address(
-            alias,
-            sid.namespace_code,
-            &sid.name,
-            t,
-            "values",
-        ));
-        addresses.push(hll_sketch_address(
-            alias,
-            sid.namespace_code,
-            &sid.name,
-            t,
-            "subjects",
-        ));
-    }
-
-    addresses
-}
-
-/// Compute obsolete HLL sketch addresses after a refresh operation
-///
-/// Compares prior property stats with updated properties to identify sketches
-/// that have been superseded. A sketch is obsolete when:
-/// - The property existed in prior stats
-/// - The property still exists in updated properties
-/// - The `last_modified_t` has changed (property was updated with new flakes)
-///
-/// If a property was completely removed (not in updated), its sketches are also obsolete.
-///
-/// # Arguments
-/// * `alias` - Ledger alias (e.g., "mydb:main")
-/// * `prior_properties` - Property stat entries from prior DbRoot (contains SID, last_modified_t)
-/// * `updated_properties` - Updated properties after refresh (contains SID, new last_modified_t)
-///
-/// # Returns
-/// Vector of obsolete sketch addresses (values + subjects for each obsolete property)
-pub fn compute_obsolete_sketch_addresses(
-    alias: &str,
-    prior_properties: &[PropertyStatEntry],
-    updated_properties: &HashMap<Sid, PropertyHll>,
-) -> Vec<String> {
-    let mut obsolete = Vec::new();
-
-    for prior_entry in prior_properties {
-        let sid = Sid::new(prior_entry.sid.0, &prior_entry.sid.1);
-        let prior_t = prior_entry.last_modified_t;
-
-        // Check if property still exists and if its last_modified_t changed
-        let is_obsolete = match updated_properties.get(&sid) {
-            Some(updated_hll) => {
-                // Property still exists - check if last_modified_t changed
-                updated_hll.last_modified_t != prior_t
-            }
-            None => {
-                // Property was completely removed (rare but possible)
-                // Its old sketches are obsolete
-                true
-            }
-        };
-
-        if is_obsolete {
-            // Add both values and subjects sketch addresses using PRIOR t
-            obsolete.push(hll_sketch_address(
-                alias,
-                prior_entry.sid.0,
-                &prior_entry.sid.1,
-                prior_t,
-                "values",
-            ));
-            obsolete.push(hll_sketch_address(
-                alias,
-                prior_entry.sid.0,
-                &prior_entry.sid.1,
-                prior_t,
-                "subjects",
-            ));
-        }
-    }
-
-    obsolete
-}
-
-// =============================================================================
-// ID-Based HLL Sketch Persistence
-// =============================================================================
-
-/// Generate storage address for ID-based HLL sketch.
-///
-/// Uses pattern: `fluree:file://{alias}/index/stats-sketches/{kind}/g{g_id}/p{p_id}_t{t}.hll`
-///
-/// Pure numeric IDs — no IRI encoding, no escaping.
-fn hll_sketch_address_id(alias: &str, g_id: u32, p_id: u32, t: i64, kind: &str) -> String {
-    format!(
-        "fluree:file://{}/index/stats-sketches/{}/g{}/p{}_t{}.hll",
-        alias.replace(':', "/"),
-        kind,
-        g_id,
-        p_id,
-        t
-    )
-}
-
-/// Persist ID-based HLL sketches to storage.
-///
-/// Writes all (graph, property) HLL sketches to storage with T-based filenames.
-/// Returns the list of addresses written.
-pub async fn persist_hll_sketches_id<S: StorageWrite>(
-    storage: &S,
-    alias: &str,
-    properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
-) -> Result<Vec<String>> {
-    let mut addresses = Vec::new();
-
-    for (key, hll) in properties {
-        let t = hll.last_modified_t;
-
-        // Write values sketch
-        let values_addr = hll_sketch_address_id(alias, key.g_id, key.p_id, t, "values");
-        let values_bytes = hll.values_hll.to_bytes();
-        storage
-            .write_bytes(&values_addr, &values_bytes)
-            .await
-            .map_err(|e| {
-                IndexerError::StorageWrite(format!(
-                    "Failed to write values HLL (g{}/p{}): {}",
-                    key.g_id, key.p_id, e
-                ))
-            })?;
-        addresses.push(values_addr);
-
-        // Write subjects sketch
-        let subjects_addr = hll_sketch_address_id(alias, key.g_id, key.p_id, t, "subjects");
-        let subjects_bytes = hll.subjects_hll.to_bytes();
-        storage
-            .write_bytes(&subjects_addr, &subjects_bytes)
-            .await
-            .map_err(|e| {
-                IndexerError::StorageWrite(format!(
-                    "Failed to write subjects HLL (g{}/p{}): {}",
-                    key.g_id, key.p_id, e
-                ))
-            })?;
-        addresses.push(subjects_addr);
-    }
-
-    Ok(addresses)
-}
-
-/// Load ID-based HLL sketches from storage.
-///
-/// Reads all (graph, property) HLL sketches from storage using each entry's
-/// `last_modified_t` to locate the correct sketch file.
-/// Returns a map of `GraphPropertyKey` to `IdPropertyHll` with loaded sketches.
-///
-/// Properties whose sketches cannot be loaded are still included with empty
-/// sketches but their prior count and last_modified_t are preserved (monotonicity).
-pub async fn load_hll_sketches_id<S: Storage>(
-    storage: &S,
-    alias: &str,
-    graph_entries: &[GraphStatsEntry],
-) -> Result<HashMap<GraphPropertyKey, IdPropertyHll>> {
-    let mut properties = HashMap::new();
-
-    for graph in graph_entries {
-        for prop in &graph.properties {
-            let key = GraphPropertyKey {
-                g_id: graph.g_id,
-                p_id: prop.p_id,
-            };
-            let t = prop.last_modified_t;
-
-            // Load values sketch
-            let values_addr = hll_sketch_address_id(alias, graph.g_id, prop.p_id, t, "values");
-            let values_hll = match storage.read_bytes(&values_addr).await {
-                Ok(bytes) if bytes.len() == HLL_REGISTER_COUNT => {
-                    let mut registers = [0u8; HLL_REGISTER_COUNT];
-                    registers.copy_from_slice(&bytes);
-                    HllSketch256::from_bytes(&registers)
-                }
-                Ok(bytes) => {
-                    tracing::warn!(
-                        g_id = graph.g_id,
-                        p_id = prop.p_id,
-                        expected = HLL_REGISTER_COUNT,
-                        got = bytes.len(),
-                        "Values HLL sketch has wrong size"
-                    );
-                    HllSketch256::new()
-                }
-                Err(_) => HllSketch256::new(),
-            };
-
-            // Load subjects sketch
-            let subjects_addr = hll_sketch_address_id(alias, graph.g_id, prop.p_id, t, "subjects");
-            let subjects_hll = match storage.read_bytes(&subjects_addr).await {
-                Ok(bytes) if bytes.len() == HLL_REGISTER_COUNT => {
-                    let mut registers = [0u8; HLL_REGISTER_COUNT];
-                    registers.copy_from_slice(&bytes);
-                    HllSketch256::from_bytes(&registers)
-                }
-                Ok(bytes) => {
-                    tracing::warn!(
-                        g_id = graph.g_id,
-                        p_id = prop.p_id,
-                        expected = HLL_REGISTER_COUNT,
-                        got = bytes.len(),
-                        "Subjects HLL sketch has wrong size"
-                    );
-                    HllSketch256::new()
-                }
-                Err(_) => HllSketch256::new(),
-            };
-
-            // Reconstruct datatype map from the stat entry
-            let datatypes: HashMap<u8, i64> = prop
-                .datatypes
-                .iter()
-                .map(|&(dt, count)| (dt, count as i64))
-                .collect();
-
-            let hll = IdPropertyHll::from_sketches(
-                prop.count as i64,
-                values_hll,
-                subjects_hll,
-                prop.last_modified_t,
-                datatypes,
-            );
-
-            properties.insert(key, hll);
-        }
-    }
-
-    Ok(properties)
-}
-
-/// Compute obsolete ID-based HLL sketch addresses after a refresh.
-///
-/// Compares prior graph stats with updated properties to identify sketches
-/// that have been superseded. A sketch is obsolete when the `last_modified_t`
-/// has changed for a given `(g_id, p_id)`.
-pub fn compute_obsolete_sketch_addresses_id(
-    alias: &str,
-    prior_graphs: &[GraphStatsEntry],
-    updated_properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
-) -> Vec<String> {
-    let mut obsolete = Vec::new();
-
-    for graph in prior_graphs {
-        for prop in &graph.properties {
-            let key = GraphPropertyKey {
-                g_id: graph.g_id,
-                p_id: prop.p_id,
-            };
-            let prior_t = prop.last_modified_t;
-
-            let is_obsolete = match updated_properties.get(&key) {
-                Some(updated_hll) => updated_hll.last_modified_t != prior_t,
-                None => true, // Property removed
-            };
-
-            if is_obsolete {
-                obsolete.push(hll_sketch_address_id(
-                    alias, graph.g_id, prop.p_id, prior_t, "values",
-                ));
-                obsolete.push(hll_sketch_address_id(
-                    alias, graph.g_id, prop.p_id, prior_t, "subjects",
-                ));
-            }
-        }
-    }
-
-    obsolete
-}
-
-/// List all ID-based HLL sketch addresses for the given properties.
-///
-/// Each property's sketch address uses its own `last_modified_t`.
-/// Useful for cleanup/garbage collection.
-pub fn list_hll_sketch_addresses_id(
-    alias: &str,
-    properties: &HashMap<GraphPropertyKey, IdPropertyHll>,
-) -> Vec<String> {
-    let mut addresses = Vec::with_capacity(properties.len() * 2);
-
-    for (key, hll) in properties {
-        let t = hll.last_modified_t;
-        addresses.push(hll_sketch_address_id(
-            alias, key.g_id, key.p_id, t, "values",
-        ));
-        addresses.push(hll_sketch_address_id(
-            alias, key.g_id, key.p_id, t, "subjects",
-        ));
-    }
-
-    addresses
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1550,327 +1245,183 @@ mod tests {
             assert_eq!(prop.ndv_values, 2); // 1 prior + 1 new
             assert_eq!(prop.ndv_subjects, 2); // 1 prior + 1 new
         }
+    }
 
-        #[test]
-        fn test_hll_sketch_address_generation() {
-            let addr = super::hll_sketch_address("mydb:main", 100, "name", 42, "values");
-            assert_eq!(
-                addr,
-                "fluree:file://mydb/main/index/stats-sketches/values/100_name_t42.hll"
-            );
+    // === HLL Sketch Blob Tests ===
 
-            // Test with special characters in name (should be sanitized)
-            let addr2 = super::hll_sketch_address("test/ledger", 200, "some/prop", 10, "subjects");
-            assert_eq!(
-                addr2,
-                "fluree:file://test/ledger/index/stats-sketches/subjects/200_some_prop_t10.hll"
-            );
-        }
+    mod sketch_blob_tests {
+        use super::*;
+        use std::collections::HashMap;
 
-        #[tokio::test]
-        async fn test_persist_and_load_hll_sketches() {
-            use fluree_db_core::MemoryStorage;
+        fn make_test_properties() -> HashMap<GraphPropertyKey, IdPropertyHll> {
+            let mut map = HashMap::new();
 
-            let storage = MemoryStorage::new();
-            let alias = "test/db";
-
-            // Create some properties with sketches (each has its own last_modified_t)
-            let mut properties = HashMap::new();
-
-            let mut hll1 = PropertyHll::new();
-            hll1.values_hll.insert_hash(0x1234567890abcdef);
-            hll1.values_hll.insert_hash(0xfedcba0987654321);
-            hll1.subjects_hll.insert_hash(0xaaaaaaaaaaaaaaaa);
-            hll1.count = 10;
-            hll1.last_modified_t = 5; // prop_a was modified at t=5
-            properties.insert(Sid::new(100, "prop_a"), hll1);
-
-            let mut hll2 = PropertyHll::new();
-            hll2.values_hll.insert_hash(0x1111111111111111);
-            hll2.subjects_hll.insert_hash(0x2222222222222222);
-            hll2.count = 5;
-            hll2.last_modified_t = 3; // prop_b was modified at t=3
-            properties.insert(Sid::new(100, "prop_b"), hll2);
-
-            // Persist sketches (each stored at its own last_modified_t)
-            let addresses = super::persist_hll_sketches(&storage, alias, &properties)
-                .await
-                .expect("persist should succeed");
-
-            // Should have 4 addresses (2 properties * 2 sketches each)
-            assert_eq!(addresses.len(), 4);
-
-            // Now load them back using property entries (with matching last_modified_t)
-            let property_entries = vec![
-                PropertyStatEntry {
-                    sid: (100, "prop_a".to_string()),
-                    count: 10,
-                    ndv_values: 2,
-                    ndv_subjects: 1,
-                    last_modified_t: 5, // Must match the t used during persist
-                    datatypes: vec![],
-                },
-                PropertyStatEntry {
-                    sid: (100, "prop_b".to_string()),
-                    count: 5,
-                    ndv_values: 1,
-                    ndv_subjects: 1,
-                    last_modified_t: 3, // Must match the t used during persist
-                    datatypes: vec![],
-                },
-            ];
-
-            let loaded = super::load_hll_sketches(&storage, alias, &property_entries)
-                .await
-                .expect("load should succeed");
-
-            assert_eq!(loaded.len(), 2);
-
-            // Verify prop_a was loaded correctly
-            let loaded_a = loaded
-                .get(&Sid::new(100, "prop_a"))
-                .expect("prop_a should exist");
-            assert_eq!(loaded_a.count, 10);
-            assert_eq!(loaded_a.last_modified_t, 5);
-            // Verify sketch data was preserved (estimates should match)
-            assert_eq!(
-                loaded_a.values_hll.estimate(),
-                properties
-                    .get(&Sid::new(100, "prop_a"))
-                    .unwrap()
-                    .values_hll
-                    .estimate()
-            );
-
-            // Verify prop_b was loaded correctly
-            let loaded_b = loaded
-                .get(&Sid::new(100, "prop_b"))
-                .expect("prop_b should exist");
-            assert_eq!(loaded_b.count, 5);
-            assert_eq!(loaded_b.last_modified_t, 3);
-        }
-
-        #[test]
-        fn test_list_hll_sketch_addresses() {
-            let mut properties = HashMap::new();
-
-            let mut hll1 = PropertyHll::new();
+            let mut hll1 = IdPropertyHll::new();
+            hll1.values_hll.insert_hash(100);
+            hll1.values_hll.insert_hash(200);
+            hll1.subjects_hll.insert_hash(1000);
+            hll1.count = 5;
             hll1.last_modified_t = 10;
-            properties.insert(Sid::new(100, "name"), hll1);
+            *hll1.datatypes.entry(3).or_insert(0) += 3; // 3 string values
+            *hll1.datatypes.entry(5).or_insert(0) += 2; // 2 ref values
+            map.insert(GraphPropertyKey { g_id: 0, p_id: 1 }, hll1);
 
-            let mut hll2 = PropertyHll::new();
-            hll2.last_modified_t = 15;
-            properties.insert(Sid::new(200, "age"), hll2);
+            let mut hll2 = IdPropertyHll::new();
+            hll2.values_hll.insert_hash(300);
+            hll2.subjects_hll.insert_hash(2000);
+            hll2.count = 3;
+            hll2.last_modified_t = 8;
+            map.insert(GraphPropertyKey { g_id: 0, p_id: 2 }, hll2);
 
-            let addresses = super::list_hll_sketch_addresses("test/db", &properties);
-
-            // Should have 4 addresses (2 properties * 2 kinds)
-            assert_eq!(addresses.len(), 4);
-
-            // Each property uses its own last_modified_t
-            let has_t10 = addresses.iter().any(|a| a.contains("t10.hll"));
-            let has_t15 = addresses.iter().any(|a| a.contains("t15.hll"));
-            assert!(has_t10, "should have address with t10");
-            assert!(has_t15, "should have address with t15");
+            map
         }
 
-        // === Obsolete Sketch Address Tests ===
+        #[test]
+        fn test_sketch_blob_round_trip() {
+            let props = make_test_properties();
+            let blob = HllSketchBlob::from_properties(10, &props);
+
+            let bytes = blob.to_json_bytes().unwrap();
+            let parsed = HllSketchBlob::from_json_bytes(&bytes).unwrap();
+
+            assert_eq!(parsed.version, 1);
+            assert_eq!(parsed.index_t, 10);
+            assert_eq!(parsed.entries.len(), 2);
+
+            // Reconstruct back to properties
+            let restored = parsed.into_properties().unwrap();
+            assert_eq!(restored.len(), 2);
+
+            let key1 = GraphPropertyKey { g_id: 0, p_id: 1 };
+            let key2 = GraphPropertyKey { g_id: 0, p_id: 2 };
+            assert!(restored.contains_key(&key1));
+            assert!(restored.contains_key(&key2));
+            assert_eq!(restored[&key1].count, 5);
+            assert_eq!(restored[&key2].count, 3);
+            assert_eq!(restored[&key1].last_modified_t, 10);
+            assert_eq!(restored[&key2].last_modified_t, 8);
+        }
 
         #[test]
-        fn test_compute_obsolete_sketch_addresses_no_changes() {
-            // Prior and updated have same last_modified_t - no obsolete
-            let prior_properties = vec![PropertyStatEntry {
-                sid: (100, "name".to_string()),
-                count: 10,
-                ndv_values: 5,
-                ndv_subjects: 5,
-                last_modified_t: 5,
-                datatypes: vec![],
-            }];
+        fn test_sketch_blob_empty() {
+            let empty: HashMap<GraphPropertyKey, IdPropertyHll> = HashMap::new();
+            let blob = HllSketchBlob::from_properties(5, &empty);
 
-            let mut updated_properties = HashMap::new();
-            let mut hll = PropertyHll::new();
-            hll.last_modified_t = 5; // Same t - no change
-            updated_properties.insert(Sid::new(100, "name"), hll);
+            assert_eq!(blob.entries.len(), 0);
+            let bytes = blob.to_json_bytes().unwrap();
+            let parsed = HllSketchBlob::from_json_bytes(&bytes).unwrap();
+            assert_eq!(parsed.entries.len(), 0);
 
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
+            let restored = parsed.into_properties().unwrap();
+            assert!(restored.is_empty());
+        }
+
+        #[test]
+        fn test_sketch_blob_deterministic() {
+            let props = make_test_properties();
+            let bytes1 = HllSketchBlob::from_properties(10, &props)
+                .to_json_bytes()
+                .unwrap();
+            let bytes2 = HllSketchBlob::from_properties(10, &props)
+                .to_json_bytes()
+                .unwrap();
+            assert_eq!(bytes1, bytes2, "same input must produce identical bytes");
+        }
+
+        #[test]
+        fn test_sketch_blob_hll_fidelity() {
+            let props = make_test_properties();
+            let blob = HllSketchBlob::from_properties(10, &props);
+            let bytes = blob.to_json_bytes().unwrap();
+            let restored = HllSketchBlob::from_json_bytes(&bytes)
+                .unwrap()
+                .into_properties()
+                .unwrap();
+
+            let key = GraphPropertyKey { g_id: 0, p_id: 1 };
+            let original = &props[&key];
+            let round_tripped = &restored[&key];
+
+            // HLL registers should be identical after round-trip
+            assert_eq!(
+                original.values_hll.registers(),
+                round_tripped.values_hll.registers(),
+                "values HLL registers must survive round-trip"
             );
+            assert_eq!(
+                original.subjects_hll.registers(),
+                round_tripped.subjects_hll.registers(),
+                "subjects HLL registers must survive round-trip"
+            );
+        }
 
+        #[test]
+        fn test_sketch_blob_clamps_negatives() {
+            let mut map = HashMap::new();
+            let mut hll = IdPropertyHll::new();
+            hll.count = -3; // negative from retractions
+            *hll.datatypes.entry(3).or_insert(0) = -2; // negative dt
+            hll.last_modified_t = 5;
+            map.insert(GraphPropertyKey { g_id: 0, p_id: 1 }, hll);
+
+            let blob = HllSketchBlob::from_properties(5, &map);
+            assert_eq!(blob.entries[0].count, 0, "negative count clamped to 0");
             assert!(
-                obsolete.is_empty(),
-                "No obsolete addresses when t unchanged"
+                blob.entries[0].datatypes.is_empty()
+                    || blob.entries[0].datatypes.iter().all(|(_, v)| *v == 0),
+                "negative datatypes clamped to 0"
             );
         }
 
         #[test]
-        fn test_compute_obsolete_sketch_addresses_with_update() {
-            // Prior t=5, updated t=10 - prior sketches are obsolete
-            let prior_properties = vec![PropertyStatEntry {
-                sid: (100, "name".to_string()),
-                count: 10,
-                ndv_values: 5,
-                ndv_subjects: 5,
-                last_modified_t: 5,
-                datatypes: vec![],
-            }];
+        fn test_sketch_blob_sorted_by_g_id_p_id() {
+            let mut map = HashMap::new();
+            // Insert in random order
+            for &(g, p) in &[(1, 10), (0, 5), (0, 1), (1, 2), (0, 10)] {
+                let mut hll = IdPropertyHll::new();
+                hll.count = 1;
+                hll.last_modified_t = 1;
+                map.insert(GraphPropertyKey { g_id: g, p_id: p }, hll);
+            }
 
-            let mut updated_properties = HashMap::new();
-            let mut hll = PropertyHll::new();
-            hll.last_modified_t = 10; // New t - prior is obsolete
-            updated_properties.insert(Sid::new(100, "name"), hll);
-
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
+            let blob = HllSketchBlob::from_properties(1, &map);
+            let keys: Vec<(u32, u32)> = blob.entries.iter().map(|e| (e.g_id, e.p_id)).collect();
+            assert_eq!(
+                keys,
+                vec![(0, 1), (0, 5), (0, 10), (1, 2), (1, 10)],
+                "entries must be sorted by (g_id, p_id)"
             );
-
-            // Should have 2 obsolete addresses (values + subjects for prior t=5)
-            assert_eq!(obsolete.len(), 2);
-            assert!(obsolete
-                .iter()
-                .any(|a| a.contains("values") && a.contains("t5.hll")));
-            assert!(obsolete
-                .iter()
-                .any(|a| a.contains("subjects") && a.contains("t5.hll")));
         }
 
         #[test]
-        fn test_compute_obsolete_sketch_addresses_property_removed() {
-            // Prior has property, updated doesn't - prior is obsolete
-            let prior_properties = vec![PropertyStatEntry {
-                sid: (100, "name".to_string()),
-                count: 10,
-                ndv_values: 5,
-                ndv_subjects: 5,
-                last_modified_t: 5,
-                datatypes: vec![],
-            }];
-
-            let updated_properties: HashMap<Sid, PropertyHll> = HashMap::new();
-
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
-            );
-
-            // Property removed, so prior sketches are obsolete
-            assert_eq!(obsolete.len(), 2);
-            assert!(obsolete
-                .iter()
-                .any(|a| a.contains("values") && a.contains("t5.hll")));
-            assert!(obsolete
-                .iter()
-                .any(|a| a.contains("subjects") && a.contains("t5.hll")));
-        }
-
-        #[test]
-        fn test_compute_obsolete_sketch_addresses_multiple_properties() {
-            // Two properties: one updated, one unchanged
-            let prior_properties = vec![
-                PropertyStatEntry {
-                    sid: (100, "name".to_string()),
-                    count: 10,
-                    ndv_values: 5,
-                    ndv_subjects: 5,
-                    last_modified_t: 5,
-                    datatypes: vec![],
-                },
-                PropertyStatEntry {
-                    sid: (100, "age".to_string()),
-                    count: 8,
-                    ndv_values: 4,
-                    ndv_subjects: 4,
-                    last_modified_t: 3,
-                    datatypes: vec![],
-                },
-            ];
-
-            let mut updated_properties = HashMap::new();
-
-            // name: updated (t=5 -> t=10)
-            let mut hll_name = PropertyHll::new();
-            hll_name.last_modified_t = 10;
-            updated_properties.insert(Sid::new(100, "name"), hll_name);
-
-            // age: unchanged (t=3 -> t=3)
-            let mut hll_age = PropertyHll::new();
-            hll_age.last_modified_t = 3;
-            updated_properties.insert(Sid::new(100, "age"), hll_age);
-
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
-            );
-
-            // Only "name" at t=5 should be obsolete (2 addresses)
-            // "age" at t=3 is unchanged
-            assert_eq!(obsolete.len(), 2);
+        fn test_sketch_blob_rejects_unknown_version() {
+            let json = r#"{"version":99,"index_t":1,"entries":[]}"#;
+            let err = HllSketchBlob::from_json_bytes(json.as_bytes());
+            assert!(err.is_err());
+            let msg = err.unwrap_err().to_string();
             assert!(
-                obsolete.iter().all(|a| a.contains("100_name_t5.hll")),
-                "All obsolete should be for name at t=5"
+                msg.contains("unsupported sketch blob version 99"),
+                "unexpected error: {msg}"
             );
         }
 
         #[test]
-        fn test_compute_obsolete_sketch_addresses_empty_prior() {
-            // No prior properties - nothing obsolete
-            let prior_properties: Vec<PropertyStatEntry> = vec![];
+        fn test_id_stats_hook_with_prior_properties() {
+            let mut prior = HashMap::new();
+            let mut hll = IdPropertyHll::new();
+            hll.values_hll.insert_hash(100);
+            hll.subjects_hll.insert_hash(1000);
+            hll.count = 5;
+            hll.last_modified_t = 3;
+            prior.insert(GraphPropertyKey { g_id: 0, p_id: 1 }, hll);
 
-            let mut updated_properties = HashMap::new();
-            let mut hll = PropertyHll::new();
-            hll.last_modified_t = 10;
-            updated_properties.insert(Sid::new(100, "name"), hll);
+            let hook = IdStatsHook::with_prior_properties(prior);
+            let props = hook.properties();
+            assert_eq!(props.len(), 1);
 
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "test/db",
-                &prior_properties,
-                &updated_properties,
-            );
-
-            assert!(
-                obsolete.is_empty(),
-                "No prior properties means nothing obsolete"
-            );
-        }
-
-        #[test]
-        fn test_compute_obsolete_sketch_addresses_correct_path_format() {
-            let prior_properties = vec![PropertyStatEntry {
-                sid: (200, "email".to_string()),
-                count: 5,
-                ndv_values: 3,
-                ndv_subjects: 3,
-                last_modified_t: 42,
-                datatypes: vec![],
-            }];
-
-            let mut updated_properties = HashMap::new();
-            let mut hll = PropertyHll::new();
-            hll.last_modified_t = 100;
-            updated_properties.insert(Sid::new(200, "email"), hll);
-
-            let obsolete = super::compute_obsolete_sketch_addresses(
-                "mydb:main",
-                &prior_properties,
-                &updated_properties,
-            );
-
-            assert_eq!(obsolete.len(), 2);
-            // Verify correct path format with alias normalization
-            assert!(obsolete.contains(
-                &"fluree:file://mydb/main/index/stats-sketches/values/200_email_t42.hll"
-                    .to_string()
-            ));
-            assert!(obsolete.contains(
-                &"fluree:file://mydb/main/index/stats-sketches/subjects/200_email_t42.hll"
-                    .to_string()
-            ));
+            let key = GraphPropertyKey { g_id: 0, p_id: 1 };
+            assert_eq!(props[&key].count, 5);
+            assert_eq!(props[&key].last_modified_t, 3);
         }
     }
 }

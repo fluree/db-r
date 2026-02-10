@@ -42,11 +42,12 @@
   - [Datatypes and typed values](concepts/datatypes.md)
   - [Datasets and named graphs](concepts/datasets-and-named-graphs.md)
   - [Time travel](concepts/time-travel.md)
+  - [Policy enforcement](concepts/policy-enforcement.md)
+  - [Verifiable data](concepts/verifiable-data.md)
 
 - [Design](design/README.md)
   - [Auth contract (CLI ↔ Server)](design/auth-contract.md)
   - [Nameservice schema v2](design/nameservice-schema-v2.md)
-  - [Graph source index manifests](design/graph-source-index-manifests.md)
   - [Storage-agnostic commits and sync](design/storage-agnostic-commits-and-sync.md)
   - [ContentId and ContentStore](design/content-id-and-contentstore.md)
   - [Index format](design/index-format.md)
@@ -119,6 +120,7 @@
   - [Fluree system vocabulary](reference/vocabulary.md)
   - [JSON-LD connection configuration](reference/connection-config-jsonld.md)
   - [Standards and feature flags](reference/compatibility.md)
+  - [Graph identities and naming](reference/graph-identities.md)
   - [Crate map](reference/crate-map.md)
 
 - [Contributing](contributing/README.md)

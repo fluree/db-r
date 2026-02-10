@@ -163,74 +163,7 @@ pub trait StorageWrite: Debug + Send + Sync {
 // Content-Addressed Write (Extension)
 // ============================================================================
 
-/// What kind of dictionary blob is being stored.
-///
-/// Used by [`ContentKind::DictBlob`] to route dictionary artifacts to
-/// typed CAS paths (e.g. `objects/dicts/{hash}.dict`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum DictKind {
-    /// Named-graph IRI dictionary (FRD1 format).
-    Graphs,
-    /// Datatype IRI dictionary (FRD1 format).
-    Datatypes,
-    /// Language tag dictionary (FRD1 format).
-    Languages,
-    /// Subject forward file — raw concatenated UTF-8 IRIs (mmap'd).
-    SubjectForward,
-    /// Subject index — offsets/lengths into subject forward file (FSI1 format).
-    SubjectIndex,
-    /// Subject reverse hash index — hash→s_id binary search table (SRV1 format, mmap'd).
-    SubjectReverse,
-    /// String value forward file — raw concatenated UTF-8 (mmap'd).
-    StringForward,
-    /// String value index — offsets/lengths into string forward file (FSI1 format).
-    StringIndex,
-    /// String value reverse hash index (SRV1 format, mmap'd).
-    StringReverse,
-    /// Per-predicate overflow BigInt/BigDecimal arena (NBA1 format).
-    NumBig { p_id: u32 },
-    /// Per-predicate vector arena shard (VAS1 format).
-    VectorShard { p_id: u32 },
-    /// Per-predicate vector arena manifest (VAM1 JSON format).
-    VectorManifest { p_id: u32 },
-}
-
-/// File extension for a given [`DictKind`] (used in CAS paths).
-///
-/// All dict blob sub-kinds use a single extension because the CID codec
-/// (`CODEC_FLUREE_DICT_BLOB`) cannot distinguish sub-kinds. Using a uniform
-/// extension ensures that `cid_to_address()` resolves to the same path
-/// regardless of whether the caller knows the exact `DictKind`.
-fn dict_kind_extension(_dict: DictKind) -> &'static str {
-    "dict"
-}
-
-/// What a blob "is", so storage can choose its layout.
-///
-/// Filesystem-like storages typically map this to directory prefixes such as
-/// `index/spot/` vs `commit/`. Some storages may ignore it (e.g. IPFS-like
-/// content stores).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ContentKind {
-    /// Commit JSON blob
-    Commit,
-    /// Txn JSON blob
-    Txn,
-    /// DB root index node (the "root pointer" written each refresh)
-    IndexRoot,
-    /// Garbage record (GC metadata)
-    GarbageRecord,
-    /// Dictionary artifact (predicates, subjects, strings, etc.)
-    DictBlob { dict: DictKind },
-    /// Index branch manifest (FBR1 format)
-    IndexBranch,
-    /// Index leaf file (FLI1 format)
-    IndexLeaf,
-    /// Ledger configuration object (origin discovery, replication defaults)
-    LedgerConfig,
-}
+use crate::content_kind::{dict_kind_extension, ContentKind};
 
 /// Result of a storage-owned content write.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -570,6 +503,7 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
         ContentKind::IndexBranch => format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex),
         ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli", prefix, hash_hex),
         ContentKind::LedgerConfig => format!("{}/config/{}.json", prefix, hash_hex),
+        ContentKind::StatsSketch => format!("{}/index/stats/{}.hll", prefix, hash_hex),
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
         _ => format!("{}/blob/{}.bin", prefix, hash_hex),

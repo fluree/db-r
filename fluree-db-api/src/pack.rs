@@ -414,7 +414,7 @@ mod tests {
     use fluree_db_core::pack::{
         decode_frame, read_stream_preamble, PackFrame, DEFAULT_MAX_PAYLOAD,
     };
-    use fluree_db_core::storage::ContentKind;
+    use fluree_db_core::ContentKind;
 
     // Kept for: integration tests that need to decode a full pack stream.
     // Use when: writing pack round-trip integration tests (Phase 2 tests).

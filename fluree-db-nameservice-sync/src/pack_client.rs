@@ -137,12 +137,10 @@ pub async fn ingest_pack_stream<S: ContentAddressedWrite>(
 
                     // Protocol rule: the Header frame is mandatory and must be the
                     // first frame after the stream preamble.
-                    if !saw_any_frame {
-                        if !matches!(frame, PackFrame::Header(_)) {
-                            return Err(SyncError::PackProtocol(
-                                "pack stream must start with Header frame".to_string(),
-                            ));
-                        }
+                    if !saw_any_frame && !matches!(frame, PackFrame::Header(_)) {
+                        return Err(SyncError::PackProtocol(
+                            "pack stream must start with Header frame".to_string(),
+                        ));
                     }
                     saw_any_frame = true;
 
@@ -313,7 +311,7 @@ mod tests {
     use fluree_db_core::pack::{
         encode_end_frame, encode_header_frame, write_stream_preamble, PackHeader,
     };
-    use fluree_db_core::storage::ContentKind;
+    use fluree_db_core::ContentKind;
 
     #[test]
     fn test_pack_ingest_result_defaults() {

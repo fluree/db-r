@@ -49,10 +49,6 @@ Geographic point data with native binary encoding:
 - Packed 60-bit lat/lng encoding (~0.3mm precision)
 - Foundation for proximity queries (latitude-band index scans)
 
-## Design docs
-
-- [Search Service Protocol (BM25 + Vector)](../design/SEARCH_SERVICE_PROTOCOL.md) - Unified embedded/remote contract and implementation plan.
-
 ## Indexing Architecture
 
 Fluree maintains multiple index types for different query patterns:

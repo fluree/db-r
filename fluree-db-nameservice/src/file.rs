@@ -2111,7 +2111,7 @@ impl ConfigPublisher for FileNameService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::storage::ContentKind;
+    use fluree_db_core::ContentKind;
     use tempfile::TempDir;
     use tokio::sync::broadcast::error::TryRecvError;
 

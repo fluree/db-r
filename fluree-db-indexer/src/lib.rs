@@ -30,8 +30,7 @@ pub use config::IndexerConfig;
 pub use error::{IndexerError, Result};
 pub use gc::{
     clean_garbage, load_garbage_record, write_garbage_record, CleanGarbageConfig,
-    CleanGarbageResult, GarbageRecord, GarbageRef, DEFAULT_MAX_OLD_INDEXES,
-    DEFAULT_MIN_TIME_GARBAGE_MINS,
+    CleanGarbageResult, GarbageRecord, DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS,
 };
 #[cfg(feature = "embedded-orchestrator")]
 pub use orchestrator::{
@@ -384,13 +383,36 @@ where
             let graph_addresses =
                 upload_indexes_to_cas(&storage, &ledger_id, &build_results).await?;
 
-            // D.4: Build stats JSON for the planner (RawDbRootStats shape).
+            // D.4: Build stats JSON + persist HLL sketches.
             //
             // Preferred: ID-based stats collected during commit resolution (per-graph property
             // stats with datatype counts + HLL NDV). Fallback: SPOT build result for per-graph
             // flake counts only.
-            let stats_json = {
+            //
+            // Sketch persistence must happen BEFORE finalize consumes the hook.
+            let (stats_json, sketch_ref) = {
                 if let Some(hook) = id_stats_hook {
+                    // D.4a: Persist HLL sketches to CAS before finalize consumes the hook.
+                    // Counts are clamped to ≥ 0 (snapshot state, not raw deltas).
+                    let sketch_blob = crate::stats::HllSketchBlob::from_properties(
+                        store.max_t(),
+                        hook.properties(),
+                    );
+                    let sketch_bytes = sketch_blob
+                        .to_json_bytes()
+                        .map_err(|e| IndexerError::Serialization(e.to_string()))?;
+                    let sketch_cid = content_store
+                        .put(fluree_db_core::ContentKind::StatsSketch, &sketch_bytes)
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                    tracing::debug!(
+                        %sketch_cid,
+                        entries = sketch_blob.entries.len(),
+                        "HLL sketch blob persisted"
+                    );
+
+                    // D.4b: Finalize stats (consumes hook).
                     let (id_result, agg_props, class_counts, class_properties, class_ref_targets) =
                         hook.finalize_with_aggregate_properties();
 
@@ -507,13 +529,13 @@ where
                         })
                         .collect();
 
-                    serde_json::json!({
+                    (serde_json::json!({
                         "flakes": id_result.total_flakes,
                         "size": 0,
                         "graphs": graphs_json,
                         "properties": properties_json,
                         "classes": classes_json,
-                    })
+                    }), Some(sketch_cid))
                 } else {
                     // Fallback: flake counts only (no per-property / datatype breakdown).
                     let (_, spot_result) = build_results
@@ -535,11 +557,11 @@ where
 
                     let total_flakes: u64 = spot_result.graphs.iter().map(|g| g.total_rows).sum();
 
-                    serde_json::json!({
+                    (serde_json::json!({
                         "flakes": total_flakes,
                         "size": 0,
                         "graphs": graph_stats
-                    })
+                    }), None)
                 }
             };
 
@@ -566,6 +588,7 @@ where
                     schema: None,     // schema: requires predicate definitions (future)
                     prev_index: None, // set below after garbage computation
                     garbage: None,    // set below after garbage computation
+                    sketch_ref,
                     subject_watermarks,
                     string_watermark,
                 });
@@ -610,13 +633,7 @@ where
                         gc::write_garbage_record(&storage, &ledger_id, store.max_t(), garbage_strings)
                             .await
                             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-                            .and_then(|r| {
-                                ContentId::from_hex_digest(
-                                    fluree_db_core::CODEC_FLUREE_GARBAGE,
-                                    &r.content_hash,
-                                )
-                                .map(|id| run_index::BinaryGarbageRef { id })
-                            });
+                            .map(|id| run_index::BinaryGarbageRef { id });
 
                     root.prev_index = Some(run_index::BinaryPrevIndexRef {
                         t: prev.index_t,

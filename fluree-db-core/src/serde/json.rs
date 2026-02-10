@@ -455,21 +455,6 @@ impl<'de> serde::Deserialize<'de> for RawClassPropertyUsage {
     }
 }
 
-// === Garbage Reference ===
-
-/// Reference to garbage record for GC chain
-///
-/// Links a db-root / index-root to its garbage manifest file.
-/// The garbage record contains addresses of obsolete nodes replaced during
-/// this refresh operation.
-#[derive(Debug, Clone, PartialEq)]
-pub struct GarbageRef {
-    /// Address of the garbage record file
-    pub address: String,
-    /// Content hash (SHA-256 hex) of the garbage record
-    pub content_hash: String,
-}
-
 // === Index Schema (JSON parsing) ===
 
 use crate::index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};

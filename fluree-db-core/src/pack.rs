@@ -448,7 +448,7 @@ impl PackHeader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::ContentKind;
+    use crate::content_kind::ContentKind;
 
     fn sample_cid(kind: ContentKind, data: &[u8]) -> ContentId {
         ContentId::new(kind, data)
@@ -554,7 +554,7 @@ mod tests {
             (ContentKind::IndexLeaf, &b"leaf"[..]),
             (
                 ContentKind::DictBlob {
-                    dict: crate::storage::DictKind::Graphs,
+                    dict: crate::content_kind::DictKind::Graphs,
                 },
                 &b"dict blob"[..],
             ),

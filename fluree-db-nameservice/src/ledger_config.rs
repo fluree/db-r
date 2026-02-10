@@ -20,8 +20,8 @@
 //! - Auth scopes are sorted and deduplicated within each origin
 //! - `Origin` has an explicit `Ord` impl that is a total order (stable across sort implementations)
 
-use fluree_db_core::storage::ContentKind;
 use fluree_db_core::ContentId;
+use fluree_db_core::ContentKind;
 use serde::{Deserialize, Serialize};
 
 /// Content-addressed ledger configuration for origin discovery.

@@ -97,6 +97,24 @@ impl Bm25Manifest {
             .map(|s| s.snapshot_address.as_str())
             .collect()
     }
+
+    /// Trim old snapshots beyond the retention limit.
+    ///
+    /// Keeps the most recent `keep` snapshots and returns the addresses of
+    /// removed entries so the caller can delete the old blobs from storage.
+    /// Returns an empty vec if no trimming was needed.
+    pub fn trim(&mut self, keep: usize) -> Vec<String> {
+        if self.snapshots.len() <= keep {
+            return Vec::new();
+        }
+        let remove_count = self.snapshots.len() - keep;
+        let removed: Vec<String> = self.snapshots[..remove_count]
+            .iter()
+            .map(|s| s.snapshot_address.clone())
+            .collect();
+        self.snapshots.drain(..remove_count);
+        removed
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +207,46 @@ mod tests {
 
         let addrs = m.all_snapshot_addresses();
         assert_eq!(addrs, vec!["addr-5", "addr-10"]);
+    }
+
+    #[test]
+    fn test_trim_removes_oldest() {
+        let mut m = Bm25Manifest::new("test:main");
+        m.append(Bm25SnapshotEntry::new(1, "addr-1"));
+        m.append(Bm25SnapshotEntry::new(2, "addr-2"));
+        m.append(Bm25SnapshotEntry::new(3, "addr-3"));
+        m.append(Bm25SnapshotEntry::new(4, "addr-4"));
+        m.append(Bm25SnapshotEntry::new(5, "addr-5"));
+
+        let removed = m.trim(3);
+        assert_eq!(removed, vec!["addr-1", "addr-2"]);
+        assert_eq!(m.snapshots.len(), 3);
+        assert_eq!(m.snapshots[0].index_t, 3);
+        assert_eq!(m.head().unwrap().index_t, 5);
+    }
+
+    #[test]
+    fn test_trim_no_op_when_under_limit() {
+        let mut m = Bm25Manifest::new("test:main");
+        m.append(Bm25SnapshotEntry::new(1, "addr-1"));
+        m.append(Bm25SnapshotEntry::new(2, "addr-2"));
+
+        let removed = m.trim(5);
+        assert!(removed.is_empty());
+        assert_eq!(m.snapshots.len(), 2);
+    }
+
+    #[test]
+    fn test_trim_to_one() {
+        let mut m = Bm25Manifest::new("test:main");
+        m.append(Bm25SnapshotEntry::new(1, "addr-1"));
+        m.append(Bm25SnapshotEntry::new(2, "addr-2"));
+        m.append(Bm25SnapshotEntry::new(3, "addr-3"));
+
+        let removed = m.trim(1);
+        assert_eq!(removed, vec!["addr-1", "addr-2"]);
+        assert_eq!(m.snapshots.len(), 1);
+        assert_eq!(m.head().unwrap().index_t, 3);
     }
 
     #[test]

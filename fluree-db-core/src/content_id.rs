@@ -16,108 +16,16 @@
 //! (varint version + varint codec + multihash bytes), used in
 //! commit format v3, pack streams, and binary indexes.
 
+use crate::content_kind::ContentKind;
 use crate::error::{Error, Result};
-use crate::storage::ContentKind;
 use cid::Cid;
 use multihash::Multihash;
 use sha2::Digest;
 use std::fmt;
 use std::str::FromStr;
 
-// ============================================================================
-// Fluree multicodec constants (private-use range)
-// ============================================================================
-
-/// Private-use multicodec base offset for Fluree.
-const FLUREE_CODEC_BASE: u64 = 0x300000;
-
-/// Multicodec for Fluree commit blobs.
-pub const CODEC_FLUREE_COMMIT: u64 = FLUREE_CODEC_BASE + 1;
-
-/// Multicodec for Fluree transaction (txn) blobs.
-pub const CODEC_FLUREE_TXN: u64 = FLUREE_CODEC_BASE + 2;
-
-/// Multicodec for Fluree index root descriptors.
-pub const CODEC_FLUREE_INDEX_ROOT: u64 = FLUREE_CODEC_BASE + 3;
-
-/// Multicodec for Fluree index branch manifests (FBR1).
-pub const CODEC_FLUREE_INDEX_BRANCH: u64 = FLUREE_CODEC_BASE + 4;
-
-/// Multicodec for Fluree index leaf files (FLI1).
-pub const CODEC_FLUREE_INDEX_LEAF: u64 = FLUREE_CODEC_BASE + 5;
-
-/// Multicodec for Fluree dictionary blobs (all sub-kinds).
-///
-/// `DictKind` is parameterized (`NumBig { p_id }`, `VectorShard { p_id }`, etc.)
-/// and cannot map 1:1 to a codec value. The dict sub-kind is part of the
-/// stored bytes, not the CID.
-pub const CODEC_FLUREE_DICT_BLOB: u64 = FLUREE_CODEC_BASE + 6;
-
-/// Multicodec for Fluree garbage collection records.
-pub const CODEC_FLUREE_GARBAGE: u64 = FLUREE_CODEC_BASE + 7;
-
-/// Multicodec for Fluree ledger configuration objects (origin discovery).
-pub const CODEC_FLUREE_LEDGER_CONFIG: u64 = FLUREE_CODEC_BASE + 8;
-
 /// SHA2-256 multihash code (standard).
 const SHA2_256: u64 = 0x12;
-
-// ============================================================================
-// ContentKind <-> codec mapping
-// ============================================================================
-
-impl ContentKind {
-    /// Map this content kind to its Fluree multicodec value.
-    ///
-    /// All `DictBlob { .. }` sub-kinds map to the single `CODEC_FLUREE_DICT_BLOB`.
-    pub fn to_codec(&self) -> u64 {
-        match self {
-            ContentKind::Commit => CODEC_FLUREE_COMMIT,
-            ContentKind::Txn => CODEC_FLUREE_TXN,
-            ContentKind::IndexRoot => CODEC_FLUREE_INDEX_ROOT,
-            ContentKind::IndexBranch => CODEC_FLUREE_INDEX_BRANCH,
-            ContentKind::IndexLeaf => CODEC_FLUREE_INDEX_LEAF,
-            ContentKind::DictBlob { .. } => CODEC_FLUREE_DICT_BLOB,
-            ContentKind::GarbageRecord => CODEC_FLUREE_GARBAGE,
-            ContentKind::LedgerConfig => CODEC_FLUREE_LEDGER_CONFIG,
-        }
-    }
-
-    /// Attempt to reverse-map a multicodec value to a `ContentKind`.
-    ///
-    /// Returns `None` for unknown codecs. For `CODEC_FLUREE_DICT_BLOB`,
-    /// returns a default `DictBlob` variant — callers that need the exact
-    /// `DictKind` sub-variant must inspect the stored bytes.
-    pub fn from_codec(codec: u64) -> Option<Self> {
-        match codec {
-            CODEC_FLUREE_COMMIT => Some(ContentKind::Commit),
-            CODEC_FLUREE_TXN => Some(ContentKind::Txn),
-            CODEC_FLUREE_INDEX_ROOT => Some(ContentKind::IndexRoot),
-            CODEC_FLUREE_INDEX_BRANCH => Some(ContentKind::IndexBranch),
-            CODEC_FLUREE_INDEX_LEAF => Some(ContentKind::IndexLeaf),
-            CODEC_FLUREE_DICT_BLOB => Some(ContentKind::DictBlob {
-                dict: crate::storage::DictKind::Graphs,
-            }),
-            CODEC_FLUREE_GARBAGE => Some(ContentKind::GarbageRecord),
-            CODEC_FLUREE_LEDGER_CONFIG => Some(ContentKind::LedgerConfig),
-            _ => None,
-        }
-    }
-
-    /// Short name for this content kind, used in filesystem layout.
-    pub fn codec_dir_name(&self) -> &'static str {
-        match self {
-            ContentKind::Commit => "commit",
-            ContentKind::Txn => "txn",
-            ContentKind::IndexRoot => "index-root",
-            ContentKind::IndexBranch => "index-branch",
-            ContentKind::IndexLeaf => "index-leaf",
-            ContentKind::DictBlob { .. } => "dict",
-            ContentKind::GarbageRecord => "garbage",
-            ContentKind::LedgerConfig => "config",
-        }
-    }
-}
 
 // ============================================================================
 // ContentId
@@ -329,6 +237,7 @@ impl<'de> serde::Deserialize<'de> for ContentId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::content_kind::*;
 
     #[test]
     fn test_new_and_verify() {
@@ -405,11 +314,11 @@ mod tests {
 
         // DictBlob maps to single codec regardless of sub-kind
         let dict_kind = ContentKind::DictBlob {
-            dict: crate::storage::DictKind::Graphs,
+            dict: crate::content_kind::DictKind::Graphs,
         };
         assert_eq!(dict_kind.to_codec(), CODEC_FLUREE_DICT_BLOB);
         let dict_kind2 = ContentKind::DictBlob {
-            dict: crate::storage::DictKind::SubjectForward,
+            dict: crate::content_kind::DictKind::SubjectForward,
         };
         assert_eq!(dict_kind2.to_codec(), CODEC_FLUREE_DICT_BLOB);
 
