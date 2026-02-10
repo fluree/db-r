@@ -49,8 +49,6 @@ pub trait IndexStatsHook {
 /// Artifacts produced by stats collection
 #[derive(Debug, Clone, Default)]
 pub struct StatsArtifacts {
-    /// Addresses of persisted stats files (e.g., HLL sketches)
-    pub artifact_addresses: Vec<String>,
     /// Summary fields for DbRoot (counts, NDV estimates)
     pub summary: StatsSummary,
 }
@@ -87,7 +85,6 @@ impl IndexStatsHook for NoOpStatsHook {
 
     fn finalize(self: Box<Self>) -> StatsArtifacts {
         StatsArtifacts {
-            artifact_addresses: vec![],
             summary: StatsSummary {
                 flake_count: self.flake_count,
                 properties: None,
@@ -258,7 +255,6 @@ impl IndexStatsHook for HllStatsHook {
         entries.sort_by(|a, b| a.sid.0.cmp(&b.sid.0).then_with(|| a.sid.1.cmp(&b.sid.1)));
 
         StatsArtifacts {
-            artifact_addresses: vec![], // Sketch addresses added by caller if persisted
             summary: StatsSummary {
                 flake_count: self.flake_count,
                 properties: if entries.is_empty() {
@@ -521,7 +517,7 @@ pub async fn load_sketch_blob(
             let blob = HllSketchBlob::from_json_bytes(&bytes)?;
             Ok(Some(blob))
         }
-        Err(e) if matches!(e, fluree_db_core::Error::NotFound(_)) => Ok(None),
+        Err(fluree_db_core::Error::NotFound(_)) => Ok(None),
         Err(e) => Err(IndexerError::StorageRead(format!(
             "sketch blob {sketch_id}: {e}"
         ))),
@@ -1019,7 +1015,6 @@ mod tests {
         let artifacts = Box::new(hook).finalize();
 
         assert_eq!(artifacts.summary.flake_count, 3);
-        assert!(artifacts.artifact_addresses.is_empty());
     }
 
     #[test]

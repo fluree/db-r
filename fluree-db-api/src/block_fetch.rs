@@ -1,7 +1,8 @@
 //! Block retrieval API with explicit enforcement semantics.
 //!
 //! This module provides a reusable, transport-agnostic API for fetching storage
-//! blocks (commits, index nodes, leaves) with security enforcement.
+//! blocks (commits, index nodes, leaves) by content identifier (CID) with
+//! security enforcement.
 //!
 //! # Security Model
 //!
@@ -18,18 +19,25 @@
 //!
 //! `PolicyEnforced` with both `identity` and `policy_class` as `None` is valid
 //! and behaves as root policy (all flakes pass through unfiltered).
+//!
+//! # Content Kind Allowlist
+//!
+//! Only replication-relevant artifact kinds are allowed through the block fetch
+//! API. Internal metadata (GC records, stats sketches) and graph source
+//! snapshots are rejected before any storage I/O occurs.
 
 use crate::dataset::QueryConnectionOptions;
 use crate::policy_builder;
+use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::flake::Flake;
-use fluree_db_core::{Db, NoOverlay, OverlayProvider, Storage, Tracker};
+use fluree_db_core::storage::content_address;
+use fluree_db_core::{ContentId, Db, NoOverlay, OverlayProvider, Storage, Tracker};
 use fluree_db_indexer::run_index::leaf::read_leaf_header;
 use fluree_db_indexer::run_index::leaflet::{
     decode_leaflet, decode_leaflet_region1, LeafletHeader,
 };
 use fluree_db_indexer::run_index::types::DecodedRow;
 use fluree_db_indexer::run_index::{BinaryIndexStore, RunSortOrder};
-use fluree_db_nameservice::STORAGE_SEGMENT_GRAPH_SOURCES;
 use fluree_db_query::QueryPolicyEnforcer;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -42,21 +50,6 @@ use thiserror::Error;
 /// Errors from block fetch operations.
 #[derive(Error, Debug)]
 pub enum BlockFetchError {
-    /// Address does not match any known pattern
-    #[error("Unknown address format: {0}")]
-    UnknownAddress(String),
-
-    /// Graph source artifacts not accessible in v1
-    #[error("Graph source artifacts not accessible")]
-    GraphSourceNotAuthorized,
-
-    /// Address does not belong to the claimed ledger
-    #[error("Address does not belong to ledger '{claimed}': resolved to {actual:?}")]
-    LedgerMismatch {
-        claimed: String,
-        actual: Option<String>,
-    },
-
     /// PolicyEnforced mode attempted to return raw bytes for a leaf block
     #[error("Raw leaf bytes not allowed under policy enforcement")]
     LeafRawForbidden,
@@ -91,44 +84,25 @@ pub enum BlockFetchError {
 }
 
 // ============================================================================
-// Address Context
+// Content Kind Allowlist
 // ============================================================================
 
-/// Context inferred from a storage address.
+/// Content kinds allowed through the block fetch API.
 ///
-/// Addresses encode their context in the path structure:
-/// - Commits: `fluree:file://{ledger_id}/commit/...`
-/// - Indexes: `fluree:file://{ledger}/{branch}/index/...`
-/// - Graph source artifacts: `fluree:file://graph-sources/{name}/{branch}/...`
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AddressContext {
-    /// Ledger commit: `fluree:file://{ledger_id}/commit/...`
-    LedgerCommit { ledger_id: String },
-    /// Ledger index: `fluree:file://{ledger}/{branch}/index/...`
-    LedgerIndex { ledger: String, branch: String },
-    /// Graph source artifact: `fluree:file://graph-sources/{name}/{branch}/...`
-    GraphSourceArtifact { name: String, branch: String },
-    /// Unknown format
-    Unknown,
-}
-
-impl AddressContext {
-    /// Get the canonical ledger ID (e.g., "books:main") if this is a
-    /// ledger context.
-    pub fn ledger_id(&self) -> Option<String> {
-        match self {
-            AddressContext::LedgerCommit { ledger_id } => Some(ledger_id.clone()),
-            AddressContext::LedgerIndex { ledger, branch } => {
-                Some(format!("{}:{}", ledger, branch))
-            }
-            _ => None,
-        }
-    }
-
-    /// Check if this is a graph source artifact address.
-    pub fn is_graph_source(&self) -> bool {
-        matches!(self, AddressContext::GraphSourceArtifact { .. })
-    }
+/// Only replication-relevant artifact kinds are allowed. Internal metadata
+/// (GC, stats) and graph source snapshots are excluded. Disallowed kinds
+/// map to `NotFound` (404) — no oracle.
+pub fn is_allowed_block_kind(kind: ContentKind) -> bool {
+    matches!(
+        kind,
+        ContentKind::Commit
+            | ContentKind::Txn
+            | ContentKind::LedgerConfig
+            | ContentKind::IndexRoot
+            | ContentKind::IndexBranch
+            | ContentKind::IndexLeaf
+            | ContentKind::DictBlob { .. }
+    )
 }
 
 // ============================================================================
@@ -151,6 +125,17 @@ impl BlockAccessScope {
     /// Check if this scope authorizes access to the given ledger ID.
     pub fn is_authorized_for_ledger(&self, ledger_id: &str) -> bool {
         self.all_ledgers || self.authorized_ledgers.contains(ledger_id)
+    }
+}
+
+/// Check authorization for a ledger, returning an error on failure.
+///
+/// Callers typically map this error to 404 (no existence leak).
+pub fn authorize_ledger(scope: &BlockAccessScope, ledger_id: &str) -> Result<(), BlockFetchError> {
+    if scope.is_authorized_for_ledger(ledger_id) {
+        Ok(())
+    } else {
+        Err(BlockFetchError::NotFound(ledger_id.to_string()))
     }
 }
 
@@ -221,164 +206,8 @@ pub enum BlockContent {
 /// Result of a block fetch operation.
 #[derive(Debug)]
 pub struct FetchedBlock {
-    /// The address that was fetched.
-    pub address: String,
-    /// Parsed address context.
-    pub context: AddressContext,
     /// The block content.
     pub content: BlockContent,
-}
-
-// ============================================================================
-// Address Parsing
-// ============================================================================
-
-/// Parse address to determine context and authorization scope.
-///
-/// This function is security-critical: it determines what ledger/graph source
-/// an address belongs to for authorization decisions.
-///
-/// Accepts any `fluree:{method}://` prefix (file, s3, memory, proxy, etc.).
-///
-/// # Examples
-/// ```ignore
-/// parse_address_context("fluree:file://books/main/commit/abc.fcv2")
-///     // => LedgerCommit { ledger_id: "books:main" }
-///
-/// parse_address_context("fluree:s3://books/main/index/abc.json")
-///     // => LedgerIndex { ledger: "books", branch: "main" }
-///
-/// parse_address_context("fluree:file://graph-sources/search/main/snapshot.bin")
-///     // => GraphSourceArtifact { name: "search", branch: "main" }
-/// ```
-pub fn parse_address_context(address: &str) -> AddressContext {
-    // Strip `fluree:{method}://` prefix for any storage method (file, s3, memory, proxy, etc.)
-    let path = match address.strip_prefix("fluree:") {
-        Some(rest) => match rest.find("://") {
-            Some(pos) => &rest[pos + 3..],
-            None => return AddressContext::Unknown,
-        },
-        None => return AddressContext::Unknown,
-    };
-
-    // Graph source format: graph-sources/{name}/{branch}/...
-    let gs_prefix = format!("{STORAGE_SEGMENT_GRAPH_SOURCES}/");
-    if let Some(gs_path) = path.strip_prefix(gs_prefix.as_str()) {
-        let parts: Vec<&str> = gs_path.splitn(3, '/').collect();
-        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            return AddressContext::GraphSourceArtifact {
-                name: parts[0].to_string(),
-                branch: parts[1].to_string(),
-            };
-        }
-        return AddressContext::Unknown;
-    }
-
-    // Commit format: {ledger_id}/commit/... (address may contain :)
-    if path.contains("/commit/") {
-        if let Some(addr) = path.split("/commit/").next() {
-            if !addr.is_empty() {
-                // New canonical layout uses `ledger/branch/commit/...` (no ':').
-                // Convert to `ledger:branch` for authorization + ledger_cached lookup.
-                if !addr.contains(':') && addr.contains('/') {
-                    let parts: Vec<&str> = addr.splitn(2, '/').collect();
-                    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-                        return AddressContext::LedgerCommit {
-                            ledger_id: format!("{}:{}", parts[0], parts[1]),
-                        };
-                    }
-                }
-                return AddressContext::LedgerCommit {
-                    ledger_id: addr.to_string(),
-                };
-            }
-        }
-        return AddressContext::Unknown;
-    }
-
-    // Index format: {ledger}/{branch}/index/... (colon normalized to /)
-    if path.contains("/index/") {
-        if let Some(prefix) = path.split("/index/").next() {
-            let parts: Vec<&str> = prefix.splitn(2, '/').collect();
-            if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-                return AddressContext::LedgerIndex {
-                    ledger: parts[0].to_string(),
-                    branch: parts[1].to_string(),
-                };
-            }
-        }
-        return AddressContext::Unknown;
-    }
-
-    // Address doesn't match any known format
-    AddressContext::Unknown
-}
-
-// ============================================================================
-// Authorization Functions
-// ============================================================================
-
-/// Check if a scope is authorized for the given address context.
-///
-/// Returns `true` if authorized, `false` otherwise.
-/// Graph source artifacts and unknown addresses always return `false`.
-pub fn is_authorized(scope: &BlockAccessScope, context: &AddressContext) -> bool {
-    match context {
-        AddressContext::LedgerCommit { ledger_id } => scope.is_authorized_for_ledger(ledger_id),
-        AddressContext::LedgerIndex { ledger, branch } => {
-            let addr = format!("{}:{}", ledger, branch);
-            scope.is_authorized_for_ledger(&addr)
-        }
-        AddressContext::GraphSourceArtifact { .. } => {
-            // Graph source artifacts not authorized in v1 (ledger-only scope).
-            // Add fluree.storage.graph_sources claim in v2 if needed.
-            false
-        }
-        AddressContext::Unknown => {
-            // Unknown address formats are never authorized (security).
-            false
-        }
-    }
-}
-
-/// Check authorization, returning an error on failure.
-///
-/// Delegates to [`is_authorized`] and maps `false` to the appropriate error.
-/// Callers typically map these errors to 404 (no existence leak).
-pub fn authorize_address(
-    scope: &BlockAccessScope,
-    context: &AddressContext,
-) -> Result<(), BlockFetchError> {
-    if is_authorized(scope, context) {
-        Ok(())
-    } else {
-        match context {
-            AddressContext::Unknown => Err(BlockFetchError::UnknownAddress(String::new())),
-            AddressContext::GraphSourceArtifact { .. } => {
-                Err(BlockFetchError::GraphSourceNotAuthorized)
-            }
-            _ => Err(BlockFetchError::UnknownAddress(
-                context.ledger_id().unwrap_or_else(|| "unknown".to_string()),
-            )),
-        }
-    }
-}
-
-/// Validate that an address belongs to the claimed ledger.
-///
-/// Compares the ledger ID extracted from `context` against `expected_ledger`.
-pub fn validate_ledger_scope(
-    context: &AddressContext,
-    expected_ledger: &str,
-) -> Result<(), BlockFetchError> {
-    let actual = context.ledger_id();
-    match &actual {
-        Some(addr) if addr == expected_ledger => Ok(()),
-        _ => Err(BlockFetchError::LedgerMismatch {
-            claimed: expected_ledger.to_string(),
-            actual,
-        }),
-    }
 }
 
 // ============================================================================
@@ -557,51 +386,66 @@ pub async fn apply_policy_filter<S: Storage + Clone + 'static>(
 // High-Level Entry Point
 // ============================================================================
 
-/// Fetch a block from storage with enforcement.
+/// Fetch a block from storage by CID with enforcement.
 ///
 /// This is the primary entry point for block retrieval. It:
-/// 1. Reads raw bytes from storage
-/// 2. Detects whether the block is an FLI1 leaf
-/// 3. Under `PolicyEnforced`: leaf blocks are always decoded+filtered (never raw)
-/// 4. Under `TrustedInternal`: all blocks returned as raw bytes
-/// 5. Non-leaf blocks always returned as raw bytes (structural pointers)
+/// 1. Checks the CID's content kind against the allowlist
+/// 2. Derives the storage address internally from `(storage_method, kind, ledger_id, digest)`
+/// 3. Reads raw bytes from storage
+/// 4. Detects whether the block is an FLI1 leaf (defense-in-depth, even when kind is `IndexLeaf`)
+/// 5. Under `PolicyEnforced`: leaf blocks are always decoded+filtered (never raw)
+/// 6. Under `TrustedInternal`: all blocks returned as raw bytes
+/// 7. Non-leaf blocks always returned as raw bytes (structural pointers)
 ///
 /// # Security guarantees
 ///
+/// - **Kind allowlist**: Only replication-relevant kinds are allowed. GC records,
+///   stats sketches, and graph source snapshots are rejected before I/O.
 /// - **`PolicyEnforced` + leaf**: always decoded+filtered, never raw bytes.
 /// - **`PolicyEnforced` + non-leaf**: returned as raw bytes. These are structural
 ///   pointers (addresses, transaction times), not user-level data flakes.
 /// - **`TrustedInternal`**: all blocks returned as raw bytes.
 pub async fn fetch_and_decode_block<S: Storage + Clone + 'static>(
     storage: &S,
-    address: &str,
-    context: &AddressContext,
+    ledger_id: &str,
+    cid: &ContentId,
     ledger_ctx: Option<&LedgerBlockContext<'_, S>>,
     mode: &EnforcementMode,
 ) -> Result<FetchedBlock, BlockFetchError> {
-    // Read raw bytes from storage
-    let bytes = storage.read_bytes(address).await.map_err(|e| {
+    // 1. Check content kind from CID codec
+    let kind = cid
+        .content_kind()
+        .ok_or_else(|| BlockFetchError::NotFound(cid.to_string()))?;
+
+    // 2. Enforce kind allowlist before any I/O
+    if !is_allowed_block_kind(kind) {
+        return Err(BlockFetchError::NotFound(cid.to_string()));
+    }
+
+    // 3. Derive storage address internally
+    let method = storage.storage_method();
+    let address = content_address(method, kind, ledger_id, &cid.digest_hex());
+
+    // 4. Read raw bytes from storage
+    let bytes = storage.read_bytes(&address).await.map_err(|e| {
         if matches!(e, fluree_db_core::Error::NotFound(_)) {
-            BlockFetchError::NotFound(address.to_string())
+            BlockFetchError::NotFound(cid.to_string())
         } else {
             BlockFetchError::StorageRead(e)
         }
     })?;
 
-    // Non-leaf blocks are structural pointers — return as-is regardless of mode
+    // 5. Non-leaf blocks are structural pointers — return as-is regardless of mode
+    //    (FLI1 sniffing is defense-in-depth even when kind == IndexLeaf)
     if !is_fli1_leaf(&bytes) {
         return Ok(FetchedBlock {
-            address: address.to_string(),
-            context: context.clone(),
             content: BlockContent::RawBytes(bytes),
         });
     }
 
-    // It's a leaf block — enforcement mode determines behavior
+    // 6. It's a leaf block — enforcement mode determines behavior
     match mode {
         EnforcementMode::TrustedInternal => Ok(FetchedBlock {
-            address: address.to_string(),
-            context: context.clone(),
             content: BlockContent::RawBytes(bytes),
         }),
 
@@ -628,8 +472,6 @@ pub async fn fetch_and_decode_block<S: Storage + Clone + 'static>(
             .await?;
 
             Ok(FetchedBlock {
-                address: address.to_string(),
-                context: context.clone(),
                 content: BlockContent::DecodedFlakes {
                     flakes: filtered,
                     policy_applied,
@@ -654,243 +496,48 @@ mod tests {
         }
     }
 
-    // --- Address parsing tests ---
+    // --- Authorization tests ---
 
     #[test]
-    fn test_parse_commit_address() {
-        let addr = "fluree:file://books:main/commit/abc123.fcv2";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::LedgerCommit {
-                ledger_id: "books:main".to_string()
-            }
-        );
-        assert_eq!(ctx.ledger_id(), Some("books:main".to_string()));
-    }
-
-    #[test]
-    fn test_parse_commit_canonical_layout() {
-        let addr = "fluree:file://books/main/commit/abc123.fcv2";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::LedgerCommit {
-                ledger_id: "books:main".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_index_address() {
-        let addr = "fluree:file://books/main/index/def456.json";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::LedgerIndex {
-                ledger: "books".to_string(),
-                branch: "main".to_string()
-            }
-        );
-        assert_eq!(ctx.ledger_id(), Some("books:main".to_string()));
-    }
-
-    #[test]
-    fn test_parse_graph_source_id() {
-        let addr = "fluree:file://graph-sources/search/main/snapshot.bin";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::GraphSourceArtifact {
-                name: "search".to_string(),
-                branch: "main".to_string()
-            }
-        );
-        assert!(ctx.is_graph_source());
-        assert_eq!(ctx.ledger_id(), None);
-    }
-
-    #[test]
-    fn test_parse_unknown_address() {
-        let addr = "fluree:file://something/else";
-        let ctx = parse_address_context(addr);
-        assert_eq!(ctx, AddressContext::Unknown);
-    }
-
-    #[test]
-    fn test_parse_non_fluree_address() {
-        let addr = "s3://bucket/key";
-        let ctx = parse_address_context(addr);
-        assert_eq!(ctx, AddressContext::Unknown);
-    }
-
-    #[test]
-    fn test_parse_empty_alias() {
-        let addr = "fluree:file:///commit/abc.fcv2";
-        let ctx = parse_address_context(addr);
-        assert_eq!(ctx, AddressContext::Unknown);
-    }
-
-    #[test]
-    fn test_parse_empty_ledger() {
-        let addr = "fluree:file:///main/index/abc.json";
-        let ctx = parse_address_context(addr);
-        assert_eq!(ctx, AddressContext::Unknown);
-    }
-
-    #[test]
-    fn test_parse_s3_commit_address() {
-        // parse_address_context should work with any storage method, not just "file"
-        let addr = "fluree:s3://books/main/commit/abc123.fcv2";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::LedgerCommit {
-                ledger_id: "books:main".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_memory_index_address() {
-        let addr = "fluree:memory://books/main/index/def456.json";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::LedgerIndex {
-                ledger: "books".to_string(),
-                branch: "main".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn test_parse_graph_source_s3_address() {
-        // Graph source blocking must work regardless of storage method
-        let addr = "fluree:s3://graph-sources/search/main/snapshot.bin";
-        let ctx = parse_address_context(addr);
-        assert_eq!(
-            ctx,
-            AddressContext::GraphSourceArtifact {
-                name: "search".to_string(),
-                branch: "main".to_string()
-            }
-        );
-        assert!(ctx.is_graph_source());
-    }
-
-    // --- Authorization tests (bool form) ---
-
-    #[test]
-    fn test_is_authorized_commit_allowed() {
+    fn test_authorize_ledger_allowed() {
         let scope = make_scope(false, vec!["books:main"]);
-        let ctx = AddressContext::LedgerCommit {
-            ledger_id: "books:main".to_string(),
-        };
-        assert!(is_authorized(&scope, &ctx));
+        assert!(authorize_ledger(&scope, "books:main").is_ok());
     }
 
     #[test]
-    fn test_is_authorized_commit_denied() {
+    fn test_authorize_ledger_denied() {
         let scope = make_scope(false, vec!["other:main"]);
-        let ctx = AddressContext::LedgerCommit {
-            ledger_id: "books:main".to_string(),
-        };
-        assert!(!is_authorized(&scope, &ctx));
-    }
-
-    #[test]
-    fn test_is_authorized_index_allowed() {
-        let scope = make_scope(false, vec!["books:main"]);
-        let ctx = AddressContext::LedgerIndex {
-            ledger: "books".to_string(),
-            branch: "main".to_string(),
-        };
-        assert!(is_authorized(&scope, &ctx));
-    }
-
-    #[test]
-    fn test_is_authorized_storage_all() {
-        let scope = make_scope(true, vec![]);
-        let ctx = AddressContext::LedgerCommit {
-            ledger_id: "any:ledger".to_string(),
-        };
-        assert!(is_authorized(&scope, &ctx));
-    }
-
-    #[test]
-    fn test_is_authorized_graph_source_denied_v1() {
-        let scope = make_scope(true, vec![]);
-        let ctx = AddressContext::GraphSourceArtifact {
-            name: "search".to_string(),
-            branch: "main".to_string(),
-        };
-        assert!(!is_authorized(&scope, &ctx));
-    }
-
-    #[test]
-    fn test_is_authorized_unknown_denied() {
-        let scope = make_scope(true, vec![]);
-        let ctx = AddressContext::Unknown;
-        assert!(!is_authorized(&scope, &ctx));
-    }
-
-    // --- Authorization tests (Result form) ---
-
-    #[test]
-    fn test_authorize_address_ok() {
-        let scope = make_scope(false, vec!["books:main"]);
-        let ctx = AddressContext::LedgerCommit {
-            ledger_id: "books:main".to_string(),
-        };
-        assert!(authorize_address(&scope, &ctx).is_ok());
-    }
-
-    #[test]
-    fn test_authorize_address_denied() {
-        let scope = make_scope(false, vec!["other:main"]);
-        let ctx = AddressContext::LedgerCommit {
-            ledger_id: "books:main".to_string(),
-        };
-        assert!(authorize_address(&scope, &ctx).is_err());
-    }
-
-    // --- Ledger scope validation tests ---
-
-    #[test]
-    fn test_validate_ledger_scope_match() {
-        let ctx = AddressContext::LedgerCommit {
-            ledger_id: "books:main".to_string(),
-        };
-        assert!(validate_ledger_scope(&ctx, "books:main").is_ok());
-    }
-
-    #[test]
-    fn test_validate_ledger_scope_match_index() {
-        let ctx = AddressContext::LedgerIndex {
-            ledger: "books".to_string(),
-            branch: "main".to_string(),
-        };
-        assert!(validate_ledger_scope(&ctx, "books:main").is_ok());
-    }
-
-    #[test]
-    fn test_validate_ledger_scope_mismatch() {
-        let ctx = AddressContext::LedgerCommit {
-            ledger_id: "books:main".to_string(),
-        };
-        let result = validate_ledger_scope(&ctx, "other:main");
+        let result = authorize_ledger(&scope, "books:main");
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            BlockFetchError::LedgerMismatch { .. }
-        ));
+        assert!(matches!(result.unwrap_err(), BlockFetchError::NotFound(_)));
     }
 
     #[test]
-    fn test_validate_ledger_scope_unknown() {
-        let ctx = AddressContext::Unknown;
-        assert!(validate_ledger_scope(&ctx, "books:main").is_err());
+    fn test_authorize_ledger_all_ledgers() {
+        let scope = make_scope(true, vec![]);
+        assert!(authorize_ledger(&scope, "any:ledger").is_ok());
+    }
+
+    // --- Content kind allowlist tests ---
+
+    #[test]
+    fn test_allowed_block_kinds() {
+        assert!(is_allowed_block_kind(ContentKind::Commit));
+        assert!(is_allowed_block_kind(ContentKind::Txn));
+        assert!(is_allowed_block_kind(ContentKind::LedgerConfig));
+        assert!(is_allowed_block_kind(ContentKind::IndexRoot));
+        assert!(is_allowed_block_kind(ContentKind::IndexBranch));
+        assert!(is_allowed_block_kind(ContentKind::IndexLeaf));
+        assert!(is_allowed_block_kind(ContentKind::DictBlob {
+            dict: fluree_db_core::content_kind::DictKind::Graphs,
+        }));
+    }
+
+    #[test]
+    fn test_disallowed_block_kinds() {
+        assert!(!is_allowed_block_kind(ContentKind::GarbageRecord));
+        assert!(!is_allowed_block_kind(ContentKind::StatsSketch));
+        assert!(!is_allowed_block_kind(ContentKind::GraphSourceSnapshot));
     }
 
     // --- Leaf detection tests ---
@@ -956,12 +603,6 @@ mod tests {
             identity: None,
             policy_class: None,
         };
-
-        // The leaf is detected, enforcement is PolicyEnforced, but no ledger context.
-        // This MUST error (MissingBinaryStore), never return RawBytes.
-        // We can't call fetch_and_decode_block without storage, so we test the
-        // decision logic directly: is_fli1_leaf is true + PolicyEnforced + no ctx
-        // = must attempt decode, which requires binary_store.
 
         // Verify the invariant at the type level: if is_fli1_leaf is true and
         // mode is PolicyEnforced, the only valid outcomes are DecodedFlakes or error.

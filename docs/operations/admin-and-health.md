@@ -111,6 +111,11 @@ Get detailed ledger metadata:
 curl "http://localhost:8090/v1/fluree/info/mydb:main"
 ```
 
+**Minimum fields used by the Fluree CLI:**
+
+- `t` (required)
+- `commitId` (required for `fluree push` when `t > 0`)
+
 **Optional query params:**
 
 - **`include_property_datatypes=true`**: include `stats.properties[*].datatypes` (datatype → count), **as-of last index**.
@@ -119,13 +124,7 @@ curl "http://localhost:8090/v1/fluree/info/mydb:main"
 Example:
 
 ```bash
-curl "http://localhost:8090/fluree/ledger-info?ledger=mydb:main&realtime_property_details=true"
-```
-
-Or with header:
-```bash
-curl http://localhost:8090/fluree/ledger-info \
-  -H "fluree-ledger: mydb:main"
+curl "http://localhost:8090/v1/fluree/info/mydb:main?realtime_property_details=true"
 ```
 
 **Response:**
@@ -133,12 +132,14 @@ curl http://localhost:8090/fluree/ledger-info \
 {
   "ledger": "mydb:main",
   "t": 150,
+  "commitId": "bafybeig...commitT150",
+  "indexId": "bafybeig...indexRootT145",
   "commit": {
     "commit_id": "bafybeig...commitT150",
     "t": 150
   },
   "index": {
-    "index_id": "bafybeig...indexRootT145",
+    "id": "bafybeig...indexRootT145",
     "t": 145
   },
   "stats": {

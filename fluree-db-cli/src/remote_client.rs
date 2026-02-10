@@ -12,6 +12,7 @@
 
 use parking_lot::Mutex;
 use reqwest::{Client, StatusCode};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -162,38 +163,43 @@ impl RemoteLedgerClient {
     async fn map_error(resp: reqwest::Response) -> RemoteLedgerError {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        let message = extract_error_message(&body);
 
         match status {
             StatusCode::UNAUTHORIZED => RemoteLedgerError::Unauthorized,
             StatusCode::FORBIDDEN => RemoteLedgerError::Forbidden,
-            StatusCode::NOT_FOUND => RemoteLedgerError::NotFound(if body.is_empty() {
+            StatusCode::NOT_FOUND => RemoteLedgerError::NotFound(if message.is_empty() {
                 "resource not found".to_string()
             } else {
-                body
+                message
             }),
-            StatusCode::BAD_REQUEST => RemoteLedgerError::BadRequest(if body.is_empty() {
+            StatusCode::BAD_REQUEST => RemoteLedgerError::BadRequest(if message.is_empty() {
                 "bad request".to_string()
             } else {
-                body
+                message
             }),
-            StatusCode::CONFLICT => RemoteLedgerError::Conflict(if body.is_empty() {
+            StatusCode::CONFLICT => RemoteLedgerError::Conflict(if message.is_empty() {
                 "conflict".to_string()
             } else {
-                body
+                message
             }),
             StatusCode::UNPROCESSABLE_ENTITY => {
-                RemoteLedgerError::ValidationError(if body.is_empty() {
+                RemoteLedgerError::ValidationError(if message.is_empty() {
                     "validation error".to_string()
                 } else {
-                    body
+                    message
                 })
             }
-            s if s.is_server_error() => RemoteLedgerError::ServerError(if body.is_empty() {
+            s if s.is_server_error() => RemoteLedgerError::ServerError(if message.is_empty() {
                 format!("status {s}")
             } else {
-                body
+                message
             }),
-            _ => RemoteLedgerError::ServerError(format!("unexpected status {status}: {body}")),
+            _ => RemoteLedgerError::ServerError(if message.is_empty() {
+                format!("unexpected status {status}")
+            } else {
+                format!("unexpected status {status}: {message}")
+            }),
         }
     }
 
@@ -301,6 +307,49 @@ impl RemoteLedgerClient {
                 .send()
                 .await
                 .map_err(Self::map_network_error)?;
+
+            if resp2.status().is_success() {
+                return resp2
+                    .json()
+                    .await
+                    .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()));
+            }
+            return Err(Self::map_error(resp2).await);
+        }
+
+        Err(Self::map_error(resp).await)
+    }
+
+    /// Execute a request with additional headers. On 401, attempt token refresh and retry once.
+    async fn send_json_with_headers(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        content_type: &str,
+        extra_headers: &[(&'static str, String)],
+        body: Option<RequestBody<'_>>,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        // First attempt
+        let mut req = self.build_request(method.clone(), url, content_type, &body);
+        for (k, v) in extra_headers {
+            req = req.header(*k, v);
+        }
+        let resp = req.send().await.map_err(Self::map_network_error)?;
+
+        if resp.status().is_success() {
+            return resp
+                .json()
+                .await
+                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()));
+        }
+
+        if resp.status() == StatusCode::UNAUTHORIZED && self.try_refresh().await {
+            // Retry with refreshed token
+            let mut req2 = self.build_request(method, url, content_type, &body);
+            for (k, v) in extra_headers {
+                req2 = req2.header(*k, v);
+            }
+            let resp2 = req2.send().await.map_err(Self::map_network_error)?;
 
             if resp2.status().is_success() {
                 return resp2
@@ -596,11 +645,14 @@ impl RemoteLedgerClient {
         let body = serde_json::to_value(request)
             .map_err(|e| RemoteLedgerError::InvalidRequest(e.to_string()))?;
 
+        // Deterministic across retries: allows servers to implement idempotent push replay.
+        let idempotency_key = push_idempotency_key(ledger, request);
         let resp = self
-            .send_json(
+            .send_json_with_headers(
                 reqwest::Method::POST,
                 &url,
                 "application/json",
+                &[("Idempotency-Key", idempotency_key)],
                 Some(RequestBody::Json(&body)),
             )
             .await?;
@@ -641,6 +693,7 @@ impl RemoteLedgerClient {
         } else if status == StatusCode::NOT_FOUND
             || status == StatusCode::METHOD_NOT_ALLOWED
             || status == StatusCode::NOT_ACCEPTABLE
+            || status == StatusCode::NOT_IMPLEMENTED
         {
             Ok(None)
         } else {
@@ -714,6 +767,51 @@ enum RequestBody<'a> {
     Text(&'a str),
 }
 
+fn extract_error_message(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    // Prefer the structured server error envelope when present:
+    // {"error":"...","status":409,"@type":"err:...","cause":{...}}
+    if trimmed.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let Some(msg) = v.get("message").and_then(|m| m.as_str()) {
+                return msg.to_string();
+            }
+            if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                return err.to_string();
+            }
+        }
+    }
+
+    trimmed.to_string()
+}
+
+fn push_idempotency_key(ledger: &str, request: &fluree_db_api::PushCommitsRequest) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"fluree-push-v1\0");
+    hasher.update(ledger.as_bytes());
+    hasher.update([0u8]);
+
+    for commit in &request.commits {
+        hasher.update((commit.0.len() as u64).to_be_bytes());
+        hasher.update(&commit.0);
+    }
+
+    let mut blobs: Vec<(&String, &fluree_db_api::Base64Bytes)> = request.blobs.iter().collect();
+    blobs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (k, v) in blobs {
+        hasher.update(k.as_bytes());
+        hasher.update([0u8]);
+        hasher.update((v.0.len() as u64).to_be_bytes());
+        hasher.update(&v.0);
+    }
+
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -742,6 +840,17 @@ mod tests {
 
         let err = RemoteLedgerError::BadRequest("invalid query syntax".to_string());
         assert_eq!(format!("{err}"), "bad request: invalid query syntax");
+    }
+
+    #[test]
+    fn test_extract_error_message_json_envelope() {
+        let body = r#"{"error":"conflict","status":409,"@type":"err:test"}"#;
+        assert_eq!(extract_error_message(body), "conflict");
+    }
+
+    #[test]
+    fn test_extract_error_message_plain_text() {
+        assert_eq!(extract_error_message("  nope  "), "nope");
     }
 
     #[test]

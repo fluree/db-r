@@ -76,6 +76,10 @@ error: no upstream configured for 'mydb:main'
 | Ancestry mismatch | Remote chain does not descend from local head (histories diverged) |
 | Import validation failure | Commit chain or retraction invariant violation |
 
+## Limitations
+
+- **Graph source indexes not replicated:** Graph source snapshots (BM25/vector/geo, etc.) are not replicated by `fluree pull` yet. Rebuild graph source indexes in the target environment as needed.
+
 ## See Also
 
 - [clone](clone.md) - Clone a ledger from a remote server

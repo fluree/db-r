@@ -2,6 +2,7 @@
 
 use crate::config::ConnectionConfig;
 use crate::error::Result;
+use fluree_db_core::ContentId;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 use fluree_db_core::FileStorage;
 use fluree_db_core::{Db, MemoryStorage, Storage};
@@ -34,13 +35,12 @@ impl<S: Storage> Connection<S> {
 }
 
 impl<S: Storage + Clone> Connection<S> {
-    /// Load a database from a root address (cloning storage)
+    /// Load a database from a root content ID (cloning storage)
     ///
-    /// The root address should point to the database's index root file.
-    /// For file storage, this is typically:
-    /// `fluree:file://{ledger}/{branch}/index/root/{file}.json`
-    pub async fn load_db(&self, root_address: &str) -> Result<Db<S>> {
-        Ok(Db::load(self.storage.clone(), root_address).await?)
+    /// The `root_id` identifies the index root by its content hash.
+    /// The `ledger_id` is needed to derive the storage address.
+    pub async fn load_db(&self, root_id: &ContentId, ledger_id: &str) -> Result<Db<S>> {
+        Ok(Db::load(self.storage.clone(), root_id, ledger_id).await?)
     }
 }
 
@@ -53,13 +53,17 @@ pub type MemoryConnection = Connection<MemoryStorage>;
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 impl FileConnection {
-    /// Load a database from a root address
+    /// Load a database from a root content ID with a fresh storage instance
     ///
-    /// Creates a new cache for the returned Db. For shared caching,
-    /// use a custom Connection with your own cache type.
-    pub async fn load_db_fresh_cache(&self, root_address: &str) -> Result<Db<FileStorage>> {
+    /// Creates a new storage instance for the returned Db. For shared storage,
+    /// use `load_db` instead.
+    pub async fn load_db_fresh_cache(
+        &self,
+        root_id: &ContentId,
+        ledger_id: &str,
+    ) -> Result<Db<FileStorage>> {
         let storage = FileStorage::new(self.storage.base_path());
-        Ok(Db::load(storage, root_address).await?)
+        Ok(Db::load(storage, root_id, ledger_id).await?)
     }
 }
 

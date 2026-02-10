@@ -14,11 +14,11 @@ pub enum RemoteEvent {
     /// A ledger record was created or updated on the remote
     LedgerUpdated(NsRecord),
     /// A ledger was retracted on the remote
-    LedgerRetracted { address: String },
+    LedgerRetracted { ledger_id: String },
     /// A graph source record was created or updated on the remote
     GraphSourceUpdated(GraphSourceRecord),
     /// A graph source was retracted on the remote
-    GraphSourceRetracted { address: String },
+    GraphSourceRetracted { graph_source_id: String },
     /// Connected to the remote
     Connected,
     /// Disconnected from the remote (will attempt reconnect)

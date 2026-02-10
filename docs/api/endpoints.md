@@ -315,7 +315,10 @@ POST /push/<ledger...>
 Content-Type: application/json
 Accept: application/json
 Authorization: Bearer <token>
+Idempotency-Key: <string>   (optional; recommended)
 ```
+
+If `Idempotency-Key` is provided, servers MAY treat `POST /push/*ledger` as idempotent for that key (same request body + key should yield the same response), returning the prior success response instead of `409` on client retry after timeouts.
 
 **Request Body:**
 
@@ -412,7 +415,8 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
   "protocol": "fluree-pack-v1",
   "want": ["bafy...remoteHead"],
   "have": ["bafy...localHead"],
-  "include_indexes": false
+  "include_indexes": false,
+  "include_graph_sources": false
 }
 ```
 
@@ -421,7 +425,10 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 | `protocol` | string | Yes | Must be `"fluree-pack-v1"` |
 | `want` | string[] | Yes | ContentId CIDs the client wants (typically the remote commit head) |
 | `have` | string[] | No | ContentId CIDs the client already has (typically the local commit head). Server stops walking the commit chain when it reaches a `have` CID. Empty for full clone. |
-| `include_indexes` | bool | No | Include index artifacts in the stream (default: `false`). Currently only commit + txn blobs are streamed. |
+| `want_index_root_id` | string | No | Index root CID the client wants (typically remote nameservice `index_head_id`). Required when `include_indexes=true`. |
+| `have_index_root_id` | string | No | Index root CID the client already has (typically local nameservice `index_head_id`). Used for index artifact diff. |
+| `include_indexes` | bool | No | Include index artifacts in the stream (default: `false`). When true, the stream contains commit + txn objects plus index root/branch/leaf/dict artifacts. |
+| `include_graph_sources` | bool | No | Reserved for future graph source packing. Currently ignored. |
 
 **Response:**
 
@@ -434,8 +441,9 @@ Binary stream using the `fluree-pack-v1` wire format (`Content-Type: application
 | Frame | Type byte | Content |
 |-------|-----------|---------|
 | Header | `0x00` | JSON metadata: protocol version, capabilities, commit count |
-| Data | `0x01` | CID binary + raw object bytes (commit or txn blob) |
+| Data | `0x01` | CID binary + raw object bytes (commit, txn blob, or index artifact) |
 | Error | `0x02` | UTF-8 error message (terminates stream) |
+| Manifest | `0x03` | JSON metadata for phase transitions (e.g. start of index phase) |
 | End | `0xFF` | End of stream (no payload) |
 
 Data frames are streamed in **oldest-first topological order** (parents before children), so the client can write objects to CAS as they arrive without buffering the entire stream.
@@ -499,9 +507,7 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
   "index_t": 40,
   "default_context": null,
   "retracted": false,
-  "config_id": "bafy...configCid",
-  "commit_address": "fluree:memory://mydb:main/commit/abc123.commit",
-  "index_address": "fluree:memory://mydb:main/index/roots/def456.json"
+  "config_id": "bafy...configCid"
 }
 ```
 
@@ -510,7 +516,6 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 | `ledger_id` | Canonical ledger ID (e.g., "mydb:main") |
 | `name` | Ledger name without branch (e.g., "mydb") |
 | `config_id` | CID of the `LedgerConfig` object (origin discovery), if set |
-| `commit_address` / `index_address` | Derived storage addresses for fetching via `/storage/block` |
 
 **Status Codes:**
 
@@ -519,7 +524,9 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 
 ### POST /storage/block
 
-Fetch a storage block (index branch or leaf) by address. Leaf blocks are always policy-filtered before return.
+Fetch a storage block (index branch or leaf) by CID. The server derives the storage address internally. Leaf blocks are always policy-filtered before return.
+
+Only replication-relevant content kinds are allowed (commits, txns, config, index roots/branches/leaves, dict blobs). Internal metadata kinds (GC records, stats sketches, graph source snapshots) are rejected with 404.
 
 **URL:**
 
@@ -537,16 +544,20 @@ Accept: application/octet-stream | application/x-fluree-flakes | application/x-f
 
 **Request Body:**
 
+Both fields are required:
+
 ```json
 {
-  "address": "fluree:memory://mydb:main/index/objects/branches/abc123.fbr"
+  "cid": "bafy...branchOrLeafCid",
+  "ledger": "mydb:main"
 }
 ```
 
 **Responses:**
 
 - `200 OK`: Block bytes (branches) or encoded flakes (leaves)
-- `404 Not Found`: Block not found or not authorized
+- `400 Bad Request`: Invalid CID string
+- `404 Not Found`: Block not found, disallowed kind, or not authorized
 
 ### GET /storage/objects/:cid
 
@@ -1109,7 +1120,7 @@ curl -X POST http://localhost:8090/fluree/create \
   -H "Authorization: Bearer eyJ..." \
   -d '{"ledger": "mydb:main"}'
 
-# Create with short address (auto-resolves to :main)
+# Create with short ledger ID (auto-resolves to :main)
 curl -X POST http://localhost:8090/fluree/create \
   -H "Content-Type: application/json" \
   -d '{"ledger": "mydb"}'
@@ -1204,7 +1215,7 @@ curl -X POST http://localhost:8090/fluree/drop \
   -H "Authorization: Bearer eyJ..." \
   -d '{"ledger": "mydb:main", "hard": true}'
 
-# Drop with short address (auto-resolves to :main)
+# Drop with short ledger ID (auto-resolves to :main)
 curl -X POST http://localhost:8090/fluree/drop \
   -H "Content-Type: application/json" \
   -d '{"ledger": "mydb"}'
@@ -1542,15 +1553,17 @@ If no admin-specific issuers are configured, admin auth falls back to `--events-
 
 ## Error Responses
 
-All endpoints may return error responses in this format:
+All endpoints may return error responses in this format (and should return `Content-Type: application/json`):
 
 ```json
 {
-  "error": "ErrorType",
-  "message": "Human-readable error message",
-  "code": "ERROR_CODE",
-  "details": {
-    "field": "Additional context"
+  "error": "Human-readable error message",
+  "status": 409,
+  "@type": "err:db/Conflict",
+  "cause": {
+    "error": "Optional nested error detail",
+    "status": 409,
+    "@type": "err:db/SomeInnerError"
   }
 }
 ```

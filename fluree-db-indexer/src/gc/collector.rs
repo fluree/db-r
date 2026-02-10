@@ -23,16 +23,13 @@ use serde::Deserialize;
 struct IndexChainEntry {
     /// Transaction time of this index.
     t: i64,
-    /// CAS address of this root blob.
-    address: String,
-    /// CAS address of the previous root in the chain (if any).
-    prev_index_address: Option<String>,
-    /// CAS address of this root's garbage manifest (if any).
-    garbage_address: Option<String>,
+    /// CID of this root blob.
+    root_id: ContentId,
+    /// CID of this root's garbage manifest (if any).
+    garbage_id: Option<ContentId>,
 }
 
-// Lightweight structs for extracting GC-relevant fields from an index root.
-// Handles both v3 (CID-based) and legacy (address-based) formats.
+// Lightweight structs for extracting GC-relevant fields from a v3 index root.
 
 #[derive(Deserialize)]
 struct GcRootFields {
@@ -43,86 +40,56 @@ struct GcRootFields {
     garbage: Option<GcGarbageRef>,
 }
 
-/// Prev-index reference. v3 uses `id` (CID string); legacy uses `address`.
+/// Prev-index reference (v3: CID string in `id` field).
 #[derive(Deserialize)]
 struct GcPrevRef {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    address: Option<String>,
+    id: String,
 }
 
-/// Garbage manifest reference. v3 uses `id` (CID string); legacy uses `address`.
+/// Garbage manifest reference (v3: CID string in `id` field).
 #[derive(Deserialize)]
 struct GcGarbageRef {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    address: Option<String>,
+    id: String,
 }
 
-/// Resolve a ref's CID or address to a storage address string.
+/// Extract the GC-relevant fields from a v3 index root blob.
 ///
-/// If the ref has an `id` field (v3 CID string), parse it and derive the storage
-/// address using `content_address`. Falls back to the raw `address` field (legacy).
-fn resolve_ref_address(
-    id: Option<&str>,
-    address: Option<&str>,
-    storage_method: &str,
-    kind: ContentKind,
-    ledger_id: &str,
-) -> Option<String> {
-    if let Some(cid_str) = id {
-        if let Ok(cid) = cid_str.parse::<ContentId>() {
-            return Some(fluree_db_core::content_address(
-                storage_method,
-                kind,
-                ledger_id,
-                &cid.digest_hex(),
-            ));
-        }
-        // If CID parse fails, treat as opaque string (shouldn't happen in practice)
-        tracing::warn!(cid_str, "Failed to parse CID in GC ref, skipping");
-        return None;
-    }
-    address.map(|a| a.to_string())
-}
-
-/// Extract the GC-relevant fields from an index root blob.
-///
-/// Returns `(index_t, prev_index_address, garbage_address)` where addresses are
-/// derived from CIDs for v3 roots or used directly for legacy roots.
-fn parse_chain_fields(
-    bytes: &[u8],
-    storage_method: &str,
-    ledger_id: &str,
-) -> Result<(i64, Option<String>, Option<String>)> {
+/// Returns `(index_t, prev_index_id, garbage_id)` parsed from CID strings.
+fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<ContentId>, Option<ContentId>)> {
     let fields: GcRootFields = serde_json::from_slice(bytes)?;
 
-    let prev_addr = fields.prev_index.as_ref().and_then(|p| {
-        resolve_ref_address(
-            p.id.as_deref(),
-            p.address.as_deref(),
-            storage_method,
-            ContentKind::IndexRoot,
-            ledger_id,
-        )
-    });
+    let prev_id = fields
+        .prev_index
+        .map(|p| p.id.parse::<ContentId>())
+        .transpose()
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to parse prev_index CID in GC chain");
+            crate::error::IndexerError::Serialization(format!("Invalid prev_index CID: {e}"))
+        })?;
 
-    let garbage_addr = fields.garbage.as_ref().and_then(|g| {
-        resolve_ref_address(
-            g.id.as_deref(),
-            g.address.as_deref(),
-            storage_method,
-            ContentKind::GarbageRecord,
-            ledger_id,
-        )
-    });
+    let garbage_id = fields
+        .garbage
+        .map(|g| g.id.parse::<ContentId>())
+        .transpose()
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Failed to parse garbage CID in GC chain");
+            crate::error::IndexerError::Serialization(format!("Invalid garbage CID: {e}"))
+        })?;
 
-    Ok((fields.index_t, prev_addr, garbage_addr))
+    Ok((fields.index_t, prev_id, garbage_id))
 }
 
-/// Walk the prev-index chain starting from the current root.
+/// Derive a storage address from a ContentId.
+fn derive_address(
+    cid: &ContentId,
+    kind: ContentKind,
+    storage_method: &str,
+    ledger_id: &str,
+) -> String {
+    fluree_db_core::content_address(storage_method, kind, ledger_id, &cid.digest_hex())
+}
+
+/// Walk the prev-index chain starting from the current root CID.
 ///
 /// Returns entries in order from newest to oldest.
 ///
@@ -131,17 +98,24 @@ fn parse_chain_fields(
 /// returning an error. This ensures GC is idempotent.
 async fn walk_prev_index_chain<S: Storage>(
     storage: &S,
-    current_root_address: &str,
+    current_root_id: &ContentId,
     ledger_id: &str,
 ) -> Result<Vec<IndexChainEntry>> {
     let storage_method = storage.storage_method();
     let mut chain = Vec::new();
-    let mut current_address = current_root_address.to_string();
+    let mut current_id = current_root_id.clone();
 
     loop {
-        // Load the db-root - if this fails on the first entry, propagate error
-        // For subsequent entries (prev_index links), treat as end of chain
-        let bytes = match storage.read_bytes(&current_address).await {
+        let address = derive_address(
+            &current_id,
+            ContentKind::IndexRoot,
+            storage_method,
+            ledger_id,
+        );
+
+        // Load the db-root - if this fails on the first entry, propagate error.
+        // For subsequent entries (prev_index links), treat as end of chain.
+        let bytes = match storage.read_bytes(&address).await {
             Ok(b) => b,
             Err(e) => {
                 if chain.is_empty() {
@@ -150,7 +124,7 @@ async fn walk_prev_index_chain<S: Storage>(
                 } else {
                     // Can't load prev_index - chain was truncated by prior GC
                     tracing::debug!(
-                        address = %current_address,
+                        root_id = %current_id,
                         "prev_index not found, chain ends here (prior GC)"
                     );
                     break;
@@ -158,21 +132,17 @@ async fn walk_prev_index_chain<S: Storage>(
             }
         };
 
-        let (t, prev_index_address, garbage_address) =
-            parse_chain_fields(&bytes, storage_method, ledger_id)?;
+        let (t, prev_index_id, garbage_id) = parse_chain_fields(&bytes)?;
 
+        let next_id = prev_index_id;
         chain.push(IndexChainEntry {
             t,
-            address: current_address.clone(),
-            prev_index_address,
-            garbage_address,
+            root_id: current_id,
+            garbage_id,
         });
 
-        // Move to previous index if exists
-        match chain.last().and_then(|e| e.prev_index_address.as_ref()) {
-            Some(prev_addr) => {
-                current_address = prev_addr.clone();
-            }
+        match next_id {
+            Some(id) => current_id = id,
             None => break,
         }
     }
@@ -180,25 +150,25 @@ async fn walk_prev_index_chain<S: Storage>(
     Ok(chain)
 }
 
-/// Resolve a garbage record item to a storage address for deletion.
+/// Resolve a garbage record item (CID string) to a storage address for deletion.
 ///
-/// v3 garbage records store CID strings (base32-lower multibase). Legacy records
-/// store raw address strings. This function detects the format and derives the
-/// storage address as needed.
-fn resolve_garbage_item(item: &str, storage_method: &str, ledger_id: &str) -> String {
-    // Try parsing as a CID. If successful, derive the storage address.
-    if let Ok(cid) = item.parse::<ContentId>() {
-        if let Some(kind) = cid.content_kind() {
-            return fluree_db_core::content_address(
-                storage_method,
-                kind,
-                ledger_id,
-                &cid.digest_hex(),
-            );
+/// Returns `None` if the CID cannot be parsed or has no recognized content kind.
+fn resolve_garbage_item(item: &str, storage_method: &str, ledger_id: &str) -> Option<String> {
+    let cid = match item.parse::<ContentId>() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(item, error = %e, "Skipping unrecognized garbage item (not a valid CID)");
+            return None;
         }
-    }
-    // Not a CID — treat as raw address string (legacy format)
-    item.to_string()
+    };
+    let kind = match cid.content_kind() {
+        Some(k) => k,
+        None => {
+            tracing::warn!(item, "Skipping garbage item with unknown content kind");
+            return None;
+        }
+    };
+    Some(derive_address(&cid, kind, storage_method, ledger_id))
 }
 
 /// Get current timestamp in milliseconds
@@ -249,16 +219,8 @@ where
     let min_age_ms = min_age_mins as i64 * 60 * 1000;
     let now_ms = current_timestamp_ms();
 
-    // Derive the storage address from the root CID.
-    let root_address = fluree_db_core::content_address(
-        storage.storage_method(),
-        ContentKind::IndexRoot,
-        ledger_id,
-        &current_root_id.digest_hex(),
-    );
-
     // 1. Walk prev_index chain to collect all index versions (tolerant of missing roots)
-    let index_chain = walk_prev_index_chain(storage, &root_address, ledger_id).await?;
+    let index_chain = walk_prev_index_chain(storage, current_root_id, ledger_id).await?;
 
     // Retention: keep current + max_old_indexes
     // With max_old_indexes=5, keep_count=6 (indices 0..5)
@@ -298,8 +260,8 @@ where
 
         // Manifest from the newer entry lists nodes from entry_to_delete
         // that were replaced when manifest_entry was built.
-        let garbage_addr = match &manifest_entry.garbage_address {
-            Some(addr) => addr,
+        let garbage_id = match &manifest_entry.garbage_id {
+            Some(id) => id,
             None => {
                 tracing::debug!(
                     t = manifest_entry.t,
@@ -309,8 +271,14 @@ where
             }
         };
 
-        // Load the garbage record to check age
-        let record = match load_garbage_record(storage, garbage_addr).await {
+        // Derive storage address for the garbage record and load it
+        let garbage_addr = derive_address(
+            garbage_id,
+            ContentKind::GarbageRecord,
+            storage_method,
+            ledger_id,
+        );
+        let record = match load_garbage_record(storage, &garbage_addr).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(
@@ -334,24 +302,30 @@ where
             break;
         }
 
-        // Delete the garbage nodes (from entry_to_delete's tree).
-        // Items may be CID strings (v3) or address strings (legacy).
+        // Delete the garbage nodes (CID strings resolved to storage addresses).
         for item in &record.garbage {
-            let addr = resolve_garbage_item(item, storage_method, ledger_id);
-            if let Err(e) = storage.delete(&addr).await {
-                tracing::debug!(
-                    address = %addr,
-                    error = %e,
-                    "Failed to delete garbage node (may already be deleted)"
-                );
-            } else {
-                deleted_count += 1;
+            if let Some(addr) = resolve_garbage_item(item, storage_method, ledger_id) {
+                if let Err(e) = storage.delete(&addr).await {
+                    tracing::debug!(
+                        address = %addr,
+                        error = %e,
+                        "Failed to delete garbage node (may already be deleted)"
+                    );
+                } else {
+                    deleted_count += 1;
+                }
             }
         }
 
         // Delete entry_to_delete's own garbage manifest
-        if let Some(ref old_garbage_addr) = entry_to_delete.garbage_address {
-            if let Err(e) = storage.delete(old_garbage_addr).await {
+        if let Some(ref old_garbage_id) = entry_to_delete.garbage_id {
+            let old_garbage_addr = derive_address(
+                old_garbage_id,
+                ContentKind::GarbageRecord,
+                storage_method,
+                ledger_id,
+            );
+            if let Err(e) = storage.delete(&old_garbage_addr).await {
                 tracing::debug!(
                     address = %old_garbage_addr,
                     error = %e,
@@ -361,9 +335,15 @@ where
         }
 
         // Delete the old db-root
-        if let Err(e) = storage.delete(&entry_to_delete.address).await {
+        let root_addr = derive_address(
+            &entry_to_delete.root_id,
+            ContentKind::IndexRoot,
+            storage_method,
+            ledger_id,
+        );
+        if let Err(e) = storage.delete(&root_addr).await {
             tracing::debug!(
-                address = %entry_to_delete.address,
+                address = %root_addr,
                 error = %e,
                 "Failed to delete old db-root (may already be deleted)"
             );
@@ -417,35 +397,21 @@ mod tests {
         let json = format!(
             r#"{{
                 "index_t": 5,
-                "prev_index": {{"t": 4, "id": "{}"}},
+                "prev_index": {{"id": "{}"}},
                 "garbage": {{"id": "{}"}}
             }}"#,
             prev_cid, garb_cid,
         );
-        let (t, prev, garbage) = parse_chain_fields(json.as_bytes(), "memory", LEDGER).unwrap();
+        let (t, prev, garbage) = parse_chain_fields(json.as_bytes()).unwrap();
         assert_eq!(t, 5);
-        assert!(prev.is_some(), "prev should resolve");
-        assert!(garbage.is_some(), "garbage should resolve");
-    }
-
-    #[test]
-    fn test_parse_chain_fields_legacy_address() {
-        // Legacy format: prev_index/garbage use "address"
-        let json = r#"{
-            "index_t": 5,
-            "prev_index": {"address": "cas://prev"},
-            "garbage": {"address": "cas://garbage"}
-        }"#;
-        let (t, prev, garbage) = parse_chain_fields(json.as_bytes(), "memory", LEDGER).unwrap();
-        assert_eq!(t, 5);
-        assert_eq!(prev.as_deref(), Some("cas://prev"));
-        assert_eq!(garbage.as_deref(), Some("cas://garbage"));
+        assert_eq!(prev, Some(prev_cid));
+        assert_eq!(garbage, Some(garb_cid));
     }
 
     #[test]
     fn test_parse_chain_fields_minimal() {
         let json = r#"{"index_t": 1}"#;
-        let (t, prev, garbage) = parse_chain_fields(json.as_bytes(), "memory", LEDGER).unwrap();
+        let (t, prev, garbage) = parse_chain_fields(json.as_bytes()).unwrap();
         assert_eq!(t, 1);
         assert_eq!(prev, None);
         assert_eq!(garbage, None);
@@ -462,14 +428,14 @@ mod tests {
             LEDGER,
             &cid.digest_hex(),
         );
-        assert_eq!(resolved, expected);
+        assert_eq!(resolved, Some(expected));
     }
 
     #[test]
-    fn test_resolve_garbage_item_legacy() {
-        let addr = "fluree:file://test/main/index/spot/old.json";
-        let resolved = resolve_garbage_item(addr, "memory", LEDGER);
-        assert_eq!(resolved, addr);
+    fn test_resolve_garbage_item_invalid() {
+        // Non-CID strings are skipped (return None)
+        let resolved = resolve_garbage_item("not-a-cid", "memory", LEDGER);
+        assert_eq!(resolved, None);
     }
 
     #[tokio::test]
@@ -483,12 +449,12 @@ mod tests {
             .await
             .unwrap();
 
-        let chain = walk_prev_index_chain(&storage, &root_addr, LEDGER)
+        let chain = walk_prev_index_chain(&storage, &root_cid, LEDGER)
             .await
             .unwrap();
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0].t, 1);
-        assert_eq!(chain[0].address, root_addr);
+        assert_eq!(chain[0].root_id, root_cid);
 
         // Also verify clean_garbage with this chain (not enough to GC)
         let config = CleanGarbageConfig {
@@ -507,27 +473,20 @@ mod tests {
         // Test chain walking with v3 CID-based refs
         let storage = MemoryStorage::new();
 
-        let (_, addr1) = cid_and_addr(ContentKind::IndexRoot, b"root1");
-        let (cid1, _) = cid_and_addr(ContentKind::IndexRoot, b"root1");
-        let (_, addr2) = cid_and_addr(ContentKind::IndexRoot, b"root2");
-        let (cid2, _) = cid_and_addr(ContentKind::IndexRoot, b"root2");
+        let (cid1, addr1) = cid_and_addr(ContentKind::IndexRoot, b"root1");
+        let (cid2, addr2) = cid_and_addr(ContentKind::IndexRoot, b"root2");
         let (_, addr3) = cid_and_addr(ContentKind::IndexRoot, b"root3");
 
         let root1 = r#"{"index_t": 1}"#;
-        let root2 = format!(
-            r#"{{"index_t": 2, "prev_index": {{"t": 1, "id": "{}"}}}}"#,
-            cid1
-        );
-        let root3 = format!(
-            r#"{{"index_t": 3, "prev_index": {{"t": 2, "id": "{}"}}}}"#,
-            cid2
-        );
+        let root2 = format!(r#"{{"index_t": 2, "prev_index": {{"id": "{}"}}}}"#, cid1);
+        let root3 = format!(r#"{{"index_t": 3, "prev_index": {{"id": "{}"}}}}"#, cid2);
 
         storage.write_bytes(&addr1, root1.as_bytes()).await.unwrap();
         storage.write_bytes(&addr2, root2.as_bytes()).await.unwrap();
         storage.write_bytes(&addr3, root3.as_bytes()).await.unwrap();
 
-        let chain = walk_prev_index_chain(&storage, &addr3, LEDGER)
+        let (cid3, _) = cid_and_addr(ContentKind::IndexRoot, b"root3");
+        let chain = walk_prev_index_chain(&storage, &cid3, LEDGER)
             .await
             .unwrap();
         assert_eq!(chain.len(), 3);
@@ -544,12 +503,13 @@ mod tests {
         let (_, addr2) = cid_and_addr(ContentKind::IndexRoot, b"root2");
 
         let root2 = format!(
-            r#"{{"index_t": 2, "prev_index": {{"t": 1, "id": "{}"}}}}"#,
+            r#"{{"index_t": 2, "prev_index": {{"id": "{}"}}}}"#,
             missing_cid
         );
         storage.write_bytes(&addr2, root2.as_bytes()).await.unwrap();
 
-        let chain = walk_prev_index_chain(&storage, &addr2, LEDGER)
+        let (cid2, _) = cid_and_addr(ContentKind::IndexRoot, b"root2");
+        let chain = walk_prev_index_chain(&storage, &cid2, LEDGER)
             .await
             .unwrap();
         assert_eq!(chain.len(), 1);
@@ -575,15 +535,12 @@ mod tests {
 
         // t=2: points to t=1, has garbage manifest (nodes replaced from t=1→t=2)
         let root2 = format!(
-            r#"{{"index_t": 2, "prev_index": {{"t": 1, "id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
+            r#"{{"index_t": 2, "prev_index": {{"id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
             cid1, garb_cid2
         );
 
         // t=3: current, points to t=2
-        let root3 = format!(
-            r#"{{"index_t": 3, "prev_index": {{"t": 2, "id": "{}"}}}}"#,
-            cid2
-        );
+        let root3 = format!(r#"{{"index_t": 3, "prev_index": {{"id": "{}"}}}}"#, cid2);
 
         // Garbage record at t=2: CID strings of nodes replaced from t=1
         let garbage2 = format!(
@@ -653,13 +610,10 @@ mod tests {
 
         let root1 = r#"{"index_t": 1}"#;
         let root2 = format!(
-            r#"{{"index_t": 2, "prev_index": {{"t": 1, "id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
+            r#"{{"index_t": 2, "prev_index": {{"id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
             cid1, garb_cid2
         );
-        let root3 = format!(
-            r#"{{"index_t": 3, "prev_index": {{"t": 2, "id": "{}"}}}}"#,
-            cid2
-        );
+        let root3 = format!(r#"{{"index_t": 3, "prev_index": {{"id": "{}"}}}}"#, cid2);
 
         let garbage2 = format!(
             r#"{{"ledger_id": "{}", "t": 2, "garbage": ["old"], "created_at_ms": {}}}"#,
@@ -707,13 +661,10 @@ mod tests {
 
         let root1 = r#"{"index_t": 1}"#;
         let root2 = format!(
-            r#"{{"index_t": 2, "prev_index": {{"t": 1, "id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
+            r#"{{"index_t": 2, "prev_index": {{"id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
             cid1, garb_cid2
         );
-        let root3 = format!(
-            r#"{{"index_t": 3, "prev_index": {{"t": 2, "id": "{}"}}}}"#,
-            cid2
-        );
+        let root3 = format!(r#"{{"index_t": 3, "prev_index": {{"id": "{}"}}}}"#, cid2);
 
         let garbage2 = format!(
             r#"{{"ledger_id": "{}", "t": 2, "garbage": ["{}"], "created_at_ms": {}}}"#,
@@ -774,21 +725,18 @@ mod tests {
 
         let root1 = r#"{"index_t": 1}"#;
         let root2 = format!(
-            r#"{{"index_t": 2, "prev_index": {{"t": 1, "id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
+            r#"{{"index_t": 2, "prev_index": {{"id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
             cid1, garb_cid2
         );
         let root3 = format!(
-            r#"{{"index_t": 3, "prev_index": {{"t": 2, "id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
+            r#"{{"index_t": 3, "prev_index": {{"id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
             cid2, garb_cid3
         );
         let root4 = format!(
-            r#"{{"index_t": 4, "prev_index": {{"t": 3, "id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
+            r#"{{"index_t": 4, "prev_index": {{"id": "{}"}}, "garbage": {{"id": "{}"}}}}"#,
             cid3, garb_cid4
         );
-        let root5 = format!(
-            r#"{{"index_t": 5, "prev_index": {{"t": 4, "id": "{}"}}}}"#,
-            cid4
-        );
+        let root5 = format!(r#"{{"index_t": 5, "prev_index": {{"id": "{}"}}}}"#, cid4);
 
         let garbage2 = format!(
             r#"{{"ledger_id": "{}", "t": 2, "garbage": ["{}"], "created_at_ms": {}}}"#,

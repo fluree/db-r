@@ -81,8 +81,8 @@ impl PeerSyncTask {
                 RemoteEvent::LedgerUpdated(record) => {
                     self.handle_ledger_updated(&record).await;
                 }
-                RemoteEvent::LedgerRetracted { address } => {
-                    self.handle_ledger_retracted(&address).await;
+                RemoteEvent::LedgerRetracted { ledger_id } => {
+                    self.handle_ledger_retracted(&ledger_id).await;
                 }
                 RemoteEvent::GraphSourceUpdated(record) => {
                     let graph_source_id = record.address.clone();
@@ -105,9 +105,9 @@ impl PeerSyncTask {
                         );
                     }
                 }
-                RemoteEvent::GraphSourceRetracted { address } => {
-                    self.peer_state.remove_graph_source(&address).await;
-                    tracing::info!(graph_source_id = %address, "Graph source retracted from remote");
+                RemoteEvent::GraphSourceRetracted { graph_source_id } => {
+                    self.peer_state.remove_graph_source(&graph_source_id).await;
+                    tracing::info!(graph_source_id = %graph_source_id, "Graph source retracted from remote");
                 }
             }
         }

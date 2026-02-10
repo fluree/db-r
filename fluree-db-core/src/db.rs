@@ -3,6 +3,8 @@
 //! The `Db` struct represents a database value at a specific point in time.
 //! It is generic over storage and cache implementations.
 
+use crate::content_id::ContentId;
+use crate::content_kind::ContentKind;
 use crate::error::{Error, Result};
 use crate::index_schema::IndexSchema;
 use crate::index_stats::IndexStats;
@@ -160,7 +162,7 @@ impl<S: Storage> Db<S> {
         }
     }
 
-    /// Load a database from a v2 index root address.
+    /// Load a database from a v2 index root content ID.
     ///
     /// Only v2 (BinaryIndexRoot) roots are supported. The `"version"` field
     /// in the JSON root must be `2`; any other value is rejected.
@@ -168,8 +170,17 @@ impl<S: Storage> Db<S> {
     /// The returned Db is metadata-only (`range_provider = None`). The caller
     /// (typically the API layer) must load a `BinaryIndexStore` and attach a
     /// `BinaryRangeProvider` before serving range queries.
-    pub async fn load(storage: S, root_address: &str) -> Result<Self> {
-        let bytes = storage.read_bytes(root_address).await?;
+    ///
+    /// The storage address is derived internally from the `ContentId` and
+    /// `ledger_id` using the storage backend's method identifier.
+    pub async fn load(storage: S, root_id: &ContentId, ledger_id: &str) -> Result<Self> {
+        let root_address = crate::content_address(
+            storage.storage_method(),
+            ContentKind::IndexRoot,
+            ledger_id,
+            &root_id.digest_hex(),
+        );
+        let bytes = storage.read_bytes(&root_address).await?;
         let root_json: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|e| Error::invalid_index(format!("invalid root JSON: {}", e)))?;
 
@@ -294,7 +305,26 @@ impl<S: Storage> Db<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::MemoryStorage;
+    use crate::storage::{MemoryStorage, StorageMethod};
+
+    /// Helper: serialize JSON, create a ContentId for it, store at the derived
+    /// address, and return the ContentId.
+    fn store_root(
+        storage: &MemoryStorage,
+        ledger_id: &str,
+        root_json: &serde_json::Value,
+    ) -> ContentId {
+        let root_bytes = serde_json::to_vec(root_json).unwrap();
+        let root_id = ContentId::new(ContentKind::IndexRoot, &root_bytes);
+        let root_address = crate::content_address(
+            storage.storage_method(),
+            ContentKind::IndexRoot,
+            ledger_id,
+            &root_id.digest_hex(),
+        );
+        storage.insert(&root_address, root_bytes);
+        root_id
+    }
 
     #[tokio::test]
     async fn test_db_load_v2() {
@@ -318,9 +348,9 @@ mod tests {
         });
 
         let storage = MemoryStorage::new();
-        storage.insert("test-root", serde_json::to_vec(&root_json).unwrap());
+        let root_id = store_root(&storage, "test/main", &root_json);
 
-        let db = Db::load(storage, "test-root").await.unwrap();
+        let db = Db::load(storage, &root_id, "test/main").await.unwrap();
         assert_eq!(db.ledger_id, "test/main");
         assert_eq!(db.t, 42);
         assert_eq!(db.version, 2);
@@ -335,9 +365,9 @@ mod tests {
         });
 
         let storage = MemoryStorage::new();
-        storage.insert("test-root", serde_json::to_vec(&root_json).unwrap());
+        let root_id = store_root(&storage, "test/main", &root_json);
 
-        let err = Db::load(storage, "test-root").await.unwrap_err();
+        let err = Db::load(storage, &root_id, "test/main").await.unwrap_err();
         assert!(err.to_string().contains("unsupported"));
     }
 
@@ -357,8 +387,8 @@ mod tests {
         });
 
         let storage = MemoryStorage::new();
-        storage.insert("test-root", serde_json::to_vec(&root_json).unwrap());
-        let db = Db::load(storage, "test-root").await.unwrap();
+        let root_id = store_root(&storage, "test/main", &root_json);
+        let db = Db::load(storage, &root_id, "test/main").await.unwrap();
 
         let sid = db.encode_iri("http://example.org/Alice").unwrap();
         assert_eq!(sid.namespace_code, 100);

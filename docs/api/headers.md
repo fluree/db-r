@@ -390,13 +390,9 @@ If a request exceeds size limits:
 **Response:**
 ```json
 {
-  "error": "RequestTooLarge",
-  "message": "Request body exceeds maximum size of 10485760 bytes",
-  "code": "PAYLOAD_TOO_LARGE",
-  "details": {
-    "max_size": 10485760,
-    "actual_size": 15000000
-  }
+  "error": "Request body exceeds maximum size of 10485760 bytes",
+  "status": 413,
+  "@type": "err:http/PayloadTooLarge"
 }
 ```
 
@@ -424,13 +420,9 @@ If a query result exceeds the limit:
 **Response:**
 ```json
 {
-  "error": "ResponseTooLarge",
-  "message": "Query result exceeds maximum response size",
-  "code": "RESPONSE_TOO_LARGE",
-  "details": {
-    "max_size": 104857600,
-    "suggestion": "Use LIMIT clause to reduce result set"
-  }
+  "error": "Query result exceeds maximum response size",
+  "status": 413,
+  "@type": "err:http/ResponseTooLarge"
 }
 ```
 

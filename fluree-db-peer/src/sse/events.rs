@@ -47,7 +47,7 @@ pub struct GraphSourceRecord {
 pub struct NsRecordEvent {
     pub action: String,
     pub kind: String,
-    pub address: String,
+    pub resource_id: String,
     pub record: serde_json::Value,
     pub emitted_at: String,
 }
@@ -57,7 +57,7 @@ pub struct NsRecordEvent {
 pub struct NsRetractedEvent {
     pub action: String,
     pub kind: String,
-    pub address: String,
+    pub resource_id: String,
     pub emitted_at: String,
 }
 
@@ -86,7 +86,7 @@ pub enum SseClientEvent {
     /// Graph source record received
     GraphSourceRecord(GraphSourceRecord),
     /// Resource retracted
-    Retracted { kind: String, address: String },
+    Retracted { kind: String, resource_id: String },
     /// Connection lost (will reconnect)
     Disconnected { reason: String },
     /// Fatal error (will not reconnect)
@@ -163,7 +163,7 @@ mod tests {
         let json = r#"{
             "action": "ns-record",
             "kind": "ledger",
-            "address": "books:main",
+            "resource_id": "books:main",
             "record": {"ledger_id": "books:main", "commit_t": 1, "index_t": 1},
             "emitted_at": "2024-01-01T00:00:00Z"
         }"#;
@@ -178,13 +178,13 @@ mod tests {
         let json = r#"{
             "action": "ns-retracted",
             "kind": "ledger",
-            "address": "books:main",
+            "resource_id": "books:main",
             "emitted_at": "2024-01-01T00:00:00Z"
         }"#;
 
         let event: NsRetractedEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.action, "ns-retracted");
-        assert_eq!(event.address, "books:main");
+        assert_eq!(event.resource_id, "books:main");
     }
 
     #[test]

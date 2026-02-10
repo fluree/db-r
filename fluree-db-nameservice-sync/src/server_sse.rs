@@ -48,14 +48,13 @@ struct NsRecordEnvelope {
 #[derive(Debug, serde::Deserialize)]
 struct NsRetractedEnvelope {
     kind: String,
-    address: String,
+    resource_id: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct LedgerSseRecord {
-    /// Canonical address, e.g. "books:main"
-    #[serde(rename = "ledger_id")]
-    address: String,
+    /// Canonical ledger alias, e.g. "books:main"
+    ledger_id: String,
     branch: String,
     #[serde(default)]
     commit_head_id: Option<String>,
@@ -68,9 +67,8 @@ struct LedgerSseRecord {
 
 #[derive(Debug, serde::Deserialize)]
 struct GraphSourceSseRecord {
-    /// Canonical address, e.g. "search:main"
-    #[serde(rename = "graph_source_id")]
-    address: String,
+    /// Canonical graph source alias, e.g. "search:main"
+    graph_source_id: String,
     name: String,
     branch: String,
     /// String form of graph source type, e.g. "f:Bm25Index"
@@ -108,10 +106,10 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
 
     match payload.kind.as_str() {
         SSE_KIND_LEDGER => Ok(Some(RemoteEvent::LedgerRetracted {
-            address: payload.address,
+            ledger_id: payload.resource_id,
         })),
         SSE_KIND_GRAPH_SOURCE => Ok(Some(RemoteEvent::GraphSourceRetracted {
-            address: payload.address,
+            graph_source_id: payload.resource_id,
         })),
         _ => Ok(None),
     }
@@ -120,9 +118,9 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
 fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
     use fluree_db_core::ContentId;
 
-    let (ledger_name, branch) = split_address_or_fallback(&record.address, &record.branch);
+    let (ledger_name, branch) = split_address_or_fallback(&record.ledger_id, &record.branch);
     NsRecord {
-        ledger_id: record.address.clone(),
+        ledger_id: record.ledger_id.clone(),
         name: ledger_name,
         branch,
         commit_head_id: record
@@ -143,7 +141,7 @@ fn gs_sse_to_graph_source_record(record: GraphSourceSseRecord) -> GraphSourceRec
     use fluree_db_core::ContentId;
 
     GraphSourceRecord {
-        address: record.address,
+        address: record.graph_source_id,
         name: record.name,
         branch: record.branch,
         source_type: GraphSourceType::from_type_string(&record.source_type),
@@ -179,7 +177,7 @@ mod tests {
             data: r#"{
                 "action": "ns-record",
                 "kind": "ledger",
-                "address": "mydb:main",
+                "resource_id": "mydb:main",
                 "record": {
                     "ledger_id": "mydb:main",
                     "branch": "main",
@@ -213,7 +211,7 @@ mod tests {
             data: r#"{
                 "action": "ns-retracted",
                 "kind": "ledger",
-                "address": "mydb:main",
+                "resource_id": "mydb:main",
                 "emitted_at": "2025-01-01T00:00:00Z"
             }"#
             .to_string(),
@@ -221,7 +219,7 @@ mod tests {
         };
 
         match parse_server_sse_event(&event).unwrap() {
-            Some(RemoteEvent::LedgerRetracted { address }) => assert_eq!(address, "mydb:main"),
+            Some(RemoteEvent::LedgerRetracted { ledger_id }) => assert_eq!(ledger_id, "mydb:main"),
             other => panic!("expected LedgerRetracted, got {:?}", other),
         }
     }
@@ -233,7 +231,7 @@ mod tests {
             data: r#"{
                 "action": "ns-record",
                 "kind": "graph-source",
-                "address": "search:main",
+                "resource_id": "search:main",
                 "record": {
                     "graph_source_id": "search:main",
                     "name": "search",

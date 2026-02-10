@@ -6,7 +6,8 @@
 //!
 //! # Endpoints
 //! - `GET /fluree/storage/ns/{ledger_id}` - Fetch nameservice record for a ledger
-//! - `POST /fluree/storage/block` - Fetch a block by address
+//! - `POST /fluree/storage/block` - Fetch a block by CID + ledger
+//! - `GET /fluree/storage/objects/:cid?ledger=...` - Fetch a CAS object by CID
 //!
 //! # Authorization
 //! All endpoints require a Bearer token with storage proxy permissions:
@@ -15,7 +16,8 @@
 //!
 //! # Security
 //! - Unauthorized requests return 404 (no existence leak)
-//! - Graph source artifacts return 404 in v1 (ledger-only scope)
+//! - Content kind allowlist: only replication-relevant kinds are served
+//! - Namespace guard: ensures ledger alias is a real ledger (not graph-source)
 
 use axum::{
     body::Body,
@@ -52,10 +54,6 @@ fn map_block_fetch_error(e: block_fetch::BlockFetchError) -> ServerError {
             } else {
                 ServerError::internal(format!("Storage: {e}"))
             }
-        }
-        UnknownAddress(_) | GraphSourceNotAuthorized | LedgerMismatch { .. } => {
-            // No existence leak — unauthorized/unknown → 404
-            ServerError::not_found("Block not found")
         }
         MissingBinaryStore => {
             ServerError::not_acceptable("Leaf decoding unavailable for this ledger")
@@ -201,24 +199,14 @@ pub struct NsRecordResponse {
 
 /// Request body for block fetch endpoint.
 ///
-/// Supports two modes:
-/// 1. **CID-based** (`cid` + `ledger`): preferred path — the server derives the
-///    storage address internally. Clients never need to know the address layout.
-/// 2. **Address-based** (`address`): legacy path — address string is parsed to
-///    infer the ledger context. Retained for backward compatibility.
-///
-/// If `cid` is provided, `ledger` is required and `address` is ignored.
+/// Both fields are required. The server derives the storage address internally
+/// from the CID and ledger — clients never need to know the address layout.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BlockRequest {
-    /// Legacy: full storage address (e.g., `"fluree:file://mydb/main/commit/abc.fcv2"`)
-    #[serde(default)]
-    pub address: Option<String>,
-    /// CID-based: content identifier string (e.g., `"bafybeig..."`)
-    #[serde(default)]
-    pub cid: Option<String>,
-    /// CID-based: ledger alias (e.g., `"mydb:main"`). Required when `cid` is set.
-    #[serde(default)]
-    pub ledger: Option<String>,
+    /// Content identifier string (e.g., `"bafybeig..."`)
+    pub cid: String,
+    /// Ledger alias (e.g., `"mydb:main"`)
+    pub ledger: String,
 }
 
 // ============================================================================
@@ -274,66 +262,16 @@ pub async fn get_ns_record(
     }))
 }
 
-/// Resolve a [`BlockRequest`] to a `(storage_address, AddressContext)` pair.
-///
-/// - **CID path** (`cid` + `ledger`): parses the CID, resolves its content kind,
-///   and derives the storage address via [`fluree_db_core::content_address`].
-/// - **Address path** (`address`): legacy fallback — parses the address to infer context.
-fn resolve_block_request(
-    body: &BlockRequest,
-    storage_method: &str,
-) -> Result<(String, block_fetch::AddressContext), ServerError> {
-    if let Some(cid_str) = &body.cid {
-        // CID-based path: require `ledger`
-        let ledger = body
-            .ledger
-            .as_ref()
-            .ok_or_else(|| ServerError::bad_request("'ledger' is required when using 'cid'"))?;
-
-        let id: ContentId = cid_str
-            .parse()
-            .map_err(|_| ServerError::bad_request(format!("Invalid CID: {cid_str}")))?;
-
-        let kind = id.content_kind().ok_or_else(|| {
-            // Unknown codec → 404 (no existence leak, same as address-path Unknown)
-            ServerError::not_found("Block not found")
-        })?;
-
-        let address =
-            fluree_db_core::content_address(storage_method, kind, ledger, &id.digest_hex());
-
-        // Derive context from the computed address — not from the client-supplied `ledger`.
-        // This ensures the same authorization rules apply regardless of request mode
-        // (e.g., graph-source prefixes are correctly detected and blocked).
-        let context = block_fetch::parse_address_context(&address);
-
-        // Reject if the derived address doesn't resolve to a known context.
-        // This catches invalid ledger strings and reserved-prefix tricks.
-        if matches!(context, block_fetch::AddressContext::Unknown) {
-            return Err(ServerError::not_found("Block not found"));
-        }
-
-        Ok((address, context))
-    } else if let Some(address) = &body.address {
-        // Legacy address-based path
-        let context = block_fetch::parse_address_context(address);
-        Ok((address.clone(), context))
-    } else {
-        Err(ServerError::bad_request(
-            "Request must include either 'cid'+'ledger' or 'address'",
-        ))
-    }
-}
-
 /// POST /fluree/storage/block
 ///
-/// Fetches a block (branch or leaf) from storage with policy enforcement.
-/// Ledger context is inferred from the address.
+/// Fetches a block (branch or leaf) from storage by CID with policy enforcement.
 ///
 /// # Security
-/// All blocks are fetched through `block_fetch::fetch_and_decode_block` with
-/// `PolicyEnforced` mode. This ensures leaf blocks are always decoded and
-/// policy-filtered — they can never be returned as raw bytes to end users.
+///
+/// 1. **Kind allowlist**: CID content kind checked against allowlist before I/O
+/// 2. **Namespace guard**: NS lookup ensures `ledger` is a real ledger (not graph-source)
+/// 3. **Token authorization**: `authorize_ledger()` checks token scope
+/// 4. **Policy enforcement**: Leaf blocks always decoded+filtered via `fetch_and_decode_block`
 ///
 /// # Content Negotiation
 /// The Accept header selects **representation**, not enforcement:
@@ -352,12 +290,32 @@ pub async fn get_block(
     headers: HeaderMap,
     Json(body): Json<BlockRequest>,
 ) -> Result<Response, ServerError> {
-    // Resolve request to (address, context) — supports both CID-based and address-based
-    let method = fluree_db_core::StorageMethod::storage_method(state.fluree.as_file().storage());
-    let (address, context) = resolve_block_request(&body, method)?;
+    // 1. Parse CID
+    let cid: ContentId = body
+        .cid
+        .parse()
+        .map_err(|_| ServerError::bad_request(format!("Invalid CID: {}", body.cid)))?;
 
-    // Authorize
-    block_fetch::authorize_address(&principal.to_block_access_scope(), &context)
+    // 2. Check content kind against allowlist — unknown codec or disallowed → 404
+    let kind = cid
+        .content_kind()
+        .filter(|k| block_fetch::is_allowed_block_kind(*k))
+        .ok_or_else(|| ServerError::not_found("Block not found"))?;
+    // Suppress unused variable warning — `kind` validated above, address derived by
+    // `fetch_and_decode_block` internally.
+    let _ = kind;
+
+    // 3. Namespace guard: ensure `body.ledger` is a real ledger (not a graph source alias)
+    let fluree = state.fluree.as_file();
+    fluree
+        .nameservice()
+        .lookup(&body.ledger)
+        .await
+        .map_err(|e| ServerError::internal(format!("Nameservice lookup failed: {e}")))?
+        .ok_or_else(|| ServerError::not_found("Block not found"))?;
+
+    // 4. Authorize: token scope must include this ledger
+    block_fetch::authorize_ledger(&principal.to_block_access_scope(), &body.ledger)
         .map_err(|_| ServerError::not_found("Block not found"))?;
 
     // Get storage proxy config for defaults and debug headers
@@ -378,34 +336,25 @@ pub async fn get_block(
         policy_class: effective_policy_class,
     };
 
-    // Load ledger context if this is a ledger ID
-    let fluree = state.fluree.as_file();
-    let ledger_ctx_data;
-    let ledger_ctx = if let Some(ledger_addr) = context.ledger_id() {
-        let handle = fluree
-            .ledger_cached(&ledger_addr)
-            .await
-            .map_err(|e| ServerError::internal(format!("Ledger load failed: {}", e)))?;
-        let snapshot = handle.snapshot().await;
-        let to_t = snapshot.db.t;
-        ledger_ctx_data = Some((snapshot, to_t));
-        ledger_ctx_data
-            .as_ref()
-            .map(|(snap, to_t)| LedgerBlockContext {
-                db: &snap.db,
-                to_t: *to_t,
-                binary_store: snap.binary_store.as_deref(),
-            })
-    } else {
-        None
+    // Load ledger context for leaf decoding + policy filtering
+    let handle = fluree
+        .ledger_cached(&body.ledger)
+        .await
+        .map_err(|e| ServerError::internal(format!("Ledger load failed: {e}")))?;
+    let snapshot = handle.snapshot().await;
+    let to_t = snapshot.db.t;
+    let ledger_ctx = LedgerBlockContext {
+        db: &snapshot.db,
+        to_t,
+        binary_store: snapshot.binary_store.as_deref(),
     };
 
-    // Fetch and decode with enforcement
+    // 5. Fetch and decode with enforcement
     let fetched = block_fetch::fetch_and_decode_block(
         fluree.storage(),
-        &address,
-        &context,
-        ledger_ctx.as_ref(),
+        &body.ledger,
+        &cid,
+        Some(&ledger_ctx),
         &mode,
     )
     .await

@@ -71,6 +71,12 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 | [`push`](push.md) | Push to upstream remote |
 | [`track`](track.md) | Track remote-only ledgers (no local data) |
 
+### Implementers
+
+If you're building a custom server that must support the CLI end-to-end (for example, integrating into another app), see:
+
+- [`server-integration`](server-integration.md) - endpoints and auth contract required by the CLI
+
 ### Authentication
 
 | Command | Description |

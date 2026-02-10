@@ -141,7 +141,7 @@ impl HttpOriginFetcher {
     ///
     /// Returns `Ok(Some(response))` on 200 — the caller feeds it to
     /// [`ingest_pack_stream`](crate::pack_client::ingest_pack_stream).
-    /// Returns `Ok(None)` on 404/405/406 (server doesn't support pack).
+    /// Returns `Ok(None)` on 404/405/406/501 (server doesn't support pack).
     pub async fn fetch_pack_response(
         &self,
         ledger: &str,
@@ -167,7 +167,7 @@ impl HttpOriginFetcher {
 
         match resp.status().as_u16() {
             200 => Ok(Some(resp)),
-            404..=406 => Ok(None),
+            404..=406 | 501 => Ok(None),
             status => {
                 let body = resp.text().await.unwrap_or_default();
                 Err(SyncError::Remote(format!(
@@ -406,7 +406,7 @@ impl MultiOriginFetcher {
     /// Attempt to fetch a pack stream, trying origins in order.
     ///
     /// Returns `Ok(Some(response))` on the first origin that returns 200.
-    /// Returns `Ok(None)` when **every** origin returns 404/405 (pack not supported).
+    /// Returns `Ok(None)` when **every** origin returns 404/405/406/501 (pack not supported).
     /// If any origin returns a non-404/405 error, the overall result is
     /// `Err(FetchFailed)`.
     pub async fn fetch_pack_response(

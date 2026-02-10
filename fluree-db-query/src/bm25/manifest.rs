@@ -1,9 +1,10 @@
 //! BM25-owned manifest for snapshot history.
 //!
 //! The manifest is stored as JSON in content-addressed storage (CAS).
-//! Nameservice stores only a head pointer to the latest manifest address.
+//! Nameservice stores only a head pointer to the latest manifest CID.
 //! BM25 owns time-travel selection logic via [`Bm25Manifest::select_snapshot`].
 
+use fluree_db_core::ContentId;
 use serde::{Deserialize, Serialize};
 
 /// A single snapshot entry in the BM25 manifest.
@@ -11,15 +12,15 @@ use serde::{Deserialize, Serialize};
 pub struct Bm25SnapshotEntry {
     /// Transaction time (watermark) for this snapshot.
     pub index_t: i64,
-    /// Storage address of the serialized BM25 index blob.
-    pub snapshot_address: String,
+    /// Content identifier of the serialized BM25 index blob.
+    pub snapshot_id: ContentId,
 }
 
 impl Bm25SnapshotEntry {
-    pub fn new(index_t: i64, snapshot_address: impl Into<String>) -> Self {
+    pub fn new(index_t: i64, snapshot_id: ContentId) -> Self {
         Self {
             index_t,
-            snapshot_address: snapshot_address.into(),
+            snapshot_id,
         }
     }
 }
@@ -27,7 +28,7 @@ impl Bm25SnapshotEntry {
 /// BM25-owned manifest for snapshot history and time-travel.
 ///
 /// Each manifest is immutable and content-addressed (keyed by latest `index_t`).
-/// The nameservice head pointer stores the CAS address of the latest manifest.
+/// The nameservice head pointer stores the CAS CID of the latest manifest.
 ///
 /// # Append semantics
 ///
@@ -90,27 +91,24 @@ impl Bm25Manifest {
         true
     }
 
-    /// Get all snapshot addresses (for cleanup/deletion on drop).
-    pub fn all_snapshot_addresses(&self) -> Vec<&str> {
-        self.snapshots
-            .iter()
-            .map(|s| s.snapshot_address.as_str())
-            .collect()
+    /// Get all snapshot CIDs (for cleanup/deletion on drop).
+    pub fn all_snapshot_ids(&self) -> Vec<&ContentId> {
+        self.snapshots.iter().map(|s| &s.snapshot_id).collect()
     }
 
     /// Trim old snapshots beyond the retention limit.
     ///
-    /// Keeps the most recent `keep` snapshots and returns the addresses of
+    /// Keeps the most recent `keep` snapshots and returns the CIDs of
     /// removed entries so the caller can delete the old blobs from storage.
     /// Returns an empty vec if no trimming was needed.
-    pub fn trim(&mut self, keep: usize) -> Vec<String> {
+    pub fn trim(&mut self, keep: usize) -> Vec<ContentId> {
         if self.snapshots.len() <= keep {
             return Vec::new();
         }
         let remove_count = self.snapshots.len() - keep;
-        let removed: Vec<String> = self.snapshots[..remove_count]
+        let removed: Vec<ContentId> = self.snapshots[..remove_count]
             .iter()
-            .map(|s| s.snapshot_address.clone())
+            .map(|s| s.snapshot_id.clone())
             .collect();
         self.snapshots.drain(..remove_count);
         removed
@@ -120,6 +118,12 @@ impl Bm25Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::ContentKind;
+
+    /// Helper: create a test ContentId for a snapshot.
+    fn test_cid(label: &[u8]) -> ContentId {
+        ContentId::new(ContentKind::GraphSourceSnapshot, label)
+    }
 
     #[test]
     fn test_empty_manifest() {
@@ -129,15 +133,15 @@ mod tests {
         assert!(m.head().is_none());
         assert!(m.select_snapshot(100).is_none());
         assert!(!m.has_snapshot_at(1));
-        assert!(m.all_snapshot_addresses().is_empty());
+        assert!(m.all_snapshot_ids().is_empty());
     }
 
     #[test]
     fn test_append_and_head() {
         let mut m = Bm25Manifest::new("test:main");
-        assert!(m.append(Bm25SnapshotEntry::new(5, "addr-5")));
-        assert!(m.append(Bm25SnapshotEntry::new(10, "addr-10")));
-        assert!(m.append(Bm25SnapshotEntry::new(20, "addr-20")));
+        assert!(m.append(Bm25SnapshotEntry::new(5, test_cid(b"snap-5"))));
+        assert!(m.append(Bm25SnapshotEntry::new(10, test_cid(b"snap-10"))));
+        assert!(m.append(Bm25SnapshotEntry::new(20, test_cid(b"snap-20"))));
 
         assert_eq!(m.snapshots.len(), 3);
         assert_eq!(m.head().unwrap().index_t, 20);
@@ -146,30 +150,32 @@ mod tests {
     #[test]
     fn test_append_monotonic_rejection() {
         let mut m = Bm25Manifest::new("test:main");
-        assert!(m.append(Bm25SnapshotEntry::new(10, "addr-10")));
-        assert!(!m.append(Bm25SnapshotEntry::new(5, "addr-5"))); // Rejected: going backwards
+        assert!(m.append(Bm25SnapshotEntry::new(10, test_cid(b"snap-10"))));
+        assert!(!m.append(Bm25SnapshotEntry::new(5, test_cid(b"snap-5")))); // Rejected
         assert_eq!(m.snapshots.len(), 1);
     }
 
     #[test]
     fn test_append_same_t_replaces_last() {
         let mut m = Bm25Manifest::new("test:main");
-        assert!(m.append(Bm25SnapshotEntry::new(5, "addr-5")));
-        assert!(m.append(Bm25SnapshotEntry::new(10, "addr-10-v1")));
-        assert!(m.append(Bm25SnapshotEntry::new(10, "addr-10-v2"))); // Idempotent reindex
+        let cid_5 = test_cid(b"snap-5");
+        let cid_10_v2 = test_cid(b"snap-10-v2");
+        assert!(m.append(Bm25SnapshotEntry::new(5, cid_5.clone())));
+        assert!(m.append(Bm25SnapshotEntry::new(10, test_cid(b"snap-10-v1"))));
+        assert!(m.append(Bm25SnapshotEntry::new(10, cid_10_v2.clone()))); // Idempotent reindex
 
         assert_eq!(m.snapshots.len(), 2);
-        assert_eq!(m.head().unwrap().snapshot_address, "addr-10-v2");
+        assert_eq!(m.head().unwrap().snapshot_id, cid_10_v2);
         // Earlier entry is untouched
-        assert_eq!(m.snapshots[0].snapshot_address, "addr-5");
+        assert_eq!(m.snapshots[0].snapshot_id, cid_5);
     }
 
     #[test]
     fn test_select_snapshot() {
         let mut m = Bm25Manifest::new("test:main");
-        m.append(Bm25SnapshotEntry::new(5, "addr-5"));
-        m.append(Bm25SnapshotEntry::new(10, "addr-10"));
-        m.append(Bm25SnapshotEntry::new(20, "addr-20"));
+        m.append(Bm25SnapshotEntry::new(5, test_cid(b"snap-5")));
+        m.append(Bm25SnapshotEntry::new(10, test_cid(b"snap-10")));
+        m.append(Bm25SnapshotEntry::new(20, test_cid(b"snap-20")));
 
         // Before any snapshot
         assert!(m.select_snapshot(3).is_none());
@@ -190,8 +196,8 @@ mod tests {
     #[test]
     fn test_has_snapshot_at() {
         let mut m = Bm25Manifest::new("test:main");
-        m.append(Bm25SnapshotEntry::new(5, "addr-5"));
-        m.append(Bm25SnapshotEntry::new(10, "addr-10"));
+        m.append(Bm25SnapshotEntry::new(5, test_cid(b"snap-5")));
+        m.append(Bm25SnapshotEntry::new(10, test_cid(b"snap-10")));
 
         assert!(m.has_snapshot_at(5));
         assert!(m.has_snapshot_at(10));
@@ -200,26 +206,30 @@ mod tests {
     }
 
     #[test]
-    fn test_all_snapshot_addresses() {
+    fn test_all_snapshot_ids() {
         let mut m = Bm25Manifest::new("test:main");
-        m.append(Bm25SnapshotEntry::new(5, "addr-5"));
-        m.append(Bm25SnapshotEntry::new(10, "addr-10"));
+        let cid_5 = test_cid(b"snap-5");
+        let cid_10 = test_cid(b"snap-10");
+        m.append(Bm25SnapshotEntry::new(5, cid_5.clone()));
+        m.append(Bm25SnapshotEntry::new(10, cid_10.clone()));
 
-        let addrs = m.all_snapshot_addresses();
-        assert_eq!(addrs, vec!["addr-5", "addr-10"]);
+        let ids = m.all_snapshot_ids();
+        assert_eq!(ids, vec![&cid_5, &cid_10]);
     }
 
     #[test]
     fn test_trim_removes_oldest() {
         let mut m = Bm25Manifest::new("test:main");
-        m.append(Bm25SnapshotEntry::new(1, "addr-1"));
-        m.append(Bm25SnapshotEntry::new(2, "addr-2"));
-        m.append(Bm25SnapshotEntry::new(3, "addr-3"));
-        m.append(Bm25SnapshotEntry::new(4, "addr-4"));
-        m.append(Bm25SnapshotEntry::new(5, "addr-5"));
+        let cid_1 = test_cid(b"snap-1");
+        let cid_2 = test_cid(b"snap-2");
+        m.append(Bm25SnapshotEntry::new(1, cid_1.clone()));
+        m.append(Bm25SnapshotEntry::new(2, cid_2.clone()));
+        m.append(Bm25SnapshotEntry::new(3, test_cid(b"snap-3")));
+        m.append(Bm25SnapshotEntry::new(4, test_cid(b"snap-4")));
+        m.append(Bm25SnapshotEntry::new(5, test_cid(b"snap-5")));
 
         let removed = m.trim(3);
-        assert_eq!(removed, vec!["addr-1", "addr-2"]);
+        assert_eq!(removed, vec![cid_1, cid_2]);
         assert_eq!(m.snapshots.len(), 3);
         assert_eq!(m.snapshots[0].index_t, 3);
         assert_eq!(m.head().unwrap().index_t, 5);
@@ -228,8 +238,8 @@ mod tests {
     #[test]
     fn test_trim_no_op_when_under_limit() {
         let mut m = Bm25Manifest::new("test:main");
-        m.append(Bm25SnapshotEntry::new(1, "addr-1"));
-        m.append(Bm25SnapshotEntry::new(2, "addr-2"));
+        m.append(Bm25SnapshotEntry::new(1, test_cid(b"snap-1")));
+        m.append(Bm25SnapshotEntry::new(2, test_cid(b"snap-2")));
 
         let removed = m.trim(5);
         assert!(removed.is_empty());
@@ -239,12 +249,14 @@ mod tests {
     #[test]
     fn test_trim_to_one() {
         let mut m = Bm25Manifest::new("test:main");
-        m.append(Bm25SnapshotEntry::new(1, "addr-1"));
-        m.append(Bm25SnapshotEntry::new(2, "addr-2"));
-        m.append(Bm25SnapshotEntry::new(3, "addr-3"));
+        let cid_1 = test_cid(b"snap-1");
+        let cid_2 = test_cid(b"snap-2");
+        m.append(Bm25SnapshotEntry::new(1, cid_1.clone()));
+        m.append(Bm25SnapshotEntry::new(2, cid_2.clone()));
+        m.append(Bm25SnapshotEntry::new(3, test_cid(b"snap-3")));
 
         let removed = m.trim(1);
-        assert_eq!(removed, vec!["addr-1", "addr-2"]);
+        assert_eq!(removed, vec![cid_1, cid_2]);
         assert_eq!(m.snapshots.len(), 1);
         assert_eq!(m.head().unwrap().index_t, 3);
     }
@@ -252,14 +264,8 @@ mod tests {
     #[test]
     fn test_serde_roundtrip() {
         let mut m = Bm25Manifest::new("my-search:main");
-        m.append(Bm25SnapshotEntry::new(
-            5,
-            "fluree:file://graph-sources/search/main/bm25/t5/snapshot.bin",
-        ));
-        m.append(Bm25SnapshotEntry::new(
-            10,
-            "fluree:file://graph-sources/search/main/bm25/t10/snapshot.bin",
-        ));
+        m.append(Bm25SnapshotEntry::new(5, test_cid(b"snap-5")));
+        m.append(Bm25SnapshotEntry::new(10, test_cid(b"snap-10")));
 
         let json = serde_json::to_string(&m).unwrap();
         let deserialized: Bm25Manifest = serde_json::from_str(&json).unwrap();

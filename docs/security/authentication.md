@@ -114,6 +114,16 @@ Scopes control which endpoints and ledgers a token can access.
 
 **Back-compat:** `fluree.storage.*` claims also imply data API read access for the same ledgers.
 
+#### Populating `fluree.storage.ledgers` (multi-tenant hint)
+
+If you run an IdP or a request-router that exchanges IdP tokens for Fluree-scoped tokens, prefer populating `fluree.storage.ledgers` rather than granting `fluree.storage.all`.
+
+Recommended conventions for mapping IdP group/role claims to ledger scopes:
+
+- Treat group values like `fluree:storage:<ledger-id>` (example: `fluree:storage:books:main`) as permission to replicate that ledger.
+- Optionally support wildcards at the router boundary (example: `fluree:storage:books:*` expands to the set of ledgers your router knows about under `books:`).
+- Reserve `fluree.storage.all=true` for admin/service accounts.
+
 #### Event scopes (`fluree.events.*`)
 
 | Claim | Type | Description |

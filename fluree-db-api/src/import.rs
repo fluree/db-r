@@ -87,8 +87,8 @@ pub struct ImportResult {
     pub t: i64,
     /// Total flake count across all commits.
     pub flake_count: u64,
-    /// CAS address of the head commit.
-    pub commit_head_address: String,
+    /// Content identifier of the head commit.
+    pub commit_head_id: fluree_db_core::ContentId,
     /// Content identifier of the index root. `None` if `build_index == false`.
     pub root_id: Option<fluree_db_core::ContentId>,
     /// Index t (same as `t` for fresh import). 0 if `build_index == false`.
@@ -516,7 +516,7 @@ where
     tracing::info!(
         t = import_result.final_t,
         flakes = import_result.cumulative_flakes,
-        commit_head = %import_result.commit_head_address,
+        commit_head = %import_result.commit_head_id,
         elapsed = ?pipeline_start.elapsed(),
         "import + run generation complete"
     );
@@ -556,7 +556,7 @@ where
         ledger_id: alias.to_string(),
         t: import_result.final_t,
         flake_count: import_result.cumulative_flakes,
-        commit_head_address: import_result.commit_head_address,
+        commit_head_id: import_result.commit_head_id,
         root_id,
         index_t,
     })
@@ -570,7 +570,7 @@ where
 struct ChunkImportResult {
     final_t: i64,
     cumulative_flakes: u64,
-    commit_head_address: String,
+    commit_head_id: fluree_db_core::ContentId,
     namespace_codes: HashMap<u16, String>,
     stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
     /// Total size of all commit blobs in bytes.
@@ -938,7 +938,6 @@ where
         .as_ref()
         .map(|r| r.id.clone())
         .ok_or_else(|| ImportError::Storage("no commit head after import".to_string()))?;
-    let commit_head_address = commit_head_id.to_string();
 
     nameservice
         .publish_commit(alias, state.t, &commit_head_id)
@@ -996,7 +995,7 @@ where
     Ok(ChunkImportResult {
         final_t: state.t,
         cumulative_flakes: state.cumulative_flakes,
-        commit_head_address,
+        commit_head_id,
         namespace_codes,
         stats_hook: run_result.stats_hook,
         total_commit_size: run_result.total_commit_size,

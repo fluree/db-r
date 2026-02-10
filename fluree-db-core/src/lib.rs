@@ -20,7 +20,7 @@
 //! use fluree_db_core::{Db, range, IndexType, RangeTest};
 //!
 //! // Apps provide their own Storage implementation
-//! let db = Db::load(storage, address).await?;
+//! let db = Db::load(storage, &root_id, "ledger/main").await?;
 //! let flakes = range(&db, IndexType::Spot, RangeTest::Eq, match_val, opts).await?;
 //! ```
 
@@ -74,8 +74,9 @@ pub use comparator::IndexType;
 pub use content_id::{CommitId, ContentId, IndexRootId, TxnId};
 pub use content_kind::{
     ContentKind, DictKind, CODEC_FLUREE_COMMIT, CODEC_FLUREE_DICT_BLOB, CODEC_FLUREE_GARBAGE,
-    CODEC_FLUREE_INDEX_BRANCH, CODEC_FLUREE_INDEX_LEAF, CODEC_FLUREE_INDEX_ROOT,
-    CODEC_FLUREE_LEDGER_CONFIG, CODEC_FLUREE_STATS_SKETCH, CODEC_FLUREE_TXN,
+    CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT, CODEC_FLUREE_INDEX_BRANCH, CODEC_FLUREE_INDEX_LEAF,
+    CODEC_FLUREE_INDEX_ROOT, CODEC_FLUREE_LEDGER_CONFIG, CODEC_FLUREE_STATS_SKETCH,
+    CODEC_FLUREE_TXN,
 };
 pub use datatypes::dt_compatible;
 pub use db::{Db, DbMetadata};

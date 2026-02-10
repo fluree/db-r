@@ -9,7 +9,7 @@ use axum::body::Body;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signer, SigningKey};
 use fluree_db_core::serde::flakes_transport::{decode_flakes, MAGIC as FLKB_MAGIC};
-use fluree_db_core::StorageRead;
+use fluree_db_core::{ContentId, ContentKind, StorageRead};
 use fluree_db_server::{
     config::{ServerRole, StorageAccessMode},
     routes::build_router,
@@ -283,10 +283,12 @@ async fn test_storage_proxy_block_endpoint() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Try to fetch a block - should return 404 for non-existent address
+    // Try to fetch a block - should return 404 for non-existent CID
     // (but the endpoint is working)
+    let fake_cid = ContentId::new(ContentKind::Commit, b"nonexistent").to_string();
     let block_body = serde_json::json!({
-        "address": "fluree:file://proxy:test/commit/nonexistent.fcv2"
+        "cid": fake_cid,
+        "ledger": "proxy:test"
     });
     let resp = app
         .oneshot(
@@ -610,8 +612,10 @@ async fn test_storage_proxy_block_authorization() {
     let token = format!("{}.{}.{}", header_b64, payload_b64, sig_b64);
 
     // Try to fetch a block from unauthorized ledger
+    let fake_cid = ContentId::new(ContentKind::Commit, b"auth-test").to_string();
     let block_body = serde_json::json!({
-        "address": "fluree:file://block:test/commit/test.fcv2"
+        "cid": fake_cid,
+        "ledger": "block:test"
     });
     let resp = app
         .oneshot(
@@ -630,9 +634,9 @@ async fn test_storage_proxy_block_authorization() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-/// Test that graph source artifact addresses are rejected in v1
+/// Test that graph source snapshot CIDs are rejected by the kind allowlist
 #[tokio::test]
-async fn test_storage_proxy_rejects_graph_source_ides() {
+async fn test_storage_proxy_rejects_graph_source_cids() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state);
 
@@ -641,9 +645,11 @@ async fn test_storage_proxy_rejects_graph_source_ides() {
     let signing_key = SigningKey::from_bytes(&secret);
     let token = create_storage_proxy_token(&signing_key, true);
 
-    // Try to fetch a graph source artifact
+    // Try to fetch a graph source snapshot CID — rejected by kind allowlist
+    let gs_cid = ContentId::new(ContentKind::GraphSourceSnapshot, b"snapshot-data").to_string();
     let block_body = serde_json::json!({
-        "address": "fluree:file://graph-sources/search/main/snapshot.bin"
+        "cid": gs_cid,
+        "ledger": "search:main"
     });
     let resp = app
         .oneshot(
@@ -658,13 +664,13 @@ async fn test_storage_proxy_rejects_graph_source_ides() {
         .await
         .unwrap();
 
-    // Graph source artifact addresses are not authorized in v1
+    // GraphSourceSnapshot is not in the kind allowlist → 404
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-/// Test unknown address format is rejected
+/// Test that an invalid CID string is rejected with 400
 #[tokio::test]
-async fn test_storage_proxy_rejects_unknown_address_format() {
+async fn test_storage_proxy_rejects_invalid_cid() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state);
 
@@ -673,9 +679,10 @@ async fn test_storage_proxy_rejects_unknown_address_format() {
     let signing_key = SigningKey::from_bytes(&secret);
     let token = create_storage_proxy_token(&signing_key, true);
 
-    // Try to fetch with non-fluree address
+    // Try to fetch with an invalid CID string
     let block_body = serde_json::json!({
-        "address": "s3://bucket/key"
+        "cid": "not-a-valid-cid",
+        "ledger": "x:y"
     });
     let resp = app
         .oneshot(
@@ -690,8 +697,8 @@ async fn test_storage_proxy_rejects_unknown_address_format() {
         .await
         .unwrap();
 
-    // Unknown formats are rejected
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // Invalid CID string → 400 Bad Request
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 // =============================================================================
@@ -1314,9 +1321,9 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .await
         .expect("refresh after reindex should succeed");
 
-    // Fetch the DB root JSON and extract a leaf address.
-    let root_addr = root_address_from_id(&reindex_result.root_id, "leaf:test");
-    let root_body = serde_json::json!({ "address": &root_addr });
+    // Fetch the DB root JSON and extract a leaf CID.
+    let root_body =
+        serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": "leaf:test" });
     let resp = app
         .clone()
         .oneshot(
@@ -1336,10 +1343,10 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
 
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&root_bytes).expect("db root should be valid JSON");
-    let leaf_address = extract_spot_leaf_address(&db_root_json, "leaf:test");
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
 
     // Request the leaf with flakes format - should return FLKB
-    let block_body = serde_json::json!({ "address": leaf_address });
+    let block_body = serde_json::json!({ "cid": leaf_cid, "ledger": "leaf:test" });
     let resp = app
         .oneshot(
             Request::builder()
@@ -1487,7 +1494,10 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
         .header("content-type", "application/json")
         .header("Authorization", format!("Bearer {}", token_for_http))
         .header("Accept", "application/octet-stream")
-        .body(serde_json::json!({ "address": root_address_from_id(&reindex_result.root_id, "peer:test") }).to_string())
+        .body(
+            serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": "peer:test" })
+                .to_string(),
+        )
         .send()
         .await
         .expect("fetch root");
@@ -1499,7 +1509,8 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     let root_bytes = root_resp.bytes().await.expect("read root bytes");
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&root_bytes).expect("db root should be valid JSON");
-    let leaf_address = extract_spot_leaf_address(&db_root_json, "peer:test");
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
+    let leaf_address = leaf_address_from_cid(&leaf_cid, "peer:test");
 
     // Create ProxyStorage pointing to our test server
     let proxy_storage = ProxyStorage::new(server_url.clone(), token);
@@ -1624,14 +1635,17 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
         .await
         .expect("refresh after reindex should succeed");
 
-    // Fetch DB root JSON so we can extract a real leaf address.
+    // Fetch DB root JSON so we can extract a real leaf CID.
     let token_for_http = token.clone();
     let root_resp = client
         .post(format!("{}/v1/fluree/storage/block", server_url))
         .header("content-type", "application/json")
         .header("Authorization", format!("Bearer {}", token_for_http))
         .header("Accept", "application/octet-stream")
-        .body(serde_json::json!({ "address": root_address_from_id(&reindex_result.root_id, "raw:test") }).to_string())
+        .body(
+            serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": "raw:test" })
+                .to_string(),
+        )
         .send()
         .await
         .expect("fetch root");
@@ -1643,7 +1657,8 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
     let root_bytes = root_resp.bytes().await.expect("read root bytes");
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&root_bytes).expect("db root should be valid JSON");
-    let leaf_address = extract_spot_leaf_address(&db_root_json, "raw:test");
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
+    let leaf_address = leaf_address_from_cid(&leaf_cid, "raw:test");
 
     // Create ProxyStorage pointing to our test server
     let proxy_storage = ProxyStorage::new(server_url.clone(), token);
@@ -1705,7 +1720,7 @@ fn tx_server_state_with_policy(
     (tmp, state)
 }
 
-/// Extract the first SPOT leaf address from a BinaryIndexRoot JSON structure.
+/// Extract the first SPOT leaf CID string from a BinaryIndexRoot JSON structure.
 ///
 /// The root format is:
 /// ```json
@@ -1718,20 +1733,7 @@ fn tx_server_state_with_policy(
 ///   }]
 /// }
 /// ```
-///
-/// Derive the storage address for an index root from its ContentId.
-fn root_address_from_id(root_id: &fluree_db_core::ContentId, ledger_id: &str) -> String {
-    fluree_db_core::content_address(
-        "file",
-        fluree_db_core::ContentKind::IndexRoot,
-        ledger_id,
-        &root_id.digest_hex(),
-    )
-}
-
-/// Leaf entries are CID strings (base32-lower multibase). This function parses
-/// the CID and derives the storage address using `content_address()`.
-fn extract_spot_leaf_address(db_root_json: &serde_json::Value, ledger_id: &str) -> String {
+fn extract_spot_leaf_cid(db_root_json: &serde_json::Value) -> String {
     let graphs = db_root_json
         .get("graphs")
         .and_then(|g| g.as_array())
@@ -1748,19 +1750,18 @@ fn extract_spot_leaf_address(db_root_json: &serde_json::Value, ledger_id: &str) 
         .and_then(|l| l.as_array())
         .expect("spot should have leaves array");
 
-    let cid_str = leaves
+    leaves
         .first()
         .and_then(|l| l.as_str())
-        .expect("should have at least one leaf");
+        .expect("should have at least one leaf")
+        .to_string()
+}
 
-    // Parse the CID and derive the storage address
-    let cid: fluree_db_core::ContentId = cid_str.parse().expect("leaf should be a valid CID");
-    fluree_db_core::content_address(
-        "file",
-        fluree_db_core::ContentKind::IndexLeaf,
-        ledger_id,
-        &cid.digest_hex(),
-    )
+/// Derive the storage address for a leaf from its CID string.
+/// (Needed by ProxyStorage tests that call `read_bytes(address)` directly.)
+fn leaf_address_from_cid(cid_str: &str, ledger_id: &str) -> String {
+    let cid: ContentId = cid_str.parse().expect("leaf should be a valid CID");
+    fluree_db_core::content_address("file", ContentKind::IndexLeaf, ledger_id, &cid.digest_hex())
 }
 
 /// Test that policy filtering is applied to binary leaves (FLI1 → FLKB)
@@ -1910,7 +1911,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
 
     // Read the DB root file
     let db_root_body =
-        serde_json::json!({ "address": root_address_from_id(&reindex_result.root_id, alias) });
+        serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": alias });
     let resp = app
         .clone()
         .oneshot(
@@ -1932,10 +1933,10 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&db_root_bytes).expect("db root should be valid JSON");
 
-    // Extract the first SPOT leaf address from BinaryIndexRoot format
-    let leaf_address = extract_spot_leaf_address(&db_root_json, alias);
+    // Extract the first SPOT leaf CID from BinaryIndexRoot format
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
 
-    let leaf_block_body = serde_json::json!({ "address": &leaf_address });
+    let leaf_block_body = serde_json::json!({ "cid": &leaf_cid, "ledger": alias });
     // Fetch the leaf FILTERED (x-fluree-flakes) with policy
     let resp = app
         .clone()
@@ -2058,7 +2059,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
     // The root_id is the DB root, not a leaf. We need to extract the SPOT index root
     // and find a leaf from there.
     let db_root_body =
-        serde_json::json!({ "address": root_address_from_id(&reindex_result.root_id, alias) });
+        serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": alias });
     let resp = app
         .clone()
         .oneshot(
@@ -2080,10 +2081,10 @@ async fn test_no_policy_flkb_returns_all_flakes() {
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&db_root_bytes).expect("db root should be valid JSON");
 
-    // Extract the first SPOT leaf address from BinaryIndexRoot format
-    let leaf_address = extract_spot_leaf_address(&db_root_json, alias);
+    // Extract the first SPOT leaf CID from BinaryIndexRoot format
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
 
-    let block_body = serde_json::json!({ "address": &leaf_address });
+    let block_body = serde_json::json!({ "cid": &leaf_cid, "ledger": alias });
     // Fetch leaf in flakes format (no policy configured → should return all flakes, still FLKB)
     let resp = app
         .clone()

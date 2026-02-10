@@ -109,13 +109,22 @@ Fetch a nameservice record for a ledger ID. Requires storage proxy authorization
 
 #### `POST /fluree/storage/block`
 
-Fetch a block/blob by storage address. The server infers the ledger context from the address for authorization. Currently supports:
+Fetch a block/blob by **CID**. The request includes the **ledger ID** so the server can authorize the request and derive the physical storage address internally. Currently supports:
 
 - `Accept: application/octet-stream` (raw bytes; always available)
 - `Accept: application/x-fluree-flakes` (binary “FLKB” transport of policy-filtered **leaf** flakes only)
 - `Accept: application/x-fluree-flakes+json` (debug-only JSON flake transport; leaf flakes only)
 
 If the client requests a flakes format for a **non-leaf** block, the server returns **406 Not Acceptable**. Clients (and peers in proxy mode) should retry with `Accept: application/octet-stream` in that case.
+
+Example request body:
+
+```json
+{
+  "cid": "bafy...leafOrBranchCid",
+  "ledger": "mydb:main"
+}
+```
 
 ##### Policy filtering semantics (leaf flakes)
 
@@ -174,4 +183,3 @@ fluree-server \
   --peer-subscribe-all \
   --peer-events-token @/etc/fluree/peer-events.jwt
 ```
-

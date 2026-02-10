@@ -73,8 +73,6 @@ mod inner {
 
     /// Result of importing a single TTL chunk.
     pub struct ImportCommitResult {
-        /// Storage address of the committed blob (legacy, for transition).
-        pub address: String,
         /// Content identifier (CIDv1).
         pub commit_id: ContentId,
         /// Transaction number.
@@ -198,7 +196,6 @@ mod inner {
         state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
 
         Ok(ImportCommitResult {
-            address: write_res.address,
             commit_id: commit_cid,
             t: new_t,
             flake_count: op_count,
@@ -394,7 +391,6 @@ mod inner {
         state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
 
         Ok(ImportCommitResult {
-            address: write_res.address,
             commit_id: commit_cid,
             t: new_t,
             flake_count: op_count,
@@ -606,7 +602,6 @@ mod inner {
         state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
 
         Ok(ImportCommitResult {
-            address: write_res.address,
             commit_id: commit_cid,
             t: new_t,
             flake_count: parsed.op_count,

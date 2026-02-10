@@ -36,10 +36,18 @@ pub async fn run(
             if let Some(t) = info.get("t").and_then(|v| v.as_i64()) {
                 println!("t:              {}", t);
             }
-            if let Some(commit) = info.get("commit_head_id").and_then(|v| v.as_str()) {
+            if let Some(commit) = info
+                .get("commitId")
+                .and_then(|v| v.as_str())
+                .or_else(|| info.get("commit_head_id").and_then(|v| v.as_str()))
+            {
                 println!("Commit ID:      {}", commit);
             }
-            if let Some(index) = info.get("index_head_id").and_then(|v| v.as_str()) {
+            if let Some(index) = info
+                .get("indexId")
+                .and_then(|v| v.as_str())
+                .or_else(|| info.get("index_head_id").and_then(|v| v.as_str()))
+            {
                 println!("Index ID:       {}", index);
             }
 

@@ -37,7 +37,7 @@ Downloads all commits from a remote ledger and creates a local copy:
 
 The CLI uses the **pack protocol** (`fluree-pack-v1`) as the primary transport for clone and pull. Pack transfers all missing CAS objects (commits + txn blobs) in a single streaming HTTP request, avoiding per-object round-trips.
 
-If the remote server does not support the pack endpoint (returns 404 or 405), the CLI automatically falls back to:
+If the remote server does not support the pack endpoint (returns 404, 405, 406, or 501), the CLI automatically falls back to:
 - **Named-remote mode**: paginated JSON export via `GET /commits/{ledger}` (500 commits per page)
 - **Origin mode**: CID chain walk via `GET /storage/objects/{cid}` (one round-trip per commit)
 
@@ -124,6 +124,7 @@ Remote ledger 'mydb:main' has no commits (t=0), nothing to clone.
 ## Limitations
 
 - **Post-clone indexing:** After cloning a large ledger, you may want to run `fluree reindex` to build a binary index. Without an index, queries must replay all novelty from commits, which can be slow for large ledgers.
+- **Graph source indexes not replicated:** Graph source snapshots (BM25/vector/geo, etc.) are not replicated by `fluree clone` yet. After cloning, rebuild graph source indexes in the target environment as needed.
 
 ## See Also
 

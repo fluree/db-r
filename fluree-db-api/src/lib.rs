@@ -81,7 +81,7 @@ pub use admin::{
     TriggerIndexResult,
 };
 pub use block_fetch::{
-    AddressContext, BlockAccessScope, BlockContent, BlockFetchError, EnforcementMode, FetchedBlock,
+    BlockAccessScope, BlockContent, BlockFetchError, EnforcementMode, FetchedBlock,
     LedgerBlockContext,
 };
 pub use commit_transfer::{

@@ -13,9 +13,7 @@ use fluree_db_core::{
     alias as core_alias, ContentId, ContentStore, OverlayProvider, Storage, StorageWrite,
 };
 use fluree_db_ledger::LedgerState;
-use fluree_db_nameservice::{
-    GraphSourcePublisher, GraphSourceType, NameService, Publisher, STORAGE_SEGMENT_GRAPH_SOURCES,
-};
+use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25IndexBuilder, Bm25Manifest, Bm25SnapshotEntry, PropertyDeps};
 use fluree_db_query::parse::parse_query;
 use fluree_db_query::{execute_with_overlay, DataSource, ExecutableQuery, SelectMode, VarRegistry};
@@ -25,10 +23,19 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 /// Best-effort deletion of old snapshot blobs from storage.
+/// Derives storage addresses from CIDs using the graph source namespace.
 /// Logs warnings on failure but does not propagate errors.
-async fn delete_old_snapshots<S: Storage>(storage: &S, addresses: &[String]) {
-    for addr in addresses {
-        if let Err(e) = storage.delete(addr).await {
+async fn delete_old_snapshots<S: Storage>(storage: &S, graph_source_id: &str, cids: &[ContentId]) {
+    use fluree_db_core::ContentKind;
+    let method = storage.storage_method();
+    for cid in cids {
+        let addr = fluree_db_core::content_address(
+            method,
+            ContentKind::GraphSourceSnapshot,
+            graph_source_id,
+            &cid.digest_hex(),
+        );
+        if let Err(e) = storage.delete(&addr).await {
             warn!(address = %addr, error = %e, "failed to delete old BM25 snapshot");
         }
     }
@@ -148,19 +155,19 @@ where
         );
 
         // 4. Persist index snapshot blob to CAS
-        let snapshot_address = self
-            .write_bm25_snapshot_blob(&graph_source_id, &index, source_t)
+        let snapshot_id = self
+            .write_bm25_snapshot_blob(&graph_source_id, &index)
             .await?;
 
         info!(
-            snapshot_address = %snapshot_address,
+            snapshot_id = %snapshot_id,
             index_t = source_t,
             "Persisted versioned index snapshot"
         );
 
         // 5. Build manifest with initial snapshot entry
         let mut manifest = Bm25Manifest::new(&graph_source_id);
-        manifest.append(Bm25SnapshotEntry::new(source_t, &snapshot_address));
+        manifest.append(Bm25SnapshotEntry::new(source_t, snapshot_id));
 
         // 6. Publish graph source config record to nameservice
         let config_json = serde_json::to_string(&serde_json::json!({
@@ -300,33 +307,24 @@ where
         }
     }
 
-    /// Write a BM25 index snapshot blob to storage with versioned path.
+    /// Write a BM25 index snapshot blob to CAS (content-addressed storage).
     ///
-    /// Creates a snapshot at `graph-sources/{name}/{branch}/bm25/t{index_t}/snapshot.bin`.
+    /// Uses the graph source namespace so the snapshot lands at
+    /// `graph-sources/{graph_source_id}/snapshots/{hash}.gssnap`. Returns the content ID.
     /// Does NOT update nameservice or the manifest -- callers handle that.
     pub(crate) async fn write_bm25_snapshot_blob(
         &self,
         graph_source_id: &str,
         index: &fluree_db_query::bm25::Bm25Index,
-        index_t: i64,
-    ) -> Result<String> {
+    ) -> Result<ContentId> {
         use fluree_db_query::bm25::serialize;
 
         let bytes = serialize(index)?;
-
-        let (name, branch) = core_alias::split_alias(graph_source_id).map_err(|e| {
-            crate::ApiError::config(format!(
-                "Invalid graph source alias '{}': {}",
-                graph_source_id, e
-            ))
-        })?;
-        let address = format!(
-            "fluree:file://{STORAGE_SEGMENT_GRAPH_SOURCES}/{}/{}/bm25/t{}/snapshot.bin",
-            name, branch, index_t
-        );
-
-        self.storage().write_bytes(&address, &bytes).await?;
-        Ok(address)
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let snapshot_id = cs
+            .put(fluree_db_core::ContentKind::GraphSourceSnapshot, &bytes)
+            .await?;
+        Ok(snapshot_id)
     }
 
     /// Write a BM25 manifest to CAS and publish the manifest address as
@@ -444,7 +442,7 @@ where
             Some(entry) => Ok(Some(SnapshotSelection {
                 graph_source_id: graph_source_id.to_string(),
                 snapshot_t: entry.index_t,
-                snapshot_address: entry.snapshot_address.clone(),
+                snapshot_id: entry.snapshot_id.clone(),
             })),
             None => Ok(None),
         }
@@ -470,10 +468,8 @@ where
                 ))
             })?;
 
-        let bytes = self
-            .storage()
-            .read_bytes(&selection.snapshot_address)
-            .await?;
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let bytes = cs.get(&selection.snapshot_id).await?;
 
         let index = deserialize(&bytes)?;
         Ok((Arc::new(index), selection.snapshot_t))
@@ -494,7 +490,8 @@ where
             crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
 
-        let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let bytes = cs.get(&head.snapshot_id).await?;
         let index = deserialize(&bytes)?;
         Ok(Arc::new(index))
     }
@@ -616,7 +613,8 @@ where
         let head = manifest.head().ok_or_else(|| {
             crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
-        let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let bytes = cs.get(&head.snapshot_id).await?;
         let mut index = deserialize(&bytes)?;
         let old_watermark = index.watermark.get(&source_ledger_alias).unwrap_or(0);
 
@@ -714,23 +712,23 @@ where
         );
 
         // 10. Persist updated index blob
-        let new_address = self
-            .write_bm25_snapshot_blob(graph_source_id, &index, ledger_t)
+        let new_snapshot_id = self
+            .write_bm25_snapshot_blob(graph_source_id, &index)
             .await?;
 
         // 11. Update manifest, trim old snapshots, and publish
         let mut manifest = manifest;
-        manifest.append(Bm25SnapshotEntry::new(ledger_t, &new_address));
+        manifest.append(Bm25SnapshotEntry::new(ledger_t, new_snapshot_id.clone()));
         let removed = manifest.trim(snapshot_retention());
         self.publish_bm25_manifest(graph_source_id, &manifest, ledger_t)
             .await?;
 
         // Best-effort cleanup of old snapshot blobs
-        delete_old_snapshots(self.storage(), &removed).await;
+        delete_old_snapshots(self.storage(), graph_source_id, &removed).await;
 
         info!(
             graph_source_id = %graph_source_id,
-            new_address = %new_address,
+            snapshot_id = %new_snapshot_id,
             trimmed = removed.len(),
             ledger_t = ledger_t,
             "Incremental sync complete"
@@ -798,7 +796,8 @@ where
         let head = manifest.head().ok_or_else(|| {
             crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
-        let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let bytes = cs.get(&head.snapshot_id).await?;
         let mut index = deserialize(&bytes)?;
         let old_watermark = index.watermark.get(&source_ledger).unwrap_or(0);
 
@@ -821,23 +820,23 @@ where
         let update_result = updater.apply_full_sync(&results, ledger_t);
 
         // 6. Persist updated index blob
-        let new_address = self
-            .write_bm25_snapshot_blob(graph_source_id, &index, ledger_t)
+        let new_snapshot_id = self
+            .write_bm25_snapshot_blob(graph_source_id, &index)
             .await?;
 
         // 7. Update manifest, trim old snapshots, and publish
         let mut manifest = manifest;
-        manifest.append(Bm25SnapshotEntry::new(ledger_t, &new_address));
+        manifest.append(Bm25SnapshotEntry::new(ledger_t, new_snapshot_id.clone()));
         let removed = manifest.trim(snapshot_retention());
         self.publish_bm25_manifest(graph_source_id, &manifest, ledger_t)
             .await?;
 
         // Best-effort cleanup of old snapshot blobs
-        delete_old_snapshots(self.storage(), &removed).await;
+        delete_old_snapshots(self.storage(), graph_source_id, &removed).await;
 
         info!(
             graph_source_id = %graph_source_id,
-            new_address = %new_address,
+            snapshot_id = %new_snapshot_id,
             trimmed = removed.len(),
             ledger_t = ledger_t,
             "Full resync complete"
@@ -917,7 +916,8 @@ where
             crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
 
-        let bytes = self.storage().read_bytes(&head.snapshot_address).await?;
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let bytes = cs.get(&head.snapshot_id).await?;
         let index = deserialize(&bytes)?;
 
         Ok((Arc::new(index), sync_result))
@@ -1014,20 +1014,20 @@ where
         let update_result = updater.apply_full_sync(&results, target_t);
 
         // 6. Persist versioned snapshot blob
-        let address = self
-            .write_bm25_snapshot_blob(graph_source_id, &index, target_t)
+        let snapshot_id = self
+            .write_bm25_snapshot_blob(graph_source_id, &index)
             .await?;
 
         // 7. Update manifest, trim old snapshots, and publish
         let mut manifest = manifest;
-        manifest.append(Bm25SnapshotEntry::new(target_t, &address));
+        manifest.append(Bm25SnapshotEntry::new(target_t, snapshot_id));
         let removed = manifest.trim(snapshot_retention());
         let effective_t = manifest.head().map(|h| h.index_t).unwrap_or(target_t);
         self.publish_bm25_manifest(graph_source_id, &manifest, effective_t)
             .await?;
 
         // Best-effort cleanup of old snapshot blobs
-        delete_old_snapshots(self.storage(), &removed).await;
+        delete_old_snapshots(self.storage(), graph_source_id, &removed).await;
 
         info!(
             graph_source_id = %graph_source_id,
@@ -1123,20 +1123,21 @@ where
             "Graph source retracted, cleaning up storage"
         );
 
-        // 4. Collect all addresses to delete (snapshot blobs + manifest itself)
-        let addresses_to_delete: HashSet<String> = manifest
-            .all_snapshot_addresses()
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect();
+        // 4. Collect all snapshot CIDs to delete
+        let snapshot_ids = manifest.all_snapshot_ids();
+        let total = snapshot_ids.len();
 
-        // Note: the manifest CID is tracked in the nameservice, but the
-        // storage address is derivable from the manifest snapshots already collected.
-
-        // 5. Delete all snapshot files
+        // 5. Delete all snapshot files (derive addresses from CIDs)
+        let method = self.storage().storage_method().to_string();
         let mut deleted_snapshots = 0;
-        for addr in &addresses_to_delete {
-            match self.storage().delete(addr).await {
+        for cid in &snapshot_ids {
+            let addr = fluree_db_core::content_address(
+                &method,
+                fluree_db_core::ContentKind::GraphSourceSnapshot,
+                graph_source_id,
+                &cid.digest_hex(),
+            );
+            match self.storage().delete(&addr).await {
                 Ok(()) => {
                     deleted_snapshots += 1;
                 }
@@ -1154,7 +1155,7 @@ where
         info!(
             graph_source_id = %graph_source_id,
             deleted = deleted_snapshots,
-            total = addresses_to_delete.len(),
+            total = total,
             "Drop complete"
         );
 

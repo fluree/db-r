@@ -55,15 +55,15 @@ pub struct EventsQuery {
 }
 
 impl EventsQuery {
-    /// Check if this query matches a given address and kind
+    /// Check if this query matches a given resource ID and kind
     #[cfg(test)]
-    pub fn matches(&self, address: &str, kind: &str) -> bool {
+    pub fn matches(&self, resource_id: &str, kind: &str) -> bool {
         if self.all {
             return true;
         }
         match kind {
-            SSE_KIND_LEDGER => self.ledgers.iter().any(|l| l == address),
-            SSE_KIND_GRAPH_SOURCE => self.graph_sources.iter().any(|v| v == address),
+            SSE_KIND_LEDGER => self.ledgers.iter().any(|l| l == resource_id),
+            SSE_KIND_GRAPH_SOURCE => self.graph_sources.iter().any(|v| v == resource_id),
             _ => false,
         }
     }
@@ -74,7 +74,7 @@ impl EventsQuery {
 struct NsRecordData {
     action: &'static str,
     kind: &'static str,
-    address: String,
+    resource_id: String,
     record: serde_json::Value,
     emitted_at: String,
 }
@@ -84,33 +84,36 @@ struct NsRecordData {
 struct NsRetractedData {
     action: &'static str,
     kind: &'static str,
-    address: String,
+    resource_id: String,
     emitted_at: String,
 }
 
 /// Compute the SSE event ID for a ledger record
-fn ledger_event_id(address: &str, record: &NsRecord) -> String {
-    format!("ledger:{}:{}:{}", address, record.commit_t, record.index_t)
+fn ledger_event_id(resource_id: &str, record: &NsRecord) -> String {
+    format!(
+        "ledger:{}:{}:{}",
+        resource_id, record.commit_t, record.index_t
+    )
 }
 
 /// Compute the SSE event ID for a graph source record
-fn graph_source_event_id(address: &str, record: &GraphSourceRecord) -> String {
+fn graph_source_event_id(resource_id: &str, record: &GraphSourceRecord) -> String {
     // Use index_t + 8-char truncated SHA-256 of config
     let config_hash = sha256_short(&record.config);
     format!(
         "graph-source:{}:{}:{}",
-        address, record.index_t, &config_hash
+        resource_id, record.index_t, &config_hash
     )
 }
 
 /// Compute the SSE event ID for a retraction
-fn retracted_event_id(kind: &str, address: &str) -> String {
+fn retracted_event_id(kind: &str, resource_id: &str) -> String {
     // Include timestamp for ordering across delete/recreate cycles
     let timestamp_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    format!("{}:{}:retracted:{}", kind, address, timestamp_ms)
+    format!("{}:{}:retracted:{}", kind, resource_id, timestamp_ms)
 }
 
 /// Compute 8-char truncated SHA-256 hash
@@ -135,7 +138,7 @@ fn ledger_to_sse_event(record: &NsRecord) -> Event {
     let data = NsRecordData {
         action: "ns-record",
         kind: SSE_KIND_LEDGER,
-        address: ledger_id.clone(),
+        resource_id: ledger_id.clone(),
         record: serde_json::json!({
             "ledger_id": ledger_id,
             "branch": record.branch,
@@ -166,7 +169,7 @@ fn graph_source_to_sse_event(record: &GraphSourceRecord) -> Event {
     let data = NsRecordData {
         action: "ns-record",
         kind: SSE_KIND_GRAPH_SOURCE,
-        address: graph_source_id.clone(),
+        resource_id: graph_source_id.clone(),
         record: serde_json::json!({
             "graph_source_id": graph_source_id,
             "name": record.name,
@@ -189,13 +192,13 @@ fn graph_source_to_sse_event(record: &GraphSourceRecord) -> Event {
 }
 
 /// Create a retracted SSE Event
-fn retracted_sse_event(kind: &'static str, address: &str) -> Event {
-    let event_id = retracted_event_id(kind, address);
+fn retracted_sse_event(kind: &'static str, resource_id: &str) -> Event {
+    let event_id = retracted_event_id(kind, resource_id);
 
     let data = NsRetractedData {
         action: "ns-retracted",
         kind,
-        address: address.to_string(),
+        resource_id: resource_id.to_string(),
         emitted_at: now_iso8601(),
     };
 
@@ -265,8 +268,8 @@ where
     events
 }
 
-/// Extract the address from a NameServiceEvent
-fn event_address(event: &NameServiceEvent) -> &str {
+/// Extract the resource ID (ledger alias or graph source alias) from a NameServiceEvent
+fn event_resource_id(event: &NameServiceEvent) -> &str {
     match event {
         NameServiceEvent::LedgerCommitPublished { ledger_id, .. } => ledger_id,
         NameServiceEvent::LedgerIndexPublished { ledger_id, .. } => ledger_id,
@@ -294,12 +297,12 @@ async fn transform_event<N>(ns: &N, event: NameServiceEvent) -> Option<Event>
 where
     N: NameService + GraphSourcePublisher,
 {
-    let address = event_address(&event).to_string();
+    let resource_id = event_resource_id(&event).to_string();
 
     match event {
         NameServiceEvent::LedgerCommitPublished { .. }
         | NameServiceEvent::LedgerIndexPublished { .. } => {
-            let record = ns.lookup(&address).await.ok()??;
+            let record = ns.lookup(&resource_id).await.ok()??;
             Some(ledger_to_sse_event(&record))
         }
         NameServiceEvent::LedgerRetracted { ledger_id } => {
@@ -307,7 +310,7 @@ where
         }
         NameServiceEvent::GraphSourceConfigPublished { .. }
         | NameServiceEvent::GraphSourceIndexPublished { .. } => {
-            let record = ns.lookup_graph_source(&address).await.ok()??;
+            let record = ns.lookup_graph_source(&resource_id).await.ok()??;
             Some(graph_source_to_sse_event(&record))
         }
         NameServiceEvent::GraphSourceRetracted { address } => {
@@ -452,16 +455,16 @@ pub async fn events(
                 match rx.recv().await {
                     Ok(event) => {
                         // Filter by effective params
-                        let address = event_address(&event);
+                        let resource_id = event_resource_id(&event);
                         let kind = event_kind(&event);
 
                         let matches = if params.all {
                             true
                         } else {
                             match kind {
-                                SSE_KIND_LEDGER => params.ledgers.iter().any(|l| l == address),
+                                SSE_KIND_LEDGER => params.ledgers.iter().any(|l| l == resource_id),
                                 SSE_KIND_GRAPH_SOURCE => {
-                                    params.graph_sources.iter().any(|v| v == address)
+                                    params.graph_sources.iter().any(|v| v == resource_id)
                                 }
                                 _ => false,
                             }

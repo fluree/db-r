@@ -18,7 +18,7 @@ use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState};
 use fluree_db_core::serde::json::{
     raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
 };
-use fluree_db_core::{Db, DbMetadata, DictNovelty, Storage, StorageMethod};
+use fluree_db_core::{Db, DbMetadata, DictNovelty, Storage};
 use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore};
 use fluree_db_query::BinaryRangeProvider;
 use fluree_db_transact::{CommitOpts, TxnOpts};
@@ -170,19 +170,14 @@ async fn property_and_class_statistics_persist_in_db_root() {
 
             assert!(index_t >= commit_t);
             let root_cid = root_id.expect("expected root_id after indexing");
-            let root_address = fluree_db_core::storage::content_address(
-                fluree.storage().storage_method(),
-                fluree_db_core::ContentKind::IndexRoot,
-                alias,
-                &root_cid.digest_hex(),
-            );
 
             let loaded = Db::load(
                 fluree.storage().clone(),
-                &root_address,
+                &root_cid,
+                alias,
             )
             .await
-            .expect("Db::load(root_address)");
+            .expect("Db::load(root_cid)");
 
             let loaded_stats = loaded.stats.as_ref().expect("db.stats should be Some after indexing");
             assert!(loaded_stats.properties.is_some(), "expected db.stats.properties");
@@ -273,16 +268,10 @@ async fn class_statistics_decrement_after_delete_refresh() {
                 unreachable!("helper only returns Completed")
             };
             let root_cid = root_id.expect("expected root_id");
-            let root2 = fluree_db_core::storage::content_address(
-                fluree.storage().storage_method(),
-                fluree_db_core::ContentKind::IndexRoot,
-                alias,
-                &root_cid.digest_hex(),
-            );
 
-            let loaded2 = Db::load(fluree.storage().clone(), &root2)
+            let loaded2 = Db::load(fluree.storage().clone(), &root_cid, alias)
                 .await
-                .expect("Db::load(root2)");
+                .expect("Db::load(root_cid)");
             assert_eq!(class_count(&loaded2, "http://example.org/Person"), Some(2));
         })
         .await;
@@ -334,16 +323,10 @@ async fn statistics_work_with_memory_storage_when_indexed() {
                 unreachable!("helper only returns Completed")
             };
             let root_cid = root_id.expect("expected root_id");
-            let root = fluree_db_core::storage::content_address(
-                fluree.storage().storage_method(),
-                fluree_db_core::ContentKind::IndexRoot,
-                alias,
-                &root_cid.digest_hex(),
-            );
 
-            let loaded = Db::load(fluree.storage().clone(), &root)
+            let loaded = Db::load(fluree.storage().clone(), &root_cid, alias)
                 .await
-                .expect("Db::load(root)");
+                .expect("Db::load(root_cid)");
 
             assert_eq!(property_count(&loaded, "http://example.org/name"), Some(2));
             assert_eq!(property_count(&loaded, "http://example.org/age"), Some(1));
@@ -1066,16 +1049,10 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 unreachable!("helper only returns Completed")
             };
             let root_cid = root_id.expect("expected root_id");
-            let root = fluree_db_core::storage::content_address(
-                fluree.storage().storage_method(),
-                fluree_db_core::ContentKind::IndexRoot,
-                alias,
-                &root_cid.digest_hex(),
-            );
 
-            let loaded = Db::load(fluree.storage().clone(), &root)
+            let loaded = Db::load(fluree.storage().clone(), &root_cid, alias)
                 .await
-                .expect("Db::load(root)");
+                .expect("Db::load(root_cid)");
 
             // Check ex:name: 20 distinct values, 20 distinct subjects
             let name_ndv_values = loaded
@@ -1622,16 +1599,10 @@ async fn large_dataset_statistics_accuracy() {
                 unreachable!("helper only returns Completed")
             };
             let root_cid = root_id.expect("expected root_id");
-            let root = fluree_db_core::storage::content_address(
-                fluree.storage().storage_method(),
-                fluree_db_core::ContentKind::IndexRoot,
-                alias,
-                &root_cid.digest_hex(),
-            );
 
-            let loaded = Db::load(fluree.storage().clone(), &root)
+            let loaded = Db::load(fluree.storage().clone(), &root_cid, alias)
                 .await
-                .expect("Db::load(root)");
+                .expect("Db::load(root_cid)");
 
             // Verify counts
             // ex:name: 100 distinct values, 100 subjects

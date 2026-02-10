@@ -211,15 +211,15 @@ impl PeerSubscriptionTask {
 
                 match data.kind.as_str() {
                     SSE_KIND_LEDGER => {
-                        self.peer_state.remove_ledger(&data.address).await;
-                        tracing::info!(ledger_id = %data.address, "Ledger retracted from remote");
+                        self.peer_state.remove_ledger(&data.resource_id).await;
+                        tracing::info!(ledger_id = %data.resource_id, "Ledger retracted from remote");
 
                         // Evict any cached state for the ledger (no-op if not cached).
-                        self.disconnect_cached_ledger(&data.address).await;
+                        self.disconnect_cached_ledger(&data.resource_id).await;
                     }
                     SSE_KIND_GRAPH_SOURCE => {
-                        self.peer_state.remove_graph_source(&data.address).await;
-                        tracing::info!(graph_source_id = %data.address, "Graph source retracted from remote");
+                        self.peer_state.remove_graph_source(&data.resource_id).await;
+                        tracing::info!(graph_source_id = %data.resource_id, "Graph source retracted from remote");
                     }
                     _ => {
                         tracing::debug!(kind = %data.kind, "Unknown retraction kind");
@@ -390,7 +390,7 @@ fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String>
 struct NsRecordData {
     action: String,
     kind: String,
-    address: String,
+    resource_id: String,
     record: serde_json::Value,
     emitted_at: String,
 }
@@ -401,7 +401,7 @@ struct NsRecordData {
 struct NsRetractedData {
     action: String,
     kind: String,
-    address: String,
+    resource_id: String,
     emitted_at: String,
 }
 

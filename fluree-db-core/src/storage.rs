@@ -488,6 +488,7 @@ pub fn alias_prefix_for_path(alias: &str) -> String {
 /// This determines the directory structure for different content types:
 /// - Commits: `{alias}/commit/{hash}.fcv2`
 /// - Index nodes: `{alias}/index/{ordering}/{hash}.json`
+/// - Graph sources: `graph-sources/{alias}/snapshots/{hash}.gssnap`
 /// - etc.
 pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
     let prefix = alias_prefix_for_path(alias);
@@ -504,6 +505,9 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
         ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli", prefix, hash_hex),
         ContentKind::LedgerConfig => format!("{}/config/{}.json", prefix, hash_hex),
         ContentKind::StatsSketch => format!("{}/index/stats/{}.hll", prefix, hash_hex),
+        ContentKind::GraphSourceSnapshot => {
+            format!("graph-sources/{}/snapshots/{}.gssnap", prefix, hash_hex)
+        }
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
         _ => format!("{}/blob/{}.bin", prefix, hash_hex),

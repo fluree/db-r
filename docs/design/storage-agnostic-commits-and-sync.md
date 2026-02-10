@@ -36,7 +36,7 @@ Integrity failure is terminal -- the entire ingest is aborted.
 
 ### Fallback
 
-When the server does not support the pack endpoint (returns 404 or 405), CLI commands automatically fall back to:
+When the server does not support the pack endpoint (returns 404, 405, 406, or 501), CLI commands automatically fall back to:
 - **Named-remote**: Paginated JSON export via `GET /commits/{ledger}`
 - **Origin-based**: CID chain walk via `GET /storage/objects/{cid}`
 

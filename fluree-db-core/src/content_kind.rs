@@ -43,6 +43,9 @@ pub const CODEC_FLUREE_LEDGER_CONFIG: u64 = FLUREE_CODEC_BASE + 8;
 /// Multicodec for Fluree HLL stats sketch blobs.
 pub const CODEC_FLUREE_STATS_SKETCH: u64 = FLUREE_CODEC_BASE + 9;
 
+/// Multicodec for Fluree graph source snapshot blobs (BM25, vector, etc.).
+pub const CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT: u64 = FLUREE_CODEC_BASE + 10;
+
 // ============================================================================
 // DictKind
 // ============================================================================
@@ -110,6 +113,8 @@ pub enum ContentKind {
     LedgerConfig,
     /// HLL stats sketch blob (per-property HyperLogLog registers for NDV estimation)
     StatsSketch,
+    /// Graph source snapshot blob (serialized BM25/vector index)
+    GraphSourceSnapshot,
 }
 
 // ============================================================================
@@ -131,6 +136,7 @@ impl ContentKind {
             ContentKind::GarbageRecord => CODEC_FLUREE_GARBAGE,
             ContentKind::LedgerConfig => CODEC_FLUREE_LEDGER_CONFIG,
             ContentKind::StatsSketch => CODEC_FLUREE_STATS_SKETCH,
+            ContentKind::GraphSourceSnapshot => CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT,
         }
     }
 
@@ -152,6 +158,7 @@ impl ContentKind {
             CODEC_FLUREE_GARBAGE => Some(ContentKind::GarbageRecord),
             CODEC_FLUREE_LEDGER_CONFIG => Some(ContentKind::LedgerConfig),
             CODEC_FLUREE_STATS_SKETCH => Some(ContentKind::StatsSketch),
+            CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT => Some(ContentKind::GraphSourceSnapshot),
             _ => None,
         }
     }
@@ -168,6 +175,7 @@ impl ContentKind {
             ContentKind::GarbageRecord => "garbage",
             ContentKind::LedgerConfig => "config",
             ContentKind::StatsSketch => "stats-sketch",
+            ContentKind::GraphSourceSnapshot => "graph-source-snapshot",
         }
     }
 }

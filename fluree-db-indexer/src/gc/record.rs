@@ -21,7 +21,7 @@ pub struct GarbageRecord {
     ///
     /// Each entry is a `ContentId.to_string()` value identifying an obsolete
     /// CAS artifact (index leaf, branch, dict, etc.) that was replaced during
-    /// this index refresh. Legacy records may contain raw address strings.
+    /// this index refresh.
     pub garbage: Vec<String>,
     /// Wall-clock timestamp when this record was created (milliseconds since epoch)
     /// Used for time-based GC retention checks
@@ -32,6 +32,12 @@ pub struct GarbageRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::{ContentId, ContentKind};
+
+    /// Helper: create a realistic CID string for test garbage entries.
+    fn test_cid_string(kind: ContentKind, label: &[u8]) -> String {
+        ContentId::new(kind, label).to_string()
+    }
 
     #[test]
     fn test_garbage_record_serialization() {
@@ -39,8 +45,8 @@ mod tests {
             ledger_id: "test:ledger".to_string(),
             t: 42,
             garbage: vec![
-                "fluree:file://test/ledger/index/spot/abc.json".to_string(),
-                "fluree:file://test/ledger/index/spot/def.json".to_string(),
+                test_cid_string(ContentKind::IndexLeaf, b"leaf-abc"),
+                test_cid_string(ContentKind::IndexLeaf, b"leaf-def"),
             ],
             created_at_ms: 1700000000000,
         };
@@ -53,10 +59,12 @@ mod tests {
 
     #[test]
     fn test_garbage_record_json_format() {
+        let cid1 = test_cid_string(ContentKind::IndexBranch, b"branch-1");
+        let cid2 = test_cid_string(ContentKind::IndexBranch, b"branch-2");
         let record = GarbageRecord {
             ledger_id: "test:main".to_string(),
             t: 100,
-            garbage: vec!["addr1".to_string(), "addr2".to_string()],
+            garbage: vec![cid1, cid2],
             created_at_ms: 1700000000000,
         };
 

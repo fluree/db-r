@@ -17,9 +17,7 @@
 //!   to a remote search service via HTTP.
 
 use async_trait::async_trait;
-#[cfg(feature = "vector")]
-use fluree_db_core::ContentStore;
-use fluree_db_core::{Storage, StorageWrite};
+use fluree_db_core::{ContentStore, Storage, StorageWrite};
 use fluree_db_nameservice::{GraphSourcePublisher, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25Index, Bm25IndexProvider, Bm25SearchProvider, Bm25SearchResult};
 use fluree_db_query::error::{QueryError, Result as QueryResult};
@@ -125,10 +123,10 @@ where
 
         // If we have a suitable snapshot, load and return it
         if let Some(entry) = selection {
-            let bytes = self
-                .fluree
-                .storage()
-                .read_bytes(&entry.snapshot_address)
+            let cs =
+                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            let bytes = cs
+                .get(&entry.snapshot_id)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
 
@@ -165,10 +163,12 @@ where
             let selection = manifest.select_snapshot(effective_as_of_t);
 
             if let Some(entry) = selection {
-                let bytes = self
-                    .fluree
-                    .storage()
-                    .read_bytes(&entry.snapshot_address)
+                let cs = fluree_db_core::content_store_for(
+                    self.fluree.storage().clone(),
+                    graph_source_id,
+                );
+                let bytes = cs
+                    .get(&entry.snapshot_id)
                     .await
                     .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
 

@@ -54,16 +54,12 @@ impl Debug for ProxyStorage {
 
 /// Request body for the `/storage/block` endpoint.
 ///
-/// Prefers CID-based requests (parsed from the address) with fallback to
-/// sending the raw address for unrecognized formats.
+/// Both fields are required. The `cid` and `ledger` are derived from
+/// the storage address via [`cid_and_ledger_from_address()`].
 #[derive(Debug, Serialize)]
-struct BlockRequest<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    address: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cid: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ledger: Option<String>,
+struct BlockRequest {
+    cid: String,
+    ledger: String,
 }
 
 /// Try to derive a CID string and ledger alias from a Fluree address.
@@ -212,23 +208,20 @@ impl ProxyStorage {
     /// Returns `FetchOutcome` to distinguish between success, 406, and errors
     /// without using string-based error detection.
     ///
-    /// Sends CID+ledger when the address can be parsed (preferred), falling
-    /// back to address-only for unrecognized formats.
+    /// Derives CID+ledger from the address. Failure to parse is a hard error
+    /// (all storage addresses in the system use the canonical format).
     async fn fetch_with_accept(&self, address: &str, accept: &str) -> FetchOutcome {
         let url = self.block_url();
-        let body = if let Some((cid, ledger)) = cid_and_ledger_from_address(address) {
-            BlockRequest {
-                address: None,
-                cid: Some(cid),
-                ledger: Some(ledger),
-            }
-        } else {
-            BlockRequest {
-                address: Some(address),
-                cid: None,
-                ledger: None,
+        let (cid, ledger) = match cid_and_ledger_from_address(address) {
+            Some(pair) => pair,
+            None => {
+                return FetchOutcome::Error(CoreError::storage(format!(
+                    "Cannot derive CID from address: {}",
+                    address
+                )));
             }
         };
+        let body = BlockRequest { cid, ledger };
 
         let response = match self
             .client

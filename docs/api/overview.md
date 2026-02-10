@@ -223,13 +223,9 @@ Errors return appropriate HTTP status codes with structured error objects:
 
 ```json
 {
-  "error": "TransactionError",
-  "message": "Invalid IRI: not a valid URI",
-  "code": "INVALID_IRI",
-  "details": {
-    "iri": "not a uri",
-    "line": 5
-  }
+  "error": "Invalid IRI: not a valid URI",
+  "status": 400,
+  "@type": "err:db/BadRequest"
 }
 ```
 

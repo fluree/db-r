@@ -20,8 +20,9 @@ use std::sync::Arc;
 /// Commit information in create response
 #[derive(Serialize)]
 pub struct CommitInfo {
-    /// Commit storage address
-    pub address: String,
+    /// Commit content identifier (CID), None for genesis (t=0, no commit exists)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_id: Option<String>,
     /// Commit hash (SHA-256) - empty for genesis
     pub hash: String,
 }
@@ -136,8 +137,7 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
         t: 0,
         tx_id,
         commit: CommitInfo {
-            // Genesis state address
-            address: format!("fluree:memory://{}/main/head", ledger_id),
+            commit_id: None, // genesis has no commit
             hash: String::new(),
         },
     };

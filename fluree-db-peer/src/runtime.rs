@@ -34,7 +34,7 @@ pub trait PeerCallbacks: Send + Sync {
     async fn on_graph_source_updated(&self, _graph_source_id: &str, _state: &GraphSourceState) {}
 
     /// Called when a resource is retracted
-    async fn on_retracted(&self, _kind: &str, _address: &str) {}
+    async fn on_retracted(&self, _kind: &str, _resource_id: &str) {}
 }
 
 /// Default logging-only callbacks
@@ -72,8 +72,8 @@ impl PeerCallbacks for LoggingCallbacks {
         );
     }
 
-    async fn on_retracted(&self, kind: &str, address: &str) {
-        tracing::info!(kind, address, "Resource retracted");
+    async fn on_retracted(&self, kind: &str, resource_id: &str) {
+        tracing::info!(kind, resource_id, "Resource retracted");
     }
 }
 
@@ -159,9 +159,9 @@ impl<C: PeerCallbacks + 'static> PeerRuntime<C> {
                 }
             }
 
-            SseClientEvent::Retracted { kind, address } => {
-                self.state.handle_retracted(&kind, &address).await;
-                self.callbacks.on_retracted(&kind, &address).await;
+            SseClientEvent::Retracted { kind, resource_id } => {
+                self.state.handle_retracted(&kind, &resource_id).await;
+                self.callbacks.on_retracted(&kind, &resource_id).await;
             }
 
             SseClientEvent::Disconnected { reason } => {
@@ -212,7 +212,7 @@ mod tests {
             self.graph_source_updates.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_retracted(&self, _kind: &str, _address: &str) {
+        async fn on_retracted(&self, _kind: &str, _resource_id: &str) {
             self.retractions.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -281,7 +281,7 @@ mod tests {
         runtime
             .handle_event(SseClientEvent::Retracted {
                 kind: "ledger".to_string(),
-                address: "books:main".to_string(),
+                resource_id: "books:main".to_string(),
             })
             .await;
 

@@ -26,7 +26,7 @@ These predicates appear on commit subjects in the txn-meta graph. Each commit pr
 
 | Predicate | Full IRI | Datatype | Description |
 |-----------|----------|----------|-------------|
-| `f:address` | `https://ns.flur.ee/db#address` | `xsd:string` | ContentId of the commit |
+| `f:address` | `https://ns.flur.ee/db#address` | `xsd:string` | Commit ContentId (CID string) |
 | `f:alias` | `https://ns.flur.ee/db#alias` | `xsd:string` | Ledger alias (e.g. `mydb:main`) |
 | `f:v` | `https://ns.flur.ee/db#v` | `xsd:int` | Commit format version |
 | `f:time` | `https://ns.flur.ee/db#time` | `xsd:long` | Commit timestamp (epoch milliseconds) |
@@ -35,7 +35,7 @@ These predicates appear on commit subjects in the txn-meta graph. Each commit pr
 | `f:flakes` | `https://ns.flur.ee/db#flakes` | `xsd:long` | Cumulative flake count |
 | `f:previous` | `https://ns.flur.ee/db#previous` | `@id` (ref) | Reference to previous commit (optional) |
 | `f:author` | `https://ns.flur.ee/db#author` | `xsd:string` | Transaction signer DID (optional) |
-| `f:txn` | `https://ns.flur.ee/db#txn` | `xsd:string` | Transaction storage address (optional) |
+| `f:txn` | `https://ns.flur.ee/db#txn` | `xsd:string` | Transaction ContentId (CID string, optional) |
 | `f:message` | `https://ns.flur.ee/db#message` | `xsd:string` | Commit message (optional) |
 | `f:asserts` | `https://ns.flur.ee/db#asserts` | `xsd:long` | Assertion count in this commit |
 | `f:retracts` | `https://ns.flur.ee/db#retracts` | `xsd:long` | Retraction count in this commit |

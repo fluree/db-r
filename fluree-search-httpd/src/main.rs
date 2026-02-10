@@ -33,7 +33,7 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
-use fluree_db_core::{ContentStore, FileStorage, StorageRead};
+use fluree_db_core::{ContentStore, FileStorage};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::GraphSourcePublisher;
 use fluree_db_query::bm25::{deserialize, Bm25Index, Bm25Manifest};
@@ -178,10 +178,10 @@ impl IndexLoader for FileIndexLoader {
                 message: format!("No snapshot found for {} at t={}", graph_source_id, index_t),
             })?;
 
-        // Load index bytes from storage
-        let bytes = self
-            .storage
-            .read_bytes(&entry.snapshot_address)
+        // Load index bytes via content store
+        let cs = fluree_db_core::content_store_for(self.storage.clone(), graph_source_id);
+        let bytes = cs
+            .get(&entry.snapshot_id)
             .await
             .map_err(|e| ServiceError::Internal {
                 message: format!("Storage error: {}", e),

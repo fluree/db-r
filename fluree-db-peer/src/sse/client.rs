@@ -183,7 +183,7 @@ impl SseClient {
                 let data: NsRetractedEvent = serde_json::from_str(&event.data)?;
                 Ok(Some(SseClientEvent::Retracted {
                     kind: data.kind,
-                    address: data.address,
+                    resource_id: data.resource_id,
                 }))
             }
             Some("snapshot-complete") => {

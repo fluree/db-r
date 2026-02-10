@@ -96,8 +96,8 @@ pub struct SnapshotSelection {
     /// The snapshot's index time (watermark)
     pub snapshot_t: i64,
 
-    /// Storage address of the snapshot
-    pub snapshot_address: String,
+    /// Content identifier of the snapshot
+    pub snapshot_id: ContentId,
 }
 
 // =============================================================================

@@ -36,7 +36,7 @@
 //! };
 //!
 //! let conn = connect_aws(config).await?;
-//! let db = conn.load_db("mydb:main").await?;
+//! let db = conn.load_db("mydb:main").await?; // does NS lookup, then Db::load
 //! ```
 //!
 //! # Example with S3 storage-backed nameservice
@@ -563,21 +563,8 @@ impl AwsConnectionHandle {
             ConnectionError::not_found(format!("Ledger has no index yet: {}", ledger_id))
         })?;
 
-        self.load_db_by_address(&index_id.to_string()).await
-    }
-
-    /// Load a database by index root address
-    ///
-    /// Loads the database directly from the given index root address,
-    /// bypassing the nameservice lookup.
-    ///
-    /// # Arguments
-    ///
-    /// * `root_address` - The index root address (e.g., "fluree:s3://bucket/path/root.json")
-    pub async fn load_db_by_address(&self, root_address: &str) -> Result<Db<S3Storage>> {
         let storage = self.index_storage.clone();
-
-        Ok(Db::load(storage, root_address).await?)
+        Ok(Db::load(storage, &index_id, ledger_id).await?)
     }
 
     /// Look up a ledger record by alias
@@ -646,7 +633,7 @@ impl AwsConnectionHandle {
 /// };
 ///
 /// let conn = connect_aws(config).await?;
-/// let db = conn.load_db("mydb").await?;
+/// let db = conn.load_db("mydb").await?; // does NS lookup, then Db::load
 /// ```
 ///
 /// # Example with S3 storage-backed nameservice

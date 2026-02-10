@@ -7,7 +7,7 @@
 
 use axum::body::Body;
 use fluree_db_api::{Bm25CreateConfig, FlureeBuilder};
-use fluree_db_core::{ContentStore, FileStorage};
+use fluree_db_core::FileStorage;
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_query::bm25::{Analyzer, Bm25Scorer};
 use fluree_search_protocol::{SearchHit, SearchRequest, SearchResponse, PROTOCOL_VERSION};
@@ -44,7 +44,7 @@ mod http_tests {
     use axum::response::IntoResponse;
     use axum::routing::{get, post};
     use axum::{Json, Router};
-    use fluree_db_core::StorageRead;
+    use fluree_db_core::ContentStore;
     use fluree_db_nameservice::GraphSourcePublisher;
     use fluree_db_query::bm25::{deserialize, Bm25Index, Bm25Manifest};
     use fluree_search_service::backend::{
@@ -159,9 +159,9 @@ mod http_tests {
                     message: format!("No snapshot found for {} at t={}", graph_source_id, index_t),
                 })?;
 
-            let bytes = self
-                .storage
-                .read_bytes(&entry.snapshot_address)
+            let cs = fluree_db_core::content_store_for(self.storage.clone(), graph_source_id);
+            let bytes = cs
+                .get(&entry.snapshot_id)
                 .await
                 .map_err(|e| ServiceError::Internal {
                     message: format!("Storage error: {}", e),

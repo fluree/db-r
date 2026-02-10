@@ -300,13 +300,9 @@ If verification fails:
 **Response:**
 ```json
 {
-  "error": "SignatureVerificationFailed",
-  "message": "Invalid signature",
-  "code": "INVALID_SIGNATURE",
-  "details": {
-    "kid": "did:key:z6Mkh...",
-    "reason": "Signature does not match"
-  }
+  "error": "Invalid signature",
+  "status": 401,
+  "@type": "err:auth/InvalidSignature"
 }
 ```
 

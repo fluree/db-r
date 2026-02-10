@@ -45,7 +45,7 @@ pub struct PackIngestResult {
 /// `origin_base_url` should be the **normalized** base URL ending with `/fluree`
 /// (matching the `HttpOriginFetcher.base_url()` convention).
 ///
-/// If the server returns 404/405/406 (pack not supported), returns
+/// If the server returns 404/405/406/501 (pack not supported), returns
 /// `Err(SyncError::PackNotSupported)` for fallback to paginated export.
 pub async fn fetch_and_ingest_pack<S: ContentAddressedWrite>(
     http: &reqwest::Client,
@@ -83,6 +83,7 @@ pub async fn fetch_and_ingest_pack<S: ContentAddressedWrite>(
     if status == reqwest::StatusCode::NOT_FOUND
         || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
         || status == reqwest::StatusCode::NOT_ACCEPTABLE
+        || status == reqwest::StatusCode::NOT_IMPLEMENTED
     {
         return Err(SyncError::PackNotSupported);
     }

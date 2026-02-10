@@ -6,6 +6,7 @@
 //! Run with: cargo test -p fluree-db-connection --test clojure_parity_test -- --ignored
 
 use fluree_db_connection::{connect, ConnectionConfig, ConnectionHandle, StorageType};
+use fluree_db_core::{ContentId, ContentKind};
 use fluree_db_query::{execute_pattern, Term, TriplePattern, VarRegistry};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -23,23 +24,23 @@ fn get_test_db_path() -> Option<PathBuf> {
     }
 }
 
-fn find_root_file(test_db_path: &Path) -> Option<String> {
+/// Ledger alias embedded in the test database path layout.
+const TEST_LEDGER_ID: &str = "test/range-scan:main";
+
+fn find_root_file(test_db_path: &Path) -> Option<ContentId> {
     let root_dir = test_db_path.join("test/range-scan/index/root");
 
     if !root_dir.exists() {
         return None;
     }
 
-    std::fs::read_dir(&root_dir)
+    let entry = std::fs::read_dir(&root_dir)
         .ok()?
         .filter_map(|e| e.ok())
-        .find(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
-        .map(|e| {
-            format!(
-                "fluree:file://test/range-scan/index/root/{}",
-                e.file_name().to_string_lossy()
-            )
-        })
+        .find(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))?;
+
+    let bytes = std::fs::read(entry.path()).ok()?;
+    Some(ContentId::new(ContentKind::IndexRoot, &bytes))
 }
 
 /// Test that Rust can parse Clojure-style JSON-LD config and load same database
@@ -95,7 +96,7 @@ async fn test_connection_parity() {
     ));
 
     // 3. Load database
-    let root_address = match find_root_file(&test_db_path) {
+    let root_id = match find_root_file(&test_db_path) {
         Some(r) => r,
         None => {
             eprintln!("No root file found, skipping");
@@ -104,10 +105,13 @@ async fn test_connection_parity() {
     };
 
     println!("Test database path: {}", test_db_path.display());
-    println!("Root address: {}", root_address);
+    println!("Root CID: {}", root_id);
 
     let db = match conn {
-        ConnectionHandle::File(c) => c.load_db_fresh_cache(&root_address).await.unwrap(),
+        ConnectionHandle::File(c) => c
+            .load_db_fresh_cache(&root_id, TEST_LEDGER_ID)
+            .await
+            .unwrap(),
         _ => panic!("Expected FileConnection"),
     };
 

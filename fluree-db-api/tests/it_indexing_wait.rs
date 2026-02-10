@@ -16,7 +16,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig};
-use fluree_db_core::{Db, StorageMethod};
+use fluree_db_core::Db;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
 use support::start_background_indexer_local;
@@ -88,15 +88,11 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
                     );
                     assert!(root_id.is_some(), "expected a root_id after indexing");
 
-                    let root_address = fluree_db_core::storage::content_address(
-                        fluree.storage().storage_method(),
-                        fluree_db_core::ContentKind::IndexRoot,
-                        "it/index-wait:main",
-                        &root_id.unwrap().digest_hex(),
-                    );
-                    let loaded = Db::load(fluree.storage().clone(), &root_address)
-                        .await
-                        .expect("Db::load(root_address)");
+                    let root_cid = root_id.unwrap();
+                    let loaded =
+                        Db::load(fluree.storage().clone(), &root_cid, "it/index-wait:main")
+                            .await
+                            .expect("Db::load(root_cid)");
                     assert!(
                         loaded.t >= commit_t,
                         "loaded db.t ({}) should be >= commit_t ({})",

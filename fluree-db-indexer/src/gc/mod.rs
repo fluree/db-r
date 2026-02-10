@@ -23,8 +23,7 @@
 //! is harmless since only one indexer wins the publish race.
 //!
 //! The collector resolves CID strings back to storage addresses using
-//! `content_address()` for deletion. Legacy records with raw address strings
-//! are also supported for backwards compatibility.
+//! `content_address()` for deletion.
 //!
 //! ## Time-Based Retention
 //!

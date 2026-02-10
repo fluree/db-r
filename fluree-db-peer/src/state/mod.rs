@@ -121,16 +121,16 @@ impl PeerState {
     }
 
     /// Handle retraction (remove from state)
-    pub async fn handle_retracted(&self, kind: &str, address: &str) {
+    pub async fn handle_retracted(&self, kind: &str, resource_id: &str) {
         match kind {
             SSE_KIND_LEDGER => {
-                self.ledgers.write().await.remove(address);
+                self.ledgers.write().await.remove(resource_id);
             }
             SSE_KIND_GRAPH_SOURCE => {
-                self.graph_sources.write().await.remove(address);
+                self.graph_sources.write().await.remove(resource_id);
             }
             _ => {
-                tracing::warn!(kind, address, "Unknown retraction kind");
+                tracing::warn!(kind, resource_id, "Unknown retraction kind");
             }
         }
     }
