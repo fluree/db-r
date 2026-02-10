@@ -40,17 +40,17 @@
 //!
 //! ## Querying
 //!
-//! Use `db:*` properties (with `"db": "https://ns.flur.ee/db#"` in `@context`) in your query's where clause:
+//! Use `f:*` properties (with `"f": "https://ns.flur.ee/db#"` in `@context`) in your query's where clause:
 //!
 //! ```json
 //! {
 //!   "where": [{
-//!     "db:graphSource": "my-search:main",
-//!     "db:searchText": "rust programming",
-//!     "db:searchResult": {
-//!       "db:resultId": "?doc",
-//!       "db:resultScore": "?score",
-//!       "db:resultLedger": "?source"
+//!     "f:graphSource": "my-search:main",
+//!     "f:searchText": "rust programming",
+//!     "f:searchResult": {
+//!       "f:resultId": "?doc",
+//!       "f:resultScore": "?score",
+//!       "f:resultLedger": "?source"
 //!     }
 //!   }],
 //!   "select": ["?doc", "?score"],

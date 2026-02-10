@@ -1450,10 +1450,10 @@ mod tests {
         let p_time = dicts.predicates.get("https://ns.flur.ee/db#time");
         let p_t = dicts.predicates.get("https://ns.flur.ee/db#t");
         let p_previous = dicts.predicates.get("https://ns.flur.ee/db#previous");
-        assert!(p_address.is_some(), "db:address predicate missing");
-        assert!(p_time.is_some(), "db:time predicate missing");
-        assert!(p_t.is_some(), "db:t predicate missing");
-        assert!(p_previous.is_some(), "db:previous predicate missing");
+        assert!(p_address.is_some(), "f:address predicate missing");
+        assert!(p_time.is_some(), "f:time predicate missing");
+        assert!(p_t.is_some(), "f:t predicate missing");
+        assert!(p_previous.is_some(), "f:previous predicate missing");
 
         // Find the time record and verify it's NUM_INT with DatatypeDictId::LONG
         let time_pid = p_time.unwrap();

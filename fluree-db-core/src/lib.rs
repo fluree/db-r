@@ -59,7 +59,10 @@ pub mod value_id;
 pub mod vec_bi_dict;
 
 // Re-export main types
-pub use address::{extract_identifier, extract_path, parse_fluree_address, ParsedFlureeAddress};
+pub use address::{
+    extract_identifier, extract_ledger_prefix, extract_path, parse_fluree_address,
+    ParsedFlureeAddress,
+};
 pub use alias::{
     format_alias, normalize_alias, parse_alias_with_time, split_alias, split_time_travel_suffix,
     AliasParseError, AliasTimeSpec, ParsedAlias, DEFAULT_BRANCH,
@@ -103,6 +106,7 @@ pub use storage::FileStorage;
 pub use storage::{
     // Helper functions for storage implementations
     alias_prefix_for_path,
+    bridge_content_store,
     content_address,
     content_path,
     sha256_hex,

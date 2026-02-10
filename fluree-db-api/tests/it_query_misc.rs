@@ -884,11 +884,11 @@ async fn untyped_value_matching_parity() {
 
     let q_typed = json!({
         "@context": {
-            "db": "https://ns.flur.ee/db#",
+            "f": "https://ns.flur.ee/db#",
             "xsd": "http://www.w3.org/2001/XMLSchema#"
         },
         "select": "?c",
-        "where": [{"@id": "?c", "db:t": {"@value": commit_t, "@type": "xsd:int"}}]
+        "where": [{"@id": "?c", "f:t": {"@value": commit_t, "@type": "xsd:int"}}]
     });
     let r_typed = fluree
         .query(&ledger2, &q_typed)
@@ -908,9 +908,9 @@ async fn untyped_value_matching_parity() {
     );
 
     let q_untyped = json!({
-        "@context": {"db": "https://ns.flur.ee/db#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "select": "?c",
-        "where": [{"@id": "?c", "db:t": commit_t}]
+        "where": [{"@id": "?c", "f:t": commit_t}]
     });
     let r_untyped = fluree
         .query(&ledger2, &q_untyped)

@@ -26,9 +26,12 @@
 //! ```
 
 use crate::error::{LedgerError, Result};
-use fluree_db_core::{Db, Flake, FlakeMeta, FlakeValue, IndexType, OverlayProvider, Sid, Storage};
+use fluree_db_core::{
+    address::parse_fluree_address, bridge_content_store, extract_ledger_prefix, ContentId, Db,
+    Flake, FlakeMeta, FlakeValue, IndexType, OverlayProvider, Sid, Storage,
+};
 use fluree_db_nameservice::NameService;
-use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
+use fluree_db_novelty::{generate_commit_flakes, trace_commits, trace_commits_by_id, Novelty};
 use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB, JSON_LD, RDF, XSD};
 use fluree_vocab::{rdf_names, xsd_names};
 use futures::StreamExt;
@@ -121,6 +124,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                 let (novelty, ns_delta) = Self::load_novelty_range(
                     storage,
                     commit_addr,
+                    record.commit_head_id.as_ref(),
                     index_t,
                     target_t,
                     &record.ledger_id,
@@ -165,6 +169,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
     async fn load_novelty_range(
         storage: S,
         head_address: &str,
+        head_id: Option<&ContentId>,
         index_t: i64,
         target_t: i64,
         ledger_id: &str,
@@ -181,8 +186,25 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
         let mut novelty = Novelty::new(index_t);
         let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
 
-        // trace_commits streams from HEAD backwards, stopping at index_t
-        let stream = trace_commits(storage, head_address.to_string(), index_t);
+        // CID-first when parseable address available for method discovery
+        let use_cid_path = head_id.is_some() && parse_fluree_address(head_address).is_some();
+
+        // Use a type-erased stream to avoid duplicating the processing loop
+        let stream: std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = fluree_db_novelty::Result<fluree_db_novelty::Commit>>
+                    + Send,
+            >,
+        > = if let (true, Some(cid)) = (use_cid_path, head_id) {
+            let parsed = parse_fluree_address(head_address).unwrap();
+            let method = parsed.method.to_string();
+            let prefix =
+                extract_ledger_prefix(head_address).unwrap_or_else(|| ledger_id.to_string());
+            let store = bridge_content_store(storage, &prefix, &method);
+            Box::pin(trace_commits_by_id(store, cid.clone(), index_t))
+        } else {
+            Box::pin(trace_commits(storage, head_address.to_string(), index_t))
+        };
         futures::pin_mut!(stream);
 
         let mut commit_count = 0;
@@ -371,7 +393,7 @@ impl<S: Storage> OverlayProvider for HistoricalLedgerView<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{ContentId, ContentKind, FlakeValue, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_nameservice::Publisher;
 
@@ -462,7 +484,10 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Create a ledger with commits up to t=5
-        ns.publish_commit("test:main", "commit-5", 5).await.unwrap();
+        let cid = ContentId::new(ContentKind::Commit, b"commit-5");
+        ns.publish_commit("test:main", 5, &cid, Some("commit-5"))
+            .await
+            .unwrap();
 
         // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new(5, vec![make_flake(1, 1, 100, 5)]);
@@ -481,7 +506,10 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Create a ledger with commits but no index
-        ns.publish_commit("test:main", "commit-5", 5).await.unwrap();
+        let cid = ContentId::new(ContentKind::Commit, b"commit-5");
+        ns.publish_commit("test:main", 5, &cid, Some("commit-5"))
+            .await
+            .unwrap();
 
         // Store the commit as v2 binary
         let commit = fluree_db_novelty::Commit::new(5, vec![make_flake(1, 1, 100, 5)]);

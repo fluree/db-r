@@ -269,6 +269,7 @@ mod tests {
 
         let mut record = TrackingRecord::new(origin(), "mydb:main");
         record.commit_ref = Some(RefValue {
+            id: None,
             address: Some("commit-1".to_string()),
             t: 5,
         });
@@ -382,12 +383,14 @@ mod tests {
 
         let mut record = TrackingRecord::new(origin(), "mydb:main");
         record.commit_ref = Some(RefValue {
+            id: None,
             address: Some("commit-1".to_string()),
             t: 1,
         });
         store.set_tracking(&record).await.unwrap();
 
         record.commit_ref = Some(RefValue {
+            id: None,
             address: Some("commit-2".to_string()),
             t: 5,
         });

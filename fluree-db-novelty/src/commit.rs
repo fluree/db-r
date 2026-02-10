@@ -600,6 +600,47 @@ pub fn trace_commits<S: Storage + Clone + 'static>(
     })
 }
 
+/// Stream commits from head backwards using CID-based chain walking.
+///
+/// This is the CID-first replacement for [`trace_commits`]. Instead of
+/// address-based loading with `replace_hash_in_address()` hacks, it uses
+/// a [`ContentStore`] to load commits by their content identifier directly,
+/// following `commit.previous_id()` CID links.
+///
+/// # Linear History Required
+///
+/// Same constraint as [`trace_commits`]: assumes linear commit history with
+/// monotonically increasing `t`. See [module documentation](self) for details.
+///
+/// # Arguments
+///
+/// * `store` - Content store for loading commits by CID
+/// * `head_id` - CID of the most recent commit to start from
+/// * `stop_at_t` - Stop when `commit.t <= stop_at_t` (typically the index t)
+pub fn trace_commits_by_id<C: ContentStore + Clone + 'static>(
+    store: C,
+    head_id: ContentId,
+    stop_at_t: i64,
+) -> impl Stream<Item = Result<Commit>> {
+    stream::unfold(Some(head_id), move |cid| {
+        let store = store.clone();
+        async move {
+            let cid = cid?;
+            let commit = match load_commit_by_id(&store, &cid).await {
+                Ok(c) => c,
+                Err(e) => return Some((Err(e), None)),
+            };
+
+            if commit.t <= stop_at_t {
+                return None;
+            }
+
+            let next = commit.previous_id().cloned();
+            Some((Ok(commit), next))
+        }
+    })
+}
+
 /// Replace the filename stem (between the last `/` and last `.`) with `new_hash_hex`.
 ///
 /// Used to derive the previous commit address from the current commit address
@@ -622,7 +663,8 @@ fn replace_hash_in_address(address: &str, new_hash_hex: &str) -> Option<String> 
 mod tests {
     use super::*;
     use fluree_db_core::{
-        ContentKind, Flake, FlakeValue, Sid, CODEC_FLUREE_COMMIT, CODEC_FLUREE_INDEX_ROOT,
+        ContentKind, Flake, FlakeValue, MemoryContentStore, Sid, CODEC_FLUREE_COMMIT,
+        CODEC_FLUREE_INDEX_ROOT,
     };
 
     fn make_test_content_id(kind: ContentKind, label: &str) -> ContentId {
@@ -829,5 +871,95 @@ mod tests {
         assert_eq!(TxnMetaValue::double(f64::NAN), None);
         assert_eq!(TxnMetaValue::double(f64::INFINITY), None);
         assert_eq!(TxnMetaValue::double(f64::NEG_INFINITY), None);
+    }
+
+    // =========================================================================
+    // trace_commits_by_id tests
+    // =========================================================================
+
+    /// Helper: serialize a commit to v2 binary, store in a MemoryContentStore,
+    /// and return the CID.
+    async fn store_commit(store: &MemoryContentStore, commit: &Commit) -> ContentId {
+        let result = crate::commit_v2::write_commit(commit, false, None).unwrap();
+        store.put(ContentKind::Commit, &result.bytes).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_trace_commits_by_id_single_commit() {
+        use futures::StreamExt;
+
+        let store = MemoryContentStore::new();
+        let commit = Commit::new(1, vec![make_test_flake(1, 2, 42, 1)]);
+        let cid = store_commit(&store, &commit).await;
+
+        let commits: Vec<_> = trace_commits_by_id(store, cid, 0)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].t, 1);
+    }
+
+    #[tokio::test]
+    async fn test_trace_commits_by_id_chain() {
+        use futures::StreamExt;
+
+        let store = MemoryContentStore::new();
+
+        // Build a 3-commit chain: c1 <- c2 <- c3
+        let c1 = Commit::new(1, vec![make_test_flake(1, 2, 10, 1)]);
+        let c1_id = store_commit(&store, &c1).await;
+
+        let c2 = Commit::new(2, vec![make_test_flake(2, 3, 20, 2)])
+            .with_previous_ref(CommitRef::new(c1_id.clone()));
+        let c2_id = store_commit(&store, &c2).await;
+
+        let c3 = Commit::new(3, vec![make_test_flake(3, 4, 30, 3)])
+            .with_previous_ref(CommitRef::new(c2_id.clone()));
+        let c3_id = store_commit(&store, &c3).await;
+
+        // Trace from head (c3), stop_at_t=0 → all 3 commits
+        let commits: Vec<_> = trace_commits_by_id(store.clone(), c3_id.clone(), 0)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0].t, 3);
+        assert_eq!(commits[1].t, 2);
+        assert_eq!(commits[2].t, 1);
+    }
+
+    #[tokio::test]
+    async fn test_trace_commits_by_id_stop_at_t() {
+        use futures::StreamExt;
+
+        let store = MemoryContentStore::new();
+
+        let c1 = Commit::new(1, vec![]);
+        let c1_id = store_commit(&store, &c1).await;
+
+        let c2 = Commit::new(2, vec![]).with_previous_ref(CommitRef::new(c1_id.clone()));
+        let c2_id = store_commit(&store, &c2).await;
+
+        let c3 = Commit::new(3, vec![]).with_previous_ref(CommitRef::new(c2_id.clone()));
+        let c3_id = store_commit(&store, &c3).await;
+
+        // stop_at_t=1 → only c3 and c2 (c1 has t=1, excluded by t <= stop_at_t)
+        let commits: Vec<_> = trace_commits_by_id(store, c3_id, 1)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].t, 3);
+        assert_eq!(commits[1].t, 2);
     }
 }

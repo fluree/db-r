@@ -1482,8 +1482,8 @@ pub mod db {
 /// Fluree DB search query key local names (under `https://ns.flur.ee/db#`)
 ///
 /// These are the local names for BM25/vector search pattern keys in queries.
-/// Users must declare `"db": "https://ns.flur.ee/db#"` in their `@context`
-/// and use keys like `"db:searchText"`, or use the full IRI directly.
+/// Users must declare `"f": "https://ns.flur.ee/db#"` in their `@context`
+/// and use keys like `"f:searchText"`, or use the full IRI directly.
 pub mod search {
     /// db:searchText - BM25 search query text
     pub const SEARCH_TEXT: &str = "searchText";

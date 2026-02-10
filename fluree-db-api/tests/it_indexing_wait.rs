@@ -84,6 +84,7 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
                 fluree_db_api::IndexOutcome::Completed {
                     index_t,
                     root_address,
+                    ..
                 } => {
                     assert!(
                         index_t >= commit_t,

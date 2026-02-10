@@ -122,11 +122,13 @@ impl SyncDriver {
             let existing = self.tracking.get_tracking(remote, ledger_id).await?;
 
             let new_commit = Some(RefValue {
+                id: record.commit_head_id.clone(),
                 address: record.commit_address.clone(),
                 t: record.commit_t,
             });
             let new_index = if record.index_t > 0 || record.index_address.is_some() {
                 Some(RefValue {
+                    id: record.index_head_id.clone(),
                     address: record.index_address.clone(),
                     t: record.index_t,
                 })
@@ -225,6 +227,7 @@ impl SyncDriver {
                         Ok(PullResult::FastForwarded {
                             ledger_id: local_alias.to_string(),
                             from: RefValue {
+                                id: None,
                                 address: None,
                                 t: 0,
                             },
@@ -236,6 +239,7 @@ impl SyncDriver {
                         Ok(PullResult::Diverged {
                             ledger_id: local_alias.to_string(),
                             local: actual.unwrap_or(RefValue {
+                                id: None,
                                 address: None,
                                 t: 0,
                             }),
@@ -424,6 +428,7 @@ impl SyncDriver {
             }
             CasResult::Conflict { actual } => {
                 let remote = actual.unwrap_or(RefValue {
+                    id: None,
                     address: None,
                     t: 0,
                 });
@@ -452,11 +457,16 @@ mod tests {
     use super::*;
     use crate::client::RemoteSnapshot;
     use crate::config::{MemorySyncConfigStore, UpstreamConfig};
+    use fluree_db_core::{ContentId, ContentKind};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_nameservice::{MemoryTrackingStore, NsRecord, Publisher};
 
     fn origin() -> RemoteName {
         RemoteName::new("origin")
+    }
+
+    fn test_commit_id(label: &str) -> ContentId {
+        ContentId::new(ContentKind::Commit, label.as_bytes())
     }
 
     /// Mock remote client backed by an in-memory nameservice
@@ -546,7 +556,12 @@ mod tests {
         // Publish something on the remote
         remote
             .ns
-            .publish_commit("mydb:main", "commit-1", 5)
+            .publish_commit(
+                "mydb:main",
+                5,
+                &test_commit_id("commit-1"),
+                Some("commit-1"),
+            )
             .await
             .unwrap();
 
@@ -563,7 +578,12 @@ mod tests {
 
         remote
             .ns
-            .publish_commit("mydb:main", "commit-1", 5)
+            .publish_commit(
+                "mydb:main",
+                5,
+                &test_commit_id("commit-1"),
+                Some("commit-1"),
+            )
             .await
             .unwrap();
 
@@ -592,14 +612,24 @@ mod tests {
 
         // Create local at t=1
         local
-            .publish_commit("mydb:main", "commit-1", 1)
+            .publish_commit(
+                "mydb:main",
+                1,
+                &test_commit_id("commit-1"),
+                Some("commit-1"),
+            )
             .await
             .unwrap();
 
         // Remote at t=5
         remote
             .ns
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit(
+                "mydb:main",
+                5,
+                &test_commit_id("commit-5"),
+                Some("commit-5"),
+            )
             .await
             .unwrap();
 
@@ -640,12 +670,22 @@ mod tests {
 
         // Both at t=5 with same address
         local
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit(
+                "mydb:main",
+                5,
+                &test_commit_id("commit-5"),
+                Some("commit-5"),
+            )
             .await
             .unwrap();
         remote
             .ns
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit(
+                "mydb:main",
+                5,
+                &test_commit_id("commit-5"),
+                Some("commit-5"),
+            )
             .await
             .unwrap();
 
@@ -673,14 +713,24 @@ mod tests {
 
         // Local ahead at t=10
         local
-            .publish_commit("mydb:main", "commit-10", 10)
+            .publish_commit(
+                "mydb:main",
+                10,
+                &test_commit_id("commit-10"),
+                Some("commit-10"),
+            )
             .await
             .unwrap();
 
         // Remote at t=5
         remote
             .ns
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit(
+                "mydb:main",
+                5,
+                &test_commit_id("commit-5"),
+                Some("commit-5"),
+            )
             .await
             .unwrap();
 
@@ -724,7 +774,12 @@ mod tests {
             .unwrap();
 
         local
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit(
+                "mydb:main",
+                5,
+                &test_commit_id("commit-5"),
+                Some("commit-5"),
+            )
             .await
             .unwrap();
 
@@ -753,13 +808,23 @@ mod tests {
         // Remote has data already
         remote
             .ns
-            .publish_commit("mydb:main", "commit-1", 1)
+            .publish_commit(
+                "mydb:main",
+                1,
+                &test_commit_id("commit-1"),
+                Some("commit-1"),
+            )
             .await
             .unwrap();
 
         // Local has different data
         local
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit(
+                "mydb:main",
+                5,
+                &test_commit_id("commit-5"),
+                Some("commit-5"),
+            )
             .await
             .unwrap();
 
@@ -782,7 +847,12 @@ mod tests {
         let (local, _remote, driver, _config) = setup_driver().await;
 
         local
-            .publish_commit("mydb:main", "commit-1", 1)
+            .publish_commit(
+                "mydb:main",
+                1,
+                &test_commit_id("commit-1"),
+                Some("commit-1"),
+            )
             .await
             .unwrap();
 

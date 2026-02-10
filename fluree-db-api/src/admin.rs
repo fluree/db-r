@@ -137,6 +137,8 @@ pub struct TriggerIndexResult {
     pub index_t: i64,
     /// Storage address of the index root
     pub root_address: String,
+    /// Content identifier of the index root (when available)
+    pub root_id: Option<fluree_db_core::ContentId>,
 }
 
 /// Result of reindex operation
@@ -148,6 +150,8 @@ pub struct ReindexResult {
     pub index_t: i64,
     /// Storage address of the new index root
     pub root_address: String,
+    /// Content identifier of the index root
+    pub root_id: fluree_db_core::ContentId,
     /// Build statistics
     pub stats: fluree_db_indexer::IndexStats,
 }
@@ -514,6 +518,7 @@ where
                 ledger_id,
                 index_t: 0,
                 root_address: String::new(),
+                root_id: None,
             });
         }
 
@@ -532,12 +537,14 @@ where
             Ok(IndexOutcome::Completed {
                 index_t,
                 root_address,
+                root_id,
             }) => {
                 info!(ledger_id = %ledger_id, index_t = index_t, "Indexing completed");
                 Ok(TriggerIndexResult {
                     ledger_id,
                     index_t,
                     root_address,
+                    root_id,
                 })
             }
             Ok(IndexOutcome::Failed(msg)) => {
@@ -630,7 +637,12 @@ where
 
         // 5. Publish new index (allows same t for reindex via AdminPublisher)
         self.nameservice
-            .publish_index_allow_equal(&ledger_id, &index_result.root_address, index_result.index_t)
+            .publish_index_allow_equal(
+                &ledger_id,
+                index_result.index_t,
+                &index_result.root_id,
+                Some(&index_result.root_address),
+            )
             .await?;
 
         info!(
@@ -663,6 +675,7 @@ where
             ledger_id,
             index_t: index_result.index_t,
             root_address: index_result.root_address,
+            root_id: index_result.root_id,
             stats: index_result.stats,
         })
     }

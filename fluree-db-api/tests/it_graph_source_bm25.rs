@@ -668,15 +668,15 @@ async fn bm25_query_connection_with_idx_pattern() {
     // - IriMatch binding for cross-ledger joins
     // - Join with ledger data to get author
     let idx_query = json!({
-        "@context": { "ex":"http://example.org/", "db": "https://ns.flur.ee/db#" },
+        "@context": { "ex":"http://example.org/", "f": "https://ns.flur.ee/db#" },
         "from": alias,
         "where": [
             // Search the BM25 index for "rust" FIRST - produces initial bindings
             {
-                "db:graphSource": &created.graph_source_id,
-                "db:searchText": "rust",
-                "db:searchLimit": 10,
-                "db:searchResult": {"db:resultId": "?doc", "db:resultScore": "?score"}
+                "f:graphSource": &created.graph_source_id,
+                "f:searchText": "rust",
+                "f:searchLimit": 10,
+                "f:searchResult": {"f:resultId": "?doc", "f:resultScore": "?score"}
             },
             // Join with ledger data to get author
             { "@id": "?doc", "ex:author": "?author" }

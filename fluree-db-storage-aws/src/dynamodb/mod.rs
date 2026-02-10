@@ -18,6 +18,7 @@ use aws_sdk_dynamodb::types::{
 use aws_sdk_dynamodb::Client;
 use aws_smithy_types::timeout::TimeoutConfig;
 use fluree_db_core::alias::{self as core_alias, DEFAULT_BRANCH};
+use fluree_db_core::ContentId;
 use fluree_db_nameservice::{
     AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
     GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
@@ -167,6 +168,10 @@ impl DynamoDbNameService {
             .and_then(|h| h.get(ATTR_COMMIT_ADDRESS))
             .and_then(|v| v.as_s().ok())
             .cloned();
+        let commit_head_id = head
+            .and_then(|h| h.get(ATTR_COMMIT_ID))
+            .and_then(|v| v.as_s().ok())
+            .and_then(|s| s.parse::<ContentId>().ok());
         let commit_t: i64 = head
             .and_then(|h| h.get(ATTR_COMMIT_T))
             .and_then(|v| v.as_n().ok())
@@ -178,6 +183,10 @@ impl DynamoDbNameService {
             .and_then(|i| i.get(ATTR_INDEX_ADDRESS))
             .and_then(|v| v.as_s().ok())
             .cloned();
+        let index_head_id = index
+            .and_then(|i| i.get(ATTR_INDEX_ID))
+            .and_then(|v| v.as_s().ok())
+            .and_then(|s| s.parse::<ContentId>().ok());
         let index_t: i64 = index
             .and_then(|i| i.get(ATTR_INDEX_T))
             .and_then(|v| v.as_n().ok())
@@ -195,8 +204,10 @@ impl DynamoDbNameService {
             name,
             branch,
             commit_address,
+            commit_head_id,
             commit_t,
             index_address,
+            index_head_id,
             index_t,
             default_context,
             retracted,
@@ -323,11 +334,11 @@ impl DynamoDbNameService {
         }
     }
 
-    /// Map RefKind → (address_attr, t_attr).
-    fn ref_kind_attrs(kind: RefKind) -> (&'static str, &'static str) {
+    /// Map RefKind → (address_attr, id_attr, t_attr).
+    fn ref_kind_attrs(kind: RefKind) -> (&'static str, &'static str, &'static str) {
         match kind {
-            RefKind::CommitHead => (ATTR_COMMIT_ADDRESS, ATTR_COMMIT_T),
-            RefKind::IndexHead => (ATTR_INDEX_ADDRESS, ATTR_INDEX_T),
+            RefKind::CommitHead => (ATTR_COMMIT_ADDRESS, ATTR_COMMIT_ID, ATTR_COMMIT_T),
+            RefKind::IndexHead => (ATTR_INDEX_ADDRESS, ATTR_INDEX_ID, ATTR_INDEX_T),
         }
     }
 
@@ -614,29 +625,38 @@ impl Publisher for DynamoDbNameService {
     async fn publish_commit(
         &self,
         alias: &str,
-        commit_addr: &str,
         commit_t: i64,
+        commit_id: &ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), NameServiceError> {
         let pk = Self::normalize(alias);
         let now = Self::now_epoch_ms().to_string();
 
-        let result = self
+        let mut update_parts = vec!["#ci = :cid", "#ct = :t", "#ua = :now"];
+        let mut request = self
             .client
             .update_item()
             .table_name(&self.table_name)
             .key(ATTR_PK, AttributeValue::S(pk.clone()))
             .key(ATTR_SK, AttributeValue::S(SK_HEAD.to_string()))
-            .update_expression("SET #ca = :addr, #ct = :t, #ua = :now")
             .condition_expression("attribute_exists(#pk) AND #ct < :t")
             .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_names("#ca", ATTR_COMMIT_ADDRESS)
+            .expression_attribute_names("#ci", ATTR_COMMIT_ID)
             .expression_attribute_names("#ct", ATTR_COMMIT_T)
             .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
-            .expression_attribute_values(":addr", AttributeValue::S(commit_addr.to_string()))
+            .expression_attribute_values(":cid", AttributeValue::S(commit_id.to_string()))
             .expression_attribute_values(":t", AttributeValue::N(commit_t.to_string()))
-            .expression_attribute_values(":now", AttributeValue::N(now))
-            .send()
-            .await;
+            .expression_attribute_values(":now", AttributeValue::N(now));
+
+        if let Some(addr) = address_hint {
+            update_parts.push("#ca = :addr");
+            request = request
+                .expression_attribute_names("#ca", ATTR_COMMIT_ADDRESS)
+                .expression_attribute_values(":addr", AttributeValue::S(addr.to_string()));
+        }
+
+        let update_expr = format!("SET {}", update_parts.join(", "));
+        let result = request.update_expression(update_expr).send().await;
 
         match result {
             Ok(_) => Ok(()),
@@ -658,10 +678,11 @@ impl Publisher for DynamoDbNameService {
     async fn publish_index(
         &self,
         alias: &str,
-        index_addr: &str,
         index_t: i64,
+        index_id: &ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), NameServiceError> {
-        self.update_index_item(alias, index_addr, index_t, "#it < :t")
+        self.update_index_item(alias, index_t, index_id, address_hint, "#it < :t")
             .await
     }
 
@@ -696,8 +717,9 @@ impl DynamoDbNameService {
     async fn update_index_item(
         &self,
         alias: &str,
-        index_addr: &str,
         index_t: i64,
+        index_id: &ContentId,
+        address_hint: Option<&str>,
         condition: &str,
     ) -> std::result::Result<(), NameServiceError> {
         let pk = Self::normalize(alias);
@@ -706,23 +728,31 @@ impl DynamoDbNameService {
         // Prepend attribute_exists to catch uninitialized aliases.
         let full_condition = format!("attribute_exists(#pk) AND {condition}");
 
-        let result = self
+        let mut update_parts = vec!["#ii = :iid", "#it = :t", "#ua = :now"];
+        let mut request = self
             .client
             .update_item()
             .table_name(&self.table_name)
             .key(ATTR_PK, AttributeValue::S(pk.clone()))
             .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
-            .update_expression("SET #ia = :addr, #it = :t, #ua = :now")
             .condition_expression(full_condition)
             .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_names("#ia", ATTR_INDEX_ADDRESS)
+            .expression_attribute_names("#ii", ATTR_INDEX_ID)
             .expression_attribute_names("#it", ATTR_INDEX_T)
             .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
-            .expression_attribute_values(":addr", AttributeValue::S(index_addr.to_string()))
+            .expression_attribute_values(":iid", AttributeValue::S(index_id.to_string()))
             .expression_attribute_values(":t", AttributeValue::N(index_t.to_string()))
-            .expression_attribute_values(":now", AttributeValue::N(now))
-            .send()
-            .await;
+            .expression_attribute_values(":now", AttributeValue::N(now));
+
+        if let Some(addr) = address_hint {
+            update_parts.push("#ia = :addr");
+            request = request
+                .expression_attribute_names("#ia", ATTR_INDEX_ADDRESS)
+                .expression_attribute_values(":addr", AttributeValue::S(addr.to_string()));
+        }
+
+        let update_expr = format!("SET {}", update_parts.join(", "));
+        let result = request.update_expression(update_expr).send().await;
 
         match result {
             Ok(_) => Ok(()),
@@ -754,7 +784,7 @@ impl DynamoDbNameService {
     ) -> std::result::Result<(), NameServiceError> {
         // Reject setting a watermark without a pointer — avoids a weird
         // "t is advanced but there's nothing to read" state.
-        if new.address.is_none() && new.t > 0 {
+        if new.address.is_none() && new.id.is_none() && new.t > 0 {
             return Err(NameServiceError::invalid_alias(format!(
                 "Cannot create ref with t={} but no address for {pk}",
                 new.t
@@ -800,6 +830,12 @@ impl DynamoDbNameService {
                         AttributeValue::S(addr.clone()),
                     );
                 }
+                if let Some(ref id) = new.id {
+                    head.insert(
+                        ATTR_COMMIT_ID.to_string(),
+                        AttributeValue::S(id.to_string()),
+                    );
+                }
                 head.insert(
                     ATTR_COMMIT_T.to_string(),
                     AttributeValue::N(new.t.to_string()),
@@ -822,6 +858,9 @@ impl DynamoDbNameService {
                         ATTR_INDEX_ADDRESS.to_string(),
                         AttributeValue::S(addr.clone()),
                     );
+                }
+                if let Some(ref id) = new.id {
+                    index.insert(ATTR_INDEX_ID.to_string(), AttributeValue::S(id.to_string()));
                 }
                 index.insert(
                     ATTR_INDEX_T.to_string(),
@@ -897,10 +936,11 @@ impl AdminPublisher for DynamoDbNameService {
     async fn publish_index_allow_equal(
         &self,
         alias: &str,
-        index_addr: &str,
         index_t: i64,
+        index_id: &ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), NameServiceError> {
-        self.update_index_item(alias, index_addr, index_t, "#it <= :t")
+        self.update_index_item(alias, index_t, index_id, address_hint, "#it <= :t")
             .await
     }
 }
@@ -916,7 +956,7 @@ impl RefPublisher for DynamoDbNameService {
     ) -> std::result::Result<Option<RefValue>, NameServiceError> {
         let pk = Self::normalize(alias);
         let sk = Self::ref_kind_sk(kind);
-        let (addr_attr, t_attr) = Self::ref_kind_attrs(kind);
+        let (addr_attr, id_attr, t_attr) = Self::ref_kind_attrs(kind);
 
         let response = self
             .client
@@ -932,17 +972,22 @@ impl RefPublisher for DynamoDbNameService {
         match response.item() {
             Some(item) => {
                 let address = item.get(addr_attr).and_then(|v| v.as_s().ok()).cloned();
+                let id = item
+                    .get(id_attr)
+                    .and_then(|v| v.as_s().ok())
+                    .and_then(|s| s.parse::<ContentId>().ok());
                 let t: i64 = item
                     .get(t_attr)
                     .and_then(|v| v.as_n().ok())
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
-                Ok(Some(RefValue { address, t }))
+                Ok(Some(RefValue { id, address, t }))
             }
             None => {
                 // Item missing — check if meta exists (fallback)
                 if self.meta_exists(&pk).await? {
                     Ok(Some(RefValue {
+                        id: None,
                         address: None,
                         t: 0,
                     }))
@@ -962,7 +1007,7 @@ impl RefPublisher for DynamoDbNameService {
     ) -> std::result::Result<CasResult, NameServiceError> {
         let pk = Self::normalize(alias);
         let sk = Self::ref_kind_sk(kind);
-        let (addr_attr, t_attr) = Self::ref_kind_attrs(kind);
+        let (addr_attr, id_attr, t_attr) = Self::ref_kind_attrs(kind);
 
         // ── Case 1: expected = None ─────────────────────────────────────
         // Caller expects the ref doesn't exist. Matches StorageNameService
@@ -995,13 +1040,12 @@ impl RefPublisher for DynamoDbNameService {
 
         // ── Case 2: expected unborn (address=None, t=0) ─────────────────
         if exp.address.is_none() && exp.t == 0 {
-            let result = self
+            let mut request = self
                 .client
                 .update_item()
                 .table_name(&self.table_name)
                 .key(ATTR_PK, AttributeValue::S(pk.clone()))
                 .key(ATTR_SK, AttributeValue::S(sk.to_string()))
-                .update_expression("SET #addr = :new_addr, #t = :new_t, #ua = :now")
                 .condition_expression(
                     "(attribute_not_exists(#addr) OR attribute_type(#addr, :null_type)) AND #t = :zero",
                 )
@@ -1018,9 +1062,18 @@ impl RefPublisher for DynamoDbNameService {
                 .expression_attribute_values(":new_t", AttributeValue::N(new.t.to_string()))
                 .expression_attribute_values(":now", AttributeValue::N(Self::now_epoch_ms().to_string()))
                 .expression_attribute_values(":null_type", AttributeValue::S("NULL".to_string()))
-                .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
-                .send()
-                .await;
+                .expression_attribute_values(":zero", AttributeValue::N("0".to_string()));
+
+            let update_expr = if let Some(ref id) = new.id {
+                request = request
+                    .expression_attribute_names("#id", id_attr)
+                    .expression_attribute_values(":new_id", AttributeValue::S(id.to_string()));
+                "SET #addr = :new_addr, #id = :new_id, #t = :new_t, #ua = :now"
+            } else {
+                "SET #addr = :new_addr, #t = :new_t, #ua = :now"
+            };
+
+            let result = request.update_expression(update_expr).send().await;
 
             return match result {
                 Ok(_) => Ok(CasResult::Updated),
@@ -1040,13 +1093,12 @@ impl RefPublisher for DynamoDbNameService {
             .as_ref()
             .expect("address must be Some in case 3");
 
-        let result = self
+        let mut request = self
             .client
             .update_item()
             .table_name(&self.table_name)
             .key(ATTR_PK, AttributeValue::S(pk.clone()))
             .key(ATTR_SK, AttributeValue::S(sk.to_string()))
-            .update_expression("SET #addr = :new_addr, #t = :new_t, #ua = :now")
             .condition_expression("#addr = :exp_addr AND #t = :exp_t")
             .expression_attribute_names("#addr", addr_attr)
             .expression_attribute_names("#t", t_attr)
@@ -1064,9 +1116,18 @@ impl RefPublisher for DynamoDbNameService {
                 AttributeValue::N(Self::now_epoch_ms().to_string()),
             )
             .expression_attribute_values(":exp_addr", AttributeValue::S(exp_addr.clone()))
-            .expression_attribute_values(":exp_t", AttributeValue::N(exp.t.to_string()))
-            .send()
-            .await;
+            .expression_attribute_values(":exp_t", AttributeValue::N(exp.t.to_string()));
+
+        let update_expr = if let Some(ref id) = new.id {
+            request = request
+                .expression_attribute_names("#id", id_attr)
+                .expression_attribute_values(":new_id", AttributeValue::S(id.to_string()));
+            "SET #addr = :new_addr, #id = :new_id, #t = :new_t, #ua = :now"
+        } else {
+            "SET #addr = :new_addr, #t = :new_t, #ua = :now"
+        };
+
+        let result = request.update_expression(update_expr).send().await;
 
         match result {
             Ok(_) => Ok(CasResult::Updated),
@@ -1985,7 +2046,7 @@ mod tests {
     #[test]
     fn test_items_to_ns_record_wrong_kind() {
         let pk = "search:main";
-        let items = vec![make_meta_gs(pk, "search", "main", "db:Bm25Index")];
+        let items = vec![make_meta_gs(pk, "search", "main", "f:Bm25Index")];
 
         assert!(DynamoDbNameService::items_to_ns_record(pk, &items).is_none());
     }
@@ -2004,7 +2065,7 @@ mod tests {
     fn test_items_to_gs_record_full() {
         let pk = "search:main";
         let items = vec![
-            make_meta_gs(pk, "search", "main", "db:Bm25Index"),
+            make_meta_gs(pk, "search", "main", "f:Bm25Index"),
             make_config_gs(pk, r#"{"k1":1.2}"#),
             make_index(pk, Some("snap-001"), 42),
         ];
@@ -2025,7 +2086,7 @@ mod tests {
     fn test_items_to_gs_record_unborn_index() {
         let pk = "search:main";
         let items = vec![
-            make_meta_gs(pk, "search", "main", "db:Bm25Index"),
+            make_meta_gs(pk, "search", "main", "f:Bm25Index"),
             make_config_gs(pk, "{}"),
             make_index(pk, None, 0),
         ];

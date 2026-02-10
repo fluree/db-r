@@ -37,9 +37,26 @@ pub async fn run(
         .commit_address
         .ok_or_else(|| CliError::NotFound(format!("ledger '{}' has no commits", alias)))?;
 
-    // Walk commit chain
+    // Walk commit chain (CID-first when available)
     let storage = fluree.storage().clone();
-    let stream = fluree_db_novelty::trace_commits(storage, head_address, 0);
+    let use_cid_path = record.commit_head_id.is_some()
+        && fluree_db_core::address::parse_fluree_address(&head_address).is_some();
+    let stream: std::pin::Pin<
+        Box<dyn futures::Stream<Item = fluree_db_novelty::Result<fluree_db_novelty::Commit>>>,
+    > = if let (true, Some(cid)) = (use_cid_path, &record.commit_head_id) {
+        let parsed = fluree_db_core::address::parse_fluree_address(&head_address).unwrap();
+        let method = parsed.method.to_string();
+        let prefix =
+            fluree_db_core::extract_ledger_prefix(&head_address).unwrap_or_else(|| address.clone());
+        let store = fluree_db_core::bridge_content_store(storage, &prefix, &method);
+        Box::pin(fluree_db_novelty::trace_commits_by_id(
+            store,
+            cid.clone(),
+            0,
+        ))
+    } else {
+        Box::pin(fluree_db_novelty::trace_commits(storage, head_address, 0))
+    };
     let mut stream = std::pin::pin!(stream);
     let mut shown = 0usize;
     let limit = count.unwrap_or(usize::MAX);

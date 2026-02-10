@@ -22,6 +22,7 @@ parking_lot = "0.12"
 async-stream = "0.3"
 
 [dev-dependencies]
+fluree-db-core = { path = "../fluree-db-core" }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "test-util"] }
 wiremock = { workspace = true }
 tempfile = "3.19"

@@ -307,6 +307,7 @@ impl Default for LedgerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::{ContentId, ContentKind};
 
     #[test]
     fn test_loaded_ledger_handle_new() {
@@ -375,7 +376,7 @@ mod tests {
         // Process commit event
         registry.on_ns_event(&NameServiceEvent::LedgerCommitPublished {
             ledger_id: "test:main".to_string(),
-            commit_address: "addr".to_string(),
+            commit_id: ContentId::new(ContentKind::Commit, b"test-commit"),
             commit_t: 42,
         });
         assert_eq!(handle.commit_t(), 42);
@@ -383,7 +384,7 @@ mod tests {
         // Process index event
         registry.on_ns_event(&NameServiceEvent::LedgerIndexPublished {
             ledger_id: "test:main".to_string(),
-            index_address: "idx-addr".to_string(),
+            index_id: ContentId::new(ContentKind::IndexRoot, b"test-index"),
             index_t: 40,
         });
         assert_eq!(handle.index_t(), 40);
@@ -391,7 +392,7 @@ mod tests {
         // Untracked ledger should be ignored
         registry.on_ns_event(&NameServiceEvent::LedgerCommitPublished {
             ledger_id: "other:main".to_string(),
-            commit_address: "addr".to_string(),
+            commit_id: ContentId::new(ContentKind::Commit, b"other-commit"),
             commit_t: 100,
         });
         assert_eq!(registry.len(), 1);

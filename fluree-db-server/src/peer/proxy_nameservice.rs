@@ -52,8 +52,10 @@ impl NsRecordResponse {
             name: self.ledger_id,
             branch: self.branch,
             commit_address: self.commit_address,
+            commit_head_id: None,
             commit_t: self.commit_t,
             index_address: self.index_address,
+            index_head_id: None,
             index_t: self.index_t,
             default_context: None, // Not exposed via proxy API
             retracted: self.retracted,

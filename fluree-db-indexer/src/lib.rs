@@ -101,9 +101,9 @@ pub struct IndexResult {
     pub root_address: String,
     /// Content identifier of the index root (derived from SHA-256 of root bytes).
     ///
-    /// Present when the root hash is available from the storage write result.
-    /// Consumers that need identity should prefer this over `root_address`.
-    pub root_id: Option<fluree_db_core::ContentId>,
+    /// Always present — derived from the content hash of the index root during build,
+    /// or from the persisted CID / address hash during early-return.
+    pub root_id: fluree_db_core::ContentId,
     /// Transaction time the index is current through
     pub index_t: i64,
     /// Ledger ID (name:branch format)
@@ -160,21 +160,25 @@ where
     // If index is already current, return it
     if let Some(ref index_addr) = record.index_address {
         if record.index_t >= record.commit_t {
-            // Derive ContentId from the existing index address hash
-            let root_id =
+            // Prefer persisted CID; fall back to extracting hash from the address
+            let root_id = record.index_head_id.clone().or_else(|| {
                 fluree_db_core::storage::extract_hash_from_address(index_addr).and_then(|h| {
                     fluree_db_core::ContentId::from_hex_digest(
                         fluree_db_core::CODEC_FLUREE_INDEX_ROOT,
                         &h,
                     )
-                });
-            return Ok(IndexResult {
-                root_address: index_addr.clone(),
-                root_id,
-                index_t: record.index_t,
-                ledger_id: ledger_id.to_string(),
-                stats: IndexStats::default(),
+                })
             });
+            if let Some(root_id) = root_id {
+                return Ok(IndexResult {
+                    root_address: index_addr.clone(),
+                    root_id,
+                    index_t: record.index_t,
+                    ledger_id: ledger_id.to_string(),
+                    stats: IndexStats::default(),
+                });
+            }
+            // Neither persisted CID nor address hash available; fall through to rebuild
         }
     }
 
@@ -650,7 +654,13 @@ where
             let root_id = fluree_db_core::ContentId::from_hex_digest(
                 fluree_db_core::CODEC_FLUREE_INDEX_ROOT,
                 &write_result.content_hash,
-            );
+            )
+            .ok_or_else(|| {
+                IndexerError::StorageWrite(format!(
+                    "invalid content_hash from write result: {}",
+                    write_result.content_hash
+                ))
+            })?;
 
             Ok(IndexResult {
                 root_address: write_result.address,
@@ -1564,7 +1574,12 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 /// Publish index result to nameservice
 pub async fn publish_index_result<P: Publisher>(publisher: &P, result: &IndexResult) -> Result<()> {
     publisher
-        .publish_index(&result.ledger_id, &result.root_address, result.index_t)
+        .publish_index(
+            &result.ledger_id,
+            result.index_t,
+            &result.root_id,
+            Some(&result.root_address),
+        )
         .await
         .map_err(|e| IndexerError::NameService(e.to_string()))
 }

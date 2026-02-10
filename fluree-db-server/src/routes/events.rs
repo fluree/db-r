@@ -129,6 +129,9 @@ fn ledger_to_sse_event(record: &NsRecord) -> Event {
     let ledger_id = format!("{}:{}", record.name, record.branch);
     let event_id = ledger_event_id(&ledger_id, record);
 
+    let commit_head_id = record.commit_head_id.as_ref().map(|id| id.to_string());
+    let index_head_id = record.index_head_id.as_ref().map(|id| id.to_string());
+
     let data = NsRecordData {
         action: "ns-record",
         kind: SSE_KIND_LEDGER,
@@ -136,8 +139,11 @@ fn ledger_to_sse_event(record: &NsRecord) -> Event {
         record: serde_json::json!({
             "ledger_id": ledger_id,
             "branch": record.branch,
+            // Identity (storage-agnostic): preferred for sync logic.
+            "commit_head_id": commit_head_id,
             "commit_address": record.commit_address,
             "commit_t": record.commit_t,
+            "index_head_id": index_head_id,
             "index_address": record.index_address,
             "index_t": record.index_t,
             "retracted": record.retracted,
@@ -515,8 +521,10 @@ mod tests {
             name: "test".to_string(),
             branch: "main".to_string(),
             commit_address: Some("commit-addr".to_string()),
+            commit_head_id: None,
             commit_t: 42,
             index_address: Some("index-addr".to_string()),
+            index_head_id: None,
             index_t: 40,
             default_context: None,
             retracted: false,

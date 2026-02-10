@@ -77,6 +77,8 @@ pub struct LedgerSnapshot<S> {
     pub head_commit: Option<String>,
     /// Content identifier of the head commit (identity)
     pub head_commit_id: Option<fluree_db_core::ContentId>,
+    /// Content identifier of the current index root (identity)
+    pub head_index_id: Option<fluree_db_core::ContentId>,
     /// Nameservice record (if loaded via nameservice)
     pub ns_record: Option<NsRecord>,
     /// Binary columnar index store (v2 only).
@@ -99,6 +101,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
             t: state.t(),
             head_commit: state.head_commit.clone(),
             head_commit_id: state.head_commit_id.clone(),
+            head_index_id: state.head_index_id.clone(),
             ns_record: state.ns_record.clone(),
             binary_store: None,
         }
@@ -139,6 +142,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
             dict_novelty,
             head_commit: self.head_commit,
             head_commit_id: self.head_commit_id,
+            head_index_id: self.head_index_id,
             ns_record: self.ns_record,
             binary_store: self.binary_store.map(|store| TypeErasedStore(store)),
         }
@@ -342,6 +346,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     pub async fn apply_index_v2(
         &self,
         index_address: &str,
+        index_id: Option<&fluree_db_core::ContentId>,
         storage: &S,
         cache_dir: &std::path::Path,
         leaflet_cache: Option<Arc<LeafletCache>>,
@@ -396,7 +401,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
         {
             let mut state = self.inner.state.lock().await;
             state
-                .apply_loaded_db(db, index_address)
+                .apply_loaded_db(db, index_address, index_id)
                 .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {}", e)))?;
             *self.inner.binary_store.lock().await = Some(arc_store);
             state.binary_store = Some(te_store);
@@ -1323,8 +1328,10 @@ mod tests {
             name: "test:main".to_string(),
             branch: "main".to_string(),
             commit_address: commit_addr.map(String::from),
+            commit_head_id: None,
             commit_t,
             index_address: index_addr.map(String::from),
+            index_head_id: None,
             index_t,
             default_context: None,
             retracted: false,

@@ -71,7 +71,7 @@ struct GraphSourceSseRecord {
     address: String,
     name: String,
     branch: String,
-    /// String form of graph source type, e.g. "db:Bm25Index"
+    /// String form of graph source type, e.g. "f:Bm25Index"
     source_type: String,
     config: String,
     dependencies: Vec<String>,
@@ -122,8 +122,10 @@ fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
         name: ledger_name,
         branch,
         commit_address: record.commit_address,
+        commit_head_id: None,
         commit_t: record.commit_t,
         index_address: record.index_address,
+        index_head_id: None,
         index_t: record.index_t,
         default_context: None,
         retracted: record.retracted,
@@ -227,7 +229,7 @@ mod tests {
                     "graph_source_id": "search:main",
                     "name": "search",
                     "branch": "main",
-                    "source_type": "db:Bm25Index",
+                    "source_type": "f:Bm25Index",
                     "config": "{\"k1\":1.2}",
                     "dependencies": ["books:main"],
                     "index_address": null,

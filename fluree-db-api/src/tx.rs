@@ -757,7 +757,7 @@ where
                 );
                 (
                     CommitReceipt {
-                        address: String::new(),
+                        address: None,
                         commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
@@ -852,7 +852,7 @@ where
                 );
                 (
                     CommitReceipt {
-                        address: String::new(),
+                        address: None,
                         commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
@@ -951,7 +951,7 @@ where
                 );
                 (
                     CommitReceipt {
-                        address: String::new(),
+                        address: None,
                         commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,

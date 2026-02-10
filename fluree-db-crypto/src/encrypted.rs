@@ -616,7 +616,7 @@ mod tests {
 
         // Verify the address format is correct
         assert!(result.address.contains("mydb/main/commit/"));
-        assert!(result.address.ends_with(".json"));
+        assert!(result.address.ends_with(".fcv2"));
 
         // Verify size_bytes reports plaintext size, not encrypted size
         assert_eq!(result.size_bytes, plaintext.len());

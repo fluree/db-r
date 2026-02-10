@@ -205,7 +205,7 @@ mod tests {
         let json = r#"{
             "ledgers": [
                 {
-                    "address": "mydb:main",
+                    "ledger_id": "mydb:main",
                     "name": "mydb",
                     "branch": "main",
                     "commit_address": "fluree:file://commit/abc",

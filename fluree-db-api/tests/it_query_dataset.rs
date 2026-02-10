@@ -1140,7 +1140,7 @@ async fn dataset_time_travel_at_time_iso() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
+    let commit1 = load_commit(fluree.storage(), tx1.receipt.address.as_ref().unwrap())
         .await
         .unwrap();
     let time1 = commit1.time.expect("commit should have ISO timestamp");
@@ -1311,7 +1311,7 @@ async fn dataset_time_travel_at_commit_sha() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
+    let commit1 = load_commit(fluree.storage(), tx1.receipt.address.as_ref().unwrap())
         .await
         .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
@@ -1360,7 +1360,7 @@ async fn dataset_time_travel_at_commit_sha_short_prefix() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
+    let commit1 = load_commit(fluree.storage(), tx1.receipt.address.as_ref().unwrap())
         .await
         .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");
@@ -1411,7 +1411,7 @@ async fn dataset_time_travel_alias_syntax_sha() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
+    let commit1 = load_commit(fluree.storage(), tx1.receipt.address.as_ref().unwrap())
         .await
         .unwrap();
     let commit_id = commit1.id.expect("commit should have content-address ID");

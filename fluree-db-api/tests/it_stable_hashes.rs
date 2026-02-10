@@ -61,10 +61,14 @@ async fn commit_id_has_valid_sha256_format() {
         digest_hex
     );
 
-    // Verify address is non-empty and contains the alias
+    // Verify address is present and non-empty
     assert!(
-        !result.receipt.address.is_empty(),
-        "commit address should not be empty"
+        result
+            .receipt
+            .address
+            .as_ref()
+            .is_some_and(|a| !a.is_empty()),
+        "commit address should be present and non-empty"
     );
 }
 
@@ -145,7 +149,7 @@ async fn commit_id_consistent_within_session() {
     // The head commit address should match what we got from the transaction
     assert_eq!(
         reloaded.head_commit.as_ref(),
-        Some(&address),
+        address.as_ref(),
         "reloaded ledger should have the same head commit address"
     );
 

@@ -1,6 +1,6 @@
 use axum::body::Body;
 use fluree_db_api::{ExportCommitsResponse, PushCommitsRequest};
-use fluree_db_core::{ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid};
+use fluree_db_core::{ContentId, Flake, FlakeMeta, FlakeValue, Sid};
 use fluree_db_novelty::{Commit, CommitRef};
 use fluree_db_server::config::{AdminAuthMode, DataAuthMode, EventsAuthMode};
 use fluree_db_server::{routes::build_router, AppState, ServerConfig, TelemetryConfig};
@@ -52,7 +52,10 @@ fn json_contains_string(v: &JsonValue, needle: &str) -> bool {
 fn make_commit_bytes(t: i64, previous: Option<&str>, flakes: Vec<Flake>) -> Vec<u8> {
     let mut c = Commit::new(t, flakes);
     if let Some(prev) = previous {
-        let prev_cid = ContentId::new(ContentKind::Commit, prev.as_bytes());
+        let hex = fluree_db_core::storage::extract_hash_from_address(prev)
+            .expect("valid fluree address for previous ref");
+        let prev_cid = ContentId::from_hex_digest(fluree_db_core::CODEC_FLUREE_COMMIT, &hex)
+            .expect("valid hex digest");
         c = c.with_previous_ref(CommitRef::new(prev_cid));
     }
     let res = fluree_db_novelty::commit_v2::write_commit(&c, true, None).expect("write_commit");

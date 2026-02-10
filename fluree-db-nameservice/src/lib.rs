@@ -50,6 +50,7 @@ pub use tracking_file::FileTrackingStore;
 
 use async_trait::async_trait;
 use fluree_db_core::alias;
+use fluree_db_core::ContentId;
 use fluree_vocab::ns_types;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -73,14 +74,29 @@ pub struct NsRecord {
     /// Branch name (e.g., "main")
     pub branch: String,
 
-    /// Latest commit address (storage address or CID string)
+    /// Latest commit address (transitional storage location hint).
+    /// Used by read paths that still require `storage.read_bytes(address)`.
+    /// Will be removed once ContentStore is the primary interface.
     pub commit_address: Option<String>,
+
+    /// Content identifier for the head commit (primary identity).
+    /// When present, this is the authoritative identity for CAS comparisons
+    /// and commit-chain integrity checks.
+    #[serde(default)]
+    pub commit_head_id: Option<ContentId>,
 
     /// Transaction time of latest commit
     pub commit_t: i64,
 
-    /// Latest index address (storage address or CID string, may lag behind commit)
+    /// Latest index address (transitional storage location hint).
+    /// Used by read paths that still require `storage.read_bytes(address)`.
+    /// Will be removed once ContentStore is the primary interface.
     pub index_address: Option<String>,
+
+    /// Content identifier for the head index root (primary identity).
+    /// When present, this is the authoritative identity for index lookups.
+    #[serde(default)]
+    pub index_head_id: Option<ContentId>,
 
     /// Transaction time of latest index
     pub index_t: i64,
@@ -104,8 +120,10 @@ impl NsRecord {
             name,
             branch,
             commit_address: None,
+            commit_head_id: None,
             commit_t: 0,
             index_address: None,
+            index_head_id: None,
             index_t: 0,
             default_context: None,
             retracted: false,
@@ -173,33 +191,33 @@ impl GraphSourceType {
         }
     }
 
-    /// Convert to the compact JSON-LD @type string using `db:` prefix.
+    /// Convert to the compact JSON-LD @type string using `f:` prefix.
     ///
-    /// Returns the compact form (e.g., `"db:Bm25Index"`) suitable for use in
-    /// JSON files where the `@context` provides `{"db": "https://ns.flur.ee/db#"}`.
+    /// Returns the compact form (e.g., `"f:Bm25Index"`) suitable for use in
+    /// JSON files where the `@context` provides `{"f": "https://ns.flur.ee/db#"}`.
     pub fn to_type_string(&self) -> String {
         match self {
-            GraphSourceType::Bm25 => "db:Bm25Index".to_string(),
-            GraphSourceType::Vector => "db:HnswIndex".to_string(),
-            GraphSourceType::Geo => "db:GeoIndex".to_string(),
-            GraphSourceType::R2rml => "db:R2rmlMapping".to_string(),
-            GraphSourceType::Iceberg => "db:IcebergMapping".to_string(),
+            GraphSourceType::Bm25 => "f:Bm25Index".to_string(),
+            GraphSourceType::Vector => "f:HnswIndex".to_string(),
+            GraphSourceType::Geo => "f:GeoIndex".to_string(),
+            GraphSourceType::R2rml => "f:R2rmlMapping".to_string(),
+            GraphSourceType::Iceberg => "f:IcebergMapping".to_string(),
             GraphSourceType::Unknown(s) => s.clone(),
         }
     }
 
     /// Parse from a JSON-LD @type string.
     ///
-    /// Accepts both compact (`db:Bm25Index`) and full IRI
+    /// Accepts compact (`f:Bm25Index`) and full IRI
     /// (`https://ns.flur.ee/db#Bm25Index`) forms, plus fuzzy matching as fallback.
     pub fn from_type_string(s: &str) -> Self {
         match s {
             // Compact forms (primary, used in ns@v2 files)
-            "db:Bm25Index" => GraphSourceType::Bm25,
-            "db:HnswIndex" => GraphSourceType::Vector,
-            "db:GeoIndex" => GraphSourceType::Geo,
-            "db:R2rmlMapping" => GraphSourceType::R2rml,
-            "db:IcebergMapping" => GraphSourceType::Iceberg,
+            "f:Bm25Index" => GraphSourceType::Bm25,
+            "f:HnswIndex" => GraphSourceType::Vector,
+            "f:GeoIndex" => GraphSourceType::Geo,
+            "f:R2rmlMapping" => GraphSourceType::R2rml,
+            "f:IcebergMapping" => GraphSourceType::Iceberg,
             // Full IRI forms
             ns_types::BM25_INDEX => GraphSourceType::Bm25,
             ns_types::HNSW_INDEX => GraphSourceType::Vector,
@@ -351,20 +369,37 @@ pub trait Publisher: Debug + Send + Sync {
     ///
     /// Only updates if: `(not exists) OR (new_t > existing_t)`
     ///
+    /// `commit_id` is the primary identity (ContentId). `address_hint` is an optional
+    /// transitional storage location for backends that still use address-based reads.
+    ///
     /// This is called by the transactor after each successful commit.
-    async fn publish_commit(&self, ledger_id: &str, commit_addr: &str, commit_t: i64)
-        -> Result<()>;
+    async fn publish_commit(
+        &self,
+        ledger_id: &str,
+        commit_t: i64,
+        commit_id: &ContentId,
+        address_hint: Option<&str>,
+    ) -> Result<()>;
 
     /// Publish a new index
     ///
     /// Only updates if: `(not exists) OR (new_t > existing_t)` - STRICTLY monotonic.
+    ///
+    /// `index_id` is the primary identity (ContentId). `address_hint` is an optional
+    /// transitional storage location for backends that still use address-based reads.
     ///
     /// This is called by the indexer after successfully writing new index roots.
     /// The index is published to a separate file/attribute to avoid contention
     /// with commit publishing.
     ///
     /// Note: "equal t prefers index file" is a READ-TIME merge rule, not a write rule.
-    async fn publish_index(&self, ledger_id: &str, index_addr: &str, index_t: i64) -> Result<()>;
+    async fn publish_index(
+        &self,
+        ledger_id: &str,
+        index_t: i64,
+        index_id: &ContentId,
+        address_hint: Option<&str>,
+    ) -> Result<()>;
 
     /// Retract a ledger
     ///
@@ -391,13 +426,17 @@ pub trait AdminPublisher: Publisher {
     /// this method allows overwriting when t == existing_t. This is needed for admin
     /// operations like `reindex()` where we rebuild to the same t with a new root address.
     ///
+    /// `index_id` is the primary identity (ContentId). `address_hint` is an optional
+    /// transitional storage location.
+    ///
     /// Note: This does NOT allow t < existing_t to preserve invariants for time-travel
     /// and snapshot history.
     async fn publish_index_allow_equal(
         &self,
         ledger_id: &str,
-        index_addr: &str,
         index_t: i64,
+        index_id: &ContentId,
+        address_hint: Option<&str>,
     ) -> Result<()>;
 }
 
@@ -505,13 +544,13 @@ pub enum NameServiceEvent {
     /// A ledger commit head was advanced.
     LedgerCommitPublished {
         ledger_id: String,
-        commit_address: String,
+        commit_id: ContentId,
         commit_t: i64,
     },
     /// A ledger index head was advanced.
     LedgerIndexPublished {
         ledger_id: String,
-        index_address: String,
+        index_id: ContentId,
         index_t: i64,
     },
     /// A ledger was retracted.
@@ -576,16 +615,26 @@ pub enum RefKind {
     IndexHead,
 }
 
-/// A ref value: an optional address + transaction-time watermark.
+/// A ref value: identity + optional address + transaction-time watermark.
+///
+/// **Priority rule**: If `id` is present, it is the authoritative identity for CAS
+/// comparisons. `address` is a best-effort location hint for storage backends that
+/// still use address-based reads. All RefPublisher implementations must compare `id`
+/// fields when both sides have them.
 ///
 /// Semantics when returned from [`RefPublisher::get_ref`]:
-/// - `Some(RefValue { address: None, t: 0 })` — ref exists but is "unborn"
+/// - `Some(RefValue { id: None, address: None, t: 0 })` — ref exists but is "unborn"
 ///   (ledger initialised, no commit yet — analogous to git's unborn HEAD).
-/// - `Some(RefValue { address: Some(..), t })` — ref exists with a value.
+/// - `Some(RefValue { id: Some(..), .. })` — ref exists with a CID identity.
 /// - `None` (at the `Option` level) — ledger ID/ref is completely unknown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefValue {
-    /// Address of the commit or index root. `None` means "unborn".
+    /// Content identifier — the **identity** of the referenced object.
+    /// When present, this is the authoritative comparison key for CAS operations.
+    pub id: Option<ContentId>,
+    /// Storage address — transitional location hint for the current backend.
+    /// Used by read paths that still require `storage.read_bytes(address)`.
+    /// Will be removed once ContentStore is the primary interface.
     pub address: Option<String>,
     /// Monotonic watermark (transaction time).
     pub t: i64,
@@ -607,8 +656,9 @@ pub enum CasResult {
 
 /// Explicit ref-level CAS operations for sync.
 ///
-/// CAS compares on **address** (the ref identity — like git's "expected old
-/// OID"). `t` serves as a **kind-dependent monotonic guard**:
+/// CAS compares on **identity** — preferring `id` (ContentId) when both sides
+/// have it, falling back to `address` comparison otherwise. `t` serves as a
+/// **kind-dependent monotonic guard**:
 ///
 /// | Kind         | Guard             | Rationale                          |
 /// |--------------|-------------------|------------------------------------|
@@ -1036,14 +1086,14 @@ mod tests {
 
     #[test]
     fn test_graph_source_type_to_string() {
-        // to_type_string returns compact "db:" prefixed forms
-        assert_eq!(GraphSourceType::Bm25.to_type_string(), "db:Bm25Index");
-        assert_eq!(GraphSourceType::Vector.to_type_string(), "db:HnswIndex");
-        assert_eq!(GraphSourceType::Geo.to_type_string(), "db:GeoIndex");
-        assert_eq!(GraphSourceType::R2rml.to_type_string(), "db:R2rmlMapping");
+        // to_type_string returns compact "f:" prefixed forms
+        assert_eq!(GraphSourceType::Bm25.to_type_string(), "f:Bm25Index");
+        assert_eq!(GraphSourceType::Vector.to_type_string(), "f:HnswIndex");
+        assert_eq!(GraphSourceType::Geo.to_type_string(), "f:GeoIndex");
+        assert_eq!(GraphSourceType::R2rml.to_type_string(), "f:R2rmlMapping");
         assert_eq!(
             GraphSourceType::Iceberg.to_type_string(),
-            "db:IcebergMapping"
+            "f:IcebergMapping"
         );
         assert_eq!(
             GraphSourceType::Unknown("https://example.com/Custom".to_string()).to_type_string(),
@@ -1053,27 +1103,6 @@ mod tests {
 
     #[test]
     fn test_graph_source_type_from_string() {
-        // Compact "db:" prefixed forms (primary)
-        assert_eq!(
-            GraphSourceType::from_type_string("db:Bm25Index"),
-            GraphSourceType::Bm25
-        );
-        assert_eq!(
-            GraphSourceType::from_type_string("db:HnswIndex"),
-            GraphSourceType::Vector
-        );
-        assert_eq!(
-            GraphSourceType::from_type_string("db:GeoIndex"),
-            GraphSourceType::Geo
-        );
-        assert_eq!(
-            GraphSourceType::from_type_string("db:R2rmlMapping"),
-            GraphSourceType::R2rml
-        );
-        assert_eq!(
-            GraphSourceType::from_type_string("db:IcebergMapping"),
-            GraphSourceType::Iceberg
-        );
         // Full IRI forms
         assert_eq!(
             GraphSourceType::from_type_string(ns_types::BM25_INDEX),

@@ -10,8 +10,18 @@ pub struct LedgerRecord {
     pub ledger_id: String,
     #[serde(default)]
     pub branch: Option<String>,
+    /// Storage-agnostic identity of the head commit (CID string).
+    ///
+    /// This field is optional for backward compatibility with older servers.
+    #[serde(default)]
+    pub commit_head_id: Option<String>,
     pub commit_address: Option<String>,
     pub commit_t: i64,
+    /// Storage-agnostic identity of the head index root (CID string).
+    ///
+    /// This field is optional for backward compatibility with older servers.
+    #[serde(default)]
+    pub index_head_id: Option<String>,
     pub index_address: Option<String>,
     pub index_t: i64,
     #[serde(default)]

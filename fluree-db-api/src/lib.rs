@@ -371,19 +371,25 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
     async fn publish_commit(
         &self,
         alias: &str,
-        commit_addr: &str,
         commit_t: i64,
+        commit_id: &fluree_db_core::ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.publish_commit(alias, commit_addr, commit_t).await
+        self.0
+            .publish_commit(alias, commit_t, commit_id, address_hint)
+            .await
     }
 
     async fn publish_index(
         &self,
         alias: &str,
-        index_addr: &str,
         index_t: i64,
+        index_id: &fluree_db_core::ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.publish_index(alias, index_addr, index_t).await
+        self.0
+            .publish_index(alias, index_t, index_id, address_hint)
+            .await
     }
 
     async fn retract(
@@ -499,21 +505,27 @@ where
     async fn publish_commit(
         &self,
         alias: &str,
-        commit_addr: &str,
         commit_t: i64,
+        commit_id: &fluree_db_core::ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        let addr = Self::rewrite(commit_addr, &self.commit_id, self.commit_method);
-        self.inner.publish_commit(alias, &addr, commit_t).await
+        let rewritten = address_hint.map(|a| Self::rewrite(a, &self.commit_id, self.commit_method));
+        self.inner
+            .publish_commit(alias, commit_t, commit_id, rewritten.as_deref())
+            .await
     }
 
     async fn publish_index(
         &self,
         alias: &str,
-        index_addr: &str,
         index_t: i64,
+        index_id: &fluree_db_core::ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        let addr = Self::rewrite(index_addr, &self.index_id, self.index_method);
-        self.inner.publish_index(alias, &addr, index_t).await
+        let rewritten = address_hint.map(|a| Self::rewrite(a, &self.index_id, self.index_method));
+        self.inner
+            .publish_index(alias, index_t, index_id, rewritten.as_deref())
+            .await
     }
 
     async fn retract(
@@ -2548,14 +2560,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_noop_when_not_cached() {
+        use fluree_db_core::{ContentId, ContentKind};
         use fluree_db_nameservice::Publisher;
 
         let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+        let cid = ContentId::new(ContentKind::Commit, b"commit-1");
 
         // Publish a record to nameservice directly (without caching the ledger)
         fluree
             .nameservice()
-            .publish_commit("mydb:main", "commit-1", 5)
+            .publish_commit("mydb:main", 5, &cid, Some("commit-1"))
             .await
             .unwrap();
 
@@ -2576,14 +2590,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_refresh_with_alias_resolution() {
+        use fluree_db_core::{ContentId, ContentKind};
         use fluree_db_nameservice::Publisher;
 
         let fluree = FlureeBuilder::memory().with_ledger_caching().build_memory();
+        let cid = ContentId::new(ContentKind::Commit, b"commit-1");
 
         // Publish with canonical alias
         fluree
             .nameservice()
-            .publish_commit("mydb:main", "commit-1", 5)
+            .publish_commit("mydb:main", 5, &cid, Some("commit-1"))
             .await
             .unwrap();
 

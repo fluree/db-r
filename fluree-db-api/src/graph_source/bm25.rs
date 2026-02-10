@@ -547,7 +547,7 @@ where
     /// This operation performs incremental updates when possible,
     /// falling back to full resync if needed.
     pub async fn sync_bm25_index(&self, graph_source_id: &str) -> Result<Bm25SyncResult> {
-        use fluree_db_novelty::trace_commits;
+        use fluree_db_novelty::{trace_commits, trace_commits_by_id};
         use fluree_db_query::bm25::{deserialize, CompiledPropertyDeps, IncrementalUpdater};
         use futures::StreamExt;
 
@@ -618,12 +618,16 @@ where
             });
         }
 
-        // 4. Get head commit address for tracing
+        // 4. Get head commit info for tracing
         let head_commit_address = ledger
             .ns_record
             .as_ref()
             .and_then(|r| r.commit_address.clone())
             .ok_or_else(|| crate::ApiError::NotFound("No commit address for ledger".to_string()))?;
+        let head_commit_id = ledger
+            .ns_record
+            .as_ref()
+            .and_then(|r| r.commit_head_id.clone());
 
         // 5. Compile property deps for this ledger's namespace
         let compiled_deps = CompiledPropertyDeps::compile(&index.property_deps, |iri: &str| {
@@ -632,11 +636,29 @@ where
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
-        let stream = trace_commits(
-            self.storage().clone(),
-            head_commit_address.clone(),
-            old_watermark,
-        );
+        let use_cid_path = head_commit_id.is_some()
+            && fluree_db_core::address::parse_fluree_address(&head_commit_address).is_some();
+        let stream: std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = fluree_db_novelty::Result<fluree_db_novelty::Commit>>
+                    + Send,
+            >,
+        > = if let (true, Some(cid)) = (use_cid_path, &head_commit_id) {
+            let parsed =
+                fluree_db_core::address::parse_fluree_address(&head_commit_address).unwrap();
+            let method = parsed.method.to_string();
+            let prefix = fluree_db_core::extract_ledger_prefix(&head_commit_address)
+                .unwrap_or_else(|| ledger.db.ledger_id.clone());
+            let store =
+                fluree_db_core::bridge_content_store(self.storage().clone(), &prefix, &method);
+            Box::pin(trace_commits_by_id(store, cid.clone(), old_watermark))
+        } else {
+            Box::pin(trace_commits(
+                self.storage().clone(),
+                head_commit_address.clone(),
+                old_watermark,
+            ))
+        };
         futures::pin_mut!(stream);
 
         while let Some(result) = stream.next().await {

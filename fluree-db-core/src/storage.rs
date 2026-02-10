@@ -488,6 +488,20 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
     }
 }
 
+/// Convenience constructor for the `StorageContentStore` bridge adapter.
+///
+/// Wraps an existing `S: Storage` to provide `ContentStore` semantics.
+/// The `method` string (e.g., `"file"`, `"memory"`, `"s3"`) must come from
+/// the calling layer — typically from connection config or by parsing an
+/// existing address via `parse_fluree_address().method`.
+pub fn bridge_content_store<S: Storage>(
+    storage: S,
+    ledger_id: &str,
+    method: &str,
+) -> StorageContentStore<S> {
+    StorageContentStore::new(storage, ledger_id, method)
+}
+
 // ============================================================================
 // Helper Functions (Public for use by other storage implementations)
 // ============================================================================

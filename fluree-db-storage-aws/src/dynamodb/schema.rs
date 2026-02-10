@@ -52,7 +52,7 @@ pub const ATTR_NAME: &str = "name";
 pub const ATTR_BRANCH: &str = "branch";
 /// Whether this record has been retracted
 pub const ATTR_RETRACTED: &str = "retracted";
-/// Graph-source type string (e.g., "db:Bm25Index")
+/// Graph-source type string (e.g., "f:Bm25Index")
 pub const ATTR_SOURCE_TYPE: &str = "source_type";
 /// Dependent ledger aliases (List<String>)
 pub const ATTR_DEPENDENCIES: &str = "dependencies";
@@ -63,10 +63,12 @@ pub const KIND_GRAPH_SOURCE: &str = "graph_source";
 
 // ── Head item attributes (ledger only) ──────────────────────────────────────
 pub const ATTR_COMMIT_ADDRESS: &str = "commit_address";
+pub const ATTR_COMMIT_ID: &str = "commit_id";
 pub const ATTR_COMMIT_T: &str = "commit_t";
 
 // ── Index item attributes (ledger + graph source) ───────────────────────────
 pub const ATTR_INDEX_ADDRESS: &str = "index_address";
+pub const ATTR_INDEX_ID: &str = "index_id";
 pub const ATTR_INDEX_T: &str = "index_t";
 
 // ── Config item attributes ──────────────────────────────────────────────────

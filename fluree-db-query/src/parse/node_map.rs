@@ -53,7 +53,7 @@ pub(super) fn is_variable(s: &str) -> bool {
 /// Look up a value in a JSON map by matching each key against a full IRI.
 ///
 /// Keys are expanded through the JSON-LD `ParsedContext` so that compact forms
-/// like `"db:searchText"` resolve to the full IRI `https://ns.flur.ee/db#searchText`.
+/// like `"f:searchText"` resolve to the full IRI `https://ns.flur.ee/db#searchText`.
 /// Users can use any prefix (or the full IRI) as long as their `@context` maps it.
 fn map_get_by_iri<'a>(
     map: &'a serde_json::Map<String, JsonValue>,
@@ -184,12 +184,12 @@ fn add_metadata_filter_pattern(
 
 /// Check if a node-map is a BM25 index search pattern.
 ///
-/// Index search patterns have a `db:graphSource` key and at least one of:
-/// `db:searchText`, `db:searchLimit`, `db:searchResult`
-/// But NOT `db:queryVector` or `db:distanceMetric` (those are vector search patterns).
+/// Index search patterns have a `f:graphSource` key and at least one of:
+/// `f:searchText`, `f:searchLimit`, `f:searchResult`
+/// But NOT `f:queryVector` or `f:distanceMetric` (those are vector search patterns).
 ///
 /// All keys are resolved through JSON-LD context expansion, so users can write
-/// compact forms like `"db:searchText"` or full IRIs.
+/// compact forms like `"f:searchText"` or full IRIs.
 fn is_index_search_pattern(
     map: &serde_json::Map<String, JsonValue>,
     context: &ParsedContext,
@@ -204,7 +204,7 @@ fn is_index_search_pattern(
 
 /// Check if a node-map is a vector search pattern.
 ///
-/// Vector search patterns have `db:graphSource` and either `db:queryVector` or `db:distanceMetric`.
+/// Vector search patterns have `f:graphSource` and either `f:queryVector` or `f:distanceMetric`.
 ///
 /// All keys are resolved through JSON-LD context expansion.
 fn is_vector_search_pattern(
@@ -218,25 +218,25 @@ fn is_vector_search_pattern(
 
 /// Parse an index search pattern from a node-map.
 ///
-/// Index search pattern syntax (with `"db": "https://ns.flur.ee/db#"` in `@context`):
+/// Index search pattern syntax (with `"f": "https://ns.flur.ee/db#"` in `@context`):
 /// ```json
 /// {
-///   "db:graphSource": "my-search:main",
-///   "db:searchText": "software engineer",
-///   "db:searchLimit": 10,
-///   "db:searchResult": "?doc"
+///   "f:graphSource": "my-search:main",
+///   "f:searchText": "software engineer",
+///   "f:searchLimit": 10,
+///   "f:searchResult": "?doc"
 /// }
 /// ```
 ///
 /// Or with nested result:
 /// ```json
 /// {
-///   "db:graphSource": "my-search:main",
-///   "db:searchText": "software engineer",
-///   "db:searchResult": {
-///     "db:resultId": "?doc",
-///     "db:resultScore": "?score",
-///     "db:resultLedger": "?source"
+///   "f:graphSource": "my-search:main",
+///   "f:searchText": "software engineer",
+///   "f:searchResult": {
+///     "f:resultId": "?doc",
+///     "f:resultScore": "?score",
+///     "f:resultLedger": "?source"
 ///   }
 /// }
 /// ```
@@ -245,16 +245,16 @@ fn parse_index_search_pattern(
     context: &ParsedContext,
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
-    // Extract db:graphSource - the graph source alias (required)
+    // Extract f:graphSource - the graph source alias (required)
     let graph_source_id = map_get_by_iri(map, search_iris::GRAPH_SOURCE, context)
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            ParseError::InvalidWhere("index search: 'db:graphSource' must be a string".to_string())
+            ParseError::InvalidWhere("index search: 'f:graphSource' must be a string".to_string())
         })?;
 
-    // Extract db:searchText - the search query (required)
+    // Extract f:searchText - the search query (required)
     let target_val = map_get_by_iri(map, search_iris::SEARCH_TEXT, context).ok_or_else(|| {
-        ParseError::InvalidWhere("index search: 'db:searchText' is required".to_string())
+        ParseError::InvalidWhere("index search: 'f:searchText' is required".to_string())
     })?;
 
     let target = match target_val.as_str() {
@@ -262,28 +262,28 @@ fn parse_index_search_pattern(
         Some(s) => UnresolvedIndexSearchTarget::Const(Arc::from(s)),
         None => {
             return Err(ParseError::InvalidWhere(
-                "index search: 'db:searchText' must be a string or variable".to_string(),
+                "index search: 'f:searchText' must be a string or variable".to_string(),
             ));
         }
     };
 
-    // Extract db:searchLimit (optional)
+    // Extract f:searchLimit (optional)
     let limit = map_get_by_iri(map, search_iris::SEARCH_LIMIT, context)
         .and_then(|v| v.as_u64().map(|n| n as usize));
 
-    // Extract db:searchResult (required) - can be a variable or nested object
+    // Extract f:searchResult (required) - can be a variable or nested object
     let result_val = map_get_by_iri(map, search_iris::SEARCH_RESULT, context).ok_or_else(|| {
-        ParseError::InvalidWhere("index search: 'db:searchResult' is required".to_string())
+        ParseError::InvalidWhere("index search: 'f:searchResult' is required".to_string())
     })?;
 
     let result_vars = parse_index_search_result(result_val, context)?;
 
-    // Extract db:syncBeforeQuery (optional, default false)
+    // Extract f:syncBeforeQuery (optional, default false)
     let sync = map_get_by_iri(map, search_iris::SYNC_BEFORE_QUERY, context)
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Extract db:timeoutMs (optional)
+    // Extract f:timeoutMs (optional)
     let timeout = map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(|v| v.as_u64());
 
     let mut pattern =
@@ -311,24 +311,24 @@ fn parse_index_search_pattern(
 
 /// Parse a vector search pattern from a node-map.
 ///
-/// Vector search pattern syntax (with `"db": "https://ns.flur.ee/db#"` in `@context`):
+/// Vector search pattern syntax (with `"f": "https://ns.flur.ee/db#"` in `@context`):
 /// ```json
 /// {
-///   "db:graphSource": "embeddings:main",
-///   "db:queryVector": [0.1, 0.2, 0.3],
-///   "db:distanceMetric": "cosine",
-///   "db:searchLimit": 10,
-///   "db:searchResult": "?doc"
+///   "f:graphSource": "embeddings:main",
+///   "f:queryVector": [0.1, 0.2, 0.3],
+///   "f:distanceMetric": "cosine",
+///   "f:searchLimit": 10,
+///   "f:searchResult": "?doc"
 /// }
 /// ```
 ///
 /// Or with variable vector:
 /// ```json
 /// {
-///   "db:graphSource": "embeddings:main",
-///   "db:queryVector": "?queryVec",
-///   "db:distanceMetric": "dot",
-///   "db:searchResult": {"db:resultId": "?doc", "db:resultScore": "?score"}
+///   "f:graphSource": "embeddings:main",
+///   "f:queryVector": "?queryVec",
+///   "f:distanceMetric": "dot",
+///   "f:searchResult": {"f:resultId": "?doc", "f:resultScore": "?score"}
 /// }
 /// ```
 fn parse_vector_search_pattern(
@@ -336,16 +336,16 @@ fn parse_vector_search_pattern(
     context: &ParsedContext,
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
-    // Extract db:graphSource (required)
+    // Extract f:graphSource (required)
     let graph_source_id = map_get_by_iri(map, search_iris::GRAPH_SOURCE, context)
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            ParseError::InvalidWhere("vector search: 'db:graphSource' must be a string".to_string())
+            ParseError::InvalidWhere("vector search: 'f:graphSource' must be a string".to_string())
         })?;
 
-    // Extract db:queryVector - the query vector (required)
+    // Extract f:queryVector - the query vector (required)
     let vector_val = map_get_by_iri(map, search_iris::QUERY_VECTOR, context).ok_or_else(|| {
-        ParseError::InvalidWhere("vector search: 'db:queryVector' is required".to_string())
+        ParseError::InvalidWhere("vector search: 'f:queryVector' is required".to_string())
     })?;
 
     let target = match vector_val {
@@ -358,7 +358,7 @@ fn parse_vector_search_pattern(
             for v in arr {
                 let num = v.as_f64().ok_or_else(|| {
                     ParseError::InvalidWhere(
-                        "vector search: db:queryVector array must contain numbers".to_string(),
+                        "vector search: f:queryVector array must contain numbers".to_string(),
                     )
                 })?;
                 vec.push(num as f32);
@@ -367,34 +367,33 @@ fn parse_vector_search_pattern(
         }
         _ => {
             return Err(ParseError::InvalidWhere(
-                "vector search: 'db:queryVector' must be a variable or array of numbers"
-                    .to_string(),
+                "vector search: 'f:queryVector' must be a variable or array of numbers".to_string(),
             ));
         }
     };
 
-    // Extract db:distanceMetric (optional, defaults to "cosine")
+    // Extract f:distanceMetric (optional, defaults to "cosine")
     let metric = map_get_by_iri(map, search_iris::DISTANCE_METRIC, context)
         .and_then(|v| v.as_str())
         .unwrap_or("cosine");
 
-    // Extract db:searchLimit (optional)
+    // Extract f:searchLimit (optional)
     let limit = map_get_by_iri(map, search_iris::SEARCH_LIMIT, context)
         .and_then(|v| v.as_u64().map(|n| n as usize));
 
-    // Extract db:searchResult (required) - can be a variable or nested object
+    // Extract f:searchResult (required) - can be a variable or nested object
     let result_val = map_get_by_iri(map, search_iris::SEARCH_RESULT, context).ok_or_else(|| {
-        ParseError::InvalidWhere("vector search: 'db:searchResult' is required".to_string())
+        ParseError::InvalidWhere("vector search: 'f:searchResult' is required".to_string())
     })?;
 
     let result_vars = parse_index_search_result(result_val, context)?;
 
-    // Extract db:syncBeforeQuery (optional, default false)
+    // Extract f:syncBeforeQuery (optional, default false)
     let sync = map_get_by_iri(map, search_iris::SYNC_BEFORE_QUERY, context)
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Extract db:timeoutMs (optional)
+    // Extract f:timeoutMs (optional)
     let timeout = map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(|v| v.as_u64());
 
     let mut pattern = UnresolvedVectorSearchPattern::new(
@@ -426,7 +425,7 @@ fn parse_vector_search_pattern(
     Ok(())
 }
 
-/// Parse the `db:searchResult` value (variable or nested object with id/score/ledger).
+/// Parse the `f:searchResult` value (variable or nested object with id/score/ledger).
 fn parse_index_search_result(
     result_val: &JsonValue,
     context: &ParsedContext,
@@ -445,19 +444,19 @@ fn parse_index_search_result(
                 ledger: None,
             })
         }
-        // Nested object: {"db:resultId": "?doc", "db:resultScore": "?score", ...}
+        // Nested object: {"f:resultId": "?doc", "f:resultScore": "?score", ...}
         JsonValue::Object(obj) => {
             let id_str = map_get_by_iri(obj, search_iris::RESULT_ID, context)
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
                     ParseError::InvalidWhere(
-                        "nested search result must have 'db:resultId'".to_string(),
+                        "nested search result must have 'f:resultId'".to_string(),
                     )
                 })?;
 
             if !is_variable(id_str) {
                 return Err(ParseError::InvalidWhere(
-                    "db:resultId must be a variable".to_string(),
+                    "f:resultId must be a variable".to_string(),
                 ));
             }
 
@@ -476,7 +475,7 @@ fn parse_index_search_result(
             })
         }
         _ => Err(ParseError::InvalidWhere(
-            "db:searchResult must be a variable or object".to_string(),
+            "f:searchResult must be a variable or object".to_string(),
         )),
     }
 }
@@ -494,12 +493,12 @@ pub fn parse_node_map(
     nested_counter: &mut u32,
     object_var_parsing: bool,
 ) -> Result<()> {
-    // Check for vector search pattern first (has db:queryVector)
+    // Check for vector search pattern first (has f:queryVector)
     if is_vector_search_pattern(map, context) {
         return parse_vector_search_pattern(map, context, query);
     }
 
-    // Check for BM25 index search pattern (has db:graphSource + db:searchText)
+    // Check for BM25 index search pattern (has f:graphSource + f:searchText)
     if is_index_search_pattern(map, context) {
         return parse_index_search_pattern(map, context, query);
     }

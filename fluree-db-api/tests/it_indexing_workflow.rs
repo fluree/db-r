@@ -240,6 +240,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
                 fluree_db_api::IndexOutcome::Completed {
                     index_t,
                     root_address,
+                    ..
                 } => (index_t, root_address),
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),

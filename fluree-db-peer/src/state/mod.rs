@@ -249,8 +249,10 @@ mod tests {
         LedgerRecord {
             ledger_id: ledger_id.to_string(),
             branch: Some("main".to_string()),
+            commit_head_id: None,
             commit_address: Some(format!("commit:{}", commit_t)),
             commit_t,
+            index_head_id: None,
             index_address: Some(format!("index:{}", index_t)),
             index_t,
             retracted: false,

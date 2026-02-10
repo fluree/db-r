@@ -665,17 +665,17 @@ async fn vector_idx_query_syntax_e2e() {
     // Execute a query using idx:vector syntax
     // Query for vectors similar to [0.85, 0.1, 0.05] - should match doc1 and doc3 best
     let search_query = json!({
-        "@context": { "ex": "http://example.org/", "db": "https://ns.flur.ee/db#" },
+        "@context": { "ex": "http://example.org/", "f": "https://ns.flur.ee/db#" },
         "from": alias,
         "where": [
             {
-                "db:graphSource": created.graph_source_id,
-                "db:queryVector": [0.85, 0.1, 0.05],
-                "db:distanceMetric": "cosine",
-                "db:searchLimit": 10,
-                "db:searchResult": {
-                    "db:resultId": "?doc",
-                    "db:resultScore": "?score"
+                "f:graphSource": created.graph_source_id,
+                "f:queryVector": [0.85, 0.1, 0.05],
+                "f:distanceMetric": "cosine",
+                "f:searchLimit": 10,
+                "f:searchResult": {
+                    "f:resultId": "?doc",
+                    "f:resultScore": "?score"
                 }
             }
         ],

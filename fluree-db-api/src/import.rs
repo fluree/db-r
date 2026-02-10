@@ -27,7 +27,7 @@
 //! even though chunk parsing is parallel.
 
 use crate::error::ApiError;
-use fluree_db_core::{ContentKind, Storage};
+use fluree_db_core::{ContentId, ContentKind, Storage, CODEC_FLUREE_INDEX_ROOT};
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -873,7 +873,7 @@ where
                     && (next_expected + 1).is_multiple_of(config.publish_every)
                 {
                     nameservice
-                        .publish_commit(alias, &result.address, result.t)
+                        .publish_commit(alias, result.t, &result.commit_id, Some(&result.address))
                         .await
                         .map_err(|e| ImportError::Storage(e.to_string()))?;
                     tracing::info!(
@@ -922,7 +922,7 @@ where
 
             if config.publish_every > 0 && (i + 1).is_multiple_of(config.publish_every) {
                 nameservice
-                    .publish_commit(alias, &result.address, result.t)
+                    .publish_commit(alias, result.t, &result.commit_id, Some(&result.address))
                     .await
                     .map_err(|e| ImportError::Storage(e.to_string()))?;
             }
@@ -930,14 +930,15 @@ where
     }
 
     // Final commit head publish
-    let commit_head_address = state
+    let commit_head_id = state
         .previous_ref
         .as_ref()
-        .map(|r| r.id.to_string())
-        .unwrap_or_default();
+        .map(|r| r.id.clone())
+        .ok_or_else(|| ImportError::Storage("no commit head after import".to_string()))?;
+    let commit_head_address = commit_head_id.to_string();
 
     nameservice
-        .publish_commit(alias, &commit_head_address, state.t)
+        .publish_commit(alias, state.t, &commit_head_id, Some(&commit_head_address))
         .await
         .map_err(|e| ImportError::Storage(e.to_string()))?;
     tracing::info!(t = state.t, "published final commit head");
@@ -1314,10 +1315,14 @@ where
         "V2 index root written to CAS"
     );
 
+    // Derive ContentId from the root's content hash
+    let root_id = ContentId::from_hex_digest(CODEC_FLUREE_INDEX_ROOT, &write_result.content_hash)
+        .expect("valid SHA-256 hash from storage write");
+
     // ---- Phase 6: Publish ----
     if config.publish {
         nameservice
-            .publish_index(alias, &write_result.address, input.final_t)
+            .publish_index(alias, input.final_t, &root_id, Some(&write_result.address))
             .await
             .map_err(|e| ImportError::Storage(format!("publish index: {}", e)))?;
         tracing::info!(

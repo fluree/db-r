@@ -14,6 +14,7 @@ use crate::state::FlureeInstance;
 
 use fluree_db_api::{NotifyResult, NsNotify};
 use fluree_db_core::alias;
+use fluree_db_core::ContentId;
 use fluree_db_nameservice::NsRecord;
 use fluree_db_peer::{GraphSourceRecord, LedgerRecord};
 use fluree_sse::{SseEvent, SseParser, SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
@@ -360,13 +361,24 @@ fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String>
     let (name, branch) = alias::split_alias(&record.ledger_id)
         .map_err(|e| format!("invalid ledger ID '{}': {}", record.ledger_id, e))?;
 
+    let commit_head_id = record
+        .commit_head_id
+        .as_deref()
+        .and_then(|s| s.parse::<ContentId>().ok());
+    let index_head_id = record
+        .index_head_id
+        .as_deref()
+        .and_then(|s| s.parse::<ContentId>().ok());
+
     Ok(NsRecord {
         ledger_id: record.ledger_id.clone(),
         name,
         branch,
         commit_address: record.commit_address.clone(),
+        commit_head_id,
         commit_t: record.commit_t,
         index_address: record.index_address.clone(),
+        index_head_id,
         index_t: record.index_t,
         default_context: None,
         retracted: record.retracted,

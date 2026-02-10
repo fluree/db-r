@@ -715,7 +715,7 @@ where
                 let (base, _) = view.into_parts();
                 (
                     fluree_db_transact::CommitReceipt {
-                        address: String::new(),
+                        address: None,
                         commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
@@ -789,7 +789,7 @@ where
         // Snapshot current cached state (brief lock), then stage without holding the write lock.
         let snap = handle.snapshot().await;
         let base_t = snap.t;
-        let base_head = snap.head_commit.clone();
+        let base_head_id = snap.head_commit_id.clone();
         let ledger_state = snap.to_ledger_state();
 
         let (stage_result, txn_type, commit_opts) = match &op_plan {
@@ -844,10 +844,10 @@ where
         // Acquire write lock only for the commit + cache update section.
         let mut write_guard = handle.lock_for_write().await;
         let current_t = write_guard.state().t();
-        let current_head = write_guard.state().head_commit.as_deref();
+        let current_head_id = write_guard.state().head_commit_id.as_ref();
 
         // If state changed since snapshot, retry staging against the latest state.
-        if current_t != base_t || current_head != base_head.as_deref() {
+        if current_t != base_t || current_head_id != base_head_id.as_ref() {
             continue;
         }
 
@@ -861,7 +861,7 @@ where
             let (base, _) = view.into_parts();
             return Ok(TransactResultRef {
                 receipt: fluree_db_transact::CommitReceipt {
-                    address: String::new(),
+                    address: None,
                     commit_id: ContentId::new(ContentKind::Commit, &[]),
                     t: base.t(),
                     flake_count: 0,

@@ -323,7 +323,7 @@ Authorization: Bearer <token>
 JSON object:
 
 - `commits`: array of base64-encoded commit v2 blobs (oldest → newest)
-- `blobs` (optional): map of `{ address: base64Bytes }` for referenced blobs (currently: `commit.txn` when present)
+- `blobs` (optional): map of `{ cid: base64Bytes }` for referenced blobs (currently: `commit.txn` when present)
 
 **Responses:**
 
@@ -333,7 +333,7 @@ JSON object:
 
 ### GET /commits/*ledger
 
-Export commit blobs from a ledger using address-cursor pagination. Pages walk backward via `previous_ref` — O(limit) per page regardless of ledger size. Used by `fluree pull` and `fluree clone`.
+Export commit blobs from a ledger using stable cursors. Pages walk backward via `previous_ref` — O(limit) per page regardless of ledger size. Used by `fluree pull` and `fluree clone`.
 
 **Requires replication-grade permissions** (`fluree.storage.*`). The storage proxy must be enabled on the server.
 
@@ -346,7 +346,8 @@ GET /commits/<ledger...>?limit=100&cursor=<address>
 **Query Parameters:**
 
 - `limit` (optional): Max commits per page (default 100, server clamps to max 500)
-- `cursor` (optional): Commit address to start from. Omit for first page (starts from head). Use `next_cursor` from previous response for subsequent pages.
+- `cursor` (optional): Backward-compatible cursor. Accepts either a legacy commit address or a commit CID string. Omit for first page (starts from head). Use `next_cursor` / `next_cursor_id` from previous response for subsequent pages.
+- `cursor_id` (optional): Preferred cursor as a commit CID string (storage-agnostic identity). If both `cursor` and `cursor_id` are provided, `cursor_id` wins.
 
 **Request Headers:**
 
@@ -360,20 +361,23 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 {
   "ledger": "mydb:main",
   "head_address": "fluree:file://mydb:main/commit/abc123.fcv2",
+  "head_commit_id": "bafy...headCommit",
   "head_t": 42,
   "commits": ["<base64>", "<base64>"],
-  "blobs": { "fluree:file://mydb:main/txn/def456.json": "<base64>" },
+  "blobs": { "bafy...txnBlob": "<base64>" },
   "newest_t": 42,
   "oldest_t": 41,
   "next_cursor": "fluree:file://mydb:main/commit/prev789.fcv2",
+  "next_cursor_id": "bafy...prevCommit",
   "count": 2,
   "effective_limit": 100
 }
 ```
 
 - `commits`: Raw commit v2 blobs, newest → oldest within each page.
-- `blobs`: Referenced txn blobs keyed by address.
-- `next_cursor`: Address for the next page, or `null` when genesis is reached.
+- `blobs`: Referenced txn blobs keyed by CID string.
+- `next_cursor`: Legacy address for the next page (may be omitted by future servers); `null` when genesis is reached.
+- `next_cursor_id`: Preferred CID cursor for the next page; omitted/`null` when genesis is reached.
 - `effective_limit`: Actual limit used (after server clamping).
 
 **Responses:**
@@ -384,7 +388,7 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 
 **Pagination:**
 
-Addresses in the immutable CAS chain are stable cursors. New commits appended to the head do not affect backward pointers, so cursors remain valid across pages even when new commits arrive between requests.
+Commit CIDs in the immutable CAS chain are stable cursors. New commits appended to the head do not affect backward pointers, so cursors remain valid across pages even when new commits arrive between requests. Legacy address cursors remain supported for backward compatibility but are transport/location hints rather than identity.
 
 ## Query Endpoints
 

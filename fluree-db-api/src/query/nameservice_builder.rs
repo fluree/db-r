@@ -71,22 +71,22 @@ use serde_json::json;
 ///
 /// # Available Properties
 ///
-/// Ledger records (`@type: "db:LedgerSource"`):
-/// - `db:ledger` - Ledger name (without branch)
-/// - `db:branch` - Branch name (e.g., "main")
-/// - `db:t` - Current transaction number
-/// - `db:status` - Status ("ready" or "retracted")
-/// - `db:ledgerCommit` - Commit address reference
-/// - `db:ledgerIndex` - Index info with `@id` and `db:t`
+/// Ledger records (`@type: "f:LedgerSource"`):
+/// - `f:ledger` - Ledger name (without branch)
+/// - `f:branch` - Branch name (e.g., "main")
+/// - `f:t` - Current transaction number
+/// - `f:status` - Status ("ready" or "retracted")
+/// - `f:ledgerCommit` - Commit address reference
+/// - `f:ledgerIndex` - Index info with `@id` and `f:t`
 ///
-/// Graph source records (`@type: "db:IndexSource"` or `"db:MappedSource"`):
-/// - `db:name` - Graph source name
-/// - `db:branch` - Branch name
-/// - `db:status` - Status
-/// - `db:graphSourceConfig` - Configuration JSON
-/// - `db:graphSourceDependencies` - Source ledger dependencies
-/// - `db:graphSourceIndex` - Index address
-/// - `db:graphSourceIndexT` - Index t value
+/// Graph source records (`@type: "f:IndexSource"` or `"f:MappedSource"`):
+/// - `f:name` - Graph source name
+/// - `f:branch` - Branch name
+/// - `f:status` - Status
+/// - `f:graphSourceConfig` - Configuration JSON
+/// - `f:graphSourceDependencies` - Source ledger dependencies
+/// - `f:graphSourceIndex` - Index address
+/// - `f:graphSourceIndexT` - Index t value
 pub struct NameserviceQueryBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
     core: QueryCore<'a>,
@@ -328,25 +328,29 @@ where
 mod tests {
     use super::*;
     use crate::FlureeBuilder;
+    use fluree_db_core::{ContentId, ContentKind};
     use fluree_db_nameservice::{memory::MemoryNameService, GraphSourceType, Publisher};
 
     async fn setup_ns_with_records() -> Fluree<fluree_db_core::MemoryStorage, MemoryNameService> {
         let fluree = FlureeBuilder::memory().build_memory();
 
         // Create some ledger records
+        let cid1 = ContentId::new(ContentKind::Commit, b"commit-1");
+        let cid2 = ContentId::new(ContentKind::Commit, b"commit-2");
+        let cid3 = ContentId::new(ContentKind::Commit, b"commit-3");
         fluree
             .nameservice
-            .publish_commit("db1:main", "commit-1", 10)
+            .publish_commit("db1:main", 10, &cid1, Some("commit-1"))
             .await
             .unwrap();
         fluree
             .nameservice
-            .publish_commit("db1:dev", "commit-2", 5)
+            .publish_commit("db1:dev", 5, &cid2, Some("commit-2"))
             .await
             .unwrap();
         fluree
             .nameservice
-            .publish_commit("db2:main", "commit-3", 20)
+            .publish_commit("db2:main", 20, &cid3, Some("commit-3"))
             .await
             .unwrap();
 
@@ -407,9 +411,9 @@ mod tests {
         let fluree = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"db": "https://ns.flur.ee/db#"},
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger"}]
+            "where": [{"@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger"}]
         });
 
         let result = fluree
@@ -428,9 +432,9 @@ mod tests {
         let fluree = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"db": "https://ns.flur.ee/db#"},
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:branch": "main"}]
+            "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
         });
 
         let result = fluree
@@ -449,9 +453,9 @@ mod tests {
         let fluree = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"db": "https://ns.flur.ee/db#"},
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?name"],
-            "where": [{"@id": "?gs", "@type": "db:IndexSource", "db:name": "?name"}]
+            "where": [{"@id": "?gs", "@type": "f:IndexSource", "f:name": "?name"}]
         });
 
         let result = fluree
@@ -470,8 +474,9 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
 
         let query = json!({
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "db:ledger": "?ledger"}]
+            "where": [{"@id": "?ns", "f:ledger": "?ledger"}]
         });
 
         let result = fluree
@@ -489,9 +494,9 @@ mod tests {
         let fluree = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"db": "https://ns.flur.ee/db#"},
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?ledger", "?t"],
-            "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:t": "?t"}]
+            "where": [{"@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger", "f:t": "?t"}]
         });
 
         let result = fluree
@@ -515,8 +520,8 @@ mod tests {
         let result = fluree
             .nameservice_query()
             .sparql(
-                "PREFIX db: <https://ns.flur.ee/db#>
-                 SELECT ?ledger WHERE { ?ns a db:LedgerSource ; db:ledger ?ledger }",
+                "PREFIX f: <https://ns.flur.ee/db#>
+                 SELECT ?ledger WHERE { ?ns a f:LedgerSource ; f:ledger ?ledger }",
             )
             .execute_formatted()
             .await

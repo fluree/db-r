@@ -23,9 +23,8 @@ use crate::error::{ApiError, Result};
 use crate::policy_builder::build_policy_context_from_opts;
 use crate::{Fluree, IndexConfig, LedgerHandle};
 use base64::Engine as _;
-use fluree_db_core::ContentId;
 use fluree_db_core::storage::extract_hash_from_address;
-use fluree_db_core::storage::sha256_hex;
+use fluree_db_core::ContentId;
 use fluree_db_core::{
     range_with_overlay, ContentAddressedWrite, ContentKind, DictNovelty, Flake, IndexType,
 };
@@ -236,6 +235,8 @@ where
 
         let final_head = stored_commits.last().expect("non-empty stored_commits");
         let new_ref = RefValue {
+            id: extract_hash_from_address(&final_head.address)
+                .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h)),
             address: Some(final_head.address.clone()),
             t: final_head.t,
         };
@@ -406,13 +407,14 @@ fn preflight_strict_next_t_and_prev(
                     addr
                 ))
             })?;
-            ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &hex).ok_or_else(|| {
-                PushError::Internal(format!(
-                    "failed to derive commit CID from current head digest: {}",
-                    hex
-                ))
-            })?
-            .into()
+            ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &hex)
+                .ok_or_else(|| {
+                    PushError::Internal(format!(
+                        "failed to derive commit CID from current head digest: {}",
+                        hex
+                    ))
+                })?
+                .into()
         }
         None => None,
     };
@@ -783,9 +785,20 @@ const EXPORT_DEFAULT_LIMIT: usize = 100;
 /// Query parameters for paginated commit export.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportCommitsRequest {
-    /// Commit address to start from. When `None`, starts from the current head.
+    /// Commit cursor to start from.
+    ///
+    /// Backward-compatible field:
+    /// - legacy: commit address (e.g. `fluree:file://.../commit/<hash>.fcv2`)
+    /// - new: commit CID string (e.g. `bafy...`)
+    ///
+    /// When both `cursor` and `cursor_id` are provided, `cursor_id` wins.
     #[serde(default)]
     pub cursor: Option<String>,
+    /// Commit CID cursor to start from (storage-agnostic identity).
+    ///
+    /// Preferred for cross-backend sync. When `None`, starts from the current head.
+    #[serde(default)]
+    pub cursor_id: Option<ContentId>,
     /// Maximum commits per page. Clamped to server max (500).
     #[serde(default)]
     pub limit: Option<usize>,
@@ -798,24 +811,43 @@ pub struct ExportCommitsResponse {
     pub ledger: String,
     /// Head address at time of export (informational; clone uses this for final head).
     pub head_address: String,
+    /// Head commit CID at time of export (storage-agnostic identity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_commit_id: Option<ContentId>,
     /// Head `t` at time of export (informational).
     pub head_t: i64,
     /// Raw commit v2 blobs, newest → oldest within this page.
     pub commits: Vec<Base64Bytes>,
-    /// Referenced blobs (txn blobs) keyed by address.
+    /// Referenced blobs (txn blobs) keyed by CID string.
     #[serde(default)]
     pub blobs: HashMap<String, Base64Bytes>,
     /// Highest `t` in this page.
     pub newest_t: i64,
     /// Lowest `t` in this page.
     pub oldest_t: i64,
-    /// Cursor for the next page (previous commit's CID or address).
+    /// Cursor for the next page (legacy: previous commit address).
     /// `None` when genesis has been reached.
     pub next_cursor: Option<String>,
+    /// Cursor for the next page (previous commit CID).
+    /// `None` when genesis has been reached.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor_id: Option<ContentId>,
     /// Number of commits in this page.
     pub count: usize,
     /// Actual limit used (after server clamping).
     pub effective_limit: usize,
+}
+
+fn storage_method_from_address(address: &str) -> Option<&str> {
+    // Expected format: `fluree:{method}://...`
+    let rest = address.strip_prefix("fluree:")?;
+    let scheme_idx = rest.find("://")?;
+    let method = &rest[..scheme_idx];
+    if method.is_empty() {
+        None
+    } else {
+        Some(method)
+    }
 }
 
 /// Export a paginated range of commits from a ledger.
@@ -861,15 +893,50 @@ where
             .clone()
             .ok_or_else(|| ApiError::NotFound("Ledger has no commits".to_string()))?;
         let head_t = head_ref.t;
+        let head_commit_id = head_ref.id.clone().or_else(|| {
+            extract_hash_from_address(&head_address)
+                .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h))
+        });
+        let head_method = storage_method_from_address(&head_address).map(str::to_string);
 
-        // Determine start address.
-        let start_address = request
-            .cursor
-            .clone()
-            .unwrap_or_else(|| head_address.clone());
+        // Determine start cursor.
+        let mut cursor_is_address = false;
+        let mut start_cursor_id: Option<ContentId> = request.cursor_id.clone();
+        let mut start_address_opt: Option<String> = None;
+
+        if start_cursor_id.is_none() {
+            if let Some(raw) = request.cursor.as_deref() {
+                // Accept CID in the legacy `cursor` field for convenience.
+                if let Ok(cid) = raw.parse::<ContentId>() {
+                    start_cursor_id = Some(cid);
+                } else {
+                    cursor_is_address = true;
+                    start_address_opt = Some(raw.to_string());
+                }
+            }
+        }
+
+        let start_address: String = if let Some(cid) = &start_cursor_id {
+            let method = head_method.as_deref().ok_or_else(|| {
+                ApiError::internal(format!(
+                    "cannot resolve cursor_id without a fluree head address (got '{}')",
+                    head_address
+                ))
+            })?;
+            fluree_db_core::storage::content_address(
+                method,
+                ContentKind::Commit,
+                ledger_id,
+                &cid.digest_hex(),
+            )
+        } else if let Some(addr) = start_address_opt {
+            addr
+        } else {
+            head_address.clone()
+        };
 
         // Validate cursor belongs to this ledger (address embeds alias path).
-        if request.cursor.is_some() {
+        if cursor_is_address {
             use fluree_db_core::storage::alias_prefix_for_path;
             let alias_path = alias_prefix_for_path(ledger_id);
             // Address format: "fluree:{method}://{alias_path}/commit/{hash}.ext"
@@ -898,6 +965,7 @@ where
         let mut newest_t: Option<i64> = None;
         let mut oldest_t: Option<i64> = None;
         let mut next_cursor: Option<String> = None;
+        let mut next_cursor_id: Option<ContentId> = None;
         let mut current_address = start_address;
 
         for _ in 0..effective_limit {
@@ -944,20 +1012,25 @@ where
             // Collect referenced txn blob.
             if let Some(ref txn_cid) = env.txn {
                 let txn_hash_hex = txn_cid.digest_hex();
-                let txn_address =
-                    txn_address_from_commit_address(&current_address, &txn_hash_hex).ok_or_else(
-                        || {
+                let txn_address = match head_method.as_deref() {
+                    Some(method) => fluree_db_core::storage::content_address(
+                        method,
+                        ContentKind::Txn,
+                        ledger_id,
+                        &txn_hash_hex,
+                    ),
+                    None => txn_address_from_commit_address(&current_address, &txn_hash_hex)
+                        .ok_or_else(|| {
                             ApiError::internal(format!(
                                 "failed to derive txn address from commit address '{}'",
                                 current_address
                             ))
-                        },
-                    )?;
+                        })?,
+                };
 
                 // Response blobs are keyed by CID string (logical identity), but bytes are read from legacy address.
                 let txn_key = txn_cid.to_string();
-                if let std::collections::hash_map::Entry::Vacant(e) = blobs.entry(txn_key.clone())
-                {
+                if let std::collections::hash_map::Entry::Vacant(e) = blobs.entry(txn_key.clone()) {
                     let txn_bytes = storage.read_bytes(&txn_address).await.map_err(|e| {
                         ApiError::internal(format!(
                             "failed to read txn blob '{}' (addr '{}'): {}",
@@ -972,21 +1045,29 @@ where
             match env.previous_ref {
                 Some(prev) => {
                     let prev_hash_hex = prev.id.digest_hex();
-                    let prev_address =
-                        replace_hash_in_address(&current_address, &prev_hash_hex).ok_or_else(
-                            || {
+                    let prev_address = match head_method.as_deref() {
+                        Some(method) => fluree_db_core::storage::content_address(
+                            method,
+                            ContentKind::Commit,
+                            ledger_id,
+                            &prev_hash_hex,
+                        ),
+                        None => replace_hash_in_address(&current_address, &prev_hash_hex)
+                            .ok_or_else(|| {
                                 ApiError::internal(format!(
                                     "failed to derive previous commit address from '{}'",
                                     current_address
                                 ))
-                            },
-                        )?;
+                            })?,
+                    };
                     next_cursor = Some(prev_address.clone());
+                    next_cursor_id = Some(prev.id);
                     current_address = prev_address;
                 }
                 None => {
                     // Reached genesis — no more commits.
                     next_cursor = None;
+                    next_cursor_id = None;
                     break;
                 }
             }
@@ -1000,12 +1081,14 @@ where
         Ok(ExportCommitsResponse {
             ledger: ledger_id.to_string(),
             head_address,
+            head_commit_id,
             head_t,
             commits,
             blobs,
             newest_t: newest_t.unwrap_or(0),
             oldest_t: oldest_t.unwrap_or(0),
             next_cursor,
+            next_cursor_id,
             count,
             effective_limit,
         })
@@ -1074,21 +1157,29 @@ where
         }
 
         // Write referenced txn blobs to local CAS.
-        for (addr, b64) in &response.blobs {
+        for (cid_str, b64) in &response.blobs {
             let bytes = &b64.0;
-            let expected_hash = extract_hash_from_address(addr).ok_or_else(|| {
-                ApiError::internal(format!("blob address is not content-addressed: {}", addr))
+            let txn_id: ContentId = cid_str.parse().map_err(|e| {
+                ApiError::http(422, format!("invalid txn CID '{}': {}", cid_str, e))
             })?;
-            let actual_hash = sha256_hex(bytes);
-            if actual_hash != expected_hash {
+            if txn_id.codec() != CODEC_FLUREE_TXN {
                 return Err(ApiError::http(
                     422,
                     format!(
-                        "blob hash mismatch for '{}': expected {}, got {}",
-                        addr, expected_hash, actual_hash
+                        "referenced txn CID has unexpected codec {}: {}",
+                        txn_id.codec(),
+                        cid_str
                     ),
                 ));
             }
+            // Integrity: verify bytes match claimed CID.
+            if !txn_id.verify(bytes) {
+                return Err(ApiError::http(
+                    422,
+                    format!("txn CID does not match provided bytes: {}", cid_str),
+                ));
+            }
+            let expected_hash = txn_id.digest_hex();
             storage
                 .content_write_bytes_with_hash(ContentKind::Txn, ledger_id, &expected_hash, bytes)
                 .await
@@ -1114,6 +1205,8 @@ where
     ) -> Result<()> {
         let ledger_id = handle.ledger_id();
         let new_ref = RefValue {
+            id: extract_hash_from_address(head_address)
+                .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h)),
             address: Some(head_address.to_string()),
             t: head_t,
         };
@@ -1208,6 +1301,8 @@ where
 
         let final_head = stored_commits.last().expect("non-empty stored_commits");
         let new_ref = RefValue {
+            id: extract_hash_from_address(&final_head.address)
+                .and_then(|h| ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &h)),
             address: Some(final_head.address.clone()),
             t: final_head.t,
         };

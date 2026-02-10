@@ -2502,6 +2502,7 @@ dependencies = [
  "async-stream",
  "async-trait",
  "bytes",
+ "fluree-db-core",
  "fluree-db-nameservice",
  "fluree-sse",
  "futures",

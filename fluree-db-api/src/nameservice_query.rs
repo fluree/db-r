@@ -115,15 +115,25 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::{ContentId, ContentKind};
     use fluree_db_nameservice::{memory::MemoryNameService, GraphSourceType, Publisher};
 
     async fn setup_ns_with_records() -> MemoryNameService {
         let ns = MemoryNameService::new();
 
         // Create some ledger records
-        ns.publish_commit("db1:main", "commit-1", 10).await.unwrap();
-        ns.publish_commit("db1:dev", "commit-2", 5).await.unwrap();
-        ns.publish_commit("db2:main", "commit-3", 20).await.unwrap();
+        let cid1 = ContentId::new(ContentKind::Commit, b"commit-1");
+        let cid2 = ContentId::new(ContentKind::Commit, b"commit-2");
+        let cid3 = ContentId::new(ContentKind::Commit, b"commit-3");
+        ns.publish_commit("db1:main", 10, &cid1, Some("commit-1"))
+            .await
+            .unwrap();
+        ns.publish_commit("db1:dev", 5, &cid2, Some("commit-2"))
+            .await
+            .unwrap();
+        ns.publish_commit("db2:main", 20, &cid3, Some("commit-3"))
+            .await
+            .unwrap();
 
         // Create a graph source record
         ns.publish_graph_source(
@@ -144,9 +154,9 @@ mod tests {
         let ns = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"db": "https://ns.flur.ee/db#"},
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger"}]
+            "where": [{"@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger"}]
         });
 
         let result = query_nameservice(&ns, &query).await.unwrap();
@@ -161,9 +171,9 @@ mod tests {
         let ns = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"db": "https://ns.flur.ee/db#"},
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "db:ledger": "?ledger", "db:branch": "main"}]
+            "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
         });
 
         let result = query_nameservice(&ns, &query).await.unwrap();
@@ -178,9 +188,9 @@ mod tests {
         let ns = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"db": "https://ns.flur.ee/db#"},
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?name"],
-            "where": [{"@id": "?gs", "@type": "db:IndexSource", "db:name": "?name"}]
+            "where": [{"@id": "?gs", "@type": "f:IndexSource", "f:name": "?name"}]
         });
 
         let result = query_nameservice(&ns, &query).await.unwrap();
@@ -195,8 +205,9 @@ mod tests {
         let ns = MemoryNameService::new();
 
         let query = json!({
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?ledger"],
-            "where": [{"@id": "?ns", "db:ledger": "?ledger"}]
+            "where": [{"@id": "?ns", "f:ledger": "?ledger"}]
         });
 
         let result = query_nameservice(&ns, &query).await.unwrap();
@@ -208,9 +219,9 @@ mod tests {
         let ns = setup_ns_with_records().await;
 
         let query = json!({
-            "@context": {"db": "https://ns.flur.ee/db#"},
+            "@context": {"f": "https://ns.flur.ee/db#"},
             "select": ["?ledger", "?t"],
-            "where": [{"@id": "?ns", "@type": "db:LedgerSource", "db:ledger": "?ledger", "db:t": "?t"}],
+            "where": [{"@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger", "f:t": "?t"}],
             "orderBy": [{"var": "?t", "desc": true}]
         });
 

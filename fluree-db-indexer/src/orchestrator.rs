@@ -65,6 +65,8 @@ pub enum IndexOutcome {
         index_t: i64,
         /// Storage address of the index root
         root_address: String,
+        /// Content identifier of the index root (when available)
+        root_id: Option<fluree_db_core::ContentId>,
     },
     /// Indexing failed after retries exhausted or fatal error
     Failed(String),
@@ -673,6 +675,7 @@ where
                             let outcome = IndexOutcome::Completed {
                                 index_t: current_index_t,
                                 root_address: index_addr,
+                                root_id: record.index_head_id.clone(),
                             };
                             state.resolve_waiters_below(current_index_t, outcome);
                             state.recalculate_pending_min_t();
@@ -690,6 +693,7 @@ where
                             let outcome = IndexOutcome::Completed {
                                 index_t: current_index_t,
                                 root_address: String::new(),
+                                root_id: None,
                             };
                             state.resolve_waiters_below(current_index_t, outcome);
                             state.recalculate_pending_min_t();
@@ -731,6 +735,7 @@ where
                     let outcome = IndexOutcome::Completed {
                         index_t: current_index_t,
                         root_address: index_addr.clone(),
+                        root_id: record.index_head_id.clone(),
                     };
                     state.resolve_waiters_below(current_index_t, outcome);
                 } else if current_index_t == 0 {
@@ -738,6 +743,7 @@ where
                     let outcome = IndexOutcome::Completed {
                         index_t: current_index_t,
                         root_address: String::new(),
+                        root_id: None,
                     };
                     state.resolve_waiters_below(current_index_t, outcome);
                 } else {
@@ -812,6 +818,7 @@ where
                         let outcome = IndexOutcome::Completed {
                             index_t: index_result.index_t,
                             root_address: index_result.root_address.clone(),
+                            root_id: Some(index_result.root_id.clone()),
                         };
                         state.resolve_waiters_below(index_result.index_t, outcome);
                         state.last_index_t = index_result.index_t;
@@ -944,13 +951,20 @@ where
         Ok(result) => {
             // Track publish result but continue regardless
             let publish_result = nameservice
-                .publish_index(&ledger_addr, &result.root_address, result.index_t)
+                .publish_index(
+                    &ledger_addr,
+                    result.index_t,
+                    &result.root_id,
+                    Some(&result.root_address),
+                )
                 .await;
             let published = publish_result.is_ok();
             let publish_error = publish_result.err().map(|e| e.to_string());
 
             // Apply even if publish failed (local correctness)
-            let apply_result = ledger.apply_index(&result.root_address).await;
+            let apply_result = ledger
+                .apply_index(&result.root_address, Some(&result.root_id))
+                .await;
             let applied = apply_result.is_ok();
 
             // Build final error message
@@ -1013,12 +1027,17 @@ where
         crate::build_index_for_ledger(&storage, nameservice, &ledger_addr, indexer_config).await?;
 
     nameservice
-        .publish_index(&ledger_addr, &result.root_address, result.index_t)
+        .publish_index(
+            &ledger_addr,
+            result.index_t,
+            &result.root_id,
+            Some(&result.root_address),
+        )
         .await
         .map_err(|e| IndexerError::NameService(e.to_string()))?;
 
     ledger
-        .apply_index(&result.root_address)
+        .apply_index(&result.root_address, Some(&result.root_id))
         .await
         .map_err(|e| IndexerError::LedgerApply(e.to_string()))?;
 
@@ -1045,6 +1064,10 @@ mod tests {
             true,
             None,
         )
+    }
+
+    fn test_commit_id(label: &str) -> ContentId {
+        ContentId::new(ContentKind::Commit, label.as_bytes())
     }
 
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> String {
@@ -1188,7 +1211,9 @@ mod tests {
             graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", &addr, 1).await.unwrap();
+        ns.publish_commit("test:main", 1, &test_commit_id(&addr), Some(&addr))
+            .await
+            .unwrap();
 
         let orchestrator = IndexerOrchestrator::new(storage, ns.clone(), IndexerConfig::small());
 
@@ -1218,7 +1243,9 @@ mod tests {
             graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", &addr, 1).await.unwrap();
+        ns.publish_commit("test:main", 1, &test_commit_id(&addr), Some(&addr))
+            .await
+            .unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-current"));
@@ -1254,7 +1281,9 @@ mod tests {
             graph_delta: HashMap::new(),
         };
         let addr1 = store_commit(&storage, &commit1).await;
-        ns.publish_commit("test:main", &addr1, 1).await.unwrap();
+        ns.publish_commit("test:main", 1, &test_commit_id(&addr1), Some(&addr1))
+            .await
+            .unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-behind"));
@@ -1280,7 +1309,9 @@ mod tests {
             graph_delta: HashMap::new(),
         };
         let addr2 = store_commit(&storage, &commit2).await;
-        ns.publish_commit("test:main", &addr2, 2).await.unwrap();
+        ns.publish_commit("test:main", 2, &test_commit_id(&addr2), Some(&addr2))
+            .await
+            .unwrap();
 
         // Index is now behind - needs indexing
         let needs = orchestrator.needs_indexing("test:main").await.unwrap();
@@ -1308,7 +1339,9 @@ mod tests {
             graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", &addr, 1).await.unwrap();
+        ns.publish_commit("test:main", 1, &test_commit_id(&addr), Some(&addr))
+            .await
+            .unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-ledger"));
@@ -1340,7 +1373,9 @@ mod tests {
             graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", &addr, 1).await.unwrap();
+        ns.publish_commit("test:main", 1, &test_commit_id(&addr), Some(&addr))
+            .await
+            .unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-publish"));
@@ -1376,7 +1411,9 @@ mod tests {
             graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", &addr, 1).await.unwrap();
+        ns.publish_commit("test:main", 1, &test_commit_id(&addr), Some(&addr))
+            .await
+            .unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-existing"));
@@ -1596,6 +1633,7 @@ mod tests {
         let outcome = IndexOutcome::Completed {
             index_t: 5,
             root_address: "test:addr".to_string(),
+            root_id: None,
         };
         let cloned = outcome.clone();
         assert!(matches!(cloned, IndexOutcome::Completed { index_t: 5, .. }));
@@ -1634,7 +1672,9 @@ mod tests {
 #[cfg(all(test, feature = "embedded-orchestrator"))]
 mod embedded_tests {
     use super::*;
-    use fluree_db_core::{Db, Flake, FlakeValue, MemoryStorage, Sid, StorageWrite};
+    use fluree_db_core::{
+        ContentId, ContentKind, Db, Flake, FlakeValue, MemoryStorage, Sid, StorageWrite,
+    };
     use fluree_db_ledger::LedgerState;
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::{Commit, Novelty};
@@ -1650,6 +1690,10 @@ mod embedded_tests {
             true,
             None,
         )
+    }
+
+    fn test_commit_id(label: &str) -> ContentId {
+        ContentId::new(ContentKind::Commit, label.as_bytes())
     }
 
     fn make_large_flake(t: i64, size_hint: usize) -> Flake {
@@ -1828,7 +1872,9 @@ mod embedded_tests {
             graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", &addr, 1).await.unwrap();
+        ns.publish_commit("test:main", 1, &test_commit_id(&addr), Some(&addr))
+            .await
+            .unwrap();
 
         // Create a LedgerState with enough novelty to trigger threshold
         let db = Db::genesis(storage.clone(), "test:main");
@@ -1878,7 +1924,9 @@ mod embedded_tests {
             graph_delta: HashMap::new(),
         };
         let addr = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", &addr, 1).await.unwrap();
+        ns.publish_commit("test:main", 1, &test_commit_id(&addr), Some(&addr))
+            .await
+            .unwrap();
 
         let db = Db::genesis(storage.clone(), "test:main");
         let mut novelty = Novelty::new(0);

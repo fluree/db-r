@@ -431,22 +431,22 @@ impl SubqueryPattern {
 /// Direct variable result:
 /// ```json
 /// {
-///   "db:graphSource": "my-search:main",
-///   "db:searchText": "software engineer",
-///   "db:searchLimit": 10,
-///   "db:searchResult": "?doc"
+///   "f:graphSource": "my-search:main",
+///   "f:searchText": "software engineer",
+///   "f:searchLimit": 10,
+///   "f:searchResult": "?doc"
 /// }
 /// ```
 ///
 /// Nested result with score:
 /// ```json
 /// {
-///   "db:graphSource": "my-search:main",
-///   "db:searchText": "software engineer",
-///   "db:searchResult": {
-///     "db:resultId": "?doc",
-///     "db:resultScore": "?score",
-///     "db:resultLedger": "?source"
+///   "f:graphSource": "my-search:main",
+///   "f:searchText": "software engineer",
+///   "f:searchResult": {
+///     "f:resultId": "?doc",
+///     "f:resultScore": "?score",
+///     "f:resultLedger": "?source"
 ///   }
 /// }
 /// ```
@@ -566,23 +566,23 @@ impl IndexSearchPattern {
 /// Simple search with constant vector:
 /// ```json
 /// {
-///   "db:graphSource": "embeddings:main",
-///   "db:queryVector": [0.1, 0.2, 0.3],
-///   "db:distanceMetric": "cosine",
-///   "db:searchLimit": 10,
-///   "db:searchResult": "?doc"
+///   "f:graphSource": "embeddings:main",
+///   "f:queryVector": [0.1, 0.2, 0.3],
+///   "f:distanceMetric": "cosine",
+///   "f:searchLimit": 10,
+///   "f:searchResult": "?doc"
 /// }
 /// ```
 ///
 /// Search with variable vector:
 /// ```json
 /// {
-///   "db:graphSource": "embeddings:main",
-///   "db:queryVector": "?queryVec",
-///   "db:distanceMetric": "dot",
-///   "db:searchResult": {
-///     "db:resultId": "?doc",
-///     "db:resultScore": "?score"
+///   "f:graphSource": "embeddings:main",
+///   "f:queryVector": "?queryVec",
+///   "f:distanceMetric": "dot",
+///   "f:searchResult": {
+///     "f:resultId": "?doc",
+///     "f:resultScore": "?score"
 ///   }
 /// }
 /// ```

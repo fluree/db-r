@@ -243,24 +243,38 @@ impl Publisher for AwsNameService {
     async fn publish_commit(
         &self,
         ledger_id: &str,
-        commit_addr: &str,
         commit_t: i64,
+        commit_id: &fluree_db_core::ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.publish_commit(ledger_id, commit_addr, commit_t).await,
-            Self::Storage(ns) => ns.publish_commit(ledger_id, commit_addr, commit_t).await,
+            Self::DynamoDb(ns) => {
+                ns.publish_commit(ledger_id, commit_t, commit_id, address_hint)
+                    .await
+            }
+            Self::Storage(ns) => {
+                ns.publish_commit(ledger_id, commit_t, commit_id, address_hint)
+                    .await
+            }
         }
     }
 
     async fn publish_index(
         &self,
         ledger_id: &str,
-        index_addr: &str,
         index_t: i64,
+        index_id: &fluree_db_core::ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), NameServiceError> {
         match self {
-            Self::DynamoDb(ns) => ns.publish_index(ledger_id, index_addr, index_t).await,
-            Self::Storage(ns) => ns.publish_index(ledger_id, index_addr, index_t).await,
+            Self::DynamoDb(ns) => {
+                ns.publish_index(ledger_id, index_t, index_id, address_hint)
+                    .await
+            }
+            Self::Storage(ns) => {
+                ns.publish_index(ledger_id, index_t, index_id, address_hint)
+                    .await
+            }
         }
     }
 
@@ -284,16 +298,17 @@ impl AdminPublisher for AwsNameService {
     async fn publish_index_allow_equal(
         &self,
         ledger_id: &str,
-        index_addr: &str,
         index_t: i64,
+        index_id: &fluree_db_core::ContentId,
+        address_hint: Option<&str>,
     ) -> std::result::Result<(), NameServiceError> {
         match self {
             Self::DynamoDb(ns) => {
-                ns.publish_index_allow_equal(ledger_id, index_addr, index_t)
+                ns.publish_index_allow_equal(ledger_id, index_t, index_id, address_hint)
                     .await
             }
             Self::Storage(ns) => {
-                ns.publish_index_allow_equal(ledger_id, index_addr, index_t)
+                ns.publish_index_allow_equal(ledger_id, index_t, index_id, address_hint)
                     .await
             }
         }
@@ -596,11 +611,12 @@ impl AwsConnectionHandle {
     pub async fn publish_commit(
         &self,
         alias: &str,
-        commit_addr: &str,
         commit_t: i64,
+        commit_id: &fluree_db_core::ContentId,
+        address_hint: Option<&str>,
     ) -> Result<()> {
         self.nameservice
-            .publish_commit(alias, commit_addr, commit_t)
+            .publish_commit(alias, commit_t, commit_id, address_hint)
             .await
             .map_err(|e| ConnectionError::storage(format!("Publish commit failed: {}", e)))
     }
@@ -608,9 +624,15 @@ impl AwsConnectionHandle {
     /// Publish a new index to the nameservice
     ///
     /// This is typically called by the indexer after successfully writing new index roots.
-    pub async fn publish_index(&self, alias: &str, index_addr: &str, index_t: i64) -> Result<()> {
+    pub async fn publish_index(
+        &self,
+        alias: &str,
+        index_t: i64,
+        index_id: &fluree_db_core::ContentId,
+        address_hint: Option<&str>,
+    ) -> Result<()> {
         self.nameservice
-            .publish_index(alias, index_addr, index_t)
+            .publish_index(alias, index_t, index_id, address_hint)
             .await
             .map_err(|e| ConnectionError::storage(format!("Publish index failed: {}", e)))
     }

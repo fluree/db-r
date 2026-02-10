@@ -225,22 +225,22 @@ pub enum UnresolvedIndexSearchTarget {
 /// Direct variable result:
 /// ```json
 /// {
-///   "db:graphSource": "my-search:main",
-///   "db:searchText": "software engineer",
-///   "db:searchLimit": 10,
-///   "db:searchResult": "?doc"
+///   "f:graphSource": "my-search:main",
+///   "f:searchText": "software engineer",
+///   "f:searchLimit": 10,
+///   "f:searchResult": "?doc"
 /// }
 /// ```
 ///
 /// Nested result with score:
 /// ```json
 /// {
-///   "db:graphSource": "my-search:main",
-///   "db:searchText": "software engineer",
-///   "db:searchResult": {
-///     "db:resultId": "?doc",
-///     "db:resultScore": "?score",
-///     "db:resultLedger": "?source"
+///   "f:graphSource": "my-search:main",
+///   "f:searchText": "software engineer",
+///   "f:searchResult": {
+///     "f:resultId": "?doc",
+///     "f:resultScore": "?score",
+///     "f:resultLedger": "?source"
 ///   }
 /// }
 /// ```
@@ -338,11 +338,11 @@ pub enum UnresolvedVectorSearchTarget {
 ///
 /// ```json
 /// {
-///   "db:graphSource": "embeddings:main",
-///   "db:queryVector": [0.1, 0.2, 0.3],
-///   "db:distanceMetric": "cosine",
-///   "db:searchLimit": 10,
-///   "db:searchResult": {"db:resultId": "?doc", "db:resultScore": "?score"}
+///   "f:graphSource": "embeddings:main",
+///   "f:queryVector": [0.1, 0.2, 0.3],
+///   "f:distanceMetric": "cosine",
+///   "f:searchLimit": 10,
+///   "f:searchResult": {"f:resultId": "?doc", "f:resultScore": "?score"}
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
@@ -876,9 +876,9 @@ pub enum UnresolvedPattern {
     /// Syntax:
     /// ```json
     /// {
-    ///   "db:graphSource": "my-search:main",
-    ///   "db:searchText": "software engineer",
-    ///   "db:searchResult": "?doc"
+    ///   "f:graphSource": "my-search:main",
+    ///   "f:searchText": "software engineer",
+    ///   "f:searchResult": "?doc"
     /// }
     /// ```
     IndexSearch(UnresolvedIndexSearchPattern),
@@ -888,11 +888,11 @@ pub enum UnresolvedPattern {
     /// Syntax:
     /// ```json
     /// {
-    ///   "db:graphSource": "embeddings:main",
-    ///   "db:queryVector": [0.1, 0.2, 0.3],
-    ///   "db:distanceMetric": "cosine",
-    ///   "db:searchLimit": 10,
-    ///   "db:searchResult": {"db:resultId": "?doc", "db:resultScore": "?score"}
+    ///   "f:graphSource": "embeddings:main",
+    ///   "f:queryVector": [0.1, 0.2, 0.3],
+    ///   "f:distanceMetric": "cosine",
+    ///   "f:searchLimit": 10,
+    ///   "f:searchResult": {"f:resultId": "?doc", "f:resultScore": "?score"}
     /// }
     /// ```
     VectorSearch(UnresolvedVectorSearchPattern),

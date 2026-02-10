@@ -72,7 +72,7 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
     db.range_provider = Some(Arc::new(provider));
 
     ledger
-        .apply_loaded_db(db, root_address)
+        .apply_loaded_db(db, root_address, None)
         .expect("apply_loaded_db");
 }
 
@@ -471,10 +471,10 @@ async fn ledger_info_api_returns_expected_structure() {
             );
             assert!(ns.get("@id").is_some(), "nameservice should have @id");
             assert!(ns.get("@type").is_some(), "nameservice should have @type");
-            assert!(ns.get("db:t").is_some(), "nameservice should have db:t");
+            assert!(ns.get("f:t").is_some(), "nameservice should have f:t");
             assert_eq!(
-                ns["db:status"], "ready",
-                "nameservice db:status should be 'ready'"
+                ns["f:status"], "ready",
+                "nameservice f:status should be 'ready'"
             );
 
             // ================================================================

@@ -49,9 +49,10 @@ pub struct TransactQueryParams {
 /// Commit information in transaction response
 #[derive(Serialize)]
 pub struct CommitInfo {
-    /// Commit storage address
-    pub address: String,
-    /// Commit hash (SHA-256)
+    /// Commit storage address (may be absent if storage is CID-native)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// Commit content identifier
     pub hash: String,
 }
 
@@ -1113,7 +1114,7 @@ async fn execute_transaction(
             tracing::info!(
                 status = "success",
                 commit_t = result.receipt.t,
-                commit_address = %result.receipt.address,
+                commit_id = %result.receipt.commit_id,
                 "transaction committed"
             );
             result
@@ -1244,7 +1245,7 @@ async fn execute_turtle_transaction(
             tracing::info!(
                 status = "success",
                 commit_t = result.receipt.t,
-                commit_address = %result.receipt.address,
+                commit_id = %result.receipt.commit_id,
                 "Turtle/TriG transaction committed"
             );
             result
@@ -1416,7 +1417,7 @@ async fn execute_sparql_update_request(
             tracing::info!(
                 status = "success",
                 commit_t = result.receipt.t,
-                commit_address = %result.receipt.address,
+                commit_id = %result.receipt.commit_id,
                 "SPARQL UPDATE committed"
             );
             result

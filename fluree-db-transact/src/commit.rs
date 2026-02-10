@@ -19,9 +19,10 @@ use std::sync::Arc;
 /// Receipt returned after a successful commit
 #[derive(Debug, Clone)]
 pub struct CommitReceipt {
-    /// Content address of the commit (legacy storage address, for transition)
-    pub address: String,
-    /// Content identifier (CIDv1)
+    /// Content address of the commit (legacy storage address).
+    /// Present when the commit was written via address-based storage.
+    pub address: Option<String>,
+    /// Content identifier (CIDv1) — primary identity
     pub commit_id: ContentId,
     /// Transaction time of this commit
     pub t: i64,
@@ -341,7 +342,7 @@ where
         let span = tracing::info_span!("commit_publish_nameservice");
         let _g = span.enter();
         nameservice
-            .publish_commit(base.ledger_id(), &address, new_t)
+            .publish_commit(base.ledger_id(), new_t, &commit_cid, Some(&address))
             .await?;
     }
 
@@ -383,12 +384,13 @@ where
         dict_novelty,
         head_commit: Some(address.clone()),
         head_commit_id: Some(commit_cid.clone()),
+        head_index_id: base.head_index_id,
         ns_record: base.ns_record,
         binary_store: base.binary_store,
     };
 
     let receipt = CommitReceipt {
-        address,
+        address: Some(address),
         commit_id: commit_cid,
         t: new_t,
         flake_count,
@@ -468,31 +470,63 @@ where
                 });
             }
 
-            // Verify previous address matches
-            match (&base.head_commit, &record.commit_address) {
-                (Some(base_prev), Some(record_prev)) if base_prev != record_prev => {
-                    return Err(TransactError::AddressMismatch {
-                        expected: record_prev.clone(),
-                        found: base_prev.clone(),
-                    });
+            // Verify previous commit identity matches.
+            // CID-primary: if both sides have CIDs, compare directly.
+            // Mixed state (one has CID, other doesn't) signals a bug — warn and
+            // fall back to address comparison.
+            // Neither has CID: genesis edge case, compare addresses.
+            match (&base.head_commit_id, &record.commit_head_id) {
+                // Primary path: both have CIDs
+                (Some(base_cid), Some(record_cid)) => {
+                    if base_cid != record_cid {
+                        return Err(TransactError::AddressMismatch {
+                            expected: record_cid.to_string(),
+                            found: base_cid.to_string(),
+                        });
+                    }
                 }
-                (None, Some(record_prev)) => {
-                    return Err(TransactError::AddressMismatch {
-                        expected: record_prev.clone(),
-                        found: "None".to_string(),
-                    });
+                // Neither has CID (genesis or legacy edge case): compare addresses
+                (None, None) => {
+                    verify_address_match(
+                        base.head_commit.as_deref(),
+                        record.commit_address.as_deref(),
+                    )?;
                 }
-                (Some(base_prev), None) => {
-                    return Err(TransactError::AddressMismatch {
-                        expected: "None".to_string(),
-                        found: base_prev.clone(),
-                    });
+                // Mixed state: one side has CID, the other doesn't — programmer error
+                _ => {
+                    tracing::warn!(
+                        base_has_cid = base.head_commit_id.is_some(),
+                        record_has_cid = record.commit_head_id.is_some(),
+                        "verify_sequencing: mixed CID state — falling back to address comparison"
+                    );
+                    verify_address_match(
+                        base.head_commit.as_deref(),
+                        record.commit_address.as_deref(),
+                    )?;
                 }
-                _ => {}
             }
 
             Ok(())
         }
+    }
+}
+
+/// Address-based fallback comparison for verify_sequencing.
+fn verify_address_match(base_addr: Option<&str>, record_addr: Option<&str>) -> Result<()> {
+    match (base_addr, record_addr) {
+        (Some(base), Some(record)) if base != record => Err(TransactError::AddressMismatch {
+            expected: record.to_string(),
+            found: base.to_string(),
+        }),
+        (None, Some(record)) => Err(TransactError::AddressMismatch {
+            expected: record.to_string(),
+            found: "None".to_string(),
+        }),
+        (Some(base), None) => Err(TransactError::AddressMismatch {
+            expected: "None".to_string(),
+            found: base.to_string(),
+        }),
+        _ => Ok(()),
     }
 }
 

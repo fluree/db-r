@@ -135,6 +135,7 @@ impl PeerSyncTask {
         // 2. Fast-forward commit head (if record has a commit)
         if record.commit_address.is_some() {
             let commit_ref = RefValue {
+                id: record.commit_head_id.clone(),
                 address: record.commit_address.clone(),
                 t: record.commit_t,
             };
@@ -214,6 +215,7 @@ impl PeerSyncTask {
         // 3. Update index head — read current first, NOT expected=None
         if record.index_address.is_some() {
             let index_ref = RefValue {
+                id: record.index_head_id.clone(),
                 address: record.index_address.clone(),
                 t: record.index_t,
             };

@@ -24,7 +24,7 @@ use fluree_db_core::{
 };
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{parse_address, GraphSourceRecord, NsRecord};
-use fluree_db_novelty::{load_commit, Novelty};
+use fluree_db_novelty::{load_commit, load_commit_by_id, Novelty};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
@@ -183,7 +183,14 @@ where
     // 1. Commit section (ALWAYS include, even if None - for Clojure parity)
     let mut index_id_from_commit: Option<String> = None;
     if let Some(commit_addr) = &ledger.head_commit {
-        match build_commit_jsonld(&ledger.db.storage, commit_addr, &ledger.db.ledger_id).await {
+        match build_commit_jsonld(
+            &ledger.db.storage,
+            commit_addr,
+            ledger.head_commit_id.as_ref(),
+            &ledger.db.ledger_id,
+        )
+        .await
+        {
             Ok((commit_json, idx_id)) => {
                 result.insert("commit".to_string(), commit_json);
                 index_id_from_commit = idx_id;
@@ -198,6 +205,14 @@ where
         result.insert("commit".to_string(), JsonValue::Null);
     }
 
+    // Include content identifiers when available
+    if let Some(ref cid) = ledger.head_commit_id {
+        result.insert("commitId".to_string(), json!(cid.to_string()));
+    }
+    if let Some(ref cid) = ledger.head_index_id {
+        result.insert("indexId".to_string(), json!(cid.to_string()));
+    }
+
     // 2. Nameservice section
     if let Some(ns_record) = &ledger.ns_record {
         result.insert("nameservice".to_string(), ns_record_to_jsonld(ns_record));
@@ -209,15 +224,17 @@ where
         build_stats(ledger, &stats, &compactor, &schema_index, options)?,
     );
 
-    // 5. Index section (if available) - include id from commit
+    // 5. Index section (if available)
     if let Some(ns_record) = &ledger.ns_record {
         if let Some(index_addr) = &ns_record.index_address {
             let mut index_obj = json!({
                 "t": ns_record.index_t,
                 "address": index_addr,
             });
-            // Add index id if we got it from the commit
-            if let Some(idx_id) = index_id_from_commit {
+            // Prefer head_index_id from LedgerState; fall back to commit-derived id
+            if let Some(ref cid) = ledger.head_index_id {
+                index_obj["id"] = json!(cid.to_string());
+            } else if let Some(idx_id) = index_id_from_commit {
                 index_obj["id"] = json!(idx_id);
             }
             result.insert("index".to_string(), index_obj);
@@ -463,14 +480,31 @@ async fn merge_class_ref_edges_from_novelty<S: Storage>(
 ///
 /// Uses `"id"` not `"@id"`, `"type"` as array not `"@type"`.
 /// Returns (commit_json, index_id) tuple.
-async fn build_commit_jsonld<S: Storage>(
+///
+/// Prefers CID-based loading via bridge adapter when `head_id` is available;
+/// falls back to address-based loading otherwise.
+async fn build_commit_jsonld<S: Storage + Clone>(
     storage: &S,
     commit_address: &str,
+    head_id: Option<&fluree_db_core::ContentId>,
     alias: &str,
 ) -> Result<(JsonValue, Option<String>)> {
-    let commit = load_commit(storage, commit_address)
-        .await
-        .map_err(|e| LedgerInfoError::CommitLoad(e.to_string()))?;
+    let commit = if let (Some(cid), Some(parsed)) = (
+        head_id,
+        fluree_db_core::address::parse_fluree_address(commit_address),
+    ) {
+        let prefix = fluree_db_core::extract_ledger_prefix(commit_address)
+            .unwrap_or_else(|| alias.to_string());
+        let store =
+            fluree_db_core::bridge_content_store((*storage).clone(), &prefix, parsed.method);
+        load_commit_by_id(&store, cid)
+            .await
+            .map_err(|e| LedgerInfoError::CommitLoad(e.to_string()))?
+    } else {
+        load_commit(storage, commit_address)
+            .await
+            .map_err(|e| LedgerInfoError::CommitLoad(e.to_string()))?
+    };
 
     let mut obj = json!({
         "@context": "https://ns.flur.ee/db/v1",
@@ -557,26 +591,40 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
     };
 
     let mut obj = json!({
-        "@context": { "db": "https://ns.flur.ee/db#" },
+        "@context": { "f": "https://ns.flur.ee/db#" },
         "@id": &canonical_id,
-        "@type": ["db:LedgerSource"],
-        "db:ledger": { "@id": &ledger_name },
-        "db:branch": &record.branch,
-        "db:t": record.commit_t,
-        "db:status": status,
+        "@type": ["f:LedgerSource"],
+        "f:ledger": { "@id": &ledger_name },
+        "f:branch": &record.branch,
+        "f:t": record.commit_t,
+        "f:status": status,
     });
 
-    if let Some(ref commit_addr) = record.commit_address {
-        obj["db:ledgerCommit"] = json!({ "@id": commit_addr });
+    // Emit commit ref when either address or CID is present (supports CID-only refs)
+    if record.commit_address.is_some() || record.commit_head_id.is_some() {
+        let mut commit_obj = serde_json::Map::new();
+        if let Some(ref addr) = record.commit_address {
+            commit_obj.insert("@id".to_string(), json!(addr));
+        }
+        if let Some(ref cid) = record.commit_head_id {
+            commit_obj.insert("f:commitCid".to_string(), json!(cid.to_string()));
+        }
+        obj["f:ledgerCommit"] = JsonValue::Object(commit_obj);
     }
-    if let Some(ref index_addr) = record.index_address {
-        obj["db:ledgerIndex"] = json!({
-            "@id": index_addr,
-            "db:t": record.index_t
-        });
+    // Emit index ref when either address or CID is present
+    if record.index_address.is_some() || record.index_head_id.is_some() {
+        let mut index_obj = serde_json::Map::new();
+        if let Some(ref addr) = record.index_address {
+            index_obj.insert("@id".to_string(), json!(addr));
+        }
+        if let Some(ref cid) = record.index_head_id {
+            index_obj.insert("f:indexCid".to_string(), json!(cid.to_string()));
+        }
+        index_obj.insert("f:t".to_string(), json!(record.index_t));
+        obj["f:ledgerIndex"] = JsonValue::Object(index_obj);
     }
     if let Some(ref ctx_addr) = record.default_context {
-        obj["db:defaultContext"] = json!({ "@id": ctx_addr });
+        obj["f:defaultContext"] = json!({ "@id": ctx_addr });
     }
 
     obj
@@ -584,8 +632,8 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
 
 /// Convert GraphSourceRecord to JSON-LD format for nameservice queries.
 ///
-/// Uses standard JSON-LD keywords with `db:` namespace.
-/// Includes `db:status` field that reflects retracted state.
+/// Uses standard JSON-LD keywords with `f:` namespace.
+/// Includes `f:status` field that reflects retracted state.
 pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
     // Use canonical form for @id: "{name}:{branch}"
     let canonical_id = core_alias::format_alias(&record.name, &record.branch);
@@ -599,26 +647,26 @@ pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
 
     // Determine the kind type string
     let kind_type_str = match record.source_type.kind() {
-        fluree_db_nameservice::GraphSourceKind::Index => "db:IndexSource",
-        fluree_db_nameservice::GraphSourceKind::Mapped => "db:MappedSource",
-        fluree_db_nameservice::GraphSourceKind::Ledger => "db:LedgerSource",
+        fluree_db_nameservice::GraphSourceKind::Index => "f:IndexSource",
+        fluree_db_nameservice::GraphSourceKind::Mapped => "f:MappedSource",
+        fluree_db_nameservice::GraphSourceKind::Ledger => "f:LedgerSource",
     };
 
     let mut obj = json!({
-        "@context": { "db": "https://ns.flur.ee/db#" },
+        "@context": { "f": "https://ns.flur.ee/db#" },
         "@id": &canonical_id,
         "@type": [kind_type_str, record.source_type.to_type_string()],
-        "db:name": &record.name,
-        "db:branch": &record.branch,
-        "db:status": status,
-        "db:graphSourceConfig": { "@value": &record.config },
-        "db:graphSourceDependencies": &record.dependencies,
+        "f:name": &record.name,
+        "f:branch": &record.branch,
+        "f:status": status,
+        "f:graphSourceConfig": { "@value": &record.config },
+        "f:graphSourceDependencies": &record.dependencies,
     });
 
     // Include index fields if present (matching ns@v2 on-disk format)
     if let Some(ref index_addr) = record.index_address {
-        obj["db:graphSourceIndex"] = json!(index_addr);
-        obj["db:graphSourceIndexT"] = json!(record.index_t);
+        obj["f:graphSourceIndex"] = json!(index_addr);
+        obj["f:graphSourceIndexT"] = json!(record.index_t);
     }
 
     obj
@@ -1098,8 +1146,10 @@ mod tests {
             name: "mydb:main".to_string(),
             branch: "main".to_string(),
             commit_address: Some("fluree:file://mydb/main/commit/abc.fcv2".to_string()),
+            commit_head_id: None,
             commit_t: 42,
             index_address: Some("fluree:file://mydb/main/index/def.json".to_string()),
+            index_head_id: None,
             index_t: 40,
             default_context: None,
             retracted: false,
@@ -1108,16 +1158,16 @@ mod tests {
         let json = ns_record_to_jsonld(&record);
 
         assert_eq!(json["@id"], "mydb:main");
-        assert_eq!(json["@type"], json!(["db:LedgerSource"]));
-        assert_eq!(json["db:ledger"]["@id"], "mydb");
-        assert_eq!(json["db:branch"], "main");
-        assert_eq!(json["db:t"], 42);
-        assert_eq!(json["db:status"], "ready");
+        assert_eq!(json["@type"], json!(["f:LedgerSource"]));
+        assert_eq!(json["f:ledger"]["@id"], "mydb");
+        assert_eq!(json["f:branch"], "main");
+        assert_eq!(json["f:t"], 42);
+        assert_eq!(json["f:status"], "ready");
         assert_eq!(
-            json["db:ledgerCommit"]["@id"],
+            json["f:ledgerCommit"]["@id"],
             "fluree:file://mydb/main/commit/abc.fcv2"
         );
-        assert_eq!(json["db:ledgerIndex"]["db:t"], 40);
+        assert_eq!(json["f:ledgerIndex"]["f:t"], 40);
     }
 
     #[test]
@@ -1127,15 +1177,17 @@ mod tests {
             name: "mydb:main".to_string(),
             branch: "main".to_string(),
             commit_address: Some("commit-addr".to_string()),
+            commit_head_id: None,
             commit_t: 10,
             index_address: None,
+            index_head_id: None,
             index_t: 0,
             default_context: None,
             retracted: true,
         };
 
         let json = ns_record_to_jsonld(&record);
-        assert_eq!(json["db:status"], "retracted");
+        assert_eq!(json["f:status"], "retracted");
     }
 
     #[test]
@@ -1155,22 +1207,22 @@ mod tests {
         let json = gs_record_to_jsonld(&record);
 
         assert_eq!(json["@id"], "my-search:main");
-        assert_eq!(json["@type"], json!(["db:IndexSource", "db:Bm25Index"]));
-        assert_eq!(json["db:name"], "my-search");
-        assert_eq!(json["db:branch"], "main");
-        assert_eq!(json["db:status"], "ready");
+        assert_eq!(json["@type"], json!(["f:IndexSource", "f:Bm25Index"]));
+        assert_eq!(json["f:name"], "my-search");
+        assert_eq!(json["f:branch"], "main");
+        assert_eq!(json["f:status"], "ready");
         assert_eq!(
-            json["db:graphSourceConfig"]["@value"],
+            json["f:graphSourceConfig"]["@value"],
             r#"{"k1":1.2,"b":0.75}"#
         );
         assert_eq!(
-            json["db:graphSourceDependencies"],
+            json["f:graphSourceDependencies"],
             json!(["source-ledger:main"])
         );
         assert_eq!(
-            json["db:graphSourceIndex"],
+            json["f:graphSourceIndex"],
             "fluree:file://graph-sources/snapshot.bin"
         );
-        assert_eq!(json["db:graphSourceIndexT"], 42);
+        assert_eq!(json["f:graphSourceIndexT"], 42);
     }
 }

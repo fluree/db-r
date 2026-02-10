@@ -32,8 +32,8 @@ mod stats;
 
 pub use commit::{
     load_commit, load_commit_by_id, load_commit_envelope, trace_commit_envelopes, trace_commits,
-    Commit, CommitEnvelope, CommitRef, IndexRef, TxnMetaEntry, TxnMetaValue, TxnSignature,
-    MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES,
+    trace_commits_by_id, Commit, CommitEnvelope, CommitRef, IndexRef, TxnMetaEntry, TxnMetaValue,
+    TxnSignature, MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES,
 };
 pub use commit_flakes::generate_commit_flakes;
 pub use commit_v2::envelope::{MAX_GRAPH_DELTA_ENTRIES, MAX_GRAPH_IRI_LENGTH};
