@@ -8,6 +8,7 @@
 //!
 //! - [`config`]: Remote and upstream configuration
 //! - [`client`]: HTTP client for communicating with remote nameservices
+//! - [`origin`]: CAS object fetcher with multi-origin fallback and integrity verification
 //! - [`watch`]: Remote watch trait with SSE and polling implementations
 //! - [`backoff`]: Exponential backoff utility
 //! - [`error`]: Error types for sync operations
@@ -23,6 +24,8 @@ pub mod client;
 pub mod config;
 pub mod driver;
 pub mod error;
+pub mod ledger_config;
+pub mod origin;
 mod server_sse;
 pub mod watch;
 pub mod watch_poll;
@@ -35,6 +38,8 @@ pub use config::{
 };
 pub use driver::{FetchResult, PullResult, PushResult, SyncDriver};
 pub use error::{Result, SyncError};
+pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
+pub use origin::{HttpOriginFetcher, MultiOriginFetcher};
 pub use watch::{RemoteEvent, RemoteWatch};
 pub use watch_poll::PollRemoteWatch;
 pub use watch_sse::SseRemoteWatch;

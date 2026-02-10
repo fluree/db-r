@@ -16,7 +16,7 @@ mod tests {
     use super::*;
     use fluree_db_core::{ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid};
     use fluree_db_novelty::commit_v2::{read_commit, read_commit_envelope, MAGIC};
-    use fluree_db_novelty::{Commit, CommitRef, IndexRef};
+    use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::HashMap;
 
     fn make_test_commit(flakes: Vec<Flake>, t: i64) -> Commit {
@@ -306,8 +306,6 @@ mod tests {
         commit.time = Some("2024-01-01T00:00:00Z".into());
         let txn_cid = ContentId::new(ContentKind::Txn, b"txn-abc123");
         commit.txn = Some(txn_cid.clone());
-        let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-xyz");
-        commit.index = Some(IndexRef::new(index_cid.clone()).with_t(8));
 
         commit.flakes.push(Flake::new(
             Sid::new(101, "x"),
@@ -325,8 +323,6 @@ mod tests {
         assert_eq!(decoded.t, 10);
         assert_eq!(decoded.time.as_deref(), Some("2024-01-01T00:00:00Z"));
         assert_eq!(decoded.txn.as_ref(), Some(&txn_cid));
-        assert_eq!(decoded.index.as_ref().unwrap().id, index_cid);
-        assert_eq!(decoded.index.as_ref().unwrap().t, Some(8));
     }
 
     #[test]

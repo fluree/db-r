@@ -181,12 +181,10 @@ where
     let mut result = Map::new();
 
     // 1. Commit section (ALWAYS include, even if None - for Clojure parity)
-    let mut index_id_from_commit: Option<String> = None;
     if let Some(head_cid) = &ledger.head_commit_id {
         match build_commit_jsonld(&ledger.db.storage, head_cid, &ledger.db.ledger_id).await {
-            Ok((commit_json, idx_id)) => {
+            Ok(commit_json) => {
                 result.insert("commit".to_string(), commit_json);
-                index_id_from_commit = idx_id;
             }
             Err(e) => {
                 // Include error in response for debugging
@@ -223,13 +221,11 @@ where
             let mut index_obj = json!({
                 "t": ns_record.index_t,
             });
-            // Prefer head_index_id from LedgerState; fall back to ns_record; then commit-derived id
+            // Prefer head_index_id from LedgerState; fall back to ns_record
             if let Some(ref cid) = ledger.head_index_id {
                 index_obj["id"] = json!(cid.to_string());
             } else if let Some(ref cid) = ns_record.index_head_id {
                 index_obj["id"] = json!(cid.to_string());
-            } else if let Some(idx_id) = index_id_from_commit {
-                index_obj["id"] = json!(idx_id);
             }
             result.insert("index".to_string(), index_obj);
         }
@@ -480,7 +476,7 @@ async fn build_commit_jsonld<S: Storage + Clone>(
     storage: &S,
     head_id: &fluree_db_core::ContentId,
     alias: &str,
-) -> Result<(JsonValue, Option<String>)> {
+) -> Result<JsonValue> {
     let store = fluree_db_core::content_store_for(storage.clone(), alias);
     let commit = load_commit_by_id(&store, head_id)
         .await
@@ -524,27 +520,11 @@ async fn build_commit_jsonld<S: Storage + Clone>(
     // NS block
     obj["ns"] = json!([{"id": alias}]);
 
-    // Index block (if indexed at this commit)
-    let mut index_id_out: Option<String> = None;
-    if let Some(index) = &commit.index {
-        let index_id_str = index.id.to_string();
-        let mut index_obj = json!({
-            "type": ["Index"],
-            "id": &index_id_str,
-        });
-        index_id_out = Some(index_id_str);
+    // Index info is NOT embedded in commits — it is tracked via the nameservice
+    // and LedgerState.head_index_id. The caller populates the index section
+    // from those canonical sources.
 
-        // Add index.data with the indexed t
-        if let Some(index_t) = index.t {
-            index_obj["data"] = json!({
-                "type": ["DB"],
-                "t": index_t,
-            });
-        }
-        obj["index"] = index_obj;
-    }
-
-    Ok((obj, index_id_out))
+    Ok(obj)
 }
 
 /// Convert NsRecord to JSON-LD format for nameservice queries.
@@ -1119,6 +1099,7 @@ mod tests {
             name: "mydb:main".to_string(),
             branch: "main".to_string(),
             commit_head_id: Some(commit_cid.clone()),
+            config_id: None,
             commit_t: 42,
             index_head_id: Some(index_cid),
             index_t: 40,
@@ -1147,6 +1128,7 @@ mod tests {
             name: "mydb:main".to_string(),
             branch: "main".to_string(),
             commit_head_id: Some(commit_cid),
+            config_id: None,
             commit_t: 10,
             index_head_id: None,
             index_t: 0,

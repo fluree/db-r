@@ -122,6 +122,14 @@ struct NsFileV2 {
     /// Config metadata beyond default_context (v2 extension)
     #[serde(rename = "f:configMeta", skip_serializing_if = "Option::is_none")]
     config_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
+
+    /// Content identifier for the ledger config object (origin discovery)
+    #[serde(
+        rename = "f:configCid",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    config_cid: Option<String>,
 }
 
 /// JSON structure for index-only ns@v2 file
@@ -463,6 +471,10 @@ impl FileNameService {
             index_t: main.index.as_ref().map(|i| i.t).unwrap_or(0),
             default_context: main.default_context.map(|c| c.id),
             retracted: main.status == "retracted",
+            config_id: main
+                .config_cid
+                .as_deref()
+                .and_then(|s| s.parse::<ContentId>().ok()),
         };
 
         // Merge index file if it has equal or higher t (READ-TIME merge rule)
@@ -611,6 +623,7 @@ impl FileNameService {
             status_meta: None,
             config_v: None,
             config_meta: None,
+            config_cid: record.config_id.as_ref().map(|cid| cid.to_string()),
         }
     }
 }
@@ -730,6 +743,7 @@ impl Publisher for FileNameService {
                         },
                         branch: branch_for_file.clone(),
                         commit_cid: None,
+                        config_cid: None,
                         t: 0,
                         index: None,
                         status: "ready".to_string(),
@@ -827,6 +841,7 @@ impl Publisher for FileNameService {
                                 },
                                 branch: branch_for_file.clone(),
                                 commit_cid: cid_str,
+                                config_cid: None,
                                 t: commit_t,
                                 index: None,
                                 status: "ready".to_string(),
@@ -880,6 +895,7 @@ impl Publisher for FileNameService {
                     index_t: 0,
                     default_context: None,
                     retracted: false,
+                    config_id: None,
                 };
                 did_update = true;
                 self.record_to_file(&record)
@@ -1589,6 +1605,7 @@ impl RefPublisher for FileNameService {
                             },
                             branch: branch_c.clone(),
                             commit_cid: None,
+                            config_cid: None,
                             t: 0,
                             index: None,
                             status: "ready".to_string(),
@@ -1860,12 +1877,20 @@ impl ConfigPublisher for FileNameService {
                 });
 
                 // Build ConfigPayload if we have any config data
-                let payload = if v == 0 && f.default_context.is_none() && f.config_meta.is_none() {
+                let payload = if v == 0
+                    && f.default_context.is_none()
+                    && f.config_meta.is_none()
+                    && f.config_cid.is_none()
+                {
                     None
                 } else {
                     let extra = f.config_meta.unwrap_or_default();
                     Some(ConfigPayload {
                         default_context: f.default_context.map(|c| c.id),
+                        config_id: f
+                            .config_cid
+                            .as_deref()
+                            .and_then(|s| s.parse::<ContentId>().ok()),
                         extra,
                     })
                 };
@@ -1905,16 +1930,23 @@ impl ConfigPublisher for FileNameService {
                             0 // Unborn
                         }
                     });
-                    let payload =
-                        if v == 0 && f.default_context.is_none() && f.config_meta.is_none() {
-                            None
-                        } else {
-                            let extra = f.config_meta.clone().unwrap_or_default();
-                            Some(ConfigPayload {
-                                default_context: f.default_context.as_ref().map(|c| c.id.clone()),
-                                extra,
-                            })
-                        };
+                    let payload = if v == 0
+                        && f.default_context.is_none()
+                        && f.config_meta.is_none()
+                        && f.config_cid.is_none()
+                    {
+                        None
+                    } else {
+                        let extra = f.config_meta.clone().unwrap_or_default();
+                        Some(ConfigPayload {
+                            default_context: f.default_context.as_ref().map(|c| c.id.clone()),
+                            config_id: f
+                                .config_cid
+                                .as_deref()
+                                .and_then(|s| s.parse::<ContentId>().ok()),
+                            extra,
+                        })
+                    };
                     Some(ConfigValue { v, payload })
                 }
             };
@@ -1966,9 +1998,11 @@ impl ConfigPublisher for FileNameService {
                 } else {
                     Some(payload.extra.clone())
                 };
+                file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
             } else {
                 file.default_context = None;
                 file.config_meta = None;
+                file.config_cid = None;
             }
 
             Ok(Some(file))
@@ -2039,12 +2073,20 @@ impl ConfigPublisher for FileNameService {
                         0 // Unborn
                     }
                 });
-                let payload = if v == 0 && f.default_context.is_none() && f.config_meta.is_none() {
+                let payload = if v == 0
+                    && f.default_context.is_none()
+                    && f.config_meta.is_none()
+                    && f.config_cid.is_none()
+                {
                     None
                 } else {
                     let extra = f.config_meta.unwrap_or_default();
                     Some(ConfigPayload {
                         default_context: f.default_context.map(|c| c.id),
+                        config_id: f
+                            .config_cid
+                            .as_deref()
+                            .and_then(|s| s.parse::<ContentId>().ok()),
                         extra,
                     })
                 };

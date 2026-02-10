@@ -222,10 +222,6 @@ async fn insert_then_query_finds_value() {
     let commit = json
         .get("commit")
         .expect("Response should have commit field");
-    assert!(
-        commit.get("address").is_some(),
-        "Commit should have address"
-    );
     assert!(commit.get("hash").is_some(), "Commit should have hash");
 
     // Query

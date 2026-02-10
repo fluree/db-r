@@ -3,7 +3,7 @@
 //! No NamespaceRegistry needed — Sids are reconstructed directly from
 //! (namespace_code, name) pairs stored in the binary format.
 //!
-//! The v2 reader produces CID-based types (`ContentId`, `CommitRef`, `IndexRef`).
+//! The v2 reader produces CID-based types (`ContentId`, `CommitRef`).
 //! String-based references in the v2 on-disk format are converted to `ContentId`
 //! during decode.
 
@@ -17,6 +17,58 @@ use super::string_dict::StringDict;
 use crate::{Commit, CommitEnvelope};
 use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
 use sha2::{Digest, Sha256};
+
+/// Verify a commit-v2 blob's embedded hash and return its `ContentId`.
+///
+/// This performs only the hash verification step (no full decode).
+/// For commit-v2, the CID is derived from `SHA-256(bytes[0..hash_offset])`
+/// where `hash_offset` excludes the trailing embedded hash and optional
+/// signature block.
+///
+/// Use this for integrity checks without full commit parsing.
+pub fn verify_commit_v2_blob(bytes: &[u8]) -> Result<ContentId, CommitV2Error> {
+    let blob_len = bytes.len();
+
+    if blob_len < MIN_COMMIT_LEN {
+        return Err(CommitV2Error::TooSmall {
+            got: blob_len,
+            min: MIN_COMMIT_LEN,
+        });
+    }
+
+    let header = CommitV2Header::read_from(bytes)?;
+
+    let sig_block_len = header.sig_block_len as usize;
+    let has_sig_block = header.flags & FLAG_HAS_COMMIT_SIG != 0 && sig_block_len > 0;
+
+    let hash_offset = if has_sig_block {
+        if blob_len < HEADER_LEN + HASH_LEN + sig_block_len {
+            return Err(CommitV2Error::TooSmall {
+                got: blob_len,
+                min: HEADER_LEN + HASH_LEN + sig_block_len,
+            });
+        }
+        blob_len - sig_block_len - HASH_LEN
+    } else {
+        blob_len - HASH_LEN
+    };
+
+    let expected_hash: [u8; 32] = bytes[hash_offset..hash_offset + HASH_LEN]
+        .try_into()
+        .unwrap();
+    let actual_hash: [u8; 32] = Sha256::digest(&bytes[..hash_offset]).into();
+    if expected_hash != actual_hash {
+        return Err(CommitV2Error::HashMismatch {
+            expected: expected_hash,
+            actual: actual_hash,
+        });
+    }
+
+    Ok(ContentId::from_sha256_digest(
+        CODEC_FLUREE_COMMIT,
+        &actual_hash,
+    ))
+}
 
 /// Read a v2 commit blob and return a full `Commit` (with flakes).
 ///
@@ -156,7 +208,6 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         time: envelope.time,
         flakes,
         previous_ref: envelope.previous_ref,
-        index: envelope.index,
         txn: envelope.txn,
         namespace_delta: envelope.namespace_delta,
         txn_signature: envelope.txn_signature,
@@ -196,7 +247,6 @@ pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Erro
     Ok(CommitEnvelope {
         t: header.t,
         previous_ref: env.previous_ref,
-        index: env.index,
         namespace_delta: env.namespace_delta,
         txn_meta: env.txn_meta,
     })

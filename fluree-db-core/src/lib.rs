@@ -72,7 +72,7 @@ pub use comparator::IndexType;
 pub use content_id::{
     CommitId, ContentId, IndexRootId, TxnId, CODEC_FLUREE_COMMIT, CODEC_FLUREE_DICT_BLOB,
     CODEC_FLUREE_GARBAGE, CODEC_FLUREE_INDEX_BRANCH, CODEC_FLUREE_INDEX_LEAF,
-    CODEC_FLUREE_INDEX_ROOT, CODEC_FLUREE_TXN,
+    CODEC_FLUREE_INDEX_ROOT, CODEC_FLUREE_LEDGER_CONFIG, CODEC_FLUREE_TXN,
 };
 pub use datatypes::dt_compatible;
 pub use db::{Db, DbMetadata};

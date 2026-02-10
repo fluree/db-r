@@ -663,7 +663,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Import complete: t={}, {:.2}M flakes, root={:?}",
             result.t,
             result.flake_count as f64 / 1_000_000.0,
-            result.root_address,
+            result.root_id,
         );
     }
 

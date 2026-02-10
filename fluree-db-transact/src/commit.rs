@@ -19,9 +19,6 @@ use std::sync::Arc;
 /// Receipt returned after a successful commit
 #[derive(Debug, Clone)]
 pub struct CommitReceipt {
-    /// Content address of the commit (legacy storage address).
-    /// Present when the commit was written via address-based storage.
-    pub address: Option<String>,
     /// Content identifier (CIDv1) — primary identity
     pub commit_id: ContentId,
     /// Transaction time of this commit
@@ -315,7 +312,7 @@ where
         (commit_cid, result.content_hash_hex, result.bytes)
     };
 
-    let write_res = storage
+    storage
         .content_write_bytes_with_hash(
             ContentKind::Commit,
             base.ledger_id(),
@@ -324,7 +321,6 @@ where
         )
         .await?;
     tracing::info!(commit_bytes = bytes.len(), "commit blob stored");
-    let address = write_res.address;
 
     // Update in-memory commit with its ContentId
     commit_record.id = Some(commit_cid.clone());
@@ -381,7 +377,6 @@ where
     };
 
     let receipt = CommitReceipt {
-        address: Some(address),
         commit_id: commit_cid,
         t: new_t,
         flake_count,

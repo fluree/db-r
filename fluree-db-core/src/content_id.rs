@@ -56,6 +56,9 @@ pub const CODEC_FLUREE_DICT_BLOB: u64 = FLUREE_CODEC_BASE + 6;
 /// Multicodec for Fluree garbage collection records.
 pub const CODEC_FLUREE_GARBAGE: u64 = FLUREE_CODEC_BASE + 7;
 
+/// Multicodec for Fluree ledger configuration objects (origin discovery).
+pub const CODEC_FLUREE_LEDGER_CONFIG: u64 = FLUREE_CODEC_BASE + 8;
+
 /// SHA2-256 multihash code (standard).
 const SHA2_256: u64 = 0x12;
 
@@ -76,6 +79,7 @@ impl ContentKind {
             ContentKind::IndexLeaf => CODEC_FLUREE_INDEX_LEAF,
             ContentKind::DictBlob { .. } => CODEC_FLUREE_DICT_BLOB,
             ContentKind::GarbageRecord => CODEC_FLUREE_GARBAGE,
+            ContentKind::LedgerConfig => CODEC_FLUREE_LEDGER_CONFIG,
         }
     }
 
@@ -95,6 +99,7 @@ impl ContentKind {
                 dict: crate::storage::DictKind::Graphs,
             }),
             CODEC_FLUREE_GARBAGE => Some(ContentKind::GarbageRecord),
+            CODEC_FLUREE_LEDGER_CONFIG => Some(ContentKind::LedgerConfig),
             _ => None,
         }
     }
@@ -109,6 +114,7 @@ impl ContentKind {
             ContentKind::IndexLeaf => "index-leaf",
             ContentKind::DictBlob { .. } => "dict",
             ContentKind::GarbageRecord => "garbage",
+            ContentKind::LedgerConfig => "config",
         }
     }
 }
@@ -411,6 +417,15 @@ mod tests {
         assert_eq!(
             ContentKind::from_codec(CODEC_FLUREE_GARBAGE),
             Some(ContentKind::GarbageRecord)
+        );
+
+        assert_eq!(
+            ContentKind::LedgerConfig.to_codec(),
+            CODEC_FLUREE_LEDGER_CONFIG
+        );
+        assert_eq!(
+            ContentKind::from_codec(CODEC_FLUREE_LEDGER_CONFIG),
+            Some(ContentKind::LedgerConfig)
         );
 
         // Unknown codec

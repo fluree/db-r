@@ -228,6 +228,8 @@ pub enum ContentKind {
     IndexBranch,
     /// Index leaf file (FLI1 format)
     IndexLeaf,
+    /// Ledger configuration object (origin discovery, replication defaults)
+    LedgerConfig,
 }
 
 /// Result of a storage-owned content write.
@@ -567,6 +569,7 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
         }
         ContentKind::IndexBranch => format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex),
         ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli", prefix, hash_hex),
+        ContentKind::LedgerConfig => format!("{}/config/{}.json", prefix, hash_hex),
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
         _ => format!("{}/blob/{}.bin", prefix, hash_hex),

@@ -166,7 +166,7 @@ pub use fluree_db_ledger::{
     HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore,
 };
 pub use fluree_db_nameservice::{GraphSourcePublisher, NameService, NsRecord, Publisher};
-pub use fluree_db_novelty::Novelty;
+pub use fluree_db_novelty::{verify_commit_v2_blob, Novelty};
 pub use fluree_db_query::{
     execute_pattern, execute_pattern_with_overlay, execute_pattern_with_overlay_at,
     execute_with_dataset_and_bm25, execute_with_dataset_and_policy_and_bm25,

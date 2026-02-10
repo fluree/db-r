@@ -2504,6 +2504,7 @@ dependencies = [
  "bytes",
  "fluree-db-core",
  "fluree-db-nameservice",
+ "fluree-db-novelty",
  "fluree-sse",
  "futures",
  "parking_lot",
@@ -2515,6 +2516,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "urlencoding",
  "wiremock",
 ]
 

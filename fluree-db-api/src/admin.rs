@@ -135,8 +135,6 @@ pub struct TriggerIndexResult {
     pub ledger_id: String,
     /// Transaction time the index was built to
     pub index_t: i64,
-    /// Storage address of the index root
-    pub root_address: String,
     /// Content identifier of the index root (when available)
     pub root_id: Option<fluree_db_core::ContentId>,
 }
@@ -148,8 +146,6 @@ pub struct ReindexResult {
     pub ledger_id: String,
     /// Transaction time the index was built to
     pub index_t: i64,
-    /// Storage address of the new index root
-    pub root_address: String,
     /// Content identifier of the index root
     pub root_id: fluree_db_core::ContentId,
     /// Build statistics
@@ -517,7 +513,6 @@ where
             return Ok(TriggerIndexResult {
                 ledger_id,
                 index_t: 0,
-                root_address: String::new(),
                 root_id: None,
             });
         }
@@ -536,21 +531,9 @@ where
         match result {
             Ok(IndexOutcome::Completed { index_t, root_id }) => {
                 info!(ledger_id = %ledger_id, index_t = index_t, "Indexing completed");
-                let root_address = root_id
-                    .as_ref()
-                    .map(|cid| {
-                        fluree_db_core::storage::content_address(
-                            self.storage().storage_method(),
-                            fluree_db_core::ContentKind::IndexRoot,
-                            &ledger_id,
-                            &cid.digest_hex(),
-                        )
-                    })
-                    .unwrap_or_default();
                 Ok(TriggerIndexResult {
                     ledger_id,
                     index_t,
-                    root_address,
                     root_id,
                 })
             }
@@ -650,33 +633,35 @@ where
         info!(
             ledger_id = %ledger_id,
             index_t = index_result.index_t,
-            root_address = %index_result.root_address,
+            root_id = %index_result.root_id,
             "Reindex completed"
         );
 
         // 6. Spawn async garbage collection (non-blocking)
         let storage_clone = self.storage().clone();
-        let root_address_clone = index_result.root_address.clone();
+        let gc_root_id = index_result.root_id.clone();
+        let gc_ledger_id = ledger_id.clone();
         let gc_config = CleanGarbageConfig {
             max_old_indexes: Some(gc_max_old_indexes),
             min_time_garbage_mins: Some(gc_min_time_mins),
         };
         tokio::spawn(async move {
-            if let Err(e) = clean_garbage(&storage_clone, &root_address_clone, gc_config).await {
+            if let Err(e) =
+                clean_garbage(&storage_clone, &gc_root_id, &gc_ledger_id, gc_config).await
+            {
                 tracing::warn!(
                     error = %e,
-                    root_address = %root_address_clone,
+                    root_id = %gc_root_id,
                     "Background garbage collection failed (non-fatal)"
                 );
             } else {
-                tracing::debug!(root_address = %root_address_clone, "Background garbage collection completed");
+                tracing::debug!(root_id = %gc_root_id, "Background garbage collection completed");
             }
         });
 
         Ok(ReindexResult {
             ledger_id,
             index_t: index_result.index_t,
-            root_address: index_result.root_address,
             root_id: index_result.root_id,
             stats: index_result.stats,
         })

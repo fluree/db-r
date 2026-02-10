@@ -385,6 +385,163 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 
 Commit CIDs in the immutable chain are stable cursors. New commits appended to the head do not affect backward pointers, so cursors remain valid across pages even when new commits arrive between requests.
 
+## Storage Proxy Endpoints
+
+These endpoints are intended for peer mode and `fluree clone`/`pull` workflows. They require the storage proxy to be enabled on the server and use replication-grade Bearer tokens (`fluree.storage.*` claims).
+
+### GET /storage/ns/:alias
+
+Fetch the nameservice record for a ledger.
+
+**URL:**
+
+```
+GET /storage/ns/{ledger-alias}
+```
+
+**Request Headers:**
+
+```http
+Authorization: Bearer <token>   (requires fluree.storage.* claims)
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "ledger_id": "mydb:main",
+  "name": "mydb",
+  "branch": "main",
+  "commit_head_id": "bafy...commitCid",
+  "commit_t": 42,
+  "index_head_id": "bafy...indexCid",
+  "index_t": 40,
+  "default_context": null,
+  "retracted": false,
+  "config_id": "bafy...configCid",
+  "commit_address": "fluree:memory://mydb:main/commit/abc123.commit",
+  "index_address": "fluree:memory://mydb:main/index/roots/def456.json"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `ledger_id` | Canonical ledger ID (e.g., "mydb:main") |
+| `name` | Ledger name without branch (e.g., "mydb") |
+| `config_id` | CID of the `LedgerConfig` object (origin discovery), if set |
+| `commit_address` / `index_address` | Derived storage addresses for fetching via `/storage/block` |
+
+**Status Codes:**
+
+- `200 OK`: Record found
+- `404 Not Found`: Storage proxy disabled, ledger not found, or not authorized
+
+### POST /storage/block
+
+Fetch a storage block (index branch or leaf) by address. Leaf blocks are always policy-filtered before return.
+
+**URL:**
+
+```
+POST /storage/block
+```
+
+**Request Headers:**
+
+```http
+Content-Type: application/json
+Authorization: Bearer <token>
+Accept: application/octet-stream | application/x-fluree-flakes | application/x-fluree-flakes+json
+```
+
+**Request Body:**
+
+```json
+{
+  "address": "fluree:memory://mydb:main/index/objects/branches/abc123.fbr"
+}
+```
+
+**Responses:**
+
+- `200 OK`: Block bytes (branches) or encoded flakes (leaves)
+- `404 Not Found`: Block not found or not authorized
+
+### GET /storage/objects/:cid
+
+Fetch a CAS (content-addressed storage) object by its content identifier. Returns the raw bytes of the stored object after verifying integrity.
+
+This is a **replication-grade** endpoint for `fluree clone`/`pull` workflows. The client knows the CID (from the nameservice record or the commit chain) and wants the raw bytes.
+
+**URL:**
+
+```
+GET /storage/objects/{cid}?ledger={ledger-alias}
+```
+
+**Path Parameters:**
+
+- `cid`: CIDv1 string (base32-lower multibase, e.g., `"bafybeig..."`)
+
+**Query Parameters:**
+
+- `ledger` (required): Ledger alias (e.g., `"mydb:main"`). Required because storage paths are ledger-scoped.
+
+**Request Headers:**
+
+```http
+Authorization: Bearer <token>   (requires fluree.storage.* claims)
+```
+
+**Kind Allowlist:**
+
+Only replication-essential content kinds are served:
+
+| Kind | Description |
+|------|-------------|
+| `commit` | Commit chain blobs |
+| `txn` | Transaction data blobs |
+| `config` | LedgerConfig origin discovery objects |
+
+Index artifacts (branches, leaves, dicts, garbage records) return 404. Use `/storage/block` for policy-filtered index access.
+
+**Response Headers:**
+
+- `Content-Type: application/octet-stream`
+- `X-Fluree-Content-Kind`: Content kind label (`commit`, `txn`, or `config`)
+
+**Response Body:**
+
+Raw bytes of the stored object.
+
+**Integrity Verification:**
+
+The server verifies the hash of the stored bytes against the CID before returning. Commit blobs are format-sniffed:
+
+- **Commit-v2 blobs** (`FCV2` magic): Uses the canonical sub-range hash (SHA-256 over the payload excluding the trailing hash + signature block).
+- **All other blobs** (txn, config, future commit formats): Full-bytes SHA-256.
+
+If verification fails, the server returns `500 Internal Server Error` — this indicates storage corruption.
+
+**Status Codes:**
+
+- `200 OK`: Object found and integrity verified
+- `400 Bad Request`: Invalid CID string
+- `404 Not Found`: Object not found, disallowed kind, not authorized, or storage proxy disabled
+- `500 Internal Server Error`: Hash verification failed (storage corruption)
+
+**Example:**
+
+```bash
+# Fetch a commit blob by CID
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/v1/fluree/storage/objects/bafybeig...commitCid?ledger=mydb:main"
+
+# Fetch a config blob by CID
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/v1/fluree/storage/objects/bafybeig...configCid?ledger=mydb:main"
+```
+
 ## Query Endpoints
 
 ### POST /query

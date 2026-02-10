@@ -715,7 +715,6 @@ where
                 let (base, _) = view.into_parts();
                 (
                     fluree_db_transact::CommitReceipt {
-                        address: None,
                         commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
@@ -861,7 +860,6 @@ where
             let (base, _) = view.into_parts();
             return Ok(TransactResultRef {
                 receipt: fluree_db_transact::CommitReceipt {
-                    address: None,
                     commit_id: ContentId::new(ContentKind::Commit, &[]),
                     t: base.t(),
                     flake_count: 0,

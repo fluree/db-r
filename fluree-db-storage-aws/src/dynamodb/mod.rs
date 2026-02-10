@@ -196,6 +196,7 @@ impl DynamoDbNameService {
             name,
             branch,
             commit_head_id,
+            config_id: None,
             commit_t,
             index_head_id,
             index_t,
@@ -1598,6 +1599,7 @@ impl ConfigPublisher for DynamoDbNameService {
                         .unwrap_or_default();
                     Some(ConfigPayload {
                         default_context,
+                        config_id: None,
                         extra,
                     })
                 };

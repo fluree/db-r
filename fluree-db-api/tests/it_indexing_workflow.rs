@@ -495,7 +495,7 @@ async fn trigger_index_no_commit_ledger_returns_index_t_zero() {
                 .await
                 .expect("trigger_index");
             assert_eq!(r.index_t, 0);
-            assert!(r.root_address.is_empty());
+            assert!(r.root_id.is_none());
         })
         .await;
 }
@@ -528,7 +528,7 @@ async fn trigger_index_builds_index_to_current_commit_t() {
                 .await
                 .expect("trigger_index");
             assert_eq!(r.index_t, 5);
-            assert!(!r.root_address.is_empty(), "expected root_address");
+            assert!(r.root_id.is_some(), "expected root_id");
 
             let after = fluree.index_status(&a).await.expect("index_status");
             assert_eq!(after.commit_t, 5);
@@ -578,7 +578,7 @@ async fn reindex_rebuilds_and_publishes_index_at_current_commit_t() {
         .await
         .expect("reindex");
     assert_eq!(r.index_t, 4);
-    assert!(!r.root_address.is_empty());
+    assert!(r.root_id.digest_hex().len() == 64);
 
     // Nameservice record should be updated
     let status = fluree.index_status(&a).await.expect("index_status");
@@ -746,8 +746,8 @@ async fn reindex_with_existing_index_completes_successfully() {
                 .await
                 .expect("initial trigger_index");
             assert_eq!(initial.index_t, 3);
-            let old_address = initial.root_address.clone();
-            assert!(!old_address.is_empty(), "Should have initial index address");
+            let old_root_id = initial.root_id.clone();
+            assert!(old_root_id.is_some(), "Should have initial root_id");
 
             // Verify index exists
             let status = fluree.index_status(&a).await.expect("index_status");
@@ -760,8 +760,8 @@ async fn reindex_with_existing_index_completes_successfully() {
                 .expect("reindex");
             assert_eq!(reindexed.index_t, 3, "Reindex should still be at t=3");
             assert!(
-                !reindexed.root_address.is_empty(),
-                "Should have reindexed address"
+                reindexed.root_id.digest_hex().len() == 64,
+                "Should have valid root_id"
             );
 
             // NOTE: Content-addressed storage means identical data produces identical hashes.
@@ -929,7 +929,10 @@ async fn reindex_uses_provided_indexer_config() {
         .expect("reindex with custom config");
 
     assert_eq!(r.index_t, 1, "Should index to t=1");
-    assert!(!r.root_address.is_empty(), "Should have index address");
+    assert!(
+        r.root_id.digest_hex().len() == 64,
+        "Should have valid root_id"
+    );
 
     // Verify stats show the index was built
     assert!(r.stats.flake_count > 0, "Should have indexed flakes");

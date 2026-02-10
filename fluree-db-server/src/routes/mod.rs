@@ -71,6 +71,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Storage proxy endpoints (for peer mode)
         .route("/storage/ns/:alias", get(storage_proxy::get_ns_record))
         .route("/storage/block", post(storage_proxy::get_block))
+        .route(
+            "/storage/objects/:cid",
+            get(storage_proxy::get_object_by_cid),
+        )
         // Nameservice ref endpoints (for remote sync)
         .route(
             "/nameservice/refs/:alias/commit",

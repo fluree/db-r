@@ -492,7 +492,6 @@ mod tests {
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
-            index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),

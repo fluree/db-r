@@ -154,7 +154,7 @@ mod inner {
                 namespace_delta: ns_delta,
                 txn: None,
                 time: Some(state.import_time.clone()),
-                index: None,
+
                 txn_signature: None,
                 txn_meta: Vec::new(),
                 graph_delta: HashMap::new(),
@@ -351,7 +351,7 @@ mod inner {
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),
-            index: None,
+
             txn_signature: None,
             txn_meta,
             graph_delta,
@@ -574,7 +574,7 @@ mod inner {
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),
-            index: None,
+
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),

@@ -1336,6 +1336,7 @@ mod tests {
             name: "test:main".to_string(),
             branch: "main".to_string(),
             commit_head_id: commit_id,
+            config_id: None,
             commit_t,
             index_head_id: index_id,
             index_t,

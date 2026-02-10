@@ -107,8 +107,6 @@ fn normalize_id_for_comparison(ledger_id: &str) -> String {
 /// Result of building an index
 #[derive(Debug, Clone)]
 pub struct IndexResult {
-    /// Storage address of the index root
-    pub root_address: String,
     /// Content identifier of the index root (derived from SHA-256 of root bytes).
     ///
     /// Always present — derived from the content hash of the index root during build,
@@ -170,15 +168,7 @@ where
     // If index is already current, return it
     if let Some(ref root_id) = record.index_head_id {
         if record.index_t >= record.commit_t {
-            // Derive the storage address for callers that need it
-            let root_address = fluree_db_core::storage::content_address(
-                storage.storage_method(),
-                fluree_db_core::ContentKind::IndexRoot,
-                ledger_id,
-                &root_id.digest_hex(),
-            );
             return Ok(IndexResult {
-                root_address,
                 root_id: root_id.clone(),
                 index_t: record.index_t,
                 ledger_id: ledger_id.to_string(),
@@ -682,7 +672,6 @@ where
             })?;
 
             Ok(IndexResult {
-                root_address: write_result.address,
                 root_id,
                 index_t: root.index_t,
                 ledger_id: ledger_id.to_string(),

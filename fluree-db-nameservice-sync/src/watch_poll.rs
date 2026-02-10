@@ -200,6 +200,7 @@ mod tests {
             name: ledger_name.to_string(),
             branch: "main".to_string(),
             commit_head_id: None,
+            config_id: None,
             commit_t,
             index_head_id: None,
             index_t: 0,

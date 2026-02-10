@@ -347,8 +347,12 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
 
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    // The address "ns:test" is split into namespace "ns" and branch "test"
-    assert_eq!(json.get("ledger_id").and_then(|v| v.as_str()), Some("ns"));
+    // ledger_id is the full canonical key; name is the ledger without branch
+    assert_eq!(
+        json.get("ledger_id").and_then(|v| v.as_str()),
+        Some("ns:test")
+    );
+    assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("ns"));
     assert_eq!(json.get("branch").and_then(|v| v.as_str()), Some("test"));
     assert_eq!(json.get("retracted").and_then(|v| v.as_bool()), Some(false));
 }
@@ -1311,7 +1315,8 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .expect("refresh after reindex should succeed");
 
     // Fetch the DB root JSON and extract a leaf address.
-    let root_body = serde_json::json!({ "address": &reindex_result.root_address });
+    let root_addr = root_address_from_id(&reindex_result.root_id, "leaf:test");
+    let root_body = serde_json::json!({ "address": &root_addr });
     let resp = app
         .clone()
         .oneshot(
@@ -1482,7 +1487,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
         .header("content-type", "application/json")
         .header("Authorization", format!("Bearer {}", token_for_http))
         .header("Accept", "application/octet-stream")
-        .body(serde_json::json!({ "address": &reindex_result.root_address }).to_string())
+        .body(serde_json::json!({ "address": root_address_from_id(&reindex_result.root_id, "peer:test") }).to_string())
         .send()
         .await
         .expect("fetch root");
@@ -1626,7 +1631,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
         .header("content-type", "application/json")
         .header("Authorization", format!("Bearer {}", token_for_http))
         .header("Accept", "application/octet-stream")
-        .body(serde_json::json!({ "address": &reindex_result.root_address }).to_string())
+        .body(serde_json::json!({ "address": root_address_from_id(&reindex_result.root_id, "raw:test") }).to_string())
         .send()
         .await
         .expect("fetch root");
@@ -1714,6 +1719,16 @@ fn tx_server_state_with_policy(
 /// }
 /// ```
 ///
+/// Derive the storage address for an index root from its ContentId.
+fn root_address_from_id(root_id: &fluree_db_core::ContentId, ledger_id: &str) -> String {
+    fluree_db_core::content_address(
+        "file",
+        fluree_db_core::ContentKind::IndexRoot,
+        ledger_id,
+        &root_id.digest_hex(),
+    )
+}
+
 /// Leaf entries are CID strings (base32-lower multibase). This function parses
 /// the CID and derives the storage address using `content_address()`.
 fn extract_spot_leaf_address(db_root_json: &serde_json::Value, ledger_id: &str) -> String {
@@ -1870,8 +1885,8 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .expect("reindex should succeed");
 
     assert!(
-        !reindex_result.root_address.is_empty(),
-        "Reindex should produce a root address"
+        reindex_result.root_id.digest_hex().len() == 64,
+        "Reindex should produce a valid root CID"
     );
     assert!(
         reindex_result.index_t > 0,
@@ -1887,14 +1902,15 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     println!("Refresh result after reindex: {:?}", refresh_result);
 
     // Step 4: Find a leaf address
-    // The root_address points to the DB root file (contains index roots as nested objects).
+    // The root_id points to the DB root file (contains index roots as nested objects).
     // We need to:
     // 1. Read the DB root to get the SPOT index root
     // 2. Read the SPOT index root (may be branch or leaf)
     // 3. If branch, walk down to find a leaf
 
     // Read the DB root file
-    let db_root_body = serde_json::json!({ "address": &reindex_result.root_address });
+    let db_root_body =
+        serde_json::json!({ "address": root_address_from_id(&reindex_result.root_id, alias) });
     let resp = app
         .clone()
         .oneshot(
@@ -2039,9 +2055,10 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .await
         .expect("refresh after reindex should succeed");
 
-    // The root_address is the DB root, not a leaf. We need to extract the SPOT index root
+    // The root_id is the DB root, not a leaf. We need to extract the SPOT index root
     // and find a leaf from there.
-    let db_root_body = serde_json::json!({ "address": &reindex_result.root_address });
+    let db_root_body =
+        serde_json::json!({ "address": root_address_from_id(&reindex_result.root_id, alias) });
     let resp = app
         .clone()
         .oneshot(

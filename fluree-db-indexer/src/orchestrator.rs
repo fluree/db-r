@@ -787,22 +787,28 @@ where
 
                     // Spawn garbage collection (fire-and-forget, non-fatal)
                     let gc_storage = self.storage.clone();
-                    let gc_root = index_result.root_address.clone();
+                    let gc_root_id = index_result.root_id.clone();
+                    let gc_ledger_id = index_result.ledger_id.clone();
                     let gc_config = crate::gc::CleanGarbageConfig {
                         max_old_indexes: Some(self.config.gc_max_old_indexes),
                         min_time_garbage_mins: Some(self.config.gc_min_time_mins),
                     };
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            crate::gc::clean_garbage(&gc_storage, &gc_root, gc_config).await
+                        if let Err(e) = crate::gc::clean_garbage(
+                            &gc_storage,
+                            &gc_root_id,
+                            &gc_ledger_id,
+                            gc_config,
+                        )
+                        .await
                         {
                             warn!(
                                 error = %e,
-                                root_address = %gc_root,
+                                root_id = %gc_root_id,
                                 "Background GC failed (non-fatal)"
                             );
                         } else {
-                            debug!(root_address = %gc_root, "Background GC completed");
+                            debug!(root_id = %gc_root_id, "Background GC completed");
                         }
                     });
 
@@ -1072,7 +1078,6 @@ mod tests {
                 .collect::<HashMap<_, _>>(),
             txn: commit.txn.clone(),
             time: commit.time.clone(),
-            index: commit.index.clone(),
             txn_signature: None,
             txn_meta: commit.txn_meta.clone(),
             graph_delta: commit.graph_delta.clone(),
@@ -1182,7 +1187,6 @@ mod tests {
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1212,7 +1216,6 @@ mod tests {
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1248,7 +1251,6 @@ mod tests {
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1271,7 +1273,6 @@ mod tests {
             time: None,
             flakes: vec![make_flake(1, "ex:bob", 1, "ex:age", 25, 2)],
             previous_ref: Some(CommitRef::new(cid1.clone())),
-            index: None,
             txn: None,
             namespace_delta: HashMap::new(),
             txn_signature: None,
@@ -1299,7 +1300,6 @@ mod tests {
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1331,7 +1331,6 @@ mod tests {
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1367,7 +1366,6 @@ mod tests {
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1388,7 +1386,7 @@ mod tests {
         // Second index - should return existing
         let result2 = orchestrator.index_ledger("test:main").await.unwrap();
 
-        assert_eq!(result1.root_address, result2.root_address);
+        assert_eq!(result1.root_id, result2.root_id);
         assert_eq!(result2.stats.flake_count, 0); // No work done
     }
 
@@ -1691,7 +1689,6 @@ mod embedded_tests {
                 .collect::<HashMap<_, _>>(),
             txn: commit.txn.clone(),
             time: commit.time.clone(),
-            index: commit.index.clone(),
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
@@ -1833,7 +1830,6 @@ mod embedded_tests {
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1883,7 +1879,6 @@ mod embedded_tests {
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
             previous_ref: None,
-            index: None,
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,

@@ -60,16 +60,6 @@ async fn commit_id_has_valid_sha256_format() {
         "SHA-256 digest should contain only hex characters, got: {}",
         digest_hex
     );
-
-    // Verify address is present and non-empty
-    assert!(
-        result
-            .receipt
-            .address
-            .as_ref()
-            .is_some_and(|a| !a.is_empty()),
-        "commit address should be present and non-empty"
-    );
 }
 
 /// Verify that sequential commits on the same ledger produce unique hashes.
@@ -103,12 +93,6 @@ async fn sequential_commits_produce_unique_hashes() {
     assert_ne!(
         result1.receipt.commit_id, result2.receipt.commit_id,
         "sequential commits should have different commit IDs"
-    );
-
-    // Each commit should have a unique address
-    assert_ne!(
-        result1.receipt.address, result2.receipt.address,
-        "sequential commits should have different addresses"
     );
 
     // Both should have valid format (ContentId with 64-char hex digest)

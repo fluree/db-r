@@ -49,10 +49,7 @@ pub struct TransactQueryParams {
 /// Commit information in transaction response
 #[derive(Serialize)]
 pub struct CommitInfo {
-    /// Commit storage address (may be absent if storage is CID-native)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-    /// Commit content identifier
+    /// Commit content identifier (CID)
     pub hash: String,
 }
 
@@ -1132,7 +1129,6 @@ async fn execute_transaction(
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {
-            address: result.receipt.address,
             hash: result.receipt.commit_id.to_string(),
         },
     }))
@@ -1263,7 +1259,6 @@ async fn execute_turtle_transaction(
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {
-            address: result.receipt.address,
             hash: result.receipt.commit_id.to_string(),
         },
     }))
@@ -1435,7 +1430,6 @@ async fn execute_sparql_update_request(
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {
-            address: result.receipt.address,
             hash: result.receipt.commit_id.to_string(),
         },
     }))

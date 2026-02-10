@@ -375,6 +375,7 @@ fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String>
         name,
         branch,
         commit_head_id,
+        config_id: None,
         commit_t: record.commit_t,
         index_head_id,
         index_t: record.index_t,

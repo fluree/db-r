@@ -89,8 +89,8 @@ pub struct ImportResult {
     pub flake_count: u64,
     /// CAS address of the head commit.
     pub commit_head_address: String,
-    /// CAS address of the V2 index root. `None` if `build_index == false`.
-    pub root_address: Option<String>,
+    /// Content identifier of the index root. `None` if `build_index == false`.
+    pub root_id: Option<fluree_db_core::ContentId>,
     /// Index t (same as `t` for fresh import). 0 if `build_index == false`.
     pub index_t: i64,
 }
@@ -448,7 +448,7 @@ where
                 alias = %normalized_alias,
                 t = result.t,
                 flakes = result.flake_count,
-                root_address = ?result.root_address,
+                root_id = ?result.root_id,
                 elapsed = ?total_elapsed,
                 "bulk import pipeline complete"
             );
@@ -522,7 +522,7 @@ where
     );
 
     // ---- Phases 3-6: Build index, upload, root, publish ----
-    let root_address;
+    let root_id;
     let index_t;
 
     if config.build_index {
@@ -545,10 +545,10 @@ where
         )
         .await?;
 
-        root_address = Some(index_result.root_address);
+        root_id = Some(index_result.root_id);
         index_t = index_result.index_t;
     } else {
-        root_address = None;
+        root_id = None;
         index_t = 0;
     }
 
@@ -557,7 +557,7 @@ where
         t: import_result.final_t,
         flake_count: import_result.cumulative_flakes,
         commit_head_address: import_result.commit_head_address,
-        root_address,
+        root_id,
         index_t,
     })
 }
@@ -1010,7 +1010,7 @@ where
 // ============================================================================
 
 struct IndexUploadResult {
-    root_address: String,
+    root_id: fluree_db_core::ContentId,
     index_t: i64,
 }
 
@@ -1312,15 +1312,15 @@ where
         .await
         .map_err(|e| ImportError::Upload(format!("write V2 root: {}", e)))?;
 
-    tracing::info!(
-        root_address = %write_result.address,
-        index_t = input.final_t,
-        "V2 index root written to CAS"
-    );
-
     // Derive ContentId from the root's content hash
     let root_id = ContentId::from_hex_digest(CODEC_FLUREE_INDEX_ROOT, &write_result.content_hash)
         .expect("valid SHA-256 hash from storage write");
+
+    tracing::info!(
+        root_id = %root_id,
+        index_t = input.final_t,
+        "V2 index root written to CAS"
+    );
 
     // ---- Phase 6: Publish ----
     if config.publish {
@@ -1330,13 +1330,13 @@ where
             .map_err(|e| ImportError::Storage(format!("publish index: {}", e)))?;
         tracing::info!(
             index_t = input.final_t,
-            root_address = %write_result.address,
+            root_id = %root_id,
             "index published to nameservice"
         );
     }
 
     Ok(IndexUploadResult {
-        root_address: write_result.address,
+        root_id,
         index_t: input.final_t,
     })
 }

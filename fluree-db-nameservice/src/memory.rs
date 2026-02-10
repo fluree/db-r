@@ -741,10 +741,12 @@ impl ConfigPublisher for MemoryNameService {
         // Apply the update to config_values
         self.config_values.write().insert(key.clone(), new.clone());
 
-        // Sync default_context to NsRecord.default_context
+        // Sync default_context and config_id to NsRecord
         let new_default_context = new.payload.as_ref().and_then(|p| p.default_context.clone());
+        let new_config_id = new.payload.as_ref().and_then(|p| p.config_id.clone());
         if let Some(record) = self.records.write().get_mut(&key) {
             record.default_context = new_default_context;
+            record.config_id = new_config_id;
         }
 
         Ok(ConfigCasResult::Updated)

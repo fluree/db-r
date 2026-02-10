@@ -77,6 +77,14 @@ struct NsFileV2 {
     )]
     commit_cid: Option<String>,
 
+    /// Content identifier for the ledger configuration (origin discovery).
+    #[serde(
+        rename = "f:configCid",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    config_cid: Option<String>,
+
     #[serde(rename = "f:t")]
     t: i64,
 
@@ -232,6 +240,7 @@ impl<S> StorageNameService<S> {
             },
             branch: branch.to_string(),
             commit_cid: commit_cid.map(|s| s.to_string()),
+            config_cid: None,
             t: commit_t,
             index: None,
             status: "ready".to_string(),
@@ -430,6 +439,10 @@ where
             branch: main.branch,
             commit_head_id: main
                 .commit_cid
+                .as_deref()
+                .and_then(|s| s.parse::<ContentId>().ok()),
+            config_id: main
+                .config_cid
                 .as_deref()
                 .and_then(|s| s.parse::<ContentId>().ok()),
             commit_t: main.t,
@@ -711,6 +724,7 @@ where
             },
             branch: branch.clone(),
             commit_cid: None,
+            config_cid: None,
             t: 0,
             index: None,
             status: "ready".to_string(),
@@ -1506,7 +1520,10 @@ where
         // - If default_context exists but config_v is missing, treat as v=1 (legacy record)
         // - If neither exists, treat as v=0 (unborn)
         let v = file.config_v.unwrap_or_else(|| {
-            if file.default_context.is_some() || file.config_meta.is_some() {
+            if file.default_context.is_some()
+                || file.config_meta.is_some()
+                || file.config_cid.is_some()
+            {
                 1 // Legacy record with config data
             } else {
                 0 // Unborn
@@ -1514,12 +1531,20 @@ where
         });
 
         // Build ConfigPayload if we have any config data
-        let payload = if v == 0 && file.default_context.is_none() && file.config_meta.is_none() {
+        let payload = if v == 0
+            && file.default_context.is_none()
+            && file.config_meta.is_none()
+            && file.config_cid.is_none()
+        {
             None
         } else {
             let extra = file.config_meta.unwrap_or_default();
             Some(ConfigPayload {
                 default_context: file.default_context.map(|c| c.id),
+                config_id: file
+                    .config_cid
+                    .as_deref()
+                    .and_then(|s| s.parse::<ContentId>().ok()),
                 extra,
             })
         };
@@ -1560,22 +1585,32 @@ where
                 // - If default_context exists but config_v is missing, treat as v=1 (legacy record)
                 // - If neither exists, treat as v=0 (unborn)
                 let v = file.config_v.unwrap_or_else(|| {
-                    if file.default_context.is_some() || file.config_meta.is_some() {
+                    if file.default_context.is_some()
+                        || file.config_meta.is_some()
+                        || file.config_cid.is_some()
+                    {
                         1 // Legacy record with config data
                     } else {
                         0 // Unborn
                     }
                 });
-                let payload =
-                    if v == 0 && file.default_context.is_none() && file.config_meta.is_none() {
-                        None
-                    } else {
-                        let extra = file.config_meta.clone().unwrap_or_default();
-                        Some(ConfigPayload {
-                            default_context: file.default_context.as_ref().map(|c| c.id.clone()),
-                            extra,
-                        })
-                    };
+                let payload = if v == 0
+                    && file.default_context.is_none()
+                    && file.config_meta.is_none()
+                    && file.config_cid.is_none()
+                {
+                    None
+                } else {
+                    let extra = file.config_meta.clone().unwrap_or_default();
+                    Some(ConfigPayload {
+                        default_context: file.default_context.as_ref().map(|c| c.id.clone()),
+                        config_id: file
+                            .config_cid
+                            .as_deref()
+                            .and_then(|s| s.parse::<ContentId>().ok()),
+                        extra,
+                    })
+                };
                 ConfigValue { v, payload }
             };
 
@@ -1610,6 +1645,7 @@ where
                     .default_context
                     .as_ref()
                     .map(|c| AddressRef { id: c.clone() });
+                file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
                 file.config_meta = if payload.extra.is_empty() {
                     None
                 } else {
@@ -1617,6 +1653,7 @@ where
                 };
             } else {
                 file.default_context = None;
+                file.config_cid = None;
                 file.config_meta = None;
             }
 

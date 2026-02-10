@@ -30,36 +30,57 @@ impl Debug for ProxyNameService {
     }
 }
 
-/// Response from nameservice lookup endpoint
-/// Must match `NsRecordResponse` from routes/storage_proxy.rs
+/// Response from nameservice lookup endpoint.
+/// Must match `NsRecordResponse` from routes/storage_proxy.rs.
+///
+/// Uses `#[serde(default)]` on optional fields so that missing JSON keys
+/// deserialize as `None` rather than failing — this keeps the peer
+/// forward-compatible when the server adds new fields.
 #[derive(Debug, Deserialize)]
 struct NsRecordResponse {
-    ledger_id: String,
+    #[serde(default)]
+    name: Option<String>,
     branch: String,
     commit_head_id: Option<String>,
     commit_t: i64,
     index_head_id: Option<String>,
     index_t: i64,
+    #[serde(default)]
+    default_context: Option<String>,
     retracted: bool,
+    #[serde(default)]
+    config_id: Option<String>,
 }
 
 impl NsRecordResponse {
-    /// Convert to NsRecord, using the original lookup key as the ledger_id
+    /// Convert to NsRecord, using the original lookup key as the ledger_id.
+    ///
+    /// When the server omits `name`, derive it from `lookup_key` by splitting
+    /// on `:` (e.g., `"books:main"` → `"books"`). This avoids copying the full
+    /// `ledger_id` (which includes the branch) into the `name` field.
     fn into_ns_record(self, lookup_key: &str) -> NsRecord {
         use fluree_db_core::ContentId;
+
+        let derived_name = self.name.unwrap_or_else(|| {
+            lookup_key
+                .split_once(':')
+                .map(|(name, _branch)| name.to_string())
+                .unwrap_or_else(|| lookup_key.to_string())
+        });
 
         NsRecord {
             // ledger_id is the key used for lookup (may differ from name)
             ledger_id: lookup_key.to_string(),
-            name: self.ledger_id,
+            name: derived_name,
             branch: self.branch,
             commit_head_id: self
                 .commit_head_id
                 .and_then(|s| s.parse::<ContentId>().ok()),
+            config_id: self.config_id.and_then(|s| s.parse::<ContentId>().ok()),
             commit_t: self.commit_t,
             index_head_id: self.index_head_id.and_then(|s| s.parse::<ContentId>().ok()),
             index_t: self.index_t,
-            default_context: None, // Not exposed via proxy API
+            default_context: self.default_context,
             retracted: self.retracted,
         }
     }
@@ -214,25 +235,68 @@ mod tests {
     #[test]
     fn test_ns_record_conversion() {
         let response = NsRecordResponse {
-            ledger_id: "books:main".to_string(),
+            name: Some("books".to_string()),
             branch: "main".to_string(),
             commit_head_id: None,
             commit_t: 42,
             index_head_id: None,
             index_t: 40,
+            default_context: None,
             retracted: false,
+            config_id: None,
         };
 
         // Use the lookup key as ledger_id (simulating lookup("books"))
         let record = response.into_ns_record("books");
         // ledger_id should be the lookup key, not the alias
         assert_eq!(record.ledger_id, "books");
-        assert_eq!(record.name, "books:main");
+        assert_eq!(record.name, "books");
         assert_eq!(record.branch, "main");
         assert_eq!(record.commit_t, 42);
         assert_eq!(record.index_t, 40);
         assert!(!record.retracted);
         // default_context is not exposed via proxy API
         assert!(record.default_context.is_none());
+    }
+
+    #[test]
+    fn test_ns_record_name_derived_from_lookup_key() {
+        // When server omits `name`, derive it by splitting lookup_key on ':'
+        let response = NsRecordResponse {
+            name: None,
+            branch: "main".to_string(),
+            commit_head_id: None,
+            commit_t: 10,
+            index_head_id: None,
+            index_t: 0,
+            default_context: None,
+            retracted: false,
+            config_id: None,
+        };
+
+        let record = response.into_ns_record("books:main");
+        assert_eq!(record.ledger_id, "books:main");
+        // name should be "books", NOT "books:main"
+        assert_eq!(record.name, "books");
+    }
+
+    #[test]
+    fn test_ns_record_name_no_branch_in_lookup_key() {
+        // When lookup_key has no colon, use it as-is
+        let response = NsRecordResponse {
+            name: None,
+            branch: "main".to_string(),
+            commit_head_id: None,
+            commit_t: 10,
+            index_head_id: None,
+            index_t: 0,
+            default_context: None,
+            retracted: false,
+            config_id: None,
+        };
+
+        let record = response.into_ns_record("books");
+        assert_eq!(record.ledger_id, "books");
+        assert_eq!(record.name, "books");
     }
 }

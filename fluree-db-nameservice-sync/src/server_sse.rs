@@ -128,6 +128,7 @@ fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
         commit_head_id: record
             .commit_head_id
             .and_then(|s| s.parse::<ContentId>().ok()),
+        config_id: None,
         commit_t: record.commit_t,
         index_head_id: record
             .index_head_id

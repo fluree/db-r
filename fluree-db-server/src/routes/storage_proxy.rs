@@ -19,14 +19,16 @@
 
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::Response,
     Json,
 };
 use fluree_db_api::block_fetch::{self, BlockContent, EnforcementMode, LedgerBlockContext};
-use fluree_db_api::NameService;
+use fluree_db_api::{verify_commit_v2_blob, NameService, StorageRead};
 use fluree_db_core::flake::Flake;
+use fluree_db_core::storage::ContentKind;
+use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -178,13 +180,20 @@ fn build_json_flakes_response(
 /// Response for nameservice record endpoint
 #[derive(Debug, Clone, Serialize)]
 pub struct NsRecordResponse {
+    /// Canonical ledger id (e.g., "mydb:main")
     pub ledger_id: String,
+    /// Ledger name without branch (e.g., "mydb")
+    pub name: String,
     pub branch: String,
     pub commit_head_id: Option<String>,
     pub commit_t: i64,
     pub index_head_id: Option<String>,
     pub index_t: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_context: Option<String>,
     pub retracted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_id: Option<String>,
     /// Computed storage address for the head commit (derived from CID + storage method).
     /// Peers need this to fetch commit blobs via the block endpoint.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -256,13 +265,19 @@ pub async fn get_ns_record(
     });
 
     Ok(Json(NsRecordResponse {
-        ledger_id: ns_record.name.clone(),
+        // IMPORTANT: this endpoint is consumed by `fluree-db-nameservice-sync` which
+        // deserializes into `NsRecord`. Therefore we must include all required
+        // `NsRecord` fields with matching names and semantics.
+        ledger_id: ns_record.ledger_id.clone(),
+        name: ns_record.name.clone(),
         branch: ns_record.branch.clone(),
         commit_head_id: ns_record.commit_head_id.as_ref().map(|id| id.to_string()),
         commit_t: ns_record.commit_t,
         index_head_id: ns_record.index_head_id.as_ref().map(|id| id.to_string()),
         index_t: ns_record.index_t,
+        default_context: ns_record.default_context.clone(),
         retracted: ns_record.retracted,
+        config_id: ns_record.config_id.as_ref().map(|id| id.to_string()),
         commit_address,
         index_address,
     }))
@@ -377,4 +392,131 @@ pub async fn get_block(
             }
         }
     }
+}
+
+// ============================================================================
+// CID Object Fetch
+// ============================================================================
+
+/// Query params for the CID object endpoint.
+#[derive(Debug, Deserialize)]
+pub struct ObjectQuery {
+    /// Ledger alias (e.g., "mydb:main"). Required because storage paths are
+    /// ledger-scoped.
+    pub ledger: String,
+}
+
+/// Content kinds allowed through the CID object endpoint.
+///
+/// Only replication-essential kinds are served. Index artifacts (branches,
+/// leaves, dicts) are NOT included — they go through `/storage/block` with
+/// policy enforcement, or a future `/storage/objects-index/:cid` endpoint.
+fn is_allowed_object_kind(kind: ContentKind) -> bool {
+    matches!(
+        kind,
+        ContentKind::Commit | ContentKind::Txn | ContentKind::LedgerConfig
+    )
+}
+
+/// Verify object bytes against a CID, with format-sniffing for commits.
+///
+/// Commit blobs are sniffed by magic bytes rather than assuming a fixed format:
+/// - `FCV2` magic → commit-v2 sub-range hash verification
+/// - Anything else → full-bytes SHA-256 (future commit formats, txn, config, etc.)
+fn verify_object_integrity(id: &ContentId, bytes: &[u8]) -> bool {
+    const COMMIT_V2_MAGIC: &[u8] = b"FCV2";
+
+    if id.codec() == CODEC_FLUREE_COMMIT && bytes.starts_with(COMMIT_V2_MAGIC) {
+        // Commit-v2: canonical sub-range hash (excludes trailing hash + sig block).
+        match verify_commit_v2_blob(bytes) {
+            Ok(derived_id) => derived_id == *id,
+            Err(_) => false,
+        }
+    } else {
+        // All other kinds + future commit formats: full-bytes SHA-256.
+        id.verify(bytes)
+    }
+}
+
+/// GET /fluree/storage/objects/:cid?ledger=mydb:main
+///
+/// Fetch a CAS object by its content identifier (CID). Returns the raw bytes
+/// of the stored object after verifying integrity.
+///
+/// # Kind Allowlist
+///
+/// Only replication-essential kinds are served:
+/// - `Commit` — commit chain blobs
+/// - `Txn` — transaction data blobs
+/// - `LedgerConfig` — origin discovery config
+///
+/// All other kinds (index artifacts, dicts, garbage records) return 404.
+///
+/// # Path Parameters
+/// - `cid`: CIDv1 string (base32-lower, e.g., `"bafybeig..."`)
+///
+/// # Query Parameters
+/// - `ledger`: Ledger alias (required, e.g., `"mydb:main"`)
+///
+/// # Response Headers
+/// - `Content-Type: application/octet-stream`
+/// - `X-Fluree-Content-Kind`: content kind label (commit, txn, config)
+///
+/// # Errors
+/// - 400: Invalid CID string
+/// - 404: Object not found, disallowed kind, or not authorized
+/// - 500: Hash verification failed (storage corruption)
+pub async fn get_object_by_cid(
+    State(state): State<Arc<AppState>>,
+    Path(cid_str): Path<String>,
+    Query(query): Query<ObjectQuery>,
+    StorageProxyBearer(principal): StorageProxyBearer,
+) -> Result<Response, ServerError> {
+    // 1. Parse CID
+    let id: ContentId = cid_str
+        .parse()
+        .map_err(|_| ServerError::bad_request(format!("Invalid CID: {cid_str}")))?;
+
+    // 2. Resolve content kind — unknown codec or disallowed kind → 404
+    //    (404, not 400, to avoid becoming a discoverability oracle)
+    let kind = match id.content_kind() {
+        Some(k) if is_allowed_object_kind(k) => k,
+        _ => return Err(ServerError::not_found("Object not found")),
+    };
+
+    // 3. Authorize: principal must have access to this ledger
+    if !principal.is_authorized_for_ledger(&query.ledger) {
+        return Err(ServerError::not_found("Object not found"));
+    }
+
+    // 4. Resolve CID → storage address and read bytes
+    let method = fluree_db_core::StorageMethod::storage_method(state.fluree.as_file().storage());
+    let address = fluree_db_core::content_address(method, kind, &query.ledger, &id.digest_hex());
+
+    let bytes = state
+        .fluree
+        .as_file()
+        .storage()
+        .read_bytes(&address)
+        .await
+        .map_err(|e| match e {
+            fluree_db_core::Error::NotFound(_) => ServerError::not_found("Object not found"),
+            other => ServerError::internal(format!("Storage read: {other}")),
+        })?;
+
+    // 5. Verify integrity (format-sniffing for commits)
+    if !verify_object_integrity(&id, &bytes) {
+        return Err(ServerError::internal(format!(
+            "Hash verification failed for CID {cid_str}"
+        )));
+    }
+
+    // 6. Build response
+    let kind_label = kind.codec_dir_name();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header("X-Fluree-Content-Kind", kind_label)
+        .body(Body::from(bytes))
+        .map_err(|e| ServerError::internal(e.to_string()))
 }

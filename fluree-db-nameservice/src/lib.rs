@@ -96,6 +96,12 @@ pub struct NsRecord {
 
     /// Whether this ledger has been retracted
     pub retracted: bool,
+
+    /// Content identifier for the ledger configuration object (origin discovery).
+    /// Points to a content-addressed `LedgerConfig` blob that describes
+    /// origins, auth requirements, and replication defaults.
+    #[serde(default)]
+    pub config_id: Option<ContentId>,
 }
 
 impl NsRecord {
@@ -115,6 +121,7 @@ impl NsRecord {
             index_t: 0,
             default_context: None,
             retracted: false,
+            config_id: None,
         }
     }
 
@@ -810,6 +817,10 @@ pub struct ConfigPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_context: Option<String>,
 
+    /// Content ID of the LedgerConfig blob (origin discovery).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_id: Option<ContentId>,
+
     /// Additional config (index_threshold, replication settings, etc.)
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,
@@ -825,6 +836,7 @@ impl ConfigPayload {
     pub fn with_default_context(context: impl Into<String>) -> Self {
         Self {
             default_context: Some(context.into()),
+            config_id: None,
             extra: std::collections::HashMap::new(),
         }
     }

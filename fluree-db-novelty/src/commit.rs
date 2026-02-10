@@ -42,33 +42,6 @@ impl CommitRef {
     }
 }
 
-/// Index reference embedded in a commit
-///
-/// When a commit is created at an index point, this records the index CID
-/// and the transaction time the index covers.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct IndexRef {
-    /// Content identifier for the index root
-    pub id: ContentId,
-
-    /// Transaction time the index covers
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub t: Option<i64>,
-}
-
-impl IndexRef {
-    /// Create a new index reference
-    pub fn new(id: ContentId) -> Self {
-        Self { id, t: None }
-    }
-
-    /// Set the transaction time
-    pub fn with_t(mut self, t: i64) -> Self {
-        self.t = Some(t);
-        self
-    }
-}
-
 /// Transaction signature — audit record of who submitted a transaction.
 ///
 /// The raw signed transaction (JWS/VC) is stored separately via content-addressed
@@ -225,9 +198,6 @@ pub struct Commit {
     /// Previous commit reference (CID-based)
     pub previous_ref: Option<CommitRef>,
 
-    /// Index reference (if indexed at this commit)
-    pub index: Option<IndexRef>,
-
     /// Transaction blob CID (content-addressed reference to original txn JSON).
     /// When present, the raw transaction JSON can be loaded from this CID.
     pub txn: Option<ContentId>,
@@ -278,7 +248,6 @@ impl Commit {
             time: None,
             flakes,
             previous_ref: None,
-            index: None,
             txn: None,
             namespace_delta: HashMap::new(),
             txn_signature: None,
@@ -334,11 +303,6 @@ impl Commit {
     pub fn previous_id(&self) -> Option<&ContentId> {
         self.previous_ref.as_ref().map(|r| &r.id)
     }
-
-    /// Get the index CID (if indexed at this commit)
-    pub fn index_id(&self) -> Option<&ContentId> {
-        self.index.as_ref().map(|r| &r.id)
-    }
 }
 
 // =============================================================================
@@ -381,9 +345,6 @@ pub struct CommitEnvelope {
     /// Previous commit reference (CID-based)
     pub previous_ref: Option<CommitRef>,
 
-    /// Index reference (if indexed at this commit)
-    pub index: Option<IndexRef>,
-
     /// New namespace codes introduced by this commit (code → prefix)
     pub namespace_delta: HashMap<u16, String>,
 
@@ -395,16 +356,6 @@ impl CommitEnvelope {
     /// Get the previous commit CID (if any)
     pub fn previous_id(&self) -> Option<&ContentId> {
         self.previous_ref.as_ref().map(|r| &r.id)
-    }
-
-    /// Get the index reference (if indexed at this commit)
-    pub fn index_ref(&self) -> Option<&IndexRef> {
-        self.index.as_ref()
-    }
-
-    /// Get the index CID (if indexed at this commit)
-    pub fn index_id(&self) -> Option<&ContentId> {
-        self.index.as_ref().map(|r| &r.id)
     }
 }
 
@@ -559,7 +510,6 @@ mod tests {
         let envelope = CommitEnvelope {
             t: 5,
             previous_ref: Some(CommitRef::new(prev_id.clone())),
-            index: None,
             namespace_delta: HashMap::from([(100, "ex:".to_string())]),
             txn_meta: Vec::new(),
         };
@@ -567,35 +517,6 @@ mod tests {
         assert_eq!(envelope.t, 5);
         assert_eq!(envelope.previous_id(), Some(&prev_id));
         assert_eq!(envelope.namespace_delta.get(&100), Some(&"ex:".to_string()));
-    }
-
-    #[test]
-    fn test_commit_envelope_index_ref() {
-        let idx_id = make_test_content_id(ContentKind::IndexRoot, "index-1");
-        let envelope = CommitEnvelope {
-            t: 10,
-            previous_ref: None,
-            index: Some(IndexRef::new(idx_id.clone()).with_t(10)),
-            namespace_delta: HashMap::new(),
-            txn_meta: Vec::new(),
-        };
-
-        let idx = envelope.index_ref().unwrap();
-        assert_eq!(idx.id, idx_id);
-        assert_eq!(idx.t, Some(10));
-    }
-
-    #[test]
-    fn test_commit_envelope_no_index() {
-        let envelope = CommitEnvelope {
-            t: 5,
-            previous_ref: None,
-            index: None,
-            namespace_delta: HashMap::new(),
-            txn_meta: Vec::new(),
-        };
-        assert!(envelope.index_ref().is_none());
-        assert!(envelope.index_id().is_none());
     }
 
     // =========================================================================

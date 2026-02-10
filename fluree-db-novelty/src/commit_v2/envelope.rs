@@ -7,7 +7,7 @@
 //!
 //! The v2 on-disk format stores address strings and optional id strings.
 //! This module converts between the on-disk format and the CID-based
-//! in-memory types (`CommitRef`, `IndexRef`, etc.) during encode/decode.
+//! in-memory types (`CommitRef`, etc.) during encode/decode.
 //!
 //! Layout:
 //! ```text
@@ -18,8 +18,8 @@
 
 use super::error::CommitV2Error;
 use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
-use crate::{CommitRef, IndexRef, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_ENTRIES};
-use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT, CODEC_FLUREE_INDEX_ROOT, CODEC_FLUREE_TXN};
+use crate::{CommitRef, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_ENTRIES};
+use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN};
 use std::collections::HashMap;
 
 // --- Presence flag bits ---
@@ -70,8 +70,6 @@ pub struct CommitV2Envelope {
     /// Transaction blob CID
     pub txn: Option<ContentId>,
     pub time: Option<String>,
-    /// Index reference (CID-based)
-    pub index: Option<IndexRef>,
     pub txn_signature: Option<TxnSignature>,
     /// User-provided transaction metadata (replay-safe)
     pub txn_meta: Vec<TxnMetaEntry>,
@@ -88,7 +86,6 @@ impl CommitV2Envelope {
             namespace_delta: commit.namespace_delta.clone(),
             txn: commit.txn.clone(),
             time: commit.time.clone(),
-            index: commit.index.clone(),
             txn_signature: commit.txn_signature.clone(),
             txn_meta: commit.txn_meta.clone(),
             graph_delta: commit.graph_delta.clone(),
@@ -128,9 +125,7 @@ pub fn encode_envelope_fields(
         flags |= FLAG_TIME;
     }
     // FLAG_DATA never set — CommitData removed from new commits
-    if envelope.index.is_some() {
-        flags |= FLAG_INDEX;
-    }
+    // FLAG_INDEX never set — index pointers are nameservice-only
     if envelope.txn_signature.is_some() {
         flags |= FLAG_TXN_SIGNATURE;
     }
@@ -155,9 +150,7 @@ pub fn encode_envelope_fields(
         encode_len_str(time, buf);
     }
     // FLAG_DATA: not set, no encoding needed
-    if let Some(index) = &envelope.index {
-        encode_index_ref(index, buf);
-    }
+    // FLAG_INDEX: not set, no encoding needed (index pointers are nameservice-only)
     if let Some(txn_sig) = &envelope.txn_signature {
         encode_len_str(&txn_sig.signer, buf);
         if let Some(txn_id) = &txn_sig.txn_id {
@@ -263,11 +256,11 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
         let _legacy_data = decode_legacy_commit_data(data, &mut pos, 0)?;
     }
 
-    let index = if flags & FLAG_INDEX != 0 {
-        Some(decode_index_ref(data, &mut pos)?)
-    } else {
-        None
-    };
+    // FLAG_INDEX: skip for tolerant decode of stray dev artifacts
+    // (index pointers are nameservice-only)
+    if flags & FLAG_INDEX != 0 {
+        skip_legacy_index_ref(data, &mut pos)?;
+    }
 
     let txn_signature = if flags & FLAG_TXN_SIGNATURE != 0 {
         let signer = decode_len_str(data, &mut pos)?;
@@ -326,7 +319,6 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
         namespace_delta,
         txn,
         time,
-        index,
         txn_signature,
         txn_meta,
         graph_delta,
@@ -489,46 +481,30 @@ fn decode_legacy_commit_data(
 }
 
 // =============================================================================
-// IndexRef (v2 wire: id_string + address + v + t → CID-based IndexRef)
+// Legacy IndexRef skip (tolerant decode for stray dev artifacts)
 // =============================================================================
 
-fn encode_index_ref(ir: &IndexRef, buf: &mut Vec<u8>) {
-    // v2 wire format: has_id(u8) + optional id_string + address_string + v + optional t
-    let id_str = ir.id.to_string();
-    buf.push(1); // has_id = true
-    encode_len_str(&id_str, buf);
-    // Address: derive from digest hex
-    let addr = format!("cid:{}", ir.id.digest_hex());
-    encode_len_str(&addr, buf);
-    // v: always 2 for v2 format
-    encode_varint(zigzag_encode(2), buf);
-    // t
-    if let Some(t) = ir.t {
-        buf.push(1);
-        encode_varint(zigzag_encode(t), buf);
-    } else {
-        buf.push(0);
-    }
-}
-
-fn decode_index_ref(data: &[u8], pos: &mut usize) -> Result<IndexRef, CommitV2Error> {
+/// Skip past a legacy index ref in the wire format.
+///
+/// Index pointers are no longer part of commits — they are tracked exclusively
+/// via the nameservice. This function advances the cursor past any index ref
+/// bytes in old blobs without constructing a value.
+fn skip_legacy_index_ref(data: &[u8], pos: &mut usize) -> Result<(), CommitV2Error> {
     // id
     if *pos >= data.len() {
         return Err(CommitV2Error::UnexpectedEof);
     }
     let has_id = data[*pos] != 0;
     *pos += 1;
-    let id_str = if has_id {
-        Some(decode_len_str(data, pos)?)
-    } else {
-        None
-    };
+    if has_id {
+        let _id_str = decode_len_str(data, pos)?;
+    }
 
     // address
-    let address = decode_len_str(data, pos)?;
+    let _address = decode_len_str(data, pos)?;
 
-    // v (read and discard — version is in the CID's multicodec)
-    let _v = zigzag_decode(decode_varint(data, pos)?) as i32;
+    // v
+    let _v = decode_varint(data, pos)?;
 
     // t
     if *pos >= data.len() {
@@ -536,27 +512,11 @@ fn decode_index_ref(data: &[u8], pos: &mut usize) -> Result<IndexRef, CommitV2Er
     }
     let has_t = data[*pos] != 0;
     *pos += 1;
-    let t = if has_t {
-        Some(zigzag_decode(decode_varint(data, pos)?))
-    } else {
-        None
-    };
-
-    // Convert v2 strings to ContentId
-    let content_id =
-        try_content_id_from_v2_ref(id_str.as_deref(), &address, CODEC_FLUREE_INDEX_ROOT)
-            .ok_or_else(|| {
-                CommitV2Error::EnvelopeDecode(format!(
-                    "cannot derive ContentId from index ref (id={:?}, addr={})",
-                    id_str, address
-                ))
-            })?;
-
-    let mut ir = IndexRef::new(content_id);
-    if let Some(t) = t {
-        ir = ir.with_t(t);
+    if has_t {
+        let _t = decode_varint(data, pos)?;
     }
-    Ok(ir)
+
+    Ok(())
 }
 
 /// Try to derive a ContentId from v2 id/address strings.
@@ -855,7 +815,6 @@ mod tests {
         assert!(decoded.namespace_delta.is_empty());
         assert!(decoded.txn.is_none());
         assert!(decoded.time.is_none());
-        assert!(decoded.index.is_none());
         assert!(decoded.txn_meta.is_empty());
     }
 
@@ -871,21 +830,6 @@ mod tests {
         let decoded = decode_envelope(&buf).unwrap();
         let decoded_prev = decoded.previous_ref.unwrap();
         assert_eq!(decoded_prev.id, prev_id);
-    }
-
-    #[test]
-    fn test_round_trip_with_index_ref() {
-        let idx_id = make_test_cid(ContentKind::IndexRoot, "index-root");
-        let mut commit = make_minimal_commit();
-        commit.index = Some(IndexRef::new(idx_id.clone()).with_t(8));
-
-        let mut buf = Vec::new();
-        encode_envelope(&commit, &mut buf).unwrap();
-
-        let decoded = decode_envelope(&buf).unwrap();
-        let decoded_idx = decoded.index.unwrap();
-        assert_eq!(decoded_idx.id, idx_id);
-        assert_eq!(decoded_idx.t, Some(8));
     }
 
     #[test]
