@@ -460,7 +460,13 @@ async fn execute_query(
     query_json: &JsonValue,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create execution span
-    let span = tracing::info_span!("query_execute", ledger_id = ledger_id, query_kind = "fql");
+    let span = tracing::info_span!(
+        "query_execute",
+        ledger_id = ledger_id,
+        query_kind = "fql",
+        tracker_time = tracing::field::Empty,
+        tracker_fuel = tracing::field::Empty,
+    );
     async move {
     let span = tracing::Span::current();
 
@@ -505,6 +511,14 @@ async fn execute_query(
                 return Err(server_error);
             }
         };
+
+        // Record tracker fields on the execution span
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
 
         // Extract tracking info for headers
         let tally = TrackingTally {
@@ -583,6 +597,14 @@ async fn execute_query_proxy(
             }
         };
 
+        // Record tracker fields on the execution span
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
+
         // Extract tracking info for headers
         let tally = TrackingTally {
             time: response.time.clone(),
@@ -641,10 +663,34 @@ async fn execute_sparql_ledger(
     // Create span for peer mode loading
     let span = tracing::info_span!("sparql_execute", ledger_id = ledger_id);
     async move {
-    let span = tracing::Span::current();
+        let span = tracing::Span::current();
 
-    // In proxy mode, use the unified FlureeInstance method
-    if state.config.is_proxy_storage_mode() {
+        // In proxy mode, use the unified FlureeInstance method
+        if state.config.is_proxy_storage_mode() {
+            let result = match identity {
+                Some(id) => {
+                    state
+                        .fluree
+                        .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
+                        .await?
+                }
+                None => {
+                    state
+                        .fluree
+                        .query_ledger_sparql_jsonld(ledger_id, sparql)
+                        .await?
+                }
+            };
+            return Ok((HeaderMap::new(), Json(result)));
+        }
+
+        // Shared storage mode: use load_ledger_for_query with freshness checking
+        let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
+        let graph = FlureeView::from_ledger_state(&ledger);
+        let fluree = state.fluree.as_file();
+
+        // Execute SPARQL query via builder
+        // Note: SPARQL tracking not yet implemented - returns empty headers
         let result = match identity {
             Some(id) => {
                 state
@@ -653,38 +699,14 @@ async fn execute_sparql_ledger(
                     .await?
             }
             None => {
-                state
-                    .fluree
-                    .query_ledger_sparql_jsonld(ledger_id, sparql)
+                graph
+                    .query(fluree.as_ref())
+                    .sparql(sparql)
+                    .execute_formatted()
                     .await?
             }
         };
-        return Ok((HeaderMap::new(), Json(result)));
-    }
-
-    // Shared storage mode: use load_ledger_for_query with freshness checking
-    let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
-    let graph = FlureeView::from_ledger_state(&ledger);
-    let fluree = state.fluree.as_file();
-
-    // Execute SPARQL query via builder
-    // Note: SPARQL tracking not yet implemented - returns empty headers
-    let result = match identity {
-        Some(id) => {
-            state
-                .fluree
-                .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
-                .await?
-        }
-        None => {
-            graph
-                .query(fluree.as_ref())
-                .sparql(sparql)
-                .execute_formatted()
-                .await?
-        }
-    };
-    Ok((HeaderMap::new(), Json(result)))
+        Ok((HeaderMap::new(), Json(result)))
     }
     .instrument(span)
     .await
@@ -716,99 +738,99 @@ pub async fn explain(
         None, // explain is the operation, no input format needed
     );
     async move {
-    let span = tracing::Span::current();
+        let span = tracing::Span::current();
 
-    tracing::info!(status = "start", "explain request received");
+        tracing::info!(status = "start", "explain request received");
 
-    // Enforce data auth if configured (Bearer token OR signed request)
-    let data_auth = state.config.data_auth();
-    if data_auth.mode == crate::config::DataAuthMode::Required
-        && !credential.is_signed()
-        && bearer.0.is_none()
-    {
-        return Err(ServerError::unauthorized(
-            "Authentication required (signed request or Bearer token)",
-        ));
-    }
-
-    // Parse body as JSON
-    let mut query_json = match credential.body_json() {
-        Ok(json) => json,
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "invalid JSON in request body");
-            return Err(e);
+        // Enforce data auth if configured (Bearer token OR signed request)
+        let data_auth = state.config.data_auth();
+        if data_auth.mode == crate::config::DataAuthMode::Required
+            && !credential.is_signed()
+            && bearer.0.is_none()
+        {
+            return Err(ServerError::unauthorized(
+                "Authentication required (signed request or Bearer token)",
+            ));
         }
-    };
 
-    // Log query text according to configuration (only serialize if needed)
-    if should_log_query_text(&state.telemetry_config) {
-        if let Ok(query_text) = serde_json::to_string(&query_json) {
-            log_query_text(&query_text, &state.telemetry_config, &span);
+        // Parse body as JSON
+        let mut query_json = match credential.body_json() {
+            Ok(json) => json,
+            Err(e) => {
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!(error = %e, "invalid JSON in request body");
+                return Err(e);
+            }
+        };
+
+        // Log query text according to configuration (only serialize if needed)
+        if should_log_query_text(&state.telemetry_config) {
+            if let Ok(query_text) = serde_json::to_string(&query_json) {
+                log_query_text(&query_text, &state.telemetry_config, &span);
+            }
         }
-    }
 
-    // Get ledger id
-    let ledger_id = match get_ledger_id(None, &headers, &query_json) {
-        Ok(ledger_id) => {
-            span.record("ledger_id", ledger_id.as_str());
-            ledger_id
-        }
-        Err(e) => {
-            set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger ID");
-            return Err(e);
-        }
-    };
-
-    // Inject header values into query opts
-    inject_headers_into_query(&mut query_json, &headers);
-
-    // Enforce bearer ledger scope for unsigned requests
-    if let Some(p) = bearer.0.as_ref() {
-        if !credential.is_signed() && !p.can_read(&ledger_id) {
-            return Err(ServerError::not_found("Ledger not found"));
-        }
-    }
-
-    // Force auth-derived identity and policy-class into opts (non-spoofable)
-    let identity = effective_identity(&credential, &bearer);
-    let policy_class = data_auth.default_policy_class.as_deref();
-    force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
-
-    // Execute explain
-    let result = if state.config.is_proxy_storage_mode() {
-        // Proxy mode: use FlureeInstance wrapper
-        match state.fluree.explain_ledger(&ledger_id, &query_json).await {
-            Ok(result) => {
-                tracing::info!(status = "success", "explain completed (proxy)");
-                result
+        // Get ledger id
+        let ledger_id = match get_ledger_id(None, &headers, &query_json) {
+            Ok(ledger_id) => {
+                span.record("ledger_id", ledger_id.as_str());
+                ledger_id
             }
             Err(e) => {
-                let server_error = ServerError::Api(e);
-                set_span_error_code(&span, "error:InvalidQuery");
-                tracing::error!(error = %server_error, "explain execution failed (proxy)");
-                return Err(server_error);
+                set_span_error_code(&span, "error:BadRequest");
+                tracing::warn!(error = %e, "missing ledger ID");
+                return Err(e);
             }
-        }
-    } else {
-        // Shared storage mode: use load_ledger_for_query with freshness checking
-        let ledger = load_ledger_for_query(&state, &ledger_id, &span).await?;
-        match state.fluree.as_file().explain(&ledger, &query_json).await {
-            Ok(result) => {
-                tracing::info!(status = "success", "explain completed");
-                result
-            }
-            Err(e) => {
-                let server_error = ServerError::Api(e);
-                set_span_error_code(&span, "error:InvalidQuery");
-                tracing::error!(error = %server_error, "explain execution failed");
-                return Err(server_error);
-            }
-        }
-    };
+        };
 
-    Ok(Json(result))
+        // Inject header values into query opts
+        inject_headers_into_query(&mut query_json, &headers);
+
+        // Enforce bearer ledger scope for unsigned requests
+        if let Some(p) = bearer.0.as_ref() {
+            if !credential.is_signed() && !p.can_read(&ledger_id) {
+                return Err(ServerError::not_found("Ledger not found"));
+            }
+        }
+
+        // Force auth-derived identity and policy-class into opts (non-spoofable)
+        let identity = effective_identity(&credential, &bearer);
+        let policy_class = data_auth.default_policy_class.as_deref();
+        force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
+
+        // Execute explain
+        let result = if state.config.is_proxy_storage_mode() {
+            // Proxy mode: use FlureeInstance wrapper
+            match state.fluree.explain_ledger(&ledger_id, &query_json).await {
+                Ok(result) => {
+                    tracing::info!(status = "success", "explain completed (proxy)");
+                    result
+                }
+                Err(e) => {
+                    let server_error = ServerError::Api(e);
+                    set_span_error_code(&span, "error:InvalidQuery");
+                    tracing::error!(error = %server_error, "explain execution failed (proxy)");
+                    return Err(server_error);
+                }
+            }
+        } else {
+            // Shared storage mode: use load_ledger_for_query with freshness checking
+            let ledger = load_ledger_for_query(&state, &ledger_id, &span).await?;
+            match state.fluree.as_file().explain(&ledger, &query_json).await {
+                Ok(result) => {
+                    tracing::info!(status = "success", "explain completed");
+                    result
+                }
+                Err(e) => {
+                    let server_error = ServerError::Api(e);
+                    set_span_error_code(&span, "error:InvalidQuery");
+                    tracing::error!(error = %server_error, "explain execution failed");
+                    return Err(server_error);
+                }
+            }
+        };
+
+        Ok(Json(result))
     }
     .instrument(span)
     .await
@@ -929,6 +951,14 @@ async fn execute_history_query(
             }
         };
 
+        // Record tracker fields on the execution span
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
+
         let tally = TrackingTally {
             time: response.time.clone(),
             fuel: response.fuel,
@@ -1022,6 +1052,14 @@ async fn execute_dataset_query(
                 return Err(server_error);
             }
         };
+
+        // Record tracker fields on the execution span
+        if let Some(ref time) = response.time {
+            span.record("tracker_time", time.as_str());
+        }
+        if let Some(fuel) = response.fuel {
+            span.record("tracker_fuel", fuel);
+        }
 
         let tally = TrackingTally {
             time: response.time.clone(),
