@@ -305,167 +305,48 @@ fn dirs_home() -> Option<PathBuf> {
 // Deep merge (profile overlay onto base)
 // ---------------------------------------------------------------------------
 
-/// Deep-merge `overlay` onto `base`. Only `Some` values in the overlay replace
-/// the corresponding base values; `None` in the overlay means "inherit from base".
+/// Deep-merge `overlay` onto `base` using a serde JSON round-trip.
+///
+/// Both structs are serialized to `serde_json::Value`, recursively merged
+/// (overlay non-null values win, null/absent = inherit from base), then
+/// deserialized back to `ServerFileConfig`.
+///
+/// This eliminates manual per-field merge logic: adding a new `Option<T>`
+/// field to any config struct automatically works in merge with zero
+/// additional code. The one-time startup cost of the JSON round-trip is
+/// negligible.
 pub fn deep_merge(base: &mut ServerFileConfig, overlay: &ServerFileConfig) {
-    macro_rules! merge_field {
-        ($field:ident) => {
-            if overlay.$field.is_some() {
-                base.$field = overlay.$field.clone();
-            }
-        };
-    }
+    let mut base_json = serde_json::to_value(&*base).expect("ServerFileConfig is serializable");
+    let overlay_json = serde_json::to_value(overlay).expect("ServerFileConfig is serializable");
 
-    merge_field!(listen_addr);
-    merge_field!(storage_path);
-    merge_field!(log_level);
-    merge_field!(cors_enabled);
-    merge_field!(body_limit);
-    merge_field!(cache_max_entries);
+    merge_json_values(&mut base_json, &overlay_json);
 
-    // Nested: indexing
-    if let Some(ref ovr) = overlay.indexing {
-        let b = base.indexing.get_or_insert_with(Default::default);
-        if ovr.enabled.is_some() {
-            b.enabled = ovr.enabled;
-        }
-        if ovr.reindex_min_bytes.is_some() {
-            b.reindex_min_bytes = ovr.reindex_min_bytes;
-        }
-        if ovr.reindex_max_bytes.is_some() {
-            b.reindex_max_bytes = ovr.reindex_max_bytes;
-        }
-    }
-
-    // Nested: auth
-    if let Some(ref ovr) = overlay.auth {
-        let b = base.auth.get_or_insert_with(Default::default);
-        merge_auth_endpoint(&mut b.events, &ovr.events);
-        merge_data_auth(&mut b.data, &ovr.data);
-        merge_auth_endpoint(&mut b.admin, &ovr.admin);
-        if let Some(ref ovr_jwks) = ovr.jwks {
-            let bj = b.jwks.get_or_insert_with(Default::default);
-            if ovr_jwks.issuers.is_some() {
-                bj.issuers = ovr_jwks.issuers.clone();
-            }
-            if ovr_jwks.cache_ttl.is_some() {
-                bj.cache_ttl = ovr_jwks.cache_ttl;
-            }
-        }
-    }
-
-    // Nested: peer
-    if let Some(ref ovr) = overlay.peer {
-        let b = base.peer.get_or_insert_with(Default::default);
-        if ovr.role.is_some() {
-            b.role = ovr.role.clone();
-        }
-        if ovr.tx_server_url.is_some() {
-            b.tx_server_url = ovr.tx_server_url.clone();
-        }
-        if ovr.events_url.is_some() {
-            b.events_url = ovr.events_url.clone();
-        }
-        if ovr.events_token.is_some() {
-            b.events_token = ovr.events_token.clone();
-        }
-        if ovr.subscribe_all.is_some() {
-            b.subscribe_all = ovr.subscribe_all;
-        }
-        if ovr.ledgers.is_some() {
-            b.ledgers = ovr.ledgers.clone();
-        }
-        if ovr.graph_sources.is_some() {
-            b.graph_sources = ovr.graph_sources.clone();
-        }
-        if ovr.storage_access_mode.is_some() {
-            b.storage_access_mode = ovr.storage_access_mode.clone();
-        }
-        if ovr.storage_proxy_token.is_some() {
-            b.storage_proxy_token = ovr.storage_proxy_token.clone();
-        }
-        if ovr.storage_proxy_token_file.is_some() {
-            b.storage_proxy_token_file = ovr.storage_proxy_token_file.clone();
-        }
-        if let Some(ref ovr_r) = ovr.reconnect {
-            let br = b.reconnect.get_or_insert_with(Default::default);
-            if ovr_r.initial_ms.is_some() {
-                br.initial_ms = ovr_r.initial_ms;
-            }
-            if ovr_r.max_ms.is_some() {
-                br.max_ms = ovr_r.max_ms;
-            }
-            if ovr_r.multiplier.is_some() {
-                br.multiplier = ovr_r.multiplier;
-            }
-        }
-    }
-
-    // Nested: mcp
-    if let Some(ref ovr) = overlay.mcp {
-        let b = base.mcp.get_or_insert_with(Default::default);
-        if ovr.enabled.is_some() {
-            b.enabled = ovr.enabled;
-        }
-        if ovr.auth_trusted_issuers.is_some() {
-            b.auth_trusted_issuers = ovr.auth_trusted_issuers.clone();
-        }
-    }
-
-    // Nested: storage_proxy
-    if let Some(ref ovr) = overlay.storage_proxy {
-        let b = base.storage_proxy.get_or_insert_with(Default::default);
-        if ovr.enabled.is_some() {
-            b.enabled = ovr.enabled;
-        }
-        if ovr.trusted_issuers.is_some() {
-            b.trusted_issuers = ovr.trusted_issuers.clone();
-        }
-        if ovr.default_identity.is_some() {
-            b.default_identity = ovr.default_identity.clone();
-        }
-        if ovr.default_policy_class.is_some() {
-            b.default_policy_class = ovr.default_policy_class.clone();
-        }
-        if ovr.debug_headers.is_some() {
-            b.debug_headers = ovr.debug_headers;
-        }
-    }
+    *base = serde_json::from_value(base_json).expect("merged value is valid ServerFileConfig");
 }
 
-fn merge_auth_endpoint(
-    base: &mut Option<AuthEndpointFileConfig>,
-    overlay: &Option<AuthEndpointFileConfig>,
-) {
-    if let Some(ref ovr) = overlay {
-        let b = base.get_or_insert_with(Default::default);
-        if ovr.mode.is_some() {
-            b.mode = ovr.mode.clone();
+/// Recursively merge `overlay` into `base`.
+///
+/// - **Objects**: recurse into matching keys; new keys in overlay are inserted.
+/// - **Other types**: overlay replaces base when overlay is non-null.
+/// - **Null overlay**: base is preserved (null = "not set in this layer").
+fn merge_json_values(base: &mut serde_json::Value, overlay: &serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) => {
+            for (key, overlay_val) in overlay_map {
+                if overlay_val.is_null() {
+                    continue;
+                }
+                if let Some(base_val) = base_map.get_mut(key) {
+                    merge_json_values(base_val, overlay_val);
+                } else {
+                    base_map.insert(key.clone(), overlay_val.clone());
+                }
+            }
         }
-        if ovr.audience.is_some() {
-            b.audience = ovr.audience.clone();
+        (base, overlay) if !overlay.is_null() => {
+            *base = overlay.clone();
         }
-        if ovr.trusted_issuers.is_some() {
-            b.trusted_issuers = ovr.trusted_issuers.clone();
-        }
-    }
-}
-
-fn merge_data_auth(base: &mut Option<DataAuthFileConfig>, overlay: &Option<DataAuthFileConfig>) {
-    if let Some(ref ovr) = overlay {
-        let b = base.get_or_insert_with(Default::default);
-        if ovr.mode.is_some() {
-            b.mode = ovr.mode.clone();
-        }
-        if ovr.audience.is_some() {
-            b.audience = ovr.audience.clone();
-        }
-        if ovr.trusted_issuers.is_some() {
-            b.trusted_issuers = ovr.trusted_issuers.clone();
-        }
-        if ovr.default_policy_class.is_some() {
-            b.default_policy_class = ovr.default_policy_class.clone();
-        }
+        _ => {} // overlay is null — keep base
     }
 }
 
@@ -1140,6 +1021,115 @@ auto_pull = true
         let dev = profiles.get("dev").unwrap();
         let dev_server = dev.server.as_ref().unwrap();
         assert_eq!(dev_server.log_level.as_deref(), Some("debug"));
+    }
+
+    /// Exercises deep merge across multiple nested sections (auth, peer,
+    /// storage_proxy) to verify the serde-based merge handles deeply nested
+    /// Option fields correctly.
+    #[test]
+    fn test_deep_merge_nested_sections() {
+        let mut base = ServerFileConfig {
+            listen_addr: Some("0.0.0.0:8090".into()),
+            auth: Some(AuthFileConfig {
+                events: Some(AuthEndpointFileConfig {
+                    mode: Some("none".into()),
+                    audience: Some("base-audience".into()),
+                    trusted_issuers: Some(vec!["issuer-a".into()]),
+                }),
+                data: Some(DataAuthFileConfig {
+                    mode: Some("optional".into()),
+                    default_policy_class: Some("ex:BasePolicy".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            peer: Some(PeerFileConfig {
+                role: Some("transaction".into()),
+                reconnect: Some(PeerReconnectFileConfig {
+                    initial_ms: Some(1000),
+                    max_ms: Some(30000),
+                    multiplier: Some(2.0),
+                }),
+                ..Default::default()
+            }),
+            storage_proxy: Some(StorageProxyFileConfig {
+                enabled: Some(false),
+                debug_headers: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        // Overlay: override some nested fields, leave others untouched
+        let overlay = ServerFileConfig {
+            auth: Some(AuthFileConfig {
+                events: Some(AuthEndpointFileConfig {
+                    mode: Some("required".into()),
+                    audience: None,        // should NOT override
+                    trusted_issuers: None, // should NOT override
+                }),
+                data: None, // entire data section absent — should NOT override
+                admin: Some(AuthEndpointFileConfig {
+                    mode: Some("required".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            peer: Some(PeerFileConfig {
+                role: Some("peer".into()),
+                reconnect: Some(PeerReconnectFileConfig {
+                    max_ms: Some(60000),
+                    ..Default::default() // initial_ms and multiplier should NOT override
+                }),
+                ..Default::default()
+            }),
+            storage_proxy: Some(StorageProxyFileConfig {
+                enabled: Some(true),
+                // debug_headers absent — should NOT override
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        deep_merge(&mut base, &overlay);
+
+        // listen_addr: unchanged (overlay had None)
+        assert_eq!(base.listen_addr.as_deref(), Some("0.0.0.0:8090"));
+
+        // auth.events: mode overridden, audience and trusted_issuers preserved
+        let auth = base.auth.as_ref().unwrap();
+        let events = auth.events.as_ref().unwrap();
+        assert_eq!(events.mode.as_deref(), Some("required"));
+        assert_eq!(events.audience.as_deref(), Some("base-audience"));
+        assert_eq!(
+            events.trusted_issuers.as_deref(),
+            Some(vec!["issuer-a".to_string()].as_slice())
+        );
+
+        // auth.data: entirely preserved (overlay had None for data section)
+        let data = auth.data.as_ref().unwrap();
+        assert_eq!(data.mode.as_deref(), Some("optional"));
+        assert_eq!(data.default_policy_class.as_deref(), Some("ex:BasePolicy"));
+
+        // auth.admin: new section introduced by overlay
+        let admin = auth.admin.as_ref().unwrap();
+        assert_eq!(admin.mode.as_deref(), Some("required"));
+
+        // peer.role: overridden
+        let peer = base.peer.as_ref().unwrap();
+        assert_eq!(peer.role.as_deref(), Some("peer"));
+
+        // peer.reconnect: max_ms overridden, initial_ms and multiplier preserved
+        let reconnect = peer.reconnect.as_ref().unwrap();
+        assert_eq!(reconnect.initial_ms, Some(1000));
+        assert_eq!(reconnect.max_ms, Some(60000));
+        assert_eq!(reconnect.multiplier, Some(2.0));
+
+        // storage_proxy.enabled: overridden
+        let sp = base.storage_proxy.as_ref().unwrap();
+        assert_eq!(sp.enabled, Some(true));
+        // storage_proxy.debug_headers: preserved
+        assert_eq!(sp.debug_headers, Some(false));
     }
 
     /// Verify that every arg ID referenced by `apply_to_server_config` (via
