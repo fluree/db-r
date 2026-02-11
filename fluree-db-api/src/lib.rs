@@ -1043,6 +1043,25 @@ fn build_indexer_config(config: &ConnectionConfig) -> fluree_db_indexer::Indexer
     indexer_config
 }
 
+/// Derive `IndexConfig` from `ConnectionConfig` defaults (or fall back to compiled defaults).
+///
+/// Used by `connect_json_ld` paths where indexing thresholds come from the JSON-LD
+/// connection config rather than the `FlureeBuilder`.
+fn derive_index_config(config: &ConnectionConfig) -> IndexConfig {
+    let indexing = config.defaults.as_ref().and_then(|d| d.indexing.as_ref());
+
+    IndexConfig {
+        reindex_min_bytes: indexing
+            .and_then(|i| i.reindex_min_bytes)
+            .map(|v| v as usize)
+            .unwrap_or(IndexConfig::default().reindex_min_bytes),
+        reindex_max_bytes: indexing
+            .and_then(|i| i.reindex_max_bytes)
+            .map(|v| v as usize)
+            .unwrap_or(IndexConfig::default().reindex_max_bytes),
+    }
+}
+
 /// Start background indexing if enabled in the config.
 ///
 /// Creates a BackgroundIndexerWorker and spawns it on the tokio runtime.
@@ -1128,10 +1147,13 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
             nameservice.clone(),
         );
 
+        let index_config = derive_index_config(aws_handle.config());
+
         return Ok(Fluree {
             connection,
             nameservice,
             indexing_mode,
+            index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         });
@@ -1163,6 +1185,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
             // Start background indexing if enabled in config
+            let index_config = derive_index_config(connection.config());
             let indexing_mode = start_background_indexing_if_enabled(
                 connection.config(),
                 connection.storage().clone(),
@@ -1173,6 +1196,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                 connection,
                 nameservice,
                 indexing_mode,
+                index_config,
                 r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
                 ledger_manager: None,
             })
@@ -1225,6 +1249,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
                 // Start background indexing if enabled in config
+                let index_config = derive_index_config(connection.config());
                 let indexing_mode = start_background_indexing_if_enabled(
                     connection.config(),
                     connection.storage().clone(),
@@ -1235,6 +1260,7 @@ pub async fn connect_json_ld(config: &serde_json::Value) -> Result<FlureeClient>
                     connection,
                     nameservice,
                     indexing_mode,
+                    index_config,
                     r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
                     ledger_manager: None,
                 })
@@ -1744,22 +1770,26 @@ impl FlureeBuilder {
         });
 
         // Start background indexing if configured
-        let indexing_mode = if let Some(idx_config) = self.indexing_config {
+        let (indexing_mode, index_config) = if let Some(idx_config) = self.indexing_config {
             let (worker, handle) = BackgroundIndexerWorker::new(
                 storage,
                 Arc::new(nameservice.clone()),
                 idx_config.indexer_config,
             );
             tokio::spawn(worker.run());
-            tx::IndexingMode::Background(handle)
+            (
+                tx::IndexingMode::Background(handle),
+                idx_config.index_config,
+            )
         } else {
-            tx::IndexingMode::Disabled
+            (tx::IndexingMode::Disabled, IndexConfig::default())
         };
 
         Ok(Fluree {
             connection,
             nameservice,
             indexing_mode,
+            index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager,
         })
@@ -1863,6 +1893,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
+            index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         })
@@ -1891,6 +1922,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
+            index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager,
         }
@@ -1920,6 +1952,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
+            index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         }
@@ -1988,6 +2021,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
+            index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         })
@@ -2067,6 +2101,7 @@ impl FlureeBuilder {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
+            index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         })
@@ -2088,6 +2123,11 @@ pub struct Fluree<S: Storage + 'static, N> {
     nameservice: N,
     /// Indexing mode (disabled or background with handle)
     pub indexing_mode: tx::IndexingMode,
+    /// Novelty backpressure thresholds used by commits and soft-trigger logic.
+    ///
+    /// Set from `FlureeBuilder::with_indexing_thresholds()` for builder paths,
+    /// or derived from `ConnectionConfig::defaults.indexing` for JSON-LD paths.
+    index_config: IndexConfig,
     /// R2RML cache for compiled mappings and table metadata
     r2rml_cache: std::sync::Arc<graph_source::R2rmlCache>,
     /// Optional ledger manager for connection-level caching
@@ -2110,6 +2150,7 @@ where
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
+            index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         }
@@ -2125,6 +2166,7 @@ where
             connection,
             nameservice,
             indexing_mode,
+            index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         }
@@ -2135,25 +2177,12 @@ where
         self.indexing_mode = mode;
     }
 
-    /// Derive `IndexConfig` from connection defaults (or fall back to compiled defaults).
+    /// Returns the novelty backpressure thresholds for this instance.
+    ///
+    /// Set from `FlureeBuilder::with_indexing_thresholds()` for builder paths,
+    /// or derived from `ConnectionConfig::defaults.indexing` for JSON-LD paths.
     pub(crate) fn default_index_config(&self) -> IndexConfig {
-        let indexing = self
-            .connection
-            .config()
-            .defaults
-            .as_ref()
-            .and_then(|d| d.indexing.as_ref());
-
-        IndexConfig {
-            reindex_min_bytes: indexing
-                .and_then(|i| i.reindex_min_bytes)
-                .map(|v| v as usize)
-                .unwrap_or(IndexConfig::default().reindex_min_bytes),
-            reindex_max_bytes: indexing
-                .and_then(|i| i.reindex_max_bytes)
-                .map(|v| v as usize)
-                .unwrap_or(IndexConfig::default().reindex_max_bytes),
-        }
+        self.index_config.clone()
     }
 
     /// Check whether indexing is enabled in connection defaults.
