@@ -166,7 +166,7 @@ let all_ledgers = nameservice.all_records().await?;
 
 ### Querying the Nameservice
 
-The nameservice can be queried using standard FQL (JSON-LD Query) or SPARQL syntax. This enables powerful ledger discovery, filtering, and metadata analysis across all managed databases.
+The nameservice can be queried using standard JSON-LD query or SPARQL syntax. This enables powerful ledger discovery, filtering, and metadata analysis across all managed databases.
 
 #### Rust API (Builder Pattern)
 

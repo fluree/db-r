@@ -1,11 +1,11 @@
 //! Polymorphic query input type
 //!
-//! Allows `query_view` to accept either JSON-LD/FQL or SPARQL queries
+//! Allows `query_view` to accept either JSON-LD or SPARQL queries
 //! through a single entrypoint with ergonomic `From` conversions.
 
 use serde_json::Value as JsonValue;
 
-/// Polymorphic query input: JSON-LD/FQL or SPARQL.
+/// Polymorphic query input: JSON-LD or SPARQL.
 ///
 /// This enum enables a single query entrypoint that accepts multiple syntaxes.
 /// Use the `From` implementations for ergonomic construction.
@@ -31,7 +31,7 @@ use serde_json::Value as JsonValue;
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub enum QueryInput<'a> {
-    /// JSON-LD / FQL query
+    /// JSON-LD query
     JsonLd(&'a JsonValue),
     /// SPARQL query string
     Sparql(&'a str),

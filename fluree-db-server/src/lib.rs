@@ -5,7 +5,7 @@
 //!
 //! # Features
 //!
-//! - FQL and SPARQL query support
+//! - JSON-LD and SPARQL query support
 //! - Transaction endpoints (transact, insert, upsert)
 //! - History queries
 //! - Ledger management (create, drop, info)

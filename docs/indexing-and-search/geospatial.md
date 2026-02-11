@@ -239,9 +239,9 @@ ORDER BY ?distance
 
 Fluree supports index-accelerated proximity queries that find points within a given distance of a center point.
 
-### Accelerated point proximity (`idx:geo`)
+### Index-Accelerated Point Proximity
 
-Use an `idx:geo` pattern to run an accelerated proximity search over inline GeoPoints.
+Use a `geof:distance` bind + filter pattern to run an accelerated proximity search over inline GeoPoints. This pattern works identically in both JSON-LD and SPARQL queries — the query optimizer detects the Triple + Bind(geof:distance) + Filter combination and rewrites it into an index-accelerated scan.
 
 **JSON-LD Query (find restaurants within 5km, include distance, limit to 10):**
 ```json
@@ -253,24 +253,17 @@ Use an `idx:geo` pattern to run an accelerated proximity search over inline GeoP
   "from": "places:main",
   "where": [
     { "@id": "?place", "@type": "ex:Restaurant" },
-    {
-      "idx:geo": "ex:location",
-      "idx:center": "POINT(2.35 48.85)",
-      "idx:radius": 5000,
-      "idx:limit": 10,
-      "idx:result": { "idx:id": "?place", "idx:distance": "?distance" }
-    }
+    { "@id": "?place", "ex:location": "?loc" },
+    ["bind", "?distance", "(geof:distance ?loc \"POINT(2.35 48.85)\")"],
+    ["filter", "(<= ?distance 5000)"]
   ],
   "select": ["?place", "?distance"],
-  "orderBy": ["?distance"]
+  "orderBy": ["?distance"],
+  "limit": 10
 }
 ```
 
-### SPARQL proximity (v1 note)
-
-SPARQL can compute distances with `geof:distance`, but v1 does not guarantee that proximity filters are rewritten into an accelerated index operator. For fastest proximity queries in v1, use the JSON-LD `idx:geo` pattern above.
-
-**SPARQL (compute distance and filter):**
+**SPARQL (same pattern, same acceleration):**
 ```sparql
 PREFIX ex: <http://example.org/>
 PREFIX geo: <http://www.opengis.net/ont/geosparql#>
@@ -308,16 +301,13 @@ Point proximity queries support time travel via the `from` ledger selector.
 {
   "@context": {
     "ex": "http://example.org/",
-    "fluree": "https://ns.flur.ee/ledger#"
+    "geo": "http://www.opengis.net/ont/geosparql#"
   },
   "from": "places:main@t:100",
   "where": [
-    {
-      "idx:geo": "ex:location",
-      "idx:center": "POINT(2.35 48.85)",
-      "idx:radius": 5000,
-      "idx:result": "?place"
-    }
+    { "@id": "?place", "ex:location": "?loc" },
+    ["bind", "?dist", "(geof:distance ?loc \"POINT(2.35 48.85)\")"],
+    ["filter", "(<= ?dist 5000)"]
   ],
   "select": ["?place"]
 }
@@ -342,20 +332,21 @@ Time travel correctly handles:
 
 ### Graph Scoping
 
-Point proximity queries via `idx:geo` respect graph context. When used inside a GRAPH pattern, the query scans only the specified named graph:
+Point proximity queries respect graph context. When used inside a GRAPH pattern, the query scans only the specified named graph:
 
 ```json
 {
+  "@context": {
+    "ex": "http://example.org/",
+    "geo": "http://www.opengis.net/ont/geosparql#"
+  },
   "from": "world:main",
   "where": [
-    ["graph", "http://example.org/france",
-     {
-       "idx:geo": "ex:location",
-       "idx:center": "POINT(2.35 48.85)",
-       "idx:radius": 50000,
-       "idx:result": "?city"
-     }
-    ]
+    ["graph", "http://example.org/france", [
+      { "@id": "?city", "ex:location": "?loc" },
+      ["bind", "?dist", "(geof:distance ?loc \"POINT(2.35 48.85)\")"],
+      ["filter", "(<= ?dist 50000)"]
+    ]]
   ],
   "select": ["?city"]
 }
@@ -580,22 +571,22 @@ This returns places as they existed at transaction time 100, correctly handling:
 
 **Note**: Time travel requires `t >= index.base_t`. Queries for times before the index was built will return an error.
 
-**Note (v1)**: The historical-view API (`query_historical`) does not execute `idx:spatial` patterns. Use a time-pinned `from` selector (as above) against the current ledger state for spatial time travel.
+**Note (v1)**: The historical-view API (`query_historical`) does not execute spatial index patterns. Use a time-pinned `from` selector (as above) against the current ledger state for spatial time travel.
 
-## Choosing Between idx:geo and idx:spatial
+## Choosing Between Point Proximity and S2 Spatial Queries
 
-Fluree provides two spatial query operators. Use this guide to pick the right one:
+Fluree provides two spatial query paths. Use this guide to pick the right one:
 
-| Use Case | Operator | Reason |
+| Use Case | Approach | Reason |
 |----------|----------|--------|
-| "Find restaurants near me" | `idx:geo` | POINT proximity with distance ranking |
-| "Find cities within 100km" | `idx:geo` | POINT data with radius filter |
+| "Find restaurants near me" | `geof:distance` bind+filter | POINT proximity with distance ranking |
+| "Find cities within 100km" | `geof:distance` bind+filter | POINT data with radius filter |
 | "Find buildings in this district" | `idx:spatial` (within) | POLYGONs inside a boundary |
 | "Which zone contains this address?" | `idx:spatial` (contains) | POLYGON containment test |
 | "Find parcels crossing this road" | `idx:spatial` (intersects) | LINESTRING intersection |
 | "Find regions near this location" | `idx:spatial` (nearby) | POLYGONs with distance from point |
 
-**Quick rule**: Use `idx:geo` for POINT locations with radius queries. Use `idx:spatial` for polygon/linestring containment, intersection, or region-based queries.
+**Quick rule**: Use `geof:distance` bind+filter for POINT locations with radius queries. Use `idx:spatial` for polygon/linestring containment, intersection, or region-based queries.
 
 ### End-to-End Example: Points and Polygons
 
@@ -643,15 +634,15 @@ This example shows storing both POINT locations and POLYGON boundaries, then que
 **2. Find landmarks near Eiffel Tower (POINT proximity):**
 ```json
 {
-  "@context": { "ex": "http://example.org/", "idx": "https://ns.flur.ee/index#" },
+  "@context": {
+    "ex": "http://example.org/",
+    "geo": "http://www.opengis.net/ont/geosparql#"
+  },
   "from": "places:main",
   "where": [
-    {
-      "idx:geo": "ex:location",
-      "idx:center": "POINT(2.2945 48.8584)",
-      "idx:radius": 5000,
-      "idx:result": { "idx:id": "?place", "idx:distance": "?dist" }
-    },
+    { "@id": "?place", "ex:location": "?loc" },
+    ["bind", "?dist", "(geof:distance ?loc \"POINT(2.2945 48.8584)\")"],
+    ["filter", "(<= ?dist 5000)"],
     { "@id": "?place", "ex:name": "?name" }
   ],
   "select": ["?name", "?dist"],
@@ -662,7 +653,10 @@ This example shows storing both POINT locations and POLYGON boundaries, then que
 **3. Find which district contains the Louvre (POLYGON containment):**
 ```json
 {
-  "@context": { "ex": "http://example.org/", "idx": "https://ns.flur.ee/index#" },
+  "@context": {
+    "ex": "http://example.org/",
+    "idx": "https://ns.flur.ee/index#"
+  },
   "from": "places:main",
   "where": [
     {
@@ -835,7 +829,7 @@ The `ex:entrance` POINT is stored as a native GeoPoint, while the `ex:boundary` 
 
 ## GeoSPARQL-related support (v1)
 
-Fluree supports the GeoSPARQL `geo:wktLiteral` datatype and `geof:distance` function in SPARQL. For accelerated spatial predicate queries (`within`/`contains`/`intersects`/`nearby`) in v1, use the JSON-LD `idx:geo` and `idx:spatial` patterns described above.
+Fluree supports the GeoSPARQL `geo:wktLiteral` datatype and `geof:distance` function. Point proximity queries use a unified `geof:distance` bind+filter pattern in both JSON-LD and SPARQL. For complex geometry queries (`within`/`contains`/`intersects`/`nearby`), use the JSON-LD `idx:spatial` pattern described above.
 
 | Feature | Status |
 |---------|--------|
@@ -846,7 +840,7 @@ Fluree supports the GeoSPARQL `geo:wktLiteral` datatype and `geof:distance` func
 | MULTIPOLYGON geometry | ✅ S2 spatial index |
 | `geo:asWKT` property | ✅ Use any property with wktLiteral type |
 | `geof:distance` function | ✅ Supported (haversine, ~0.3% accuracy) |
-| Proximity queries (radius) | ✅ Index-accelerated (POST + S2) |
+| Proximity queries (radius) | ✅ Index-accelerated via geof:distance bind+filter |
 | Time travel | ✅ Support via `from: "<ledger>@t:<t>"` |
 | k-NN queries (nearest K) | ✅ Via ORDER BY distance + LIMIT |
 | `within` spatial predicate | ✅ Via JSON-LD `idx:spatial` |
@@ -912,10 +906,16 @@ Invalid coordinates are stored as strings and won't benefit from native GeoPoint
 { "@value": "POINT(2.35 48.86)" }
 ```
 
-**Check the predicate.** The `idx:property` must match exactly:
+**Check the predicate.** The property in the triple pattern must match the data exactly:
 ```json
-// If data uses ex:location, query must use ex:location
-"idx:property": "ex:location"    // Correct
+// If data uses ex:location, the triple must use ex:location
+{ "@id": "?place", "ex:location": "?loc" }    // Correct
+{ "@id": "?place", "ex:geo": "?loc" }         // Wrong - different predicate
+```
+
+For S2 spatial queries, `idx:property` must also match:
+```json
+"idx:property": "ex:boundary"    // Correct
 "idx:property": "ex:geo"         // Wrong - different predicate
 ```
 
@@ -931,9 +931,9 @@ Polygons crossing the antimeridian (±180° longitude) generate many S2 cells. C
 - Splitting the polygon at the antimeridian
 - Using a simpler bounding region for initial filtering
 
-### SPARQL spatial queries not accelerated
+### SPARQL spatial predicates not accelerated
 
-In v1, SPARQL `geof:*` functions (like `geof:sfWithin`) evaluate as filters, not index operators. For accelerated spatial queries, use the JSON-LD `idx:spatial` pattern instead.
+In v1, SPARQL `geof:*` spatial predicates (like `geof:sfWithin`) evaluate as filters, not index operators. For accelerated spatial queries on complex geometries, use the JSON-LD `idx:spatial` pattern instead. Note: `geof:distance` bind+filter patterns **are** automatically accelerated in both SPARQL and JSON-LD.
 
 ## Related Documentation
 

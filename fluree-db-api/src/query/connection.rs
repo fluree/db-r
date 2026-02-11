@@ -12,7 +12,7 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + Clone + Send + Sync + 'static,
 {
-    /// Execute an FQL/JSON-LD query via connection (Clojure parity: query-connection).
+    /// Execute a JSON-LD query via connection (Clojure parity: query-connection).
     ///
     /// This is the unified entry point for connection queries. It:
     /// 1. Parses dataset spec and options from query JSON
@@ -166,7 +166,7 @@ where
         self.query_connection_jsonld_tracked(query_json).await
     }
 
-    /// Execute an FQL/JSON-LD query via connection with explicit policy context.
+    /// Execute a JSON-LD query via connection with explicit policy context.
     ///
     /// Uses FlureeView API for single-ledger, FlureeDataSetView for multi-ledger.
     pub(crate) async fn query_connection_with_policy(

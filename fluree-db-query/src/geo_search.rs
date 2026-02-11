@@ -45,7 +45,7 @@ pub struct GeoSearchOperator {
     out_pos: HashMap<VarId, usize>,
     /// Well-known datatypes for binding construction
     datatypes: WellKnownDatatypes,
-    /// Predicate ID for the `idx:geo` predicate in binary index space.
+    /// Predicate ID for the geo-indexed predicate in binary index space.
     ///
     /// When an overlay is present, this may be an ephemeral predicate ID assigned
     /// by `DictOverlay`.

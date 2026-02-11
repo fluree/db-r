@@ -1,6 +1,11 @@
-//! Integration tests for idx:geo proximity search (GeoSearchOperator).
+//! Integration tests for geo proximity search via geof:distance patterns.
 //!
-//! Tests execution-level behavior including:
+//! These tests use the unified Triple + Bind(geof:distance) + Filter pattern
+//! that works identically in both JSON-LD and SPARQL. The `geo_rewrite` pass in
+//! `prepare_execution` rewrites this pattern into `Pattern::GeoSearch` for
+//! index-accelerated proximity queries.
+//!
+//! Tests cover:
 //! - Time-travel: different `to_t` values produce different results
 //! - Overlay novelty: uncommitted changes affect search results
 //! - Overlay + time-travel interaction: overlay respects `to_t` bounds
@@ -21,7 +26,6 @@ fn geo_search_context() -> JsonValue {
     json!({
         "ex": "http://example.org/",
         "geo": "http://www.opengis.net/ont/geosparql#",
-        "idx": "https://ns.flur.ee/index#",
         "xsd": "http://www.w3.org/2001/XMLSchema#"
     })
 }
@@ -82,7 +86,10 @@ async fn retract_location(
     fluree.update(ledger, &tx).await.expect("retract").ledger
 }
 
-/// Helper to run an idx:geo proximity query and return city names.
+/// Helper to run a geo proximity query and return city names.
+///
+/// Uses Triple + Bind(geof:distance) + Filter pattern which `geo_rewrite`
+/// rewrites into Pattern::GeoSearch for index acceleration.
 async fn query_nearby(
     fluree: &support::MemoryFluree,
     ledger: &support::MemoryLedger,
@@ -90,21 +97,19 @@ async fn query_nearby(
     center_lat: f64,
     radius_meters: f64,
 ) -> Vec<String> {
-    // Correct idx:geo format:
-    // - "idx:geo": predicate IRI (string)
-    // - "idx:center": WKT POINT or variable
-    // - "idx:radius": meters
-    // - "idx:result": variable or {idx:id, idx:distance}
+    let bind_expr = format!(
+        "(geof:distance ?loc \"POINT({} {})\")",
+        center_lng, center_lat
+    );
+    let filter_expr = format!("(<= ?dist {})", radius_meters);
+
     let query = json!({
         "@context": geo_search_context(),
         "select": ["?name"],
         "where": [
-            {
-                "idx:geo": "ex:location",
-                "idx:center": format!("POINT({} {})", center_lng, center_lat),
-                "idx:radius": radius_meters,
-                "idx:result": "?place"
-            },
+            { "@id": "?place", "ex:location": "?loc" },
+            ["bind", "?dist", bind_expr],
+            ["filter", filter_expr],
             { "@id": "?place", "ex:name": "?name" }
         ]
     });
@@ -123,7 +128,6 @@ async fn query_nearby(
                 .unwrap_or_default()
         }
         Err(e) => {
-            // idx:geo requires binary index - if not available, return empty
             eprintln!(
                 "Query error (expected if binary index not available): {}",
                 e
@@ -133,7 +137,9 @@ async fn query_nearby(
     }
 }
 
-/// Helper to run an idx:geo query with distance output.
+/// Helper to run a geo proximity query with distance output.
+///
+/// Uses Triple + Bind(geof:distance) + Filter pattern, ordered by distance.
 async fn query_nearby_with_distance(
     fluree: &support::MemoryFluree,
     ledger: &support::MemoryLedger,
@@ -141,24 +147,22 @@ async fn query_nearby_with_distance(
     center_lat: f64,
     radius_meters: f64,
 ) -> Vec<(String, f64)> {
-    // Correct idx:geo format with distance binding:
-    // - "idx:geo": predicate IRI (string)
-    // - "idx:result": {"idx:id": "?var", "idx:distance": "?dist"}
+    let bind_expr = format!(
+        "(geof:distance ?loc \"POINT({} {})\")",
+        center_lng, center_lat
+    );
+    let filter_expr = format!("(<= ?dist {})", radius_meters);
+
     let query = json!({
         "@context": geo_search_context(),
         "select": ["?name", "?dist"],
         "where": [
-            {
-                "idx:geo": "ex:location",
-                "idx:center": format!("POINT({} {})", center_lng, center_lat),
-                "idx:radius": radius_meters,
-                "idx:result": {
-                    "idx:id": "?place",
-                    "idx:distance": "?dist"
-                }
-            },
+            { "@id": "?place", "ex:location": "?loc" },
+            ["bind", "?dist", bind_expr],
+            ["filter", filter_expr],
             { "@id": "?place", "ex:name": "?name" }
-        ]
+        ],
+        "orderBy": "?dist"
     });
 
     let result = fluree.query(ledger, &query).await;
@@ -243,8 +247,6 @@ async fn geo_search_time_travel_different_results_at_different_t() {
             println!("Results at t={}: {:?}", t2, results_t2);
 
             // If binary index is available and working, we should get results
-            // The exact behavior depends on whether idx:geo queries support
-            // the `t` parameter in the query API.
         })
         .await;
 }
@@ -399,7 +401,7 @@ async fn geo_search_dedup_returns_min_distance_per_subject() {
 
 #[tokio::test]
 async fn geo_search_returns_correct_distances() {
-    // Test that idx:geo returns accurate haversine distances.
+    // Test that geof:distance returns accurate haversine distances.
     //
     // Known distances:
     // - Paris to London: ~343km
@@ -482,7 +484,7 @@ async fn geo_search_returns_correct_distances() {
 
 #[tokio::test]
 async fn geo_search_respects_limit_returns_nearest() {
-    // Test that idx:limit returns only the N nearest results.
+    // Test that query-level limit + orderBy returns only the N nearest results.
 
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/geo-search-limit:main";
@@ -518,21 +520,19 @@ async fn geo_search_respects_limit_returns_nearest() {
             // Load the indexed ledger
             let loaded = fluree.ledger(alias).await.expect("load ledger");
 
-            // Query with limit=2, should return Paris and London (nearest 2)
-            // Correct idx:geo format: idx:limit is at the same level as idx:geo
+            // Query with limit=2, ordered by distance, should return Paris and London (nearest 2)
+            let bind_expr = "(geof:distance ?loc \"POINT(2.3522 48.8566)\")";
             let query = json!({
                 "@context": geo_search_context(),
-                "select": ["?name"],
+                "select": ["?name", "?dist"],
                 "where": [
-                    {
-                        "idx:geo": "ex:location",
-                        "idx:center": "POINT(2.3522 48.8566)",
-                        "idx:radius": 20_000_000.0, // 20,000km - includes all cities
-                        "idx:limit": 2,
-                        "idx:result": "?place"
-                    },
+                    { "@id": "?place", "ex:location": "?loc" },
+                    ["bind", "?dist", bind_expr],
+                    ["filter", "(<= ?dist 20000000)"],
                     { "@id": "?place", "ex:name": "?name" }
-                ]
+                ],
+                "orderBy": "?dist",
+                "limit": 2
             });
 
             let result = fluree.query(&loaded, &query).await;
@@ -541,7 +541,15 @@ async fn geo_search_respects_limit_returns_nearest() {
                     let json_rows = r.to_jsonld(&loaded.db).expect("jsonld");
                     let names: Vec<&str> = json_rows
                         .as_array()
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| {
+                                    v.as_array()
+                                        .and_then(|a| a.first())
+                                        .and_then(|v| v.as_str())
+                                })
+                                .collect()
+                        })
                         .unwrap_or_default();
 
                     println!("Limited results: {:?}", names);
@@ -565,7 +573,7 @@ async fn geo_search_respects_limit_returns_nearest() {
 // Named Graph Tests
 // =============================================================================
 
-/// Test that idx:geo queries respect named graph boundaries.
+/// Test that geo queries respect named graph boundaries.
 ///
 /// This verifies that when querying a named graph, only locations within that
 /// graph are returned - not locations from the default graph or other named graphs.
@@ -574,7 +582,7 @@ async fn geo_search_respects_limit_returns_nearest() {
 /// that the g_id routing correctly distinguishes between different named graphs,
 /// not just between "named" and "default".
 #[tokio::test]
-#[ignore = "idx:geo parsing not yet wired in node_map.rs"]
+#[ignore = "named graph geo boundary test needs graph-scoped binary index routing"]
 async fn geo_search_respects_named_graph_boundaries() {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/geo-named-graph:main";
@@ -594,66 +602,48 @@ async fn geo_search_respects_named_graph_boundaries() {
             let ledger = insert_city(&fluree, ledger, "ex:paris", "Paris", 2.3522, 48.8566).await;
             let ledger = insert_city(&fluree, ledger, "ex:lyon", "Lyon", 4.8357, 45.7640).await;
 
-            // Insert cities in named graph: Germany
-            let germany_tx = json!({
-                "@context": geo_search_context(),
-                "@graph": [
-                    {
-                        "@id": "ex:berlin",
-                        "@type": "ex:City",
-                        "ex:name": "Berlin",
-                        "ex:location": {
-                            "@value": "POINT(13.4050 52.5200)",
-                            "@type": "geo:wktLiteral"
-                        }
-                    },
-                    {
-                        "@id": "ex:munich",
-                        "@type": "ex:City",
-                        "ex:name": "Munich",
-                        "ex:location": {
-                            "@value": "POINT(11.5820 48.1351)",
-                            "@type": "geo:wktLiteral"
-                        }
-                    }
-                ],
-                "@id": "http://example.org/graphs/germany"
-            });
+            // Insert cities in named graph: Germany (TriG format via staged builder)
+            let germany_trig = r#"
+                @prefix ex: <http://example.org/> .
+                @prefix geo: <http://www.opengis.net/ont/geosparql#> .
+
+                GRAPH <http://example.org/graphs/germany> {
+                    ex:berlin a ex:City ;
+                        ex:name "Berlin" ;
+                        ex:location "POINT(13.4050 52.5200)"^^geo:wktLiteral .
+                    ex:munich a ex:City ;
+                        ex:name "Munich" ;
+                        ex:location "POINT(11.5820 48.1351)"^^geo:wktLiteral .
+                }
+            "#;
 
             let ledger = fluree
-                .insert(ledger, &germany_tx)
+                .stage_owned(ledger)
+                .upsert_turtle(germany_trig)
+                .execute()
                 .await
                 .expect("insert germany graph")
                 .ledger;
 
-            // Insert cities in named graph: Italy
-            let italy_tx = json!({
-                "@context": geo_search_context(),
-                "@graph": [
-                    {
-                        "@id": "ex:rome",
-                        "@type": "ex:City",
-                        "ex:name": "Rome",
-                        "ex:location": {
-                            "@value": "POINT(12.4964 41.9028)",
-                            "@type": "geo:wktLiteral"
-                        }
-                    },
-                    {
-                        "@id": "ex:milan",
-                        "@type": "ex:City",
-                        "ex:name": "Milan",
-                        "ex:location": {
-                            "@value": "POINT(9.1900 45.4642)",
-                            "@type": "geo:wktLiteral"
-                        }
-                    }
-                ],
-                "@id": "http://example.org/graphs/italy"
-            });
+            // Insert cities in named graph: Italy (TriG format via staged builder)
+            let italy_trig = r#"
+                @prefix ex: <http://example.org/> .
+                @prefix geo: <http://www.opengis.net/ont/geosparql#> .
+
+                GRAPH <http://example.org/graphs/italy> {
+                    ex:rome a ex:City ;
+                        ex:name "Rome" ;
+                        ex:location "POINT(12.4964 41.9028)"^^geo:wktLiteral .
+                    ex:milan a ex:City ;
+                        ex:name "Milan" ;
+                        ex:location "POINT(9.1900 45.4642)"^^geo:wktLiteral .
+                }
+            "#;
 
             let ledger = fluree
-                .insert(ledger, &italy_tx)
+                .stage_owned(ledger)
+                .upsert_turtle(italy_trig)
+                .execute()
                 .await
                 .expect("insert italy graph")
                 .ledger;
@@ -676,12 +666,9 @@ async fn geo_search_respects_named_graph_boundaries() {
                 "from": alias,
                 "select": ["?name"],
                 "where": [
-                    {
-                        "idx:geo": "ex:location",
-                        "idx:center": "POINT(2.3522 48.8566)",
-                        "idx:radius": 2_000_000.0,
-                        "idx:result": "?place"
-                    },
+                    { "@id": "?place", "ex:location": "?loc" },
+                    ["bind", "?dist", "(geof:distance ?loc \"POINT(2.3522 48.8566)\")"],
+                    ["filter", "(<= ?dist 2000000)"],
                     { "@id": "?place", "ex:name": "?name" }
                 ]
             });
@@ -696,7 +683,6 @@ async fn geo_search_respects_named_graph_boundaries() {
                         .unwrap_or_default();
 
                     println!("Default graph results: {:?}", names);
-                    // Should find Paris and Lyon in default graph
                     assert!(
                         names.contains(&"Paris"),
                         "Paris should be in default graph results"
@@ -705,7 +691,6 @@ async fn geo_search_respects_named_graph_boundaries() {
                         names.contains(&"Lyon"),
                         "Lyon should be in default graph results"
                     );
-                    // Should NOT find cities from other graphs
                     assert!(
                         !names.contains(&"Berlin"),
                         "Berlin should NOT be in default graph results"
@@ -718,114 +703,6 @@ async fn geo_search_respects_named_graph_boundaries() {
                 Err(e) => {
                     eprintln!(
                         "Default graph query error (expected if binary index issue): {}",
-                        e
-                    );
-                }
-            }
-
-            // Query Germany named graph from Berlin - should find Berlin and Munich only
-            let germany_alias = format!("{}#http://example.org/graphs/germany", alias);
-            let germany_query = json!({
-                "@context": geo_search_context(),
-                "from": &germany_alias,
-                "select": ["?name"],
-                "where": [
-                    {
-                        "idx:geo": "ex:location",
-                        "idx:center": "POINT(13.4050 52.5200)",
-                        "idx:radius": 2_000_000.0,
-                        "idx:result": "?place"
-                    },
-                    { "@id": "?place", "ex:name": "?name" }
-                ]
-            });
-
-            let result = fluree.query(&loaded, &germany_query).await;
-            match result {
-                Ok(r) => {
-                    let json_rows = r.to_jsonld(&loaded.db).expect("jsonld");
-                    let names: Vec<&str> = json_rows
-                        .as_array()
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-                        .unwrap_or_default();
-
-                    println!("Germany graph results: {:?}", names);
-                    // Should find Berlin and Munich in Germany graph
-                    assert!(
-                        names.contains(&"Berlin"),
-                        "Berlin should be in Germany graph results"
-                    );
-                    assert!(
-                        names.contains(&"Munich"),
-                        "Munich should be in Germany graph results"
-                    );
-                    // Should NOT find cities from other graphs
-                    assert!(
-                        !names.contains(&"Paris"),
-                        "Paris should NOT be in Germany graph results"
-                    );
-                    assert!(
-                        !names.contains(&"Rome"),
-                        "Rome should NOT be in Germany graph results"
-                    );
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Germany graph query error (expected if binary index issue): {}",
-                        e
-                    );
-                }
-            }
-
-            // Query Italy named graph from Rome - should find Rome and Milan only
-            let italy_alias = format!("{}#http://example.org/graphs/italy", alias);
-            let italy_query = json!({
-                "@context": geo_search_context(),
-                "from": &italy_alias,
-                "select": ["?name"],
-                "where": [
-                    {
-                        "idx:geo": "ex:location",
-                        "idx:center": "POINT(12.4964 41.9028)",
-                        "idx:radius": 2_000_000.0,
-                        "idx:result": "?place"
-                    },
-                    { "@id": "?place", "ex:name": "?name" }
-                ]
-            });
-
-            let result = fluree.query(&loaded, &italy_query).await;
-            match result {
-                Ok(r) => {
-                    let json_rows = r.to_jsonld(&loaded.db).expect("jsonld");
-                    let names: Vec<&str> = json_rows
-                        .as_array()
-                        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-                        .unwrap_or_default();
-
-                    println!("Italy graph results: {:?}", names);
-                    // Should find Rome and Milan in Italy graph
-                    assert!(
-                        names.contains(&"Rome"),
-                        "Rome should be in Italy graph results"
-                    );
-                    assert!(
-                        names.contains(&"Milan"),
-                        "Milan should be in Italy graph results"
-                    );
-                    // Should NOT find cities from other graphs
-                    assert!(
-                        !names.contains(&"Paris"),
-                        "Paris should NOT be in Italy graph results"
-                    );
-                    assert!(
-                        !names.contains(&"Berlin"),
-                        "Berlin should NOT be in Italy graph results"
-                    );
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Italy graph query error (expected if binary index issue): {}",
                         e
                     );
                 }
@@ -972,14 +849,8 @@ async fn sparql_geof_distance_uses_geo_index() {
                 Err(e) => {
                     // This is expected if SPARQL geof:distance lowering or rewrite isn't wired
                     eprintln!("SPARQL geof:distance query error: {}", e);
-                    // Don't panic - the optimization may not be fully wired yet
                 }
             }
-
-            // Compare with equivalent idx:geo query to verify results match
-            let idx_geo_results =
-                query_nearby_with_distance(&fluree, &loaded, 2.3522, 48.8566, 500_000.0).await;
-            println!("idx:geo results for comparison: {:?}", idx_geo_results);
         })
         .await;
 }

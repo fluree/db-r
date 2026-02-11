@@ -12,7 +12,7 @@ pub enum DataFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryFormat {
     Sparql,
-    Fql,
+    JsonLd,
 }
 
 /// Detect data format from file extension and content.
@@ -66,13 +66,13 @@ pub fn detect_query_format(
     path: Option<&Path>,
     content: &str,
     sparql_flag: bool,
-    fql_flag: bool,
+    jsonld_flag: bool,
 ) -> CliResult<QueryFormat> {
     if sparql_flag {
         return Ok(QueryFormat::Sparql);
     }
-    if fql_flag {
-        return Ok(QueryFormat::Fql);
+    if jsonld_flag {
+        return Ok(QueryFormat::JsonLd);
     }
 
     // File extension
@@ -80,7 +80,7 @@ pub fn detect_query_format(
         if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
             return match ext.to_lowercase().as_str() {
                 "rq" | "sparql" => Ok(QueryFormat::Sparql),
-                "json" | "jsonld" => Ok(QueryFormat::Fql),
+                "json" | "jsonld" => Ok(QueryFormat::JsonLd),
                 _ => sniff_query_format(content),
             };
         }
@@ -101,13 +101,13 @@ fn sniff_query_format(content: &str) -> CliResult<QueryFormat> {
         }
     }
 
-    // Valid JSON → FQL (parse to confirm, not just first-char check)
+    // Valid JSON → JSON-LD query (parse to confirm, not just first-char check)
     if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-        return Ok(QueryFormat::Fql);
+        return Ok(QueryFormat::JsonLd);
     }
 
     Err(CliError::Usage(format!(
-        "could not detect query format\n  {} use --sparql or --fql to specify",
+        "could not detect query format\n  {} use --sparql or --jsonld to specify",
         colored::Colorize::bold(colored::Colorize::cyan("help:"))
     )))
 }

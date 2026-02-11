@@ -104,7 +104,7 @@ pub struct ExtractedCredential {
 /// The unwrapped credential payload
 #[derive(Debug, Clone)]
 pub enum CredentialPayload {
-    /// JSON payload (FQL queries, transactions)
+    /// JSON payload (JSON-LD queries, transactions)
     Json(JsonValue),
     /// Raw string payload (SPARQL queries)
     Sparql(String),
@@ -149,7 +149,7 @@ impl MaybeCredential {
         self.credential.is_some()
     }
 
-    /// Get the body as JSON (for FQL queries/transactions)
+    /// Get the body as JSON (for JSON-LD queries/transactions)
     pub fn body_json(&self) -> Result<JsonValue> {
         serde_json::from_slice(&self.body).map_err(ServerError::from)
     }

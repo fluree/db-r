@@ -1,4 +1,4 @@
-//! Unresolved AST types for JSON FQL query parsing
+//! Unresolved AST types for JSON-LD query parsing
 //!
 //! These types represent the parsed query before IRI resolution.
 //! They use `Arc<str>` for efficient string handling and deduplication.

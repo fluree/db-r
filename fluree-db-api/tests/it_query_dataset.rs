@@ -510,7 +510,7 @@ async fn dataset_named_graph_basic() {
 }
 
 // =============================================================================
-// FQL "from" parsing tests
+// JSON-LD "from" parsing tests
 // =============================================================================
 
 #[tokio::test]
@@ -991,10 +991,10 @@ async fn sparql_graph_pattern_default_vs_named() {
 }
 
 // =============================================================================
-// FQL GRAPH Pattern Tests
+// JSON-LD GRAPH Pattern Tests
 // =============================================================================
 
-/// Test FQL ["graph", ...] syntax parsing
+/// Test JSON-LD ["graph", ...] syntax parsing
 #[tokio::test]
 async fn fql_graph_pattern_basic() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -1018,7 +1018,7 @@ async fn fql_graph_pattern_basic() {
         .with_named(GraphSource::new("people:main"));
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
-    // Query using FQL ["graph", "name", {...}] syntax
+    // Query using JSON-LD ["graph", "name", {...}] syntax
     let query = json!({
         "@context": {"schema": "http://schema.org/"},
         "select": ["?name"],
@@ -1042,7 +1042,7 @@ async fn fql_graph_pattern_basic() {
     );
 }
 
-/// Test FQL ["graph", <alias>, ...] syntax - graph pattern using dataset-local alias
+/// Test JSON-LD ["graph", <alias>, ...] syntax - graph pattern using dataset-local alias
 ///
 /// When `from-named` specifies an alias (e.g., "alias": "folks"), the GRAPH pattern
 /// should be able to reference by that alias, not just by the ledger identifier.
@@ -1060,7 +1060,7 @@ async fn fql_graph_pattern_with_alias() {
         .with_named(GraphSource::new("people:main").with_alias("folks"));
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
-    // Query using FQL ["graph", <alias>, {...}] syntax with the alias "folks"
+    // Query using JSON-LD ["graph", <alias>, {...}] syntax with the alias "folks"
     let query = json!({
         "@context": {"schema": "http://schema.org/"},
         "select": ["?name"],

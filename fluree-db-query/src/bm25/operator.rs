@@ -2,10 +2,10 @@
 //!
 //! This operator executes BM25 full-text search against a loaded BM25 graph source index
 //! and emits bindings for:
-//! - idx:id      -> `Binding::IriMatch` (canonical IRI with ledger provenance for cross-ledger joins)
+//! - f:resultId      -> `Binding::IriMatch` (canonical IRI with ledger provenance for cross-ledger joins)
 //!   or `Binding::Iri` (if IRI cannot be encoded to SID)
-//! - idx:score   -> `Binding::Lit` (xsd:double)
-//! - idx:ledger  -> `Binding::Lit` (xsd:string; ledger alias) [optional]
+//! - f:resultScore   -> `Binding::Lit` (xsd:double)
+//! - f:resultLedger  -> `Binding::Lit` (xsd:string; ledger alias) [optional]
 //!
 //! # Multi-Ledger Support
 //!
@@ -253,7 +253,7 @@ impl Bm25SearchOperator {
                     }
                 }
                 Some(Binding::Sid(sid)) => {
-                    // If user bound idx:target to an IRI, treat its decoded IRI as the search string.
+                    // If user bound f:searchText to an IRI, treat its decoded IRI as the search string.
                     // (Not typical, but keeps query robust.)
                     Ok(ctx.decode_sid(sid))
                 }

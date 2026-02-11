@@ -1654,7 +1654,7 @@ async fn main() -> Result<()> {
 
 | Method | Description |
 |--------|-------------|
-| `.jsonld(&query)` | Set JSON-LD/FQL query input |
+| `.jsonld(&query)` | Set JSON-LD query input |
 | `.sparql(query)` | Set SPARQL query input |
 | `.format(config)` | Override output format |
 | `.execute_formatted()` | Execute and return formatted JSON |

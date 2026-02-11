@@ -713,18 +713,14 @@ impl VectorSearchPattern {
 /// of a center point. Uses the latitude-primary encoding for efficient
 /// latitude-band scans, then applies haversine post-filter for exact distance.
 ///
-/// # Example Query Pattern
+/// # Source Patterns
+///
+/// Created by `geo_rewrite` from Triple + Bind(geof:distance) + Filter patterns:
 ///
 /// ```json
-/// {
-///   "idx:geo": "ex:location",
-///   "idx:center": "POINT(2.3522 48.8566)",
-///   "idx:radius": 500000,
-///   "idx:result": {
-///     "idx:id": "?place",
-///     "idx:distance": "?dist"
-///   }
-/// }
+/// { "@id": "?place", "ex:location": "?loc" },
+/// ["bind", "?dist", "(geof:distance ?loc \"POINT(2.3522 48.8566)\")"],
+/// ["filter", "(<= ?dist 500000)"]
 /// ```
 #[derive(Debug, Clone)]
 pub struct GeoSearchPattern {
@@ -825,7 +821,7 @@ impl GeoSearchPattern {
 /// # Example (within query)
 ///
 /// ```sparql
-/// ?building idx:within "POLYGON((...))".
+/// ?building geo:sfWithin "POLYGON((...))".
 /// ```
 #[derive(Debug, Clone)]
 pub struct S2SearchPattern {

@@ -1,6 +1,6 @@
 //! S-expression filter parsing
 //!
-//! Parses Clojure-style S-expression filter syntax used in FQL queries.
+//! Parses Clojure-style S-expression filter syntax used in JSON-LD queries.
 //!
 //! # Syntax
 //!

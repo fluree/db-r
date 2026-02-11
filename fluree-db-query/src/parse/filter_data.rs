@@ -1,6 +1,6 @@
 //! Data expression (JSON array) filter parsing
 //!
-//! Parses JSON array-based filter expressions used in FQL queries.
+//! Parses JSON array-based filter expressions used in JSON-LD queries.
 //!
 //! # Syntax
 //!

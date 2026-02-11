@@ -1,6 +1,6 @@
 //! WHERE clause parsing
 //!
-//! Parses FQL WHERE clause patterns in both node-map and array formats.
+//! Parses JSON-LD WHERE clause patterns in both node-map and array formats.
 //!
 //! # Syntax
 //!

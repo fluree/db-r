@@ -181,7 +181,7 @@ where
 
     // --- Shared setters (delegated to QueryCore) ---
 
-    /// Set the query input as JSON-LD/FQL.
+    /// Set the query input as JSON-LD.
     pub fn jsonld(mut self, json: &'a JsonValue) -> Self {
         self.core.set_jsonld(json);
         self
@@ -336,7 +336,7 @@ where
 
     // --- Shared setters ---
 
-    /// Set the query input as JSON-LD/FQL.
+    /// Set the query input as JSON-LD.
     pub fn jsonld(mut self, json: &'a JsonValue) -> Self {
         self.core.set_jsonld(json);
         self
@@ -495,7 +495,7 @@ where
 
     // --- Shared setters ---
 
-    /// Set the query input as JSON-LD/FQL.
+    /// Set the query input as JSON-LD.
     pub fn jsonld(mut self, json: &'a JsonValue) -> Self {
         self.core.set_jsonld(json);
         self

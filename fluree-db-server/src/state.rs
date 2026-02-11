@@ -124,7 +124,7 @@ impl FlureeInstance {
         }
     }
 
-    /// Execute a JSON-LD/FQL query against a connection (dataset specified via from/to keys)
+    /// Execute a JSON-LD query against a connection (dataset specified via from/to keys)
     ///
     /// This is the connection-scoped query path that properly handles:
     /// - History queries (from + to keys)
@@ -140,7 +140,7 @@ impl FlureeInstance {
         }
     }
 
-    /// Execute a tracked JSON-LD/FQL query against a connection.
+    /// Execute a tracked JSON-LD query against a connection.
     ///
     /// Returns a tracked response body (status/result/time/fuel/policy) that callers can
     /// forward directly, and optionally translate to tracking headers for Clojure parity.

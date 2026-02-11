@@ -3,8 +3,8 @@
 //! Detects: Triple(?s, pred, ?loc) → Bind(?dist = geof:distance(?loc, WKT)) → Filter(?dist < radius)
 //! Emits: Pattern::GeoSearch with index acceleration
 //!
-//! This optimization enables SPARQL queries using `geof:distance` to use the same
-//! accelerated GeoPoint index path as JSON-LD `idx:geo` queries.
+//! This optimization runs for both SPARQL and JSON-LD queries, enabling `geof:distance`
+//! patterns to use the accelerated GeoPoint binary index path.
 
 use crate::ir::{Expression, FilterValue, Function, GeoSearchCenter, GeoSearchPattern, Pattern};
 use crate::pattern::{Term, TriplePattern};

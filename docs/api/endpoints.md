@@ -1695,7 +1695,7 @@ This section summarizes the contract that third-party server implementations (e.
 | Endpoint | CLI commands |
 |----------|-------------|
 | `GET /info/{ledger}` | `info`, `push`, `pull`, `clone` |
-| `POST /query/{ledger}` | `query` (FQL and SPARQL) |
+| `POST /query/{ledger}` | `query` (JSON-LD and SPARQL) |
 | `POST /insert/{ledger}` | `insert` |
 | `POST /upsert/{ledger}` | `upsert` |
 | `GET /exists/{ledger}` | `clone` (pre-create check) |

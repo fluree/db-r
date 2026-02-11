@@ -21,7 +21,7 @@ where
 {
     /// Execute a query against a loaded dataset with BM25 and vector index provider support.
     ///
-    /// This enables both `idx:search` (BM25) and `idx:vector` (similarity search) patterns
+    /// This enables both `f:searchText` (BM25) and `f:queryVector` (similarity search) patterns
     /// in queries against graph sources.
     pub async fn query_dataset_with_bm25(
         &self,
@@ -50,7 +50,7 @@ where
         // Execute with dataset and BM25 provider.
         //
         // Vector provider support is feature-gated. When disabled,
-        // idx:vector patterns are not available and we run the BM25-only path.
+        // f:queryVector patterns are not available and we run the BM25-only path.
         let tracker = tracker_for_limits(query_json);
         let source = DataSource::new(primary.db.as_ref(), primary.overlay.as_ref(), primary_t);
         let tracker_ref = if tracker.is_enabled() {
@@ -110,7 +110,7 @@ where
 
     /// Execute a connection query with index provider support (BM25 + Vector).
     ///
-    /// This method enables both `idx:search` (BM25 full-text search) and `idx:vector`
+    /// This method enables both `f:searchText` (BM25 full-text search) and `f:queryVector`
     /// (similarity search) patterns in queries. Despite the name, it supports all
     /// graph source index types.
     ///
@@ -126,7 +126,7 @@ where
         }
 
         // NOTE: Unlike query_connection(), we do NOT take the single-ledger fast path here.
-        // BM25 queries with idx:* patterns require the full dataset execution path with
+        // BM25 queries with f:searchText patterns require the full dataset execution path with
         // FlureeIndexProvider wired into the execution context. Always use dataset path.
 
         let dataset = if qc_opts.has_any_policy_inputs() {

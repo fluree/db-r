@@ -344,7 +344,7 @@ impl Operator for S2SearchOperator {
                     tracing::debug!(
                         selected_key = %first_key,
                         available_count = sorted.len(),
-                        "S2Search: no idx:property specified, using first provider alphabetically"
+                        "S2Search: no property specified, using first provider alphabetically"
                     );
                     providers.get(first_key).unwrap().as_ref()
                 }
