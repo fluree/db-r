@@ -24,7 +24,7 @@ pub type MemoryFluree =
     fluree_db_api::Fluree<MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>;
 
 /// Type alias for memory-backed ledger state.
-pub type MemoryLedger = LedgerState<MemoryStorage>;
+pub type MemoryLedger = LedgerState;
 
 // =============================================================================
 // Context helpers
@@ -40,7 +40,7 @@ pub fn default_context() -> JsonValue {
         "schema": "http://schema.org/",
         "skos": "http://www.w3.org/2008/05/skos#",
         "wiki": "https://www.wikidata.org/wiki/",
-        "f": "https://ns.flur.ee/ledger#"
+        "f": "https://ns.flur.ee/db#"
     })
 }
 
@@ -48,13 +48,93 @@ pub fn default_context() -> JsonValue {
 // Ledger helpers
 // =============================================================================
 
-/// Create a genesis ledger state for the given alias.
+/// Create a genesis ledger state for the given ledger ID.
 ///
 /// This is the Rust equivalent of `(fluree/create conn "ledger")` prior to the first commit:
 /// the nameservice has no record yet, and `commit()` will create one via `publish_commit()`.
-pub fn genesis_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let db = Db::genesis(fluree.storage().clone(), alias);
+pub fn genesis_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    genesis_ledger_for_fluree(fluree, ledger_id)
+}
+
+/// Generic version of `genesis_ledger` for any `Fluree` storage backend.
+///
+/// The ledger ID is normalized to canonical `name:branch` form (e.g., `"mydb"` → `"mydb:main"`)
+/// so that the `Db.ledger_id` matches the canonical form used by the nameservice and
+/// content-addressed storage paths.
+pub fn genesis_ledger_for_fluree<S, N>(
+    _fluree: &fluree_db_api::Fluree<S, N>,
+    ledger_id: &str,
+) -> LedgerState
+where
+    S: fluree_db_core::Storage + Clone,
+    N: fluree_db_api::NameService,
+{
+    let canonical = fluree_db_core::ledger_id::normalize_ledger_id(ledger_id)
+        .unwrap_or_else(|_| ledger_id.to_string());
+    let db = Db::genesis(&canonical);
     LedgerState::new(db, Novelty::new(0))
+}
+
+// =============================================================================
+// Common seeding helpers
+// =============================================================================
+
+/// Seed a ledger with a user that has a sensitive `schema:ssn` property.
+///
+/// Uses the default graph and returns the updated ledger.
+pub async fn seed_user_with_ssn(
+    fluree: &MemoryFluree,
+    ledger_id: &str,
+    user_id: &str,
+    ssn: &str,
+) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let txn = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [
+            {
+                "@id": user_id,
+                "@type": "ex:User",
+                "schema:name": "Alice",
+                "schema:ssn": ssn,
+                "ex:age": 25
+            }
+        ]
+    });
+
+    fluree.insert(ledger0, &txn).await.expect("seed").ledger
+}
+
+// =============================================================================
+// Indexing helpers (native tests)
+// =============================================================================
+
+/// Trigger background indexing for `ledger_id` at `t` and wait for completion.
+#[cfg(feature = "native")]
+pub async fn trigger_index_and_wait(
+    handle: &fluree_db_indexer::IndexerHandle,
+    ledger_id: &str,
+    t: i64,
+) {
+    let _ = trigger_index_and_wait_outcome(handle, ledger_id, t).await;
+}
+
+/// Trigger background indexing for `ledger_id` at `t` and return the completion outcome.
+#[cfg(feature = "native")]
+pub async fn trigger_index_and_wait_outcome(
+    handle: &fluree_db_indexer::IndexerHandle,
+    ledger_id: &str,
+    t: i64,
+) -> fluree_db_api::IndexOutcome {
+    let completion = handle.trigger(ledger_id, t).await;
+    match completion.wait().await {
+        ok @ fluree_db_api::IndexOutcome::Completed { .. } => ok,
+        fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
+        fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+    }
 }
 
 // =============================================================================
@@ -66,7 +146,7 @@ pub fn genesis_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
 /// This is the Rust equivalent of Clojure tests that pass an `index-files-ch` to `commit!`
 /// and then block until indexing completes. In Rust, tests should:
 /// - transact (get `receipt.t`)
-/// - `handle.trigger(alias, receipt.t)`
+/// - `handle.trigger(ledger_id, receipt.t)`
 /// - `completion.wait().await`
 #[cfg(feature = "native")]
 pub fn start_background_indexer_local<S, N>(
@@ -166,6 +246,17 @@ pub fn normalize_sparql_bindings(v: &JsonValue) -> Vec<JsonValue> {
     out
 }
 
+/// Normalize single-variable results (flat array) for comparison.
+pub fn normalize_flat_results(v: &JsonValue) -> Vec<JsonValue> {
+    let mut items: Vec<JsonValue> = v.as_array().expect("expected JSON array").to_vec();
+    items.sort_by(|a, b| {
+        serde_json::to_string(a)
+            .unwrap_or_default()
+            .cmp(&serde_json::to_string(b).unwrap_or_default())
+    });
+    items
+}
+
 // =============================================================================
 // Common @context helpers
 // =============================================================================
@@ -234,10 +325,127 @@ pub fn people_data() -> JsonValue {
     ])
 }
 
+/// Seed the "people" dataset used by JSON-LD filter/optional/union tests.
+pub async fn seed_people_filter_dataset(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let ctx = context_ex_schema();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {
+                "@id": "ex:brian",
+                "@type": "ex:User",
+                "schema:name": "Brian",
+                "schema:email": "brian@example.org",
+                "schema:age": 50,
+                "ex:last": "Smith",
+                "ex:favNums": 7
+            },
+            {
+                "@id": "ex:alice",
+                "@type": "ex:User",
+                "schema:name": "Alice",
+                "schema:email": "alice@example.org",
+                "schema:age": 42,
+                "ex:last": "Smith",
+                "ex:favColor": "Green",
+                "ex:favNums": [42, 76, 9]
+            },
+            {
+                "@id": "ex:cam",
+                "@type": "ex:User",
+                "schema:name": "Cam",
+                "schema:email": "cam@example.org",
+                "schema:age": 34,
+                "ex:last": "Jones",
+                "ex:favColor": "Blue",
+                "ex:favNums": [5, 10],
+                "ex:friend": [{"@id": "ex:brian"}, {"@id": "ex:alice"}]
+            },
+            {
+                "@id": "ex:david",
+                "@type": "ex:User",
+                "schema:name": "David",
+                "schema:email": "david@example.org",
+                "schema:age": 46,
+                "ex:last": "Jones",
+                "ex:favNums": [15, 70],
+                "ex:friend": [{"@id": "ex:cam"}]
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("seed insert should succeed")
+        .ledger
+}
+
+/// Seed the "people" dataset used by JSON-LD compound query tests.
+pub async fn seed_people_compound_dataset(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+    let insert = json!({
+        "@context": {
+            "id":"@id",
+            "type":"@type",
+            "schema":"http://schema.org/",
+            "ex":"http://example.org/ns/"
+        },
+        "@graph": [
+            {"@id":"ex:brian","@type":"ex:User","schema:name":"Brian","schema:email":"brian@example.org","schema:age":50,"ex:favNums":7},
+            {"@id":"ex:alice","@type":"ex:User","schema:name":"Alice","schema:email":"alice@example.org","schema:age":50,"ex:favNums":[42,76,9]},
+            {"@id":"ex:cam","@type":"ex:User","schema:name":"Cam","schema:email":"cam@example.org","schema:age":34,"ex:favNums":[5,10],"ex:friend":[{"@id":"ex:brian"},{"@id":"ex:alice"}]}
+        ]
+    });
+
+    fluree.insert(ledger0, &insert).await.expect("seed").ledger
+}
+
+/// Seed a small "people" dataset used by policy + query-connection tests.
+///
+/// Includes `schema:ssn` so view-policy behavior can be tested.
+pub async fn seed_people_with_ssn(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
+
+    let txn = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/",
+            "f": "https://ns.flur.ee/db#"
+        },
+        "@graph": [
+            {
+                "@id": "ex:alice",
+                "@type": "ex:User",
+                "schema:name": "Alice",
+                "schema:email": "alice@flur.ee",
+                "schema:birthDate": "2022-08-17",
+                "schema:ssn": "111-11-1111"
+            },
+            {
+                "@id": "ex:john",
+                "@type": "ex:User",
+                "schema:name": "John",
+                "schema:email": "john@flur.ee",
+                "schema:birthDate": "2021-08-17",
+                "schema:ssn": "888-88-8888"
+            }
+        ]
+    });
+
+    fluree
+        .insert(ledger0, &txn)
+        .await
+        .expect("seed should succeed")
+        .ledger
+}
+
 /// Load people test data into a new ledger (matches Clojure `test-utils/load-people`)
 pub async fn load_people(fluree: &MemoryFluree) -> Result<String, Box<dyn std::error::Error>> {
-    let ledger_alias = "test/people:main";
-    let ledger = fluree.create_ledger(ledger_alias).await?;
+    let ledger_id = "test/people:main";
+    let ledger = fluree.create_ledger(ledger_id).await?;
 
     let ctx = json!([
         default_context(),
@@ -250,5 +458,5 @@ pub async fn load_people(fluree: &MemoryFluree) -> Result<String, Box<dyn std::e
     });
 
     fluree.insert(ledger, &insert_txn).await?;
-    Ok(ledger_alias.to_string())
+    Ok(ledger_id.to_string())
 }

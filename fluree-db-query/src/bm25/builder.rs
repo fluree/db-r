@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::analyzer::Analyzer;
-use super::index::{Bm25Config, Bm25Index, DocKey, PropertyDeps, VgWatermark};
+use super::index::{Bm25Config, Bm25Index, DocKey, GraphSourceWatermark, PropertyDeps};
 use super::text::extract_text;
 
 /// Error type for builder operations.
@@ -311,7 +311,7 @@ impl MultiBm25IndexBuilder {
     }
 
     /// Get the watermark tracker.
-    pub fn watermark(&self) -> &VgWatermark {
+    pub fn watermark(&self) -> &GraphSourceWatermark {
         &self.index.watermark
     }
 

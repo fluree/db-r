@@ -15,9 +15,9 @@ use serde_json::json;
 #[tokio::test]
 async fn commit_id_has_valid_sha256_format() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/hash-format:main";
+    let ledger_id = "it/hash-format:main";
 
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": {
@@ -37,31 +37,28 @@ async fn commit_id_has_valid_sha256_format() {
 
     let result = fluree.insert(ledger0, &tx).await.expect("insert");
 
-    // Verify commit ID format: "sha256:" prefix + 64 hex characters
+    // Verify commit ID is a valid ContentId with SHA-256 digest
+    let commit_id_str = result.receipt.commit_id.to_string();
+    let digest_hex = result.receipt.commit_id.digest_hex();
+
+    // CID string should be non-empty
     assert!(
-        result.receipt.commit_id.starts_with("sha256:"),
-        "commit ID should start with 'sha256:' prefix, got: {}",
-        result.receipt.commit_id
+        !commit_id_str.is_empty(),
+        "commit ID string should not be empty"
     );
 
-    let hash_part = result.receipt.commit_id.strip_prefix("sha256:").unwrap();
+    // digest_hex should be 64 hex characters (SHA-256)
     assert_eq!(
-        hash_part.len(),
+        digest_hex.len(),
         64,
-        "SHA-256 hash should be 64 hex characters, got {} chars: {}",
-        hash_part.len(),
-        hash_part
+        "SHA-256 digest should be 64 hex characters, got {} chars: {}",
+        digest_hex.len(),
+        digest_hex
     );
     assert!(
-        hash_part.chars().all(|c| c.is_ascii_hexdigit()),
-        "SHA-256 hash should contain only hex characters, got: {}",
-        hash_part
-    );
-
-    // Verify address is non-empty and contains the alias
-    assert!(
-        !result.receipt.address.is_empty(),
-        "commit address should not be empty"
+        digest_hex.chars().all(|c| c.is_ascii_hexdigit()),
+        "SHA-256 digest should contain only hex characters, got: {}",
+        digest_hex
     );
 }
 
@@ -69,9 +66,9 @@ async fn commit_id_has_valid_sha256_format() {
 #[tokio::test]
 async fn sequential_commits_produce_unique_hashes() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/unique-hashes:main";
+    let ledger_id = "it/unique-hashes:main";
 
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
 
     let tx1 = json!({
         "@context": {"ex": "http://example.org/ns/"},
@@ -98,24 +95,18 @@ async fn sequential_commits_produce_unique_hashes() {
         "sequential commits should have different commit IDs"
     );
 
-    // Each commit should have a unique address
-    assert_ne!(
-        result1.receipt.address, result2.receipt.address,
-        "sequential commits should have different addresses"
-    );
-
-    // Both should have valid format
+    // Both should have valid format (ContentId with 64-char hex digest)
     for (i, id) in [&result1.receipt.commit_id, &result2.receipt.commit_id]
         .iter()
         .enumerate()
     {
-        assert!(
-            id.starts_with("sha256:"),
-            "commit {} ID should start with 'sha256:'",
+        let digest = id.digest_hex();
+        assert_eq!(
+            digest.len(),
+            64,
+            "commit {} digest should be 64 hex chars",
             i + 1
         );
-        let hash = id.strip_prefix("sha256:").unwrap();
-        assert_eq!(hash.len(), 64, "commit {} hash should be 64 chars", i + 1);
     }
 }
 
@@ -123,9 +114,9 @@ async fn sequential_commits_produce_unique_hashes() {
 #[tokio::test]
 async fn commit_id_consistent_within_session() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/consistent-id:main";
+    let ledger_id = "it/consistent-id:main";
 
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": {"ex": "http://example.org/ns/"},
@@ -134,18 +125,17 @@ async fn commit_id_consistent_within_session() {
 
     let result = fluree.update(ledger0, &tx).await.expect("insert");
     let commit_id = result.receipt.commit_id.clone();
-    let address = result.receipt.address.clone();
 
     // Reload the ledger from the same Fluree instance
-    let reloaded = fluree.ledger(alias).await.expect("reload ledger");
+    let reloaded = fluree.ledger(ledger_id).await.expect("reload ledger");
 
-    // The head commit address should match what we got from the transaction
+    // The head commit CID should match what we got from the transaction
     assert_eq!(
-        reloaded.head_commit.as_ref(),
-        Some(&address),
-        "reloaded ledger should have the same head commit address"
+        reloaded.head_commit_id.as_ref(),
+        Some(&commit_id),
+        "reloaded ledger should have the same head commit CID"
     );
 
     // Verify the commit ID format is still valid after reload
-    assert!(commit_id.starts_with("sha256:"));
+    assert_eq!(commit_id.digest_hex().len(), 64);
 }

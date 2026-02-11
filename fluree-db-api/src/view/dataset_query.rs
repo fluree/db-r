@@ -42,7 +42,7 @@ where
     /// ```
     pub async fn query_dataset_view(
         &self,
-        dataset: &FlureeDataSetView<S>,
+        dataset: &FlureeDataSetView,
         q: impl Into<QueryInput<'_>>,
     ) -> Result<QueryResult> {
         let input = q.into();
@@ -123,7 +123,7 @@ where
     /// Execute a dataset query with tracking.
     pub(crate) async fn query_dataset_view_tracked(
         &self,
-        dataset: &FlureeDataSetView<S>,
+        dataset: &FlureeDataSetView,
         q: impl Into<QueryInput<'_>>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -137,20 +137,16 @@ where
 
         // Require primary
         let primary = dataset.primary().ok_or_else(|| {
-            crate::query::TrackedErrorResponse::from_error(
-                400,
-                "Dataset has no graphs",
-                tracker.tally(),
-            )
+            crate::query::TrackedErrorResponse::new(400, "Dataset has no graphs", tracker.tally())
         })?;
 
         // Parse
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => parse_jsonld_query(json, &primary.db).map_err(|e| {
-                crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+                crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
             })?,
             QueryInput::Sparql(sparql) => parse_sparql_to_ir(sparql, &primary.db).map_err(|e| {
-                crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+                crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
             })?,
         };
 
@@ -158,7 +154,7 @@ where
         let executable = self
             .build_executable_for_dataset(dataset, &parsed)
             .map_err(|e| {
-                crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+                crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
             })?;
 
         // Execute with tracking
@@ -167,11 +163,7 @@ where
             .await
             .map_err(|e| {
                 let status = status_for_query_error(&e);
-                crate::query::TrackedErrorResponse::from_error(
-                    status,
-                    e.to_string(),
-                    tracker.tally(),
-                )
+                crate::query::TrackedErrorResponse::new(status, e.to_string(), tracker.tally())
             })?;
 
         // Build result
@@ -190,21 +182,13 @@ where
                 .to_jsonld_async_with_policy_tracked(&primary.db, policy, &tracker)
                 .await
                 .map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(
-                        500,
-                        e.to_string(),
-                        tracker.tally(),
-                    )
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
             None => query_result
                 .to_jsonld_async_tracked(&primary.db, &tracker)
                 .await
                 .map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(
-                        500,
-                        e.to_string(),
-                        tracker.tally(),
-                    )
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
         };
 
@@ -223,7 +207,7 @@ where
     /// Applies reasoning from the primary view if set.
     fn build_executable_for_dataset(
         &self,
-        dataset: &FlureeDataSetView<S>,
+        dataset: &FlureeDataSetView,
         parsed: &fluree_db_query::parse::ParsedQuery,
     ) -> Result<ExecutableQuery> {
         let mut executable = prepare_for_execution(parsed);
@@ -252,7 +236,7 @@ where
     /// `ExecutionContext` for `BinaryScanOperator`.
     async fn execute_dataset_internal(
         &self,
-        dataset: &FlureeDataSetView<S>,
+        dataset: &FlureeDataSetView,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -315,7 +299,7 @@ where
     /// Threads `binary_store` from the primary view into the execution context.
     async fn execute_dataset_tracked(
         &self,
-        dataset: &FlureeDataSetView<S>,
+        dataset: &FlureeDataSetView,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -478,7 +462,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let dataset: FlureeDataSetView<_> = FlureeDataSetView::new();
+        let dataset: FlureeDataSetView = FlureeDataSetView::new();
         let query = json!({ "select": ["?s"], "where": {"@id": "?s"} });
 
         let result = fluree.query_dataset_view(&dataset, &query).await;

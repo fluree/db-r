@@ -127,5 +127,6 @@ Remote:
 ## See Also
 
 - [upstream](upstream.md) - Configure upstream tracking
+- [clone](clone.md) - Clone a ledger from a remote
 - [fetch](fetch.md) - Fetch refs from a remote
 - [token](token.md) - Create authentication tokens

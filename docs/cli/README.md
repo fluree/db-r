@@ -37,6 +37,8 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 | `-q, --quiet` | Suppress non-essential output |
 | `--no-color` | Disable colored output (also respects `NO_COLOR` env var) |
 | `--config <PATH>` | Path to config file |
+| `--memory-budget-mb <MB>` | Memory budget in MB for bulk import (0 = auto: 75% of system RAM). Affects chunk size, concurrency, and run budget when creating a ledger with `--from`. |
+| `--parallelism <N>` | Number of parallel parse threads for bulk import (0 = auto: system cores, default cap 6). Used when creating a ledger with `--from`. |
 | `-h, --help` | Print help |
 | `-V, --version` | Print version |
 
@@ -66,14 +68,25 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 | [`remote`](remote.md) | Manage remote servers |
 | [`upstream`](upstream.md) | Manage upstream tracking configuration |
 | [`fetch`](fetch.md) | Fetch refs from a remote |
-| [`pull`](pull.md) | Pull (fetch + fast-forward) from upstream |
+| [`clone`](clone.md) | Clone a ledger from a remote (full commit download) |
+| [`pull`](pull.md) | Pull commits from upstream |
 | [`push`](push.md) | Push to upstream remote |
+| [`track`](track.md) | Track remote-only ledgers (no local data) |
+
+**Clone and pull** transfer commits and, by default, **binary index data** from the remote (pack protocol), so the local ledger is query-ready without a separate reindex. Use `--no-indexes` to skip index transfer and reduce download size; run `fluree reindex` afterward if you need the index. Large transfers may prompt for confirmation before streaming.
+
+### Implementers
+
+If you're building a custom server that must support the CLI end-to-end (for example, integrating into another app), see:
+
+- [`server-integration`](server-integration.md) - endpoints and auth contract required by the CLI
 
 ### Authentication
 
 | Command | Description |
 |---------|-------------|
-| [`token`](token.md) | Manage JWS tokens for authentication |
+| [`token`](token.md) | Create, inspect, and manage JWS tokens |
+| [`auth`](auth.md) | Manage bearer tokens stored on remotes (login/logout/status) |
 
 ### Configuration
 
@@ -102,7 +115,7 @@ Commands that accept data input (`insert`, `upsert`, `query`) use flexible argum
 | Arguments | Behavior |
 |-----------|----------|
 | (none) | Active ledger + stdin or `-e` expression |
-| `<arg>` | If file exists: active ledger + file; else: ledger alias + stdin/-e |
+| `<arg>` | If file exists: active ledger + file; else: ledger ID + stdin/-e |
 | `<ledger> <file>` | Specified ledger + file |
 
 ## Data Format Detection

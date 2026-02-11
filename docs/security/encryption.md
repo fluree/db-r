@@ -253,7 +253,7 @@ xxd -l 4 /var/lib/fluree/data/some-file
 # Unencrypted: will show different bytes (likely JSON or Avro magic)
 ```
 
-## Migration Guide
+## Changing Encryption Settings
 
 ### Enabling Encryption on Existing Data
 

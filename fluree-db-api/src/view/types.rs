@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{Db, NoOverlay, OverlayProvider, Storage};
+use fluree_db_core::{Db, NoOverlay, OverlayProvider};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
@@ -61,12 +61,12 @@ pub enum ReasoningModePrecedence {
 /// `FlureeView` is cheap to clone (all fields are `Arc`-wrapped or `Copy`).
 /// Cloning a view creates a new handle to the same underlying data.
 #[derive(Clone)]
-pub struct FlureeView<S: Storage + 'static> {
+pub struct FlureeView {
     // ========================================================================
     // Core components (required)
     // ========================================================================
     /// The indexed database snapshot.
-    pub db: Arc<Db<S>>,
+    pub db: Arc<Db>,
 
     /// Overlay provider for uncommitted/derived flakes.
     ///
@@ -79,8 +79,8 @@ pub struct FlureeView<S: Storage + 'static> {
     /// Queries will only see flakes with `t <= to_t`.
     pub to_t: i64,
 
-    /// Ledger alias (e.g., "mydb:main").
-    pub ledger_alias: Arc<str>,
+    /// Ledger ID (e.g., "mydb:main").
+    pub ledger_id: Arc<str>,
 
     /// Graph ID within the ledger (0 = default graph).
     ///
@@ -136,10 +136,10 @@ pub struct FlureeView<S: Storage + 'static> {
     pub(crate) dict_novelty: Option<Arc<DictNovelty>>,
 }
 
-impl<S: Storage + 'static> std::fmt::Debug for FlureeView<S> {
+impl std::fmt::Debug for FlureeView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeView")
-            .field("ledger_alias", &self.ledger_alias)
+            .field("ledger_id", &self.ledger_id)
             .field("graph_id", &self.graph_id)
             .field("to_t", &self.to_t)
             .field("db_t", &self.db.t)
@@ -155,7 +155,7 @@ impl<S: Storage + 'static> std::fmt::Debug for FlureeView<S> {
 // Constructors
 // ============================================================================
 
-impl<S: Storage + Clone + 'static> FlureeView<S> {
+impl FlureeView {
     /// Create a base view from components.
     ///
     /// This is the low-level constructor. Prefer `from_ledger_state` or
@@ -167,20 +167,20 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// * `overlay` - Overlay provider for uncommitted flakes
     /// * `novelty` - Optional concrete novelty (for policy stats)
     /// * `to_t` - Time bound for queries
-    /// * `ledger_alias` - Ledger alias (e.g., "mydb:main")
+    /// * `ledger_id` - Ledger ID (e.g., "mydb:main")
     pub fn new(
-        db: Arc<Db<S>>,
+        db: Arc<Db>,
         overlay: Arc<dyn OverlayProvider>,
         novelty: Option<Arc<Novelty>>,
         to_t: i64,
-        ledger_alias: impl Into<Arc<str>>,
+        ledger_id: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             db,
             overlay,
             novelty,
             to_t,
-            ledger_alias: ledger_alias.into(),
+            ledger_id: ledger_id.into(),
             graph_id: 0,
             policy: None,
             policy_enforcer: None,
@@ -201,14 +201,14 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// let ledger = fluree.ledger("mydb:main").await?;
     /// let view = FlureeView::from_ledger_state(&ledger);
     /// ```
-    pub fn from_ledger_state(ledger: &LedgerState<S>) -> Self {
+    pub fn from_ledger_state(ledger: &LedgerState) -> Self {
         let novelty = ledger.novelty.clone();
         let mut view = Self::new(
             Arc::new(ledger.db.clone()),
             novelty.clone() as Arc<dyn OverlayProvider>,
             Some(novelty),
             ledger.t(),
-            ledger.alias(),
+            ledger.ledger_id(),
         );
         view.dict_novelty = Some(ledger.dict_novelty.clone());
         // Extract binary_store from LedgerState's TypeErasedStore
@@ -229,7 +229,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// let historical = fluree.ledger_view_at("mydb:main", 50).await?;
     /// let view = FlureeView::from_historical(&historical);
     /// ```
-    pub fn from_historical(view: &HistoricalLedgerView<S>) -> Self {
+    pub fn from_historical(view: &HistoricalLedgerView) -> Self {
         let has_overlay = view.overlay().is_some();
         tracing::trace!(
             to_t = view.to_t(),
@@ -247,12 +247,12 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             overlay,
             novelty,
             view.to_t(),
-            view.db.alias.as_str(),
+            view.db.ledger_id.as_str(),
         )
     }
 }
 
-impl<S: Storage + Clone + 'static> FlureeView<S> {
+impl FlureeView {
     /// Create a view from a [`Staged`](crate::tx_builder::Staged) transaction
     /// that includes the staged (uncommitted) changes.
     ///
@@ -267,7 +267,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// let result = preview.query(&fluree).jsonld(&q).execute().await?;
     /// ```
     pub fn from_staged(
-        staged: &crate::tx_builder::Staged<S>,
+        staged: &crate::tx_builder::Staged,
     ) -> std::result::Result<Self, crate::ApiError> {
         let base = staged.view.base();
         let staged_t = base.t() + 1;
@@ -293,7 +293,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             combined.clone() as Arc<dyn OverlayProvider>,
             Some(combined),
             staged_t,
-            base.alias(),
+            base.ledger_id(),
         );
         view.dict_novelty = Some(base.dict_novelty.clone());
         Ok(view)
@@ -312,7 +312,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
     /// let before = FlureeView::from_staged_base(&staged);
     /// let after  = FlureeView::from_staged(&staged);
     /// ```
-    pub fn from_staged_base(staged: &crate::tx_builder::Staged<S>) -> Self {
+    pub fn from_staged_base(staged: &crate::tx_builder::Staged) -> Self {
         let base = staged.view.base();
         let novelty = base.novelty.clone();
         Self::new(
@@ -320,7 +320,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
             novelty.clone() as Arc<dyn OverlayProvider>,
             Some(novelty),
             base.t(),
-            base.alias(),
+            base.ledger_id(),
         )
     }
 }
@@ -329,7 +329,7 @@ impl<S: Storage + Clone + 'static> FlureeView<S> {
 // Time Travel
 // ============================================================================
 
-impl<S: Storage + 'static> FlureeView<S> {
+impl FlureeView {
     /// Adjust the view's time bound.
     ///
     /// **Important**: This only adjusts the `to_t` filter; it doesn't reload
@@ -352,7 +352,7 @@ impl<S: Storage + 'static> FlureeView<S> {
 // Graph selection
 // ============================================================================
 
-impl<S: Storage + 'static> FlureeView<S> {
+impl FlureeView {
     /// Select a graph ID within this ledger view.
     ///
     /// This does **not** reload the underlying ledger; it only adjusts the
@@ -369,7 +369,7 @@ impl<S: Storage + 'static> FlureeView<S> {
 // Binary Store
 // ============================================================================
 
-impl<S: Storage + 'static> FlureeView<S> {
+impl FlureeView {
     /// Attach a binary index store for `BinaryScanOperator`.
     pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>) -> Self {
         self.binary_store = Some(store);
@@ -386,7 +386,7 @@ impl<S: Storage + 'static> FlureeView<S> {
 // Policy Wrapper
 // ============================================================================
 
-impl<S: Storage + 'static> FlureeView<S> {
+impl FlureeView {
     /// Attach a policy context to the view.
     ///
     /// Policy is enforced during query execution and result formatting.
@@ -446,7 +446,7 @@ impl<S: Storage + 'static> FlureeView<S> {
 // Reasoning Wrapper
 // ============================================================================
 
-impl<S: Storage + 'static> FlureeView<S> {
+impl FlureeView {
     /// Apply default reasoning modes to queries on this view.
     ///
     /// This mirrors Clojure's `wrap-reasoning`. The reasoning modes apply
@@ -545,7 +545,7 @@ impl<S: Storage + 'static> FlureeView<S> {
 // Accessors
 // ============================================================================
 
-impl<S: Storage + 'static> FlureeView<S> {
+impl FlureeView {
     /// Get the concrete novelty overlay (if available).
     ///
     /// This is needed for policy stats (`f:onClass`) and some time resolution
@@ -604,11 +604,9 @@ impl std::fmt::Debug for DerivedFactsHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::MemoryStorage;
 
-    fn make_test_db() -> Db<MemoryStorage> {
-        let storage = MemoryStorage::new();
-        Db::genesis(storage, "test:main")
+    fn make_test_db() -> Db {
+        Db::genesis("test:main")
     }
 
     #[test]
@@ -620,7 +618,7 @@ mod tests {
         let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
 
         assert_eq!(view.to_t, 5);
-        assert_eq!(&*view.ledger_alias, "test:main");
+        assert_eq!(&*view.ledger_id, "test:main");
         assert!(view.novelty().is_some());
         assert!(!view.has_policy());
         assert!(view.reasoning().is_none());
@@ -748,7 +746,7 @@ mod tests {
         let view2 = view1.clone();
 
         assert_eq!(view1.to_t, view2.to_t);
-        assert_eq!(&*view1.ledger_alias, &*view2.ledger_alias);
+        assert_eq!(&*view1.ledger_id, &*view2.ledger_id);
         assert!(view2.reasoning().is_some());
     }
 }

@@ -260,7 +260,7 @@ curl -X POST http://localhost:8090/query \
   }'
 ```
 
-### Query at Commit SHA
+### Query at Commit ContentId
 
 ```bash
 curl -X POST http://localhost:8090/query \
@@ -269,7 +269,7 @@ curl -X POST http://localhost:8090/query \
     "@context": {
       "schema": "http://schema.org/"
     },
-    "from": "mydb:main@sha:abc123",
+    "from": "mydb:main@commit:bafybeig...",
     "select": ["?name"],
     "where": [
       { "@id": "?person", "schema:name": "?name" }

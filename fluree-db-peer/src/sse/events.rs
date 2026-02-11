@@ -7,32 +7,36 @@ use serde::Deserialize;
 /// Ledger record from SSE ns-record event
 #[derive(Debug, Clone, Deserialize)]
 pub struct LedgerRecord {
-    pub alias: String,
+    pub ledger_id: String,
     #[serde(default)]
     pub branch: Option<String>,
-    pub commit_address: Option<String>,
+    /// Storage-agnostic identity of the head commit (CID string).
+    #[serde(default)]
+    pub commit_head_id: Option<String>,
     pub commit_t: i64,
-    pub index_address: Option<String>,
+    /// Storage-agnostic identity of the head index root (CID string).
+    #[serde(default)]
+    pub index_head_id: Option<String>,
     pub index_t: i64,
     #[serde(default)]
     pub retracted: bool,
 }
 
-/// Virtual graph record from SSE ns-record event
+/// Graph source record from SSE ns-record event
 #[derive(Debug, Clone, Deserialize)]
-pub struct VgRecord {
-    pub alias: String,
+pub struct GraphSourceRecord {
+    pub graph_source_id: String,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
-    pub vg_type: Option<String>,
+    pub source_type: Option<String>,
     #[serde(default)]
     pub config: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
-    pub index_address: Option<String>,
+    pub index_id: Option<String>,
     pub index_t: i64,
     #[serde(default)]
     pub retracted: bool,
@@ -43,7 +47,7 @@ pub struct VgRecord {
 pub struct NsRecordEvent {
     pub action: String,
     pub kind: String,
-    pub alias: String,
+    pub resource_id: String,
     pub record: serde_json::Value,
     pub emitted_at: String,
 }
@@ -53,7 +57,7 @@ pub struct NsRecordEvent {
 pub struct NsRetractedEvent {
     pub action: String,
     pub kind: String,
-    pub alias: String,
+    pub resource_id: String,
     pub emitted_at: String,
 }
 
@@ -79,10 +83,10 @@ pub enum SseClientEvent {
     SnapshotComplete { hash: String },
     /// Ledger record received
     LedgerRecord(LedgerRecord),
-    /// VG record received
-    VgRecord(VgRecord),
+    /// Graph source record received
+    GraphSourceRecord(GraphSourceRecord),
     /// Resource retracted
-    Retracted { kind: String, alias: String },
+    Retracted { kind: String, resource_id: String },
     /// Connection lost (will reconnect)
     Disconnected { reason: String },
     /// Fatal error (will not reconnect)
@@ -97,11 +101,11 @@ impl LedgerRecord {
     }
 }
 
-impl VgRecord {
+impl GraphSourceRecord {
     /// Compute a config hash for change detection.
     ///
     /// Uses SHA-256 truncated to 8 hex chars (4 bytes) to match
-    /// the server's VG SSE event ID format.
+    /// the server's graph source SSE event ID format.
     pub fn config_hash(&self) -> String {
         use sha2::{Digest, Sha256};
 
@@ -119,37 +123,37 @@ mod tests {
     #[test]
     fn test_parse_ledger_record() {
         let json = r#"{
-            "alias": "books:main",
+            "ledger_id": "books:main",
             "branch": "main",
-            "commit_address": "fluree:file://commit/abc123",
+            "commit_head_id": "fluree:commit:abc123",
             "commit_t": 5,
-            "index_address": "fluree:file://index/def456",
+            "index_head_id": "fluree:index:def456",
             "index_t": 3,
             "retracted": false
         }"#;
 
         let record: LedgerRecord = serde_json::from_str(json).unwrap();
-        assert_eq!(record.alias, "books:main");
+        assert_eq!(record.ledger_id, "books:main");
         assert_eq!(record.commit_t, 5);
         assert_eq!(record.index_t, 3);
     }
 
     #[test]
-    fn test_parse_vg_record() {
+    fn test_parse_graph_source_record() {
         let json = r#"{
-            "alias": "search:main",
+            "graph_source_id": "search:main",
             "name": "search",
             "branch": "main",
-            "vg_type": "fulltext",
+            "source_type": "fulltext",
             "config": "{\"analyzer\": \"standard\"}",
             "dependencies": ["books:main"],
-            "index_address": "fluree:file://vg/search",
+            "index_id": "fluree:index:gs/search",
             "index_t": 2,
             "retracted": false
         }"#;
 
-        let record: VgRecord = serde_json::from_str(json).unwrap();
-        assert_eq!(record.alias, "search:main");
+        let record: GraphSourceRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.graph_source_id, "search:main");
         assert_eq!(record.index_t, 2);
         assert_eq!(record.dependencies, vec!["books:main"]);
     }
@@ -159,8 +163,8 @@ mod tests {
         let json = r#"{
             "action": "ns-record",
             "kind": "ledger",
-            "alias": "books:main",
-            "record": {"alias": "books:main", "commit_t": 1, "index_t": 1},
+            "resource_id": "books:main",
+            "record": {"ledger_id": "books:main", "commit_t": 1, "index_t": 1},
             "emitted_at": "2024-01-01T00:00:00Z"
         }"#;
 
@@ -174,27 +178,27 @@ mod tests {
         let json = r#"{
             "action": "ns-retracted",
             "kind": "ledger",
-            "alias": "books:main",
+            "resource_id": "books:main",
             "emitted_at": "2024-01-01T00:00:00Z"
         }"#;
 
         let event: NsRetractedEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.action, "ns-retracted");
-        assert_eq!(event.alias, "books:main");
+        assert_eq!(event.resource_id, "books:main");
     }
 
     #[test]
-    fn test_vg_config_hash_sha256() {
+    fn test_graph_source_config_hash_sha256() {
         // Test that config_hash produces SHA-256 truncated to 8 hex chars
         // This should match the server's sha256_short function
-        let record = VgRecord {
-            alias: "test:main".to_string(),
+        let record = GraphSourceRecord {
+            graph_source_id: "test:main".to_string(),
             name: None,
             branch: None,
-            vg_type: None,
+            source_type: None,
             config: Some("test config".to_string()),
             dependencies: vec![],
-            index_address: None,
+            index_id: None,
             index_t: 1,
             retracted: false,
         };
@@ -207,16 +211,16 @@ mod tests {
     }
 
     #[test]
-    fn test_vg_config_hash_empty() {
+    fn test_graph_source_config_hash_empty() {
         // Empty config should still produce valid hash
-        let record = VgRecord {
-            alias: "test:main".to_string(),
+        let record = GraphSourceRecord {
+            graph_source_id: "test:main".to_string(),
             name: None,
             branch: None,
-            vg_type: None,
+            source_type: None,
             config: None, // None config
             dependencies: vec![],
-            index_address: None,
+            index_id: None,
             index_t: 1,
             retracted: false,
         };

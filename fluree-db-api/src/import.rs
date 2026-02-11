@@ -5,12 +5,12 @@
 //!
 //! ## Pipeline overview
 //!
-//! 1. **Create ledger** — `nameservice.publish_ledger_init(alias)`
+//! 1. **Create ledger** — `nameservice.publish_ledger_init(ledger_id)`
 //! 2. **Import TTL → commits + runs** — parallel chunk parsing, serial commit
 //!    finalization, streaming run generation via background resolver thread
 //! 3. **Build indexes** — `build_all_indexes()` from completed run files
 //! 4. **CAS upload** — dicts + indexes uploaded to content-addressed storage
-//! 5. **V2 root** — `BinaryIndexRootV2::from_cas_artifacts()` written to CAS
+//! 5. **V2 root** — `BinaryIndexRoot::from_cas_artifacts()` written to CAS
 //! 6. **Publish** — `nameservice.publish_index_allow_equal()`
 //! 7. **Cleanup** — remove tmp session directory (only on full success)
 //!
@@ -27,7 +27,7 @@
 //! even though chunk parsing is parallel.
 
 use crate::error::ApiError;
-use fluree_db_core::{ContentKind, Storage};
+use fluree_db_core::{ContentId, ContentKind, Storage, CODEC_FLUREE_INDEX_ROOT};
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,9 +40,9 @@ use std::time::Instant;
 /// Configuration for the bulk import pipeline.
 #[derive(Debug, Clone)]
 pub struct ImportConfig {
-    /// Number of parallel TTL parse threads. Default: available parallelism.
+    /// Number of parallel TTL parse threads. Default: available parallelism (capped at 6).
     pub parse_threads: usize,
-    /// Run writer memory budget in MB. Default: 256.
+    /// Run writer memory budget in MB. 0 = derive from memory budget. Default: 0.
     pub run_budget_mb: usize,
     /// Whether to build multi-order indexes after runs. Default: true.
     pub build_index: bool,
@@ -52,26 +52,178 @@ pub struct ImportConfig {
     pub cleanup_local_files: bool,
     /// Whether to zstd-compress commit blobs. Default: true.
     pub compress_commits: bool,
+    /// Whether to collect ID-based stats during commit resolution. Default: true.
+    ///
+    /// When enabled, the import resolver performs per-op stats collection (HLL NDV,
+    /// datatype counts, and optional class/property attribution) while resolving commit
+    /// blobs to run records. This can be CPU-intensive and may reduce peak import
+    /// throughput, but produces richer `stats.json` for the query planner.
+    ///
+    /// When disabled, `stats.json` falls back to cheaper summaries derived from the
+    /// SPOT index build results (flake counts only).
+    pub collect_id_stats: bool,
     /// Publish nameservice head every N chunks during import. Default: 50.
     /// 0 disables periodic checkpoints.
     pub publish_every: usize,
+    /// Overall memory budget in MB for the import pipeline. 0 = auto-detect (75% of RAM).
+    ///
+    /// Used to derive `chunk_size_mb`, `max_inflight_chunks`, and `run_budget_mb`
+    /// when those fields are left at 0.
+    pub memory_budget_mb: usize,
+    /// Chunk size in MB for splitting a single large Turtle file. 0 = derive from budget.
+    pub chunk_size_mb: usize,
+    /// Maximum number of chunk texts materialized in memory simultaneously.
+    /// 0 = derive from budget.
+    pub max_inflight_chunks: usize,
+    /// Whether `run_budget_mb` was explicitly set (vs derived from memory budget).
+    run_budget_explicit: bool,
 }
 
 impl Default for ImportConfig {
     fn default() -> Self {
         let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
+            .map(|n| n.get().min(6))
             .unwrap_or(4);
         Self {
             parse_threads: threads,
-            run_budget_mb: 256,
+            run_budget_mb: 0,
             build_index: true,
             publish: true,
             cleanup_local_files: true,
             compress_commits: true,
+            collect_id_stats: true,
             publish_every: 50,
+            memory_budget_mb: 0,
+            chunk_size_mb: 0,
+            max_inflight_chunks: 0,
+            run_budget_explicit: false,
         }
     }
+}
+
+// ============================================================================
+// Memory budget derivation
+// ============================================================================
+
+/// Detect total system memory in MB. Falls back to 16 GB if detection fails.
+#[cfg(feature = "native")]
+pub fn detect_system_memory_mb() -> usize {
+    use sysinfo::{MemoryRefreshKind, System};
+
+    let mut sys = System::new();
+    sys.refresh_memory_specifics(MemoryRefreshKind::everything());
+    let total_bytes = sys.total_memory();
+
+    if total_bytes == 0 {
+        tracing::warn!("could not detect system memory, falling back to 16 GB");
+        16 * 1024
+    } else {
+        (total_bytes / (1024 * 1024)) as usize
+    }
+}
+
+/// Fallback: assume 16 GB when native feature is off.
+#[cfg(not(feature = "native"))]
+pub fn detect_system_memory_mb() -> usize {
+    16 * 1024
+}
+
+impl ImportConfig {
+    /// Effective memory budget in MB (auto-detected if 0).
+    pub fn effective_memory_budget_mb(&self) -> usize {
+        if self.memory_budget_mb > 0 {
+            self.memory_budget_mb
+        } else {
+            let ram = detect_system_memory_mb();
+            // 75% of system RAM
+            (ram as f64 * 0.75) as usize
+        }
+    }
+
+    /// Effective max inflight chunks (derived from budget if 0).
+    pub fn effective_max_inflight(&self) -> usize {
+        if self.max_inflight_chunks > 0 {
+            return self.max_inflight_chunks;
+        }
+        let budget = self.effective_memory_budget_mb();
+        if budget >= 20 * 1024 {
+            3
+        } else {
+            2
+        }
+    }
+
+    /// Effective chunk size in MB (derived from budget if 0).
+    pub fn effective_chunk_size_mb(&self) -> usize {
+        if self.chunk_size_mb > 0 {
+            return self.chunk_size_mb;
+        }
+        let budget_mb = self.effective_memory_budget_mb();
+        let max_inflight = self.effective_max_inflight();
+        // Budget ≈ max_inflight * chunk_size * 2.5 + run_budget + 2GB (fixed overhead)
+        // Solve for chunk_size: (budget - 2048) / (max_inflight * 2.5 + 1)
+        let numerator = budget_mb.saturating_sub(2048) as f64;
+        let denominator = max_inflight as f64 * 2.5 + 1.0;
+        let raw = (numerator / denominator).floor() as usize;
+        raw.clamp(256, 4096)
+    }
+
+    /// Effective run budget in MB (derived from budget if not explicitly set).
+    pub fn effective_run_budget_mb(&self) -> usize {
+        if self.run_budget_explicit && self.run_budget_mb > 0 {
+            return self.run_budget_mb;
+        }
+        let budget_mb = self.effective_memory_budget_mb();
+        let chunk_size = self.effective_chunk_size_mb();
+        // Run budget = min(chunk_size, budget / 3)
+        chunk_size.min(budget_mb / 3).max(256)
+    }
+
+    /// Log all computed import settings.
+    pub fn log_effective_settings(&self) {
+        let budget = self.effective_memory_budget_mb();
+        let chunk_size = self.effective_chunk_size_mb();
+        let max_inflight = self.effective_max_inflight();
+        let run_budget = self.effective_run_budget_mb();
+        let parallelism = self.parse_threads;
+
+        tracing::info!(
+            memory_budget_mb = budget,
+            chunk_size_mb = chunk_size,
+            max_inflight = max_inflight,
+            run_budget_mb = run_budget,
+            parallelism = parallelism,
+            "import pipeline computed settings"
+        );
+    }
+
+    /// Effective settings that will be used for the import (auto-derived when not set).
+    /// Callers can use this to report to the user what resources the import will use.
+    pub fn effective_import_settings(&self) -> EffectiveImportSettings {
+        EffectiveImportSettings {
+            memory_budget_mb: self.effective_memory_budget_mb(),
+            parallelism: self.parse_threads,
+            chunk_size_mb: self.effective_chunk_size_mb(),
+            max_inflight_chunks: self.effective_max_inflight(),
+            run_budget_mb: self.effective_run_budget_mb(),
+        }
+    }
+}
+
+/// Effective import resource settings (memory budget, parallelism, chunk size, etc.).
+/// Used to report to the user what the import pipeline will use when values are auto-detected.
+#[derive(Debug, Clone)]
+pub struct EffectiveImportSettings {
+    /// Memory budget in MB (75% of system RAM when not set).
+    pub memory_budget_mb: usize,
+    /// Number of parallel parse threads (system cores capped at 6 when not set).
+    pub parallelism: usize,
+    /// Chunk size in MB for large-file splitting (derived from budget when not set).
+    pub chunk_size_mb: usize,
+    /// Max inflight chunks (derived from budget when not set).
+    pub max_inflight_chunks: usize,
+    /// Run budget in MB for multi-order indexing (derived when not set).
+    pub run_budget_mb: usize,
 }
 
 // ============================================================================
@@ -81,16 +233,16 @@ impl Default for ImportConfig {
 /// Result of a successful bulk import.
 #[derive(Debug)]
 pub struct ImportResult {
-    /// Ledger alias.
-    pub alias: String,
+    /// Ledger ID.
+    pub ledger_id: String,
     /// Final commit t (= number of imported chunks).
     pub t: i64,
     /// Total flake count across all commits.
     pub flake_count: u64,
-    /// CAS address of the head commit.
-    pub commit_head_address: String,
-    /// CAS address of the V2 index root. `None` if `build_index == false`.
-    pub root_address: Option<String>,
+    /// Content identifier of the head commit.
+    pub commit_head_id: fluree_db_core::ContentId,
+    /// Content identifier of the index root. `None` if `build_index == false`.
+    pub root_id: Option<fluree_db_core::ContentId>,
     /// Index t (same as `t` for fresh import). 0 if `build_index == false`.
     pub index_t: i64,
 }
@@ -156,26 +308,125 @@ impl From<fluree_db_core::Error> for ImportError {
 }
 
 // ============================================================================
+// ChunkSource
+// ============================================================================
+
+/// Abstraction over the source of import chunks.
+///
+/// Either a set of pre-split files (existing behavior), or a single large
+/// Turtle file that is auto-split on the fly.
+pub enum ChunkSource {
+    /// Pre-split chunk files (existing behavior: `chunk_*.ttl` / `chunk_*.trig`).
+    Files(Vec<PathBuf>),
+    /// Single large Turtle file, auto-split into byte-range chunks.
+    LargeFile(fluree_db_transact::turtle_splitter::TurtleChunkReader),
+}
+
+impl ChunkSource {
+    /// Number of chunks.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Files(files) => files.len(),
+            Self::LargeFile(reader) => reader.chunk_count(),
+        }
+    }
+
+    /// Whether the source has no chunks.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Read chunk at `index` as a String.
+    pub fn read_chunk(&self, index: usize) -> std::io::Result<String> {
+        match self {
+            Self::Files(files) => std::fs::read_to_string(&files[index]),
+            Self::LargeFile(reader) => reader.read_chunk(index)?.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("chunk index {} out of range", index),
+                )
+            }),
+        }
+    }
+
+    /// Whether chunk at `index` is a TriG file.
+    pub fn is_trig(&self, index: usize) -> bool {
+        match self {
+            Self::Files(files) => files
+                .get(index)
+                .and_then(|p| p.extension())
+                .is_some_and(|ext| ext == "trig"),
+            Self::LargeFile(_) => false, // Large file splitting is Turtle only.
+        }
+    }
+}
+
+/// Resolve the import path into a `ChunkSource`.
+///
+/// - If `path` is a directory: discover `chunk_*.ttl`/`chunk_*.trig` files (existing behavior).
+/// - If `path` is a single large `.ttl` file: auto-split using `TurtleChunkReader`.
+/// - If `path` is a single small `.ttl` file: treat as a single-element `Files` source.
+fn resolve_chunk_source(
+    path: &Path,
+    config: &ImportConfig,
+) -> std::result::Result<ChunkSource, ImportError> {
+    if path.is_dir() {
+        let files = discover_chunks(path)?;
+        return Ok(ChunkSource::Files(files));
+    }
+
+    if !path.exists() {
+        return Err(ImportError::NoChunks(format!(
+            "path does not exist: {}",
+            path.display()
+        )));
+    }
+
+    // Single file — decide whether to auto-split based on size.
+    let file_size = std::fs::metadata(path)?.len();
+    let chunk_size_bytes = config.effective_chunk_size_mb() as u64 * 1024 * 1024;
+
+    let is_ttl = path.extension().is_some_and(|ext| ext == "ttl");
+
+    if is_ttl && file_size > chunk_size_bytes {
+        // Large file: auto-split.
+        let split_config =
+            fluree_db_transact::turtle_splitter::TurtleSplitConfig { chunk_size_bytes };
+        let reader =
+            fluree_db_transact::turtle_splitter::TurtleChunkReader::new(path, &split_config)
+                .map_err(|e| ImportError::NoChunks(format!("turtle file split failed: {}", e)))?;
+        tracing::info!(
+            chunks = reader.chunk_count(),
+            chunk_size_mb = config.effective_chunk_size_mb(),
+            "auto-split large Turtle file"
+        );
+        Ok(ChunkSource::LargeFile(reader))
+    } else {
+        // Small file or non-TTL: treat as a single-element source.
+        Ok(ChunkSource::Files(vec![path.to_path_buf()]))
+    }
+}
+
+// ============================================================================
 // Builder
 // ============================================================================
 
 /// Builder for a bulk import operation.
 ///
-/// Created via `fluree.create("alias").import("/path/to/chunks")`.
+/// Created via `fluree.create("mydb").import("/path/to/chunks")`.
 ///
 /// # Example
 ///
 /// ```ignore
 /// let result = fluree.create("mydb")
 ///     .import("/data/chunks/")
-///     .threads(8)
-///     .run_budget_mb(4096)
+///     .memory_budget_mb(24000)
 ///     .execute()
 ///     .await?;
 /// ```
 pub struct ImportBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a super::Fluree<S, N>,
-    alias: String,
+    ledger_id: String,
     import_path: PathBuf,
     config: ImportConfig,
 }
@@ -187,12 +438,12 @@ where
 {
     pub(crate) fn new(
         fluree: &'a super::Fluree<S, N>,
-        alias: String,
+        ledger_id: String,
         import_path: PathBuf,
     ) -> Self {
         Self {
             fluree,
-            alias,
+            ledger_id,
             import_path,
             config: ImportConfig::default(),
         }
@@ -204,9 +455,28 @@ where
         self
     }
 
-    /// Set the run writer memory budget in MB.
+    /// Set the run writer memory budget in MB. Overrides budget derivation.
     pub fn run_budget_mb(mut self, mb: usize) -> Self {
         self.config.run_budget_mb = mb;
+        self.config.run_budget_explicit = true;
+        self
+    }
+
+    /// Set the overall memory budget in MB. 0 = auto-detect (75% of RAM).
+    pub fn memory_budget_mb(mut self, mb: usize) -> Self {
+        self.config.memory_budget_mb = mb;
+        self
+    }
+
+    /// Set the chunk size in MB for large-file splitting. 0 = derive from budget.
+    pub fn chunk_size_mb(mut self, mb: usize) -> Self {
+        self.config.chunk_size_mb = mb;
+        self
+    }
+
+    /// Set the parallelism (alias for `.threads()`).
+    pub fn parallelism(mut self, n: usize) -> Self {
+        self.config.parse_threads = n;
         self
     }
 
@@ -234,10 +504,22 @@ where
         self
     }
 
+    /// Whether to collect ID-based stats during commit resolution. Default: false.
+    pub fn collect_id_stats(mut self, v: bool) -> Self {
+        self.config.collect_id_stats = v;
+        self
+    }
+
     /// Publish nameservice checkpoint every N chunks. Default: 50. 0 disables.
     pub fn publish_every(mut self, n: usize) -> Self {
         self.config.publish_every = n;
         self
+    }
+
+    /// Effective resource settings that will be used for this import (auto-derived when not set).
+    /// Use this to report to the user what memory budget and parallelism the import will use.
+    pub fn effective_import_settings(&self) -> EffectiveImportSettings {
+        self.config.effective_import_settings()
     }
 
     /// Execute the bulk import pipeline.
@@ -245,7 +527,7 @@ where
         run_import_pipeline(
             self.fluree.storage(),
             self.fluree.nameservice(),
-            &self.alias,
+            &self.ledger_id,
             &self.import_path,
             &self.config,
         )
@@ -257,12 +539,12 @@ where
 // Create builder (intermediate)
 // ============================================================================
 
-/// Intermediate builder returned by `fluree.create("alias")`.
+/// Intermediate builder returned by `fluree.create("mydb")`.
 ///
 /// Supports `.import(path)` for bulk import, or `.execute()` for empty ledger creation.
 pub struct CreateBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a super::Fluree<S, N>,
-    alias: String,
+    ledger_id: String,
 }
 
 impl<'a, S, N> CreateBuilder<'a, S, N>
@@ -270,8 +552,8 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
-    pub(crate) fn new(fluree: &'a super::Fluree<S, N>, alias: String) -> Self {
-        Self { fluree, alias }
+    pub(crate) fn new(fluree: &'a super::Fluree<S, N>, ledger_id: String) -> Self {
+        Self { fluree, ledger_id }
     }
 }
 
@@ -284,7 +566,7 @@ where
     ///
     /// `path` can be a directory containing `chunk_*.ttl` files, or a single TTL file.
     pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, S, N> {
-        ImportBuilder::new(self.fluree, self.alias, path.as_ref().to_path_buf())
+        ImportBuilder::new(self.fluree, self.ledger_id, path.as_ref().to_path_buf())
     }
 }
 
@@ -350,14 +632,15 @@ where
     let pipeline_start = Instant::now();
     let _span = tracing::info_span!("bulk_import", alias = %alias).entered();
 
-    // ---- Discover chunks ----
-    let chunks = discover_chunks(import_path)?;
-    let total = chunks.len();
-    tracing::info!(chunks = total, path = %import_path.display(), "discovered import chunks");
+    // ---- Log effective settings and resolve chunk source ----
+    config.log_effective_settings();
+    let chunk_source = resolve_chunk_source(import_path, config)?;
+    let total = chunk_source.len();
+    tracing::info!(chunks = total, path = %import_path.display(), "resolved import chunks");
 
     // ---- Phase 1: Create ledger (init nameservice) ----
     let normalized_alias =
-        fluree_db_core::alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+        fluree_db_core::ledger_id::normalize_ledger_id(alias).unwrap_or_else(|_| alias.to_string());
 
     // Check if ledger already exists
     let ns_record = nameservice
@@ -366,7 +649,7 @@ where
         .map_err(|e| ImportError::Storage(e.to_string()))?;
 
     if let Some(ref record) = ns_record {
-        if record.commit_t > 0 || record.commit_address.is_some() {
+        if record.commit_t > 0 || record.commit_head_id.is_some() {
             return Err(ImportError::Transact(format!(
                 "import requires a fresh ledger, but '{}' already has commits (t={})",
                 normalized_alias, record.commit_t
@@ -383,7 +666,7 @@ where
     }
 
     // ---- Set up session directory for runs/indexes ----
-    let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&normalized_alias)
+    let alias_prefix = fluree_db_core::address_path::ledger_id_to_path_prefix(&normalized_alias)
         .unwrap_or_else(|_| normalized_alias.replace(':', "/"));
 
     // Derive session dir from storage's data directory.
@@ -409,11 +692,12 @@ where
         run_dir: &run_dir,
         index_dir: &index_dir,
     };
+    let chunk_source = std::sync::Arc::new(chunk_source);
     let pipeline_result = run_pipeline_phases(
         storage,
         nameservice,
         &normalized_alias,
-        &chunks,
+        &chunk_source,
         paths,
         config,
         pipeline_start,
@@ -448,7 +732,7 @@ where
                 alias = %normalized_alias,
                 t = result.t,
                 flakes = result.flake_count,
-                root_address = ?result.root_address,
+                root_id = ?result.root_id,
                 elapsed = ?total_elapsed,
                 "bulk import pipeline complete"
             );
@@ -500,7 +784,7 @@ async fn run_pipeline_phases<S, N>(
     storage: &S,
     nameservice: &N,
     alias: &str,
-    chunks: &[PathBuf],
+    chunk_source: &std::sync::Arc<ChunkSource>,
     paths: PipelinePaths<'_>,
     config: &ImportConfig,
     pipeline_start: Instant,
@@ -510,19 +794,26 @@ where
     N: NameService + Publisher,
 {
     // ---- Phase 2: Import TTL → commits + streaming runs ----
-    let import_result =
-        run_import_chunks(storage, nameservice, alias, chunks, paths.run_dir, config).await?;
+    let import_result = run_import_chunks(
+        storage,
+        nameservice,
+        alias,
+        chunk_source,
+        paths.run_dir,
+        config,
+    )
+    .await?;
 
     tracing::info!(
         t = import_result.final_t,
         flakes = import_result.cumulative_flakes,
-        commit_head = %import_result.commit_head_address,
+        commit_head = %import_result.commit_head_id,
         elapsed = ?pipeline_start.elapsed(),
         "import + run generation complete"
     );
 
     // ---- Phases 3-6: Build index, upload, root, publish ----
-    let root_address;
+    let root_id;
     let index_t;
 
     if config.build_index {
@@ -545,19 +836,19 @@ where
         )
         .await?;
 
-        root_address = Some(index_result.root_address);
+        root_id = Some(index_result.root_id);
         index_t = index_result.index_t;
     } else {
-        root_address = None;
+        root_id = None;
         index_t = 0;
     }
 
     Ok(ImportResult {
-        alias: alias.to_string(),
+        ledger_id: alias.to_string(),
         t: import_result.final_t,
         flake_count: import_result.cumulative_flakes,
-        commit_head_address: import_result.commit_head_address,
-        root_address,
+        commit_head_id: import_result.commit_head_id,
+        root_id,
         index_t,
     })
 }
@@ -570,7 +861,7 @@ where
 struct ChunkImportResult {
     final_t: i64,
     cumulative_flakes: u64,
-    commit_head_address: String,
+    commit_head_id: fluree_db_core::ContentId,
     namespace_codes: HashMap<u16, String>,
     stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
     /// Total size of all commit blobs in bytes.
@@ -586,7 +877,7 @@ async fn run_import_chunks<S, N>(
     storage: &S,
     nameservice: &N,
     alias: &str,
-    chunks: &[PathBuf],
+    chunk_source: &std::sync::Arc<ChunkSource>,
     run_dir: &Path,
     config: &ImportConfig,
 ) -> std::result::Result<ChunkImportResult, ImportError>
@@ -606,15 +897,27 @@ where
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    let total = chunks.len();
+    let total = chunk_source.len();
     let compress = config.compress_commits;
     let num_threads = config.parse_threads;
     let mut state = ImportState::new();
     let run_start = Instant::now();
+    let collect_id_stats = config.collect_id_stats;
+
+    // ---- Inflight permit channel (memory budget enforcement) ----
+    // Limits the number of chunk texts materialized in memory simultaneously.
+    let max_inflight = config.effective_max_inflight();
+    let (permit_tx, permit_rx) = std::sync::mpsc::sync_channel::<()>(max_inflight);
+    for _ in 0..max_inflight {
+        permit_tx.send(()).unwrap();
+    }
+    let permit_rx = std::sync::Arc::new(std::sync::Mutex::new(permit_rx));
+    let permit_tx_clone = permit_tx.clone();
 
     // ---- Spawn background run resolver (three session-scoped singletons) ----
     std::fs::create_dir_all(run_dir)?;
-    let budget = config.run_budget_mb * 1024 * 1024;
+    let run_budget = config.effective_run_budget_mb();
+    let budget = run_budget * 1024 * 1024;
     let mo_config = MultiOrderConfig {
         total_budget_bytes: budget,
         orders: RunSortOrder::all_build_orders().to_vec(),
@@ -634,7 +937,9 @@ where
                     GlobalDicts::new(&run_dir_clone).map_err(|e| format!("init dicts: {}", e))?;
                 // Singleton 2: CommitResolver
                 let mut resolver = CommitResolver::new();
-                resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
+                if collect_id_stats {
+                    resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
+                }
 
                 // Singleton 3: MultiOrderRunWriter
                 let mut writer = MultiOrderRunWriter::new(mo_config)
@@ -723,10 +1028,10 @@ where
             .map_err(|e| ImportError::RunGeneration(format!("spawn resolver: {}", e)))?;
 
     // ---- Phase 2a: Parse + commit chunk 0 serially (establishes namespaces) ----
-    if !chunks.is_empty() {
-        let content = std::fs::read_to_string(&chunks[0])?;
+    if total > 0 {
+        let content = chunk_source.read_chunk(0)?;
         let size_mb = content.len() as f64 / (1024.0 * 1024.0);
-        let is_trig = chunks[0].extension().is_some_and(|ext| ext == "trig");
+        let is_trig = chunk_source.is_trig(0);
         tracing::info!(
             chunk = 1,
             total,
@@ -754,11 +1059,11 @@ where
             "chunk 0 committed"
         );
 
-        // Feed to resolver
-        let addr = result.address.clone();
+        // Feed to resolver (pass content hash hex for metadata)
+        let hash_hex = result.commit_id.digest_hex();
         tokio::task::block_in_place(|| {
             run_tx
-                .send((result.commit_blob, addr))
+                .send((result.commit_blob, hash_hex))
                 .map_err(|_| ImportError::RunGeneration("resolver exited unexpectedly".into()))
         })?;
     }
@@ -766,10 +1071,8 @@ where
     // ---- Phase 2b: Parse remaining chunks in parallel, commit serially ----
     // Note: Parallel parsing only works with pure Turtle files. If any chunks are TriG,
     // we fall back to serial processing (TriG needs parse_trig_phase1 which is different).
-    let has_trig = chunks[1..]
-        .iter()
-        .any(|p| p.extension().is_some_and(|ext| ext == "trig"));
-    if chunks.len() > 1 && num_threads > 0 && !has_trig {
+    let has_trig = (1..total).any(|i| chunk_source.is_trig(i));
+    if total > 1 && num_threads > 0 && !has_trig {
         let base_registry = state.ns_registry.clone();
         let ledger = alias.to_string();
 
@@ -785,19 +1088,28 @@ where
             let result_tx = result_tx.clone();
             let base_registry = base_registry.clone();
             let ledger = ledger.clone();
-            let chunks: Vec<PathBuf> = chunks.to_vec();
+            let chunk_source = Arc::clone(chunk_source);
+            let permit_rx_ref = Arc::clone(&permit_rx);
+            let permit_tx_ref = permit_tx_clone.clone();
 
             let handle = std::thread::Builder::new()
                 .name(format!("ttl-parser-{}", thread_idx))
                 .spawn(move || loop {
                     let idx = next_chunk.fetch_add(1, Ordering::Relaxed);
-                    if idx >= chunks.len() {
+                    if idx >= chunk_source.len() {
                         break;
                     }
 
-                    let ttl = match std::fs::read_to_string(&chunks[idx]) {
+                    // Acquire inflight permit (blocks if at max_inflight).
+                    let permit_result = permit_rx_ref.lock().unwrap().recv();
+                    if permit_result.is_err() {
+                        break;
+                    }
+
+                    let ttl = match chunk_source.read_chunk(idx) {
                         Ok(s) => s,
                         Err(e) => {
+                            let _ = permit_tx_ref.send(()); // release permit
                             let _ =
                                 result_tx.send(Err(format!("failed to read chunk {}: {}", idx, e)));
                             break;
@@ -807,11 +1119,14 @@ where
                     let t = (idx + 1) as i64;
                     match parse_chunk(&ttl, base_registry.clone(), t, &ledger, compress) {
                         Ok(parsed) => {
+                            // Release permit — chunk text will be dropped after send.
+                            let _ = permit_tx_ref.send(());
                             if result_tx.send(Ok((idx, parsed))).is_err() {
                                 break;
                             }
                         }
                         Err(e) => {
+                            let _ = permit_tx_ref.send(()); // release permit
                             let _ =
                                 result_tx.send(Err(format!("parse chunk {} failed: {}", idx, e)));
                             break;
@@ -852,10 +1167,12 @@ where
                     "chunk committed"
                 );
 
-                // Feed to resolver
+                // Feed to resolver (pass content hash hex for metadata)
                 let resolver_send_failed = {
-                    let addr = result.address.clone();
-                    tokio::task::block_in_place(|| run_tx.send((result.commit_blob, addr)).is_err())
+                    let hash_hex = result.commit_id.digest_hex();
+                    tokio::task::block_in_place(|| {
+                        run_tx.send((result.commit_blob, hash_hex)).is_err()
+                    })
                 };
                 if resolver_send_failed {
                     // Drop sender so resolver thread exits, then join to get error
@@ -873,7 +1190,7 @@ where
                     && (next_expected + 1).is_multiple_of(config.publish_every)
                 {
                     nameservice
-                        .publish_commit(alias, &result.address, result.t)
+                        .publish_commit(alias, result.t, &result.commit_id)
                         .await
                         .map_err(|e| ImportError::Storage(e.to_string()))?;
                     tracing::info!(
@@ -892,11 +1209,11 @@ where
         for handle in parse_handles {
             handle.join().expect("parse thread panicked");
         }
-    } else if chunks.len() > 1 {
-        // Serial fallback (0 threads)
-        for (i, chunk) in chunks.iter().enumerate().skip(1) {
-            let content = std::fs::read_to_string(chunk)?;
-            let is_trig = chunk.extension().is_some_and(|ext| ext == "trig");
+    } else if total > 1 {
+        // Serial fallback (0 threads or TriG files present)
+        for i in 1..total {
+            let content = chunk_source.read_chunk(i)?;
+            let is_trig = chunk_source.is_trig(i);
             let result = if is_trig {
                 import_trig_commit(&mut state, &content, storage, alias, compress)
                     .await
@@ -907,9 +1224,10 @@ where
                     .map_err(|e| ImportError::Transact(e.to_string()))?
             };
 
-            let addr = result.address.clone();
-            let send_failed =
-                tokio::task::block_in_place(|| run_tx.send((result.commit_blob, addr)).is_err());
+            let hash_hex = result.commit_id.digest_hex();
+            let send_failed = tokio::task::block_in_place(|| {
+                run_tx.send((result.commit_blob, hash_hex)).is_err()
+            });
             if send_failed {
                 drop(run_tx);
                 let err = match resolver_handle.join() {
@@ -922,7 +1240,7 @@ where
 
             if config.publish_every > 0 && (i + 1).is_multiple_of(config.publish_every) {
                 nameservice
-                    .publish_commit(alias, &result.address, result.t)
+                    .publish_commit(alias, result.t, &result.commit_id)
                     .await
                     .map_err(|e| ImportError::Storage(e.to_string()))?;
             }
@@ -930,14 +1248,14 @@ where
     }
 
     // Final commit head publish
-    let commit_head_address = state
+    let commit_head_id = state
         .previous_ref
         .as_ref()
-        .map(|r| r.address.clone())
-        .unwrap_or_default();
+        .map(|r| r.id.clone())
+        .ok_or_else(|| ImportError::Storage("no commit head after import".to_string()))?;
 
     nameservice
-        .publish_commit(alias, &commit_head_address, state.t)
+        .publish_commit(alias, state.t, &commit_head_id)
         .await
         .map_err(|e| ImportError::Storage(e.to_string()))?;
     tracing::info!(t = state.t, "published final commit head");
@@ -992,7 +1310,7 @@ where
     Ok(ChunkImportResult {
         final_t: state.t,
         cumulative_flakes: state.cumulative_flakes,
-        commit_head_address,
+        commit_head_id,
         namespace_codes,
         stats_hook: run_result.stats_hook,
         total_commit_size: run_result.total_commit_size,
@@ -1006,7 +1324,7 @@ where
 // ============================================================================
 
 struct IndexUploadResult {
-    root_address: String,
+    root_id: fluree_db_core::ContentId,
     index_t: i64,
 }
 
@@ -1026,7 +1344,7 @@ where
     N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{
-        build_all_indexes, precompute_language_dict, BinaryIndexRootV2, CasArtifactsConfig,
+        build_all_indexes, precompute_language_dict, BinaryIndexRoot, CasArtifactsConfig,
         PrefixTrie, RunSortOrder,
     };
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
@@ -1102,7 +1420,7 @@ where
 
     // Upload index segments to CAS (needs build_results).
     // Dict upload may still be running — we overlap with it.
-    let graph_addresses = upload_indexes_to_cas(storage, alias, &build_results)
+    let graph_refs = upload_indexes_to_cas(storage, alias, &build_results)
         .await
         .map_err(|e| ImportError::Upload(e.to_string()))?;
 
@@ -1114,7 +1432,7 @@ where
 
     tracing::info!(
         elapsed = ?build_start.elapsed(),
-        graphs = graph_addresses.len(),
+        graphs = graph_refs.len(),
         "index build + CAS upload complete (overlapped)"
     );
 
@@ -1277,19 +1595,20 @@ where
     };
 
     // ---- Phase 5: Build V2 root ----
-    let mut root = BinaryIndexRootV2::from_cas_artifacts(CasArtifactsConfig {
-        ledger_alias: alias,
+    let mut root = BinaryIndexRoot::from_cas_artifacts(CasArtifactsConfig {
+        ledger_id: alias,
         index_t: input.final_t,
         base_t: 0, // fresh import
         predicate_sids,
         namespace_codes: input.namespace_codes,
         subject_id_encoding: uploaded_dicts.subject_id_encoding,
-        dict_addresses: uploaded_dicts.dict_addresses,
-        graph_addresses,
+        dict_refs: uploaded_dicts.dict_refs,
+        graph_refs,
         stats: Some(stats_json),
         schema: None,
         prev_index: None, // fresh import
         garbage: None,    // fresh import
+        sketch_ref: None, // sketches persisted on next incremental index build
         subject_watermarks: uploaded_dicts.subject_watermarks,
         string_watermark: uploaded_dicts.string_watermark,
     });
@@ -1308,8 +1627,12 @@ where
         .await
         .map_err(|e| ImportError::Upload(format!("write V2 root: {}", e)))?;
 
+    // Derive ContentId from the root's content hash
+    let root_id = ContentId::from_hex_digest(CODEC_FLUREE_INDEX_ROOT, &write_result.content_hash)
+        .expect("valid SHA-256 hash from storage write");
+
     tracing::info!(
-        root_address = %write_result.address,
+        root_id = %root_id,
         index_t = input.final_t,
         "V2 index root written to CAS"
     );
@@ -1317,18 +1640,18 @@ where
     // ---- Phase 6: Publish ----
     if config.publish {
         nameservice
-            .publish_index(alias, &write_result.address, input.final_t)
+            .publish_index(alias, input.final_t, &root_id)
             .await
             .map_err(|e| ImportError::Storage(format!("publish index: {}", e)))?;
         tracing::info!(
             index_t = input.final_t,
-            root_address = %write_result.address,
+            root_id = %root_id,
             "index published to nameservice"
         );
     }
 
     Ok(IndexUploadResult {
-        root_address: write_result.address,
+        root_id,
         index_t: input.final_t,
     })
 }

@@ -205,7 +205,11 @@ fn format_property(lines: &mut Vec<String>, index: usize, prop_iri: &str, prop_d
     }
 
     // Reference classes
-    if let Some(refs) = prop_data.get("ref-classes").and_then(|v| v.as_object()) {
+    let refs_obj = prop_data
+        .get("ref-classes")
+        .or_else(|| prop_data.get("refs"))
+        .and_then(|v| v.as_object());
+    if let Some(refs) = refs_obj {
         for (ref_class, count) in refs {
             if let Some(c) = count.as_i64() {
                 type_info.push(format!("→ {} ({})", ref_class, format_number(c)));

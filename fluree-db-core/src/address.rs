@@ -10,16 +10,16 @@
 //! use fluree_db_core::address::{parse_fluree_address, extract_identifier};
 //!
 //! // Standard address (no identifier)
-//! let parsed = parse_fluree_address("fluree:s3://mydb/main/commit/abc.json").unwrap();
+//! let parsed = parse_fluree_address("fluree:s3://mydb/main/commit/abc.fcv2").unwrap();
 //! assert_eq!(parsed.identifier, None);
 //! assert_eq!(parsed.method, "s3");
-//! assert_eq!(parsed.path, "mydb/main/commit/abc.json");
+//! assert_eq!(parsed.path, "mydb/main/commit/abc.fcv2");
 //!
 //! // Address with identifier
-//! let parsed = parse_fluree_address("fluree:commit-store:s3://mydb/main/commit/abc.json").unwrap();
+//! let parsed = parse_fluree_address("fluree:commit-store:s3://mydb/main/commit/abc.fcv2").unwrap();
 //! assert_eq!(parsed.identifier, Some("commit-store"));
 //! assert_eq!(parsed.method, "s3");
-//! assert_eq!(parsed.path, "mydb/main/commit/abc.json");
+//! assert_eq!(parsed.path, "mydb/main/commit/abc.fcv2");
 //!
 //! // Extract just the identifier for routing
 //! assert_eq!(extract_identifier("fluree:myid:s3://path"), Some("myid"));
@@ -113,6 +113,25 @@ pub fn extract_identifier(address: &str) -> Option<&str> {
     parse_fluree_address(address)?.identifier
 }
 
+/// Extract the ledger path prefix from a Fluree content-addressed address.
+///
+/// For an address like `fluree:memory://mydb/main/commit/abc123.fcv2`,
+/// returns `Some("mydb/main")` — the portion before the content-type directory.
+///
+/// This is useful for constructing a `StorageContentStore` bridge that uses the
+/// same path layout as the original writes. The returned prefix is already in
+/// path form (no `:` colon), so it can be passed directly to `bridge_content_store`.
+pub fn extract_ledger_prefix(address: &str) -> Option<String> {
+    let parsed = parse_fluree_address(address)?;
+    // Content-type directory markers used by content_path()
+    for marker in ["/commit/", "/txn/", "/index/", "/blob/"] {
+        if let Some(pos) = parsed.path.find(marker) {
+            return Some(parsed.path[..pos].to_string());
+        }
+    }
+    None
+}
+
 /// Extract the path portion from a Fluree address.
 ///
 /// This returns the path after the `://` delimiter, regardless of whether
@@ -141,10 +160,10 @@ mod tests {
 
     #[test]
     fn test_parse_simple_s3_address() {
-        let parsed = parse_fluree_address("fluree:s3://mydb/main/commit/abc.json").unwrap();
+        let parsed = parse_fluree_address("fluree:s3://mydb/main/commit/abc.fcv2").unwrap();
         assert_eq!(parsed.identifier, None);
         assert_eq!(parsed.method, "s3");
-        assert_eq!(parsed.path, "mydb/main/commit/abc.json");
+        assert_eq!(parsed.path, "mydb/main/commit/abc.fcv2");
     }
 
     #[test]
@@ -166,10 +185,10 @@ mod tests {
     #[test]
     fn test_parse_address_with_identifier() {
         let parsed =
-            parse_fluree_address("fluree:commit-storage:s3://mydb/commit/abc.json").unwrap();
+            parse_fluree_address("fluree:commit-storage:s3://mydb/commit/abc.fcv2").unwrap();
         assert_eq!(parsed.identifier, Some("commit-storage"));
         assert_eq!(parsed.method, "s3");
-        assert_eq!(parsed.path, "mydb/commit/abc.json");
+        assert_eq!(parsed.path, "mydb/commit/abc.fcv2");
     }
 
     #[test]

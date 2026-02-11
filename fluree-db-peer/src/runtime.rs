@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use crate::config::PeerConfig;
 use crate::error::PeerError;
 use crate::sse::{SseClient, SseClientEvent};
-use crate::state::{LedgerState, PeerState, VgState};
+use crate::state::{GraphSourceState, LedgerState, PeerState};
 
 /// Callback trait for peer events
 ///
@@ -28,13 +28,13 @@ pub trait PeerCallbacks: Send + Sync {
     async fn on_snapshot_complete(&self, _hash: &str) {}
 
     /// Called when a ledger is created or updated
-    async fn on_ledger_updated(&self, _alias: &str, _state: &LedgerState) {}
+    async fn on_ledger_updated(&self, _ledger_id: &str, _state: &LedgerState) {}
 
-    /// Called when a virtual graph is created or updated
-    async fn on_vg_updated(&self, _alias: &str, _state: &VgState) {}
+    /// Called when a graph source is created or updated
+    async fn on_graph_source_updated(&self, _graph_source_id: &str, _state: &GraphSourceState) {}
 
     /// Called when a resource is retracted
-    async fn on_retracted(&self, _kind: &str, _alias: &str) {}
+    async fn on_retracted(&self, _kind: &str, _resource_id: &str) {}
 }
 
 /// Default logging-only callbacks
@@ -54,26 +54,26 @@ impl PeerCallbacks for LoggingCallbacks {
         tracing::info!(hash, "Snapshot complete");
     }
 
-    async fn on_ledger_updated(&self, alias: &str, state: &LedgerState) {
+    async fn on_ledger_updated(&self, ledger_id: &str, state: &LedgerState) {
         tracing::info!(
-            alias,
+            ledger_id,
             commit_t = state.commit_t,
             index_t = state.index_t,
             "Ledger updated"
         );
     }
 
-    async fn on_vg_updated(&self, alias: &str, state: &VgState) {
+    async fn on_graph_source_updated(&self, graph_source_id: &str, state: &GraphSourceState) {
         tracing::info!(
-            alias,
+            graph_source_id,
             index_t = state.index_t,
             config_hash = %state.config_hash,
-            "Virtual graph updated"
+            "Graph source updated"
         );
     }
 
-    async fn on_retracted(&self, kind: &str, alias: &str) {
-        tracing::info!(kind, alias, "Resource retracted");
+    async fn on_retracted(&self, kind: &str, resource_id: &str) {
+        tracing::info!(kind, resource_id, "Resource retracted");
     }
 }
 
@@ -139,26 +139,29 @@ impl<C: PeerCallbacks + 'static> PeerRuntime<C> {
             SseClientEvent::LedgerRecord(record) => {
                 let changed = self.state.handle_ledger_record(&record).await;
                 if changed {
-                    if let Some(state) = self.state.get_ledger(&record.alias).await {
+                    if let Some(state) = self.state.get_ledger(&record.ledger_id).await {
                         self.callbacks
-                            .on_ledger_updated(&record.alias, &state)
+                            .on_ledger_updated(&record.ledger_id, &state)
                             .await;
                     }
                 }
             }
 
-            SseClientEvent::VgRecord(record) => {
-                let changed = self.state.handle_vg_record(&record).await;
+            SseClientEvent::GraphSourceRecord(record) => {
+                let changed = self.state.handle_graph_source_record(&record).await;
                 if changed {
-                    if let Some(state) = self.state.get_vg(&record.alias).await {
-                        self.callbacks.on_vg_updated(&record.alias, &state).await;
+                    if let Some(state) = self.state.get_graph_source(&record.graph_source_id).await
+                    {
+                        self.callbacks
+                            .on_graph_source_updated(&record.graph_source_id, &state)
+                            .await;
                     }
                 }
             }
 
-            SseClientEvent::Retracted { kind, alias } => {
-                self.state.handle_retracted(&kind, &alias).await;
-                self.callbacks.on_retracted(&kind, &alias).await;
+            SseClientEvent::Retracted { kind, resource_id } => {
+                self.state.handle_retracted(&kind, &resource_id).await;
+                self.callbacks.on_retracted(&kind, &resource_id).await;
             }
 
             SseClientEvent::Disconnected { reason } => {
@@ -180,7 +183,7 @@ mod tests {
     struct CountingCallbacks {
         connected: AtomicUsize,
         ledger_updates: AtomicUsize,
-        vg_updates: AtomicUsize,
+        graph_source_updates: AtomicUsize,
         retractions: AtomicUsize,
     }
 
@@ -189,7 +192,7 @@ mod tests {
             Self {
                 connected: AtomicUsize::new(0),
                 ledger_updates: AtomicUsize::new(0),
-                vg_updates: AtomicUsize::new(0),
+                graph_source_updates: AtomicUsize::new(0),
                 retractions: AtomicUsize::new(0),
             }
         }
@@ -201,15 +204,15 @@ mod tests {
             self.connected.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_ledger_updated(&self, _alias: &str, _state: &LedgerState) {
+        async fn on_ledger_updated(&self, _ledger_id: &str, _state: &LedgerState) {
             self.ledger_updates.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_vg_updated(&self, _alias: &str, _state: &VgState) {
-            self.vg_updates.fetch_add(1, Ordering::SeqCst);
+        async fn on_graph_source_updated(&self, _graph_source_id: &str, _state: &GraphSourceState) {
+            self.graph_source_updates.fetch_add(1, Ordering::SeqCst);
         }
 
-        async fn on_retracted(&self, _kind: &str, _alias: &str) {
+        async fn on_retracted(&self, _kind: &str, _resource_id: &str) {
             self.retractions.fetch_add(1, Ordering::SeqCst);
         }
     }
@@ -234,11 +237,11 @@ mod tests {
 
         use crate::sse::LedgerRecord;
         let record = LedgerRecord {
-            alias: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
             branch: Some("main".to_string()),
-            commit_address: Some("commit:1".to_string()),
+            commit_head_id: Some("commit-cid:1".to_string()),
             commit_t: 5,
-            index_address: Some("index:1".to_string()),
+            index_head_id: Some("index-cid:1".to_string()),
             index_t: 3,
             retracted: false,
         };
@@ -261,11 +264,11 @@ mod tests {
         // First add a ledger
         use crate::sse::LedgerRecord;
         let record = LedgerRecord {
-            alias: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
             branch: Some("main".to_string()),
-            commit_address: Some("commit:1".to_string()),
+            commit_head_id: Some("commit-cid:1".to_string()),
             commit_t: 5,
-            index_address: Some("index:1".to_string()),
+            index_head_id: Some("index-cid:1".to_string()),
             index_t: 3,
             retracted: false,
         };
@@ -278,7 +281,7 @@ mod tests {
         runtime
             .handle_event(SseClientEvent::Retracted {
                 kind: "ledger".to_string(),
-                alias: "books:main".to_string(),
+                resource_id: "books:main".to_string(),
             })
             .await;
 
@@ -295,11 +298,11 @@ mod tests {
         // Add a ledger
         use crate::sse::LedgerRecord;
         let record = LedgerRecord {
-            alias: "books:main".to_string(),
+            ledger_id: "books:main".to_string(),
             branch: Some("main".to_string()),
-            commit_address: Some("commit:1".to_string()),
+            commit_head_id: Some("commit-cid:1".to_string()),
             commit_t: 5,
-            index_address: Some("index:1".to_string()),
+            index_head_id: Some("index-cid:1".to_string()),
             index_t: 3,
             retracted: false,
         };

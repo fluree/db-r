@@ -317,8 +317,8 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
             Ok(vec![Pattern::Subquery(lowered)])
         }
         UnresolvedPattern::IndexSearch(isp) => {
-            // Lower index search (BM25 / virtual graph search) pattern.
-            let vg_alias = isp.vg_alias.as_ref().to_string();
+            // Lower index search (BM25 / graph source search) pattern.
+            let graph_source_id = isp.graph_source_id.as_ref().to_string();
 
             let target = match &isp.target {
                 super::ast::UnresolvedIndexSearchTarget::Const(s) => {
@@ -330,7 +330,7 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
             };
 
             let id_var = vars.get_or_insert(&isp.id_var);
-            let mut pat = IndexSearchPattern::new(vg_alias, target, id_var);
+            let mut pat = IndexSearchPattern::new(graph_source_id, target, id_var);
 
             pat.limit = isp.limit;
             pat.score_var = isp.score_var.as_ref().map(|v| vars.get_or_insert(v));
@@ -342,7 +342,7 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
         }
         UnresolvedPattern::VectorSearch(vsp) => {
             // Lower vector search (similarity search) pattern.
-            let vg_alias = vsp.vg_alias.as_ref().to_string();
+            let graph_source_id = vsp.graph_source_id.as_ref().to_string();
 
             let target = match &vsp.target {
                 super::ast::UnresolvedVectorSearchTarget::Const(v) => {
@@ -356,7 +356,8 @@ pub fn lower_unresolved_pattern<E: IriEncoder>(
             let metric = DistanceMetric::parse(&vsp.metric).unwrap_or(DistanceMetric::Cosine);
 
             let id_var = vars.get_or_insert(&vsp.id_var);
-            let mut pat = VectorSearchPattern::new(vg_alias, target, id_var).with_metric(metric);
+            let mut pat =
+                VectorSearchPattern::new(graph_source_id, target, id_var).with_metric(metric);
 
             if let Some(limit) = vsp.limit {
                 pat = pat.with_limit(limit);

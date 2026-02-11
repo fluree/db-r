@@ -94,7 +94,7 @@ When complete:
 
 ```text
   - Write index snapshot to storage
-  - Publish index_address to nameservice
+  - Publish index_id to nameservice
   - Update index_t to 42
 ```
 
@@ -193,7 +193,7 @@ curl http://localhost:8090/ledgers/mydb:main
 Response:
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_id": "mydb:main",
   "commit_t": 150,
   "index_t": 145,
   "novelty_count": 5,

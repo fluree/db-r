@@ -67,8 +67,7 @@ Response:
 {
   "t": 1,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456...",
-  "address": "fluree:memory:commit:abc123...",
+  "commit_id": "bafybeig...commitT1",
   "flakes_added": 4,
   "flakes_retracted": 0
 }
@@ -351,20 +350,20 @@ Every successful transaction returns a receipt with metadata:
 {
   "t": 5,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456789...",
-  "address": "fluree:memory:commit:abc123...",
+  "commit_id": "bafybeig...commitT5",
   "flakes_added": 3,
   "flakes_retracted": 2,
-  "previous_commit": "def456abc789..."
+  "previous_commit_id": "bafybeig...commitT4"
 }
 ```
 
 Key fields:
 - **t**: Transaction time (monotonically increasing)
 - **timestamp**: ISO 8601 timestamp
-- **commit_sha**: Cryptographic hash of the commit
+- **commit_id**: Content-addressed identifier (CID) for the commit
 - **flakes_added**: Number of triples added
 - **flakes_retracted**: Number of triples removed
+- **previous_commit_id**: ContentId of the previous commit (present when t > 1)
 
 See [Commit Receipts](../transactions/commit-receipts.md) for details.
 

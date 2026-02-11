@@ -113,7 +113,7 @@ impl fmt::Debug for RemoteBm25SearchProvider {
 impl Bm25SearchProvider for RemoteBm25SearchProvider {
     async fn search_bm25(
         &self,
-        vg_alias: &str,
+        graph_source_id: &str,
         query_text: &str,
         limit: usize,
         as_of_t: Option<i64>,
@@ -121,7 +121,7 @@ impl Bm25SearchProvider for RemoteBm25SearchProvider {
         timeout_ms: Option<u64>,
     ) -> Result<Bm25SearchResult> {
         // Build the search request
-        let mut request = SearchRequest::bm25(vg_alias, query_text, limit);
+        let mut request = SearchRequest::bm25(graph_source_id, query_text, limit);
         request.as_of_t = as_of_t;
         request.sync = sync;
         request.timeout_ms = timeout_ms;
@@ -159,7 +159,7 @@ impl Bm25SearchProvider for RemoteBm25SearchProvider {
                 let code = search_error.error.code;
                 let msg = search_error.error.message;
                 return Err(match code {
-                    ErrorCode::VgNotFound
+                    ErrorCode::GraphSourceNotFound
                     | ErrorCode::IndexNotBuilt
                     | ErrorCode::NoSnapshotForAsOfT => {
                         QueryError::InvalidQuery(format!("{}: {}", code, msg))

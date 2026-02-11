@@ -21,7 +21,10 @@ mod inner {
     use crate::namespace::NamespaceRegistry;
     use crate::parse::trig_meta::{parse_trig_phase1, resolve_trig_meta, RawObject, RawTerm};
     use crate::value_convert::convert_string_literal;
-    use fluree_db_core::{ContentAddressedWrite, ContentKind, Flake, FlakeMeta, FlakeValue, Sid};
+    use fluree_db_core::{
+        ContentAddressedWrite, ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid,
+        CODEC_FLUREE_COMMIT,
+    };
     use fluree_db_novelty::CommitRef;
     use std::collections::HashMap;
 
@@ -70,10 +73,8 @@ mod inner {
 
     /// Result of importing a single TTL chunk.
     pub struct ImportCommitResult {
-        /// Storage address of the committed blob.
-        pub address: String,
-        /// Content ID (e.g. "sha256:abcd...").
-        pub commit_id: String,
+        /// Content identifier (CIDv1).
+        pub commit_id: ContentId,
         /// Transaction number.
         pub t: i64,
         /// Number of flakes in this commit.
@@ -95,20 +96,20 @@ mod inner {
     /// * `state` — mutable import state (carried across chunks)
     /// * `ttl` — Turtle input text
     /// * `storage` — storage backend for writing commit blobs
-    /// * `ledger_alias` — ledger name for storage path construction
+    /// * `ledger_id` — ledger name for storage path construction
     /// * `compress` — whether to zstd-compress the ops stream
     pub async fn import_commit<S>(
         state: &mut ImportState,
         ttl: &str,
         storage: &S,
-        ledger_alias: &str,
+        ledger_id: &str,
         compress: bool,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
     {
         let new_t = state.t + 1;
-        let txn_id = format!("{}-{}", ledger_alias, new_t);
+        let txn_id = format!("{}-{}", ledger_id, new_t);
 
         // 1. Create ImportSink + parse TTL
         let ns_codes_before = state.ns_registry.code_count();
@@ -147,13 +148,11 @@ mod inner {
 
             let envelope = CommitV2Envelope {
                 t: new_t,
-                v: 2,
                 previous_ref: state.previous_ref.clone(),
                 namespace_delta: ns_delta,
                 txn: None,
                 time: Some(state.import_time.clone()),
-                data: None, // DB stats not maintained during import
-                index: None,
+
                 txn_signature: None,
                 txn_meta: Vec::new(),
                 graph_delta: HashMap::new(),
@@ -167,7 +166,8 @@ mod inner {
             let _span = tracing::info_span!("import_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
-        let commit_id = format!("sha256:{}", &result.content_hash_hex);
+        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
+            .expect("valid SHA-256 hex from commit writer");
         let blob_bytes = result.bytes.len();
 
         // 5. Store
@@ -176,7 +176,7 @@ mod inner {
             storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
-                    ledger_alias,
+                    ledger_id,
                     &result.content_hash_hex,
                     &result.bytes,
                 )
@@ -193,13 +193,10 @@ mod inner {
 
         // 8. Advance state
         state.t = new_t;
-        state.previous_ref = Some(
-            CommitRef::new(&write_res.address).with_id(format!("fluree:commit:{}", commit_id)),
-        );
+        state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
 
         Ok(ImportCommitResult {
-            address: write_res.address,
-            commit_id,
+            commit_id: commit_cid,
             t: new_t,
             flake_count: op_count,
             blob_bytes,
@@ -223,27 +220,27 @@ mod inner {
     /// * `state` — mutable import state (carried across chunks)
     /// * `trig` — TriG input text (Turtle-compatible if no GRAPH blocks)
     /// * `storage` — storage backend for writing commit blobs
-    /// * `ledger_alias` — ledger name for storage path construction
+    /// * `ledger_id` — ledger name for storage path construction
     /// * `compress` — whether to zstd-compress the ops stream
     pub async fn import_trig_commit<S>(
         state: &mut ImportState,
         trig: &str,
         storage: &S,
-        ledger_alias: &str,
+        ledger_id: &str,
         compress: bool,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
     {
         let new_t = state.t + 1;
-        let txn_id = format!("{}-{}", ledger_alias, new_t);
+        let txn_id = format!("{}-{}", ledger_id, new_t);
 
         // 1. Parse TriG to extract GRAPH blocks
         let phase1 = parse_trig_phase1(trig)?;
 
         // If no named graphs and no txn-meta, use the faster pure-Turtle path
         if phase1.named_graphs.is_empty() && phase1.raw_meta.is_none() {
-            return import_commit(state, trig, storage, ledger_alias, compress).await;
+            return import_commit(state, trig, storage, ledger_id, compress).await;
         }
 
         let _parse_span = tracing::info_span!(
@@ -347,13 +344,11 @@ mod inner {
 
         let envelope = CommitV2Envelope {
             t: new_t,
-            v: 2,
             previous_ref: state.previous_ref.clone(),
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),
-            data: None,
-            index: None,
+
             txn_signature: None,
             txn_meta,
             graph_delta,
@@ -365,7 +360,8 @@ mod inner {
                 tracing::info_span!("import_trig_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
-        let commit_id = format!("sha256:{}", &result.content_hash_hex);
+        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
+            .expect("valid SHA-256 hex from commit writer");
         let blob_bytes = result.bytes.len();
 
         // 8. Store
@@ -374,7 +370,7 @@ mod inner {
             storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
-                    ledger_alias,
+                    ledger_id,
                     &result.content_hash_hex,
                     &result.bytes,
                 )
@@ -392,13 +388,10 @@ mod inner {
 
         // 9. Advance state
         state.t = new_t;
-        state.previous_ref = Some(
-            CommitRef::new(&write_res.address).with_id(format!("fluree:commit:{}", commit_id)),
-        );
+        state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
 
         Ok(ImportCommitResult {
-            address: write_res.address,
-            commit_id,
+            commit_id: commit_cid,
             t: new_t,
             flake_count: op_count,
             blob_bytes,
@@ -516,10 +509,10 @@ mod inner {
         ttl: &str,
         mut ns_registry: NamespaceRegistry,
         t: i64,
-        ledger_alias: &str,
+        ledger_id: &str,
         compress: bool,
     ) -> Result<ParsedChunk> {
-        let txn_id = format!("{}-{}", ledger_alias, t);
+        let txn_id = format!("{}-{}", ledger_id, t);
 
         let _parse_span = tracing::info_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
 
@@ -550,7 +543,7 @@ mod inner {
         state: &mut ImportState,
         parsed: ParsedChunk,
         storage: &S,
-        ledger_alias: &str,
+        ledger_id: &str,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
@@ -573,26 +566,25 @@ mod inner {
 
         let envelope = CommitV2Envelope {
             t: new_t,
-            v: 2,
             previous_ref: state.previous_ref.clone(),
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),
-            data: None,
-            index: None,
+
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
         };
 
         let result = parsed.writer.finish(&envelope)?;
-        let commit_id = format!("sha256:{}", &result.content_hash_hex);
+        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
+            .expect("valid SHA-256 hex from commit writer");
         let blob_bytes = result.bytes.len();
 
         let write_res = storage
             .content_write_bytes_with_hash(
                 ContentKind::Commit,
-                ledger_alias,
+                ledger_id,
                 &result.content_hash_hex,
                 &result.bytes,
             )
@@ -607,13 +599,10 @@ mod inner {
         );
 
         state.t = new_t;
-        state.previous_ref = Some(
-            CommitRef::new(&write_res.address).with_id(format!("fluree:commit:{}", commit_id)),
-        );
+        state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
 
         Ok(ImportCommitResult {
-            address: write_res.address,
-            commit_id,
+            commit_id: commit_cid,
             t: new_t,
             flake_count: parsed.op_count,
             blob_bytes,

@@ -606,6 +606,7 @@ fn add_property(node: &mut Map<String, JsonValue>, predicate: &str, value: JsonV
 mod tests {
     use super::*;
     use fluree_graph_ir::Term;
+    use fluree_vocab::rdf;
     use pretty_assertions::assert_eq;
 
     fn make_simple_graph() -> Graph {
@@ -619,7 +620,7 @@ mod tests {
 
         graph.add_triple(
             Term::iri("http://example.org/alice"),
-            Term::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            Term::iri(rdf::TYPE),
             Term::iri("http://xmlns.com/foaf/0.1/Person"),
         );
 
@@ -652,9 +653,7 @@ mod tests {
         let node = &result["@graph"][0];
         assert_eq!(node["@type"], "http://xmlns.com/foaf/0.1/Person");
         // Should not have rdf:type
-        assert!(node
-            .get("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
-            .is_none());
+        assert!(node.get(rdf::TYPE).is_none());
     }
 
     #[test]
@@ -668,9 +667,7 @@ mod tests {
         // Should NOT have @type
         assert!(node.get("@type").is_none());
         // Should have rdf:type
-        assert!(node
-            .get("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
-            .is_some());
+        assert!(node.get(rdf::TYPE).is_some());
     }
 
     #[test]
@@ -713,13 +710,13 @@ mod tests {
 
         graph.add_triple(
             Term::iri("http://example.org/alice"),
-            Term::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            Term::iri(rdf::TYPE),
             Term::iri("http://xmlns.com/foaf/0.1/Person"),
         );
 
         graph.add_triple(
             Term::iri("http://example.org/alice"),
-            Term::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            Term::iri(rdf::TYPE),
             Term::iri("http://xmlns.com/foaf/0.1/Agent"),
         );
 
@@ -1058,7 +1055,7 @@ mod tests {
 
         graph.add_triple(
             Term::iri("http://example.org/alice"),
-            Term::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            Term::iri(rdf::TYPE),
             Term::iri("http://xmlns.com/foaf/0.1/Person"),
         );
 

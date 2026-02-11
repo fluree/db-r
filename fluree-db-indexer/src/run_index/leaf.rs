@@ -25,6 +25,8 @@ use super::run_record::{RunRecord, RunSortOrder};
 use sha2::{Digest, Sha256};
 use std::io;
 use std::path::PathBuf;
+use std::time::Duration;
+use std::{fs, io::Write};
 
 /// Magic bytes for a leaf file.
 const LEAF_MAGIC: [u8; 4] = *b"FLI1";
@@ -125,10 +127,105 @@ pub struct LeafInfo {
     pub last_key: RunRecord,
 }
 
-/// Compute SHA-256 content hash of a byte slice, returning hex string.
-fn content_hash(data: &[u8]) -> String {
-    let hash = Sha256::digest(data);
-    hex::encode(hash)
+/// Perf counters for leaf/leaflet work during index build.
+#[derive(Debug, Default, Clone)]
+pub struct LeafWriterPerf {
+    /// Leaflets encoded (including Region 1/2 zstd + optional Region 3 zstd).
+    pub leaflets_encoded: u64,
+    /// Total records encoded into leaflets.
+    pub leaflet_records: u64,
+    /// Time spent building Region 3 entries (collect + sort).
+    pub region3_build_time: Duration,
+    /// Time spent encoding/compressing leaflets (all regions).
+    pub leaflet_encode_time: Duration,
+    /// Leaf files flushed to disk.
+    pub leaves_flushed: u64,
+    /// Total bytes written to leaf files on disk.
+    pub leaf_bytes_written: u64,
+    /// Time spent hashing+writing leaf files.
+    pub leaf_flush_time: Duration,
+}
+
+/// Dummy value used for allocating radix-sort scratch buffers.
+const R3_DUMMY: Region3Entry = Region3Entry {
+    s_id: 0,
+    p_id: 0,
+    o_kind: 0,
+    o_key: 0,
+    t_signed: 0,
+    dt: 0,
+    lang_id: 0,
+    i: 0,
+};
+
+/// Radix-sort Region 3 entries by abs(t) descending.
+///
+/// This is substantially faster than comparison sorting for large leaflets.
+#[inline]
+fn radix_sort_r3_abs_t_desc(entries: &mut [Region3Entry], tmp: &mut Vec<Region3Entry>) {
+    let n = entries.len();
+    if n <= 1 {
+        return;
+    }
+
+    // Ensure tmp has space to receive writes by index.
+    tmp.clear();
+    tmp.resize(n, R3_DUMMY);
+
+    // 8 passes over 8-bit digits, LSD-first.
+    // For descending abs_t, sort by key = !abs_t() ascending.
+    let mut write_into_tmp = true;
+    for shift in (0..64).step_by(8) {
+        let mut counts = [0usize; 256];
+
+        if write_into_tmp {
+            for e in entries.iter() {
+                let key = !e.abs_t();
+                let b = ((key >> shift) & 0xFF) as usize;
+                counts[b] += 1;
+            }
+            let mut offsets = [0usize; 256];
+            let mut sum = 0usize;
+            for (i, c) in counts.iter().enumerate() {
+                offsets[i] = sum;
+                sum += *c;
+            }
+            for e in entries.iter() {
+                let key = !e.abs_t();
+                let b = ((key >> shift) & 0xFF) as usize;
+                let pos = offsets[b];
+                tmp[pos] = *e;
+                offsets[b] = pos + 1;
+            }
+        } else {
+            for e in tmp.iter() {
+                let key = !e.abs_t();
+                let b = ((key >> shift) & 0xFF) as usize;
+                counts[b] += 1;
+            }
+            let mut offsets = [0usize; 256];
+            let mut sum = 0usize;
+            for (i, c) in counts.iter().enumerate() {
+                offsets[i] = sum;
+                sum += *c;
+            }
+            for e in tmp.iter() {
+                let key = !e.abs_t();
+                let b = ((key >> shift) & 0xFF) as usize;
+                let pos = offsets[b];
+                entries[pos] = *e;
+                offsets[b] = pos + 1;
+            }
+        }
+
+        write_into_tmp = !write_into_tmp;
+    }
+
+    // After 8 passes, the final write lands back in `entries`.
+    debug_assert!(
+        write_into_tmp,
+        "radix sort should end with entries as destination"
+    );
 }
 
 // ============================================================================
@@ -151,6 +248,8 @@ pub struct LeafWriter {
     p_width: u8,
     /// Buffer of records for the current leaflet.
     record_buf: Vec<RunRecord>,
+    /// Scratch buffer reused for Region 3 sorting.
+    r3_tmp: Vec<Region3Entry>,
     /// Encoded leaflets for the current leaf file.
     current_leaflets: Vec<EncodedLeaflet>,
     /// First record of the current leaf (for LeafInfo).
@@ -161,6 +260,8 @@ pub struct LeafWriter {
     leaf_count: u32,
     /// Accumulated leaf metadata.
     leaf_infos: Vec<LeafInfo>,
+    perf: LeafWriterPerf,
+    perf_enabled: bool,
 }
 
 impl LeafWriter {
@@ -195,6 +296,9 @@ impl LeafWriter {
         p_width: u8,
         sort_order: RunSortOrder,
     ) -> Self {
+        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         Self {
             leaflet_encoder: LeafletEncoder::with_widths_and_order(
                 zstd_level, p_width, dt_width, sort_order,
@@ -205,11 +309,14 @@ impl LeafWriter {
             dt_width,
             p_width,
             record_buf: Vec::with_capacity(leaflet_rows),
+            r3_tmp: Vec::with_capacity(leaflet_rows),
             current_leaflets: Vec::with_capacity(leaflets_per_leaf),
             leaf_first_record: None,
             last_record: None,
             leaf_count: 0,
             leaf_infos: Vec::new(),
+            perf: LeafWriterPerf::default(),
+            perf_enabled,
         }
     }
 
@@ -234,22 +341,34 @@ impl LeafWriter {
             return Ok(());
         }
 
+        let t0 = self.perf_enabled.then(std::time::Instant::now);
         let row_count = self.record_buf.len() as u32;
         let first_s_id = self.record_buf[0].s_id.as_u64();
         let first_p_id = self.record_buf[0].p_id;
 
         // Build R3 entries for time-travel support in bulk builds.
         // Must be sorted in reverse chronological order (newest first) for replay.
+        let r3_t0 = self.perf_enabled.then(std::time::Instant::now);
         let mut r3_entries: Vec<Region3Entry> = self
             .record_buf
             .iter()
             .map(Region3Entry::from_run_record)
             .collect();
-        r3_entries.sort_by_key(|e| std::cmp::Reverse(e.abs_t()));
+        radix_sort_r3_abs_t_desc(&mut r3_entries, &mut self.r3_tmp);
+        if let Some(t) = r3_t0 {
+            self.perf.region3_build_time += t.elapsed();
+        }
         let data = self
             .leaflet_encoder
             .encode_leaflet_with_r3(&self.record_buf, &r3_entries);
         self.record_buf.clear();
+        if let Some(t) = t0 {
+            self.perf.leaflet_encode_time += t.elapsed();
+        }
+        if self.perf_enabled {
+            self.perf.leaflets_encoded += 1;
+            self.perf.leaflet_records += row_count as u64;
+        }
 
         self.current_leaflets.push(EncodedLeaflet {
             data,
@@ -271,6 +390,7 @@ impl LeafWriter {
             return Ok(());
         }
 
+        let t0 = self.perf_enabled.then(std::time::Instant::now);
         let leaf_index = self.leaf_count;
 
         let first_key = self
@@ -284,19 +404,86 @@ impl LeafWriter {
             .map(|l| l.row_count as u64)
             .sum();
 
-        // Build leaf bytes in memory, then hash for content-addressed filename
-        let leaf_bytes = build_leaf_bytes(
-            &self.current_leaflets,
-            &first_key,
-            &last_key,
-            total_rows,
-            self.dt_width,
-            self.p_width,
-        );
-        let hash = content_hash(&leaf_bytes);
+        // Stream leaf bytes to disk while hashing, then rename to content hash.
+        //
+        // This avoids building a large `leaf_bytes` buffer and copying leaflet
+        // bytes into it, which is expensive at scale.
+        let leaflet_count = self.current_leaflets.len();
+        let dir_size = leaflet_count * LEAFLET_DIR_ENTRY;
+        let header_size = LEAF_HEADER_FIXED + dir_size;
+
+        // Temporary file name (same dir so rename is atomic).
+        let tmp_path = self
+            .output_dir
+            .join(format!(".leaf_tmp_{:06}.fli", leaf_index));
+
+        let mut hasher = Sha256::new();
+        let file = fs::File::create(&tmp_path)?;
+        let mut w = io::BufWriter::new(file);
+
+        let mut write_hashed = |bytes: &[u8]| -> io::Result<()> {
+            hasher.update(bytes);
+            w.write_all(bytes)
+        };
+
+        // ---- Header ----
+        write_hashed(&LEAF_MAGIC)?;
+        write_hashed(&[LEAF_VERSION])?;
+        write_hashed(&[leaflet_count as u8])?;
+        write_hashed(&[self.dt_width])?;
+        write_hashed(&[self.p_width])?;
+        write_hashed(&total_rows.to_le_bytes())?;
+
+        // First/last keys (28 bytes each)
+        let mut key_buf = [0u8; SORT_KEY_BYTES];
+        SortKey::from_record(&first_key).write_to(&mut key_buf);
+        write_hashed(&key_buf)?;
+        SortKey::from_record(&last_key).write_to(&mut key_buf);
+        write_hashed(&key_buf)?;
+
+        // ---- Leaflet directory ----
+        let mut offset = header_size as u64;
+        for l in &self.current_leaflets {
+            write_hashed(&offset.to_le_bytes())?;
+            write_hashed(&(l.data.len() as u32).to_le_bytes())?;
+            write_hashed(&l.row_count.to_le_bytes())?;
+            write_hashed(&l.first_s_id.to_le_bytes())?;
+            write_hashed(&l.first_p_id.to_le_bytes())?;
+            offset += l.data.len() as u64;
+        }
+
+        // ---- Leaflet data ----
+        for l in &self.current_leaflets {
+            write_hashed(&l.data)?;
+        }
+
+        w.flush()?;
+        if self.perf_enabled {
+            // Header+dir + all leaflet data
+            let bytes_written = header_size as u64
+                + self
+                    .current_leaflets
+                    .iter()
+                    .map(|l| l.data.len() as u64)
+                    .sum::<u64>();
+            self.perf.leaf_bytes_written += bytes_written;
+        }
+
+        let hash = hex::encode(hasher.finalize());
         let leaf_path = self.output_dir.join(format!("{}.fli", hash));
 
-        std::fs::write(&leaf_path, &leaf_bytes)?;
+        match fs::rename(&tmp_path, &leaf_path) {
+            Ok(()) => {}
+            Err(e) if leaf_path.exists() => {
+                // Content-addressed: if destination exists, it should be identical.
+                let _ = fs::remove_file(&tmp_path);
+            }
+            Err(e) => return Err(e),
+        }
+        if let Some(t) = t0 {
+            self.perf.leaf_flush_time += t.elapsed();
+            self.perf.leaves_flushed += 1;
+        }
 
         tracing::debug!(
             leaf = leaf_index,
@@ -331,65 +518,15 @@ impl LeafWriter {
         Ok(self.leaf_infos)
     }
 
+    /// Get perf counters accumulated so far.
+    pub fn perf(&self) -> Option<&LeafWriterPerf> {
+        self.perf_enabled.then_some(&self.perf)
+    }
+
     /// Number of leaf files written so far.
     pub fn leaf_count(&self) -> u32 {
         self.leaf_count
     }
-}
-
-// ============================================================================
-// Write a leaf file
-// ============================================================================
-
-/// Build leaf file bytes in memory (for content hashing before writing).
-fn build_leaf_bytes(
-    leaflets: &[EncodedLeaflet],
-    first_key: &RunRecord,
-    last_key: &RunRecord,
-    total_rows: u64,
-    dt_width: u8,
-    p_width: u8,
-) -> Vec<u8> {
-    let leaflet_count = leaflets.len();
-    let dir_size = leaflet_count * LEAFLET_DIR_ENTRY;
-    let header_size = LEAF_HEADER_FIXED + dir_size;
-    let data_size: usize = leaflets.iter().map(|l| l.data.len()).sum();
-    let total_size = header_size + data_size;
-
-    let mut buf = Vec::with_capacity(total_size);
-
-    // ---- Header ----
-    buf.extend_from_slice(&LEAF_MAGIC);
-    buf.push(LEAF_VERSION);
-    buf.push(leaflet_count as u8);
-    buf.push(dt_width);
-    buf.push(p_width);
-    buf.extend_from_slice(&total_rows.to_le_bytes());
-
-    // First/last keys (28 bytes each)
-    let mut key_buf = [0u8; SORT_KEY_BYTES];
-    SortKey::from_record(first_key).write_to(&mut key_buf);
-    buf.extend_from_slice(&key_buf);
-    SortKey::from_record(last_key).write_to(&mut key_buf);
-    buf.extend_from_slice(&key_buf);
-
-    // ---- Leaflet directory ----
-    let mut offset = header_size as u64;
-    for l in leaflets {
-        buf.extend_from_slice(&offset.to_le_bytes());
-        buf.extend_from_slice(&(l.data.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&l.row_count.to_le_bytes());
-        buf.extend_from_slice(&l.first_s_id.to_le_bytes());
-        buf.extend_from_slice(&l.first_p_id.to_le_bytes());
-        offset += l.data.len() as u64;
-    }
-
-    // ---- Leaflet data ----
-    for l in leaflets {
-        buf.extend_from_slice(&l.data);
-    }
-
-    buf
 }
 
 // ============================================================================

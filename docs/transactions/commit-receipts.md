@@ -10,11 +10,10 @@ Basic commit receipt:
 {
   "t": 42,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456789abcdef...",
-  "address": "fluree:memory:commit:abc123...",
+  "commit_id": "bafybeig...commitT42",
   "flakes_added": 15,
   "flakes_retracted": 3,
-  "previous_commit": "def456abc789012defabc..."
+  "previous_commit_id": "bafybeig...commitT41"
 }
 ```
 
@@ -68,44 +67,29 @@ curl -X POST http://localhost:8090/query \
   -d '{"from": "mydb:main@iso:2024-01-22T10:30:00Z", ...}'
 ```
 
-### Commit SHA
+### Commit ID
 
-Cryptographic hash of the commit:
+Content-addressed identifier for the commit:
 
 ```json
 {
-  "commit_sha": "abc123def456789abcdef0123456789abcdef01"
+  "commit_id": "bafybeig...commitT42"
 }
 ```
 
 **Properties:**
-- SHA-256 hash (or similar)
-- Unique identifier for this exact commit
-- Content-addressable (same data = same hash)
-- Used for verification and references
+- CIDv1 value (base32-lower multibase string)
+- Derived from the commit's canonical bytes via SHA-256
+- Storage-agnostic -- does not depend on where the commit is stored
+- Can be used to fetch the commit from any content store
 
 **Usage:**
 
 ```bash
 # Query at specific commit
 curl -X POST http://localhost:8090/query \
-  -d '{"from": "mydb:main@sha:abc123", ...}'
+  -d '{"from": "mydb:main@commit:bafybeig...commitT42", ...}'
 ```
-
-### Storage Address
-
-Location where commit data is stored:
-
-```json
-{
-  "address": "fluree:memory:commit:abc123def456"
-}
-```
-
-**Format depends on storage mode:**
-- Memory: `fluree:memory:commit:...`
-- File: `fluree:file:commit:...`
-- AWS: `fluree:s3:bucket-name:commit:...`
 
 ### Flake Counts
 
@@ -125,16 +109,16 @@ Net change: `flakes_added - flakes_retracted`
 
 ### Previous Commit
 
-SHA of the previous commit (forms a chain):
+ContentId of the previous commit (forms a chain):
 
 ```json
 {
-  "previous_commit": "def456abc789012defabc01234567890abcdef"
+  "previous_commit_id": "bafybeig...commitT41"
 }
 ```
 
 **Properties:**
-- Links to parent commit
+- Links to parent commit by ContentId
 - Forms immutable commit chain
 - Enables commit history traversal
 - `null` for first transaction (t=1)
@@ -168,7 +152,7 @@ Optional commit message (if provided):
 
 ### Ledger
 
-Ledger alias:
+Ledger ID:
 
 ```json
 {
@@ -225,14 +209,14 @@ const historicalData = await query({
 
 ### Commit Verification
 
-Verify commit integrity:
+Verify commit integrity by re-deriving the ContentId from fetched bytes:
 
 ```javascript
-async function verifyCommit(ledger, receipt) {
-  const commit = await fetchCommit(receipt.address);
-  const computedSha = sha256(commit);
-  
-  if (computedSha !== receipt.commit_sha) {
+async function verifyCommit(receipt) {
+  const bytes = await contentStore.get(receipt.commit_id);
+  const derivedCid = computeContentId("Commit", bytes);
+
+  if (derivedCid !== receipt.commit_id) {
     throw new Error('Commit integrity violation!');
   }
 }
@@ -243,7 +227,7 @@ async function verifyCommit(ledger, receipt) {
 Commits form an immutable chain:
 
 ```text
-t=1 (sha:aaa) ← t=2 (sha:bbb) ← t=3 (sha:ccc) ← t=4 (sha:ddd)
+t=1 (cid:aaa) ← t=2 (cid:bbb) ← t=3 (cid:ccc) ← t=4 (cid:ddd)
   ↑                ↑                ↑                ↑
   |                |                |                |
 previous=null   previous=aaa    previous=bbb    previous=ccc
@@ -273,14 +257,14 @@ async function getCommitHistory(ledger, fromT, toT) {
 ### SPARQL Query for Commits
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX f: <https://ns.flur.ee/db#>
 
-SELECT ?t ?timestamp ?sha ?author
+SELECT ?t ?timestamp ?commitId ?author
 WHERE {
   ?commit a f:Commit ;
           f:t ?t ;
           f:timestamp ?timestamp ;
-          f:sha ?sha .
+          f:commitId ?commitId .
   OPTIONAL { ?commit f:author ?author }
 }
 ORDER BY DESC(?t)
@@ -292,14 +276,14 @@ LIMIT 10
 ```json
 {
   "@context": {
-    "f": "https://ns.flur.ee/ledger#"
+    "f": "https://ns.flur.ee/db#"
   },
-  "select": ["?t", "?timestamp", "?sha"],
+  "select": ["?t", "?timestamp", "?commitId"],
   "where": [
     { "@id": "?commit", "@type": "f:Commit" },
     { "@id": "?commit", "f:t": "?t" },
     { "@id": "?commit", "f:timestamp": "?timestamp" },
-    { "@id": "?commit", "f:sha": "?sha" }
+    { "@id": "?commit", "f:commitId": "?commitId" }
   ],
   "orderBy": ["-?t"],
   "limit": 10
@@ -317,7 +301,7 @@ CREATE TABLE transaction_receipts (
   id SERIAL PRIMARY KEY,
   ledger VARCHAR(255),
   transaction_t INTEGER,
-  commit_sha VARCHAR(64),
+  commit_id TEXT,
   timestamp TIMESTAMP,
   flakes_added INTEGER,
   flakes_retracted INTEGER,
@@ -334,7 +318,7 @@ Store as JSON documents:
 await mongodb.collection('receipts').insertOne({
   ledger: receipt.ledger,
   t: receipt.t,
-  commit_sha: receipt.commit_sha,
+  commit_id: receipt.commit_id,
   timestamp: receipt.timestamp,
   flakes: {
     added: receipt.flakes_added,
@@ -383,7 +367,7 @@ async function buildAuditLog(ledger, startDate, endDate) {
       added: r.flakes_added,
       removed: r.flakes_retracted
     },
-    commit: r.commit_sha,
+    commit: r.commit_id,
     verifiable: true
   }));
 }
@@ -462,7 +446,7 @@ async function verifyChainIntegrity(ledger) {
   const receipts = await fetchAllReceipts(ledger);
   
   for (let i = 1; i < receipts.length; i++) {
-    if (receipts[i].previous_commit !== receipts[i-1].commit_sha) {
+    if (receipts[i].previous_commit_id !== receipts[i-1].commit_id) {
       throw new Error(`Chain broken at t=${receipts[i].t}`);
     }
   }

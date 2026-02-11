@@ -173,8 +173,8 @@ fn plan_patterns_to_json(
 /// field of the response (JSON-LD echoes the original JSON object; SPARQL echoes
 /// the raw SPARQL string).  `where_clause` is optionally included in the
 /// no-stats early-return path (only meaningful for JSON-LD).
-fn explain_from_parsed<S: fluree_db_core::Storage + 'static>(
-    db: &fluree_db_core::Db<S>,
+fn explain_from_parsed(
+    db: &fluree_db_core::Db,
     vars: &VarRegistry,
     parsed: &ParsedQuery,
     query_echo: JsonValue,
@@ -258,10 +258,7 @@ fn explain_from_parsed<S: fluree_db_core::Storage + 'static>(
 ///
 /// Returns a JSON object like:
 /// `{ "query": <parsed/echo>, "plan": { ... } }`
-pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static>(
-    db: &fluree_db_core::Db<S>,
-    query_json: &JsonValue,
-) -> Result<JsonValue> {
+pub async fn explain_jsonld(db: &fluree_db_core::Db, query_json: &JsonValue) -> Result<JsonValue> {
     let mut vars = VarRegistry::new();
     let parsed = parse_query(query_json, db, &mut vars)
         .map_err(|e| ApiError::query(format!("Explain parse error: {e}")))?;
@@ -278,10 +275,7 @@ pub async fn explain_jsonld<S: fluree_db_core::Storage + 'static>(
 ///
 /// Returns a JSON object like:
 /// `{ "query": "<sparql string>", "plan": { ... } }`
-pub async fn explain_sparql<S: fluree_db_core::Storage + 'static>(
-    db: &fluree_db_core::Db<S>,
-    sparql: &str,
-) -> Result<JsonValue> {
+pub async fn explain_sparql(db: &fluree_db_core::Db, sparql: &str) -> Result<JsonValue> {
     let (vars, parsed) = parse_sparql_to_ir(sparql, db)?;
 
     explain_from_parsed(db, &vars, &parsed, json!(sparql), None)

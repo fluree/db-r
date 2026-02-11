@@ -121,12 +121,12 @@ impl fmt::Debug for RemoteVectorSearchProvider {
 impl VectorIndexProvider for RemoteVectorSearchProvider {
     async fn search(
         &self,
-        vg_alias: &str,
+        graph_source_id: &str,
         params: VectorSearchParams<'_>,
     ) -> Result<Vec<VectorSearchHit>> {
         // Build the search request
         let mut request =
-            SearchRequest::vector(vg_alias, params.query_vector.to_vec(), params.limit);
+            SearchRequest::vector(graph_source_id, params.query_vector.to_vec(), params.limit);
         request.as_of_t = params.as_of_t;
         request.sync = params.sync;
         request.timeout_ms = params.timeout_ms;
@@ -173,7 +173,7 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
                 let code = search_error.error.code;
                 let msg = search_error.error.message;
                 return Err(match code {
-                    ErrorCode::VgNotFound
+                    ErrorCode::GraphSourceNotFound
                     | ErrorCode::IndexNotBuilt
                     | ErrorCode::NoSnapshotForAsOfT => {
                         QueryError::InvalidQuery(format!("{}: {}", code, msg))
@@ -204,7 +204,7 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
         Ok(hits)
     }
 
-    async fn collection_exists(&self, _vg_alias: &str) -> Result<bool> {
+    async fn collection_exists(&self, _graph_source_id: &str) -> Result<bool> {
         // For remote mode, optimistically return true.
         // The remote service will return an error if the collection doesn't exist.
         Ok(true)

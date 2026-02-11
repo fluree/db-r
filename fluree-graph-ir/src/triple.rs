@@ -134,6 +134,7 @@ impl std::fmt::Display for Triple {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_vocab::rdf;
 
     #[test]
     fn test_triple_creation() {
@@ -180,7 +181,7 @@ mod tests {
     fn test_is_rdf_type() {
         let type_triple = Triple::new(
             Term::iri("http://example.org/alice"),
-            Term::iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            Term::iri(rdf::TYPE),
             Term::iri("http://xmlns.com/foaf/0.1/Person"),
         );
         assert!(type_triple.is_rdf_type());

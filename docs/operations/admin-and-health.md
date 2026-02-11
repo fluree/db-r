@@ -43,12 +43,12 @@ readinessProbe:
 
 ## Statistics Endpoints
 
-### GET /fluree/stats
+### GET /v1/fluree/stats
 
 Server statistics:
 
 ```bash
-curl http://localhost:8090/fluree/stats
+curl http://localhost:8090/v1/fluree/stats
 ```
 
 **Response:**
@@ -70,18 +70,62 @@ curl http://localhost:8090/fluree/stats
 | `cached_ledgers` | Number of ledgers currently cached |
 | `version` | Server version |
 
-### GET /fluree/ledger-info
+## Diagnostic endpoints
+
+### GET /v1/fluree/whoami
+
+Diagnostic endpoint for debugging Bearer tokens.
+
+- If no token is present, returns `token_present=false`.
+- If a token is present, attempts to **cryptographically verify** it using the same verification logic as authenticated endpoints (embedded-JWK Ed25519 and JWKS/OIDC when enabled/configured).
+- On verification failure, returns `verified=false` and includes an `error` string. Some unverified decoded fields may be included for debugging.
+
+```bash
+curl http://localhost:8090/v1/fluree/whoami \
+  -H "Authorization: Bearer eyJ..."
+```
+
+## CLI discovery
+
+### GET /.well-known/fluree.json
+
+Discovery document used by the CLI when adding a remote (`fluree remote add`) or when running `fluree auth login` with no configured auth type.
+
+Standalone `fluree-server` returns:
+
+- `{"version":1,"api_base_url":"/v1/fluree"}` when no auth is enabled
+- `{"version":1,"api_base_url":"/v1/fluree","auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
+
+OIDC-capable implementations can return `auth.type="oidc_device"` plus `issuer`, `client_id`, and `exchange_url`.
+The CLI treats `oidc_device` as "OIDC interactive login": it uses device-code when the IdP supports it, otherwise authorization-code + PKCE (localhost callback).
+
+Implementations MAY also return `api_base_url` to tell the CLI where the Fluree API is mounted (for example,
+when the API is hosted under `/v1/fluree` or on a separate `data` subdomain).
+
+See [Auth contract (CLI ↔ Server)](../design/auth-contract.md) for the full schema and behavior.
+
+### GET /v1/fluree/info/<ledger...>
 
 Get detailed ledger metadata:
 
 ```bash
-curl "http://localhost:8090/fluree/ledger-info?ledger=mydb:main"
+curl "http://localhost:8090/v1/fluree/info/mydb:main"
 ```
 
-Or with header:
+**Minimum fields used by the Fluree CLI:**
+
+- `t` (required)
+- `commitId` (required for `fluree push` when `t > 0`)
+
+**Optional query params:**
+
+- **`include_property_datatypes=true`**: include `stats.properties[*].datatypes` (datatype → count), **as-of last index**.
+- **`realtime_property_details=true`**: enable real-time datatype details *and* real-time class ref edges. This also enables `include_property_datatypes`.
+
+Example:
+
 ```bash
-curl http://localhost:8090/fluree/ledger-info \
-  -H "fluree-ledger: mydb:main"
+curl "http://localhost:8090/v1/fluree/info/mydb:main?realtime_property_details=true"
 ```
 
 **Response:**
@@ -89,20 +133,62 @@ curl http://localhost:8090/fluree/ledger-info \
 {
   "ledger": "mydb:main",
   "t": 150,
+  "commitId": "bafybeig...commitT150",
+  "indexId": "bafybeig...indexRootT145",
   "commit": {
-    "address": "fluree:file://mydb/main/commit/abc123...",
+    "commit_id": "bafybeig...commitT150",
     "t": 150
   },
   "index": {
-    "address": "fluree:file://mydb/main/index/def456...",
+    "id": "bafybeig...indexRootT145",
     "t": 145
   },
   "stats": {
     "flakes": 12345,
-    "size_bytes": 1048576
+    "size": 1048576,
+    "indexed": 145,
+    "properties": {
+      "ex:name": {
+        "count": 3,
+        "ndv-values": 3,
+        "ndv-subjects": 3,
+        "last-modified-t": 150,
+        "selectivity-value": 1,
+        "selectivity-subject": 1
+      }
+    },
+    "classes": {
+      "ex:Person": {
+        "count": 2,
+        "properties": {
+          "ex:worksFor": {
+            "count": 2,
+            "refs": { "ex:Organization": 2 },
+            "ref-classes": { "ex:Organization": 2 }
+          },
+          "ex:name": {}
+        },
+        "property-list": ["ex:name", "ex:worksFor"]
+      }
+    }
   }
 }
 ```
+
+#### Stats freshness (real-time vs indexed)
+
+- **Real-time (includes novelty)**:
+  - `commit` and top-level `t` reflect the latest committed head.
+  - `stats.flakes` and `stats.size` are derived from the current ledger stats view (indexed + novelty deltas).
+  - `stats.classes[*].properties` / `property-list` will include properties introduced in novelty, even when the update does not restate `@type`.
+  - `stats.properties[*].datatypes` is real-time **only when** `realtime_property_details=true` is used.
+  - `stats.classes[*].properties[*].refs` is real-time **only when** `realtime_property_details=true` is used.
+
+- **As-of last index**:
+  - `stats.indexed` is the last index \(t\). If `commit.t > indexed`, the index is behind the head.
+  - NDV-related fields in `stats.properties[*]` (`ndv-values`, `ndv-subjects`) and selectivity derived from them are only as current as the last index refresh.
+  - `stats.properties[*].datatypes` (when present via `include_property_datatypes=true`) is as-of last index unless `realtime_property_details=true` is used.
+  - Class property ref-edge counts (`stats.classes[*].properties[*].refs`) are as-of last index unless `realtime_property_details=true` is used.
 
 ### GET /fluree/exists
 
@@ -141,8 +227,7 @@ curl -X POST http://localhost:8090/fluree/create \
   "t": 0,
   "tx-id": "fluree:tx:sha256:abc123...",
   "commit": {
-    "address": "fluree:file://mydb/main/head",
-    "hash": ""
+    "commit_id": "bafybeig...commitT0"
   }
 }
 ```

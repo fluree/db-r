@@ -5,7 +5,7 @@
 //!
 //! # Overview
 //!
-//! When a GRAPH pattern targets an R2RML virtual graph, the contained triple
+//! When a GRAPH pattern targets an R2RML graph source, the contained triple
 //! patterns should be rewritten to R2RML scan patterns. This allows the query
 //! engine to route the patterns to the R2RML operator which will scan the
 //! underlying Iceberg tables.
@@ -26,7 +26,7 @@
 
 use crate::ir::{Pattern, R2rmlPattern};
 use crate::pattern::{Term, TriplePattern};
-use fluree_db_core::{Db, Storage};
+use fluree_db_core::Db;
 
 /// Result of rewriting patterns for R2RML.
 #[derive(Debug)]
@@ -39,7 +39,7 @@ pub struct R2rmlRewriteResult {
     pub unconverted_count: usize,
 }
 
-/// Rewrite patterns for an R2RML virtual graph.
+/// Rewrite patterns for an R2RML graph source.
 ///
 /// This function takes patterns from a GRAPH block and converts triple patterns
 /// to R2RML patterns when possible. Other pattern types (Filter, Optional, etc.)
@@ -48,16 +48,16 @@ pub struct R2rmlRewriteResult {
 /// # Arguments
 ///
 /// * `patterns` - The patterns to rewrite
-/// * `vg_alias` - The virtual graph alias (e.g., "airlines-vg:main")
+/// * `graph_source_id` - The graph source alias (e.g., "airlines-gs:main")
 /// * `db` - Database for Sid-to-IRI conversion
 ///
 /// # Returns
 ///
 /// A result containing the rewritten patterns and conversion statistics.
-pub fn rewrite_patterns_for_r2rml<S: Storage>(
+pub fn rewrite_patterns_for_r2rml(
     patterns: &[Pattern],
-    vg_alias: &str,
-    db: &Db<S>,
+    graph_source_id: &str,
+    db: &Db,
 ) -> R2rmlRewriteResult {
     let mut result_patterns = Vec::with_capacity(patterns.len());
     let mut converted = 0;
@@ -66,7 +66,7 @@ pub fn rewrite_patterns_for_r2rml<S: Storage>(
     for pattern in patterns {
         match pattern {
             Pattern::Triple(tp) => {
-                if let Some(r2rml_pattern) = convert_triple_to_r2rml(tp, vg_alias, db) {
+                if let Some(r2rml_pattern) = convert_triple_to_r2rml(tp, graph_source_id, db) {
                     result_patterns.push(Pattern::R2rml(r2rml_pattern));
                     converted += 1;
                 } else {
@@ -76,7 +76,7 @@ pub fn rewrite_patterns_for_r2rml<S: Storage>(
                 }
             }
             Pattern::Optional(inner) => {
-                let inner_result = rewrite_patterns_for_r2rml(inner, vg_alias, db);
+                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, db);
                 result_patterns.push(Pattern::Optional(inner_result.patterns));
                 converted += inner_result.converted_count;
                 unconverted += inner_result.unconverted_count;
@@ -84,7 +84,7 @@ pub fn rewrite_patterns_for_r2rml<S: Storage>(
             Pattern::Union(branches) => {
                 let mut new_branches = Vec::with_capacity(branches.len());
                 for branch in branches {
-                    let branch_result = rewrite_patterns_for_r2rml(branch, vg_alias, db);
+                    let branch_result = rewrite_patterns_for_r2rml(branch, graph_source_id, db);
                     new_branches.push(branch_result.patterns);
                     converted += branch_result.converted_count;
                     unconverted += branch_result.unconverted_count;
@@ -92,25 +92,25 @@ pub fn rewrite_patterns_for_r2rml<S: Storage>(
                 result_patterns.push(Pattern::Union(new_branches));
             }
             Pattern::Minus(inner) => {
-                let inner_result = rewrite_patterns_for_r2rml(inner, vg_alias, db);
+                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, db);
                 result_patterns.push(Pattern::Minus(inner_result.patterns));
                 converted += inner_result.converted_count;
                 unconverted += inner_result.unconverted_count;
             }
             Pattern::Exists(inner) => {
-                let inner_result = rewrite_patterns_for_r2rml(inner, vg_alias, db);
+                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, db);
                 result_patterns.push(Pattern::Exists(inner_result.patterns));
                 converted += inner_result.converted_count;
                 unconverted += inner_result.unconverted_count;
             }
             Pattern::NotExists(inner) => {
-                let inner_result = rewrite_patterns_for_r2rml(inner, vg_alias, db);
+                let inner_result = rewrite_patterns_for_r2rml(inner, graph_source_id, db);
                 result_patterns.push(Pattern::NotExists(inner_result.patterns));
                 converted += inner_result.converted_count;
                 unconverted += inner_result.unconverted_count;
             }
             Pattern::Service(sp) => {
-                let inner_result = rewrite_patterns_for_r2rml(&sp.patterns, vg_alias, db);
+                let inner_result = rewrite_patterns_for_r2rml(&sp.patterns, graph_source_id, db);
                 result_patterns.push(Pattern::Service(crate::ir::ServicePattern::new(
                     sp.silent,
                     sp.endpoint.clone(),
@@ -144,10 +144,10 @@ pub fn rewrite_patterns_for_r2rml<S: Storage>(
 /// Convert a triple pattern to an R2RML pattern.
 ///
 /// Returns `None` if the pattern cannot be converted (e.g., subject is a literal).
-fn convert_triple_to_r2rml<S: Storage>(
+fn convert_triple_to_r2rml(
     tp: &TriplePattern,
-    vg_alias: &str,
-    db: &Db<S>,
+    graph_source_id: &str,
+    db: &Db,
 ) -> Option<R2rmlPattern> {
     // Extract subject variable (must be a variable for basic R2RML support)
     let subject_var = match &tp.s {
@@ -181,7 +181,7 @@ fn convert_triple_to_r2rml<S: Storage>(
 
         // For rdf:type, we create an R2RML pattern with class_filter and no object_var
         // (the type binding is implicit in the class_filter)
-        let mut pattern = R2rmlPattern::new(vg_alias, subject_var, None);
+        let mut pattern = R2rmlPattern::new(graph_source_id, subject_var, None);
         if let Some(class_iri) = class_filter {
             pattern = pattern.with_class(class_iri);
         }
@@ -212,7 +212,7 @@ fn convert_triple_to_r2rml<S: Storage>(
         }
     };
 
-    let mut pattern = R2rmlPattern::new(vg_alias, subject_var, object_var);
+    let mut pattern = R2rmlPattern::new(graph_source_id, subject_var, object_var);
     if let Some(pred_iri) = predicate_filter {
         pattern = pattern.with_predicate(pred_iri);
     }

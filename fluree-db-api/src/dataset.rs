@@ -31,7 +31,10 @@
 //! let result = fluree.query_dataset_view(&dataset, &query).await?;
 //! ```
 
-use fluree_db_core::{alias as core_alias, TrackingOptions};
+use fluree_db_core::{
+    ledger_id::{split_time_travel_suffix, LedgerIdTimeSpec},
+    TrackingOptions,
+};
 use fluree_db_sparql::ast::{DatasetClause as SparqlDatasetClause, IriValue};
 
 /// Convert a SPARQL IriValue to a string for use as a ledger identifier.
@@ -178,7 +181,7 @@ impl DatasetSpec {
             .iter()
             .map(|iri| {
                 let iri_str = iri_value_to_string(&iri.value);
-                let (identifier, time_spec) = parse_alias_time_travel(&iri_str)?;
+                let (identifier, time_spec) = parse_ledger_id_time_travel(&iri_str)?;
                 let mut source = GraphSource::new(identifier);
                 source.time_spec = time_spec;
                 Ok(source)
@@ -190,7 +193,7 @@ impl DatasetSpec {
             .iter()
             .map(|iri| {
                 let iri_str = iri_value_to_string(&iri.value);
-                let (identifier, time_spec) = parse_alias_time_travel(&iri_str)?;
+                let (identifier, time_spec) = parse_ledger_id_time_travel(&iri_str)?;
                 let mut source = GraphSource::new(identifier);
                 source.time_spec = time_spec;
                 Ok(source)
@@ -213,7 +216,7 @@ impl DatasetSpec {
             })?;
 
             let to_iri_str = iri_value_to_string(&to_iri.value);
-            let (to_identifier, to_time_spec) = parse_alias_time_travel(&to_iri_str)?;
+            let (to_identifier, to_time_spec) = parse_ledger_id_time_travel(&to_iri_str)?;
             let to_time = to_time_spec.ok_or_else(|| {
                 DatasetParseError::InvalidFrom("TO graph must have time specification".to_string())
             })?;
@@ -840,21 +843,23 @@ impl QueryConnectionOptions {
     }
 }
 
-/// Parse time-travel specification from ledger alias string.
+/// Parse time-travel specification from ledger ID string.
 ///
 /// Supports Clojure-compatible formats:
 /// - `ledger:main@t:42` → identifier="ledger:main", TimeSpec::AtT(42)
 /// - `ledger:main@t:latest` → identifier="ledger:main", TimeSpec::Latest
 /// - `ledger:main@iso:2025-01-01T00:00:00Z` → identifier="ledger:main", TimeSpec::AtTime(...)
-/// - `ledger:main@sha:abc123` → identifier="ledger:main", TimeSpec::AtCommit(...)
+/// - `ledger:main@commit:abc123` → identifier="ledger:main", TimeSpec::AtCommit(...)
 ///
 /// Returns (identifier, Option<TimeSpec>).
-fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), DatasetParseError> {
+fn parse_ledger_id_time_travel(
+    ledger_id: &str,
+) -> Result<(String, Option<TimeSpec>), DatasetParseError> {
     // Support optional named-graph fragment selector after time spec:
     //   ledger:main@t:42#txn-meta
     // We parse time-travel on the portion before '#', then re-attach the fragment
     // to the identifier (so the identifier remains stable and time is separate).
-    let (before_fragment, fragment) = match alias.split_once('#') {
+    let (before_fragment, fragment) = match ledger_id.split_once('#') {
         Some((left, right)) => {
             if right.is_empty() {
                 return Err(DatasetParseError::InvalidGraphSource(
@@ -863,7 +868,7 @@ fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), Da
             }
             (left, Some(right))
         }
-        None => (alias, None),
+        None => (ledger_id, None),
     };
     let fragment_suffix = fragment.map(|f| format!("#{f}")).unwrap_or_default();
 
@@ -871,20 +876,20 @@ fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), Da
     if let Some(base) = before_fragment.strip_suffix("@t:latest") {
         if base.is_empty() {
             return Err(DatasetParseError::InvalidGraphSource(
-                "Alias cannot be empty before '@'".to_string(),
+                "Ledger ID cannot be empty before '@'".to_string(),
             ));
         }
         let identifier = format!("{base}{fragment_suffix}");
         return Ok((identifier, Some(TimeSpec::Latest)));
     }
 
-    let (identifier, time) = core_alias::split_time_travel_suffix(before_fragment)
+    let (identifier, time) = split_time_travel_suffix(before_fragment)
         .map_err(|e| DatasetParseError::InvalidGraphSource(e.to_string()))?;
 
     let time_spec = time.map(|spec| match spec {
-        core_alias::AliasTimeSpec::AtT(t) => TimeSpec::AtT(t),
-        core_alias::AliasTimeSpec::AtIso(value) => TimeSpec::AtTime(value),
-        core_alias::AliasTimeSpec::AtSha(value) => TimeSpec::AtCommit(value),
+        LedgerIdTimeSpec::AtT(t) => TimeSpec::AtT(t),
+        LedgerIdTimeSpec::AtIso(value) => TimeSpec::AtTime(value),
+        LedgerIdTimeSpec::AtCommit(value) => TimeSpec::AtCommit(value),
     });
 
     Ok((format!("{identifier}{fragment_suffix}"), time_spec))
@@ -893,7 +898,7 @@ fn parse_alias_time_travel(alias: &str) -> Result<(String, Option<TimeSpec>), Da
 /// Parse graph sources from a JSON value
 ///
 /// Accepts:
-/// - String: single graph source (may include @t:/@iso:/@sha: time-travel syntax)
+/// - String: single graph source (may include @t:/@iso:/@commit: time-travel syntax)
 /// - Array: multiple graph sources
 /// - Object: single graph source with time spec
 fn parse_graph_sources(
@@ -902,7 +907,7 @@ fn parse_graph_sources(
 ) -> Result<Vec<GraphSource>, DatasetParseError> {
     match val {
         JsonValue::String(s) => {
-            let (identifier, time_spec) = parse_alias_time_travel(s)?;
+            let (identifier, time_spec) = parse_ledger_id_time_travel(s)?;
             let mut source = GraphSource::new(identifier);
             source.time_spec = time_spec;
             Ok(vec![source])
@@ -923,7 +928,7 @@ fn parse_graph_sources(
 /// Parse a single graph source from a JSON value
 ///
 /// Accepts:
-/// - String: identifier (may include @t:/@iso:/@sha: time-travel syntax and #txn-meta fragment)
+/// - String: identifier (may include @t:/@iso:/@commit: time-travel syntax and #txn-meta fragment)
 /// - Object: Extended graph source object with optional fields:
 ///   - `@id` / `id`: ledger reference (required)
 ///   - `t` / `at`: time specification
@@ -936,7 +941,7 @@ fn parse_single_graph_source(
 ) -> Result<GraphSource, DatasetParseError> {
     match val {
         JsonValue::String(s) => {
-            let (identifier, time_spec) = parse_alias_time_travel(s)?;
+            let (identifier, time_spec) = parse_ledger_id_time_travel(s)?;
             let mut source = GraphSource::new(identifier);
             source.time_spec = time_spec;
             Ok(source)
@@ -955,7 +960,7 @@ fn parse_single_graph_source(
                 })?;
 
             // Parse time-travel and fragment from the identifier
-            let (identifier, time_spec) = parse_alias_time_travel(raw_identifier)?;
+            let (identifier, time_spec) = parse_ledger_id_time_travel(raw_identifier)?;
 
             let mut source = GraphSource::new(&identifier);
             source.time_spec = time_spec;
@@ -1127,6 +1132,62 @@ fn validate_alias_uniqueness(spec: &DatasetSpec) -> Result<(), DatasetParseError
     Ok(())
 }
 
+/// Extract unique ledger identifiers from a SPARQL query's FROM / FROM NAMED clauses.
+///
+/// Parses the SPARQL, extracts the dataset clause, strips time-travel suffixes,
+/// and returns the de-duplicated base ledger IDs.
+///
+/// Returns `Ok(vec![])` if the query has no FROM/FROM NAMED clauses.
+/// Returns `Err` only for SPARQL parse failures that prevent dataset extraction.
+pub fn sparql_dataset_ledger_ids(sparql: &str) -> Result<Vec<String>, DatasetParseError> {
+    let parsed = fluree_db_sparql::parse_sparql(sparql);
+    let ast = parsed.ast.ok_or_else(|| {
+        let msg = parsed
+            .diagnostics
+            .first()
+            .map(|d| d.message.clone())
+            .unwrap_or_else(|| "unknown parse error".to_string());
+        DatasetParseError::InvalidFrom(format!("SPARQL parse error: {}", msg))
+    })?;
+
+    let dataset_clause = match &ast.body {
+        fluree_db_sparql::ast::QueryBody::Select(q) => q.dataset.as_ref(),
+        fluree_db_sparql::ast::QueryBody::Construct(q) => q.dataset.as_ref(),
+        fluree_db_sparql::ast::QueryBody::Ask(q) => q.dataset.as_ref(),
+        fluree_db_sparql::ast::QueryBody::Describe(q) => q.dataset.as_ref(),
+        fluree_db_sparql::ast::QueryBody::Update(_) => None,
+    };
+
+    let Some(clause) = dataset_clause else {
+        return Ok(vec![]);
+    };
+
+    let spec = DatasetSpec::from_sparql_clause(clause)?;
+
+    // Collect unique identifiers (base ledger IDs, time-travel already stripped)
+    let mut seen = std::collections::HashSet::new();
+    let mut ledger_ids = Vec::new();
+    for source in spec.default_graphs.iter().chain(spec.named_graphs.iter()) {
+        // Strip #txn-meta or other fragments — the scope check is on the base ledger
+        let base = source
+            .identifier
+            .split('#')
+            .next()
+            .unwrap_or(&source.identifier);
+        if seen.insert(base.to_string()) {
+            ledger_ids.push(base.to_string());
+        }
+    }
+    // Also include the history range ledger if present
+    if let Some(range) = &spec.history_range {
+        if seen.insert(range.identifier.clone()) {
+            ledger_ids.push(range.identifier.clone());
+        }
+    }
+
+    Ok(ledger_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1243,10 +1304,10 @@ mod tests {
         ));
     }
 
-    // Ledger alias time-travel syntax tests (@t:, @iso:, @sha:)
+    // Ledger ID time-travel syntax tests (@t:, @iso:, @commit:)
 
     #[test]
-    fn test_parse_alias_at_t() {
+    fn test_parse_ledger_id_at_t() {
         let query = json!({
             "from": "ledger:main@t:42",
             "select": ["?s"],
@@ -1263,7 +1324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_t_with_named_graph_fragment() {
+    fn test_parse_ledger_id_at_t_with_named_graph_fragment() {
         let query = json!({
             "from": "ledger:main@t:42#txn-meta",
             "select": ["?s"],
@@ -1280,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_iso() {
+    fn test_parse_ledger_id_at_iso() {
         let query = json!({
             "from": "ledger:main@iso:2025-01-20T00:00:00Z",
             "select": ["?s"],
@@ -1297,9 +1358,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_sha() {
+    fn test_parse_ledger_id_at_commit() {
         let query = json!({
-            "from": "ledger:main@sha:abc123def456",
+            "from": "ledger:main@commit:abc123def456",
             "select": ["?s"],
             "where": {"@id": "?s"}
         });
@@ -1314,9 +1375,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_sha_too_short() {
+    fn test_parse_ledger_id_at_commit_too_short() {
         let query = json!({
-            "from": "ledger:main@sha:abc",
+            "from": "ledger:main@commit:abc",
             "select": ["?s"],
             "where": {"@id": "?s"}
         });
@@ -1326,7 +1387,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_array_mixed_time_specs() {
+    fn test_parse_ledger_id_array_mixed_time_specs() {
         let query = json!({
             "from": ["ledger1:main@t:10", "ledger2:main", "ledger3:main@iso:2025-01-01T00:00:00Z"],
             "select": ["?s"],
@@ -1353,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_invalid_time_format() {
+    fn test_parse_ledger_id_invalid_time_format() {
         let query = json!({
             "from": "ledger:main@invalid:123",
             "select": ["?s"],
@@ -1552,7 +1613,7 @@ mod tests {
                 Iri::full("ledger:main@t:42", make_span()),
                 Iri::full("ledger:main@iso:2025-01-01T00:00:00Z", make_span()),
             ],
-            named_graphs: vec![Iri::full("ledger:main@sha:abc123def456", make_span())],
+            named_graphs: vec![Iri::full("ledger:main@commit:abc123def456", make_span())],
             to_graph: None,
             span: make_span(),
         };
@@ -1657,9 +1718,9 @@ mod tests {
 
     #[test]
     fn test_history_mode_mixed_time_types_explicit() {
-        // Different time types (sha and t) for same ledger with explicit "to"
+        // Different time types (commit and t) for same ledger with explicit "to"
         let query = json!({
-            "from": "ledger:main@sha:abc123def456",
+            "from": "ledger:main@commit:abc123def456",
             "to": "ledger:main@t:latest",
             "select": ["?t", "?age"]
         });
@@ -2228,5 +2289,64 @@ mod tests {
         assert!(spec.default_graphs[0].source_alias.is_none());
         assert!(spec.default_graphs[0].graph_selector.is_none());
         assert!(spec.default_graphs[0].policy_override.is_none());
+    }
+
+    // =============================================================================
+    // sparql_dataset_ledger_ids tests
+    // =============================================================================
+
+    #[test]
+    fn test_sparql_dataset_ledger_ids_single_from() {
+        let sparql = "SELECT ?s FROM <ledger:main> WHERE { ?s ?p ?o }";
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_ledger_ids_multiple_from() {
+        let sparql = "SELECT ?s FROM <ledger:one> FROM <ledger:two> WHERE { ?s ?p ?o }";
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:one", "ledger:two"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_ledger_ids_from_named() {
+        let sparql = "SELECT ?s FROM <ledger:main> FROM NAMED <ledger:named1> WHERE { ?s ?p ?o }";
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main", "ledger:named1"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_ledger_ids_deduplicates() {
+        let sparql = "SELECT ?s FROM <ledger:main> FROM NAMED <ledger:main> WHERE { ?s ?p ?o }";
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_ledger_ids_strips_time_travel() {
+        let sparql = "SELECT ?s FROM <ledger:main@t:42> WHERE { ?s ?p ?o }";
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_ledger_ids_strips_fragment() {
+        let sparql = "SELECT ?s FROM <ledger:main#txn-meta> WHERE { ?s ?p ?o }";
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main"]);
+    }
+
+    #[test]
+    fn test_sparql_dataset_ledger_ids_no_from() {
+        let sparql = "SELECT ?s WHERE { ?s ?p ?o }";
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert!(ledger_ids.is_empty());
+    }
+
+    #[test]
+    fn test_sparql_dataset_ledger_ids_parse_error() {
+        let result = sparql_dataset_ledger_ids("NOT VALID SPARQL }{}{");
+        assert!(result.is_err());
     }
 }

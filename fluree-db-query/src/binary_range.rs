@@ -22,10 +22,15 @@ use crate::binary_scan::index_type_to_sort_order;
 use crate::dict_overlay::DictOverlay;
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::range::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
+use fluree_db_core::subject_id::SubjectId;
+use fluree_db_core::value_id::ObjKind;
+use fluree_db_core::ListIndex;
 use fluree_db_core::{Flake, IndexType, OverlayProvider, RangeProvider, Sid};
+use fluree_db_indexer::run_index::run_record::{RunRecord, RunSortOrder};
 use fluree_db_indexer::run_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch,
 };
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
 
@@ -74,6 +79,154 @@ pub fn binary_range(
 // ============================================================================
 // Internals
 // ============================================================================
+
+/// Batched lookup for ref-valued predicate objects across many subjects.
+///
+/// This is primarily used for fast `rdf:type` lookups in policy enforcement and
+/// for class→property stats refresh.
+#[allow(clippy::too_many_arguments)]
+fn binary_lookup_subject_predicate_refs_batched(
+    store: &Arc<BinaryIndexStore>,
+    g_id: u32,
+    index: IndexType,
+    predicate: &Sid,
+    subjects: &[Sid],
+    opts: &RangeOptions,
+    overlay: &dyn OverlayProvider,
+    dict_novelty: &Arc<DictNovelty>,
+) -> io::Result<HashMap<Sid, Vec<Sid>>> {
+    if index != IndexType::Psot {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "batched predicate+subject lookup currently supports PSOT only",
+        ));
+    }
+
+    if subjects.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // Per-call DictOverlay for ephemeral subject handling + overlay translation.
+    let mut dict_ov = DictOverlay::new(store.clone(), dict_novelty.clone());
+
+    // Predicate ID (supports ephemeral predicates, though rdf:type is always persisted).
+    let p_id = dict_ov.assign_predicate_id_from_sid(predicate);
+
+    // Translate subjects to s_id and build s_id -> Sid map.
+    let mut s_ids: Vec<u64> = Vec::with_capacity(subjects.len());
+    let mut s_id_to_sid: HashMap<u64, Sid> = HashMap::with_capacity(subjects.len());
+    for sid in subjects {
+        let s_id = dict_ov.assign_subject_id_from_sid(sid)?;
+        s_ids.push(s_id);
+        // Preserve the original Sid to avoid resolve cost and to keep exact identity.
+        s_id_to_sid.entry(s_id).or_insert_with(|| sid.clone());
+    }
+    if s_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    s_ids.sort_unstable();
+    s_ids.dedup();
+
+    let min_s_id = s_ids[0];
+    let max_s_id = *s_ids.last().unwrap();
+
+    // Cursor bounds: PSOT key interval restricted to [min_s_id, max_s_id] within this predicate.
+    let min_key = RunRecord {
+        g_id,
+        s_id: SubjectId::from_u64(min_s_id),
+        p_id,
+        dt: 0,
+        o_kind: 0,
+        op: 0,
+        o_key: 0,
+        t: i64::MIN,
+        lang_id: 0,
+        i: ListIndex::none().as_i32(),
+    };
+    let max_key = RunRecord {
+        g_id,
+        s_id: SubjectId::from_u64(max_s_id),
+        p_id,
+        dt: u16::MAX,
+        o_kind: u8::MAX,
+        op: u8::MAX,
+        o_key: u64::MAX,
+        t: i64::MAX,
+        lang_id: u16::MAX,
+        i: i32::MAX,
+    };
+
+    // Filter: keep the predicate fixed. Subject set filtering happens post-decode.
+    let mut filter = BinaryFilter::new();
+    filter.p_id = Some(p_id);
+
+    // Region 2 is needed for time filtering / stale removal at `to_t`.
+    let need_region2 = true;
+    let order = RunSortOrder::Psot;
+
+    let mut cursor = BinaryCursor::new(
+        store.clone(),
+        order,
+        g_id,
+        &min_key,
+        &max_key,
+        filter,
+        need_region2,
+    );
+
+    // Time-travel: constrain to_t if set, otherwise use store max.
+    let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());
+    cursor.set_to_t(effective_to_t);
+
+    // Overlay merge: translate overlay flakes to integer-ID overlay ops, sort to PSOT, attach.
+    let overlay_ops =
+        crate::binary_scan::translate_overlay_flakes(overlay, &mut dict_ov, effective_to_t, g_id);
+    if !overlay_ops.is_empty() {
+        cursor.set_epoch(overlay.epoch());
+        let mut sorted = overlay_ops;
+        sort_overlay_ops(&mut sorted, order);
+        cursor.set_overlay_ops(sorted);
+    }
+
+    // Membership filter for s_id (fast O(1)).
+    let s_id_set: HashSet<u64> = s_ids.into_iter().collect();
+
+    // Collect results.
+    let mut out: HashMap<Sid, Vec<Sid>> = HashMap::new();
+
+    while let Some(batch) = cursor.next_leaf()? {
+        // NOTE: DecodedBatch rows are already filtered to `to_t` and have overlay merged.
+        for i in 0..batch.row_count {
+            let s_id = batch.s_ids[i];
+            if !s_id_set.contains(&s_id) {
+                continue;
+            }
+            if batch.p_ids[i] != p_id {
+                continue;
+            }
+            if batch.o_kinds[i] != ObjKind::REF_ID.as_u8() {
+                continue;
+            }
+
+            // Subject Sid: prefer original, otherwise resolve via DictOverlay.
+            let subj_sid = match s_id_to_sid.get(&s_id) {
+                Some(s) => s.clone(),
+                None => dict_ov.resolve_subject_sid(s_id)?,
+            };
+            let class_sid = dict_ov.resolve_subject_sid(batch.o_keys[i])?;
+
+            out.entry(subj_sid).or_default().push(class_sid);
+        }
+    }
+
+    // Dedup class vectors per subject for stable policy semantics.
+    for classes in out.values_mut() {
+        classes.sort();
+        classes.dedup();
+    }
+
+    Ok(out)
+}
 
 /// Equality range query: all flakes matching the bound components exactly.
 fn binary_range_eq(
@@ -304,6 +457,26 @@ impl RangeProvider for BinaryRangeProvider {
             match_val,
             opts,
             Some((overlay, &mut dict_ov)),
+        )
+    }
+
+    fn lookup_subject_predicate_refs_batched(
+        &self,
+        index: IndexType,
+        predicate: &Sid,
+        subjects: &[Sid],
+        opts: &RangeOptions,
+        overlay: &dyn OverlayProvider,
+    ) -> io::Result<HashMap<Sid, Vec<Sid>>> {
+        binary_lookup_subject_predicate_refs_batched(
+            &self.store,
+            self.g_id,
+            index,
+            predicate,
+            subjects,
+            opts,
+            overlay,
+            &self.dict_novelty,
         )
     }
 }

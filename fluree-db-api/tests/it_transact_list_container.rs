@@ -18,10 +18,10 @@ async fn list_container_serialization_test() {
     let fluree = FlureeBuilder::file(test_dir_str)
         .build()
         .expect("build file fluree");
-    let ledger_alias = "crm/test:main";
+    let ledger_id = "crm/test:main";
 
     // Create ledger
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     // Transaction with @list container (reproducing the issue)
     let txn = json!({
@@ -45,7 +45,7 @@ async fn list_container_serialization_test() {
         .expect("build file fluree2");
 
     // Try to load the database - this should not fail
-    let loaded_ledger = fluree2.ledger(ledger_alias).await.unwrap();
+    let loaded_ledger = fluree2.ledger(ledger_id).await.unwrap();
 
     // Query to verify data was loaded correctly
     let query = json!({
@@ -84,10 +84,10 @@ async fn list_container_multiple_values_test() {
     let fluree = FlureeBuilder::file(test_dir_str)
         .build()
         .expect("build file fluree");
-    let ledger_alias = "test/lists:main";
+    let ledger_id = "test/lists:main";
 
     // Create ledger
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     // Transaction with @list containing multiple values
     let txn = json!({
@@ -110,7 +110,7 @@ async fn list_container_multiple_values_test() {
     let fluree2 = FlureeBuilder::file(test_dir_str)
         .build()
         .expect("build file fluree2");
-    let loaded_ledger = fluree2.ledger(ledger_alias).await.unwrap();
+    let loaded_ledger = fluree2.ledger(ledger_id).await.unwrap();
 
     let query = json!({
         "@context": [
@@ -141,10 +141,10 @@ async fn list_container_with_objects_test() {
     let fluree = FlureeBuilder::file(test_dir_str)
         .build()
         .expect("build file fluree");
-    let ledger_alias = "test/list-objects:main";
+    let ledger_id = "test/list-objects:main";
 
     // Create ledger
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     // Transaction with @list containing object references
     let txn = json!({
@@ -172,7 +172,7 @@ async fn list_container_with_objects_test() {
     let fluree2 = FlureeBuilder::file(test_dir_str)
         .build()
         .expect("build file fluree2");
-    let loaded_ledger = fluree2.ledger(ledger_alias).await.unwrap();
+    let loaded_ledger = fluree2.ledger(ledger_id).await.unwrap();
 
     let query = json!({
         "@context": [

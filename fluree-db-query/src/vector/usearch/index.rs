@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 
-use crate::bm25::index::{PropertyDeps, VgWatermark};
+use crate::bm25::index::{GraphSourceWatermark, PropertyDeps};
 
 use super::super::DistanceMetric;
 use super::error::{Result, VectorError};
@@ -396,7 +396,7 @@ pub struct VectorIndex {
     /// Index metadata
     pub metadata: VectorIndexMetadata,
     /// Multi-ledger watermarks
-    pub watermark: VgWatermark,
+    pub watermark: GraphSourceWatermark,
     /// Property dependencies for incremental updates
     pub property_deps: VectorPropertyDeps,
 }
@@ -442,7 +442,7 @@ impl VectorIndex {
             inner,
             id_assigner: PointIdAssigner::new(),
             metadata: VectorIndexMetadata::new(options.dimensions, options.metric, 0),
-            watermark: VgWatermark::new(),
+            watermark: GraphSourceWatermark::new(),
             property_deps: VectorPropertyDeps::default(),
         })
     }
@@ -452,7 +452,7 @@ impl VectorIndex {
         inner: Index,
         id_assigner: PointIdAssigner,
         metadata: VectorIndexMetadata,
-        watermark: VgWatermark,
+        watermark: GraphSourceWatermark,
         property_deps: VectorPropertyDeps,
     ) -> Self {
         Self {

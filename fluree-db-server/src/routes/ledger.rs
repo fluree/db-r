@@ -2,12 +2,12 @@
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
-use crate::extract::FlureeHeaders;
+use crate::extract::{FlureeHeaders, MaybeDataBearer};
 use crate::state::AppState;
 use crate::telemetry::{
     create_request_span, extract_request_id, extract_trace_id, set_span_error_code,
 };
-use axum::extract::{Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -20,8 +20,9 @@ use std::sync::Arc;
 /// Commit information in create response
 #[derive(Serialize)]
 pub struct CommitInfo {
-    /// Commit storage address
-    pub address: String,
+    /// Commit content identifier (CID), None for genesis (t=0, no commit exists)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_id: Option<String>,
     /// Commit hash (SHA-256) - empty for genesis
     pub hash: String,
 }
@@ -29,8 +30,8 @@ pub struct CommitInfo {
 /// Create ledger response - matches Clojure server format
 #[derive(Serialize)]
 pub struct CreateResponse {
-    /// Ledger alias
-    pub ledger: String,
+    /// Ledger identifier
+    pub ledger_id: String,
     /// Transaction time (t=0 for new empty ledger)
     pub t: i64,
     /// Transaction ID (SHA-256 hash of create request)
@@ -105,7 +106,7 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
         .ok_or_else(|| ServerError::bad_request("Missing required field: ledger"))
     {
         Ok(alias) => {
-            span.record("ledger_alias", alias);
+            span.record("ledger_id", alias);
             alias.to_string()
         }
         Err(e) => {
@@ -129,15 +130,14 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
             return Err(server_error);
         }
     };
-    let ledger_alias = ledger.alias().to_string();
+    let ledger_id = ledger.ledger_id().to_string();
 
     let response = CreateResponse {
-        ledger: ledger_alias.clone(),
+        ledger_id: ledger_id.clone(),
         t: 0,
         tx_id,
         commit: CommitInfo {
-            // Genesis state address
-            address: format!("fluree:memory://{}/main/head", ledger_alias),
+            commit_id: None, // genesis has no commit
             hash: String::new(),
         },
     };
@@ -159,8 +159,8 @@ pub struct DropRequest {
 /// Drop ledger response
 #[derive(Serialize)]
 pub struct DropResponse {
-    /// Ledger alias
-    pub ledger: String,
+    /// Ledger identifier
+    pub ledger_id: String,
     /// Drop status
     pub status: String,
     /// Files deleted (hard mode only)
@@ -186,7 +186,7 @@ impl From<DropReport> for DropResponse {
         };
 
         DropResponse {
-            ledger: report.alias,
+            ledger_id: report.ledger_id,
             status: status.to_string(),
             files_deleted,
             warnings: report.warnings,
@@ -268,16 +268,16 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
 /// Ledger info response (simplified, used in proxy storage mode fallback)
 #[derive(Serialize)]
 pub struct LedgerInfoResponse {
-    /// Ledger alias
-    pub ledger: String,
+    /// Ledger identifier
+    pub ledger_id: String,
     /// Current transaction time
     pub t: i64,
-    /// Commit address (if any)
+    /// Head commit ContentId (storage-agnostic identity), if known.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-    /// Index address (if any)
+    pub commit_head_id: Option<fluree_db_core::ContentId>,
+    /// Head index ContentId (storage-agnostic identity), if known.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub index: Option<String>,
+    pub index_head_id: Option<fluree_db_core::ContentId>,
 }
 
 /// Get ledger information
@@ -294,6 +294,7 @@ pub struct LedgerInfoResponse {
 pub async fn info(
     State(state): State<Arc<AppState>>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     query: axum::extract::Query<LedgerInfoQuery>,
 ) -> Result<Response> {
     // Create request span
@@ -319,7 +320,7 @@ pub async fn info(
         .ok_or(ServerError::MissingLedger)
     {
         Ok(alias) => {
-            span.record("ledger_alias", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias
         }
         Err(e) => {
@@ -328,6 +329,18 @@ pub async fn info(
             return Err(e);
         }
     };
+
+    // Enforce data auth (ledger-info is a read operation; Bearer token only)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {
+        return Err(ServerError::unauthorized("Bearer token required"));
+    }
+    if let Some(p) = bearer.0.as_ref() {
+        if !p.can_read(alias) {
+            // Avoid existence leak
+            return Err(ServerError::not_found("Ledger not found"));
+        }
+    }
 
     // In proxy storage mode, return simplified nameservice-only response
     // (peer doesn't have local ledger state to compute full stats)
@@ -338,22 +351,47 @@ pub async fn info(
     // Non-proxy mode: load ledger and return comprehensive info
     let ledger_state = super::query::load_ledger_for_query(&state, alias, &span).await?;
 
-    // Get t value for backwards compatibility
     let t = ledger_state.db.t;
 
     // Build comprehensive ledger info (at parity with Clojure)
-    let mut info = fluree_db_api::ledger_info::build_ledger_info(&ledger_state, None)
-        .await
-        .map_err(|e| {
-            set_span_error_code(&span, "error:InternalError");
-            tracing::error!(error = %e, "failed to build ledger info");
-            ServerError::internal(format!("Failed to build ledger info: {}", e))
-        })?;
+    //
+    // By default we return the optimized base payload. Callers can opt into
+    // heavier/real-time property details via query params.
+    let realtime_details = query.realtime_property_details.unwrap_or(false);
+    let opts = fluree_db_api::ledger_info::LedgerInfoOptions {
+        realtime_property_details: realtime_details,
+        include_property_datatypes: query.include_property_datatypes.unwrap_or(false)
+            || realtime_details,
+    };
+    let mut info = match &state.fluree {
+        crate::state::FlureeInstance::File(f) => {
+            fluree_db_api::ledger_info::build_ledger_info_with_options(
+                &ledger_state,
+                f.storage(),
+                None,
+                opts,
+            )
+            .await
+        }
+        crate::state::FlureeInstance::Proxy(p) => {
+            fluree_db_api::ledger_info::build_ledger_info_with_options(
+                &ledger_state,
+                p.storage(),
+                None,
+                opts,
+            )
+            .await
+        }
+    }
+    .map_err(|e| {
+        set_span_error_code(&span, "error:InternalError");
+        tracing::error!(error = %e, "failed to build ledger info");
+        ServerError::internal(format!("Failed to build ledger info: {}", e))
+    })?;
 
-    // Add top-level ledger alias and t for backwards compatibility
     if let Some(obj) = info.as_object_mut() {
         obj.insert(
-            "ledger".to_string(),
+            "ledger_id".to_string(),
             serde_json::Value::String(alias.to_string()),
         );
         obj.insert("t".to_string(), serde_json::Value::Number(t.into()));
@@ -361,6 +399,20 @@ pub async fn info(
 
     tracing::info!(status = "success", "ledger info retrieved");
     Ok(Json(info).into_response())
+}
+
+/// Get ledger information with ledger as greedy tail segment.
+///
+/// GET /fluree/info/<ledger...>
+pub async fn info_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
+    Query(mut query): Query<LedgerInfoQuery>,
+) -> Result<Response> {
+    query.ledger = Some(ledger);
+    info(State(state), headers, bearer, axum::extract::Query(query)).await
 }
 
 /// Simplified ledger info for proxy storage mode (nameservice lookup only)
@@ -389,10 +441,10 @@ async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) ->
         "ledger info retrieved (simplified)"
     );
     Ok(Json(LedgerInfoResponse {
-        ledger: record.address.clone(),
+        ledger_id: record.ledger_id.clone(),
         t: record.commit_t,
-        commit: record.commit_address.clone(),
-        index: record.index_address.clone(),
+        commit_head_id: record.commit_head_id.clone(),
+        index_head_id: record.index_head_id.clone(),
     })
     .into_response())
 }
@@ -401,13 +453,17 @@ async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) ->
 #[derive(Deserialize)]
 pub struct LedgerInfoQuery {
     pub ledger: Option<String>,
+    /// When true, merge novelty deltas into property “details” (real-time).
+    pub realtime_property_details: Option<bool>,
+    /// When true, include `datatypes` under `stats.properties[*]` (indexed view by default).
+    pub include_property_datatypes: Option<bool>,
 }
 
 /// Ledger exists response
 #[derive(Serialize)]
 pub struct ExistsResponse {
-    /// Ledger alias (echoed back)
-    pub ledger: String,
+    /// Ledger identifier (echoed back)
+    pub ledger_id: String,
     /// Whether the ledger exists
     pub exists: bool,
 }
@@ -423,6 +479,7 @@ pub struct ExistsResponse {
 pub async fn exists(
     State(state): State<Arc<AppState>>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     query: axum::extract::Query<LedgerInfoQuery>,
 ) -> Result<Json<ExistsResponse>> {
     // Create request span
@@ -448,7 +505,7 @@ pub async fn exists(
         .ok_or(ServerError::MissingLedger)
     {
         Ok(alias) => {
-            span.record("ledger_alias", alias.as_str());
+            span.record("ledger_id", alias.as_str());
             alias.clone()
         }
         Err(e) => {
@@ -457,6 +514,18 @@ pub async fn exists(
             return Err(e);
         }
     };
+
+    // Enforce data auth (exists is a read operation; Bearer token only)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {
+        return Err(ServerError::unauthorized("Bearer token required"));
+    }
+    if let Some(p) = bearer.0.as_ref() {
+        if !p.can_read(&alias) {
+            // Avoid existence leak
+            return Err(ServerError::not_found("Ledger not found"));
+        }
+    }
 
     // Check if ledger exists via nameservice lookup
     let exists = match state.fluree.ledger_exists(&alias).await {
@@ -475,9 +544,23 @@ pub async fn exists(
         "ledger exists check completed"
     );
     Ok(Json(ExistsResponse {
-        ledger: alias,
+        ledger_id: alias,
         exists,
     }))
+}
+
+/// Check ledger existence with ledger as greedy tail segment.
+///
+/// GET /fluree/exists/<ledger...>
+pub async fn exists_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
+    Query(mut query): Query<LedgerInfoQuery>,
+) -> Result<Json<ExistsResponse>> {
+    query.ledger = Some(ledger);
+    exists(State(state), headers, bearer, axum::extract::Query(query)).await
 }
 
 /// Forward a write request to the transaction server (peer mode)

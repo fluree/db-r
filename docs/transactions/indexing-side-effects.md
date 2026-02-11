@@ -99,7 +99,7 @@ For each flake in t=41, t=42:
 When complete, publish new index:
 ```text
   - Write index snapshot to storage
-  - Publish index_address to nameservice
+  - Publish index_id to nameservice
   - Update index_t to 42
 ```
 
@@ -172,7 +172,7 @@ curl http://localhost:8090/ledgers/mydb:main
 Response:
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_id": "mydb:main",
   "commit_t": 150,
   "index_t": 140,
   "novelty_count": 10
@@ -359,9 +359,9 @@ async function waitForIndexing() {
 }
 ```
 
-## Virtual Graph Indexing
+## Graph Source Indexing
 
-Virtual graphs have their own indexing processes:
+Graph sources have their own indexing processes:
 
 ### BM25 Indexing
 
@@ -374,9 +374,11 @@ t=100: Transaction with new documents
   - Documents added to BM25 index
 ```
 
-### Vector Search Indexing (Planned)
+### Vector Search Indexing
 
-Vector embeddings will be indexed separately when usearch support is implemented:
+Vector embeddings can be indexed separately for approximate nearest-neighbor (ANN) search via HNSW vector indexes (implemented with `usearch`, feature-gated behind the `vector` feature).
+
+Inline similarity functions (`dotProduct`, `cosineSimilarity`, `euclideanDistance`) do **not** require a separate graph-source index; they compute scores directly during query execution.
 
 ```text
 t=100: Transaction with embeddings
@@ -384,6 +386,8 @@ t=100: Transaction with embeddings
   - Vector indexer triggered
   - Vectors added to vector index
 ```
+
+See [Vector Search](../indexing-and-search/vector-search.md) for details on HNSW vector indexes and query syntax.
 
 ## Best Practices
 

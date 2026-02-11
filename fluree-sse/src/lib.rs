@@ -10,3 +10,9 @@
 mod parser;
 
 pub use parser::{SseEvent, SseParser};
+
+/// SSE event kind for ledger events (published, retracted, updated).
+pub const SSE_KIND_LEDGER: &str = "ledger";
+
+/// SSE event kind for graph source events (published, retracted, updated).
+pub const SSE_KIND_GRAPH_SOURCE: &str = "graph-source";

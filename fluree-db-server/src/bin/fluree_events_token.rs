@@ -49,7 +49,7 @@ struct Args {
     #[arg(long)]
     identity: Option<String>,
 
-    /// Grant access to all ledgers and VGs (fluree.events.all=true)
+    /// Grant access to all ledgers and graph sources (fluree.events.all=true)
     #[arg(long)]
     all: bool,
 
@@ -57,9 +57,9 @@ struct Args {
     #[arg(long = "ledger")]
     ledgers: Vec<String>,
 
-    /// Grant access to specific virtual graph (repeatable)
-    #[arg(long = "vg")]
-    vgs: Vec<String>,
+    /// Grant access to specific graph source (repeatable)
+    #[arg(long = "graph-source")]
+    graph_sources: Vec<String>,
 
     /// Output format
     #[arg(long, default_value = "token", value_enum)]
@@ -112,8 +112,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Warn if no permissions granted
-    if !args.all && args.ledgers.is_empty() && args.vgs.is_empty() {
-        return Err("No permissions granted. Use --all, --ledger, or --vg".into());
+    if !args.all && args.ledgers.is_empty() && args.graph_sources.is_empty() {
+        return Err("No permissions granted. Use --all, --ledger, or --graph-source".into());
     }
 
     // Build claims payload
@@ -143,8 +143,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         claims["fluree.events.ledgers"] = json!(args.ledgers);
     }
 
-    if !args.vgs.is_empty() {
-        claims["fluree.events.vgs"] = json!(args.vgs);
+    if !args.graph_sources.is_empty() {
+        claims["fluree.events.graph_sources"] = json!(args.graph_sources);
     }
 
     // Create JWS
@@ -183,11 +183,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     ledger_params.push_str(&format!("ledger={}", url_encode(l)));
                 }
-                for v in &args.vgs {
+                for v in &args.graph_sources {
                     if !ledger_params.is_empty() {
                         ledger_params.push('&');
                     }
-                    ledger_params.push_str(&format!("vg={}", url_encode(v)));
+                    ledger_params.push_str(&format!("graph-source={}", url_encode(v)));
                 }
             }
             println!(

@@ -275,13 +275,10 @@ mod inner {
         fn make_envelope(t: i64) -> crate::commit_v2::CommitV2Envelope {
             crate::commit_v2::CommitV2Envelope {
                 t,
-                v: 2,
                 previous_ref: None,
                 namespace_delta: HashMap::new(),
                 txn: None,
                 time: None,
-                data: None,
-                index: None,
                 txn_signature: None,
                 txn_meta: Vec::new(),
                 graph_delta: HashMap::new(),

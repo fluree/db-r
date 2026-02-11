@@ -36,9 +36,9 @@ All requests are stateless:
 
 ## Core Concepts
 
-### Ledger Addressing
+### Ledger Identification
 
-Ledgers are addressed using aliases with branch names:
+Ledgers are identified using aliases with branch names:
 
 ```text
 ledger-name:branch-name
@@ -51,12 +51,12 @@ Examples:
 
 ### Time Travel in URLs
 
-Historical queries use time specifiers in ledger addresses:
+Historical queries use time specifiers in ledger IDs:
 
 ```text
 ledger:branch@t:100           # Transaction number
 ledger:branch@iso:2024-01-15  # ISO timestamp
-ledger:branch@sha:abc123      # Commit SHA
+ledger:branch@commit:bafybeig...  # Commit ID
 ```
 
 These work in all query contexts (FROM clauses, dataset specs, etc.).
@@ -91,7 +91,7 @@ Response format determined by `Accept` header:
 - Supports history queries via time range in `from` clause (see [Time Travel](../concepts/time-travel.md))
 
 **POST /nameservice/query**
-- Query metadata about all ledgers and virtual graphs
+- Query metadata about all ledgers and graph sources
 - Parameters: None (query in request body)
 - Returns: Query results over nameservice records
 
@@ -102,14 +102,14 @@ Response format determined by `Accept` header:
 - Parameters: None
 - Returns: Array of ledger metadata
 
-**GET /ledgers/:alias**
+**GET /ledgers/:ledger-id**
 - Get specific ledger metadata
-- Parameters: `alias` (ledger:branch)
+- Parameters: `ledger-id` (ledger:branch)
 - Returns: Ledger details (commit_t, index_t, etc.)
 
 **POST /ledgers**
 - Create a new ledger explicitly
-- Parameters: `alias`, `config`
+- Parameters: `ledger-id`, `config`
 - Returns: Ledger metadata
 - Note: The HTTP server also supports implicit creation on first transaction; the Rust library API requires explicit `create_ledger` before transacting
 
@@ -203,8 +203,7 @@ Successful operations return appropriate status codes with JSON bodies.
 {
   "t": 5,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456...",
-  "address": "fluree:memory:commit:abc123...",
+  "commit_id": "bafybeig...commitT5",
   "flakes_added": 3,
   "flakes_retracted": 1
 }
@@ -224,13 +223,9 @@ Errors return appropriate HTTP status codes with structured error objects:
 
 ```json
 {
-  "error": "TransactionError",
-  "message": "Invalid IRI: not a valid URI",
-  "code": "INVALID_IRI",
-  "details": {
-    "iri": "not a uri",
-    "line": 5
-  }
+  "error": "Invalid IRI: not a valid URI",
+  "status": 400,
+  "@type": "err:db/BadRequest"
 }
 ```
 
@@ -238,50 +233,66 @@ See [Errors and Status Codes](errors.md) for complete error reference.
 
 ## Authentication
 
+Fluree supports multiple authentication mechanisms, configured per endpoint group (data, events, admin, storage proxy). Each can be set to `none`, `optional`, or `required`. See [Configuration](../operations/configuration.md) for full details.
+
 ### Development Mode
 
-No authentication required (default for local development):
+No authentication required (default):
 
 ```bash
-curl http://localhost:8090/query -d '{...}'
+curl http://localhost:8090/mydb:main/query \
+  -H "Content-Type: application/json" \
+  -d '{"select": ["?s"], "where": [{"@id": "?s"}]}'
 ```
 
-### Production Modes
+### Bearer Token Authentication
 
-#### API Key Authentication
+Bearer tokens in the `Authorization` header. Fluree supports two token types with automatic dual-path dispatch:
 
-Simple token-based authentication:
+**Ed25519 JWS (did:key)** - Locally minted tokens with an embedded JWK. Created with `fluree token create`:
 
 ```bash
-curl http://api.example.com/query \
-  -H "X-API-Key: your-api-key" \
-  -d '{...}'
+TOKEN=$(fluree token create --private-key @~/.fluree/key --read-all --write-all)
+
+curl http://localhost:8090/mydb:main/query \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"select": ["?s"], "where": [{"@id": "?s"}]}'
 ```
 
-#### Bearer Token Authentication
-
-JWT-based authentication:
+**OIDC/JWKS (RS256)** - Tokens from external identity providers, verified against the provider's JWKS endpoint. Requires the `oidc` feature and `--jwks-issuer` server configuration:
 
 ```bash
-curl http://api.example.com/query \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
-  -d '{...}'
+curl http://localhost:8090/mydb:main/query \
+  -H "Authorization: Bearer <oidc-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"select": ["?s"], "where": [{"@id": "?s"}]}'
 ```
 
-#### Signed Requests (JWS/VC)
+The server inspects the token header to determine the verification path:
+- **Embedded JWK** (Ed25519): Verifies against the embedded public key; issuer is a `did:key`
+- **kid header** (RS256): Verifies against the issuer's JWKS endpoint
 
-Cryptographically signed requests using JSON Web Signatures or Verifiable Credentials:
+#### Token Scopes
+
+Bearer tokens carry permission scopes that control access:
+
+- **Read**: `fluree.ledger.read.all=true` or `fluree.ledger.read.ledgers=[...]`
+- **Write**: `fluree.ledger.write.all=true` or `fluree.ledger.write.ledgers=[...]`
+- **Back-compat**: `fluree.storage.*` claims also imply read access for data endpoints
+
+#### Connection-Scoped SPARQL
+
+When a bearer token is present for connection-scoped SPARQL queries (`/fluree/query` with `Content-Type: application/sparql-query`), FROM/FROM NAMED clauses are checked against the token's read scope (`fluree.ledger.read.all` or `fluree.ledger.read.ledgers`). Out-of-scope ledgers return 404 (no existence leak).
+
+### Signed Requests (JWS/VC)
+
+Cryptographically signed request bodies using Ed25519 JWS or Verifiable Credentials. The signed payload carries the request itself plus the signer's identity for policy evaluation.
 
 ```bash
-curl http://api.example.com/query \
+curl http://localhost:8090/mydb:main/query \
   -H "Content-Type: application/jose" \
-  -d '{
-    "payload": "[base64-encoded-request]",
-    "signatures": [{
-      "protected": "[base64-encoded-header]",
-      "signature": "[base64-encoded-signature]"
-    }]
-  }'
+  -d '<compact-jws-string>'
 ```
 
 See [Signed Requests](signed-requests.md) for detailed documentation.
@@ -325,14 +336,6 @@ Future versions may use URL-based versioning:
 ```text
 https://api.example.com/v2/query
 ```
-
-### Backward Compatibility
-
-The API maintains backward compatibility within major versions:
-- New endpoints may be added
-- New optional parameters may be added
-- Response format remains compatible
-- Breaking changes trigger major version bump
 
 ## Common Patterns
 
@@ -498,7 +501,7 @@ Combine related entities in single transactions for better performance.
 
 - `@t:NNN` is fastest (direct lookup)
 - `@iso:DATETIME` requires binary search
-- `@sha:PREFIX` requires scan (use 7+ character prefixes)
+- `@commit:CID` requires scan
 
 ### 3. Limit Result Sets
 

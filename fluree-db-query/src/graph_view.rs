@@ -33,7 +33,7 @@
 //! # Object Safety
 //!
 //! The `GraphView` trait is object-safe (with concrete `S`), enabling heterogeneous
-//! collections of views via `Arc<dyn GraphView<S>>`.
+//! collections of views via `Arc<dyn GraphView>`.
 //!
 //! # Performance
 //!
@@ -46,7 +46,7 @@
 //! then call `resolve()` to obtain a `ResolvedGraphView` for use in operators.
 
 use crate::policy::QueryPolicyEnforcer;
-use fluree_db_core::{Db, OverlayProvider, Storage};
+use fluree_db_core::{Db, OverlayProvider};
 use std::sync::Arc;
 
 // ============================================================================
@@ -69,42 +69,42 @@ use std::sync::Arc;
 /// The lifetime `'a` ties this view to the underlying `GraphView` it was
 /// resolved from. The resolved view is valid as long as the source view exists.
 #[derive(Copy, Clone)]
-pub struct ResolvedGraphView<'a, S: Storage> {
+pub struct ResolvedGraphView<'a> {
     /// The database for this graph
-    pub db: &'a Db<S>,
+    pub db: &'a Db,
     /// Overlay provider (novelty layer, possibly with reasoning)
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time (possibly overridden by AsOf)
     pub to_t: i64,
     /// Optional policy enforcer (attached by WithPolicy) - reference, no clone
     pub policy_enforcer: Option<&'a QueryPolicyEnforcer>,
-    /// Ledger alias for provenance tracking - reference to Arc, no clone
-    pub ledger_alias: &'a Arc<str>,
+    /// Ledger ID for provenance tracking - reference to Arc, no clone
+    pub ledger_id: &'a Arc<str>,
 }
 
-impl<'a, S: Storage> ResolvedGraphView<'a, S> {
+impl<'a> ResolvedGraphView<'a> {
     /// Create a new resolved view with no policy
     pub fn new(
-        db: &'a Db<S>,
+        db: &'a Db,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
-        ledger_alias: &'a Arc<str>,
+        ledger_id: &'a Arc<str>,
     ) -> Self {
         Self {
             db,
             overlay,
             to_t,
             policy_enforcer: None,
-            ledger_alias,
+            ledger_id,
         }
     }
 
     /// Create a resolved view with policy
     pub fn with_policy(
-        db: &'a Db<S>,
+        db: &'a Db,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
-        ledger_alias: &'a Arc<str>,
+        ledger_id: &'a Arc<str>,
         policy_enforcer: &'a QueryPolicyEnforcer,
     ) -> Self {
         Self {
@@ -112,7 +112,7 @@ impl<'a, S: Storage> ResolvedGraphView<'a, S> {
             overlay,
             to_t,
             policy_enforcer: Some(policy_enforcer),
-            ledger_alias,
+            ledger_id,
         }
     }
 
@@ -122,14 +122,14 @@ impl<'a, S: Storage> ResolvedGraphView<'a, S> {
     }
 }
 
-impl<'a, S: Storage> std::fmt::Debug for ResolvedGraphView<'a, S> {
+impl<'a> std::fmt::Debug for ResolvedGraphView<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedGraphView")
             .field("db", &"<Db>")
             .field("overlay", &"<dyn OverlayProvider>")
             .field("to_t", &self.to_t)
             .field("has_policy", &self.policy_enforcer.is_some())
-            .field("ledger_alias", self.ledger_alias)
+            .field("ledger_id", self.ledger_id)
             .finish()
     }
 }
@@ -147,21 +147,21 @@ impl<'a, S: Storage> std::fmt::Debug for ResolvedGraphView<'a, S> {
 /// # Object Safety
 ///
 /// The trait is object-safe when `S` and `C` are concrete, which allows
-/// `DataSet` to store heterogeneous wrapper stacks via `Arc<dyn GraphView<S>>`.
+/// `DataSet` to store heterogeneous wrapper stacks via `Arc<dyn GraphView>`.
 ///
 /// # Performance
 ///
 /// `resolve()` returns a view with **references only** - no allocations.
 /// Call it once per graph/leaf, then use the resolved view.
-pub trait GraphView<S: Storage> {
+pub trait GraphView {
     /// Resolve this view to a [`ResolvedGraphView`] for use by operators.
     ///
     /// This should be called **once per graph/leaf**, not per flake.
     /// The returned view borrows from `self` and contains no owned data.
-    fn resolve(&self) -> ResolvedGraphView<'_, S>;
+    fn resolve(&self) -> ResolvedGraphView<'_>;
 
-    /// Get the ledger alias for this view (for provenance tracking).
-    fn ledger_alias(&self) -> &Arc<str>;
+    /// Get the ledger ID for this view (for provenance tracking).
+    fn ledger_id(&self) -> &Arc<str>;
 }
 
 // ============================================================================
@@ -178,18 +178,18 @@ pub trait GraphView<S: Storage> {
 /// Do **not** use `db.t` as `to_t` when you have a novelty overlay - that
 /// ignores unindexed commits. Use `ledger.t()` (which is `max(db.t, novelty.t)`)
 /// or pass the correct time explicitly.
-pub struct BaseView<'a, S: Storage> {
+pub struct BaseView<'a> {
     /// The database
-    pub db: &'a Db<S>,
+    pub db: &'a Db,
     /// The overlay provider (novelty)
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time - must include novelty commits if present
     pub to_t: i64,
-    /// Ledger alias for provenance tracking
-    pub ledger_alias: Arc<str>,
+    /// Ledger ID for provenance tracking
+    pub ledger_id: Arc<str>,
 }
 
-impl<'a, S: Storage> BaseView<'a, S> {
+impl<'a> BaseView<'a> {
     /// Create a new base view.
     ///
     /// # Arguments
@@ -199,29 +199,29 @@ impl<'a, S: Storage> BaseView<'a, S> {
     /// * `to_t` - Target transaction time. **Important**: If using a novelty
     ///   overlay, this should be `ledger.t()` (not `db.t`) to include
     ///   unindexed commits.
-    /// * `ledger_alias` - Ledger alias for provenance tracking
+    /// * `ledger_id` - Ledger ID for provenance tracking
     pub fn new(
-        db: &'a Db<S>,
+        db: &'a Db,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
-        ledger_alias: impl Into<Arc<str>>,
+        ledger_id: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             db,
             overlay,
             to_t,
-            ledger_alias: ledger_alias.into(),
+            ledger_id: ledger_id.into(),
         }
     }
 }
 
-impl<'a, S: Storage> GraphView<S> for BaseView<'a, S> {
-    fn resolve(&self) -> ResolvedGraphView<'_, S> {
-        ResolvedGraphView::new(self.db, self.overlay, self.to_t, &self.ledger_alias)
+impl<'a> GraphView for BaseView<'a> {
+    fn resolve(&self) -> ResolvedGraphView<'_> {
+        ResolvedGraphView::new(self.db, self.overlay, self.to_t, &self.ledger_id)
     }
 
-    fn ledger_alias(&self) -> &Arc<str> {
-        &self.ledger_alias
+    fn ledger_id(&self) -> &Arc<str> {
+        &self.ledger_id
     }
 }
 
@@ -259,15 +259,15 @@ impl<V> AsOf<V> {
     }
 }
 
-impl<S: Storage, V: GraphView<S>> GraphView<S> for AsOf<V> {
-    fn resolve(&self) -> ResolvedGraphView<'_, S> {
+impl<V: GraphView> GraphView for AsOf<V> {
+    fn resolve(&self) -> ResolvedGraphView<'_> {
         let mut resolved = self.inner.resolve();
         resolved.to_t = self.to_t;
         resolved
     }
 
-    fn ledger_alias(&self) -> &Arc<str> {
-        self.inner.ledger_alias()
+    fn ledger_id(&self) -> &Arc<str> {
+        self.inner.ledger_id()
     }
 }
 
@@ -309,15 +309,15 @@ impl<'a, V> WithPolicy<'a, V> {
     }
 }
 
-impl<'a, S: Storage, V: GraphView<S>> GraphView<S> for WithPolicy<'a, V> {
-    fn resolve(&self) -> ResolvedGraphView<'_, S> {
+impl<'a, V: GraphView> GraphView for WithPolicy<'a, V> {
+    fn resolve(&self) -> ResolvedGraphView<'_> {
         let mut resolved = self.inner.resolve();
         resolved.policy_enforcer = Some(self.enforcer);
         resolved
     }
 
-    fn ledger_alias(&self) -> &Arc<str> {
-        self.inner.ledger_alias()
+    fn ledger_id(&self) -> &Arc<str> {
+        self.inner.ledger_id()
     }
 }
 
@@ -351,15 +351,15 @@ impl<'a, V> WithReasoning<'a, V> {
     }
 }
 
-impl<'a, S: Storage, V: GraphView<S>> GraphView<S> for WithReasoning<'a, V> {
-    fn resolve(&self) -> ResolvedGraphView<'_, S> {
+impl<'a, V: GraphView> GraphView for WithReasoning<'a, V> {
+    fn resolve(&self) -> ResolvedGraphView<'_> {
         let mut resolved = self.inner.resolve();
         resolved.overlay = self.overlay;
         resolved
     }
 
-    fn ledger_alias(&self) -> &Arc<str> {
-        self.inner.ledger_alias()
+    fn ledger_id(&self) -> &Arc<str> {
+        self.inner.ledger_id()
     }
 }
 
@@ -372,18 +372,18 @@ mod tests {
     use super::*;
 
     // Verify object-safety: the trait can be used as a trait object
-    fn _assert_object_safe<S: Storage + 'static>(_: &dyn GraphView<S>) {}
+    fn _assert_object_safe(_: &dyn GraphView) {}
 
     #[test]
     fn test_wrapper_composition_compiles() {
         // This test just verifies that the wrapper composition types compile
         // and the trait bounds are correct.
-        fn _assert_graph_view<V: GraphView<fluree_db_core::MemoryStorage>>(_: &V) {}
+        fn _assert_graph_view<V: GraphView>(_: &V) {}
 
         // Object-safety check (doesn't run, just compiles)
-        fn _check_dyn<S: Storage + 'static>(v: &dyn GraphView<S>) {
+        fn _check_dyn(v: &dyn GraphView) {
             let _resolved = v.resolve();
-            let _alias = v.ledger_alias();
+            let _ledger_id = v.ledger_id();
         }
     }
 }

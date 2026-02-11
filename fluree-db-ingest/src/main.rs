@@ -10,23 +10,25 @@ use fluree_db_api::{FlureeBuilder, IndexConfig};
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-fn alias_prefix(alias: &str) -> String {
-    fluree_db_core::address_path::alias_to_path_prefix(alias)
-        .unwrap_or_else(|_| alias.replace(':', "/"))
+fn ledger_id_prefix(ledger_id: &str) -> String {
+    fluree_db_core::address_path::ledger_id_to_path_prefix(ledger_id)
+        .unwrap_or_else(|_| ledger_id.replace(':', "/"))
 }
 
 fn default_run_dir(args: &Args) -> PathBuf {
     args.run_dir.clone().unwrap_or_else(|| {
         args.db_dir
-            .join(alias_prefix(&args.ledger))
+            .join(ledger_id_prefix(&args.ledger))
             .join("tmp_import")
     })
 }
 
 fn default_index_dir(args: &Args) -> PathBuf {
-    args.index_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join(alias_prefix(&args.ledger)).join("index"))
+    args.index_dir.clone().unwrap_or_else(|| {
+        args.db_dir
+            .join(ledger_id_prefix(&args.ledger))
+            .join("index")
+    })
 }
 
 fn init_logging() {
@@ -178,7 +180,7 @@ struct Args {
     #[arg(long)]
     db_dir: PathBuf,
 
-    /// Ledger alias (default: "dblp:main")
+    /// Ledger ID (default: "dblp:main")
     #[arg(long, default_value = "dblp:main")]
     ledger: String,
 
@@ -200,12 +202,29 @@ struct Args {
     #[arg(long)]
     no_compress: bool,
 
+    /// Disable ID-based stats during import commit resolution (import mode only).
+    ///
+    /// By default, per-op stats collection (HLL NDV, datatype counts) runs while
+    /// resolving commit blobs to run records. This flag disables it for faster
+    /// throughput at the cost of less detailed `stats.json`.
+    #[arg(long)]
+    no_id_stats: bool,
+
     /// Directory for run files (default: {db_dir}/tmp_import).
     #[arg(long)]
     run_dir: Option<PathBuf>,
 
-    /// Run writer memory budget in MB (default: 256).
-    #[arg(long, default_value_t = 256)]
+    /// Overall memory budget in MB (0 = auto-detect 75% of system RAM).
+    /// Derives chunk-size-mb, run-budget-mb, and max-inflight if not set.
+    #[arg(long, default_value_t = 0)]
+    memory_budget_mb: usize,
+
+    /// Chunk size in MB for splitting a single large Turtle file (0 = derive from budget).
+    #[arg(long, default_value_t = 0)]
+    chunk_size_mb: usize,
+
+    /// Run writer memory budget in MB (0 = derive from memory budget).
+    #[arg(long, default_value_t = 0)]
     run_budget_mb: usize,
 
     /// Build multi-order indexes (SPOT, PSOT, POST, OPST).
@@ -235,9 +254,12 @@ struct Args {
     sparql: Option<String>,
 
     /// Number of parallel TTL parse threads (import mode only).
-    /// 0 = serial (default). Parsing is 90% of import time; parallel parsing
-    /// parses multiple chunks simultaneously while commits remain serial.
+    /// 0 = derive from system cores (default, capped at 6).
     #[arg(long, default_value_t = 0)]
+    parallelism: usize,
+
+    /// Hidden alias for --parallelism (backward compatibility).
+    #[arg(long, hide = true, default_value_t = 0)]
     parse_threads: usize,
 
     /// Enable background indexing in the standard staging pipeline.
@@ -529,17 +551,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ns_present = ns_record.is_some(),
             commit_t = ns_record.as_ref().map(|r| r.commit_t).unwrap_or(0),
             index_t = ns_record.as_ref().map(|r| r.index_t).unwrap_or(0),
-            index_address = ns_record
+            index_head_id = %ns_record
                 .as_ref()
-                .and_then(|r| r.index_address.as_ref())
-                .map(|s| s.as_str())
-                .unwrap_or(""),
+                .and_then(|r| r.index_head_id.as_ref())
+                .map(|cid| cid.to_string())
+                .unwrap_or_default(),
             "Nameservice ledger record"
         );
 
-        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&args.ledger)
+        let ledger_prefix = fluree_db_core::address_path::ledger_id_to_path_prefix(&args.ledger)
             .unwrap_or_else(|_| args.ledger.replace(':', "/"));
-        let manifest_addr = format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
+        let manifest_addr = format!("fluree:file://{}/stats/pre-index-stats.json", ledger_prefix);
         match storage.read_bytes(&manifest_addr).await {
             Ok(bytes) => {
                 info!(
@@ -572,13 +594,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        if let Some(index_addr) = ns_record.and_then(|r| r.index_address) {
-            use fluree_db_indexer::run_index::BinaryIndexRootV2;
+        if let Some(index_cid) = ns_record.and_then(|r| r.index_head_id) {
+            use fluree_db_core::ContentStore;
+            use fluree_db_indexer::run_index::BinaryIndexRoot;
 
-            match storage.read_bytes(&index_addr).await {
+            let cs = fluree_db_core::content_store_for(storage.clone(), &args.ledger);
+            match cs.get(&index_cid).await {
                 Ok(bytes) => {
                     info!(
-                        index_addr = %index_addr,
+                        index_cid = %index_cid,
                         bytes = bytes.len(),
                         "Loaded index root descriptor"
                     );
@@ -588,10 +612,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("{}", s);
                         }
                     } else {
-                        match BinaryIndexRootV2::from_json_bytes(&bytes) {
+                        match BinaryIndexRoot::from_json_bytes(&bytes) {
                             Ok(root) => {
                                 info!(
-                                    index_addr = %index_addr,
+                                    index_cid = %index_cid,
                                     schema_version = root.version,
                                     index_t = root.index_t,
                                     base_t = root.base_t,
@@ -604,7 +628,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             Err(e) => {
                                 info!(
-                                    index_addr = %index_addr,
+                                    index_cid = %index_cid,
                                     "Failed to parse index root as V2: {}", e
                                 );
                             }
@@ -612,11 +636,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 Err(e) => {
-                    info!(index_addr = %index_addr, "Failed to read index root descriptor: {}", e);
+                    info!(index_cid = %index_cid, "Failed to read index root descriptor: {}", e);
                 }
             }
         } else {
-            info!("No index_address in nameservice; cannot load db-root stats");
+            info!("No index_head_id in nameservice; cannot load db-root stats");
         }
 
         if args.dump_stats_only {
@@ -643,12 +667,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy()).build()?;
         let mut builder = fluree.create(&args.ledger).import(chunks_dir);
 
-        if args.parse_threads > 0 {
-            builder = builder.threads(args.parse_threads);
+        // --parallelism takes precedence over --parse-threads (hidden alias)
+        let parallelism = if args.parallelism > 0 {
+            args.parallelism
+        } else {
+            args.parse_threads
+        };
+        if parallelism > 0 {
+            builder = builder.parallelism(parallelism);
         }
+
+        if args.memory_budget_mb > 0 {
+            builder = builder.memory_budget_mb(args.memory_budget_mb);
+        }
+        if args.chunk_size_mb > 0 {
+            builder = builder.chunk_size_mb(args.chunk_size_mb);
+        }
+        if args.run_budget_mb > 0 {
+            builder = builder.run_budget_mb(args.run_budget_mb);
+        }
+
         builder = builder
-            .run_budget_mb(args.run_budget_mb)
             .compress(!args.no_compress)
+            .collect_id_stats(!args.no_id_stats)
             .publish_every(args.publish_every);
 
         let result = builder
@@ -661,7 +702,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Import complete: t={}, {:.2}M flakes, root={:?}",
             result.t,
             result.flake_count as f64 / 1_000_000.0,
-            result.root_address,
+            result.root_id,
         );
     }
 

@@ -3,24 +3,24 @@
 //! This module provides the `commit` function that persists staged changes
 //! to storage and publishes to the nameservice.
 
-use crate::address::parse_commit_id;
 use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, DictNovelty, Flake, FlakeValue, Storage};
+use fluree_db_core::{
+    ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, FlakeValue, Storage,
+    CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN,
+};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::generate_commit_flakes;
-use fluree_db_novelty::{Commit, CommitData, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
+use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
 use std::sync::Arc;
 
 /// Receipt returned after a successful commit
 #[derive(Debug, Clone)]
 pub struct CommitReceipt {
-    /// Content address of the commit
-    pub address: String,
-    /// Commit ID (sha256 hash)
-    pub commit_id: String,
+    /// Content identifier (CIDv1) — primary identity
+    pub commit_id: ContentId,
     /// Transaction time of this commit
     pub t: i64,
     /// Number of flakes in the commit
@@ -142,13 +142,13 @@ impl CommitOpts {
 ///
 /// A tuple of (CommitReceipt, new LedgerState)
 pub async fn commit<S, N>(
-    view: LedgerView<S>,
+    view: LedgerView,
     mut ns_registry: NamespaceRegistry,
     storage: &S,
     nameservice: &N,
     index_config: &IndexConfig,
     opts: CommitOpts,
-) -> Result<(CommitReceipt, LedgerState<S>)>
+) -> Result<(CommitReceipt, LedgerState)>
 where
     S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher,
@@ -156,15 +156,27 @@ where
     // 1. Extract flakes from view
     let (mut base, flakes) = view.into_parts();
 
+    // Move commit options into locals so we can pass ownership where useful
+    // (e.g., txn_meta) without forcing clones, while still using other fields later.
+    let CommitOpts {
+        message: _message,
+        author: _author,
+        raw_txn,
+        signing_key,
+        txn_signature,
+        txn_meta,
+        graph_delta,
+    } = opts;
+
     let commit_span = tracing::info_span!(
         "txn_commit",
-        alias = base.alias(),
+        alias = base.ledger_id(),
         base_t = base.t(),
         flake_count = tracing::field::Empty,
         delta_bytes = tracing::field::Empty,
         current_novelty_bytes = tracing::field::Empty,
         max_novelty_bytes = index_config.reindex_max_bytes,
-        has_raw_txn = opts.raw_txn.is_some(),
+        has_raw_txn = raw_txn.is_some(),
     );
     let _commit_guard = commit_span.enter();
 
@@ -197,7 +209,7 @@ where
     let current = {
         let span = tracing::info_span!("commit_nameservice_lookup");
         let _g = span.enter();
-        nameservice.lookup(base.alias()).await?
+        nameservice.lookup(base.ledger_id()).await?
     };
     {
         let span = tracing::info_span!("commit_verify_sequencing");
@@ -232,18 +244,19 @@ where
     let timestamp = Utc::now().to_rfc3339();
 
     // Store original transaction JSON if provided (Clojure parity)
-    let txn_address = if let Some(txn_json) = &opts.raw_txn {
+    let txn_id: Option<ContentId> = if let Some(txn_json) = &raw_txn {
         let (txn_bytes, res) = {
             let span = tracing::info_span!("commit_write_raw_txn");
             let _g = span.enter();
             let txn_bytes = serde_json::to_vec(txn_json)?;
             let res = storage
-                .content_write_bytes(ContentKind::Txn, base.alias(), &txn_bytes)
+                .content_write_bytes(ContentKind::Txn, base.ledger_id(), &txn_bytes)
                 .await?;
             (txn_bytes, res)
         };
         tracing::info!(raw_txn_bytes = txn_bytes.len(), "raw txn stored");
-        Some(res.address)
+        // Derive ContentId from the content hash in the write result
+        ContentId::from_hex_digest(CODEC_FLUREE_TXN, &res.content_hash)
     } else {
         None
     };
@@ -251,102 +264,73 @@ where
     let mut commit_record = {
         let span = tracing::info_span!("commit_build_record");
         let _g = span.enter();
-        Commit::new("", new_t, flakes.clone())
+        Commit::new(new_t, flakes)
             .with_namespace_delta(ns_delta)
             .with_time(timestamp)
     };
 
-    // Add txn address to commit record (must be before computing commit ID)
-    if let Some(txn_addr) = &txn_address {
-        commit_record = commit_record.with_txn(txn_addr.clone());
+    // Add txn CID to commit record (must be before computing commit ID)
+    if let Some(txn_cid) = txn_id {
+        commit_record = commit_record.with_txn(txn_cid);
     }
 
     // Add txn signature if provided (audit metadata)
-    if let Some(txn_sig) = opts.txn_signature {
+    if let Some(txn_sig) = txn_signature {
         commit_record = commit_record.with_txn_signature(txn_sig);
     }
 
     // Add user-provided transaction metadata
-    if !opts.txn_meta.is_empty() {
-        commit_record = commit_record.with_txn_meta(opts.txn_meta.clone());
+    if !txn_meta.is_empty() {
+        commit_record = commit_record.with_txn_meta(txn_meta);
     }
 
     // Add named graph delta (g_id -> IRI mappings)
-    if !opts.graph_delta.is_empty() {
-        commit_record.graph_delta = opts.graph_delta.clone();
+    if !graph_delta.is_empty() {
+        commit_record.graph_delta = graph_delta;
     }
 
-    // Build previous commit reference with id and address
-    if let Some(prev_addr) = &base.head_commit {
-        // Try to extract commit ID from previous address
-        let prev_id = parse_commit_id(prev_addr).map(|id| format!("fluree:commit:{}", id));
-        let mut prev_ref = CommitRef::new(prev_addr.clone());
-        if let Some(id) = prev_id {
-            prev_ref = prev_ref.with_id(id);
-        }
-        commit_record = commit_record.with_previous_ref(prev_ref);
+    // Build previous commit reference from the head commit's ContentId.
+    if let Some(cid) = base.head_commit_id.clone() {
+        commit_record = commit_record.with_previous_ref(CommitRef::new(cid));
     }
-
-    // Build cumulative DB metadata
-    // Get current stats if available, otherwise use defaults
-    let (cumulative_flakes, cumulative_size) = if let Some(stats) = &base.db.stats {
-        (
-            stats.flakes + flake_count as u64,
-            stats.size + delta_bytes as u64,
-        )
-    } else {
-        // No indexed stats yet - use novelty as baseline
-        let novelty_flakes = base.novelty.len() as u64;
-        (
-            novelty_flakes + flake_count as u64,
-            (base.novelty_size() + delta_bytes) as u64,
-        )
-    };
-
-    let commit_data = CommitData {
-        id: None,      // Will be set after content-addressing
-        address: None, // DB address not tracked separately in Rust yet
-        flakes: cumulative_flakes,
-        size: cumulative_size,
-        previous: None, // Previous DB reference not tracked yet
-    };
-    commit_record = commit_record.with_data(commit_data);
 
     // 7. Content-address + write (storage-owned)
     //
-    // Important: the on-disk commit blob is written *without* `address` / `id`
-    // set (to avoid self-reference). We inject them into the in-memory struct
-    // after the write for downstream logic (metadata flakes, receipt, etc.).
+    // The on-disk commit blob is written *without* `id` set (to avoid
+    // self-reference). We derive the ContentId from the blob's trailing
+    // SHA-256 hash after writing.
 
-    // The blob's trailing SHA-256 IS the content address.
-    let (commit_id, commit_hash_hex, bytes) = {
+    let (commit_cid, commit_hash_hex, bytes) = {
         let span = tracing::info_span!("commit_write_commit_blob");
         let _g = span.enter();
-        let signing = opts
-            .signing_key
+        let signing = signing_key
             .as_ref()
-            .map(|key| (key.as_ref(), base.alias()));
+            .map(|key| (key.as_ref(), base.ledger_id()));
         let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
-        let commit_id = format!("sha256:{}", &result.content_hash_hex);
-        (commit_id, result.content_hash_hex, result.bytes)
+        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
+            .expect("valid SHA-256 hex from commit writer");
+        (commit_cid, result.content_hash_hex, result.bytes)
     };
 
-    let write_res = storage
-        .content_write_bytes_with_hash(ContentKind::Commit, base.alias(), &commit_hash_hex, &bytes)
+    storage
+        .content_write_bytes_with_hash(
+            ContentKind::Commit,
+            base.ledger_id(),
+            &commit_hash_hex,
+            &bytes,
+        )
         .await?;
     tracing::info!(commit_bytes = bytes.len(), "commit blob stored");
-    let address = write_res.address;
 
-    // Update in-memory commit with its address and content ID
-    commit_record.address = address.clone();
-    commit_record.id = Some(format!("fluree:commit:{}", commit_id));
+    // Update in-memory commit with its ContentId
+    commit_record.id = Some(commit_cid.clone());
 
     // 8. Publish to nameservice
     {
         let span = tracing::info_span!("commit_publish_nameservice");
         let _g = span.enter();
         nameservice
-            .publish_commit(base.alias(), &address, new_t)
+            .publish_commit(base.ledger_id(), new_t, &commit_cid)
             .await?;
     }
 
@@ -356,7 +340,7 @@ where
     let commit_metadata_flakes = {
         let span = tracing::info_span!("commit_generate_metadata_flakes");
         let _g = span.enter();
-        generate_commit_flakes(&commit_record, base.alias(), new_t)
+        generate_commit_flakes(&commit_record, base.ledger_id(), new_t)
     };
     tracing::info!(
         metadata_flakes = commit_metadata_flakes.len(),
@@ -364,7 +348,7 @@ where
     );
 
     // 10. Build new state - merge commit_metadata_flakes with transaction flakes
-    let mut all_flakes = flakes;
+    let mut all_flakes = std::mem::take(&mut commit_record.flakes);
     all_flakes.extend(commit_metadata_flakes);
 
     // 10.1 Populate DictNovelty with subjects/strings from this commit
@@ -375,25 +359,25 @@ where
         populate_dict_novelty(Arc::make_mut(&mut dict_novelty), &all_flakes);
     }
 
-    let mut new_novelty = (*base.novelty).clone();
+    let mut new_novelty = Arc::clone(&base.novelty);
     {
         let span = tracing::info_span!("commit_apply_to_novelty");
         let _g = span.enter();
-        new_novelty.apply_commit(all_flakes, new_t)?;
+        Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t)?;
     }
 
     let new_state = LedgerState {
         db: base.db,
-        novelty: Arc::new(new_novelty),
+        novelty: new_novelty,
         dict_novelty,
-        head_commit: Some(address.clone()),
+        head_commit_id: Some(commit_cid.clone()),
+        head_index_id: base.head_index_id,
         ns_record: base.ns_record,
         binary_store: base.binary_store,
     };
 
     let receipt = CommitReceipt {
-        address,
-        commit_id,
+        commit_id: commit_cid,
         t: new_t,
         flake_count,
     };
@@ -438,18 +422,15 @@ fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
 }
 
 /// Verify that this commit follows the expected sequence
-fn verify_sequencing<S>(
-    base: &LedgerState<S>,
+fn verify_sequencing(
+    base: &LedgerState,
     current: Option<&fluree_db_nameservice::NsRecord>,
-) -> Result<()>
-where
-    S: Storage + Clone + 'static,
-{
+) -> Result<()> {
     match current {
         None => {
             // Genesis case: no record exists yet
-            // Base should have no head_commit and t=0
-            if base.head_commit.is_some() {
+            // Base should have no head_commit_id and t=0
+            if base.head_commit_id.is_some() {
                 return Err(TransactError::CommitConflict {
                     expected_t: 0,
                     head_t: base.t(),
@@ -472,27 +453,32 @@ where
                 });
             }
 
-            // Verify previous address matches
-            match (&base.head_commit, &record.commit_address) {
-                (Some(base_prev), Some(record_prev)) if base_prev != record_prev => {
-                    return Err(TransactError::AddressMismatch {
-                        expected: record_prev.clone(),
-                        found: base_prev.clone(),
+            // Verify previous commit identity matches via CID comparison.
+            match (&base.head_commit_id, &record.commit_head_id) {
+                // Both have CIDs: compare directly
+                (Some(base_cid), Some(record_cid)) => {
+                    if base_cid != record_cid {
+                        return Err(TransactError::CommitIdMismatch {
+                            expected: record_cid.to_string(),
+                            found: base_cid.to_string(),
+                        });
+                    }
+                }
+                // Neither has CID: genesis edge case, both are at t=0 with no commits
+                (None, None) => {}
+                // Mixed state: one side has CID, the other doesn't
+                (Some(base_cid), None) => {
+                    return Err(TransactError::CommitIdMismatch {
+                        expected: "None".to_string(),
+                        found: base_cid.to_string(),
                     });
                 }
-                (None, Some(record_prev)) => {
-                    return Err(TransactError::AddressMismatch {
-                        expected: record_prev.clone(),
+                (None, Some(record_cid)) => {
+                    return Err(TransactError::CommitIdMismatch {
+                        expected: record_cid.to_string(),
                         found: "None".to_string(),
                     });
                 }
-                (Some(base_prev), None) => {
-                    return Err(TransactError::AddressMismatch {
-                        expected: "None".to_string(),
-                        found: base_prev.clone(),
-                    });
-                }
-                _ => {}
             }
 
             Ok(())
@@ -512,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_simple_insert() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -545,15 +531,16 @@ mod tests {
 
         assert_eq!(receipt.t, 1);
         assert_eq!(receipt.flake_count, 1);
-        assert!(receipt.commit_id.starts_with("sha256:"));
+        // commit_id is now a ContentId with CODEC_FLUREE_COMMIT
+        assert_eq!(receipt.commit_id.codec(), CODEC_FLUREE_COMMIT);
         assert_eq!(new_state.t(), 1);
-        assert!(new_state.head_commit.is_some());
+        assert!(new_state.head_commit_id.is_some());
     }
 
     #[tokio::test]
     async fn test_commit_empty_transaction() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -584,7 +571,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_sequence() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -650,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_predictive_sizing() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 

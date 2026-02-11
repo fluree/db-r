@@ -350,10 +350,10 @@ impl ReasoningModes {
     }
 }
 
-/// Entailment mode for query execution (legacy enum)
+/// Entailment mode for query execution.
 ///
 /// Controls how patterns are expanded based on class/property hierarchies.
-/// For new code, prefer using `ReasoningModes` which supports multiple modes.
+/// For composite reasoning, see `ReasoningModes` which supports multiple modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EntailmentMode {
     /// No reasoning - exact pattern matching only

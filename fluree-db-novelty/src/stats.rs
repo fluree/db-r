@@ -17,7 +17,9 @@
 use crate::Novelty;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::is_rdf_type;
-use fluree_db_core::{ClassPropertyUsage, ClassStatEntry, IndexStats, PropertyStatEntry};
+use fluree_db_core::{
+    ClassPropertyUsage, ClassRefCount, ClassStatEntry, IndexStats, PropertyStatEntry,
+};
 use fluree_db_core::{FlakeValue, Sid};
 use std::collections::{HashMap, HashSet};
 
@@ -111,6 +113,10 @@ struct PropertyDataMut {
     /// We intentionally do NOT track datatype/ref/lang breakdowns here; detailed
     /// property stats live in graph-scoped stats (`IndexStats.graphs`).
     count_delta: i64,
+    /// Persisted ref target class counts (as-of last index).
+    ///
+    /// Novelty updates do not currently adjust these counts (requires extra lookups).
+    ref_classes: Vec<ClassRefCount>,
 }
 
 /// Build class data from indexed stats
@@ -122,7 +128,10 @@ fn build_class_data(indexed: &IndexStats) -> HashMap<Sid, ClassDataMut> {
             for prop_usage in &entry.properties {
                 // Prior stats only carry the property identity. Treat presence as 1 so we
                 // preserve the property list, but do not attempt to “undo” it on retractions.
-                let prop_data = PropertyDataMut { count_delta: 1 };
+                let prop_data = PropertyDataMut {
+                    count_delta: 1,
+                    ref_classes: prop_usage.ref_classes.clone(),
+                };
                 props.insert(prop_usage.property_sid.clone(), prop_data);
             }
             let data = ClassDataMut {
@@ -239,7 +248,10 @@ fn finalize_stats(
                 let properties: Vec<ClassPropertyUsage> = prop_entries
                     .into_iter()
                     .filter(|(_, prop)| prop.count_delta > 0)
-                    .map(|(property_sid, _prop)| ClassPropertyUsage { property_sid })
+                    .map(|(property_sid, prop)| ClassPropertyUsage {
+                        property_sid,
+                        ref_classes: prop.ref_classes,
+                    })
                     .collect();
 
                 ClassStatEntry {

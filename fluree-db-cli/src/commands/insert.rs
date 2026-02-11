@@ -1,4 +1,4 @@
-use crate::context;
+use crate::context::{self, LedgerMode};
 use crate::detect;
 use crate::error::CliResult;
 use crate::input;
@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 /// Resolve positional args for insert/query commands.
 ///
 /// - 0 args: active ledger + stdin/-e
-/// - 1 arg: if file exists → active ledger + that file; else → ledger alias + stdin/-e
-/// - 2 args: first = ledger alias, second = file path
+/// - 1 arg: if file exists → active ledger + that file; else → ledger name + stdin/-e
+/// - 2 args: first = ledger name, second = file path
 pub fn resolve_positional_args(args: &[String]) -> (Option<&str>, Option<PathBuf>) {
     match args.len() {
         0 => (None, None),
@@ -31,10 +31,9 @@ pub async fn run(
     message: Option<&str>,
     format_flag: Option<&str>,
     fluree_dir: &Path,
+    remote_flag: Option<&str>,
 ) -> CliResult<()> {
     let (explicit_ledger, file_path) = resolve_positional_args(args);
-    let alias = context::resolve_ledger(explicit_ledger, fluree_dir)?;
-    let fluree = context::build_fluree(fluree_dir)?;
 
     // Resolve input
     let source = input::resolve_input(file_path.as_deref(), expr)?;
@@ -43,39 +42,77 @@ pub async fn run(
     // Detect format
     let data_format = detect::detect_data_format(file_path.as_deref(), &content, format_flag)?;
 
-    // Build commit options
-    let commit_opts = CommitOpts {
-        message: message.map(String::from),
-        ..Default::default()
+    // Resolve ledger mode: --remote flag, local, or tracked
+    let mode = if let Some(remote_name) = remote_flag {
+        let alias = context::resolve_ledger(explicit_ledger, fluree_dir)?;
+        context::build_remote_mode(remote_name, &alias, fluree_dir).await?
+    } else {
+        context::resolve_ledger_mode(explicit_ledger, fluree_dir).await?
     };
 
-    // Execute transaction
-    let result = match data_format {
-        detect::DataFormat::Turtle => {
-            fluree
-                .graph(&alias)
-                .transact()
-                .insert_turtle(&content)
-                .commit_opts(commit_opts)
-                .commit()
-                .await?
-        }
-        detect::DataFormat::JsonLd => {
-            let json: serde_json::Value = serde_json::from_str(&content)?;
-            fluree
-                .graph(&alias)
-                .transact()
-                .insert(&json)
-                .commit_opts(commit_opts)
-                .commit()
-                .await?
-        }
-    };
+    match mode {
+        LedgerMode::Tracked {
+            client,
+            remote_alias,
+            remote_name,
+            ..
+        } => {
+            let result = match data_format {
+                detect::DataFormat::Turtle => client.insert_turtle(&remote_alias, &content).await?,
+                detect::DataFormat::JsonLd => {
+                    let json: serde_json::Value = serde_json::from_str(&content)?;
+                    client.insert_jsonld(&remote_alias, &json).await?
+                }
+            };
 
-    println!(
-        "Committed t={}, {} flakes",
-        result.receipt.t, result.receipt.flake_count
-    );
+            context::persist_refreshed_tokens(&client, &remote_name, fluree_dir).await;
+
+            // Display server response fields
+            print_txn_result(&result);
+        }
+        LedgerMode::Local { fluree, alias } => {
+            let commit_opts = CommitOpts {
+                message: message.map(String::from),
+                ..Default::default()
+            };
+
+            let result = match data_format {
+                detect::DataFormat::Turtle => {
+                    fluree
+                        .graph(&alias)
+                        .transact()
+                        .insert_turtle(&content)
+                        .commit_opts(commit_opts)
+                        .commit()
+                        .await?
+                }
+                detect::DataFormat::JsonLd => {
+                    let json: serde_json::Value = serde_json::from_str(&content)?;
+                    fluree
+                        .graph(&alias)
+                        .transact()
+                        .insert(&json)
+                        .commit_opts(commit_opts)
+                        .commit()
+                        .await?
+                }
+            };
+
+            println!(
+                "Committed t={}, {} flakes",
+                result.receipt.t, result.receipt.flake_count
+            );
+        }
+    }
 
     Ok(())
+}
+
+/// Print transaction result from remote server JSON response.
+pub fn print_txn_result(result: &serde_json::Value) {
+    // Print the full server response as pretty JSON
+    println!(
+        "{}",
+        serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string())
+    );
 }

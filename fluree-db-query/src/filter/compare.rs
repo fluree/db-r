@@ -41,7 +41,7 @@ pub fn compare_values(left: &ComparableValue, right: &ComparableValue, op: Compa
         (ComparableValue::String(a), ComparableValue::String(b)) => a.cmp(b),
         (ComparableValue::Bool(a), ComparableValue::Bool(b)) => a.cmp(b),
         (ComparableValue::Sid(a), ComparableValue::Sid(b)) => a.cmp(b),
-        // Raw IRIs from VGs compare by string value
+        // Raw IRIs from graph sources compare by string value
         (ComparableValue::Iri(a), ComparableValue::Iri(b)) => a.cmp(b),
         // Type mismatch -> always not equal
         _ => return matches!(op, CompareOp::Ne),

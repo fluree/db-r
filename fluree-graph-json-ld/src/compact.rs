@@ -197,7 +197,7 @@ fn sorted_prefix_iris(flipped: &HashMap<String, String>) -> Vec<(String, String)
 }
 
 // ---------------------------------------------------------------------------
-// Legacy convenience functions (delegate to ContextCompactor)
+// Convenience functions (delegate to ContextCompactor)
 // ---------------------------------------------------------------------------
 
 /// Create a compaction function from a parsed context.

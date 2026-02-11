@@ -93,14 +93,15 @@ Expected response:
 
 ```json
 {
-  "status": "healthy"
+  "status": "ok",
+  "version": "0.1.0"
 }
 ```
 
 ### Create a Ledger
 
 ```bash
-curl -X POST http://localhost:8090/fluree/create \
+curl -X POST http://localhost:8090/v1/fluree/create \
   -H "Content-Type: application/json" \
   -d '{"ledger": "test:main"}'
 ```
@@ -108,7 +109,7 @@ curl -X POST http://localhost:8090/fluree/create \
 ### Insert Data
 
 ```bash
-curl -X POST "http://localhost:8090/fluree/insert" \
+curl -X POST "http://localhost:8090/v1/fluree/insert" \
   -H "Content-Type: application/json" \
   -H "fluree-ledger: test:main" \
   -d '{

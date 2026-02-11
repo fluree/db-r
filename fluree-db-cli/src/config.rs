@@ -127,7 +127,7 @@ pub fn init_fluree_dir(global: bool) -> CliResult<PathBuf> {
     Ok(fluree_dir)
 }
 
-/// Read the currently active ledger alias from `.fluree/active`.
+/// Read the currently active ledger name from `.fluree/active`.
 pub fn read_active_ledger(fluree_dir: &Path) -> Option<String> {
     let path = fluree_dir.join(ACTIVE_FILE);
     fs::read_to_string(&path)
@@ -136,7 +136,7 @@ pub fn read_active_ledger(fluree_dir: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Write the active ledger alias to `.fluree/active`.
+/// Write the active ledger name to `.fluree/active`.
 pub fn write_active_ledger(fluree_dir: &Path, alias: &str) -> CliResult<()> {
     let path = fluree_dir.join(ACTIVE_FILE);
     fs::write(&path, alias).map_err(|e| {
@@ -235,6 +235,18 @@ use fluree_db_nameservice_sync::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Configuration for a tracked (remote-only) ledger.
+///
+/// Tracked ledgers have no local data — all operations are proxied to the
+/// remote server via HTTP. This is distinct from upstreams, which track
+/// a local ledger's relationship to a remote for ref-level sync.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackedLedgerConfig {
+    pub local_alias: String,
+    pub remote: String,
+    pub remote_alias: String,
+}
+
 /// TOML structure for sync configuration in config.toml
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SyncToml {
@@ -242,6 +254,8 @@ struct SyncToml {
     remotes: Vec<RemoteConfigToml>,
     #[serde(default)]
     upstreams: Vec<UpstreamConfig>,
+    #[serde(default)]
+    tracked_ledgers: Vec<TrackedLedgerConfig>,
 }
 
 /// TOML-friendly remote config (converts RemoteName to String)
@@ -334,10 +348,53 @@ impl TomlSyncConfigStore {
                 }
             }
 
-            if let Some(token) = &remote.auth.token {
-                let mut auth = Table::new();
-                auth.insert("token", Value::from(token.as_str()).into());
-                table.insert("auth", Item::Table(auth));
+            // Build [remotes.auth] sub-table with all populated fields
+            {
+                use fluree_db_nameservice_sync::RemoteAuthType;
+
+                let auth = &remote.auth;
+                let has_any = auth.auth_type.is_some()
+                    || auth.token.is_some()
+                    || auth.issuer.is_some()
+                    || auth.client_id.is_some()
+                    || auth.exchange_url.is_some()
+                    || auth.refresh_token.is_some()
+                    || auth.scopes.is_some()
+                    || auth.redirect_port.is_some();
+
+                if has_any {
+                    let mut auth_table = Table::new();
+                    if let Some(ref at) = auth.auth_type {
+                        let type_str = match at {
+                            RemoteAuthType::Token => "token",
+                            RemoteAuthType::OidcDevice => "oidc_device",
+                        };
+                        auth_table.insert("type", Value::from(type_str).into());
+                    }
+                    if let Some(ref v) = auth.token {
+                        auth_table.insert("token", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref v) = auth.issuer {
+                        auth_table.insert("issuer", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref v) = auth.client_id {
+                        auth_table.insert("client_id", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref v) = auth.exchange_url {
+                        auth_table.insert("exchange_url", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref v) = auth.refresh_token {
+                        auth_table.insert("refresh_token", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref scopes) = auth.scopes {
+                        let arr: toml_edit::Array = scopes.iter().map(|s| s.as_str()).collect();
+                        auth_table.insert("scopes", Value::from(arr).into());
+                    }
+                    if let Some(port) = auth.redirect_port {
+                        auth_table.insert("redirect_port", Value::from(i64::from(port)).into());
+                    }
+                    table.insert("auth", Item::Table(auth_table));
+                }
             }
 
             if let Some(interval) = remote.fetch_interval_secs {
@@ -364,7 +421,23 @@ impl TomlSyncConfigStore {
             upstreams_aot.push(table);
         }
 
-        // Update only the remotes and upstreams keys, preserving everything else
+        // Build tracked_ledgers array of tables ([[tracked_ledgers]])
+        let mut tracked_aot = ArrayOfTables::new();
+        for tracked in &config.tracked_ledgers {
+            let mut table = Table::new();
+            table.insert(
+                "local_alias",
+                Value::from(tracked.local_alias.as_str()).into(),
+            );
+            table.insert("remote", Value::from(tracked.remote.as_str()).into());
+            table.insert(
+                "remote_alias",
+                Value::from(tracked.remote_alias.as_str()).into(),
+            );
+            tracked_aot.push(table);
+        }
+
+        // Update only sync-related keys, preserving everything else
         if config.remotes.is_empty() {
             doc.remove("remotes");
         } else {
@@ -375,6 +448,12 @@ impl TomlSyncConfigStore {
             doc.remove("upstreams");
         } else {
             doc["upstreams"] = Item::ArrayOfTables(upstreams_aot);
+        }
+
+        if config.tracked_ledgers.is_empty() {
+            doc.remove("tracked_ledgers");
+        } else {
+            doc["tracked_ledgers"] = Item::ArrayOfTables(tracked_aot);
         }
 
         fs::write(&path, doc.to_string())
@@ -469,5 +548,53 @@ impl SyncConfigStore for TomlSyncConfigStore {
     async fn list_upstreams(&self) -> fluree_db_nameservice_sync::Result<Vec<UpstreamConfig>> {
         let config = self.read_sync_config();
         Ok(config.upstreams)
+    }
+}
+
+// --- Tracked Ledger Operations (CLI-only, not part of SyncConfigStore trait) ---
+
+impl TomlSyncConfigStore {
+    /// List all tracked ledgers.
+    pub fn tracked_ledgers(&self) -> Vec<TrackedLedgerConfig> {
+        self.read_sync_config().tracked_ledgers
+    }
+
+    /// Get a tracked ledger by local name.
+    pub fn get_tracked(&self, local_alias: &str) -> Option<TrackedLedgerConfig> {
+        self.read_sync_config()
+            .tracked_ledgers
+            .into_iter()
+            .find(|t| t.local_alias == local_alias)
+    }
+
+    /// Add a tracked ledger. Replaces if the name already exists.
+    pub fn add_tracked(&self, tracked: TrackedLedgerConfig) -> CliResult<()> {
+        let mut config = self.read_sync_config();
+
+        if let Some(pos) = config
+            .tracked_ledgers
+            .iter()
+            .position(|t| t.local_alias == tracked.local_alias)
+        {
+            config.tracked_ledgers[pos] = tracked;
+        } else {
+            config.tracked_ledgers.push(tracked);
+        }
+
+        self.write_sync_config(&config)
+    }
+
+    /// Remove a tracked ledger by local name. Returns true if it existed.
+    pub fn remove_tracked(&self, local_alias: &str) -> CliResult<bool> {
+        let mut config = self.read_sync_config();
+        let before = config.tracked_ledgers.len();
+        config
+            .tracked_ledgers
+            .retain(|t| t.local_alias != local_alias);
+        let removed = config.tracked_ledgers.len() < before;
+        if removed {
+            self.write_sync_config(&config)?;
+        }
+        Ok(removed)
     }
 }

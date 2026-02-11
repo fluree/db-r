@@ -6,7 +6,7 @@
 //! - HAVING filter on aggregated results
 //! - Full pipeline execution
 
-use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
+use fluree_db_core::{Db, FlakeValue, Sid};
 use fluree_db_query::aggregate::{AggregateFn, AggregateSpec};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
@@ -20,8 +20,8 @@ use fluree_db_query::var_registry::{VarId, VarRegistry};
 use fluree_graph_json_ld::ParsedContext;
 use std::sync::Arc;
 
-fn make_test_db() -> Db<MemoryStorage> {
-    Db::genesis(MemoryStorage::new(), "test/main")
+fn make_test_db() -> Db {
+    Db::genesis("test/main")
 }
 
 fn xsd_long() -> Sid {
@@ -357,28 +357,23 @@ async fn test_group_by_multiple_keys() {
     }
     use async_trait::async_trait;
     #[async_trait]
-    impl<S: fluree_db_core::Storage + 'static> fluree_db_query::operator::Operator<S>
-        for BatchOperator
-    {
+    impl fluree_db_query::operator::Operator for BatchOperator {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
-        async fn open(
-            &mut self,
-            _: &ExecutionContext<'_, S>,
-        ) -> fluree_db_query::error::Result<()> {
+        async fn open(&mut self, _: &ExecutionContext<'_>) -> fluree_db_query::error::Result<()> {
             Ok(())
         }
         async fn next_batch(
             &mut self,
-            _: &ExecutionContext<'_, S>,
+            _: &ExecutionContext<'_>,
         ) -> fluree_db_query::error::Result<Option<fluree_db_query::binding::Batch>> {
             Ok(self.batch.take())
         }
         fn close(&mut self) {}
     }
 
-    let child: fluree_db_query::operator::BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
+    let child: fluree_db_query::operator::BoxedOperator = Box::new(BatchOperator {
         schema: schema.clone(),
         batch: Some(batch),
     });

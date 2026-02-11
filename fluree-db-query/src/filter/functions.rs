@@ -13,7 +13,7 @@ use crate::error::{QueryError, Result};
 use crate::ir::{FilterExpr, FunctionName};
 use chrono::{DateTime, Datelike, FixedOffset, SecondsFormat, Timelike, Utc};
 use fluree_db_core::temporal::DateTime as FlureeDateTime;
-use fluree_db_core::{geo, FlakeValue, Storage};
+use fluree_db_core::{geo, FlakeValue};
 use md5::{Digest as Md5Digest, Md5};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rand::random;
@@ -27,6 +27,7 @@ use super::helpers::{
     build_regex_with_flags, check_arity, format_datatype_sid, parse_datetime_from_binding,
 };
 use super::value::{comparable_to_str_value, comparable_to_string, ComparableValue};
+use super::vector_math;
 
 // =============================================================================
 // Unified Function Evaluation
@@ -36,11 +37,11 @@ use super::value::{comparable_to_str_value, comparable_to_string, ComparableValu
 ///
 /// This is THE entry point for function evaluation. All functions go through here.
 /// For boolean context, use `eval_function_to_bool` which calls this and applies EBV.
-pub fn eval_function<S: Storage>(
+pub fn eval_function(
     name: &FunctionName,
     args: &[FilterExpr],
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
         // =================================================================
@@ -573,33 +574,18 @@ pub fn eval_function<S: Storage>(
         // Vector functions
         // =================================================================
         FunctionName::DotProduct => eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
-            Some(a.iter().zip(b.iter()).map(|(x, y)| x * y).sum())
+            Some(vector_math::dot_f64(a, b))
         }),
 
         FunctionName::CosineSimilarity => {
             eval_binary_vector_fn(args, row, ctx, "cosineSimilarity", |a, b| {
-                let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-                let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
-                let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
-                if mag_a == 0.0 || mag_b == 0.0 {
-                    None
-                } else {
-                    Some(dot / (mag_a * mag_b))
-                }
+                vector_math::cosine_f64(a, b)
             })
         }
 
         FunctionName::EuclideanDistance => {
             eval_binary_vector_fn(args, row, ctx, "euclideanDistance", |a, b| {
-                let sum_sq: f64 = a
-                    .iter()
-                    .zip(b.iter())
-                    .map(|(x, y)| {
-                        let diff = x - y;
-                        diff * diff
-                    })
-                    .sum();
-                Some(sum_sq.sqrt())
+                Some(vector_math::l2_f64(a, b))
             })
         }
 
@@ -699,11 +685,11 @@ pub fn eval_function<S: Storage>(
 /// Evaluate a function in boolean context using EBV
 ///
 /// This calls `eval_function` and applies Effective Boolean Value (EBV) rules.
-pub fn eval_function_to_bool<S: Storage>(
+pub fn eval_function_to_bool(
     name: &FunctionName,
     args: &[FilterExpr],
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<bool> {
     let value = eval_function(name, args, row, ctx)?;
 
@@ -744,10 +730,10 @@ where
 }
 
 /// Evaluate a hash function
-fn eval_hash_function<S: Storage, F>(
+fn eval_hash_function<F>(
     args: &[FilterExpr],
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
     fn_name: &str,
     hash_fn: F,
 ) -> Result<Option<ComparableValue>>
@@ -761,11 +747,19 @@ where
     }))
 }
 
+/// Tag for which vector metric is being computed.
+#[derive(Clone, Copy)]
+enum VectorMetric {
+    Dot,
+    Cosine,
+    L2,
+}
+
 /// Evaluate a binary vector function
-fn eval_binary_vector_fn<S: Storage, F>(
+fn eval_binary_vector_fn<F>(
     args: &[FilterExpr],
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
     fn_name: &str,
     compute: F,
 ) -> Result<Option<ComparableValue>>
@@ -773,6 +767,46 @@ where
     F: Fn(&[f64], &[f64]) -> Option<f64>,
 {
     check_arity(args, 2, fn_name)?;
+
+    let metric = match fn_name {
+        "dotProduct" => VectorMetric::Dot,
+        "cosineSimilarity" => VectorMetric::Cosine,
+        "euclideanDistance" => VectorMetric::L2,
+        _ => VectorMetric::Dot,
+    };
+
+    // Arena-aware fast path: when bindings include EncodedLit VECTOR_ID,
+    // score directly on f32 data from the vector arena — no upcast, no alloc.
+    if let (FilterExpr::Var(v1), FilterExpr::Var(v2)) = (&args[0], &args[1]) {
+        if let Some(result) = try_arena_f32_scoring(row, ctx, *v1, *v2, metric)? {
+            return Ok(Some(result));
+        }
+
+        // Standard fast path: borrow f64 vectors directly from Binding::Lit
+        let a = match row.get(*v1) {
+            Some(Binding::Lit {
+                val: FlakeValue::Vector(v),
+                ..
+            }) => Some(v.as_slice()),
+            _ => None,
+        };
+        let b = match row.get(*v2) {
+            Some(Binding::Lit {
+                val: FlakeValue::Vector(v),
+                ..
+            }) => Some(v.as_slice()),
+            _ => None,
+        };
+
+        if let (Some(a), Some(b)) = (a, b) {
+            if a.len() != b.len() {
+                return Ok(None);
+            }
+            return Ok(compute(a, b).map(ComparableValue::Double));
+        }
+    }
+
+    // Fallback: full evaluation (supports nested expressions, context-aware decoding, etc).
     let v1 = eval_to_comparable_inner(&args[0], row, ctx)?;
     let v2 = eval_to_comparable_inner(&args[1], row, ctx)?;
     match (v1, v2) {
@@ -784,6 +818,123 @@ where
             }
         }
         _ => Ok(None),
+    }
+}
+
+/// Try to score two vector bindings using f32 arena data directly.
+///
+/// Returns `Some(ComparableValue::Double(score))` if both vectors could be
+/// resolved via the arena fast path; `None` if the fast path doesn't apply.
+fn try_arena_f32_scoring(
+    row: &RowView,
+    ctx: Option<&ExecutionContext<'_>>,
+    v1: crate::var_registry::VarId,
+    v2: crate::var_registry::VarId,
+    metric: VectorMetric,
+) -> Result<Option<ComparableValue>> {
+    use fluree_db_core::value_id::ObjKind;
+
+    let store = match ctx.and_then(|c| c.binary_store.as_ref()) {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+
+    // Extract arena-backed f32 slices from EncodedLit bindings
+    let a_f32 = match row.get(v1) {
+        Some(Binding::EncodedLit {
+            o_kind,
+            o_key,
+            p_id,
+            ..
+        }) if *o_kind == ObjKind::VECTOR_ID.as_u8() => store.get_vector_f32(*p_id, *o_key as u32),
+        _ => None,
+    };
+    let b_f32 = match row.get(v2) {
+        Some(Binding::EncodedLit {
+            o_kind,
+            o_key,
+            p_id,
+            ..
+        }) if *o_kind == ObjKind::VECTOR_ID.as_u8() => store.get_vector_f32(*p_id, *o_key as u32),
+        _ => None,
+    };
+
+    // We need at least one side from the arena. The other can be a FlakeValue::Vector.
+    match (a_f32, b_f32) {
+        (Some(a), Some(b)) => {
+            if a.len() != b.len() {
+                return Ok(None);
+            }
+            let score = compute_f32_metric(a, b, metric, store, row, v1);
+            Ok(Some(ComparableValue::Double(score as f64)))
+        }
+        (Some(arena_slice), None) => {
+            // Other side might be a FlakeValue::Vector (e.g. query constant)
+            if let Some(other_f64) = extract_vector_f64(row, v2) {
+                if arena_slice.len() != other_f64.len() {
+                    return Ok(None);
+                }
+                // Convert query vector to f32 once (negligible for single vector)
+                let other_f32: Vec<f32> = other_f64.iter().map(|&x| x as f32).collect();
+                let score = compute_f32_metric(arena_slice, &other_f32, metric, store, row, v1);
+                return Ok(Some(ComparableValue::Double(score as f64)));
+            }
+            Ok(None)
+        }
+        (None, Some(arena_slice)) => {
+            if let Some(other_f64) = extract_vector_f64(row, v1) {
+                if arena_slice.len() != other_f64.len() {
+                    return Ok(None);
+                }
+                let other_f32: Vec<f32> = other_f64.iter().map(|&x| x as f32).collect();
+                let score = compute_f32_metric(&other_f32, arena_slice, metric, store, row, v2);
+                return Ok(Some(ComparableValue::Double(score as f64)));
+            }
+            Ok(None)
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// Extract a &[f64] from a Binding::Lit vector.
+fn extract_vector_f64<'a>(
+    row: &'a RowView<'a>,
+    var_id: crate::var_registry::VarId,
+) -> Option<&'a [f64]> {
+    match row.get(var_id) {
+        Some(Binding::Lit {
+            val: FlakeValue::Vector(v),
+            ..
+        }) => Some(v.as_slice()),
+        _ => None,
+    }
+}
+
+/// Compute f32 metric with normalization optimization for cosine.
+fn compute_f32_metric(
+    a: &[f32],
+    b: &[f32],
+    metric: VectorMetric,
+    store: &fluree_db_indexer::run_index::BinaryIndexStore,
+    row: &RowView,
+    arena_var: crate::var_registry::VarId,
+) -> f32 {
+    match metric {
+        VectorMetric::Dot => vector_math::dot_f32(a, b),
+        VectorMetric::Cosine => {
+            // Normalization optimization: if all vectors for this predicate are
+            // unit-normalized, cosine(a,b) = dot(a,b) — skip magnitude computation.
+            let normalized = match row.get(arena_var) {
+                Some(Binding::EncodedLit { p_id, .. }) => store.is_vector_normalized(*p_id),
+                _ => false,
+            };
+            if normalized {
+                vector_math::dot_f32(a, b)
+            } else {
+                vector_math::cosine_f32(a, b).unwrap_or(0.0)
+            }
+        }
+        VectorMetric::L2 => vector_math::l2_f32(a, b),
     }
 }
 
@@ -825,7 +976,7 @@ mod tests {
     fn test_strlen() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::Strlen,
             &[FilterExpr::Var(VarId(0))],
             &row,
@@ -839,7 +990,7 @@ mod tests {
     fn test_ucase() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::Ucase,
             &[FilterExpr::Var(VarId(0))],
             &row,
@@ -856,7 +1007,7 @@ mod tests {
     fn test_contains() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::Contains,
             &[
                 FilterExpr::Var(VarId(0)),
@@ -873,7 +1024,7 @@ mod tests {
     fn test_bound() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::Bound,
             &[FilterExpr::Var(VarId(0))],
             &row,
@@ -893,13 +1044,9 @@ mod tests {
         let row = batch.row_view(0).unwrap();
 
         // STRLEN returns 0 for empty string, which should be falsy
-        let result = eval_function_to_bool::<fluree_db_core::MemoryStorage>(
-            &FunctionName::Abs,
-            &[FilterExpr::Var(VarId(0))],
-            &row,
-            None,
-        )
-        .unwrap();
+        let result =
+            eval_function_to_bool(&FunctionName::Abs, &[FilterExpr::Var(VarId(0))], &row, None)
+                .unwrap();
         assert!(!result); // 0 is falsy
     }
 
@@ -926,7 +1073,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::GeofDistance,
             &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
             &row,
@@ -962,7 +1109,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::GeofDistance,
             &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
             &row,
@@ -997,7 +1144,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::GeofDistance,
             &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
             &row,

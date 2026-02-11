@@ -391,6 +391,7 @@ pub fn read_forward_entry(forward_mmap: &memmap2::Mmap, offset: u64, len: u32) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_vocab::rdf;
 
     #[test]
     fn test_predicate_dict_round_trip() {
@@ -400,7 +401,7 @@ mod tests {
         let path = dir.join("graphs.dict");
 
         let mut dict = PredicateDict::new();
-        dict.get_or_insert("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
+        dict.get_or_insert(rdf::TYPE);
         dict.get_or_insert("http://purl.org/dc/terms/title");
         dict.get_or_insert("http://xmlns.com/foaf/0.1/name");
 
@@ -408,10 +409,7 @@ mod tests {
         let restored = read_predicate_dict(&path).unwrap();
 
         assert_eq!(restored.len(), 3);
-        assert_eq!(
-            restored.resolve(0),
-            Some("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")
-        );
+        assert_eq!(restored.resolve(0), Some(rdf::TYPE));
         assert_eq!(restored.resolve(1), Some("http://purl.org/dc/terms/title"));
         assert_eq!(restored.resolve(2), Some("http://xmlns.com/foaf/0.1/name"));
 

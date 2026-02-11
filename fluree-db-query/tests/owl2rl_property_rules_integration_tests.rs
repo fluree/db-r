@@ -12,7 +12,7 @@ use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, MemoryStorage, Sid};
+use fluree_db_core::{Db, Sid};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::execute::{execute_with_overlay, DataSource, ExecutableQuery};
 use fluree_db_query::options::QueryOptions;
@@ -181,7 +181,7 @@ fn overlay_epoch_from_flakes(flakes: &[Flake]) -> u64 {
 #[tokio::test]
 async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     // Base DB is empty; all facts come from overlay.
-    let mut db = Db::genesis(MemoryStorage::new(), "test/main");
+    let mut db = Db::genesis("test/main");
     // The query parser lowers IRIs as `Term::Iri` and scan time encodes them via `db.encode_iri`.
     // Since this test constructs facts directly as SIDs in an overlay, we must teach the DB
     // the namespace codes used by those SIDs so encoding succeeds.

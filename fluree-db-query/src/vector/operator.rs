@@ -2,10 +2,10 @@
 //!
 //! This operator executes vector similarity search against a vector index provider
 //! and emits bindings for:
-//! - idx:id      -> `Binding::IriMatch` (canonical IRI with ledger provenance for cross-ledger joins)
+//! - f:resultId      -> `Binding::IriMatch` (canonical IRI with ledger provenance for cross-ledger joins)
 //!   or `Binding::Iri` (if IRI cannot be encoded to SID)
-//! - idx:score   -> `Binding::Lit` (xsd:double, similarity score)
-//! - idx:ledger  -> `Binding::Lit` (xsd:string; ledger alias) [optional]
+//! - f:resultScore   -> `Binding::Lit` (xsd:double, similarity score)
+//! - f:resultLedger  -> `Binding::Lit` (xsd:string; ledger alias) [optional]
 //!
 //! # Provider Abstraction
 //!
@@ -19,11 +19,11 @@
 //! ```json
 //! {
 //!   "where": [{
-//!     "idx:graph": "embeddings:main",
-//!     "idx:vector": [0.1, 0.2, 0.3],
-//!     "idx:metric": "cosine",
-//!     "idx:limit": 10,
-//!     "idx:result": {"idx:id": "?doc", "idx:score": "?score"}
+//!     "f:graphSource": "embeddings:main",
+//!     "f:queryVector": [0.1, 0.2, 0.3],
+//!     "f:distanceMetric": "cosine",
+//!     "f:searchLimit": 10,
+//!     "f:searchResult": {"f:resultId": "?doc", "f:resultScore": "?score"}
 //!   }],
 //!   "select": ["?doc", "?score"]
 //! }
@@ -36,7 +36,7 @@ use crate::ir::{VectorSearchPattern, VectorSearchTarget};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, Storage};
+use fluree_db_core::FlakeValue;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -78,7 +78,7 @@ pub trait VectorIndexProvider: std::fmt::Debug + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `vg_alias` - Virtual graph alias (e.g., "embeddings:main")
+    /// * `graph_source_id` - Graph source alias (e.g., "embeddings:main")
     /// * `params` - Search parameters (query vector, metric, limit, etc.)
     ///
     /// # Returns
@@ -86,18 +86,18 @@ pub trait VectorIndexProvider: std::fmt::Debug + Send + Sync {
     /// Vector of search hits, ordered by similarity (best first).
     async fn search(
         &self,
-        vg_alias: &str,
+        graph_source_id: &str,
         params: VectorSearchParams<'_>,
     ) -> Result<Vec<VectorSearchHit>>;
 
-    /// Check if a collection exists for the given VG alias
-    async fn collection_exists(&self, vg_alias: &str) -> Result<bool>;
+    /// Check if a collection exists for the given graph source alias
+    async fn collection_exists(&self, graph_source_id: &str) -> Result<bool>;
 }
 
 /// Vector search operator for `Pattern::VectorSearch`.
-pub struct VectorSearchOperator<S: Storage + 'static> {
+pub struct VectorSearchOperator {
     /// Child operator providing input solutions (may be EmptyOperator seed)
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Search pattern
     pattern: VectorSearchPattern,
     /// Output schema (child schema + any new vars from the search result)
@@ -110,8 +110,8 @@ pub struct VectorSearchOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> VectorSearchOperator<S> {
-    pub fn new(child: BoxedOperator<S>, pattern: VectorSearchPattern) -> Self {
+impl VectorSearchOperator {
+    pub fn new(child: BoxedOperator, pattern: VectorSearchPattern) -> Self {
         let child_schema = child.schema();
 
         // Build output schema: start with child vars, then add id/score/ledger vars if missing.
@@ -154,7 +154,7 @@ impl<S: Storage + 'static> VectorSearchOperator<S> {
     /// Resolve the query vector from the pattern (constant or variable)
     fn resolve_vector_from_row(
         &self,
-        _ctx: &ExecutionContext<'_, S>,
+        _ctx: &ExecutionContext<'_>,
         row: &crate::binding::RowView<'_>,
     ) -> Result<Option<Vec<f32>>> {
         match &self.pattern.target {
@@ -191,12 +191,12 @@ impl<S: Storage + 'static> VectorSearchOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
+impl Operator for VectorSearchOperator {
     fn schema(&self) -> &[VarId] {
         self.schema()
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
 
         let _provider = ctx.vector_provider.ok_or_else(|| {
@@ -220,7 +220,7 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -281,7 +281,9 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
                 .with_sync(self.pattern.sync)
                 .with_timeout_ms(self.pattern.timeout);
 
-            let results = provider.search(&self.pattern.vg_alias, params).await?;
+            let results = provider
+                .search(&self.pattern.graph_source_id, params)
+                .await?;
 
             // For each search result, merge with the child row.
             for hit in results {
@@ -386,7 +388,7 @@ mod tests {
     use crate::seed::EmptyOperator;
     use crate::var_registry::VarRegistry;
     use crate::vector::DistanceMetric;
-    use fluree_db_core::{Db, MemoryStorage};
+    use fluree_db_core::Db;
     use std::sync::Mutex;
 
     #[derive(Debug)]
@@ -398,7 +400,7 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct SearchCall {
-        vg_alias: String,
+        graph_source_id: String,
         query_vector: Vec<f32>,
         metric: DistanceMetric,
         limit: usize,
@@ -426,12 +428,12 @@ mod tests {
     impl VectorIndexProvider for MockVectorProvider {
         async fn search(
             &self,
-            vg_alias: &str,
+            graph_source_id: &str,
             params: VectorSearchParams<'_>,
         ) -> Result<Vec<VectorSearchHit>> {
             // Record the call
             self.search_calls.lock().unwrap().push(SearchCall {
-                vg_alias: vg_alias.to_string(),
+                graph_source_id: graph_source_id.to_string(),
                 query_vector: params.query_vector.to_vec(),
                 metric: params.metric,
                 limit: params.limit,
@@ -439,13 +441,13 @@ mod tests {
             Ok(self.results.iter().take(params.limit).cloned().collect())
         }
 
-        async fn collection_exists(&self, _vg_alias: &str) -> Result<bool> {
+        async fn collection_exists(&self, _graph_source_id: &str) -> Result<bool> {
             Ok(true)
         }
     }
 
-    fn make_test_db() -> Db<MemoryStorage> {
-        let mut db = Db::genesis(MemoryStorage::new(), "test/main");
+    fn make_test_db() -> Db {
+        let mut db = Db::genesis("test/main");
         // Ensure example IRIs used by tests are encodable to SIDs.
         db.namespace_codes
             .insert(100, "http://example.org/".to_string());
@@ -492,9 +494,9 @@ mod tests {
 
         // Build operator with explicit seed
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.vector_provider = Some(&provider);
@@ -513,7 +515,7 @@ mod tests {
         // Verify search was called correctly
         let calls = provider.search_calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].vg_alias, "embeddings:main");
+        assert_eq!(calls[0].graph_source_id, "embeddings:main");
         assert_eq!(calls[0].query_vector, vec![0.1, 0.2, 0.3]);
         assert_eq!(calls[0].metric, DistanceMetric::Cosine);
         assert_eq!(calls[0].limit, 10);
@@ -537,9 +539,9 @@ mod tests {
         let patterns = vec![Pattern::VectorSearch(vsp)];
 
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.vector_provider = Some(&provider);
@@ -577,9 +579,9 @@ mod tests {
         let patterns = vec![Pattern::VectorSearch(vsp)];
 
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.vector_provider = Some(&provider);
@@ -606,9 +608,9 @@ mod tests {
         let patterns = vec![Pattern::VectorSearch(vsp)];
 
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         // No vector_provider set
         let ctx = ExecutionContext::new(&db, &vars);
@@ -637,9 +639,9 @@ mod tests {
         let patterns = vec![Pattern::VectorSearch(vsp)];
 
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.vector_provider = Some(&provider);

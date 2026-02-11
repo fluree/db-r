@@ -231,8 +231,6 @@ mod tests {
             class_policy: false,
             for_classes: HashSet::new(),
             class_check_needed: false,
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         }
     }
 
@@ -248,8 +246,6 @@ mod tests {
             class_policy: true,
             for_classes: [class].into_iter().collect(),
             class_check_needed: true, // Will be computed
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         }
     }
 
@@ -265,8 +261,6 @@ mod tests {
             class_policy: false,
             for_classes: HashSet::new(),
             class_check_needed: false,
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         }
     }
 
@@ -280,7 +274,10 @@ mod tests {
                 count: 10,
                 properties: property_sids
                     .into_iter()
-                    .map(|p| ClassPropertyUsage { property_sid: p })
+                    .map(|p| ClassPropertyUsage {
+                        property_sid: p,
+                        ref_classes: Vec::new(),
+                    })
                     .collect(),
             }]),
             graphs: None,
@@ -401,9 +398,11 @@ mod tests {
                     properties: vec![
                         ClassPropertyUsage {
                             property_sid: name_prop.clone(),
+                            ref_classes: Vec::new(),
                         },
                         ClassPropertyUsage {
                             property_sid: ssn_prop.clone(),
+                            ref_classes: Vec::new(),
                         },
                     ],
                 },
@@ -412,6 +411,7 @@ mod tests {
                     count: 5,
                     properties: vec![ClassPropertyUsage {
                         property_sid: name_prop.clone(),
+                        ref_classes: Vec::new(),
                     }],
                 },
             ]),

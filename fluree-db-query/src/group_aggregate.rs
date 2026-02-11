@@ -44,7 +44,7 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, Sid, Storage};
+use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -448,9 +448,9 @@ struct GroupState {
 /// Streaming GROUP BY + Aggregate operator
 ///
 /// Memory usage: O(groups) instead of O(rows)
-pub struct GroupAggregateOperator<S: Storage + 'static> {
+pub struct GroupAggregateOperator {
     /// Child operator
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Output schema
     schema: Arc<[VarId]>,
     /// Operator state
@@ -467,7 +467,7 @@ pub struct GroupAggregateOperator<S: Storage + 'static> {
     binary_store: Option<Arc<BinaryIndexStore>>,
 }
 
-impl<S: Storage + 'static> GroupAggregateOperator<S> {
+impl GroupAggregateOperator {
     /// Create a streaming GROUP BY + Aggregate operator
     ///
     /// # Arguments
@@ -477,7 +477,7 @@ impl<S: Storage + 'static> GroupAggregateOperator<S> {
     /// * `agg_specs` - Aggregate specifications (input col, function, output var)
     /// * `binary_store` - Optional binary store for encoded binding materialization
     pub fn new(
-        child: BoxedOperator<S>,
+        child: BoxedOperator,
         group_vars: Vec<VarId>,
         agg_specs: Vec<StreamingAggSpec>,
         binary_store: Option<Arc<BinaryIndexStore>>,
@@ -554,12 +554,12 @@ impl<S: Storage + 'static> GroupAggregateOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for GroupAggregateOperator<S> {
+impl Operator for GroupAggregateOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         self.groups.clear();
@@ -572,7 +572,7 @@ impl<S: Storage + 'static> Operator<S> for GroupAggregateOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -770,10 +770,10 @@ fn is_int_binding(binding: &Binding) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{Db, MemoryStorage};
+    use fluree_db_core::Db;
 
-    fn make_test_db() -> Db<MemoryStorage> {
-        Db::genesis(MemoryStorage::new(), "test/main")
+    fn make_test_db() -> Db {
+        Db::genesis("test/main")
     }
 
     #[tokio::test]
@@ -818,20 +818,20 @@ mod tests {
             batch: Option<Batch>,
         }
         #[async_trait]
-        impl<S: Storage + 'static> Operator<S> for BatchOperator {
+        impl Operator for BatchOperator {
             fn schema(&self) -> &[VarId] {
                 &self.schema
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
         }
 
-        let child: BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
+        let child: BoxedOperator = Box::new(BatchOperator {
             schema: schema.clone(),
             batch: Some(batch),
         });
@@ -929,20 +929,20 @@ mod tests {
             batch: Option<Batch>,
         }
         #[async_trait]
-        impl<S: Storage + 'static> Operator<S> for BatchOperator {
+        impl Operator for BatchOperator {
             fn schema(&self) -> &[VarId] {
                 &self.schema
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
         }
 
-        let child: BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
+        let child: BoxedOperator = Box::new(BatchOperator {
             schema: schema.clone(),
             batch: Some(batch),
         });
@@ -1166,20 +1166,20 @@ mod tests {
             batch: Option<Batch>,
         }
         #[async_trait]
-        impl<S: Storage + 'static> Operator<S> for BatchOperator {
+        impl Operator for BatchOperator {
             fn schema(&self) -> &[VarId] {
                 &self.schema
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
         }
 
-        let child: BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
+        let child: BoxedOperator = Box::new(BatchOperator {
             schema: schema.clone(),
             batch: Some(batch),
         });
@@ -1230,9 +1230,7 @@ mod tests {
                 output_var: VarId(2),
             },
         ];
-        assert!(GroupAggregateOperator::<MemoryStorage>::all_streamable(
-            &streamable
-        ));
+        assert!(GroupAggregateOperator::all_streamable(&streamable));
 
         let non_streamable = vec![
             StreamingAggSpec {
@@ -1248,8 +1246,6 @@ mod tests {
                 output_var: VarId(2),
             },
         ];
-        assert!(!GroupAggregateOperator::<MemoryStorage>::all_streamable(
-            &non_streamable
-        ));
+        assert!(!GroupAggregateOperator::all_streamable(&non_streamable));
     }
 }

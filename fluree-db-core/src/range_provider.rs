@@ -14,6 +14,8 @@ use crate::comparator::IndexType;
 use crate::flake::Flake;
 use crate::overlay::OverlayProvider;
 use crate::query_bounds::{RangeMatch, RangeOptions, RangeTest};
+use crate::sid::Sid;
+use std::collections::HashMap;
 
 /// A range query backend that can execute range queries against an index.
 ///
@@ -65,6 +67,29 @@ pub trait RangeProvider: Send + Sync {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "range_bounded not supported by this provider",
+        ))
+    }
+
+    /// Batched lookup: for a fixed predicate, retrieve ref-valued objects for many subjects.
+    ///
+    /// This supports latency-sensitive callers like policy enforcement (`rdf:type` lookups)
+    /// without issuing one range query per subject and without scanning the full predicate
+    /// partition.
+    ///
+    /// Implementations should respect `opts.to_t` and must merge overlay ops.
+    ///
+    /// Default implementation returns `Unsupported`.
+    fn lookup_subject_predicate_refs_batched(
+        &self,
+        _index: IndexType,
+        _predicate: &Sid,
+        _subjects: &[Sid],
+        _opts: &RangeOptions,
+        _overlay: &dyn OverlayProvider,
+    ) -> std::io::Result<HashMap<Sid, Vec<Sid>>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "lookup_subject_predicate_refs_batched not supported by this provider",
         ))
     }
 }

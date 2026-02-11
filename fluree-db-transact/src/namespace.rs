@@ -10,7 +10,7 @@
 //! Fluree uses predefined codes for common namespaces to ensure compatibility
 //! with existing databases. User-supplied namespaces start at `USER_START`.
 
-use fluree_db_core::{Db, Sid, Storage};
+use fluree_db_core::{Db, PrefixTrie, Sid};
 use fluree_vocab::namespaces::{BLANK_NODE, OVERFLOW, USER_START};
 use std::collections::HashMap;
 
@@ -23,96 +23,6 @@ pub const BLANK_NODE_PREFIX: &str = "_:";
 
 /// Fluree blank node ID prefix (used in generated blank node names)
 pub const BLANK_NODE_ID_PREFIX: &str = "fdb";
-
-// ============================================================================
-// Prefix Trie — O(len(iri)) longest-prefix matching
-// ============================================================================
-
-/// A node in the byte-level prefix trie.
-///
-/// Children are stored as a sorted `Vec<(u8, u32)>` instead of a HashMap.
-/// Most nodes in URI prefix tries have 1-3 children, where a linear scan
-/// beats HashMap's hashing + heap allocation overhead. The `u32` index
-/// supports up to 4B nodes (far more than needed).
-#[derive(Debug, Clone)]
-struct TrieNode {
-    /// Namespace code if a registered prefix ends at this node.
-    code: Option<u16>,
-    /// Children sorted by byte value. Typically 1-3 entries for URI prefixes.
-    children: Vec<(u8, u32)>,
-}
-
-/// Byte-level trie for longest-prefix matching of IRI strings.
-///
-/// Each registered namespace prefix is inserted byte-by-byte. Lookup walks
-/// the trie following the IRI's bytes, tracking the deepest node that has a
-/// namespace code set. This gives O(len(iri)) lookup time independent of the
-/// number of registered prefixes — critical when namespace counts grow to
-/// thousands (e.g. DBLP imports with ~90K namespaces).
-#[derive(Debug, Clone)]
-struct PrefixTrie {
-    nodes: Vec<TrieNode>,
-}
-
-impl PrefixTrie {
-    fn new() -> Self {
-        Self {
-            nodes: vec![TrieNode {
-                code: None,
-                children: Vec::new(),
-            }],
-        }
-    }
-
-    /// Insert a prefix string with its namespace code.
-    fn insert(&mut self, prefix: &str, code: u16) {
-        let mut node_idx: u32 = 0;
-        for &byte in prefix.as_bytes() {
-            let children = &self.nodes[node_idx as usize].children;
-            node_idx = match children.iter().find(|(b, _)| *b == byte) {
-                Some(&(_, child_idx)) => child_idx,
-                None => {
-                    let new_idx = self.nodes.len() as u32;
-                    self.nodes.push(TrieNode {
-                        code: None,
-                        children: Vec::new(),
-                    });
-                    let node = &mut self.nodes[node_idx as usize];
-                    let pos = node.children.partition_point(|(b, _)| *b < byte);
-                    node.children.insert(pos, (byte, new_idx));
-                    new_idx
-                }
-            };
-        }
-        self.nodes[node_idx as usize].code = Some(code);
-    }
-
-    /// Find the longest registered prefix that matches the start of `iri`.
-    ///
-    /// Returns `(namespace_code, prefix_byte_length)` or `None` if no
-    /// non-empty prefix matches. The empty prefix (code 0) is intentionally
-    /// not stored in the trie — unmatched IRIs fall through to the split
-    /// heuristic in `sid_for_iri`.
-    fn longest_match(&self, iri: &str) -> Option<(u16, usize)> {
-        let mut node_idx: u32 = 0;
-        let mut best: Option<(u16, usize)> = None;
-
-        for (i, &byte) in iri.as_bytes().iter().enumerate() {
-            let children = &self.nodes[node_idx as usize].children;
-            match children.iter().find(|(b, _)| *b == byte) {
-                Some(&(_, child_idx)) => {
-                    node_idx = child_idx;
-                    if let Some(code) = self.nodes[node_idx as usize].code {
-                        best = Some((code, i + 1));
-                    }
-                }
-                None => break,
-            }
-        }
-
-        best
-    }
-}
 
 /// Build the default namespace mappings (single source of truth: `fluree-db-core`).
 fn default_namespaces() -> HashMap<u16, String> {
@@ -179,7 +89,7 @@ impl NamespaceRegistry {
     ///
     /// This merges the database's codes with the predefined defaults,
     /// with the database taking precedence for any conflicts.
-    pub fn from_db<S: Storage>(db: &Db<S>) -> Self {
+    pub fn from_db(db: &Db) -> Self {
         // Start with defaults
         let mut names = default_namespaces();
 

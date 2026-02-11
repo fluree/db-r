@@ -33,7 +33,7 @@ curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
 {
   "t": 1,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123...",
+  "commit_id": "bafybeig...commitT1",
   "flakes_added": 4,
   "flakes_retracted": 0
 }

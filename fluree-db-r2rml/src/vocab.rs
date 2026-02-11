@@ -69,7 +69,7 @@ impl R2RML {
     /// rr:tableName - Specifies the name of a base table or view
     pub const TABLE_NAME: &'static str = "http://www.w3.org/ns/r2rml#tableName";
 
-    /// rr:sqlQuery - Specifies an SQL query (NOT SUPPORTED for Iceberg VG)
+    /// rr:sqlQuery - Specifies an SQL query (NOT SUPPORTED for Iceberg graph sources)
     pub const SQL_QUERY: &'static str = "http://www.w3.org/ns/r2rml#sqlQuery";
 
     /// rr:sqlVersion - Specifies the SQL version

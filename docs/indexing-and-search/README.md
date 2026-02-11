@@ -36,8 +36,8 @@ Integrated full-text search using BM25 ranking:
 Approximate nearest neighbor (ANN) search for embeddings:
 - Vector index configuration
 - Embedded HNSW indexes (in-process) or remote via dedicated search service
-- Embedding storage with `f:vector` datatype
-- Similarity queries via `idx:vector` syntax
+- Embedding storage with `@vector` datatype (resolves to `https://ns.flur.ee/db#embeddingVector`)
+- Similarity queries via `f:*` syntax
 - Deployment modes (embedded / remote)
 - Use cases (semantic search, recommendations)
 
@@ -49,10 +49,6 @@ Geographic point data with native binary encoding:
 - Packed 60-bit lat/lng encoding (~0.3mm precision)
 - Foundation for proximity queries (latitude-band index scans)
 
-## Design docs
-
-- [Search Service Protocol (BM25 + Vector)](../design/SEARCH_SERVICE_PROTOCOL.md) - Unified embedded/remote contract and implementation plan.
-
 ## Indexing Architecture
 
 Fluree maintains multiple index types for different query patterns:
@@ -63,7 +59,7 @@ Fluree maintains multiple index types for different query patterns:
 - OPST: Object-Predicate-Subject-Time
 - PSOT: Predicate-Subject-Object-Time
 
-**Virtual Indexes (explicit):**
+**Graph Source Indexes (explicit):**
 - BM25: Full-text search indexes
 - Vector: Embedding similarity indexes
 - R2RML: Relational database views
@@ -126,7 +122,7 @@ See [BM25](bm25.md) for details.
 
 Similarity search using vector embeddings via HNSW indexes (embedded or remote).
 
-**Important**: Embeddings must be stored with `@type: "f:vector"` to preserve array structure.
+**Important**: Embeddings must be stored with the vector datatype (`@type: "@vector"`, `@type: "f:embeddingVector"`, or full IRI `https://ns.flur.ee/db#embeddingVector`) to preserve array structure.
 
 **Creating Index (Rust API):**
 ```rust
@@ -143,12 +139,12 @@ fluree.create_vector_index(config).await?;
   "select": ["?product", "?score"],
   "where": [
     {
-      "idx:graph": "products-vector:main",
-      "idx:vector": [0.1, 0.2, ..., 0.9],
-      "idx:limit": 10,
-      "idx:result": {
-        "idx:id": "?product",
-        "idx:score": "?score"
+      "f:graphSource": "products-vector:main",
+      "f:queryVector": [0.1, 0.2, ..., 0.9],
+      "f:searchLimit": 10,
+      "f:searchResult": {
+        "f:resultId": "?product",
+        "f:resultScore": "?score"
       }
     }
   ]
@@ -157,11 +153,11 @@ fluree.create_vector_index(config).await?;
 
 See [Vector Search](vector-search.md) for details.
 
-## Index as Virtual Graphs
+## Index as Graph Sources
 
-Search indexes are exposed as virtual graphs:
+Search indexes are exposed as graph sources:
 
-**Virtual Graph Names:**
+**Graph Source Names:**
 - `products-search:main` - BM25 index
 - `products-vector:main` - Vector index
 
@@ -219,10 +215,11 @@ curl -X DELETE "http://localhost:8090/index/bm25/products-search:main"
 
 ### Vector Search
 
-- **Index Build Time**: O(n log n) for HNSW index
-- **Query Time**: O(log n) approximate
+- **Flat scan (inline functions)**: O(n) brute-force, viable up to ~100K vectors with binary indexing; binary index provides ~6x speedup over novelty-only scans and ~25x for filtered queries
+- **HNSW index**: O(log n) approximate nearest neighbor, recommended for 100K+ vectors or strict latency requirements
 - **Space**: ~1.5x embedding size
 - **Updates**: Incremental, O(1) per vector
+- See [Vector Search -- Performance and Scaling](vector-search.md#performance-and-scaling) for benchmark data and guidance on when to adopt HNSW
 
 ### Combined Queries
 
@@ -273,32 +270,45 @@ Query optimizer handles joins efficiently.
 **Semantic Search:**
 ```json
 {
-  "from": "articles-vector:main",
+  "from": "articles:main",
+  "values": [
+    ["?queryVec"],
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
+  ],
   "where": [
     {
-      "@id": "?article",
-      "vector:similar": {
-        "embedding": getUserQueryEmbedding("machine learning"),
-        "limit": 10
+      "f:graphSource": "articles-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 10,
+      "f:searchResult": {
+        "f:resultId": "?article",
+        "f:resultScore": "?vecScore"
       }
     }
-  ]
+  ],
+  "select": ["?article", "?vecScore"],
+  "orderBy": [["desc", "?vecScore"]]
 }
 ```
 
 **Recommendation Engine:**
 ```json
 {
-  "from": "products-vector:main",
+  "from": "products:main",
   "where": [
     {
-      "@id": "?similar",
-      "vector:similar": {
-        "to": "ex:product-123",
-        "limit": 5
-      }
+      "@id": "ex:product-123",
+      "ex:embedding": "?queryVec"
+    },
+    {
+      "f:graphSource": "products-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 5,
+      "f:searchResult": { "f:resultId": "?similar", "f:resultScore": "?vecScore" }
     }
-  ]
+  ],
+  "select": ["?similar", "?vecScore"],
+  "orderBy": [["desc", "?vecScore"]]
 }
 ```
 
@@ -309,17 +319,19 @@ Combine text and vector search:
 ```json
 {
   "from": ["products-search:main", "products-vector:main"],
+  "values": [
+    ["?queryVec"],
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
+  ],
   "where": [
     { "@id": "?product", "bm25:matches": "laptop" },
     { "@id": "?product", "bm25:score": "?textScore" },
-    { 
-      "@id": "?product",
-      "vector:similar": {
-        "embedding": queryEmbedding,
-        "limit": 100
-      }
-    },
-    { "@id": "?product", "vector:similarity": "?vecScore" }
+    {
+      "f:graphSource": "products-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 100,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?vecScore" }
+    }
   ],
   "bind": {
     "?finalScore": "(?textScore * 0.6) + (?vecScore * 0.4)"
@@ -433,5 +445,5 @@ Limit results for performance:
 - [Background Indexing](background-indexing.md) - Core index details
 - [BM25](bm25.md) - Full-text search
 - [Vector Search](vector-search.md) - Similarity search
-- [Virtual Graphs](../virtual-graphs/README.md) - Virtual graph concepts
+- [Graph Sources](../graph-sources/README.md) - Graph source concepts
 - [Query](../query/README.md) - Query syntax

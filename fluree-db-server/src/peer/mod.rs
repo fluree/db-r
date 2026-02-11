@@ -29,7 +29,8 @@ pub use forward::{ForwardingClient, ForwardingError};
 pub use proxy_nameservice::ProxyNameService;
 pub use proxy_storage::ProxyStorage;
 pub use state::{
-    NeedsRefresh, PeerState, RemoteLedgerWatermark, RemoteVgWatermark, VgNeedsRefresh,
+    GraphSourceNeedsRefresh, NeedsRefresh, PeerState, RemoteGraphSourceWatermark,
+    RemoteLedgerWatermark,
 };
 pub use subscription::{PeerSubscriptionError, PeerSubscriptionTask};
 pub use sync_task::PeerSyncTask;
@@ -54,8 +55,8 @@ pub fn build_peer_events_url(config: &ServerConfig) -> String {
         for l in &sub.ledgers {
             params.push(format!("ledger={}", urlencoding::encode(l)));
         }
-        for v in &sub.vgs {
-            params.push(format!("vg={}", urlencoding::encode(v)));
+        for v in &sub.graph_sources {
+            params.push(format!("graph-source={}", urlencoding::encode(v)));
         }
     }
 

@@ -1,7 +1,7 @@
 //! Search deployment configuration.
 //!
 //! This module defines configuration types for search deployment modes,
-//! allowing virtual graphs to use either embedded or remote search providers.
+//! allowing graph sources to use either embedded or remote search providers.
 
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,7 @@ pub enum DeploymentMode {
 
 /// Search deployment configuration.
 ///
-/// This is typically embedded in the virtual graph configuration
+/// This is typically embedded in the graph source configuration
 /// to specify how search should be performed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchDeploymentConfig {

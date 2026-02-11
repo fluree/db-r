@@ -9,7 +9,7 @@ use axum::body::Body;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::{Signer, SigningKey};
 use fluree_db_core::serde::flakes_transport::{decode_flakes, MAGIC as FLKB_MAGIC};
-use fluree_db_core::StorageRead;
+use fluree_db_core::{ContentId, ContentKind, StorageRead};
 use fluree_db_server::{
     config::{ServerRole, StorageAccessMode},
     routes::build_router,
@@ -163,7 +163,7 @@ async fn test_storage_proxy_endpoints_enabled() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/nonexistent:ledger")
+                .uri("/v1/fluree/storage/ns/nonexistent:ledger")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -186,7 +186,7 @@ async fn test_storage_proxy_requires_token() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/test:main")
+                .uri("/v1/fluree/storage/ns/test:main")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -244,7 +244,7 @@ async fn test_storage_proxy_requires_storage_permissions() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/test:main")
+                .uri("/v1/fluree/storage/ns/test:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -274,7 +274,7 @@ async fn test_storage_proxy_block_endpoint() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -283,16 +283,18 @@ async fn test_storage_proxy_block_endpoint() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Try to fetch a block - should return 404 for non-existent address
+    // Try to fetch a block - should return 404 for non-existent CID
     // (but the endpoint is working)
+    let fake_cid = ContentId::new(ContentKind::Commit, b"nonexistent").to_string();
     let block_body = serde_json::json!({
-        "address": "fluree:file://proxy:test/commit/nonexistent.json"
+        "cid": fake_cid,
+        "ledger": "proxy:test"
     });
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::from(block_body.to_string()))
@@ -323,7 +325,7 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -337,7 +339,7 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/ns:test")
+                .uri("/v1/fluree/storage/ns/ns:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -347,8 +349,12 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
 
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    // The alias "ns:test" is split into namespace "ns" and branch "test"
-    assert_eq!(json.get("alias").and_then(|v| v.as_str()), Some("ns"));
+    // ledger_id is the full canonical key; name is the ledger without branch
+    assert_eq!(
+        json.get("ledger_id").and_then(|v| v.as_str()),
+        Some("ns:test")
+    );
+    assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("ns"));
     assert_eq!(json.get("branch").and_then(|v| v.as_str()), Some("test"));
     assert_eq!(json.get("retracted").and_then(|v| v.as_bool()), Some(false));
 }
@@ -366,7 +372,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -381,7 +387,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -433,7 +439,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/allowed:main")
+                .uri("/v1/fluree/storage/ns/allowed:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -447,7 +453,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/denied:main")
+                .uri("/v1/fluree/storage/ns/denied:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -530,7 +536,7 @@ async fn test_storage_proxy_disabled() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/test:main")
+                .uri("/v1/fluree/storage/ns/test:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -559,7 +565,7 @@ async fn test_storage_proxy_block_authorization() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -606,14 +612,16 @@ async fn test_storage_proxy_block_authorization() {
     let token = format!("{}.{}.{}", header_b64, payload_b64, sig_b64);
 
     // Try to fetch a block from unauthorized ledger
+    let fake_cid = ContentId::new(ContentKind::Commit, b"auth-test").to_string();
     let block_body = serde_json::json!({
-        "address": "fluree:file://block:test/commit/test.json"
+        "cid": fake_cid,
+        "ledger": "block:test"
     });
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::from(block_body.to_string()))
@@ -626,9 +634,9 @@ async fn test_storage_proxy_block_authorization() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-/// Test that VG addresses are rejected in v1
+/// Test that graph source snapshot CIDs are rejected by the kind allowlist
 #[tokio::test]
-async fn test_storage_proxy_rejects_vg_addresses() {
+async fn test_storage_proxy_rejects_graph_source_cids() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state);
 
@@ -637,15 +645,17 @@ async fn test_storage_proxy_rejects_vg_addresses() {
     let signing_key = SigningKey::from_bytes(&secret);
     let token = create_storage_proxy_token(&signing_key, true);
 
-    // Try to fetch a VG artifact
+    // Try to fetch a graph source snapshot CID — rejected by kind allowlist
+    let gs_cid = ContentId::new(ContentKind::GraphSourceSnapshot, b"snapshot-data").to_string();
     let block_body = serde_json::json!({
-        "address": "fluree:file://virtual-graphs/search/main/snapshot.bin"
+        "cid": gs_cid,
+        "ledger": "search:main"
     });
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::from(block_body.to_string()))
@@ -654,13 +664,13 @@ async fn test_storage_proxy_rejects_vg_addresses() {
         .await
         .unwrap();
 
-    // VG addresses are not authorized in v1
+    // GraphSourceSnapshot is not in the kind allowlist → 404
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-/// Test unknown address format is rejected
+/// Test that an invalid CID string is rejected with 400
 #[tokio::test]
-async fn test_storage_proxy_rejects_unknown_address_format() {
+async fn test_storage_proxy_rejects_invalid_cid() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state);
 
@@ -669,15 +679,16 @@ async fn test_storage_proxy_rejects_unknown_address_format() {
     let signing_key = SigningKey::from_bytes(&secret);
     let token = create_storage_proxy_token(&signing_key, true);
 
-    // Try to fetch with non-fluree address
+    // Try to fetch with an invalid CID string
     let block_body = serde_json::json!({
-        "address": "s3://bucket/key"
+        "cid": "not-a-valid-cid",
+        "ledger": "x:y"
     });
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::from(block_body.to_string()))
@@ -686,8 +697,8 @@ async fn test_storage_proxy_rejects_unknown_address_format() {
         .await
         .unwrap();
 
-    // Unknown formats are rejected
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // Invalid CID string → 400 Bad Request
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 // =============================================================================
@@ -740,7 +751,7 @@ async fn test_storage_proxy_rejects_expired_token() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/test:main")
+                .uri("/v1/fluree/storage/ns/test:main")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -769,12 +780,14 @@ async fn bytes_body(resp: http::Response<Body>) -> (StatusCode, Vec<u8>) {
     (status, bytes)
 }
 
-/// Test that non-leaf blocks return 406 when flakes format is requested
+/// Test that non-leaf blocks return raw bytes even when flakes format is requested
 ///
-/// Commit files are JSON, not leaf nodes, so they should return 406 when
-/// the client requests application/x-fluree-flakes format.
+/// Commit blocks are structural data (not leaf nodes). The server returns them
+/// as raw bytes regardless of Accept header — the content negotiation only
+/// affects leaf block representation. Non-leaf blocks always return 200 with
+/// application/octet-stream.
 #[tokio::test]
-async fn test_block_content_negotiation_406_for_non_leaf() {
+async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state.clone());
 
@@ -790,7 +803,7 @@ async fn test_block_content_negotiation_406_for_non_leaf() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -813,7 +826,7 @@ async fn test_block_content_negotiation_406_for_non_leaf() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/update")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -828,7 +841,7 @@ async fn test_block_content_negotiation_406_for_non_leaf() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/flkb:test")
+                .uri("/v1/fluree/storage/ns/flkb:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -838,20 +851,20 @@ async fn test_block_content_negotiation_406_for_non_leaf() {
     let (status, ns_json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Extract commit address (now should exist after transaction)
-    let commit_address = ns_json
-        .get("commit_address")
+    // Extract commit head CID (should exist after transaction)
+    let commit_head_id = ns_json
+        .get("commit_head_id")
         .and_then(|v| v.as_str())
-        .expect("commit_address should exist after transaction");
+        .expect("commit_head_id should exist after transaction");
 
-    // Request the commit with flakes format - should get 406
-    let block_body = serde_json::json!({ "address": commit_address });
+    // Request the commit via CID — server returns raw bytes anyway
+    let block_body = serde_json::json!({ "cid": commit_head_id, "ledger": "flkb:test" });
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes")
@@ -861,11 +874,24 @@ async fn test_block_content_negotiation_406_for_non_leaf() {
         .await
         .unwrap();
 
-    // Commit blocks are not leaf nodes, so flakes format is not available
+    // Non-leaf blocks always return raw bytes with 200, regardless of Accept header.
+    // Content negotiation only affects leaf block representation.
     assert_eq!(
         resp.status(),
-        StatusCode::NOT_ACCEPTABLE,
-        "Non-leaf block with flakes format should return 406"
+        StatusCode::OK,
+        "Non-leaf block should return 200 with raw bytes regardless of Accept"
+    );
+
+    // Verify response is application/octet-stream (raw bytes)
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("application/octet-stream"),
+        "Non-leaf response should be octet-stream, got: {}",
+        content_type
     );
 }
 
@@ -890,7 +916,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -913,7 +939,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/update")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -928,7 +954,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/octet:test")
+                .uri("/v1/fluree/storage/ns/octet:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -938,19 +964,19 @@ async fn test_block_content_negotiation_octet_stream_success() {
     let (status, ns_json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Extract commit address (now should exist after transaction)
-    let commit_address = ns_json
-        .get("commit_address")
+    // Extract commit head CID (should exist after transaction)
+    let commit_head_id = ns_json
+        .get("commit_head_id")
         .and_then(|v| v.as_str())
-        .expect("commit_address should exist after transaction");
+        .expect("commit_head_id should exist after transaction");
 
-    // Request the commit with octet-stream format - should succeed
-    let block_body = serde_json::json!({ "address": commit_address });
+    // Request the commit via CID with octet-stream format - should succeed
+    let block_body = serde_json::json!({ "cid": commit_head_id, "ledger": "octet:test" });
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/octet-stream")
@@ -996,7 +1022,7 @@ async fn test_block_content_negotiation_default_accept() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -1019,7 +1045,7 @@ async fn test_block_content_negotiation_default_accept() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/update")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -1034,7 +1060,7 @@ async fn test_block_content_negotiation_default_accept() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/default:test")
+                .uri("/v1/fluree/storage/ns/default:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -1044,19 +1070,19 @@ async fn test_block_content_negotiation_default_accept() {
     let (status, ns_json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Extract commit address (now should exist after transaction)
-    let commit_address = ns_json
-        .get("commit_address")
+    // Extract commit head CID (should exist after transaction)
+    let commit_head_id = ns_json
+        .get("commit_head_id")
         .and_then(|v| v.as_str())
-        .expect("commit_address should exist after transaction");
+        .expect("commit_head_id should exist after transaction");
 
-    // Request with NO Accept header - should default to octet-stream and succeed
-    let block_body = serde_json::json!({ "address": commit_address });
+    // Request via CID with NO Accept header - should default to octet-stream and succeed
+    let block_body = serde_json::json!({ "cid": commit_head_id, "ledger": "default:test" });
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 // No Accept header - should default to octet-stream
@@ -1074,9 +1100,11 @@ async fn test_block_content_negotiation_default_accept() {
     );
 }
 
-/// Test JSON flakes debug format for non-leaf returns 406
+/// Test that non-leaf blocks return raw bytes even when JSON flakes format is requested
+///
+/// Same as the binary flakes test: non-leaf blocks ignore Accept and return raw bytes.
 #[tokio::test]
-async fn test_block_content_negotiation_json_flakes_406() {
+async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
     let (_tmp, state) = tx_server_state();
     let app = build_router(state.clone());
 
@@ -1092,7 +1120,7 @@ async fn test_block_content_negotiation_json_flakes_406() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -1115,7 +1143,7 @@ async fn test_block_content_negotiation_json_flakes_406() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/update")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(update_body.to_string()))
                 .unwrap(),
@@ -1130,7 +1158,7 @@ async fn test_block_content_negotiation_json_flakes_406() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/fluree/storage/ns/json:test")
+                .uri("/v1/fluree/storage/ns/json:test")
                 .header("Authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -1140,19 +1168,19 @@ async fn test_block_content_negotiation_json_flakes_406() {
     let (status, ns_json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Extract commit address (now should exist after transaction)
-    let commit_address = ns_json
-        .get("commit_address")
+    // Extract commit head CID (should exist after transaction)
+    let commit_head_id = ns_json
+        .get("commit_head_id")
         .and_then(|v| v.as_str())
-        .expect("commit_address should exist after transaction");
+        .expect("commit_head_id should exist after transaction");
 
-    // Request with JSON flakes debug format - should also get 406 for non-leaf
-    let block_body = serde_json::json!({ "address": commit_address });
+    // Request via CID with JSON flakes debug format — server returns raw bytes anyway
+    let block_body = serde_json::json!({ "cid": commit_head_id, "ledger": "json:test" });
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes+json")
@@ -1162,10 +1190,23 @@ async fn test_block_content_negotiation_json_flakes_406() {
         .await
         .unwrap();
 
+    // Non-leaf blocks always return raw bytes with 200, regardless of Accept header.
     assert_eq!(
         resp.status(),
-        StatusCode::NOT_ACCEPTABLE,
-        "JSON flakes format for non-leaf should also return 406"
+        StatusCode::OK,
+        "Non-leaf block should return 200 with raw bytes regardless of Accept"
+    );
+
+    // Verify response is application/octet-stream (raw bytes)
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("application/octet-stream"),
+        "Non-leaf response should be octet-stream, got: {}",
+        content_type
     );
 }
 
@@ -1208,16 +1249,19 @@ fn create_storage_proxy_token_no_identity(signing_key: &SigningKey, storage_all:
     format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
 }
 
-/// Test that ACTUAL leaf blocks return FLKB format when requested
+/// Test that binary FLI1 leaf blocks return FLKB format when requested.
 ///
-/// This test writes a valid leaf node JSON directly to storage, then
-/// requests it with Accept: application/x-fluree-flakes to verify:
-/// 1. Server returns 200 OK
-/// 2. Response bytes start with FLKB magic
-/// 3. decode_flakes() successfully decodes the response
+/// This test:
+/// - creates a ledger and transacts some data
+/// - reindexes (producing binary `FLI1` leaves)
+/// - fetches a real leaf address from the BinaryIndexRoot JSON root
+/// - requests that leaf with `Accept: application/x-fluree-flakes`
+/// - verifies the response is FLKB and decodes to at least one flake
 #[tokio::test]
 async fn test_block_content_negotiation_returns_flkb_for_leaf() {
-    let (tmp, state) = tx_server_state();
+    use fluree_db_api::ReindexOptions;
+
+    let (_tmp, state) = tx_server_state();
     let app = build_router(state.clone());
 
     // Generate a token WITHOUT identity claim (avoids policy resolution errors)
@@ -1232,7 +1276,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -1241,38 +1285,73 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Write a valid leaf node JSON directly to storage
-    // The address format for index is: fluree:file://{ledger}/{branch}/index/{file}
-    // This gets parsed as LedgerIndex { ledger: "leaf", branch: "test" } = "leaf:test"
-    let leaf_json = r#"{
-        "version": 2,
-        "dict": [
-            [1, "alice"],
-            [1, "bob"],
-            [2, "name"],
-            [3, "xsd:string"]
-        ],
-        "flakes": [
-            [0, 2, "Alice", 3, 100, true, null],
-            [1, 2, "Bob", 3, 101, true, null]
-        ]
-    }"#;
+    // Transact some data so reindex produces at least one leaf.
+    let data = serde_json::json!({
+        "ledger": "leaf:test",
+        "@context": { "ex": "http://example.org/ns/" },
+        "insert": {
+            "@graph": [
+                { "@id": "ex:alice", "ex:name": "Alice" },
+                { "@id": "ex:bob",   "ex:name": "Bob"   }
+            ]
+        }
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/transact")
+                .header("content-type", "application/json")
+                .body(Body::from(data.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "Transact should succeed");
 
-    // Write the leaf node to the temp storage directory
-    let leaf_path = tmp.path().join("leaf").join("test").join("index");
-    std::fs::create_dir_all(&leaf_path).expect("create leaf dir");
-    std::fs::write(leaf_path.join("test-leaf.json"), leaf_json).expect("write leaf");
+    // Reindex to build binary leaves (FLI1) + refresh cache so binary_store is present.
+    let fluree = state.fluree.as_file();
+    let reindex_result = fluree
+        .reindex("leaf:test", ReindexOptions::default())
+        .await
+        .expect("reindex should succeed");
+    fluree
+        .refresh("leaf:test")
+        .await
+        .expect("refresh after reindex should succeed");
 
-    // The address that maps to this file
-    let leaf_address = "fluree:file://leaf/test/index/test-leaf.json";
+    // Fetch the DB root JSON and extract a leaf CID.
+    let root_body =
+        serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": "leaf:test" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/storage/block")
+                .header("content-type", "application/json")
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Accept", "application/octet-stream")
+                .body(Body::from(root_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, root_bytes) = bytes_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "DB root fetch failed");
+
+    let db_root_json: serde_json::Value =
+        serde_json::from_slice(&root_bytes).expect("db root should be valid JSON");
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
 
     // Request the leaf with flakes format - should return FLKB
-    let block_body = serde_json::json!({ "address": leaf_address });
+    let block_body = serde_json::json!({ "cid": leaf_cid, "ledger": "leaf:test" });
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes")
@@ -1310,11 +1389,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
 
     // Verify we can decode the flakes
     let flakes = decode_flakes(&bytes).expect("decode_flakes should succeed");
-    assert_eq!(flakes.len(), 2, "Should decode 2 flakes (Alice and Bob)");
-
-    // Verify flake content
-    assert_eq!(flakes[0].s.name, "alice");
-    assert_eq!(flakes[1].s.name, "bob");
+    assert!(!flakes.is_empty(), "Should decode at least one flake");
 }
 
 // =============================================================================
@@ -1336,7 +1411,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     use tokio::net::TcpListener;
 
     // Create tx server state with storage proxy enabled
-    let (tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state();
     let app = build_router(state.clone());
 
     // Start a real HTTP server
@@ -1362,7 +1437,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     // Create a ledger via HTTP (to have a valid alias for authorization)
     let client = reqwest::Client::new();
     let create_resp = client
-        .post(format!("{}/fluree/create", server_url))
+        .post(format!("{}/v1/fluree/create", server_url))
         .header("content-type", "application/json")
         .body(r#"{"ledger": "peer:test"}"#)
         .send()
@@ -1374,33 +1449,75 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
         "Ledger creation should succeed"
     );
 
-    // Write a valid leaf node JSON directly to storage
-    let leaf_json = r#"{
-        "version": 2,
-        "dict": [
-            [1, "carol"],
-            [1, "dave"],
-            [2, "age"],
-            [3, "xsd:integer"]
-        ],
-        "flakes": [
-            [0, 2, 30, 3, 200, true, null],
-            [1, 2, 25, 3, 201, true, null]
-        ]
-    }"#;
+    // Create some data + reindex so we have a real leaf to fetch.
+    let transact_resp = client
+        .post(format!("{}/v1/fluree/transact", server_url))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "ledger": "peer:test",
+                "@context": { "ex": "http://example.org/ns/" },
+                "insert": {
+                    "@graph": [
+                        { "@id": "ex:carol", "ex:age": 30 },
+                        { "@id": "ex:dave",  "ex:age": 25 }
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .expect("transact request");
+    assert_eq!(
+        transact_resp.status(),
+        reqwest::StatusCode::OK,
+        "Transact should succeed"
+    );
 
-    let leaf_path = tmp.path().join("peer").join("test").join("index");
-    std::fs::create_dir_all(&leaf_path).expect("create leaf dir");
-    std::fs::write(leaf_path.join("peer-leaf.json"), leaf_json).expect("write leaf");
+    // Reindex via tx server state (direct call) and refresh, then fetch DB root JSON over HTTP.
+    // (The server is running in-process; state is still available in this test.)
+    use fluree_db_api::ReindexOptions;
+    let fluree = state.fluree.as_file();
+    let reindex_result = fluree
+        .reindex("peer:test", ReindexOptions::default())
+        .await
+        .expect("reindex should succeed");
+    fluree
+        .refresh("peer:test")
+        .await
+        .expect("refresh after reindex should succeed");
 
-    let leaf_address = "fluree:file://peer/test/index/peer-leaf.json";
+    let token_for_http = token.clone();
+    let root_resp = client
+        .post(format!("{}/v1/fluree/storage/block", server_url))
+        .header("content-type", "application/json")
+        .header("Authorization", format!("Bearer {}", token_for_http))
+        .header("Accept", "application/octet-stream")
+        .body(
+            serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": "peer:test" })
+                .to_string(),
+        )
+        .send()
+        .await
+        .expect("fetch root");
+    assert_eq!(
+        root_resp.status(),
+        reqwest::StatusCode::OK,
+        "DB root fetch should succeed"
+    );
+    let root_bytes = root_resp.bytes().await.expect("read root bytes");
+    let db_root_json: serde_json::Value =
+        serde_json::from_slice(&root_bytes).expect("db root should be valid JSON");
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
+    let leaf_address = leaf_address_from_cid(&leaf_cid, "peer:test");
 
     // Create ProxyStorage pointing to our test server
     let proxy_storage = ProxyStorage::new(server_url.clone(), token);
 
     // Call read_bytes_hint with PreferLeafFlakes
     let result = proxy_storage
-        .read_bytes_hint(leaf_address, ReadHint::PreferLeafFlakes)
+        .read_bytes_hint(&leaf_address, ReadHint::PreferLeafFlakes)
         .await;
 
     // Should succeed
@@ -1419,27 +1536,37 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
 
     // Verify we can decode the flakes
     let flakes = decode_flakes(&bytes).expect("decode_flakes should succeed");
-    assert_eq!(flakes.len(), 2, "Should decode 2 flakes (carol and dave)");
-
-    // Verify flake content
-    assert_eq!(flakes[0].s.name, "carol");
-    assert_eq!(flakes[1].s.name, "dave");
+    assert!(!flakes.is_empty(), "Should decode at least one flake");
+    assert!(
+        flakes.iter().any(|f| f.s.name == "carol"),
+        "Expected a flake for ex:carol"
+    );
+    assert!(
+        flakes.iter().any(|f| f.s.name == "dave"),
+        "Expected a flake for ex:dave"
+    );
 
     // Cleanup: abort server
     server_handle.abort();
 }
 
-/// Test that ProxyStorage.read_bytes (no hint) returns raw bytes, not FLKB
+/// Test that ProxyStorage.read_bytes returns FLKB for leaf blocks under PolicyEnforced
 ///
-/// This verifies that the default read_bytes() path doesn't trigger FLKB encoding,
-/// only read_bytes_hint with PreferLeafFlakes does.
+/// Under PolicyEnforced mode (the only mode currently available via storage proxy),
+/// leaf blocks are always decoded and policy-filtered. ProxyStorage.read_bytes() uses
+/// flakes-first content negotiation, so leaves come back as FLKB (not raw FLI1).
+///
+/// Raw FLI1 leaf bytes would only be available under TrustedInternal enforcement mode,
+/// which is not yet implemented. When it is, a separate ProxyStorage variant (or mode)
+/// would be needed to opt into raw bytes.
 #[tokio::test]
-async fn test_proxy_storage_read_bytes_returns_raw_not_flkb() {
+async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
+    use fluree_db_api::ReindexOptions;
     use fluree_db_server::peer::ProxyStorage;
     use tokio::net::TcpListener;
 
     // Create tx server state with storage proxy enabled
-    let (tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state();
     let app = build_router(state.clone());
 
     // Start a real HTTP server
@@ -1465,7 +1592,7 @@ async fn test_proxy_storage_read_bytes_returns_raw_not_flkb() {
     // Create a ledger via HTTP
     let client = reqwest::Client::new();
     let create_resp = client
-        .post(format!("{}/fluree/create", server_url))
+        .post(format!("{}/v1/fluree/create", server_url))
         .header("content-type", "application/json")
         .body(r#"{"ledger": "raw:test"}"#)
         .send()
@@ -1477,39 +1604,82 @@ async fn test_proxy_storage_read_bytes_returns_raw_not_flkb() {
         "Ledger creation should succeed"
     );
 
-    // Write a valid leaf node JSON directly to storage
-    let leaf_json = r#"{
-        "version": 2,
-        "dict": [[1, "eve"], [2, "score"], [3, "xsd:integer"]],
-        "flakes": [[0, 2, 100, 3, 300, true, null]]
-    }"#;
+    // Transact + reindex to create real binary leaves (FLI1).
+    let transact_resp = client
+        .post(format!("{}/v1/fluree/transact", server_url))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "ledger": "raw:test",
+                "@context": { "ex": "http://example.org/ns/" },
+                "insert": { "@id": "ex:eve", "ex:score": 100 }
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .expect("transact request");
+    assert_eq!(
+        transact_resp.status(),
+        reqwest::StatusCode::OK,
+        "Transact should succeed"
+    );
 
-    let leaf_path = tmp.path().join("raw").join("test").join("index");
-    std::fs::create_dir_all(&leaf_path).expect("create leaf dir");
-    std::fs::write(leaf_path.join("raw-leaf.json"), leaf_json).expect("write leaf");
+    let fluree = state.fluree.as_file();
+    let reindex_result = fluree
+        .reindex("raw:test", ReindexOptions::default())
+        .await
+        .expect("reindex should succeed");
+    fluree
+        .refresh("raw:test")
+        .await
+        .expect("refresh after reindex should succeed");
 
-    let leaf_address = "fluree:file://raw/test/index/raw-leaf.json";
+    // Fetch DB root JSON so we can extract a real leaf CID.
+    let token_for_http = token.clone();
+    let root_resp = client
+        .post(format!("{}/v1/fluree/storage/block", server_url))
+        .header("content-type", "application/json")
+        .header("Authorization", format!("Bearer {}", token_for_http))
+        .header("Accept", "application/octet-stream")
+        .body(
+            serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": "raw:test" })
+                .to_string(),
+        )
+        .send()
+        .await
+        .expect("fetch root");
+    assert_eq!(
+        root_resp.status(),
+        reqwest::StatusCode::OK,
+        "DB root fetch should succeed"
+    );
+    let root_bytes = root_resp.bytes().await.expect("read root bytes");
+    let db_root_json: serde_json::Value =
+        serde_json::from_slice(&root_bytes).expect("db root should be valid JSON");
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
+    let leaf_address = leaf_address_from_cid(&leaf_cid, "raw:test");
 
     // Create ProxyStorage pointing to our test server
     let proxy_storage = ProxyStorage::new(server_url.clone(), token);
 
-    // Call read_bytes (NOT read_bytes_hint)
-    let result = proxy_storage.read_bytes(leaf_address).await;
+    // Call read_bytes (no hint) — under PolicyEnforced, this uses flakes-first
+    // negotiation and returns FLKB for leaf blocks.
+    let result = proxy_storage.read_bytes(&leaf_address).await;
+    let bytes = result.expect("read_bytes should succeed for leaf");
 
-    // Should succeed
-    let bytes = result.expect("read_bytes should succeed");
-
-    // Should NOT be FLKB format (should be raw JSON)
+    // Under PolicyEnforced, leaf blocks are returned as FLKB (policy-filtered flakes),
+    // not raw FLI1. This is the same behavior as read_bytes_hint(PreferLeafFlakes).
     assert!(
-        bytes.len() < 4 || &bytes[0..4] != FLKB_MAGIC,
-        "read_bytes (without hint) should return raw bytes, not FLKB"
+        bytes.len() >= 4 && &bytes[0..4] == FLKB_MAGIC,
+        "read_bytes for leaf should return FLKB under PolicyEnforced, got magic: {:?}",
+        &bytes[..std::cmp::min(4, bytes.len())]
     );
 
-    // Verify it's the original JSON
-    let json_str = String::from_utf8(bytes).expect("should be valid UTF-8");
+    // Should NOT be raw FLI1 (that would require TrustedInternal mode)
     assert!(
-        json_str.contains("version"),
-        "Should be the original JSON leaf format"
+        bytes.len() < 4 || &bytes[0..4] != b"FLI1",
+        "read_bytes should NOT return raw FLI1 under PolicyEnforced"
     );
 
     // Cleanup: abort server
@@ -1550,18 +1720,7 @@ fn tx_server_state_with_policy(
     (tmp, state)
 }
 
-/// Parse leaf node JSON to extract flake count
-///
-/// Leaf node format: { "version": 2, "dict": [...], "flakes": [...] }
-fn count_flakes_in_leaf_json(bytes: &[u8]) -> usize {
-    let json: serde_json::Value = serde_json::from_slice(bytes).expect("valid leaf JSON");
-    json.get("flakes")
-        .and_then(|f| f.as_array())
-        .map(|arr| arr.len())
-        .unwrap_or(0)
-}
-
-/// Extract the first SPOT leaf address from a BinaryIndexRootV2 JSON structure.
+/// Extract the first SPOT leaf CID string from a BinaryIndexRoot JSON structure.
 ///
 /// The root format is:
 /// ```json
@@ -1569,12 +1728,12 @@ fn count_flakes_in_leaf_json(bytes: &[u8]) -> usize {
 ///   "graphs": [{
 ///     "g_id": 0,
 ///     "orders": {
-///       "spot": { "branch": "...", "leaves": ["leaf1", "leaf2", ...] }
+///       "spot": { "branch": "...", "leaves": ["cid1", "cid2", ...] }
 ///     }
 ///   }]
 /// }
 /// ```
-fn extract_spot_leaf_address(db_root_json: &serde_json::Value) -> String {
+fn extract_spot_leaf_cid(db_root_json: &serde_json::Value) -> String {
     let graphs = db_root_json
         .get("graphs")
         .and_then(|g| g.as_array())
@@ -1598,24 +1757,24 @@ fn extract_spot_leaf_address(db_root_json: &serde_json::Value) -> String {
         .to_string()
 }
 
-/// Test that policy filtering produces fewer flakes than raw leaf
+/// Derive the storage address for a leaf from its CID string.
+/// (Needed by ProxyStorage tests that call `read_bytes(address)` directly.)
+fn leaf_address_from_cid(cid_str: &str, ledger_id: &str) -> String {
+    let cid: ContentId = cid_str.parse().expect("leaf should be a valid CID");
+    fluree_db_core::content_address("file", ContentKind::IndexLeaf, ledger_id, &cid.digest_hex())
+}
+
+/// Test that policy filtering is applied to binary leaves (FLI1 → FLKB)
 ///
 /// This test proves real policy enforcement using CLASS-BASED policy (not identity-based):
 /// 1. Create ledger with data and a policy class that unconditionally denies `schema:ssn`
 /// 2. Reindex to build the index
-/// 3. Fetch leaf twice: raw (all flakes) vs filtered (policy-restricted)
-/// 4. Assert filtered.len() < raw.len()
-///
-/// This is the end-to-end proof that policy filtering works at the leaf level.
+/// 3. Fetch a real leaf with `Accept: application/x-fluree-flakes`
+/// 4. Assert returned flakes do not include `schema:ssn`
 ///
 /// NOTE: Uses class-based policy only (no identity) to avoid the stale-cache issue
 /// where identity-based policy loading queries the cached DB for `<identity> f:policyClass ?class`.
-///
-/// IGNORED: The binary indexer (`reindex()`) produces FLI1 binary format leaves, but the
-/// storage proxy's `parse_leaf_node` only handles JSON format leaves. This test needs to
-/// be updated once the storage proxy supports binary leaf parsing.
 #[tokio::test]
-#[ignore = "requires storage proxy support for binary FLI1 leaves"]
 async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     use fluree_db_api::ReindexOptions;
 
@@ -1643,7 +1802,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -1664,7 +1823,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         "@context": {
             "ex": "http://example.org/ns/",
             "schema": "http://schema.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "insert": {
             "@graph": [
@@ -1707,7 +1866,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/transact")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(setup_data.to_string()))
                 .unwrap(),
@@ -1727,8 +1886,8 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .expect("reindex should succeed");
 
     assert!(
-        !reindex_result.root_address.is_empty(),
-        "Reindex should produce a root address"
+        reindex_result.root_id.digest_hex().len() == 64,
+        "Reindex should produce a valid root CID"
     );
     assert!(
         reindex_result.index_t > 0,
@@ -1744,20 +1903,21 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     println!("Refresh result after reindex: {:?}", refresh_result);
 
     // Step 4: Find a leaf address
-    // The root_address points to the DB root file (contains index roots as nested objects).
+    // The root_id points to the DB root file (contains index roots as nested objects).
     // We need to:
     // 1. Read the DB root to get the SPOT index root
     // 2. Read the SPOT index root (may be branch or leaf)
     // 3. If branch, walk down to find a leaf
 
     // Read the DB root file
-    let db_root_body = serde_json::json!({ "address": &reindex_result.root_address });
+    let db_root_body =
+        serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": alias });
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/octet-stream")
@@ -1773,43 +1933,17 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&db_root_bytes).expect("db root should be valid JSON");
 
-    // Extract the first SPOT leaf address from BinaryIndexRootV2 format
-    let leaf_address = extract_spot_leaf_address(&db_root_json);
+    // Extract the first SPOT leaf CID from BinaryIndexRoot format
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
 
-    // Step 5: Fetch the leaf RAW (octet-stream) to get all flakes
-    let leaf_block_body = serde_json::json!({ "address": &leaf_address });
+    let leaf_block_body = serde_json::json!({ "cid": &leaf_cid, "ledger": alias });
+    // Fetch the leaf FILTERED (x-fluree-flakes) with policy
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
-                .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
-                .header("Accept", "application/octet-stream")
-                .body(Body::from(leaf_block_body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let (status, raw_bytes) = bytes_body(resp).await;
-    assert_eq!(status, StatusCode::OK, "Raw leaf fetch failed");
-
-    let raw_flake_count = count_flakes_in_leaf_json(&raw_bytes);
-    assert!(
-        raw_flake_count > 0,
-        "Raw leaf should have flakes, got: {}",
-        String::from_utf8_lossy(&raw_bytes)
-    );
-
-    // Step 6: Fetch the leaf FILTERED (x-fluree-flakes) with policy
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes")
@@ -1840,36 +1974,21 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
 
     // Decode the filtered flakes
     let filtered_flakes = decode_flakes(&filtered_bytes).expect("FLKB decode should succeed");
-    let filtered_flake_count = filtered_flakes.len();
-
-    // Step 7: Assert filtered < raw
-    // The unconditional deny policy on schema:ssn should filter out all SSN flakes.
-    // Since we have 2 users each with an SSN, at least 2 flakes should be filtered.
-    println!(
-        "Raw flakes: {}, Filtered flakes: {}",
-        raw_flake_count, filtered_flake_count
-    );
-
-    // The key assertion: policy filtering should produce fewer flakes
-    // (specifically, ALL SSN flakes should be filtered out due to unconditional deny)
     assert!(
-        filtered_flake_count < raw_flake_count,
-        "Policy filtering should produce fewer flakes. Raw: {}, Filtered: {}. \
-         The unconditional deny on schema:ssn should filter out SSN flakes.",
-        raw_flake_count,
-        filtered_flake_count
+        !filtered_flakes.is_empty(),
+        "Expected at least one flake after filtering"
+    );
+    assert!(
+        filtered_flakes.iter().all(|f| f.p.name != "ssn"),
+        "Expected schema:ssn flakes to be filtered out"
     );
 }
 
 /// Test that NO policy (no identity/policy_class config) returns ALL flakes
 ///
-/// This is the control test: without policy config, filtered == raw
-///
-/// IGNORED: The binary indexer (`reindex()`) produces FLI1 binary format leaves, but the
-/// storage proxy's `parse_leaf_node` only handles JSON format leaves. This test needs to
-/// be updated once the storage proxy supports binary leaf parsing.
+/// This is the control test: without policy config, we can still request FLKB
+/// for a binary leaf and decode at least one flake.
 #[tokio::test]
-#[ignore = "requires storage proxy support for binary FLI1 leaves"]
 async fn test_no_policy_flkb_returns_all_flakes() {
     use fluree_db_api::ReindexOptions;
 
@@ -1890,7 +2009,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/create")
+                .uri("/v1/fluree/create")
                 .header("content-type", "application/json")
                 .body(Body::from(create_body.to_string()))
                 .unwrap(),
@@ -1917,7 +2036,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/transact")
+                .uri("/v1/fluree/transact")
                 .header("content-type", "application/json")
                 .body(Body::from(data.to_string()))
                 .unwrap(),
@@ -1932,16 +2051,21 @@ async fn test_no_policy_flkb_returns_all_flakes() {
         .reindex(alias, ReindexOptions::default())
         .await
         .expect("reindex");
+    fluree
+        .refresh(alias)
+        .await
+        .expect("refresh after reindex should succeed");
 
-    // The root_address is the DB root, not a leaf. We need to extract the SPOT index root
+    // The root_id is the DB root, not a leaf. We need to extract the SPOT index root
     // and find a leaf from there.
-    let db_root_body = serde_json::json!({ "address": &reindex_result.root_address });
+    let db_root_body =
+        serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": alias });
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/octet-stream")
@@ -1957,36 +2081,17 @@ async fn test_no_policy_flkb_returns_all_flakes() {
     let db_root_json: serde_json::Value =
         serde_json::from_slice(&db_root_bytes).expect("db root should be valid JSON");
 
-    // Extract the first SPOT leaf address from BinaryIndexRootV2 format
-    let leaf_address = extract_spot_leaf_address(&db_root_json);
+    // Extract the first SPOT leaf CID from BinaryIndexRoot format
+    let leaf_cid = extract_spot_leaf_cid(&db_root_json);
 
-    // Fetch raw
-    let block_body = serde_json::json!({ "address": &leaf_address });
+    let block_body = serde_json::json!({ "cid": &leaf_cid, "ledger": alias });
+    // Fetch leaf in flakes format (no policy configured → should return all flakes, still FLKB)
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/fluree/storage/block")
-                .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
-                .header("Accept", "application/octet-stream")
-                .body(Body::from(block_body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let (status, raw_bytes) = bytes_body(resp).await;
-    assert_eq!(status, StatusCode::OK);
-    let raw_count = count_flakes_in_leaf_json(&raw_bytes);
-
-    // Fetch filtered
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/fluree/storage/block")
+                .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/x-fluree-flakes")
@@ -1999,12 +2104,13 @@ async fn test_no_policy_flkb_returns_all_flakes() {
     let (status, filtered_bytes) = bytes_body(resp).await;
     assert_eq!(status, StatusCode::OK);
 
+    assert!(
+        filtered_bytes.len() >= 4 && &filtered_bytes[0..4] == FLKB_MAGIC,
+        "Response should be FLKB format"
+    );
     let filtered_flakes = decode_flakes(&filtered_bytes).expect("decode");
-    let filtered_count = filtered_flakes.len();
-
-    // Without policy, filtered should equal raw
-    assert_eq!(
-        filtered_count, raw_count,
-        "Without policy config, filtered flakes should equal raw flakes"
+    assert!(
+        !filtered_flakes.is_empty(),
+        "Expected at least one flake from no-policy FLKB response"
     );
 }

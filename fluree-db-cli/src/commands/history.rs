@@ -13,7 +13,19 @@ pub async fn run(
     format_str: &str,
     fluree_dir: &Path,
 ) -> CliResult<()> {
+    // Check for tracked ledger — history requires local query execution
+    let store = crate::config::TomlSyncConfigStore::new(fluree_dir.to_path_buf());
     let alias = context::resolve_ledger(ledger, fluree_dir)?;
+    if store.get_tracked(&alias).is_some()
+        || store.get_tracked(&context::to_ledger_id(&alias)).is_some()
+    {
+        return Err(CliError::Usage(
+            "history is not available for tracked ledgers (no server endpoint).\n  \
+             Use `fluree track status` to check remote state instead."
+                .to_string(),
+        ));
+    }
+
     let fluree = context::build_fluree(fluree_dir)?;
 
     // Expand compact IRIs using stored prefixes
@@ -113,8 +125,8 @@ fn format_time_spec(alias: &str, spec: &str) -> String {
         // ISO-8601 timestamp
         format!("{alias}:main@iso:{spec}")
     } else {
-        // Assume commit hash
-        format!("{alias}:main@sha:{spec}")
+        // Assume commit CID prefix
+        format!("{alias}:main@commit:{spec}")
     }
 }
 

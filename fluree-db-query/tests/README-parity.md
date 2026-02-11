@@ -18,7 +18,7 @@ This repo already has:
 ### Practical implementation sketch
 
 - **Rust**:
-  - Load DB with `Db::load(FileStorage, cache, root_address)`.
+  - Load DB with `load_db(&storage, &root_id, "ledger/main").await?` (see `fluree_db_core::load_db`).
   - Parse query JSON via `parse::parse_query(...)` (already supports `FILTER` and `OPTIONAL`).
   - Execute via your planned “query runner” (if you don’t have a single entrypoint yet, it’s worth adding one small `execute_query(db, parsed_query, vars)` wrapper that builds the operator tree and collects rows).
   - Normalize results:
@@ -44,4 +44,3 @@ Add a new ignored integration test file (e.g. `fluree-db-query/tests/parity_test
 - executes the Rust query runner and compares to expected
 
 Then you can add a small script in `test-database` / Clojure side to generate the `expected_rows` fixtures from the Clojure engine.
-

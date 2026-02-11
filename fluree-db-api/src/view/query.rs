@@ -52,7 +52,7 @@ where
     /// `query_connection_sparql` for multi-ledger queries.
     pub async fn query_view(
         &self,
-        view: &FlureeView<S>,
+        view: &FlureeView,
         q: impl Into<QueryInput<'_>>,
     ) -> Result<QueryResult> {
         let input = q.into();
@@ -110,7 +110,7 @@ where
     /// Returns a tracked response with fuel, time, and policy statistics.
     pub(crate) async fn query_view_tracked(
         &self,
-        view: &FlureeView<S>,
+        view: &FlureeView,
         q: impl Into<QueryInput<'_>>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -125,29 +125,21 @@ where
         // Parse
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => parse_jsonld_query(json, &view.db).map_err(|e| {
-                crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+                crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
             })?,
             QueryInput::Sparql(sparql) => {
                 self.validate_sparql_for_view(sparql).map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(
-                        400,
-                        e.to_string(),
-                        tracker.tally(),
-                    )
+                    crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                 })?;
                 parse_sparql_to_ir(sparql, &view.db).map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(
-                        400,
-                        e.to_string(),
-                        tracker.tally(),
-                    )
+                    crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                 })?
             }
         };
 
         // Build executable with reasoning
         let executable = self.build_executable_for_view(view, &parsed).map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+            crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
         })?;
 
         // Execute with tracking (use tracked variant for policy)
@@ -156,11 +148,7 @@ where
             .await
             .map_err(|e| {
                 let status = query_error_to_status(&e);
-                crate::query::TrackedErrorResponse::from_error(
-                    status,
-                    e.to_string(),
-                    tracker.tally(),
-                )
+                crate::query::TrackedErrorResponse::new(status, e.to_string(), tracker.tally())
             })?;
 
         // Build result
@@ -179,21 +167,13 @@ where
                 .to_jsonld_async_with_policy_tracked(&view.db, policy, &tracker)
                 .await
                 .map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(
-                        500,
-                        e.to_string(),
-                        tracker.tally(),
-                    )
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
             None => query_result
                 .to_jsonld_async_tracked(&view.db, &tracker)
                 .await
                 .map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(
-                        500,
-                        e.to_string(),
-                        tracker.tally(),
-                    )
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
         };
 
@@ -236,7 +216,7 @@ where
     /// Build an ExecutableQuery with optional reasoning override from view wrapper.
     fn build_executable_for_view(
         &self,
-        view: &FlureeView<S>,
+        view: &FlureeView,
         parsed: &fluree_db_query::parse::ParsedQuery,
     ) -> Result<ExecutableQuery> {
         // Start with the standard executable
@@ -264,7 +244,7 @@ where
     /// `ScanOperator` can use `BinaryScanOperator` when available.
     pub(crate) async fn execute_view_internal(
         &self,
-        view: &FlureeView<S>,
+        view: &FlureeView,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -299,7 +279,7 @@ where
     /// Uses tracked execution functions to properly record fuel/time/policy stats.
     pub(crate) async fn execute_view_tracked(
         &self,
-        view: &FlureeView<S>,
+        view: &FlureeView,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,

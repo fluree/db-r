@@ -14,11 +14,17 @@
 //! # Fluree-specific Claims (Events)
 //! - `fluree.events.all` - Grant access to all events
 //! - `fluree.events.ledgers` - Grant access to specific ledgers
-//! - `fluree.events.vgs` - Grant access to specific virtual graphs
+//! - `fluree.events.graph_sources` - Grant access to specific graph sources
 //!
 //! # Fluree-specific Claims (Storage Proxy)
 //! - `fluree.storage.all` - Grant access to all ledgers via storage proxy
 //! - `fluree.storage.ledgers` - Grant access to specific ledgers via storage proxy
+//!
+//! # Fluree-specific Claims (Data API)
+//! - `fluree.ledger.read.all` - Grant read/query access to all ledgers
+//! - `fluree.ledger.read.ledgers` - Grant read/query access to specific ledgers
+//! - `fluree.ledger.write.all` - Grant write/transact access to all ledgers
+//! - `fluree.ledger.write.ledgers` - Grant write/transact access to specific ledgers
 //!
 //! # Shared Claims
 //! - `fluree.identity` - Identity for policy resolution
@@ -57,9 +63,9 @@ pub struct EventsTokenPayload {
     /// Grant access to specific ledgers
     #[serde(rename = "fluree.events.ledgers")]
     pub events_ledgers: Option<Vec<String>>,
-    /// Grant access to specific virtual graphs
-    #[serde(rename = "fluree.events.vgs")]
-    pub events_vgs: Option<Vec<String>>,
+    /// Grant access to specific graph sources
+    #[serde(rename = "fluree.events.graph_sources")]
+    pub events_graph_sources: Option<Vec<String>>,
 
     // Fluree-specific claims (Storage Proxy)
     /// Grant access to all ledgers via storage proxy
@@ -68,6 +74,20 @@ pub struct EventsTokenPayload {
     /// Grant access to specific ledgers via storage proxy
     #[serde(rename = "fluree.storage.ledgers")]
     pub storage_ledgers: Option<Vec<String>>,
+
+    // Fluree-specific claims (Data API)
+    /// Grant read/query access to all ledgers
+    #[serde(rename = "fluree.ledger.read.all")]
+    pub ledger_read_all: Option<bool>,
+    /// Grant read/query access to specific ledgers
+    #[serde(rename = "fluree.ledger.read.ledgers")]
+    pub ledger_read_ledgers: Option<Vec<String>>,
+    /// Grant write/transact access to all ledgers
+    #[serde(rename = "fluree.ledger.write.all")]
+    pub ledger_write_all: Option<bool>,
+    /// Grant write/transact access to specific ledgers
+    #[serde(rename = "fluree.ledger.write.ledgers")]
+    pub ledger_write_ledgers: Option<Vec<String>>,
 
     // Shared claims
     /// Identity for policy resolution
@@ -187,13 +207,88 @@ impl EventsTokenPayload {
         Ok(())
     }
 
+    /// Validate claims for OIDC/JWKS-verified tokens.
+    ///
+    /// Unlike [`validate()`], this does NOT require `iss` to be a `did:key` or match
+    /// a signing key's DID. The `iss` claim is validated against the `expected_issuer`
+    /// parameter, which should be the configured JWKS issuer URL.
+    ///
+    /// # Arguments
+    /// * `expected_aud` - Expected audience claim. If `Some` and the token has no `aud`
+    ///   claim, validation fails.
+    /// * `expected_issuer` - The configured issuer URL. Token `iss` must exactly match.
+    /// * `require_identity` - Whether identity (`sub` or `fluree.identity`) is required.
+    ///
+    /// # Errors
+    /// Returns `ClaimsError` if any validation fails.
+    pub fn validate_oidc(
+        &self,
+        expected_aud: Option<&str>,
+        expected_issuer: &str,
+        require_identity: bool,
+    ) -> Result<(), ClaimsError> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before epoch")
+            .as_secs();
+
+        // exp must be in future (with skew)
+        if self.exp + CLOCK_SKEW_SECS < now {
+            return Err(ClaimsError::Expired);
+        }
+
+        // nbf must be in past (with skew)
+        if let Some(nbf) = self.nbf {
+            if nbf > now + CLOCK_SKEW_SECS {
+                return Err(ClaimsError::NotYetValid);
+            }
+        }
+
+        // iat must not be in future (with skew)
+        if let Some(iat) = self.iat {
+            if iat > now + CLOCK_SKEW_SECS {
+                return Err(ClaimsError::IssuedInFuture);
+            }
+        }
+
+        // aud must match if server expects one; fail if expected but absent
+        if let Some(expected) = expected_aud {
+            match &self.aud {
+                Some(audiences) if audiences.iter().any(|a| a == expected) => {}
+                _ => {
+                    return Err(ClaimsError::AudienceMismatch {
+                        expected: expected.to_string(),
+                    })
+                }
+            }
+        }
+
+        // iss must exactly match the configured issuer
+        if self.iss != expected_issuer {
+            return Err(ClaimsError::IssuerMismatch {
+                token_iss: self.iss.clone(),
+                signing_did: expected_issuer.to_string(),
+            });
+        }
+
+        // identity required in Required mode
+        if require_identity && self.resolve_identity().is_none() {
+            return Err(ClaimsError::IdentityRequired);
+        }
+
+        Ok(())
+    }
+
     /// Check if token grants any events permissions.
     ///
-    /// Note: If events_all is true, ledgers/vgs lists are irrelevant.
+    /// Note: If events_all is true, ledgers/graph_sources lists are irrelevant.
     pub fn has_permissions(&self) -> bool {
         self.events_all.unwrap_or(false)
             || self.events_ledgers.as_ref().is_some_and(|l| !l.is_empty())
-            || self.events_vgs.as_ref().is_some_and(|v| !v.is_empty())
+            || self
+                .events_graph_sources
+                .as_ref()
+                .is_some_and(|v| !v.is_empty())
     }
 
     /// Check if token grants storage proxy permissions.
@@ -202,6 +297,59 @@ impl EventsTokenPayload {
     pub fn has_storage_permissions(&self) -> bool {
         self.storage_all.unwrap_or(false)
             || self.storage_ledgers.as_ref().is_some_and(|l| !l.is_empty())
+    }
+
+    /// Check if token grants data API read permissions.
+    ///
+    /// Back-compat: `fluree.storage.*` claims imply read permissions if
+    /// `fluree.ledger.read.*` claims are absent.
+    pub fn has_ledger_read_permissions(&self) -> bool {
+        self.ledger_read_all.unwrap_or(false)
+            || self
+                .ledger_read_ledgers
+                .as_ref()
+                .is_some_and(|l| !l.is_empty())
+            || self.has_storage_permissions()
+    }
+
+    /// Check if token grants data API write permissions.
+    pub fn has_ledger_write_permissions(&self) -> bool {
+        self.ledger_write_all.unwrap_or(false)
+            || self
+                .ledger_write_ledgers
+                .as_ref()
+                .is_some_and(|l| !l.is_empty())
+    }
+
+    /// Check if token authorizes read/query access to a specific ledger ID.
+    ///
+    /// Back-compat: `fluree.storage.*` implies read access when ledger.read.* absent.
+    pub fn is_ledger_read_authorized_for(&self, ledger_id: &str) -> bool {
+        if self.ledger_read_all.unwrap_or(false) {
+            return true;
+        }
+        if self
+            .ledger_read_ledgers
+            .as_ref()
+            .is_some_and(|l| l.iter().any(|x| x == ledger_id))
+        {
+            return true;
+        }
+        // Back-compat: treat storage proxy scope as read scope
+        self.storage_all.unwrap_or(false)
+            || self
+                .storage_ledgers
+                .as_ref()
+                .is_some_and(|l| l.iter().any(|x| x == ledger_id))
+    }
+
+    /// Check if token authorizes write/transact access to a specific ledger ID.
+    pub fn is_ledger_write_authorized_for(&self, ledger_id: &str) -> bool {
+        self.ledger_write_all.unwrap_or(false)
+            || self
+                .ledger_write_ledgers
+                .as_ref()
+                .is_some_and(|l| l.iter().any(|x| x == ledger_id))
     }
 
     /// Resolve identity: fluree.identity takes precedence, then sub.
@@ -258,9 +406,13 @@ mod tests {
             nbf: None,
             events_all: Some(true),
             events_ledgers: None,
-            events_vgs: None,
+            events_graph_sources: None,
             storage_all: None,
             storage_ledgers: None,
+            ledger_read_all: None,
+            ledger_read_ledgers: None,
+            ledger_write_all: None,
+            ledger_write_ledgers: None,
             fluree_identity: None,
         }
     }
@@ -429,7 +581,7 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.events_all = Some(true);
         payload.events_ledgers = None;
-        payload.events_vgs = None;
+        payload.events_graph_sources = None;
 
         assert!(payload.has_permissions());
     }
@@ -440,18 +592,18 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.events_all = None;
         payload.events_ledgers = Some(vec!["books:main".to_string()]);
-        payload.events_vgs = None;
+        payload.events_graph_sources = None;
 
         assert!(payload.has_permissions());
     }
 
     #[test]
-    fn test_has_permissions_vgs() {
+    fn test_has_permissions_graph_sources() {
         let did = test_did();
         let mut payload = valid_payload(&did);
         payload.events_all = None;
         payload.events_ledgers = None;
-        payload.events_vgs = Some(vec!["search:main".to_string()]);
+        payload.events_graph_sources = Some(vec!["search:main".to_string()]);
 
         assert!(payload.has_permissions());
     }
@@ -462,7 +614,7 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.events_all = None;
         payload.events_ledgers = None;
-        payload.events_vgs = None;
+        payload.events_graph_sources = None;
 
         assert!(!payload.has_permissions());
     }
@@ -473,7 +625,7 @@ mod tests {
         let mut payload = valid_payload(&did);
         payload.events_all = Some(false);
         payload.events_ledgers = Some(vec![]);
-        payload.events_vgs = Some(vec![]);
+        payload.events_graph_sources = Some(vec![]);
 
         assert!(!payload.has_permissions());
     }
@@ -510,7 +662,7 @@ mod tests {
             "exp": 9999999999,
             "fluree.events.all": true,
             "fluree.events.ledgers": ["books:main", "users:main"],
-            "fluree.events.vgs": ["search:main"],
+            "fluree.events.graph_sources": ["search:main"],
             "fluree.identity": "did:fluree:user123"
         }"#;
         let payload: EventsTokenPayload = serde_json::from_str(json).unwrap();
@@ -519,7 +671,10 @@ mod tests {
             payload.events_ledgers,
             Some(vec!["books:main".to_string(), "users:main".to_string()])
         );
-        assert_eq!(payload.events_vgs, Some(vec!["search:main".to_string()]));
+        assert_eq!(
+            payload.events_graph_sources,
+            Some(vec!["search:main".to_string()])
+        );
         assert_eq!(
             payload.fluree_identity,
             Some("did:fluree:user123".to_string())
@@ -612,5 +767,94 @@ mod tests {
             payload.storage_ledgers,
             Some(vec!["users:main".to_string()])
         );
+    }
+
+    // === validate_oidc tests ===
+
+    fn oidc_payload(issuer: &str) -> EventsTokenPayload {
+        EventsTokenPayload {
+            iss: issuer.to_string(),
+            sub: Some("user@example.com".to_string()),
+            aud: None,
+            exp: now_secs() + 3600,
+            iat: Some(now_secs()),
+            nbf: None,
+            events_all: None,
+            events_ledgers: None,
+            events_graph_sources: None,
+            storage_all: None,
+            storage_ledgers: None,
+            ledger_read_all: Some(true),
+            ledger_read_ledgers: None,
+            ledger_write_all: None,
+            ledger_write_ledgers: None,
+            fluree_identity: Some("did:key:z6MkTest".to_string()),
+        }
+    }
+
+    #[test]
+    fn test_validate_oidc_valid() {
+        let payload = oidc_payload("https://solo.example.com");
+        assert!(payload
+            .validate_oidc(None, "https://solo.example.com", false)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_oidc_issuer_mismatch() {
+        let payload = oidc_payload("https://evil.example.com");
+        let result = payload.validate_oidc(None, "https://solo.example.com", false);
+        assert!(matches!(result, Err(ClaimsError::IssuerMismatch { .. })));
+    }
+
+    #[test]
+    fn test_validate_oidc_expired() {
+        let mut payload = oidc_payload("https://solo.example.com");
+        payload.exp = now_secs() - 120; // 2 minutes ago
+
+        let result = payload.validate_oidc(None, "https://solo.example.com", false);
+        assert!(matches!(result, Err(ClaimsError::Expired)));
+    }
+
+    #[test]
+    fn test_validate_oidc_audience_match() {
+        let mut payload = oidc_payload("https://solo.example.com");
+        payload.aud = Some(vec!["fluree-server".to_string()]);
+
+        assert!(payload
+            .validate_oidc(Some("fluree-server"), "https://solo.example.com", false)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_oidc_audience_missing_when_expected() {
+        let payload = oidc_payload("https://solo.example.com");
+        // payload.aud is None but we expect "fluree-server"
+        let result =
+            payload.validate_oidc(Some("fluree-server"), "https://solo.example.com", false);
+        assert!(matches!(result, Err(ClaimsError::AudienceMismatch { .. })));
+    }
+
+    #[test]
+    fn test_validate_oidc_identity_required_missing() {
+        let mut payload = oidc_payload("https://solo.example.com");
+        payload.sub = None;
+        payload.fluree_identity = None;
+
+        let result = payload.validate_oidc(None, "https://solo.example.com", true);
+        assert!(matches!(result, Err(ClaimsError::IdentityRequired)));
+    }
+
+    #[test]
+    fn test_validate_oidc_url_issuer_accepted() {
+        // validate_oidc should accept URL issuers (not just did:key)
+        let payload = oidc_payload("https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123");
+        assert!(payload
+            .validate_oidc(
+                None,
+                "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123",
+                false,
+            )
+            .is_ok());
     }
 }

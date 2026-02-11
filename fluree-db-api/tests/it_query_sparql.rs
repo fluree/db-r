@@ -30,8 +30,8 @@ fn normalize_object_rows(value: &JsonValue) -> Vec<String> {
     rows
 }
 
-async fn seed_people(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     // Seed dataset roughly equivalent to the Clojure SPARQL INSERT DATA payload.
     let insert = json!({
@@ -89,8 +89,8 @@ async fn seed_people(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
     committed.ledger
 }
 
-async fn seed_books(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_books(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     let insert = json!({
         "@context": {
@@ -122,8 +122,8 @@ async fn seed_books(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
 async fn sparql_basic_query_outputs_jsonld_and_sparql_json() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -164,8 +164,8 @@ async fn sparql_basic_query_outputs_jsonld_and_sparql_json() {
 async fn sparql_filter_query_outputs_jsonld_and_sparql_json() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -213,8 +213,8 @@ async fn sparql_filter_query_outputs_jsonld_and_sparql_json() {
 async fn sparql_count_star_counts_solutions() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -232,8 +232,8 @@ async fn sparql_count_star_counts_solutions() {
 async fn sparql_count_distinct_with_group_by_and_order_by() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     // Test the user's exact query pattern:
     // SELECT ?handle (COUNT(DISTINCT ?favNum) AS ?distinctCount)
@@ -266,8 +266,8 @@ async fn sparql_count_distinct_with_group_by_and_order_by() {
 async fn sparql_delete_data_removes_specified_triples() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     // Equivalent to Clojure's SPARQL: DELETE DATA { ex:jdoe person:favNums 3 . ex:jdoe person:favNums 7 . }
     // Represented as a JSON-LD Update transaction (no WHERE needed).
@@ -302,8 +302,8 @@ async fn sparql_delete_data_removes_specified_triples() {
 async fn sparql_select_star_returns_object_rows() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -343,8 +343,8 @@ async fn sparql_select_star_returns_object_rows() {
 async fn sparql_lang_filter_limits_language_tagged_literals() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -364,8 +364,8 @@ async fn sparql_lang_filter_limits_language_tagged_literals() {
 async fn sparql_union_combines_unioned_patterns() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX foaf: <http://xmlns.com/foaf/0.1/>
@@ -387,8 +387,8 @@ async fn sparql_union_combines_unioned_patterns() {
 async fn sparql_optional_includes_unbound_values_as_null() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -429,8 +429,8 @@ async fn sparql_optional_includes_unbound_values_as_null() {
 async fn sparql_optional_multi_pattern_allows_partial_binding() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -474,8 +474,8 @@ async fn sparql_optional_multi_pattern_allows_partial_binding() {
 async fn sparql_group_by_with_optional_preserves_grouped_lists() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -508,8 +508,8 @@ async fn sparql_group_by_with_optional_preserves_grouped_lists() {
 async fn sparql_omitted_subjects_match_expanded_subject_bindings() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -542,8 +542,8 @@ async fn sparql_omitted_subjects_match_expanded_subject_bindings() {
 async fn sparql_scalar_sha512_function_binds_values() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -571,8 +571,8 @@ async fn sparql_scalar_sha512_function_binds_values() {
 async fn sparql_aggregate_avg_over_values() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -595,8 +595,8 @@ async fn sparql_aggregate_avg_over_values() {
 async fn sparql_group_by_having_filters_groups() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -628,8 +628,8 @@ async fn sparql_group_by_having_filters_groups() {
 async fn sparql_having_with_multiple_string_constraints() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -649,8 +649,8 @@ async fn sparql_having_with_multiple_string_constraints() {
 async fn sparql_having_aggregate_without_select_alias() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -671,8 +671,8 @@ async fn sparql_having_aggregate_without_select_alias() {
 async fn sparql_multiple_select_expressions_with_aggregate_alias() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -695,8 +695,8 @@ async fn sparql_multiple_select_expressions_with_aggregate_alias() {
 async fn sparql_group_concat_aggregate_per_group() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -718,8 +718,8 @@ async fn sparql_group_concat_aggregate_per_group() {
 async fn sparql_concat_function_formats_strings() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -748,8 +748,8 @@ async fn sparql_concat_function_formats_strings() {
 async fn sparql_mix_of_grouped_values_and_aggregates() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -821,8 +821,8 @@ async fn sparql_mix_of_grouped_values_and_aggregates() {
 async fn sparql_count_aggregate_per_group() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -844,8 +844,8 @@ async fn sparql_count_aggregate_per_group() {
 async fn sparql_count_star_per_group() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -867,8 +867,8 @@ async fn sparql_count_star_per_group() {
 async fn sparql_sample_aggregate_returns_one_value() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -891,8 +891,8 @@ async fn sparql_sample_aggregate_returns_one_value() {
 async fn sparql_sum_aggregate_per_group() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -914,8 +914,8 @@ async fn sparql_sum_aggregate_per_group() {
 async fn sparql_order_by_ascending_sorts_results() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -934,8 +934,8 @@ async fn sparql_order_by_ascending_sorts_results() {
 async fn sparql_order_by_descending_sorts_results() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -954,8 +954,8 @@ async fn sparql_order_by_descending_sorts_results() {
 async fn sparql_values_filters_bindings() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -979,8 +979,8 @@ async fn sparql_values_filters_bindings() {
 async fn sparql_construct_query_outputs_jsonld_graph() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -1042,8 +1042,8 @@ async fn sparql_construct_query_outputs_jsonld_graph() {
 async fn sparql_construct_where_outputs_graph() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -1096,8 +1096,8 @@ async fn sparql_construct_where_outputs_graph() {
 async fn sparql_base_iri_compacts_relative_ids() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "books:main";
-    let ledger = seed_books(&fluree, alias).await;
+    let ledger_id = "books:main";
+    let ledger = seed_books(&fluree, ledger_id).await;
 
     let query = r#"
         BASE <http://example.org/book/>
@@ -1122,8 +1122,8 @@ async fn sparql_base_iri_compacts_relative_ids() {
 async fn sparql_prefix_declarations_compact_ids() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "books:main";
-    let ledger = seed_books(&fluree, alias).await;
+    let ledger_id = "books:main";
+    let ledger = seed_books(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX book: <http://example.org/book/>
@@ -1148,8 +1148,8 @@ async fn sparql_prefix_declarations_compact_ids() {
 async fn sparql_sparql_json_language_tags() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX ex: <http://example.org/ns/>
@@ -1181,8 +1181,8 @@ async fn sparql_sparql_json_language_tags() {
 async fn sparql_concat_with_langtag_argument() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "people:main";
-    let ledger = seed_people(&fluree, alias).await;
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
 
     let query = r#"
         PREFIX person: <http://example.org/Person#>
@@ -1214,8 +1214,8 @@ async fn sparql_concat_with_langtag_argument() {
 /// Seed a knows-chain for SPARQL property path tests.
 ///
 /// Graph: a→b, b→c, b→d, d→e
-async fn sparql_seed_knows_chain(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn sparql_seed_knows_chain(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": {"ex":"http://example.org/"},
         "@graph": [
@@ -1409,8 +1409,8 @@ async fn sparql_property_path_nested_alternative_under_transitive_errors() {
 ///        carol --name--> "Carol"
 ///        alice --parent--> bob
 ///        bob   --parent--> carol
-async fn sparql_seed_chain_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn sparql_seed_chain_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": {"ex":"http://example.org/"},
         "@graph": [
@@ -1601,8 +1601,8 @@ async fn sparql_property_path_inverse_zero_or_more() {
 ///   ex:alice --ex:colleague--> ex:carol
 ///   ex:bob   --ex:name--> "Bob"
 ///   ex:carol --ex:name--> "Carol"
-async fn sparql_seed_alt_seq_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn sparql_seed_alt_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": {"ex":"http://example.org/"},
         "@graph": [
@@ -1668,8 +1668,8 @@ async fn sparql_property_path_alternative_mixed_simple_and_sequence() {
 // SPARQL Alternative-in-Sequence distribution tests
 // =============================================================================
 
-async fn sparql_seed_alt_in_seq_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn sparql_seed_alt_in_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": {"ex":"http://example.org/"},
         "@graph": [

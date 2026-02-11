@@ -88,7 +88,7 @@ The `addressIdentifiers` field maps identifier strings to storage backends, enab
 ```
 
 **Routing behavior:**
-- `fluree:commit-storage:s3://db/commit/abc.json` → routes to `commitS3`
+- `fluree:commit-storage:s3://db/commit/abc.fcv2` → routes to `commitS3`
 - `fluree:index-storage:s3://db/index/xyz.json` → routes to `indexS3`
 - `fluree:s3://db/index/xyz.json` (no identifier) → routes to default storage
 - `fluree:unknown-id:s3://db/file.json` (unknown identifier) → fallback to default storage
@@ -190,7 +190,7 @@ Guidance:
 #### addressIdentifier
 
 Rust parses `addressIdentifier` on storage nodes and uses it to rewrite **published**
-commit/index addresses so they include the identifier segment (Clojure parity), e.g.:
+commit/index ContentIds so they include the identifier segment (Clojure parity), e.g.:
 `fluree:{addressIdentifier}:s3://...`.
 
 This is mainly useful when you have multiple storage backends and want addresses to

@@ -93,8 +93,8 @@ fn normalize_flat_results(v: &serde_json::Value) -> Vec<serde_json::Value> {
     items
 }
 
-async fn seed_people_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": context_ex_schema(),
         "@graph": [
@@ -109,8 +109,8 @@ async fn seed_people_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger 
         .ledger
 }
 
-async fn seed_people2_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people2_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": context_ex_schema(),
         "@graph": [

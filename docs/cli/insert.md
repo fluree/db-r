@@ -13,7 +13,7 @@ fluree insert [LEDGER] [FILE] [OPTIONS]
 | Arguments | Behavior |
 |-----------|----------|
 | (none) | Active ledger + stdin or `-e` expression |
-| `<arg>` | If file exists: active ledger + file; else: ledger alias + stdin/-e |
+| `<arg>` | If file exists: active ledger + file; else: ledger ID + stdin/-e |
 | `<ledger> <file>` | Specified ledger + file |
 
 ## Options
@@ -63,7 +63,7 @@ Committed t=1 (42 flakes)
 With verbose mode:
 ```
 Committed t=1 (42 flakes)
-Address: fluree:file://storage/mydb/commit/abc123...
+Commit ID: bafybeig...
 ```
 
 ## Data Format Detection

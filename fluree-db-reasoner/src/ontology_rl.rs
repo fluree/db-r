@@ -16,7 +16,6 @@ use fluree_db_core::namespaces::{
 };
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
-use fluree_db_core::storage::Storage;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Sid};
 use fluree_vocab::namespaces::{OWL, RDFS};
@@ -172,8 +171,8 @@ impl OntologyRL {
     /// - `?p owl:inverseOf ?q`
     /// - `?p rdfs:domain ?c`
     /// - `?p rdfs:range ?c`
-    pub async fn from_db_with_overlay<S: Storage>(
-        db: &Db<S>,
+    pub async fn from_db_with_overlay(
+        db: &Db,
         overlay: &dyn OverlayProvider,
         epoch: u64,
         to_t: i64,
@@ -875,8 +874,8 @@ impl OntologyRL {
 /// Load initial owl:sameAs assertions from the database
 ///
 /// Returns pairs of SIDs that are asserted to be the same.
-pub async fn load_same_as_assertions<S: Storage>(
-    db: &Db<S>,
+pub async fn load_same_as_assertions(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<Vec<(Sid, Sid)>> {

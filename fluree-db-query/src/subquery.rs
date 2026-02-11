@@ -37,14 +37,13 @@ use crate::seed::{EmptyOperator, SeedOperator};
 use crate::sort::SortOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Subquery operator - executes nested queries and merges results
-pub struct SubqueryOperator<S: Storage + 'static> {
+pub struct SubqueryOperator {
     /// Child operator providing parent solutions
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// The subquery pattern to execute
     subquery: SubqueryPattern,
     /// Output schema (parent schema + new subquery variables)
@@ -63,9 +62,9 @@ pub struct SubqueryOperator<S: Storage + 'static> {
     buffer_pos: usize,
 }
 
-impl<S: Storage + 'static> SubqueryOperator<S> {
+impl SubqueryOperator {
     /// Create a new subquery operator
-    pub fn new(child: BoxedOperator<S>, subquery: SubqueryPattern) -> Self {
+    pub fn new(child: BoxedOperator, subquery: SubqueryPattern) -> Self {
         let parent_schema: HashSet<VarId> = child.schema().iter().copied().collect();
         // Compute variables referenced by subquery patterns (correlation basis)
         let mut subquery_pattern_vars: HashSet<VarId> = HashSet::new();
@@ -120,12 +119,12 @@ impl<S: Storage + 'static> SubqueryOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for SubqueryOperator<S> {
+impl Operator for SubqueryOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -138,7 +137,7 @@ impl<S: Storage + 'static> Operator<S> for SubqueryOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);
@@ -224,7 +223,7 @@ impl<S: Storage + 'static> Operator<S> for SubqueryOperator<S> {
     }
 }
 
-impl<S: Storage + 'static> SubqueryOperator<S> {
+impl SubqueryOperator {
     /// Drain buffered results into a batch
     async fn drain_buffer(&mut self) -> Result<Option<Batch>> {
         if self.buffer_pos >= self.result_buffer.len() {
@@ -255,7 +254,7 @@ impl<S: Storage + 'static> SubqueryOperator<S> {
     /// Execute subquery for a single parent row
     async fn execute_subquery_for_row(
         &self,
-        ctx: &ExecutionContext<'_, S>,
+        ctx: &ExecutionContext<'_>,
         parent_batch: &Batch,
         row_idx: usize,
     ) -> Result<Vec<Vec<Binding>>> {
@@ -273,7 +272,7 @@ impl<S: Storage + 'static> SubqueryOperator<S> {
             })
             .collect();
 
-        let seed: BoxedOperator<S> = if seed_schema.is_empty() {
+        let seed: BoxedOperator = if seed_schema.is_empty() {
             Box::new(EmptyOperator::new())
         } else {
             let schema = Arc::from(seed_schema.into_boxed_slice());
@@ -281,8 +280,8 @@ impl<S: Storage + 'static> SubqueryOperator<S> {
         };
 
         // Build full operator tree for subquery patterns (supports filters, optionals, union, etc.)
-        let mut operator: BoxedOperator<S> =
-            build_where_operators_seeded::<S>(Some(seed), &self.subquery.patterns, None)?;
+        let mut operator: BoxedOperator =
+            build_where_operators_seeded(Some(seed), &self.subquery.patterns, None)?;
 
         // Apply GROUP BY / aggregates / HAVING for subqueries that use them.
         let needs_grouping =

@@ -1,14 +1,14 @@
 # R2RML Query Integration
 
 This module provides R2RML (RDB to RDF Mapping Language) support for querying
-Iceberg virtual graphs as RDF.
+Iceberg graph sources as RDF.
 
 ## Module Structure
 
 - `mod.rs` - Module exports and R2rmlPattern definition
 - `operator.rs` - R2rmlScanOperator for query execution
 - `provider.rs` - R2rmlProvider trait for mapping and table access
-- `rewrite.rs` - Query rewriting for R2RML virtual graphs
+- `rewrite.rs` - Query rewriting for R2RML graph sources
 
 ## RefObjectMap Join Implementation
 
@@ -86,7 +86,7 @@ analyzing object map types to determine which predicates can be pushed.
 
 ## Testing
 
-See `fluree-db-api/tests/it_virtual_graph_r2rml.rs` for integration tests:
+See `fluree-db-api/tests/it_graph_source_r2rml.rs` for integration tests:
 
 - `engine_e2e_ref_object_map_join_execution` - E2E join with orphan FK handling
 - `test_ref_object_map_composite_key_parsing` - Composite join key parsing

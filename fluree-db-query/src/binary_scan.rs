@@ -35,49 +35,19 @@ use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::ListIndex;
 use fluree_db_core::{
-    range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds, OverlayProvider,
-    RangeMatch, RangeOptions, RangeTest, Sid, Storage,
+    dt_compatible, range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds,
+    OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
 };
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
 };
-use fluree_vocab::namespaces::FLUREE_LEDGER;
-use fluree_vocab::namespaces::XSD;
-use fluree_vocab::xsd_names;
+use fluree_vocab::namespaces::FLUREE_DB;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-/// Datatype match semantics for WHERE value objects.
-///
-/// We normalize numeric datatype IRIs at parse time (e.g., xsd:int → xsd:integer),
-/// so matching must treat numeric "families" as compatible at execution time:
-/// - xsd:integer matches integer-family stored datatypes (xsd:int, xsd:long, ...)
-/// - xsd:double matches xsd:float
-#[inline]
-fn dt_compatible(expected: &Sid, actual: &Sid) -> bool {
-    if expected == actual {
-        return true;
-    }
-    if expected.namespace_code != XSD || actual.namespace_code != XSD {
-        return false;
-    }
-    match expected.name.as_ref() {
-        // Integer family: int/short/byte/long normalize to integer for matching.
-        xsd_names::INTEGER => matches!(
-            actual.name.as_ref(),
-            xsd_names::INTEGER
-                | xsd_names::INT
-                | xsd_names::SHORT
-                | xsd_names::BYTE
-                | xsd_names::LONG
-        ),
-        // Float normalizes to double for matching.
-        xsd_names::DOUBLE => matches!(actual.name.as_ref(), xsd_names::DOUBLE | xsd_names::FLOAT),
-        _ => false,
-    }
-}
+use crate::policy::QueryPolicyEnforcer;
 
 // ============================================================================
 // IndexType → RunSortOrder mapping
@@ -92,6 +62,43 @@ pub(crate) fn index_type_to_sort_order(idx: IndexType) -> RunSortOrder {
         IndexType::Post => RunSortOrder::Post,
         IndexType::Opst => RunSortOrder::Opst,
     }
+}
+
+// ============================================================================
+// Shared helpers
+// ============================================================================
+
+/// Build output schema and variable positions from a triple pattern.
+///
+/// Returns `(schema, s_var_pos, p_var_pos, o_var_pos)` where each position
+/// is the column index of that variable in the schema (None if bound).
+fn schema_from_pattern(
+    pattern: &TriplePattern,
+) -> (Arc<[VarId]>, Option<usize>, Option<usize>, Option<usize>) {
+    let mut schema_vec = Vec::with_capacity(3);
+    let mut s_var_pos = None;
+    let mut p_var_pos = None;
+    let mut o_var_pos = None;
+
+    if let Term::Var(v) = &pattern.s {
+        s_var_pos = Some(schema_vec.len());
+        schema_vec.push(*v);
+    }
+    if let Term::Var(v) = &pattern.p {
+        p_var_pos = Some(schema_vec.len());
+        schema_vec.push(*v);
+    }
+    if let Term::Var(v) = &pattern.o {
+        o_var_pos = Some(schema_vec.len());
+        schema_vec.push(*v);
+    }
+
+    (
+        Arc::from(schema_vec.into_boxed_slice()),
+        s_var_pos,
+        p_var_pos,
+        o_var_pos,
+    )
 }
 
 // ============================================================================
@@ -184,31 +191,13 @@ impl BinaryScanOperator {
             index = IndexType::Post;
         }
 
-        // Build schema from pattern variables (same logic as ScanOperator)
-        let mut schema_vec = Vec::with_capacity(3);
-        let mut s_var_pos = None;
-        let mut p_var_pos = None;
-        let mut o_var_pos = None;
-
-        if let Term::Var(v) = &pattern.s {
-            s_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
-        }
-        if let Term::Var(v) = &pattern.p {
-            p_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
-        }
-        if let Term::Var(v) = &pattern.o {
-            o_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
-        }
-
+        let (schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
         let p_is_var = matches!(pattern.p, Term::Var(_));
 
         Self {
             pattern,
             index,
-            schema: Arc::from(schema_vec.into_boxed_slice()),
+            schema,
             s_var_pos,
             p_var_pos,
             o_var_pos,
@@ -273,7 +262,7 @@ impl BinaryScanOperator {
             return Ok(sid.clone());
         }
 
-        let sid = if let Some(ref dict_ov) = self.dict_overlay {
+        let sid = if let Some(dict_ov) = &self.dict_overlay {
             dict_ov
                 .resolve_subject_sid(s_id)
                 .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?
@@ -298,7 +287,7 @@ impl BinaryScanOperator {
             && self
                 .p_sids
                 .get(p_id as usize)
-                .is_some_and(|s| s.namespace_code == FLUREE_LEDGER)
+                .is_some_and(|s| s.namespace_code == FLUREE_DB)
     }
 
     /// Decode an object value, routing through DictOverlay when present.
@@ -320,7 +309,7 @@ impl BinaryScanOperator {
             return self.p_sids[idx].clone();
         }
         // Ephemeral or out-of-range p_id: try DictOverlay, then store
-        if let Some(ref ov) = self.dict_overlay {
+        if let Some(ov) = &self.dict_overlay {
             if let Some(sid) = ov.resolve_predicate_sid(p_id) {
                 return sid;
             }
@@ -355,7 +344,7 @@ impl BinaryScanOperator {
             // Post-filter: when an object value couldn't be translated to an
             // (ObjKind, ObjKey) pair (e.g. string literal — no reverse string index),
             // decode each row's object and skip non-matching rows.
-            if let Some(ref filter_val) = self.bound_o_filter {
+            if let Some(filter_val) = &self.bound_o_filter {
                 let decoded_val = self
                     .decode_obj(
                         decoded.o_kinds[row],
@@ -373,7 +362,7 @@ impl BinaryScanOperator {
             // Range post-filter: ObjectBounds applied after decoding.
             // POST key range provides coarse leaf filtering; this handles
             // inclusive/exclusive boundaries and cross-type comparisons exactly.
-            if let Some(ref obj_bounds) = self.object_bounds {
+            if let Some(obj_bounds) = &self.object_bounds {
                 let decoded_val = self
                     .decode_obj(
                         decoded.o_kinds[row],
@@ -559,8 +548,8 @@ impl BinaryScanOperator {
 ///
 /// Uses graph-scoped property datatype counts from `IndexStats.graphs`.
 /// Returns `None` when stats are unavailable or the predicate is not present.
-fn numeric_shape_from_db_stats<S: Storage + 'static>(
-    ctx: &ExecutionContext<'_, S>,
+fn numeric_shape_from_db_stats(
+    ctx: &ExecutionContext<'_>,
     _pred_iri: &str,
     pred_sid_binary: &Sid,
 ) -> Option<NumericShape> {
@@ -608,12 +597,12 @@ fn numeric_shape_from_db_stats<S: Storage + 'static>(
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
+impl Operator for BinaryScanOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -696,9 +685,9 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
             some @ Some(_) => some,
             None if !self.overlay_ops.is_empty() && s_sid.is_some() => {
                 tracing::trace!(?s_sid, "binary_scan: trying overlay-only subject fallback");
-                if let Some(ref mut dict_ov) = self.dict_overlay {
+                if let Some(dict_ov) = &mut self.dict_overlay {
                     tracing::trace!("binary_scan: have dict_overlay for overlay-only fallback");
-                    if let Some(ref s) = s_sid {
+                    if let Some(s) = &s_sid {
                         // Try to get s_id from DictOverlay (handles ephemeral subjects)
                         match dict_ov.assign_subject_id_from_sid(s) {
                             Ok(s_id) => {
@@ -709,7 +698,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
                                 let p_id = p_sid.as_ref().and_then(|p| self.store.sid_to_p_id(p));
 
                                 let (min_o_kind, min_o_key, max_o_kind, max_o_key) =
-                                    if let Some(ref val) = o_val {
+                                    if let Some(val) = &o_val {
                                         if let Ok(Some((ok, okey))) =
                                             self.store.value_to_obj_pair(val)
                                         {
@@ -776,8 +765,8 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
             Some((mut min_key, mut max_key)) => {
                 // Narrow key range with ObjectBounds when available.
                 // Requires a bound predicate (need p_id for shape lookup and POST order).
-                if let Some(ref obj_bounds) = self.object_bounds {
-                    if let Some(ref p) = p_sid {
+                if let Some(obj_bounds) = &self.object_bounds {
+                    if let Some(p) = &p_sid {
                         if let Some(p_id) = self.store.sid_to_p_id(p) {
                             let shape = {
                                 let pred_iri_for_stats = self.store.sid_to_iri(p);
@@ -879,11 +868,11 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
                 // Build BinaryFilter from bound terms
                 let mut filter = BinaryFilter::new();
 
-                if let Some(ref sid) = s_sid {
+                if let Some(sid) = &s_sid {
                     // First try persisted index
                     if let Ok(Some(s_id)) = self.store.sid_to_s_id(sid) {
                         filter.s_id = Some(s_id);
-                    } else if let Some(ref mut dict_ov) = self.dict_overlay {
+                    } else if let Some(dict_ov) = &mut self.dict_overlay {
                         // Fallback to DictOverlay for novelty-only subjects
                         if let Ok(s_id) = dict_ov.assign_subject_id_from_sid(sid) {
                             filter.s_id = Some(s_id);
@@ -894,7 +883,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
                 if let Some(p_id) = resolved_p_id {
                     filter.p_id = Some(p_id);
                 }
-                if let Some(ref val) = o_val {
+                if let Some(val) = &o_val {
                     let pair_result = if let Some(p_id) = resolved_p_id {
                         self.store.value_to_obj_pair_for_predicate(val, p_id)
                     } else {
@@ -942,10 +931,6 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
 
                 // Propagate time-travel target and overlay state to the cursor.
                 let mut cursor = cursor;
-                eprintln!(
-                    "BinaryScanOperator::open: setting to_t={} g_id={}",
-                    ctx.to_t, self.g_id
-                );
                 cursor.set_to_t(ctx.to_t);
 
                 // Always propagate overlay epoch for cache key correctness.
@@ -971,7 +956,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);
@@ -1188,34 +1173,25 @@ fn translate_one_flake(
 ///
 /// Overlay flakes are always translatable via `DictOverlay` (ephemeral IDs
 /// are allocated for entities not yet in the persisted dictionaries).
-pub struct ScanOperator<S: Storage + 'static> {
+pub struct ScanOperator {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
     schema: Arc<[VarId]>,
-    inner: Option<BoxedOperator<S>>,
+    inner: Option<BoxedOperator>,
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> ScanOperator<S> {
+impl ScanOperator {
     /// Create a new scan operator for a triple pattern.
     ///
     /// Schema is computed from the pattern variables.
     pub fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
-        let mut schema_vec = Vec::with_capacity(3);
-        if let Term::Var(v) = &pattern.s {
-            schema_vec.push(*v);
-        }
-        if let Term::Var(v) = &pattern.p {
-            schema_vec.push(*v);
-        }
-        if let Term::Var(v) = &pattern.o {
-            schema_vec.push(*v);
-        }
+        let (schema, _, _, _) = schema_from_pattern(&pattern);
 
         Self {
             pattern,
             object_bounds,
-            schema: Arc::from(schema_vec.into_boxed_slice()),
+            schema,
             inner: None,
             state: OperatorState::Created,
         }
@@ -1223,7 +1199,7 @@ impl<S: Storage + 'static> ScanOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
+impl Operator for ScanOperator {
     fn schema(&self) -> &[VarId] {
         match &self.inner {
             Some(op) => op.schema(),
@@ -1231,7 +1207,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         }
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -1245,12 +1221,19 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         // falls back to range_with_overlay() which works for multi-ledger,
         // pre-index, history, and time-travel-before-base_t via the
         // RangeProvider trait.
-        let use_binary = ctx.binary_store.as_ref().is_some_and(|s| {
-            !ctx.is_multi_ledger()
-                && ctx.to_t >= s.base_t()
+        let use_binary = ctx.has_binary_store() && {
+            let s = ctx.binary_store.as_ref().unwrap();
+            ctx.to_t >= s.base_t()
                 && !ctx.history_mode
                 && ctx.from_t.is_none()
-        });
+                // Policy enforcement currently operates on materialized flakes.
+                // When a non-root policy is present, fall back to the flake-based
+                // range path (`range_with_overlay`) so policy filtering is applied.
+                && ctx
+                    .policy_enforcer
+                    .as_ref()
+                    .is_none_or(|enf| enf.is_root())
+        };
 
         tracing::trace!(
             pattern = ?self.pattern,
@@ -1299,7 +1282,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
             (None, None)
         };
 
-        let mut inner: BoxedOperator<S> = if use_binary {
+        let mut inner: BoxedOperator = if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
             let mut op = BinaryScanOperator::new(
                 self.pattern.clone(),
@@ -1317,7 +1300,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         } else {
             // Fallback: range_with_overlay() for pre-index, history, or
             // time-travel-before-base_t queries.
-            Box::new(RangeScanOperator::<S>::new(
+            Box::new(RangeScanOperator::new(
                 self.pattern.clone(),
                 self.object_bounds.clone(),
             ))
@@ -1329,7 +1312,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         match &mut self.inner {
             Some(op) => op.next_batch(ctx).await,
             None => Err(QueryError::OperatorNotOpened),
@@ -1363,7 +1346,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
 ///
 /// For genesis databases (t=0, no index, no provider), returns overlay-only
 /// flakes.
-struct RangeScanOperator<S: Storage + 'static> {
+struct RangeScanOperator {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
     schema: Arc<[VarId]>,
@@ -1378,46 +1361,28 @@ struct RangeScanOperator<S: Storage + 'static> {
     p_is_var: bool,
     state: OperatorState,
     batches: VecDeque<Batch>,
-    _marker: std::marker::PhantomData<S>,
 }
 
-impl<S: Storage + 'static> RangeScanOperator<S> {
+impl RangeScanOperator {
     fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
         let p_is_var = matches!(pattern.p, Term::Var(_));
-        let mut schema_vec = Vec::with_capacity(3);
-        let mut s_var_pos = None;
-        let mut p_var_pos = None;
-        let mut o_var_pos = None;
-
-        if let Term::Var(v) = &pattern.s {
-            s_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
-        }
-        if let Term::Var(v) = &pattern.p {
-            p_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
-        }
-        if let Term::Var(v) = &pattern.o {
-            o_var_pos = Some(schema_vec.len());
-            schema_vec.push(*v);
-        }
+        let (schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
 
         Self {
             pattern,
             object_bounds,
-            schema: Arc::from(schema_vec.into_boxed_slice()),
+            schema,
             s_var_pos,
             p_var_pos,
             o_var_pos,
             p_is_var,
             state: OperatorState::Created,
             batches: VecDeque::new(),
-            _marker: std::marker::PhantomData,
         }
     }
 
     /// Build a `RangeMatch` from the pattern's bound terms.
-    fn build_range_match(&self, db: &Db<S>) -> RangeMatch {
+    fn build_range_match(&self, db: &Db) -> RangeMatch {
         let mut rm = RangeMatch::new();
 
         match &self.pattern.s {
@@ -1458,11 +1423,70 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
         rm
     }
 
+    /// Build `RangeOptions` from execution context and this operator's bounds.
+    fn build_range_opts(&self, to_t: i64, ctx: &ExecutionContext<'_>) -> RangeOptions {
+        let mut opts = RangeOptions::new().with_to_t(to_t);
+        if let Some(from_t) = ctx.from_t {
+            opts = opts.with_from_t(from_t);
+        }
+        if ctx.history_mode {
+            opts = opts.with_history_mode();
+        }
+        if let Some(bounds) = &self.object_bounds {
+            opts = opts.with_object_bounds(bounds.clone());
+        }
+        opts
+    }
+
+    /// Scan one graph: range query + policy enforcement + post-filtering.
+    ///
+    /// Shared by the default-graphs, named-graphs, and single-db paths in `open()`.
+    async fn scan_one_graph(
+        &self,
+        db: &Db,
+        overlay: &dyn OverlayProvider,
+        to_t: i64,
+        index: IndexType,
+        ctx: &ExecutionContext<'_>,
+        policy_enforcer: Option<&Arc<QueryPolicyEnforcer>>,
+    ) -> Result<Vec<Flake>> {
+        let range_match = self.build_range_match(db);
+        let opts = self.build_range_opts(to_t, ctx);
+        let flakes = range_with_overlay(db, overlay, index, RangeTest::Eq, range_match, opts)
+            .await
+            .map_err(|e| QueryError::execution(e.to_string()))?;
+
+        // Policy filter (skip for root policies).
+        let flakes = match policy_enforcer {
+            Some(enforcer) if !enforcer.is_root() => {
+                let subjects: Vec<fluree_db_core::Sid> = flakes
+                    .iter()
+                    .map(|f| f.s.clone())
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                enforcer
+                    .populate_class_cache_for_graph(db, overlay, to_t, &subjects)
+                    .await?;
+                enforcer
+                    .filter_flakes_for_graph(db, overlay, to_t, &ctx.tracker, flakes)
+                    .await?
+            }
+            _ => flakes,
+        };
+
+        // Post-filter (overlay may return a superset).
+        Ok(flakes
+            .into_iter()
+            .filter(|f| self.flake_matches(f, db))
+            .collect())
+    }
+
     /// Check if a flake matches the pattern's bound terms.
     ///
     /// `range_with_overlay` may return a superset (especially in the
     /// overlay-only genesis path), so we post-filter here.
-    fn flake_matches(&self, f: &Flake, db: &Db<S>) -> bool {
+    fn flake_matches(&self, f: &Flake, db: &Db) -> bool {
         match &self.pattern.s {
             Term::Sid(sid) if &f.s != sid => return false,
             Term::Iri(iri) => match db.encode_iri(iri) {
@@ -1547,12 +1571,12 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
+impl Operator for RangeScanOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -1575,6 +1599,9 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
 
         // Collect matching flakes.
         //
+        // All paths delegate to scan_one_graph() which handles the range query,
+        // policy enforcement, and post-filtering in a single call.
+        //
         // Dataset mode:
         // - ActiveGraph::Default → union across all default graphs (fast path via slice)
         // - ActiveGraph::Named   → scan only the selected named graph(s)
@@ -1582,217 +1609,59 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
         // Single-db mode:
         // - scan `ctx.db`
         let flakes = if let Some(graphs) = ctx.default_graphs_slice() {
-            // Fast path: dataset mode + default graphs active (no allocation).
             let mut all_flakes = Vec::new();
             for graph in graphs {
-                let range_match = self.build_range_match(graph.db);
-                let mut opts = RangeOptions::new().with_to_t(graph.to_t);
-                if let Some(from_t) = ctx.from_t {
-                    opts = opts.with_from_t(from_t);
-                }
-                if ctx.history_mode {
-                    opts = opts.with_history_mode();
-                }
-                if let Some(ref bounds) = self.object_bounds {
-                    opts = opts.with_object_bounds(bounds.clone());
-                }
-                let graph_flakes = range_with_overlay(
-                    graph.db,
-                    graph.overlay,
-                    index,
-                    RangeTest::Eq,
-                    range_match,
-                    opts,
-                )
-                .await
-                .map_err(|e| QueryError::execution(e.to_string()))?;
-                // Policy filter per graph (before pattern matching).
-                let graph_flakes = match graph
+                let enforcer = graph
                     .policy_enforcer
                     .as_ref()
-                    .or(ctx.policy_enforcer.as_ref())
-                {
-                    Some(enforcer) if !enforcer.is_root() => {
-                        // Ensure rdf:type class cache is populated for f:onClass policies.
-                        let subjects: Vec<fluree_db_core::Sid> = graph_flakes
-                            .iter()
-                            .map(|f| f.s.clone())
-                            .collect::<HashSet<_>>()
-                            .into_iter()
-                            .collect();
-                        enforcer
-                            .populate_class_cache_for_graph(
-                                graph.db,
-                                graph.overlay,
-                                graph.to_t,
-                                &subjects,
-                            )
-                            .await?;
-                        enforcer
-                            .filter_flakes_for_graph(
-                                graph.db,
-                                graph.overlay,
-                                graph.to_t,
-                                &ctx.tracker,
-                                graph_flakes,
-                            )
-                            .await?
-                    }
-                    _ => graph_flakes,
-                };
-                // Pre-filter per graph (overlay may return a superset).
-                all_flakes.extend(
-                    graph_flakes
-                        .into_iter()
-                        .filter(|f| self.flake_matches(f, graph.db)),
-                );
+                    .or(ctx.policy_enforcer.as_ref());
+                let graph_flakes = self
+                    .scan_one_graph(graph.db, graph.overlay, graph.to_t, index, ctx, enforcer)
+                    .await?;
+                all_flakes.extend(graph_flakes);
             }
             all_flakes
         } else if ctx.dataset.is_some() {
-            // Dataset mode + named graph active.
             let active = ctx.active_graphs();
             let graphs = active.as_many().unwrap_or(&[]);
             let mut all_flakes = Vec::new();
             for graph in graphs {
                 let graph = *graph;
-                let range_match = self.build_range_match(graph.db);
-                let mut opts = RangeOptions::new().with_to_t(graph.to_t);
-                if let Some(from_t) = ctx.from_t {
-                    opts = opts.with_from_t(from_t);
-                }
-                if ctx.history_mode {
-                    opts = opts.with_history_mode();
-                }
-                if let Some(ref bounds) = self.object_bounds {
-                    opts = opts.with_object_bounds(bounds.clone());
-                }
-                let graph_flakes = range_with_overlay(
-                    graph.db,
-                    graph.overlay,
-                    index,
-                    RangeTest::Eq,
-                    range_match,
-                    opts,
-                )
-                .await
-                .map_err(|e| QueryError::execution(e.to_string()))?;
-                // Policy filter per graph (before pattern matching).
-                let graph_flakes = match graph
+                let enforcer = graph
                     .policy_enforcer
                     .as_ref()
-                    .or(ctx.policy_enforcer.as_ref())
-                {
-                    Some(enforcer) if !enforcer.is_root() => {
-                        let subjects: Vec<fluree_db_core::Sid> = graph_flakes
-                            .iter()
-                            .map(|f| f.s.clone())
-                            .collect::<HashSet<_>>()
-                            .into_iter()
-                            .collect();
-                        enforcer
-                            .populate_class_cache_for_graph(
-                                graph.db,
-                                graph.overlay,
-                                graph.to_t,
-                                &subjects,
-                            )
-                            .await?;
-                        enforcer
-                            .filter_flakes_for_graph(
-                                graph.db,
-                                graph.overlay,
-                                graph.to_t,
-                                &ctx.tracker,
-                                graph_flakes,
-                            )
-                            .await?
-                    }
-                    _ => graph_flakes,
-                };
-                // Pre-filter per graph (overlay may return a superset).
-                all_flakes.extend(
-                    graph_flakes
-                        .into_iter()
-                        .filter(|f| self.flake_matches(f, graph.db)),
-                );
+                    .or(ctx.policy_enforcer.as_ref());
+                let graph_flakes = self
+                    .scan_one_graph(graph.db, graph.overlay, graph.to_t, index, ctx, enforcer)
+                    .await?;
+                all_flakes.extend(graph_flakes);
             }
             all_flakes
         } else {
-            // Single-db mode.
-            let range_match = self.build_range_match(ctx.db);
-            let mut opts = RangeOptions::new().with_to_t(ctx.to_t);
-            if let Some(from_t) = ctx.from_t {
-                opts = opts.with_from_t(from_t);
-            }
-            if ctx.history_mode {
-                opts = opts.with_history_mode();
-            }
-            if let Some(ref bounds) = self.object_bounds {
-                opts = opts.with_object_bounds(bounds.clone());
-            }
-            let flakes = range_with_overlay(
+            self.scan_one_graph(
                 ctx.db,
                 ctx.overlay(),
+                ctx.to_t,
                 index,
-                RangeTest::Eq,
-                range_match,
-                opts,
+                ctx,
+                ctx.policy_enforcer.as_ref(),
             )
-            .await
-            .map_err(|e| QueryError::execution(e.to_string()))?;
-            // Policy filter (single-graph mode).
-            match ctx.policy_enforcer.as_ref() {
-                Some(enforcer) if !enforcer.is_root() => {
-                    // Ensure rdf:type class cache is populated for f:onClass policies.
-                    let subjects: Vec<fluree_db_core::Sid> = flakes
-                        .iter()
-                        .map(|f| f.s.clone())
-                        .collect::<HashSet<_>>()
-                        .into_iter()
-                        .collect();
-                    enforcer
-                        .populate_class_cache_for_graph(ctx.db, ctx.overlay(), ctx.to_t, &subjects)
-                        .await?;
-                    enforcer
-                        .filter_flakes_for_graph(
-                            ctx.db,
-                            ctx.overlay(),
-                            ctx.to_t,
-                            &ctx.tracker,
-                            flakes,
-                        )
-                        .await?
-                }
-                _ => flakes,
-            }
+            .await?
         };
 
-        let is_multi_graph = ctx.default_graphs_slice().is_some();
-
-        // Post-filter: overlay-only path may return a superset of matches.
-        // In multi-graph mode, flakes were already pre-filtered per graph above.
+        // Build batches from collected flakes (already post-filtered by scan_one_graph).
         let batch_size = ctx.batch_size;
         let ncols = self.schema.len();
 
         if ncols == 0 {
-            // All terms bound (existence check): count matches, emit empty-schema batch
-            let match_count = if is_multi_graph {
-                if self.p_is_var {
-                    flakes
-                        .iter()
-                        .filter(|f| f.p.namespace_code != FLUREE_LEDGER)
-                        .count()
-                } else {
-                    flakes.len()
-                }
-            } else {
+            // All terms bound (existence check): count matches, emit empty-schema batch.
+            let match_count = if self.p_is_var {
                 flakes
                     .iter()
-                    .filter(|f| {
-                        (!self.p_is_var || f.p.namespace_code != FLUREE_LEDGER)
-                            && self.flake_matches(f, ctx.db)
-                    })
+                    .filter(|f| f.p.namespace_code != FLUREE_DB)
                     .count()
+            } else {
+                flakes.len()
             };
             for _ in 0..match_count {
                 ctx.tracker.consume_fuel_one()?;
@@ -1807,12 +1676,9 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
             let mut row_count = 0;
 
             for f in &flakes {
-                if !is_multi_graph && !self.flake_matches(f, ctx.db) {
-                    continue;
-                }
                 // Filter internal predicates (commit metadata) for wildcard predicate patterns.
                 // Matches `BinaryScanOperator` behavior.
-                if self.p_is_var && f.p.namespace_code == FLUREE_LEDGER {
+                if self.p_is_var && f.p.namespace_code == FLUREE_DB {
                     continue;
                 }
 
@@ -1844,7 +1710,7 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         Ok(self.batches.pop_front())
     }
 

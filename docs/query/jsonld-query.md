@@ -92,7 +92,7 @@ Specifies which ledger(s) to query:
 
 ```json
 {
-  "from": "mydb:main@sha:abc123def456"
+  "from": "mydb:main@commit:bafybeig..."
 }
 ```
 
@@ -558,6 +558,16 @@ Each step must be a simple predicate (`ex:p`), inverse simple predicate (`^ex:p`
 - `(/ ?x ?y)` - Division
 - `(abs ?x)` - Absolute value
 
+### Vector Similarity Functions
+
+Used with `bind` to compute similarity scores between `@vector` values:
+
+- `(dotProduct ?vec1 ?vec2)` - Dot product (inner product)
+- `(cosineSimilarity ?vec1 ?vec2)` - Cosine similarity (-1 to 1)
+- `(euclideanDistance ?vec1 ?vec2)` - Euclidean (L2) distance
+
+Function names are case-insensitive. See [Vector Search](../indexing-and-search/vector-search.md) for usage examples.
+
 ### Type Functions
 
 - `(bound ?var)` - Variable is bound
@@ -682,12 +692,12 @@ Query historical data using time specifiers in `from`:
 }
 ```
 
-**Commit SHA:**
+**Commit ContentId:**
 
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from": "ledger:main@sha:abc123def456",
+  "from": "ledger:main@commit:bafybeig...",
   "select": ["?name"],
   "where": [
     { "@id": "?person", "ex:name": "?name" }
@@ -803,9 +813,9 @@ Use `@t` and `@op` annotations on value objects to capture metadata:
 }
 ```
 
-## Virtual Graph Queries
+## Graph Source Queries
 
-Query virtual graphs using the same syntax:
+Query graph sources using the same syntax:
 
 **BM25 Search:**
 
@@ -830,18 +840,29 @@ Query virtual graphs using the same syntax:
 ```json
 {
   "@context": {
-    "vector": "http://ns.flur.ee/vector#"
+    "ex": "http://example.org/",
+    "f": "https://ns.flur.ee/db#"
   },
-  "from": "documents-vector:main",
+  "from": "documents:main",
   "select": ["?document", "?similarity"],
+  "values": [
+    ["?queryVec"],
+    [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
+  ],
   "where": [
-    { "@id": "?document", "vector:similar": "machine learning" },
-    { "@id": "?document", "vector:score": "?similarity" }
+    {
+      "f:graphSource": "documents-vector:main",
+      "f:queryVector": "?queryVec",
+      "f:searchLimit": 5,
+      "f:searchResult": { "f:resultId": "?document", "f:resultScore": "?similarity" }
+    }
   ],
   "orderBy": [["desc", "?similarity"]],
   "limit": 5
 }
 ```
+
+Note: `f:*` keys used for graph source queries should be defined in your `@context` for clarity.
 
 ## Complete Examples
 
@@ -908,11 +929,11 @@ Query virtual graphs using the same syntax:
 3. **Limit Result Sets**: Use `limit` for large result sets
 4. **Optimize Filters**: Place filters early in `where` clauses
 5. **Use Time Specifiers**: Use `@t:` when transaction numbers are known (fastest)
-6. **Virtual Graph Selection**: Choose appropriate virtual graphs for query patterns
+6. **Graph Source Selection**: Choose appropriate graph sources for query patterns
 
 ## Related Documentation
 
 - [SPARQL](sparql.md): SPARQL query language
 - [Time Travel](../concepts/time-travel.md): Historical queries
-- [Virtual Graphs](../concepts/virtual-graphs.md): Virtual graph queries
+- [Graph Sources](../concepts/graph-sources.md): Graph source queries
 - [Output Formats](output-formats.md): Query result formats

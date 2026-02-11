@@ -37,11 +37,11 @@ pub struct PeerConfig {
     #[arg(long = "ledger")]
     pub ledgers: Vec<String>,
 
-    /// Subscribed virtual graph aliases (repeatable)
-    #[arg(long = "vg")]
-    pub vgs: Vec<String>,
+    /// Subscribed graph source aliases (repeatable)
+    #[arg(long = "graph-source")]
+    pub graph_sources: Vec<String>,
 
-    /// Subscribe to all ledgers and VGs (required if no --ledger/--vg specified)
+    /// Subscribe to all ledgers and graph sources (required if no --ledger/--graph-source specified)
     #[arg(long, default_value = "false")]
     pub all: bool,
 
@@ -79,8 +79,8 @@ impl PeerConfig {
         }
 
         // Must subscribe to something
-        if !self.all && self.ledgers.is_empty() && self.vgs.is_empty() {
-            return Err("Must specify --all or at least one --ledger/--vg".to_string());
+        if !self.all && self.ledgers.is_empty() && self.graph_sources.is_empty() {
+            return Err("Must specify --all or at least one --ledger/--graph-source".to_string());
         }
 
         // Validate reconnect parameters
@@ -108,8 +108,8 @@ impl PeerConfig {
             for l in &self.ledgers {
                 params.push(format!("ledger={}", url_encode(l)));
             }
-            for v in &self.vgs {
-                params.push(format!("vg={}", url_encode(v)));
+            for gs in &self.graph_sources {
+                params.push(format!("graph-source={}", url_encode(gs)));
             }
         }
 
@@ -167,7 +167,7 @@ impl Default for PeerConfig {
             events_url: "http://localhost:8090/fluree/events".to_string(),
             events_token: None,
             ledgers: Vec::new(),
-            vgs: Vec::new(),
+            graph_sources: Vec::new(),
             all: false,
             read_mode: ReadMode::SharedStorage,
             storage_path: None,
@@ -199,7 +199,7 @@ mod tests {
         let config = PeerConfig {
             all: false,
             ledgers: vec![],
-            vgs: vec![],
+            graph_sources: vec![],
             storage_path: Some(PathBuf::from("/tmp")),
             ..Default::default()
         };
@@ -236,12 +236,12 @@ mod tests {
             events_url: "http://localhost:8090/fluree/events".to_string(),
             all: false,
             ledgers: vec!["books:main".to_string(), "users:main".to_string()],
-            vgs: vec!["search:main".to_string()],
+            graph_sources: vec!["search:main".to_string()],
             ..Default::default()
         };
         assert_eq!(
             config.events_url_with_params(),
-            "http://localhost:8090/fluree/events?ledger=books:main&ledger=users:main&vg=search:main"
+            "http://localhost:8090/fluree/events?ledger=books:main&ledger=users:main&graph-source=search:main"
         );
     }
 

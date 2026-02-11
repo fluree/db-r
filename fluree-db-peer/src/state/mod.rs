@@ -1,6 +1,6 @@
 //! State tracking for the query peer
 //!
-//! Maintains an in-memory view of ledger and virtual graph metadata
+//! Maintains an in-memory view of ledger and graph source metadata
 //! based on events received from the SSE stream.
 
 use std::collections::HashMap;
@@ -8,28 +8,29 @@ use std::time::Instant;
 
 use tokio::sync::RwLock;
 
-use crate::sse::{LedgerRecord, VgRecord};
+use crate::sse::{GraphSourceRecord, LedgerRecord};
+use fluree_sse::{SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 
 /// Tracked state for a ledger
 #[derive(Debug, Clone)]
 pub struct LedgerState {
-    pub alias: String,
+    pub ledger_id: String,
     pub commit_t: i64,
     pub index_t: i64,
-    pub commit_address: Option<String>,
-    pub index_address: Option<String>,
+    pub commit_head_id: Option<String>,
+    pub index_head_id: Option<String>,
     /// Needs refresh (state changed since last query operation)
     pub dirty: bool,
     pub last_updated: Instant,
 }
 
-/// Tracked state for a virtual graph
+/// Tracked state for a graph source
 #[derive(Debug, Clone)]
-pub struct VgState {
-    pub alias: String,
+pub struct GraphSourceState {
+    pub graph_source_id: String,
     pub index_t: i64,
     pub config_hash: String,
-    pub index_address: Option<String>,
+    pub index_id: Option<String>,
     pub dependencies: Vec<String>,
     /// Needs refresh
     pub dirty: bool,
@@ -39,7 +40,7 @@ pub struct VgState {
 /// Central state tracker for the peer
 pub struct PeerState {
     ledgers: RwLock<HashMap<String, LedgerState>>,
-    vgs: RwLock<HashMap<String, VgState>>,
+    graph_sources: RwLock<HashMap<String, GraphSourceState>>,
     snapshot_hash: RwLock<Option<String>>,
     /// Whether we've received the initial snapshot
     snapshot_received: RwLock<bool>,
@@ -50,7 +51,7 @@ impl PeerState {
     pub fn new() -> Self {
         Self {
             ledgers: RwLock::new(HashMap::new()),
-            vgs: RwLock::new(HashMap::new()),
+            graph_sources: RwLock::new(HashMap::new()),
             snapshot_hash: RwLock::new(None),
             snapshot_received: RwLock::new(false),
         }
@@ -61,7 +62,7 @@ impl PeerState {
     pub async fn handle_ledger_record(&self, record: &LedgerRecord) -> bool {
         let mut ledgers = self.ledgers.write().await;
 
-        let changed = match ledgers.get(&record.alias) {
+        let changed = match ledgers.get(&record.ledger_id) {
             Some(existing) => {
                 // Check if watermarks advanced
                 record.commit_t > existing.commit_t || record.index_t > existing.index_t
@@ -71,13 +72,13 @@ impl PeerState {
 
         if changed {
             ledgers.insert(
-                record.alias.clone(),
+                record.ledger_id.clone(),
                 LedgerState {
-                    alias: record.alias.clone(),
+                    ledger_id: record.ledger_id.clone(),
                     commit_t: record.commit_t,
                     index_t: record.index_t,
-                    commit_address: record.commit_address.clone(),
-                    index_address: record.index_address.clone(),
+                    commit_head_id: record.commit_head_id.clone(),
+                    index_head_id: record.index_head_id.clone(),
                     dirty: true,
                     last_updated: Instant::now(),
                 },
@@ -87,14 +88,14 @@ impl PeerState {
         changed
     }
 
-    /// Handle a VG record from SSE
+    /// Handle a graph source record from SSE
     /// Returns true if the state changed
-    pub async fn handle_vg_record(&self, record: &VgRecord) -> bool {
-        let mut vgs = self.vgs.write().await;
+    pub async fn handle_graph_source_record(&self, record: &GraphSourceRecord) -> bool {
+        let mut graph_sources = self.graph_sources.write().await;
 
         let config_hash = record.config_hash();
 
-        let changed = match vgs.get(&record.alias) {
+        let changed = match graph_sources.get(&record.graph_source_id) {
             Some(existing) => {
                 record.index_t > existing.index_t || config_hash != existing.config_hash
             }
@@ -102,13 +103,13 @@ impl PeerState {
         };
 
         if changed {
-            vgs.insert(
-                record.alias.clone(),
-                VgState {
-                    alias: record.alias.clone(),
+            graph_sources.insert(
+                record.graph_source_id.clone(),
+                GraphSourceState {
+                    graph_source_id: record.graph_source_id.clone(),
                     index_t: record.index_t,
                     config_hash,
-                    index_address: record.index_address.clone(),
+                    index_id: record.index_id.clone(),
                     dependencies: record.dependencies.clone(),
                     dirty: true,
                     last_updated: Instant::now(),
@@ -120,16 +121,16 @@ impl PeerState {
     }
 
     /// Handle retraction (remove from state)
-    pub async fn handle_retracted(&self, kind: &str, alias: &str) {
+    pub async fn handle_retracted(&self, kind: &str, resource_id: &str) {
         match kind {
-            "ledger" => {
-                self.ledgers.write().await.remove(alias);
+            SSE_KIND_LEDGER => {
+                self.ledgers.write().await.remove(resource_id);
             }
-            "virtual-graph" => {
-                self.vgs.write().await.remove(alias);
+            SSE_KIND_GRAPH_SOURCE => {
+                self.graph_sources.write().await.remove(resource_id);
             }
             _ => {
-                tracing::warn!(kind, alias, "Unknown retraction kind");
+                tracing::warn!(kind, resource_id, "Unknown retraction kind");
             }
         }
     }
@@ -153,19 +154,23 @@ impl PeerState {
     /// Clear all state (on reconnect, before new snapshot)
     pub async fn clear(&self) {
         self.ledgers.write().await.clear();
-        self.vgs.write().await.clear();
+        self.graph_sources.write().await.clear();
         *self.snapshot_hash.write().await = None;
         *self.snapshot_received.write().await = false;
     }
 
     /// Get current ledger state
-    pub async fn get_ledger(&self, alias: &str) -> Option<LedgerState> {
-        self.ledgers.read().await.get(alias).cloned()
+    pub async fn get_ledger(&self, ledger_id: &str) -> Option<LedgerState> {
+        self.ledgers.read().await.get(ledger_id).cloned()
     }
 
-    /// Get current VG state
-    pub async fn get_vg(&self, alias: &str) -> Option<VgState> {
-        self.vgs.read().await.get(alias).cloned()
+    /// Get current graph source state
+    pub async fn get_graph_source(&self, graph_source_id: &str) -> Option<GraphSourceState> {
+        self.graph_sources
+            .read()
+            .await
+            .get(graph_source_id)
+            .cloned()
     }
 
     /// Get all ledger states
@@ -173,9 +178,9 @@ impl PeerState {
         self.ledgers.read().await.values().cloned().collect()
     }
 
-    /// Get all VG states
-    pub async fn all_vgs(&self) -> Vec<VgState> {
-        self.vgs.read().await.values().cloned().collect()
+    /// Get all graph source states
+    pub async fn all_graph_sources(&self) -> Vec<GraphSourceState> {
+        self.graph_sources.read().await.values().cloned().collect()
     }
 
     /// Get all dirty ledgers (need refresh)
@@ -189,28 +194,28 @@ impl PeerState {
             .collect()
     }
 
-    /// Get all dirty VGs
-    pub async fn dirty_vgs(&self) -> Vec<VgState> {
-        self.vgs
+    /// Get all dirty graph sources
+    pub async fn dirty_graph_sources(&self) -> Vec<GraphSourceState> {
+        self.graph_sources
             .read()
             .await
             .values()
-            .filter(|v| v.dirty)
+            .filter(|gs| gs.dirty)
             .cloned()
             .collect()
     }
 
     /// Mark ledger as clean (after refresh)
-    pub async fn mark_ledger_clean(&self, alias: &str) {
-        if let Some(ledger) = self.ledgers.write().await.get_mut(alias) {
+    pub async fn mark_ledger_clean(&self, ledger_id: &str) {
+        if let Some(ledger) = self.ledgers.write().await.get_mut(ledger_id) {
             ledger.dirty = false;
         }
     }
 
-    /// Mark VG as clean
-    pub async fn mark_vg_clean(&self, alias: &str) {
-        if let Some(vg) = self.vgs.write().await.get_mut(alias) {
-            vg.dirty = false;
+    /// Mark graph source as clean
+    pub async fn mark_graph_source_clean(&self, graph_source_id: &str) {
+        if let Some(gs) = self.graph_sources.write().await.get_mut(graph_source_id) {
+            gs.dirty = false;
         }
     }
 
@@ -219,9 +224,9 @@ impl PeerState {
         self.ledgers.read().await.len()
     }
 
-    /// Get VG count
-    pub async fn vg_count(&self) -> usize {
-        self.vgs.read().await.len()
+    /// Get graph source count
+    pub async fn graph_source_count(&self) -> usize {
+        self.graph_sources.read().await.len()
     }
 
     /// Get the current snapshot hash
@@ -240,27 +245,27 @@ impl Default for PeerState {
 mod tests {
     use super::*;
 
-    fn make_ledger_record(alias: &str, commit_t: i64, index_t: i64) -> LedgerRecord {
+    fn make_ledger_record(ledger_id: &str, commit_t: i64, index_t: i64) -> LedgerRecord {
         LedgerRecord {
-            alias: alias.to_string(),
+            ledger_id: ledger_id.to_string(),
             branch: Some("main".to_string()),
-            commit_address: Some(format!("commit:{}", commit_t)),
+            commit_head_id: Some(format!("commit-cid:{}", commit_t)),
             commit_t,
-            index_address: Some(format!("index:{}", index_t)),
+            index_head_id: Some(format!("index-cid:{}", index_t)),
             index_t,
             retracted: false,
         }
     }
 
-    fn make_vg_record(alias: &str, index_t: i64) -> VgRecord {
-        VgRecord {
-            alias: alias.to_string(),
+    fn make_graph_source_record(graph_source_id: &str, index_t: i64) -> GraphSourceRecord {
+        GraphSourceRecord {
+            graph_source_id: graph_source_id.to_string(),
             name: Some("test".to_string()),
             branch: Some("main".to_string()),
-            vg_type: Some("fulltext".to_string()),
+            source_type: Some("fulltext".to_string()),
             config: Some(r#"{"analyzer": "standard"}"#.to_string()),
             dependencies: vec![],
-            index_address: Some(format!("vg:{}", index_t)),
+            index_id: Some(format!("gs-cid:{}", index_t)),
             index_t,
             retracted: false,
         }
@@ -305,16 +310,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_vg_record() {
+    async fn test_handle_graph_source_record() {
         let state = PeerState::new();
-        let record = make_vg_record("search:main", 2);
+        let record = make_graph_source_record("search:main", 2);
 
-        let changed = state.handle_vg_record(&record).await;
+        let changed = state.handle_graph_source_record(&record).await;
         assert!(changed);
 
-        let vg = state.get_vg("search:main").await.unwrap();
-        assert_eq!(vg.index_t, 2);
-        assert!(vg.dirty);
+        let gs = state.get_graph_source("search:main").await.unwrap();
+        assert_eq!(gs.index_t, 2);
+        assert!(gs.dirty);
     }
 
     #[tokio::test]
@@ -337,20 +342,20 @@ mod tests {
 
         // Add some state
         let ledger = make_ledger_record("books:main", 5, 3);
-        let vg = make_vg_record("search:main", 2);
+        let gs = make_graph_source_record("search:main", 2);
         state.handle_ledger_record(&ledger).await;
-        state.handle_vg_record(&vg).await;
+        state.handle_graph_source_record(&gs).await;
         state.set_snapshot_hash("abc123".to_string()).await;
 
         assert_eq!(state.ledger_count().await, 1);
-        assert_eq!(state.vg_count().await, 1);
+        assert_eq!(state.graph_source_count().await, 1);
         assert!(state.is_snapshot_received().await);
 
         // Clear
         state.clear().await;
 
         assert_eq!(state.ledger_count().await, 0);
-        assert_eq!(state.vg_count().await, 0);
+        assert_eq!(state.graph_source_count().await, 0);
         assert!(!state.is_snapshot_received().await);
     }
 
@@ -370,6 +375,6 @@ mod tests {
         // Mark one clean
         state.mark_ledger_clean("books:main").await;
         assert_eq!(state.dirty_ledgers().await.len(), 1);
-        assert_eq!(state.dirty_ledgers().await[0].alias, "users:main");
+        assert_eq!(state.dirty_ledgers().await[0].ledger_id, "users:main");
     }
 }

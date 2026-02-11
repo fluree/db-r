@@ -11,7 +11,8 @@ use super::ast::{
 };
 use super::error::{ParseError, Result};
 use super::PathAliasMap;
-use fluree_graph_json_ld::{details, details_with_vocab, ParsedContext, TypeValue};
+use fluree_graph_json_ld::{details, details_with_vocab, expand_iri, ParsedContext, TypeValue};
+use fluree_vocab::search_iris;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -47,6 +48,29 @@ use fluree_vocab::xsd;
 /// Check if a string is a variable (starts with '?')
 pub(super) fn is_variable(s: &str) -> bool {
     s.starts_with('?')
+}
+
+/// Look up a value in a JSON map by matching each key against a full IRI.
+///
+/// Keys are expanded through the JSON-LD `ParsedContext` so that compact forms
+/// like `"f:searchText"` resolve to the full IRI `https://ns.flur.ee/db#searchText`.
+/// Users can use any prefix (or the full IRI) as long as their `@context` maps it.
+fn map_get_by_iri<'a>(
+    map: &'a serde_json::Map<String, JsonValue>,
+    iri: &str,
+    context: &ParsedContext,
+) -> Option<&'a JsonValue> {
+    // Fast path: exact full IRI match
+    if let Some(v) = map.get(iri) {
+        return Some(v);
+    }
+    // Expand each key through context and check
+    for (key, val) in map.iter() {
+        if expand_iri(key, context) == iri {
+            return Some(val);
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -160,62 +184,77 @@ fn add_metadata_filter_pattern(
 
 /// Check if a node-map is a BM25 index search pattern.
 ///
-/// Index search patterns have a "graph" key and at least one of:
-/// idx:target, idx:limit, idx:result
-/// But NOT idx:vector or idx:metric (those are vector search patterns)
-fn is_index_search_pattern(map: &serde_json::Map<String, JsonValue>) -> bool {
-    map.contains_key("graph")
-        && (map.contains_key("idx:target")
-            || map.contains_key("idx:limit")
-            || map.contains_key("idx:result"))
-        && !map.contains_key("idx:vector")
-        && !map.contains_key("idx:metric")
+/// Index search patterns have a `f:graphSource` key and at least one of:
+/// `f:searchText`, `f:searchLimit`, `f:searchResult`
+/// But NOT `f:queryVector` or `f:distanceMetric` (those are vector search patterns).
+///
+/// All keys are resolved through JSON-LD context expansion, so users can write
+/// compact forms like `"f:searchText"` or full IRIs.
+fn is_index_search_pattern(
+    map: &serde_json::Map<String, JsonValue>,
+    context: &ParsedContext,
+) -> bool {
+    map_get_by_iri(map, search_iris::GRAPH_SOURCE, context).is_some()
+        && (map_get_by_iri(map, search_iris::SEARCH_TEXT, context).is_some()
+            || map_get_by_iri(map, search_iris::SEARCH_LIMIT, context).is_some()
+            || map_get_by_iri(map, search_iris::SEARCH_RESULT, context).is_some())
+        && map_get_by_iri(map, search_iris::QUERY_VECTOR, context).is_none()
+        && map_get_by_iri(map, search_iris::DISTANCE_METRIC, context).is_none()
 }
 
 /// Check if a node-map is a vector search pattern.
 ///
-/// Vector search patterns have "idx:graph" or "graph" and idx:vector
-fn is_vector_search_pattern(map: &serde_json::Map<String, JsonValue>) -> bool {
-    (map.contains_key("idx:graph") || map.contains_key("graph"))
-        && (map.contains_key("idx:vector") || map.contains_key("idx:metric"))
+/// Vector search patterns have `f:graphSource` and either `f:queryVector` or `f:distanceMetric`.
+///
+/// All keys are resolved through JSON-LD context expansion.
+fn is_vector_search_pattern(
+    map: &serde_json::Map<String, JsonValue>,
+    context: &ParsedContext,
+) -> bool {
+    map_get_by_iri(map, search_iris::GRAPH_SOURCE, context).is_some()
+        && (map_get_by_iri(map, search_iris::QUERY_VECTOR, context).is_some()
+            || map_get_by_iri(map, search_iris::DISTANCE_METRIC, context).is_some())
 }
 
 /// Parse an index search pattern from a node-map.
 ///
-/// Index search pattern syntax:
+/// Index search pattern syntax (with `"f": "https://ns.flur.ee/db#"` in `@context`):
 /// ```json
 /// {
-///   "graph": "my-search:main",
-///   "idx:target": "software engineer",
-///   "idx:limit": 10,
-///   "idx:result": "?doc"
+///   "f:graphSource": "my-search:main",
+///   "f:searchText": "software engineer",
+///   "f:searchLimit": 10,
+///   "f:searchResult": "?doc"
 /// }
 /// ```
 ///
 /// Or with nested result:
 /// ```json
 /// {
-///   "graph": "my-search:main",
-///   "idx:target": "software engineer",
-///   "idx:result": {
-///     "idx:id": "?doc",
-///     "idx:score": "?score",
-///     "idx:ledger": "?source"
+///   "f:graphSource": "my-search:main",
+///   "f:searchText": "software engineer",
+///   "f:searchResult": {
+///     "f:resultId": "?doc",
+///     "f:resultScore": "?score",
+///     "f:resultLedger": "?source"
 ///   }
 /// }
 /// ```
 fn parse_index_search_pattern(
     map: &serde_json::Map<String, JsonValue>,
+    context: &ParsedContext,
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
-    // Extract "graph" - the virtual graph alias (required)
-    let vg_alias = map.get("graph").and_then(|v| v.as_str()).ok_or_else(|| {
-        ParseError::InvalidWhere("index search: 'graph' must be a string".to_string())
-    })?;
+    // Extract f:graphSource - the graph source alias (required)
+    let graph_source_id = map_get_by_iri(map, search_iris::GRAPH_SOURCE, context)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ParseError::InvalidWhere("index search: 'f:graphSource' must be a string".to_string())
+        })?;
 
-    // Extract "idx:target" - the search query (required)
-    let target_val = map.get("idx:target").ok_or_else(|| {
-        ParseError::InvalidWhere("index search: 'idx:target' is required".to_string())
+    // Extract f:searchText - the search query (required)
+    let target_val = map_get_by_iri(map, search_iris::SEARCH_TEXT, context).ok_or_else(|| {
+        ParseError::InvalidWhere("index search: 'f:searchText' is required".to_string())
     })?;
 
     let target = match target_val.as_str() {
@@ -223,33 +262,32 @@ fn parse_index_search_pattern(
         Some(s) => UnresolvedIndexSearchTarget::Const(Arc::from(s)),
         None => {
             return Err(ParseError::InvalidWhere(
-                "index search: 'idx:target' must be a string or variable".to_string(),
+                "index search: 'f:searchText' must be a string or variable".to_string(),
             ));
         }
     };
 
-    // Extract "idx:limit" (optional)
-    let limit = map
-        .get("idx:limit")
+    // Extract f:searchLimit (optional)
+    let limit = map_get_by_iri(map, search_iris::SEARCH_LIMIT, context)
         .and_then(|v| v.as_u64().map(|n| n as usize));
 
-    // Extract "idx:result" (required) - can be a variable or nested object
-    let result_val = map.get("idx:result").ok_or_else(|| {
-        ParseError::InvalidWhere("index search: 'idx:result' is required".to_string())
+    // Extract f:searchResult (required) - can be a variable or nested object
+    let result_val = map_get_by_iri(map, search_iris::SEARCH_RESULT, context).ok_or_else(|| {
+        ParseError::InvalidWhere("index search: 'f:searchResult' is required".to_string())
     })?;
 
-    let result_vars = parse_index_search_result(result_val)?;
+    let result_vars = parse_index_search_result(result_val, context)?;
 
-    // Extract "idx:sync" (optional, default false)
-    let sync = map
-        .get("idx:sync")
+    // Extract f:syncBeforeQuery (optional, default false)
+    let sync = map_get_by_iri(map, search_iris::SYNC_BEFORE_QUERY, context)
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Extract "idx:timeout" (optional)
-    let timeout = map.get("idx:timeout").and_then(|v| v.as_u64());
+    // Extract f:timeoutMs (optional)
+    let timeout = map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(|v| v.as_u64());
 
-    let mut pattern = UnresolvedIndexSearchPattern::new(vg_alias, target, result_vars.id.as_ref());
+    let mut pattern =
+        UnresolvedIndexSearchPattern::new(graph_source_id, target, result_vars.id.as_ref());
 
     if let Some(limit) = limit {
         pattern = pattern.with_limit(limit);
@@ -273,42 +311,41 @@ fn parse_index_search_pattern(
 
 /// Parse a vector search pattern from a node-map.
 ///
-/// Vector search pattern syntax:
+/// Vector search pattern syntax (with `"f": "https://ns.flur.ee/db#"` in `@context`):
 /// ```json
 /// {
-///   "idx:graph": "embeddings:main",
-///   "idx:vector": [0.1, 0.2, 0.3],
-///   "idx:metric": "cosine",
-///   "idx:limit": 10,
-///   "idx:result": "?doc"
+///   "f:graphSource": "embeddings:main",
+///   "f:queryVector": [0.1, 0.2, 0.3],
+///   "f:distanceMetric": "cosine",
+///   "f:searchLimit": 10,
+///   "f:searchResult": "?doc"
 /// }
 /// ```
 ///
 /// Or with variable vector:
 /// ```json
 /// {
-///   "idx:graph": "embeddings:main",
-///   "idx:vector": "?queryVec",
-///   "idx:metric": "dot",
-///   "idx:result": {"idx:id": "?doc", "idx:score": "?score"}
+///   "f:graphSource": "embeddings:main",
+///   "f:queryVector": "?queryVec",
+///   "f:distanceMetric": "dot",
+///   "f:searchResult": {"f:resultId": "?doc", "f:resultScore": "?score"}
 /// }
 /// ```
 fn parse_vector_search_pattern(
     map: &serde_json::Map<String, JsonValue>,
+    context: &ParsedContext,
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
-    // Extract graph alias (required) - support both "idx:graph" and "graph"
-    let vg_alias = map
-        .get("idx:graph")
-        .or_else(|| map.get("graph"))
+    // Extract f:graphSource (required)
+    let graph_source_id = map_get_by_iri(map, search_iris::GRAPH_SOURCE, context)
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            ParseError::InvalidWhere("vector search: 'idx:graph' must be a string".to_string())
+            ParseError::InvalidWhere("vector search: 'f:graphSource' must be a string".to_string())
         })?;
 
-    // Extract "idx:vector" - the query vector (required)
-    let vector_val = map.get("idx:vector").ok_or_else(|| {
-        ParseError::InvalidWhere("vector search: 'idx:vector' is required".to_string())
+    // Extract f:queryVector - the query vector (required)
+    let vector_val = map_get_by_iri(map, search_iris::QUERY_VECTOR, context).ok_or_else(|| {
+        ParseError::InvalidWhere("vector search: 'f:queryVector' is required".to_string())
     })?;
 
     let target = match vector_val {
@@ -321,7 +358,7 @@ fn parse_vector_search_pattern(
             for v in arr {
                 let num = v.as_f64().ok_or_else(|| {
                     ParseError::InvalidWhere(
-                        "vector search: idx:vector array must contain numbers".to_string(),
+                        "vector search: f:queryVector array must contain numbers".to_string(),
                     )
                 })?;
                 vec.push(num as f32);
@@ -330,40 +367,41 @@ fn parse_vector_search_pattern(
         }
         _ => {
             return Err(ParseError::InvalidWhere(
-                "vector search: 'idx:vector' must be a variable or array of numbers".to_string(),
+                "vector search: 'f:queryVector' must be a variable or array of numbers".to_string(),
             ));
         }
     };
 
-    // Extract "idx:metric" (optional, defaults to "cosine")
-    let metric = map
-        .get("idx:metric")
+    // Extract f:distanceMetric (optional, defaults to "cosine")
+    let metric = map_get_by_iri(map, search_iris::DISTANCE_METRIC, context)
         .and_then(|v| v.as_str())
         .unwrap_or("cosine");
 
-    // Extract "idx:limit" (optional)
-    let limit = map
-        .get("idx:limit")
+    // Extract f:searchLimit (optional)
+    let limit = map_get_by_iri(map, search_iris::SEARCH_LIMIT, context)
         .and_then(|v| v.as_u64().map(|n| n as usize));
 
-    // Extract "idx:result" (required) - can be a variable or nested object
-    let result_val = map.get("idx:result").ok_or_else(|| {
-        ParseError::InvalidWhere("vector search: 'idx:result' is required".to_string())
+    // Extract f:searchResult (required) - can be a variable or nested object
+    let result_val = map_get_by_iri(map, search_iris::SEARCH_RESULT, context).ok_or_else(|| {
+        ParseError::InvalidWhere("vector search: 'f:searchResult' is required".to_string())
     })?;
 
-    let result_vars = parse_index_search_result(result_val)?;
+    let result_vars = parse_index_search_result(result_val, context)?;
 
-    // Extract "idx:sync" (optional, default false)
-    let sync = map
-        .get("idx:sync")
+    // Extract f:syncBeforeQuery (optional, default false)
+    let sync = map_get_by_iri(map, search_iris::SYNC_BEFORE_QUERY, context)
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Extract "idx:timeout" (optional)
-    let timeout = map.get("idx:timeout").and_then(|v| v.as_u64());
+    // Extract f:timeoutMs (optional)
+    let timeout = map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(|v| v.as_u64());
 
-    let mut pattern =
-        UnresolvedVectorSearchPattern::new(vg_alias, target, metric, result_vars.id.as_ref());
+    let mut pattern = UnresolvedVectorSearchPattern::new(
+        graph_source_id,
+        target,
+        metric,
+        result_vars.id.as_ref(),
+    );
 
     if let Some(limit) = limit {
         pattern = pattern.with_limit(limit);
@@ -387,14 +425,17 @@ fn parse_vector_search_pattern(
     Ok(())
 }
 
-/// Parse the idx:result value (variable or nested object with id/score/ledger).
-fn parse_index_search_result(result_val: &JsonValue) -> Result<IndexSearchResultVars> {
+/// Parse the `f:searchResult` value (variable or nested object with id/score/ledger).
+fn parse_index_search_result(
+    result_val: &JsonValue,
+    context: &ParsedContext,
+) -> Result<IndexSearchResultVars> {
     match result_val {
         // Simple variable: "?doc"
         JsonValue::String(s) => {
             if !is_variable(s) {
                 return Err(ParseError::InvalidWhere(
-                    "index search: idx:result variable must start with ?".to_string(),
+                    "search result variable must start with ?".to_string(),
                 ));
             }
             Ok(IndexSearchResultVars {
@@ -403,34 +444,29 @@ fn parse_index_search_result(result_val: &JsonValue) -> Result<IndexSearchResult
                 ledger: None,
             })
         }
-        // Nested object: {"idx:id": "?doc", "idx:score": "?score", ...}
+        // Nested object: {"f:resultId": "?doc", "f:resultScore": "?score", ...}
         JsonValue::Object(obj) => {
-            let id_str = obj.get("idx:id").and_then(|v| v.as_str()).ok_or_else(|| {
-                ParseError::InvalidWhere(
-                    "index search: nested idx:result must have 'idx:id'".to_string(),
-                )
-            })?;
+            let id_str = map_get_by_iri(obj, search_iris::RESULT_ID, context)
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ParseError::InvalidWhere(
+                        "nested search result must have 'f:resultId'".to_string(),
+                    )
+                })?;
 
             if !is_variable(id_str) {
                 return Err(ParseError::InvalidWhere(
-                    "index search: idx:id must be a variable".to_string(),
+                    "f:resultId must be a variable".to_string(),
                 ));
             }
 
-            let score_var = obj.get("idx:score").and_then(|v| v.as_str()).map(|s| {
-                if !is_variable(s) {
-                    // Return an error if not a variable - but for now, just ignore
-                    // In a real impl, we'd want proper error handling here
-                }
-                Arc::from(s)
-            });
+            let score_var = map_get_by_iri(obj, search_iris::RESULT_SCORE, context)
+                .and_then(|v| v.as_str())
+                .map(Arc::from);
 
-            let ledger_var = obj.get("idx:ledger").and_then(|v| v.as_str()).map(|s| {
-                if !is_variable(s) {
-                    // Same note as above
-                }
-                Arc::from(s)
-            });
+            let ledger_var = map_get_by_iri(obj, search_iris::RESULT_LEDGER, context)
+                .and_then(|v| v.as_str())
+                .map(Arc::from);
 
             Ok(IndexSearchResultVars {
                 id: Arc::from(id_str),
@@ -439,7 +475,7 @@ fn parse_index_search_result(result_val: &JsonValue) -> Result<IndexSearchResult
             })
         }
         _ => Err(ParseError::InvalidWhere(
-            "index search: idx:result must be a variable or object".to_string(),
+            "f:searchResult must be a variable or object".to_string(),
         )),
     }
 }
@@ -457,14 +493,14 @@ pub fn parse_node_map(
     nested_counter: &mut u32,
     object_var_parsing: bool,
 ) -> Result<()> {
-    // Check for vector search pattern first (has idx:vector)
-    if is_vector_search_pattern(map) {
-        return parse_vector_search_pattern(map, query);
+    // Check for vector search pattern first (has f:queryVector)
+    if is_vector_search_pattern(map, context) {
+        return parse_vector_search_pattern(map, context, query);
     }
 
-    // Check for BM25 index search pattern (has "graph" + idx:target)
-    if is_index_search_pattern(map) {
-        return parse_index_search_pattern(map, query);
+    // Check for BM25 index search pattern (has f:graphSource + f:searchText)
+    if is_index_search_pattern(map, context) {
+        return parse_index_search_pattern(map, context, query);
     }
 
     // Determine subject: explicit @id (or aliased @id) or generated unique variable

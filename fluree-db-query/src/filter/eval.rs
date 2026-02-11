@@ -9,7 +9,7 @@ use crate::binding::{Binding, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{FilterExpr, FilterValue, FunctionName};
-use fluree_db_core::{FlakeValue, Storage};
+use fluree_db_core::FlakeValue;
 use std::sync::Arc;
 
 use super::compare::compare_values;
@@ -29,14 +29,14 @@ use super::value::{
 /// Returns `Binding::Unbound` on evaluation errors (type mismatches, unbound vars, etc.)
 /// rather than `Binding::Poisoned` - Poisoned is reserved for OPTIONAL semantics.
 pub fn evaluate_to_binding(expr: &FilterExpr, row: &RowView) -> Binding {
-    evaluate_to_binding_with_context::<fluree_db_core::MemoryStorage>(expr, row, None)
+    evaluate_to_binding_with_context(expr, row, None)
 }
 
 /// Evaluate to binding with execution context (for EncodedLit support)
-pub fn evaluate_to_binding_with_context<S: Storage>(
+pub fn evaluate_to_binding_with_context(
     expr: &FilterExpr,
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Binding {
     match evaluate_to_binding_with_context_strict(expr, row, ctx) {
         Ok(binding) => binding,
@@ -45,10 +45,10 @@ pub fn evaluate_to_binding_with_context<S: Storage>(
 }
 
 /// Evaluate to binding with strict error handling
-pub fn evaluate_to_binding_with_context_strict<S: Storage>(
+pub fn evaluate_to_binding_with_context_strict(
     expr: &FilterExpr,
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Binding> {
     // Evaluate to comparable value
     let comparable = match eval_to_comparable_inner(expr, row, ctx) {
@@ -177,7 +177,7 @@ pub fn evaluate_to_binding_with_context_strict<S: Storage>(
 /// Returns `true` if the row passes the filter, `false` otherwise.
 /// Type mismatches and unbound variables result in `false`.
 pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
-    evaluate_inner::<fluree_db_core::MemoryStorage>(expr, row, None)
+    evaluate_inner(expr, row, None)
 }
 
 /// Evaluate a filter expression with access to execution context.
@@ -185,19 +185,19 @@ pub fn evaluate(expr: &FilterExpr, row: &RowView) -> Result<bool> {
 /// This is required for correct evaluation when a row contains
 /// `Binding::EncodedLit` (late materialization), e.g. for `REGEX`, `STR`,
 /// and comparisons.
-pub fn evaluate_with_context<S: Storage>(
+pub fn evaluate_with_context(
     expr: &FilterExpr,
     row: &RowView,
-    ctx: &ExecutionContext<'_, S>,
+    ctx: &ExecutionContext<'_>,
 ) -> Result<bool> {
     evaluate_inner(expr, row, Some(ctx))
 }
 
 /// Core boolean evaluation (internal)
-pub(crate) fn evaluate_inner<S: Storage>(
+pub(crate) fn evaluate_inner(
     expr: &FilterExpr,
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<bool> {
     match expr {
         FilterExpr::Var(var) => {
@@ -325,14 +325,14 @@ pub(crate) fn evaluate_inner<S: Storage>(
 ///
 /// Prefer [`eval_to_comparable_inner`] when `Binding::EncodedLit` may appear.
 pub fn eval_to_comparable(expr: &FilterExpr, row: &RowView) -> Result<Option<ComparableValue>> {
-    eval_to_comparable_inner::<fluree_db_core::MemoryStorage>(expr, row, None)
+    eval_to_comparable_inner(expr, row, None)
 }
 
 /// Evaluate expression to a comparable value with context (for EncodedLit support)
-pub fn eval_to_comparable_inner<S: Storage>(
+pub fn eval_to_comparable_inner(
     expr: &FilterExpr,
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     match expr {
         FilterExpr::Var(var) => match row.get(*var) {

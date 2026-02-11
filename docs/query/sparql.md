@@ -559,7 +559,7 @@ WHERE {
 
 For local Fluree ledger queries, use the `fluree:ledger:` scheme:
 
-| Format | Description | Matches dataset alias |
+| Format | Description | Matches dataset ledger ID |
 |--------|-------------|----------------------|
 | `fluree:ledger:<name>` | Query ledger with default branch (main) | `<name>:main` |
 | `fluree:ledger:<name>:<branch>` | Query specific branch | `<name>:<branch>` |
@@ -567,9 +567,9 @@ For local Fluree ledger queries, use the `fluree:ledger:` scheme:
 Where:
 - `<name>` is the ledger name **without** the branch (e.g., `orders`, `acme/people`)
 - `<branch>` is the branch name (e.g., `main`, `dev`)
-- The full dataset alias is always `<name>:<branch>` (e.g., `orders:main`, `acme/people:dev`)
+- The full dataset ledger ID is always `<name>:<branch>` (e.g., `orders:main`, `acme/people:dev`)
 
-The endpoint is resolved by matching against the full `ledger_alias` in the dataset.
+The endpoint is resolved by matching against the full `ledger_id` in the dataset.
 
 **Examples:**
 
@@ -675,7 +675,7 @@ WHERE {
 Time specifiers:
 - `@t:100` - Transaction number
 - `@iso:2024-01-15T10:30:00Z` - ISO 8601 datetime
-- `@sha:abc123def456` - Commit hash prefix
+- `@commit:bafybeig...` - Commit ContentId
 - `@t:latest` - Current/latest state
 
 ### History Queries
@@ -684,7 +684,7 @@ Query all changes (assertions and retractions) within a time range using `FROM..
 
 ```sparql
 PREFIX ex: <http://example.org/ns/>
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?age ?t ?op
 FROM <ledger:main@t:1>
@@ -704,7 +704,7 @@ The `<< subject predicate object >>` syntax (RDF-star) treats the triple as an e
 
 ```sparql
 PREFIX ex: <http://example.org/ns/>
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?age ?t
 FROM <ledger:main@t:1>
@@ -720,7 +720,7 @@ WHERE {
 
 ```sparql
 PREFIX ex: <http://example.org/ns/>
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?name ?t ?op
 FROM <ledger:main@iso:2024-01-01T00:00:00Z>

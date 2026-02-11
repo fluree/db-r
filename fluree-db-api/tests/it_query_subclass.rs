@@ -12,8 +12,8 @@ use serde_json::json;
 use support::{genesis_ledger, normalize_rows, MemoryFluree, MemoryLedger};
 use tempfile::TempDir;
 
-async fn seed_schema_creative_work(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_schema_creative_work(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     // Seed a Movie + Book instance, plus schema class hierarchy:
     // Book subClassOf CreativeWork
@@ -165,8 +165,8 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
     );
 }
 
-async fn seed_humanoid(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_humanoid(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let ctx = json!({
         "id":"@id",
         "type":"@type",
@@ -244,7 +244,7 @@ async fn subclass_inferencing_after_load_issue_core_48() {
     let fluree = FlureeBuilder::file(storage_path)
         .build()
         .expect("build file fluree");
-    let ledger_alias = "subclass-inferencing-test:main";
+    let ledger_id = "subclass-inferencing-test:main";
 
     let ctx = json!({
         "id":"@id",
@@ -254,7 +254,7 @@ async fn subclass_inferencing_after_load_issue_core_48() {
         "rdfs":"http://www.w3.org/2000/01/rdf-schema#"
     });
 
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
     let insert_people = json!({
         "@context": ctx,
         "insert": [
@@ -279,7 +279,7 @@ async fn subclass_inferencing_after_load_issue_core_48() {
     let fluree2 = FlureeBuilder::file(storage_path)
         .build()
         .expect("build file fluree2");
-    let loaded = fluree2.ledger(ledger_alias).await.unwrap();
+    let loaded = fluree2.ledger(ledger_id).await.unwrap();
 
     let q = json!({
         "@context": ctx,

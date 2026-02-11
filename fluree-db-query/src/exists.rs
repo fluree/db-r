@@ -20,7 +20,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::{EmptyOperator, SeedOperator};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{StatsView, Storage};
+use fluree_db_core::StatsView;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -30,9 +30,9 @@ use std::sync::Arc;
 /// If any result is produced, the input row is kept; otherwise it's filtered out.
 ///
 /// For NOT EXISTS, the `negated` field is true and the logic is inverted.
-pub struct ExistsOperator<S: Storage + 'static> {
+pub struct ExistsOperator {
     /// Child operator providing input solutions
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// EXISTS/NOT EXISTS patterns to execute
     exists_patterns: Vec<Pattern>,
     /// If true, this is NOT EXISTS (invert the check)
@@ -49,7 +49,7 @@ pub struct ExistsOperator<S: Storage + 'static> {
     stats: Option<Arc<StatsView>>,
 }
 
-impl<S: Storage + 'static> ExistsOperator<S> {
+impl ExistsOperator {
     /// Create a new EXISTS operator
     ///
     /// # Arguments
@@ -59,7 +59,7 @@ impl<S: Storage + 'static> ExistsOperator<S> {
     /// * `negated` - If true, this is NOT EXISTS (keep rows where NO match found)
     /// * `stats` - Optional stats for nested query optimization (Arc for cheap cloning)
     pub fn new(
-        child: BoxedOperator<S>,
+        child: BoxedOperator,
         exists_patterns: Vec<Pattern>,
         negated: bool,
         stats: Option<Arc<StatsView>>,
@@ -87,7 +87,7 @@ impl<S: Storage + 'static> ExistsOperator<S> {
 
     /// Create a NOT EXISTS operator (convenience constructor)
     pub fn not_exists(
-        child: BoxedOperator<S>,
+        child: BoxedOperator,
         patterns: Vec<Pattern>,
         stats: Option<Arc<StatsView>>,
     ) -> Self {
@@ -97,7 +97,7 @@ impl<S: Storage + 'static> ExistsOperator<S> {
     /// Check if the EXISTS subquery produces any results for a given input row
     async fn has_match(
         &self,
-        ctx: &ExecutionContext<'_, S>,
+        ctx: &ExecutionContext<'_>,
         input_batch: &Batch,
         row_idx: usize,
     ) -> Result<bool> {
@@ -131,16 +131,16 @@ impl<S: Storage + 'static> ExistsOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for ExistsOperator<S> {
+impl Operator for ExistsOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if self.uncorrelated {
             // Evaluate once with an empty seed (fresh scope).
             #[allow(clippy::box_default)]
-            let seed: BoxedOperator<S> = Box::new(EmptyOperator::new());
+            let seed: BoxedOperator = Box::new(EmptyOperator::new());
             let mut exists_op = build_where_operators_seeded(
                 Some(seed),
                 &self.exists_patterns,
@@ -163,7 +163,7 @@ impl<S: Storage + 'static> Operator<S> for ExistsOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn test_exists_schema_preserved() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestEmptyWithSchema {
+        let child: BoxedOperator = Box::new(TestEmptyWithSchema {
             schema: child_schema.clone(),
         });
 
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn test_not_exists_constructor() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestEmptyWithSchema {
+        let child: BoxedOperator = Box::new(TestEmptyWithSchema {
             schema: child_schema,
         });
 
@@ -276,16 +276,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static> Operator<S> for TestEmptyWithSchema {
+    impl Operator for TestEmptyWithSchema {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
             Ok(None)
         }
 

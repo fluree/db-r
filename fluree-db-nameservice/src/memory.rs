@@ -5,13 +5,14 @@
 //! async runtimes.
 
 use crate::{
-    parse_alias, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
-    NameService, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
-    RefPublisher, RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
-    Subscription, VgNsRecord, VgSnapshotEntry, VgSnapshotHistory, VgType, VirtualGraphPublisher,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher,
+    GraphSourceRecord, GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord,
+    Publication, Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult,
+    StatusPayload, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
-use fluree_db_core::alias as core_alias;
+use fluree_db_core::ledger_id as core_ledger_id;
+use fluree_db_core::ContentId;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -24,15 +25,13 @@ use tokio::sync::broadcast;
 /// This implementation is thread-safe and suitable for multi-threaded runtimes.
 #[derive(Clone)]
 pub struct MemoryNameService {
-    /// Ledger records keyed by canonical alias (e.g., "mydb:main")
+    /// Ledger records keyed by canonical address (e.g., "mydb:main")
     records: Arc<RwLock<HashMap<String, NsRecord>>>,
-    /// Virtual graph records keyed by canonical alias (e.g., "my-search:main")
-    vg_records: Arc<RwLock<HashMap<String, VgNsRecord>>>,
-    /// Virtual graph snapshot histories keyed by canonical alias
-    vg_snapshots: Arc<RwLock<HashMap<String, VgSnapshotHistory>>>,
-    /// Status values keyed by canonical alias (v2 extension)
+    /// Graph source records keyed by canonical address (e.g., "my-search:main")
+    graph_source_records: Arc<RwLock<HashMap<String, GraphSourceRecord>>>,
+    /// Status values keyed by canonical address (v2 extension)
     status_values: Arc<RwLock<HashMap<String, StatusValue>>>,
-    /// Config values keyed by canonical alias (v2 extension)
+    /// Config values keyed by canonical address (v2 extension)
     config_values: Arc<RwLock<HashMap<String, ConfigValue>>>,
     /// In-process event sender for reactive subscriptions.
     event_tx: broadcast::Sender<NameServiceEvent>,
@@ -44,8 +43,7 @@ impl Default for MemoryNameService {
         let (event_tx, _event_rx) = broadcast::channel(128);
         Self {
             records: Arc::new(RwLock::new(HashMap::new())),
-            vg_records: Arc::new(RwLock::new(HashMap::new())),
-            vg_snapshots: Arc::new(RwLock::new(HashMap::new())),
+            graph_source_records: Arc::new(RwLock::new(HashMap::new())),
             status_values: Arc::new(RwLock::new(HashMap::new())),
             config_values: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
@@ -56,14 +54,12 @@ impl Default for MemoryNameService {
 impl Debug for MemoryNameService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let records = self.records.read();
-        let vg_records = self.vg_records.read();
-        let vg_snapshots = self.vg_snapshots.read();
+        let graph_source_records = self.graph_source_records.read();
         let status_values = self.status_values.read();
         let config_values = self.config_values.read();
         f.debug_struct("MemoryNameService")
             .field("record_count", &records.len())
-            .field("vg_record_count", &vg_records.len())
-            .field("vg_snapshot_count", &vg_snapshots.len())
+            .field("graph_source_record_count", &graph_source_records.len())
             .field("status_count", &status_values.len())
             .field("config_count", &config_values.len())
             .finish()
@@ -79,22 +75,24 @@ impl MemoryNameService {
     /// Create a record for a new ledger
     ///
     /// This is a convenience method for tests to bootstrap a ledger.
-    pub fn create_ledger(&self, alias: &str) -> Result<()> {
-        let (ledger_name, branch) = parse_alias(alias)?;
+    pub fn create_ledger(&self, ledger_id: &str) -> Result<()> {
+        let (ledger_name, branch) = core_ledger_id::split_ledger_id(ledger_id)?;
         let record = NsRecord::new(ledger_name, branch);
-        self.records.write().insert(record.address.clone(), record);
+        self.records
+            .write()
+            .insert(record.ledger_id.clone(), record);
         Ok(())
     }
 
-    /// Get a record by alias (internal helper)
-    fn get_record(&self, alias: &str) -> Option<NsRecord> {
+    /// Get a record by address (internal helper)
+    fn get_record(&self, ledger_id: &str) -> Option<NsRecord> {
         // Try direct lookup first
-        if let Some(record) = self.records.read().get(alias).cloned() {
+        if let Some(record) = self.records.read().get(ledger_id).cloned() {
             return Some(record);
         }
 
         // Try with default branch
-        let with_branch = match core_alias::normalize_alias(alias) {
+        let with_branch = match core_ledger_id::normalize_ledger_id(ledger_id) {
             Ok(value) => value,
             Err(_) => return None,
         };
@@ -102,20 +100,16 @@ impl MemoryNameService {
         self.records.read().get(&with_branch).cloned()
     }
 
-    /// Normalize alias to canonical form
-    fn normalize_alias(&self, alias: &str) -> String {
-        core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string())
+    /// Normalize ledger ID to canonical form
+    fn normalize_ledger_id(&self, ledger_id: &str) -> String {
+        core_ledger_id::normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string())
     }
 }
 
 #[async_trait]
 impl NameService for MemoryNameService {
-    async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
-        Ok(self.get_record(ledger_address))
-    }
-
-    async fn alias(&self, ledger_address: &str) -> Result<Option<String>> {
-        Ok(self.get_record(ledger_address).map(|r| r.alias))
+    async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
+        Ok(self.get_record(ledger_id))
     }
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
@@ -125,8 +119,8 @@ impl NameService for MemoryNameService {
 
 #[async_trait]
 impl Publisher for MemoryNameService {
-    async fn publish_ledger_init(&self, alias: &str) -> Result<()> {
-        let key = self.normalize_alias(alias);
+    async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
 
         // Check if record already exists (including retracted)
         if self.records.read().contains_key(&key) {
@@ -134,31 +128,36 @@ impl Publisher for MemoryNameService {
         }
 
         // Create minimal NsRecord
-        let (ledger_name, branch) = parse_alias(alias)?;
+        let (ledger_name, branch) = core_ledger_id::split_ledger_id(ledger_id)?;
         let record = NsRecord::new(ledger_name, branch);
         self.records.write().insert(key, record);
 
         Ok(())
     }
 
-    async fn publish_commit(&self, alias: &str, commit_addr: &str, commit_t: i64) -> Result<()> {
-        let key = self.normalize_alias(alias);
+    async fn publish_commit(
+        &self,
+        ledger_id: &str,
+        commit_t: i64,
+        commit_id: &ContentId,
+    ) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
         let mut did_update = false;
 
         if let Some(record) = records.get_mut(&key) {
             // Only update if new_t > existing_t (strictly monotonic)
             if commit_t > record.commit_t {
-                record.commit_address = Some(commit_addr.to_string());
+                record.commit_head_id = Some(commit_id.clone());
                 record.commit_t = commit_t;
                 did_update = true;
             }
             // If commit_t <= existing, silently ignore (monotonic guarantee)
         } else {
             // Create new record
-            let (ledger_name, branch) = parse_alias(alias)?;
+            let (ledger_name, branch) = core_ledger_id::split_ledger_id(ledger_id)?;
             let mut record = NsRecord::new(ledger_name, branch);
-            record.commit_address = Some(commit_addr.to_string());
+            record.commit_head_id = Some(commit_id.clone());
             record.commit_t = commit_t;
             records.insert(key, record);
             did_update = true;
@@ -166,32 +165,37 @@ impl Publisher for MemoryNameService {
 
         if did_update {
             let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                alias: self.normalize_alias(alias),
-                commit_address: commit_addr.to_string(),
+                ledger_id: self.normalize_ledger_id(ledger_id),
+                commit_id: commit_id.clone(),
                 commit_t,
             });
         }
         Ok(())
     }
 
-    async fn publish_index(&self, alias: &str, index_addr: &str, index_t: i64) -> Result<()> {
-        let key = self.normalize_alias(alias);
+    async fn publish_index(
+        &self,
+        ledger_id: &str,
+        index_t: i64,
+        index_id: &ContentId,
+    ) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
         let mut did_update = false;
 
         if let Some(record) = records.get_mut(&key) {
             // Only update if new_t > existing_t (strictly monotonic)
             if index_t > record.index_t {
-                record.index_address = Some(index_addr.to_string());
+                record.index_head_id = Some(index_id.clone());
                 record.index_t = index_t;
                 did_update = true;
             }
             // If index_t <= existing, silently ignore (monotonic guarantee)
         } else {
             // Create new record
-            let (ledger_name, branch) = parse_alias(alias)?;
+            let (ledger_name, branch) = core_ledger_id::split_ledger_id(ledger_id)?;
             let mut record = NsRecord::new(ledger_name, branch);
-            record.index_address = Some(index_addr.to_string());
+            record.index_head_id = Some(index_id.clone());
             record.index_t = index_t;
             records.insert(key, record);
             did_update = true;
@@ -199,16 +203,16 @@ impl Publisher for MemoryNameService {
 
         if did_update {
             let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                alias: self.normalize_alias(alias),
-                index_address: index_addr.to_string(),
+                ledger_id: self.normalize_ledger_id(ledger_id),
+                index_id: index_id.clone(),
                 index_t,
             });
         }
         Ok(())
     }
 
-    async fn retract(&self, alias: &str) -> Result<()> {
-        let key = self.normalize_alias(alias);
+    async fn retract(&self, ledger_id: &str) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
         let mut did_update = false;
 
@@ -230,14 +234,14 @@ impl Publisher for MemoryNameService {
 
             let _ = self
                 .event_tx
-                .send(NameServiceEvent::LedgerRetracted { alias: key });
+                .send(NameServiceEvent::LedgerRetracted { ledger_id: key });
         }
         Ok(())
     }
 
-    fn publishing_address(&self, alias: &str) -> Option<String> {
-        // Memory nameservice always returns the alias as the publishing address
-        Some(self.normalize_alias(alias))
+    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
+        // Memory nameservice always returns the normalized ledger ID for publishing
+        Some(self.normalize_ledger_id(ledger_id))
     }
 }
 
@@ -245,38 +249,38 @@ impl Publisher for MemoryNameService {
 impl AdminPublisher for MemoryNameService {
     async fn publish_index_allow_equal(
         &self,
-        alias: &str,
-        index_addr: &str,
+        ledger_id: &str,
         index_t: i64,
+        index_id: &ContentId,
     ) -> Result<()> {
-        let key = self.normalize_alias(alias);
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
 
         if let Some(record) = records.get_mut(&key) {
             // Allow update when new_t >= existing_t (not strictly monotonic)
             if index_t >= record.index_t {
-                record.index_address = Some(index_addr.to_string());
+                record.index_head_id = Some(index_id.clone());
                 record.index_t = index_t;
 
                 // Emit event (preserve semantics with regular publish_index)
                 let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    alias: key.clone(),
-                    index_address: index_addr.to_string(),
+                    ledger_id: key.clone(),
+                    index_id: index_id.clone(),
                     index_t,
                 });
             }
             // If index_t < existing, silently ignore (protect time-travel invariants)
         } else {
             // Create new record (same as publish_index)
-            let (ledger_name, branch) = parse_alias(alias)?;
+            let (ledger_name, branch) = core_ledger_id::split_ledger_id(ledger_id)?;
             let mut record = NsRecord::new(ledger_name, branch);
-            record.index_address = Some(index_addr.to_string());
+            record.index_head_id = Some(index_id.clone());
             record.index_t = index_t;
             records.insert(key.clone(), record);
 
             let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                alias: key,
-                index_address: index_addr.to_string(),
+                ledger_id: key,
+                index_id: index_id.clone(),
                 index_t,
             });
         }
@@ -287,19 +291,19 @@ impl AdminPublisher for MemoryNameService {
 
 #[async_trait]
 impl RefPublisher for MemoryNameService {
-    async fn get_ref(&self, alias: &str, kind: RefKind) -> Result<Option<RefValue>> {
-        let key = self.normalize_alias(alias);
+    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
+        let key = self.normalize_ledger_id(ledger_id);
         let records = self.records.read();
 
         match records.get(&key) {
             None => Ok(None),
             Some(record) => match kind {
                 RefKind::CommitHead => Ok(Some(RefValue {
-                    address: record.commit_address.clone(),
+                    id: record.commit_head_id.clone(),
                     t: record.commit_t,
                 })),
                 RefKind::IndexHead => Ok(Some(RefValue {
-                    address: record.index_address.clone(),
+                    id: record.index_head_id.clone(),
                     t: record.index_t,
                 })),
             },
@@ -308,21 +312,21 @@ impl RefPublisher for MemoryNameService {
 
     async fn compare_and_set_ref(
         &self,
-        alias: &str,
+        ledger_id: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
     ) -> Result<CasResult> {
-        let key = self.normalize_alias(alias);
+        let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
 
         let current_ref = records.get(&key).map(|r| match kind {
             RefKind::CommitHead => RefValue {
-                address: r.commit_address.clone(),
+                id: r.commit_head_id.clone(),
                 t: r.commit_t,
             },
             RefKind::IndexHead => RefValue {
-                address: r.index_address.clone(),
+                id: r.index_head_id.clone(),
                 t: r.index_t,
             },
         });
@@ -332,15 +336,15 @@ impl RefPublisher for MemoryNameService {
             (None, None) => {
                 // Creating a new ref — record must not exist yet.
                 // Initialize the ledger record.
-                let (ledger_name, branch) = parse_alias(alias)?;
+                let (ledger_name, branch) = core_ledger_id::split_ledger_id(ledger_id)?;
                 let mut record = NsRecord::new(ledger_name, branch);
                 match kind {
                     RefKind::CommitHead => {
-                        record.commit_address = new.address.clone();
+                        record.commit_head_id = new.id.clone();
                         record.commit_t = new.t;
                     }
                     RefKind::IndexHead => {
-                        record.index_address = new.address.clone();
+                        record.index_head_id = new.id.clone();
                         record.index_t = new.t;
                     }
                 }
@@ -348,19 +352,19 @@ impl RefPublisher for MemoryNameService {
                 // Emit event for new record creation.
                 match kind {
                     RefKind::CommitHead => {
-                        if let Some(addr) = &new.address {
+                        if let Some(cid) = &new.id {
                             let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                                alias: key,
-                                commit_address: addr.clone(),
+                                ledger_id: key,
+                                commit_id: cid.clone(),
                                 commit_t: new.t,
                             });
                         }
                     }
                     RefKind::IndexHead => {
-                        if let Some(addr) = &new.address {
+                        if let Some(cid) = &new.id {
                             let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                                alias: key,
-                                index_address: addr.clone(),
+                                ledger_id: key,
+                                index_id: cid.clone(),
                                 index_t: new.t,
                             });
                         }
@@ -379,8 +383,13 @@ impl RefPublisher for MemoryNameService {
                 return Ok(CasResult::Conflict { actual: None });
             }
             (Some(exp), Some(actual)) => {
-                // Both exist — compare addresses.
-                if exp.address != actual.address {
+                // Compare `id` (ContentId) for identity.
+                let identity_matches = match (&exp.id, &actual.id) {
+                    (Some(a), Some(b)) => a == b,
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !identity_matches {
                     return Ok(CasResult::Conflict {
                         actual: Some(actual.clone()),
                     });
@@ -388,7 +397,7 @@ impl RefPublisher for MemoryNameService {
             }
         }
 
-        // Address matches — check monotonic guard.
+        // Identity matches — check monotonic guard.
         let current = current_ref.as_ref().unwrap();
         let guard_ok = match kind {
             RefKind::CommitHead => new.t > current.t,
@@ -404,24 +413,24 @@ impl RefPublisher for MemoryNameService {
         let record = records.get_mut(&key).unwrap();
         match kind {
             RefKind::CommitHead => {
-                record.commit_address = new.address.clone();
+                record.commit_head_id = new.id.clone();
                 record.commit_t = new.t;
                 // Emit event.
-                if let Some(addr) = &new.address {
+                if let Some(cid) = &new.id {
                     let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                        alias: key.clone(),
-                        commit_address: addr.clone(),
+                        ledger_id: key.clone(),
+                        commit_id: cid.clone(),
                         commit_t: new.t,
                     });
                 }
             }
             RefKind::IndexHead => {
-                record.index_address = new.address.clone();
+                record.index_head_id = new.id.clone();
                 record.index_t = new.t;
-                if let Some(addr) = &new.address {
+                if let Some(cid) = &new.id {
                     let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                        alias: key.clone(),
-                        index_address: addr.clone(),
+                        ledger_id: key.clone(),
+                        index_id: cid.clone(),
                         index_t: new.t,
                     });
                 }
@@ -445,132 +454,91 @@ impl Publication for MemoryNameService {
         Ok(())
     }
 
-    async fn known_addresses(&self, alias: &str) -> Result<Vec<String>> {
-        let key = self.normalize_alias(alias);
-        let records = self.records.read();
-
-        if let Some(record) = records.get(&key) {
-            let mut addresses = Vec::new();
-            if let Some(addr) = &record.commit_address {
-                addresses.push(addr.clone());
-            }
-            if let Some(addr) = &record.index_address {
-                addresses.push(addr.clone());
-            }
-            Ok(addresses)
-        } else {
-            Ok(vec![])
-        }
+    async fn known_ledger_ids(&self, _ledger_id: &str) -> Result<Vec<String>> {
+        // CID-only nameservice no longer stores storage addresses.
+        Ok(vec![])
     }
 }
 
 #[async_trait]
-impl VirtualGraphPublisher for MemoryNameService {
-    async fn publish_vg(
+impl GraphSourcePublisher for MemoryNameService {
+    async fn publish_graph_source(
         &self,
         name: &str,
         branch: &str,
-        vg_type: VgType,
+        source_type: GraphSourceType,
         config: &str,
         dependencies: &[String],
     ) -> Result<()> {
-        let key = core_alias::format_alias(name, branch);
-        let mut vg_records = self.vg_records.write();
+        let key = core_ledger_id::format_ledger_id(name, branch);
+        let mut graph_source_records = self.graph_source_records.write();
 
-        if let Some(record) = vg_records.get_mut(&key) {
+        if let Some(record) = graph_source_records.get_mut(&key) {
             // Update config but preserve retracted status if already set
-            record.vg_type = vg_type.clone();
+            record.source_type = source_type.clone();
             record.config = config.to_string();
             record.dependencies = dependencies.to_vec();
         } else {
-            // Create new VG record
-            let record =
-                VgNsRecord::new(name, branch, vg_type.clone(), config, dependencies.to_vec());
-            vg_records.insert(key, record);
+            // Create new graph source record
+            let record = GraphSourceRecord::new(
+                name,
+                branch,
+                source_type.clone(),
+                config,
+                dependencies.to_vec(),
+            );
+            graph_source_records.insert(key, record);
         }
 
-        let _ = self.event_tx.send(NameServiceEvent::VgConfigPublished {
-            alias: core_alias::format_alias(name, branch),
-            vg_type,
-            dependencies: dependencies.to_vec(),
-        });
+        let _ = self
+            .event_tx
+            .send(NameServiceEvent::GraphSourceConfigPublished {
+                graph_source_id: core_ledger_id::format_ledger_id(name, branch),
+                source_type,
+                dependencies: dependencies.to_vec(),
+            });
         Ok(())
     }
 
-    async fn publish_vg_index(
+    async fn publish_graph_source_index(
         &self,
         name: &str,
         branch: &str,
-        index_addr: &str,
+        index_id: &ContentId,
         index_t: i64,
     ) -> Result<()> {
-        let key = core_alias::format_alias(name, branch);
-        let mut vg_records = self.vg_records.write();
+        let key = core_ledger_id::format_ledger_id(name, branch);
+        let mut graph_source_records = self.graph_source_records.write();
         let mut did_update = false;
 
-        if let Some(record) = vg_records.get_mut(&key) {
+        if let Some(record) = graph_source_records.get_mut(&key) {
             // Strictly monotonic: only update if new_t > existing_t
             if index_t > record.index_t {
-                record.index_address = Some(index_addr.to_string());
+                record.index_id = Some(index_id.clone());
                 record.index_t = index_t;
                 did_update = true;
             }
         }
-        // If VG doesn't exist, silently ignore (index requires config first)
+        // If graph source doesn't exist, silently ignore (index requires config first)
 
         if did_update {
-            let _ = self.event_tx.send(NameServiceEvent::VgIndexPublished {
-                alias: key,
-                index_address: index_addr.to_string(),
-                index_t,
-            });
+            let _ = self
+                .event_tx
+                .send(NameServiceEvent::GraphSourceIndexPublished {
+                    graph_source_id: key,
+                    index_id: index_id.clone(),
+                    index_t,
+                });
         }
         Ok(())
     }
 
-    async fn publish_vg_snapshot(
-        &self,
-        name: &str,
-        branch: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()> {
-        let key = core_alias::format_alias(name, branch);
-        let mut vg_snapshots = self.vg_snapshots.write();
-
-        let history = vg_snapshots
-            .entry(key.clone())
-            .or_insert_with(|| VgSnapshotHistory::new(&key));
-
-        // Append is monotonic - returns false if entry is rejected
-        let did_append = history.append(VgSnapshotEntry::new(index_t, index_addr));
-        if did_append {
-            let _ = self.event_tx.send(NameServiceEvent::VgSnapshotPublished {
-                alias: key,
-                index_address: index_addr.to_string(),
-                index_t,
-            });
-        }
-
-        Ok(())
-    }
-
-    async fn lookup_vg_snapshots(&self, alias: &str) -> Result<VgSnapshotHistory> {
-        let key = self.normalize_alias(alias);
-        let vg_snapshots = self.vg_snapshots.read();
-
-        Ok(vg_snapshots
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(|| VgSnapshotHistory::new(&key)))
-    }
-
-    async fn retract_vg(&self, name: &str, branch: &str) -> Result<()> {
-        let key = core_alias::format_alias(name, branch);
-        let mut vg_records = self.vg_records.write();
+    async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()> {
+        let key = core_ledger_id::format_ledger_id(name, branch);
+        let mut graph_source_records = self.graph_source_records.write();
         let mut did_update = false;
 
-        if let Some(record) = vg_records.get_mut(&key) {
+        if let Some(record) = graph_source_records.get_mut(&key) {
             if !record.retracted {
                 record.retracted = true;
                 did_update = true;
@@ -578,24 +546,27 @@ impl VirtualGraphPublisher for MemoryNameService {
         }
 
         if did_update {
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::VgRetracted { alias: key });
+            let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
+                graph_source_id: key,
+            });
         }
         Ok(())
     }
 
-    async fn lookup_vg(&self, alias: &str) -> Result<Option<VgNsRecord>> {
-        let key = self.normalize_alias(alias);
-        Ok(self.vg_records.read().get(&key).cloned())
+    async fn lookup_graph_source(
+        &self,
+        graph_source_id: &str,
+    ) -> Result<Option<GraphSourceRecord>> {
+        let key = self.normalize_ledger_id(graph_source_id);
+        Ok(self.graph_source_records.read().get(&key).cloned())
     }
 
-    async fn lookup_any(&self, alias: &str) -> Result<NsLookupResult> {
-        let key = self.normalize_alias(alias);
+    async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult> {
+        let key = self.normalize_ledger_id(resource_id);
 
-        // Check VG records first
-        if let Some(record) = self.vg_records.read().get(&key).cloned() {
-            return Ok(NsLookupResult::VirtualGraph(record));
+        // Check graph source records first
+        if let Some(record) = self.graph_source_records.read().get(&key).cloned() {
+            return Ok(NsLookupResult::GraphSource(record));
         }
 
         // Then check ledger records
@@ -606,15 +577,15 @@ impl VirtualGraphPublisher for MemoryNameService {
         Ok(NsLookupResult::NotFound)
     }
 
-    async fn all_vg_records(&self) -> Result<Vec<VgNsRecord>> {
-        Ok(self.vg_records.read().values().cloned().collect())
+    async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>> {
+        Ok(self.graph_source_records.read().values().cloned().collect())
     }
 }
 
 #[async_trait]
 impl StatusPublisher for MemoryNameService {
-    async fn get_status(&self, alias: &str) -> Result<Option<StatusValue>> {
-        let key = self.normalize_alias(alias);
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
+        let key = self.normalize_ledger_id(ledger_id);
         let status_values = self.status_values.read();
 
         // If status exists, return it
@@ -634,11 +605,11 @@ impl StatusPublisher for MemoryNameService {
 
     async fn push_status(
         &self,
-        alias: &str,
+        ledger_id: &str,
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> Result<StatusCasResult> {
-        let key = self.normalize_alias(alias);
+        let key = self.normalize_ledger_id(ledger_id);
 
         // Get current status (or initial if record exists but no status)
         let current = {
@@ -696,8 +667,8 @@ impl StatusPublisher for MemoryNameService {
 
 #[async_trait]
 impl ConfigPublisher for MemoryNameService {
-    async fn get_config(&self, alias: &str) -> Result<Option<ConfigValue>> {
-        let key = self.normalize_alias(alias);
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
+        let key = self.normalize_ledger_id(ledger_id);
         let config_values = self.config_values.read();
 
         // If config exists, return it
@@ -717,11 +688,11 @@ impl ConfigPublisher for MemoryNameService {
 
     async fn push_config(
         &self,
-        alias: &str,
+        ledger_id: &str,
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
-        let key = self.normalize_alias(alias);
+        let key = self.normalize_ledger_id(ledger_id);
 
         // Get current config (or unborn if record exists but no config)
         let current = {
@@ -773,10 +744,12 @@ impl ConfigPublisher for MemoryNameService {
         // Apply the update to config_values
         self.config_values.write().insert(key.clone(), new.clone());
 
-        // Sync default_context to NsRecord.default_context_address
+        // Sync default_context and config_id to NsRecord
         let new_default_context = new.payload.as_ref().and_then(|p| p.default_context.clone());
+        let new_config_id = new.payload.as_ref().and_then(|p| p.config_id.clone());
         if let Some(record) = self.records.write().get_mut(&key) {
-            record.default_context_address = new_default_context;
+            record.default_context = new_default_context;
+            record.config_id = new_config_id;
         }
 
         Ok(ConfigCasResult::Updated)
@@ -787,33 +760,46 @@ impl ConfigPublisher for MemoryNameService {
 mod tests {
     use super::*;
     use crate::{ConfigPayload, StatusPayload};
+    use fluree_db_core::ContentKind;
     use tokio::sync::broadcast::error::TryRecvError;
+
+    fn test_commit_id(label: &str) -> ContentId {
+        ContentId::new(ContentKind::Commit, label.as_bytes())
+    }
+
+    fn test_index_id(label: &str) -> ContentId {
+        ContentId::new(ContentKind::IndexRoot, label.as_bytes())
+    }
 
     #[tokio::test]
     async fn test_memory_ns_publish_commit() {
         let ns = MemoryNameService::new();
 
         // First publish
-        ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
-
-        let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.commit_address, Some("commit-1".to_string()));
-        assert_eq!(record.commit_t, 1);
-
-        // Higher t should update
-        ns.publish_commit("mydb:main", "commit-2", 5).await.unwrap();
-
-        let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.commit_address, Some("commit-2".to_string()));
-        assert_eq!(record.commit_t, 5);
-
-        // Lower t should be ignored (monotonic)
-        ns.publish_commit("mydb:main", "commit-old", 3)
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
-        assert_eq!(record.commit_address, Some("commit-2".to_string()));
+        assert_eq!(record.commit_head_id, Some(test_commit_id("commit-1")));
+        assert_eq!(record.commit_t, 1);
+
+        // Higher t should update
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-2"))
+            .await
+            .unwrap();
+
+        let record = ns.lookup("mydb:main").await.unwrap().unwrap();
+        assert_eq!(record.commit_head_id, Some(test_commit_id("commit-2")));
+        assert_eq!(record.commit_t, 5);
+
+        // Lower t should be ignored (monotonic)
+        ns.publish_commit("mydb:main", 3, &test_commit_id("commit-old"))
+            .await
+            .unwrap();
+
+        let record = ns.lookup("mydb:main").await.unwrap().unwrap();
+        assert_eq!(record.commit_head_id, Some(test_commit_id("commit-2")));
         assert_eq!(record.commit_t, 5);
     }
 
@@ -822,12 +808,14 @@ mod tests {
         let ns = MemoryNameService::new();
 
         // Publish commit first
-        ns.publish_commit("mydb:main", "commit-1", 10)
+        ns.publish_commit("mydb:main", 10, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
         // Publish index (can lag behind commit)
-        ns.publish_index("mydb:main", "index-1", 5).await.unwrap();
+        ns.publish_index("mydb:main", 5, &test_index_id("index-1"))
+            .await
+            .unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_t, 10);
@@ -839,7 +827,9 @@ mod tests {
     async fn test_memory_ns_lookup_default_branch() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         // Lookup without branch should find default
         let record = ns.lookup("mydb").await.unwrap();
@@ -854,7 +844,9 @@ mod tests {
     async fn test_memory_ns_retract() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert!(!record.retracted);
@@ -869,21 +861,30 @@ mod tests {
     async fn test_memory_ns_all_records() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit("db1:main", "commit-1", 1).await.unwrap();
-        ns.publish_commit("db2:main", "commit-2", 1).await.unwrap();
-        ns.publish_commit("db3:dev", "commit-3", 1).await.unwrap();
+        ns.publish_commit("db1:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
+        ns.publish_commit("db2:main", 1, &test_commit_id("commit-2"))
+            .await
+            .unwrap();
+        ns.publish_commit("db3:dev", 1, &test_commit_id("commit-3"))
+            .await
+            .unwrap();
 
         let records = ns.all_records().await.unwrap();
         assert_eq!(records.len(), 3);
     }
 
     #[tokio::test]
-    async fn test_memory_ns_publishing_address() {
+    async fn test_memory_ns_publishing_ledger_id() {
         let ns = MemoryNameService::new();
 
-        assert_eq!(ns.publishing_address("mydb"), Some("mydb:main".to_string()));
         assert_eq!(
-            ns.publishing_address("mydb:dev"),
+            ns.publishing_ledger_id("mydb"),
+            Some("mydb:main".to_string())
+        );
+        assert_eq!(
+            ns.publishing_ledger_id("mydb:dev"),
             Some("mydb:dev".to_string())
         );
     }
@@ -892,225 +893,131 @@ mod tests {
     async fn test_memory_ns_emits_events_on_publish_commit_monotonic() {
         let ns = MemoryNameService::new();
         let mut sub = ns
-            .subscribe(crate::SubscriptionScope::alias("mydb:main"))
+            .subscribe(crate::SubscriptionScope::resource_id("mydb:main"))
             .await
             .unwrap();
 
-        ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
         let evt = sub.receiver.recv().await.unwrap();
         assert_eq!(
             evt,
             NameServiceEvent::LedgerCommitPublished {
-                alias: "mydb:main".to_string(),
-                commit_address: "commit-1".to_string(),
+                ledger_id: "mydb:main".to_string(),
+                commit_id: test_commit_id("commit-1"),
                 commit_t: 1
             }
         );
 
         // Lower t should not emit a new event.
-        ns.publish_commit("mydb:main", "commit-old", 0)
+        ns.publish_commit("mydb:main", 0, &test_commit_id("commit-old"))
             .await
             .unwrap();
         assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
-    // ========== Virtual Graph Tests ==========
+    // ========== Graph Source Tests ==========
 
     #[tokio::test]
-    async fn test_memory_vg_publish_and_lookup() {
+    async fn test_memory_graph_source_publish_and_lookup() {
         let ns = MemoryNameService::new();
 
-        ns.publish_vg(
+        ns.publish_graph_source(
             "my-search",
             "main",
-            VgType::Bm25,
+            GraphSourceType::Bm25,
             r#"{"k1":1.2}"#,
             &["source:main".to_string()],
         )
         .await
         .unwrap();
 
-        let record = ns.lookup_vg("my-search:main").await.unwrap().unwrap();
+        let record = ns
+            .lookup_graph_source("my-search:main")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(record.name, "my-search");
         assert_eq!(record.branch, "main");
-        assert_eq!(record.vg_type, VgType::Bm25);
+        assert_eq!(record.source_type, GraphSourceType::Bm25);
         assert_eq!(record.config, r#"{"k1":1.2}"#);
         assert!(!record.retracted);
     }
 
     #[tokio::test]
-    async fn test_memory_vg_index_monotonic() {
+    async fn test_memory_graph_source_index_monotonic() {
         let ns = MemoryNameService::new();
 
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
 
-        ns.publish_vg_index("vg", "main", "index-v1", 10)
+        let id_v1 = ContentId::new(ContentKind::IndexRoot, b"index-v1");
+        let id_v2 = ContentId::new(ContentKind::IndexRoot, b"index-v2");
+        let id_old = ContentId::new(ContentKind::IndexRoot, b"index-old");
+
+        ns.publish_graph_source_index("gs", "main", &id_v1, 10)
             .await
             .unwrap();
 
-        ns.publish_vg_index("vg", "main", "index-v2", 20)
+        ns.publish_graph_source_index("gs", "main", &id_v2, 20)
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
-        assert_eq!(record.index_address, Some("index-v2".to_string()));
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
+        assert_eq!(record.index_id, Some(id_v2.clone()));
         assert_eq!(record.index_t, 20);
 
         // Lower t should be ignored
-        ns.publish_vg_index("vg", "main", "index-old", 15)
+        ns.publish_graph_source_index("gs", "main", &id_old, 15)
             .await
             .unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
-        assert_eq!(record.index_address, Some("index-v2".to_string()));
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
+        assert_eq!(record.index_id, Some(id_v2));
         assert_eq!(record.index_t, 20);
     }
 
     #[tokio::test]
-    async fn test_memory_vg_retract() {
+    async fn test_memory_graph_source_retract() {
         let ns = MemoryNameService::new();
 
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
 
-        ns.retract_vg("vg", "main").await.unwrap();
+        ns.retract_graph_source("gs", "main").await.unwrap();
 
-        let record = ns.lookup_vg("vg:main").await.unwrap().unwrap();
+        let record = ns.lookup_graph_source("gs:main").await.unwrap().unwrap();
         assert!(record.retracted);
     }
 
     #[tokio::test]
-    async fn test_memory_vg_lookup_any() {
+    async fn test_memory_graph_source_lookup_any() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit("ledger:main", "commit-1", 1)
+        ns.publish_commit("ledger:main", 1, &test_commit_id("commit-1"))
             .await
             .unwrap();
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
+        ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
 
         match ns.lookup_any("ledger:main").await.unwrap() {
-            NsLookupResult::Ledger(r) => assert_eq!(r.alias, "ledger"),
+            NsLookupResult::Ledger(r) => assert_eq!(r.name, "ledger"),
             other => panic!("Expected Ledger, got {:?}", other),
         }
 
-        match ns.lookup_any("vg:main").await.unwrap() {
-            NsLookupResult::VirtualGraph(r) => assert_eq!(r.name, "vg"),
-            other => panic!("Expected VirtualGraph, got {:?}", other),
+        match ns.lookup_any("gs:main").await.unwrap() {
+            NsLookupResult::GraphSource(r) => assert_eq!(r.name, "gs"),
+            other => panic!("Expected GraphSource, got {:?}", other),
         }
 
         match ns.lookup_any("nonexistent:main").await.unwrap() {
             NsLookupResult::NotFound => {}
             other => panic!("Expected NotFound, got {:?}", other),
         }
-    }
-
-    // ========== VG Snapshot History Tests ==========
-
-    #[tokio::test]
-    async fn test_memory_vg_snapshot_publish_and_lookup() {
-        let ns = MemoryNameService::new();
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        // Publish snapshots
-        ns.publish_vg_snapshot("vg", "main", "addr-t5", 5)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t10", 10)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t20", 20)
-            .await
-            .unwrap();
-
-        // Lookup and verify
-        let history = ns.lookup_vg_snapshots("vg:main").await.unwrap();
-        assert_eq!(history.alias, "vg:main");
-        assert_eq!(history.snapshots.len(), 3);
-        assert_eq!(history.snapshots[0].index_t, 5);
-        assert_eq!(history.snapshots[1].index_t, 10);
-        assert_eq!(history.snapshots[2].index_t, 20);
-    }
-
-    #[tokio::test]
-    async fn test_memory_vg_snapshot_monotonic() {
-        let ns = MemoryNameService::new();
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        ns.publish_vg_snapshot("vg", "main", "addr-t10", 10)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t20", 20)
-            .await
-            .unwrap();
-
-        // Lower t should be ignored
-        ns.publish_vg_snapshot("vg", "main", "addr-t15", 15)
-            .await
-            .unwrap();
-
-        // Equal t should be ignored
-        ns.publish_vg_snapshot("vg", "main", "addr-t20-dup", 20)
-            .await
-            .unwrap();
-
-        let history = ns.lookup_vg_snapshots("vg:main").await.unwrap();
-        assert_eq!(history.snapshots.len(), 2);
-        assert_eq!(history.snapshots[0].index_t, 10);
-        assert_eq!(history.snapshots[1].index_t, 20);
-        assert_eq!(history.snapshots[1].index_address, "addr-t20");
-    }
-
-    #[tokio::test]
-    async fn test_memory_vg_snapshot_lookup_empty() {
-        let ns = MemoryNameService::new();
-
-        // Lookup nonexistent VG snapshots returns empty history
-        let history = ns.lookup_vg_snapshots("nonexistent:main").await.unwrap();
-        assert_eq!(history.alias, "nonexistent:main");
-        assert!(history.snapshots.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_memory_vg_snapshot_selection() {
-        let ns = MemoryNameService::new();
-
-        ns.publish_vg("vg", "main", VgType::Bm25, "{}", &[])
-            .await
-            .unwrap();
-
-        ns.publish_vg_snapshot("vg", "main", "addr-t5", 5)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t10", 10)
-            .await
-            .unwrap();
-        ns.publish_vg_snapshot("vg", "main", "addr-t20", 20)
-            .await
-            .unwrap();
-
-        let history = ns.lookup_vg_snapshots("vg:main").await.unwrap();
-
-        // Select best snapshot for as_of_t=12 should be t=10
-        let snap = history.select_snapshot(12).unwrap();
-        assert_eq!(snap.index_t, 10);
-
-        // Select best snapshot for as_of_t=25 should be t=20
-        let snap = history.select_snapshot(25).unwrap();
-        assert_eq!(snap.index_t, 20);
-
-        // Select best snapshot for as_of_t=3 should be None
-        assert!(history.select_snapshot(3).is_none());
     }
 
     // =========================================================================
@@ -1130,23 +1037,25 @@ mod tests {
     #[tokio::test]
     async fn test_ref_get_ref_after_publish() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 5).await.unwrap();
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let commit = ns
             .get_ref("mydb:main", RefKind::CommitHead)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(commit.address, Some("commit-1".to_string()));
+        assert_eq!(commit.id, Some(test_commit_id("commit-1")));
         assert_eq!(commit.t, 5);
 
-        // Index should exist but be at t=0 with no address (unborn-like)
+        // Index should exist but be at t=0 with no id (unborn-like)
         let index = ns
             .get_ref("mydb:main", RefKind::IndexHead)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(index.address, None);
+        assert_eq!(index.id, None);
         assert_eq!(index.t, 0);
     }
 
@@ -1154,7 +1063,7 @@ mod tests {
     async fn test_ref_cas_create_new() {
         let ns = MemoryNameService::new();
         let new_ref = RefValue {
-            address: Some("commit-1".to_string()),
+            id: Some(test_commit_id("commit-1")),
             t: 1,
         };
 
@@ -1169,17 +1078,19 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(current.address, Some("commit-1".to_string()));
+        assert_eq!(current.id, Some(test_commit_id("commit-1")));
         assert_eq!(current.t, 1);
     }
 
     #[tokio::test]
     async fn test_ref_cas_conflict_already_exists() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let new_ref = RefValue {
-            address: Some("commit-2".to_string()),
+            id: Some(test_commit_id("commit-2")),
             t: 2,
         };
         // expected=None but record exists → conflict
@@ -1190,7 +1101,7 @@ mod tests {
         match result {
             CasResult::Conflict { actual } => {
                 let a = actual.unwrap();
-                assert_eq!(a.address, Some("commit-1".to_string()));
+                assert_eq!(a.id, Some(test_commit_id("commit-1")));
                 assert_eq!(a.t, 1);
             }
             _ => panic!("expected conflict"),
@@ -1198,16 +1109,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ref_cas_conflict_address_mismatch() {
+    async fn test_ref_cas_conflict_id_mismatch() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let expected = RefValue {
-            address: Some("wrong-address".to_string()),
+            id: Some(test_commit_id("wrong-id")),
             t: 1,
         };
         let new_ref = RefValue {
-            address: Some("commit-2".to_string()),
+            id: Some(test_commit_id("commit-2")),
             t: 2,
         };
         let result = ns
@@ -1216,23 +1129,25 @@ mod tests {
             .unwrap();
         match result {
             CasResult::Conflict { actual } => {
-                assert_eq!(actual.unwrap().address, Some("commit-1".to_string()));
+                assert_eq!(actual.unwrap().id, Some(test_commit_id("commit-1")));
             }
             _ => panic!("expected conflict"),
         }
     }
 
     #[tokio::test]
-    async fn test_ref_cas_success_address_matches() {
+    async fn test_ref_cas_success_id_matches() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let expected = RefValue {
-            address: Some("commit-1".to_string()),
+            id: Some(test_commit_id("commit-1")),
             t: 1,
         };
         let new_ref = RefValue {
-            address: Some("commit-2".to_string()),
+            id: Some(test_commit_id("commit-2")),
             t: 2,
         };
         let result = ns
@@ -1246,22 +1161,24 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(current.address, Some("commit-2".to_string()));
+        assert_eq!(current.id, Some(test_commit_id("commit-2")));
         assert_eq!(current.t, 2);
     }
 
     #[tokio::test]
     async fn test_ref_cas_commit_strict_monotonic() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 5).await.unwrap();
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let expected = RefValue {
-            address: Some("commit-1".to_string()),
+            id: Some(test_commit_id("commit-1")),
             t: 5,
         };
         // Same t should fail (strict for CommitHead)
         let new_ref = RefValue {
-            address: Some("commit-2".to_string()),
+            id: Some(test_commit_id("commit-2")),
             t: 5,
         };
         let result = ns
@@ -1275,7 +1192,7 @@ mod tests {
 
         // Lower t should also fail
         let new_ref = RefValue {
-            address: Some("commit-2".to_string()),
+            id: Some(test_commit_id("commit-2")),
             t: 3,
         };
         let result = ns
@@ -1291,16 +1208,20 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_index_allows_equal_t() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 5).await.unwrap();
-        ns.publish_index("mydb:main", "index-1", 5).await.unwrap();
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
+        ns.publish_index("mydb:main", 5, &test_index_id("index-1"))
+            .await
+            .unwrap();
 
         let expected = RefValue {
-            address: Some("index-1".to_string()),
+            id: Some(test_index_id("index-1")),
             t: 5,
         };
         // Same t should succeed for IndexHead (non-strict)
         let new_ref = RefValue {
-            address: Some("index-2".to_string()),
+            id: Some(test_index_id("index-2")),
             t: 5,
         };
         let result = ns
@@ -1313,10 +1234,12 @@ mod tests {
     #[tokio::test]
     async fn test_ref_fast_forward_commit_success() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 1).await.unwrap();
+        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
 
         let new_ref = RefValue {
-            address: Some("commit-5".to_string()),
+            id: Some(test_commit_id("commit-5")),
             t: 5,
         };
         let result = ns
@@ -1336,12 +1259,12 @@ mod tests {
     #[tokio::test]
     async fn test_ref_fast_forward_commit_rejected_stale() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 10)
+        ns.publish_commit("mydb:main", 10, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
         let new_ref = RefValue {
-            address: Some("commit-old".to_string()),
+            id: Some(test_commit_id("commit-old")),
             t: 5,
         };
         let result = ns
@@ -1360,11 +1283,11 @@ mod tests {
     async fn test_ref_cas_expected_some_but_missing() {
         let ns = MemoryNameService::new();
         let expected = RefValue {
-            address: Some("commit-1".to_string()),
+            id: Some(test_commit_id("commit-1")),
             t: 1,
         };
         let new_ref = RefValue {
-            address: Some("commit-2".to_string()),
+            id: Some(test_commit_id("commit-2")),
             t: 2,
         };
         let result = ns
@@ -1383,12 +1306,12 @@ mod tests {
     async fn test_ref_cas_emits_commit_event() {
         let ns = MemoryNameService::new();
         let mut sub = ns
-            .subscribe(crate::SubscriptionScope::alias("mydb:main"))
+            .subscribe(crate::SubscriptionScope::resource_id("mydb:main"))
             .await
             .unwrap();
 
         let new_ref = RefValue {
-            address: Some("commit-1".to_string()),
+            id: Some(test_commit_id("commit-1")),
             t: 1,
         };
         ns.compare_and_set_ref("mydb:main", RefKind::CommitHead, None, &new_ref)
@@ -1397,12 +1320,12 @@ mod tests {
 
         match sub.receiver.recv().await.unwrap() {
             NameServiceEvent::LedgerCommitPublished {
-                alias,
-                commit_address,
+                ledger_id,
+                commit_id,
                 commit_t,
             } => {
-                assert_eq!(alias, "mydb:main");
-                assert_eq!(commit_address, "commit-1");
+                assert_eq!(ledger_id, "mydb:main");
+                assert_eq!(commit_id, test_commit_id("commit-1"));
                 assert_eq!(commit_t, 1);
             }
             other => panic!("expected LedgerCommitPublished, got {:?}", other),
@@ -1412,18 +1335,17 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_emits_index_event() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", "commit-1", 5).await.unwrap();
+        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
+            .await
+            .unwrap();
         let mut sub = ns
-            .subscribe(crate::SubscriptionScope::alias("mydb:main"))
+            .subscribe(crate::SubscriptionScope::resource_id("mydb:main"))
             .await
             .unwrap();
 
-        let expected = RefValue {
-            address: None,
-            t: 0,
-        };
+        let expected = RefValue { id: None, t: 0 };
         let new_ref = RefValue {
-            address: Some("index-1".to_string()),
+            id: Some(test_index_id("index-1")),
             t: 5,
         };
         ns.compare_and_set_ref("mydb:main", RefKind::IndexHead, Some(&expected), &new_ref)
@@ -1432,12 +1354,12 @@ mod tests {
 
         match sub.receiver.recv().await.unwrap() {
             NameServiceEvent::LedgerIndexPublished {
-                alias,
-                index_address,
+                ledger_id,
+                index_id,
                 index_t,
             } => {
-                assert_eq!(alias, "mydb:main");
-                assert_eq!(index_address, "index-1");
+                assert_eq!(ledger_id, "mydb:main");
+                assert_eq!(index_id, test_index_id("index-1"));
                 assert_eq!(index_t, 5);
             }
             other => panic!("expected LedgerIndexPublished, got {:?}", other),

@@ -17,6 +17,9 @@ pub mod errors;
 
 /// RDF vocabulary constants
 pub mod rdf {
+    /// rdf namespace IRI (prefix)
+    pub const NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+
     /// rdf:type IRI
     pub const TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 
@@ -38,6 +41,9 @@ pub mod rdf {
 
 /// RDFS vocabulary constants
 pub mod rdfs {
+    /// rdfs namespace IRI (prefix)
+    pub const NS: &str = "http://www.w3.org/2000/01/rdf-schema#";
+
     /// rdfs:subClassOf IRI
     pub const SUB_CLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
 
@@ -53,6 +59,9 @@ pub mod rdfs {
 
 /// XSD vocabulary constants
 pub mod xsd {
+    /// xsd namespace IRI (prefix)
+    pub const NS: &str = "http://www.w3.org/2001/XMLSchema#";
+
     /// xsd:string IRI
     pub const STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 
@@ -586,6 +595,9 @@ pub mod rdf_names {
 
 /// OWL vocabulary constants
 pub mod owl {
+    /// owl namespace IRI (prefix)
+    pub const NS: &str = "http://www.w3.org/2002/07/owl#";
+
     /// owl:inverseOf IRI
     pub const INVERSE_OF: &str = "http://www.w3.org/2002/07/owl#inverseOf";
 
@@ -1283,17 +1295,30 @@ pub mod shacl_names {
 
 /// Fluree-specific vocabulary constants
 pub mod fluree {
-    /// Fluree ledger namespace IRI
-    pub const LEDGER: &str = "https://ns.flur.ee/ledger#";
+    /// Fluree DB system namespace IRI (canonical base for all Fluree system vocabulary)
+    pub const DB: &str = "https://ns.flur.ee/db#";
 
-    /// f:rule IRI - datalog rule definition predicate
-    pub const RULE: &str = "https://ns.flur.ee/ledger#rule";
+    /// db:rule IRI - datalog rule definition predicate
+    pub const RULE: &str = "https://ns.flur.ee/db#rule";
 
-    /// Fluree commit namespace IRI
+    /// Fluree commit subject identifier scheme (not a predicate vocabulary)
     pub const COMMIT: &str = "fluree:commit:sha256:";
 
-    /// Fluree vector datatype IRI
-    pub const VECTOR: &str = "https://ns.flur.ee/ledger#vector";
+    /// db:embeddingVector datatype IRI (f32-precision embedding vectors)
+    /// The `@vector` shorthand in JSON-LD resolves to this IRI.
+    pub const EMBEDDING_VECTOR: &str = "https://ns.flur.ee/db#embeddingVector";
+
+    /// Full IRI for db:t predicate (used in RDF-Star annotation matching)
+    pub const DB_T: &str = "https://ns.flur.ee/db#t";
+
+    /// Full IRI for db:op predicate (used in RDF-Star annotation matching)
+    pub const DB_OP: &str = "https://ns.flur.ee/db#op";
+
+    /// "This commit" placeholder IRI (HTTP form, expands from `fluree:commit:this` with db# context)
+    pub const COMMIT_THIS_HTTP: &str = "https://ns.flur.ee/db#commit:this";
+
+    /// "This commit" placeholder IRI (scheme form, used without prefix definition)
+    pub const COMMIT_THIS_SCHEME: &str = "fluree:commit:this";
 }
 
 /// Namespace codes for IRI encoding
@@ -1324,8 +1349,8 @@ pub mod namespaces {
     /// Code 6: OWL
     pub const OWL: u16 = 6;
 
-    /// Code 7: Fluree ledger namespace
-    pub const FLUREE_LEDGER: u16 = 7;
+    /// Code 7: Fluree DB system namespace (https://ns.flur.ee/db#)
+    pub const FLUREE_DB: u16 = 7;
 
     /// Code 8: DID key prefix
     pub const DID_KEY: u16 = 8;
@@ -1397,109 +1422,230 @@ pub mod predicates {
     pub const OWL_TRANSITIVEPROPERTY: &str = "TransitiveProperty";
 }
 
-/// Fluree Ledger namespace predicate local names
-pub mod ledger {
-    /// ledger:address - storage address (commit or DB snapshot)
+/// Fluree DB namespace predicate local names (for SID construction)
+///
+/// These are local name constants under `https://ns.flur.ee/db#`.
+/// Used with `Sid::new(FLUREE_DB, db::FIELD)` for commit metadata flakes.
+pub mod db {
+    /// db:address - storage address (commit or DB snapshot)
     pub const ADDRESS: &str = "address";
 
-    /// ledger:alias - ledger alias
+    /// db:alias - ledger alias (used in commit metadata)
     pub const ALIAS: &str = "alias";
 
-    /// ledger:v - version number
+    /// db:v - version number
     pub const V: &str = "v";
 
-    /// ledger:previous - reference to previous commit
+    /// db:previous - reference to previous commit
     pub const PREVIOUS: &str = "previous";
 
-    /// ledger:time - commit timestamp (epoch milliseconds)
+    /// db:time - commit timestamp (epoch milliseconds)
     pub const TIME: &str = "time";
 
-    /// ledger:data - reference to DB data subject
-    pub const DATA: &str = "data";
-
-    /// ledger:message - commit message (optional)
+    /// db:message - commit message (optional)
     pub const MESSAGE: &str = "message";
 
-    /// ledger:author - commit author (optional)
+    /// db:author - commit author (optional)
     pub const AUTHOR: &str = "author";
 
-    /// ledger:txn - transaction address (optional)
+    /// db:txn - transaction address (optional)
     pub const TXN: &str = "txn";
 
-    /// ledger:t - transaction number (on DB data subject)
+    /// db:t - transaction number (watermark)
     pub const T: &str = "t";
 
-    /// ledger:size - data size in bytes (cumulative on DB data, per-commit on txn-meta)
+    /// db:size - data size in bytes (cumulative on DB data, per-commit on txn-meta)
     pub const SIZE: &str = "size";
 
-    /// ledger:flakes - cumulative flake count (on DB data subject in default graph)
+    /// db:flakes - cumulative flake count (on DB data subject in default graph)
     pub const FLAKES: &str = "flakes";
 
-    /// ledger:asserts - number of assertions in this commit (txn-meta graph)
+    /// db:asserts - number of assertions in this commit (txn-meta graph)
     pub const ASSERTS: &str = "asserts";
 
-    /// ledger:retracts - number of retractions in this commit (txn-meta graph)
+    /// db:retracts - number of retractions in this commit (txn-meta graph)
     pub const RETRACTS: &str = "retracts";
 
-    /// ledger:rule - datalog rule definition
-    /// Used to store user-defined reasoning rules with where/insert clauses
+    /// db:rule - datalog rule definition
     pub const RULE: &str = "rule";
+
+    /// db:op - operation type in RDF-Star annotations (assert/retract)
+    pub const OP: &str = "op";
+
+    /// db:ledgerCommit - nameservice field: pointer to latest ledger commit address
+    pub const LEDGER_COMMIT: &str = "ledgerCommit";
+
+    /// db:ledgerIndex - nameservice field: pointer to latest ledger index root
+    pub const LEDGER_INDEX: &str = "ledgerIndex";
 }
 
-/// Fluree Index namespace predicate local names
-pub mod index {
-    /// idx:target - search query text for BM25 queries
-    pub const TARGET: &str = "target";
+/// Fluree DB search query key local names (under `https://ns.flur.ee/db#`)
+///
+/// These are the local names for BM25/vector search pattern keys in queries.
+/// Users must declare `"f": "https://ns.flur.ee/db#"` in their `@context`
+/// and use keys like `"f:searchText"`, or use the full IRI directly.
+pub mod search {
+    /// db:searchText - BM25 search query text
+    pub const SEARCH_TEXT: &str = "searchText";
 
-    /// idx:limit - maximum number of results to return
-    pub const LIMIT: &str = "limit";
+    /// db:searchLimit - maximum number of search results
+    pub const SEARCH_LIMIT: &str = "searchLimit";
 
-    /// idx:result - result pattern specification (can be a var or node ref)
-    pub const RESULT: &str = "result";
+    /// db:searchResult - result binding specification (variable or nested object)
+    pub const SEARCH_RESULT: &str = "searchResult";
 
-    /// idx:id - document ID binding in result pattern
-    pub const ID: &str = "id";
+    /// db:resultId - document ID binding in result pattern
+    pub const RESULT_ID: &str = "resultId";
 
-    /// idx:score - BM25 score binding in result pattern
-    pub const SCORE: &str = "score";
+    /// db:resultScore - score binding in result pattern
+    pub const RESULT_SCORE: &str = "resultScore";
 
-    /// idx:ledger - optional ledger alias binding for multi-ledger disambiguation
-    pub const LEDGER: &str = "ledger";
+    /// db:resultLedger - ledger alias binding for multi-ledger disambiguation
+    pub const RESULT_LEDGER: &str = "resultLedger";
 
-    /// idx:sync - synchronization mode (true = sync before query)
-    pub const SYNC: &str = "sync";
+    /// db:syncBeforeQuery - synchronization mode (true = sync before query)
+    pub const SYNC_BEFORE_QUERY: &str = "syncBeforeQuery";
 
-    /// idx:timeout - query timeout in milliseconds
-    pub const TIMEOUT: &str = "timeout";
+    /// db:timeoutMs - query timeout in milliseconds
+    pub const TIMEOUT_MS: &str = "timeoutMs";
 
-    /// BM25-specific configuration properties
-    ///
-    /// fidx:BM25 - BM25 index type identifier
-    pub const BM25: &str = "BM25";
+    /// db:queryVector - query vector for similarity search
+    pub const QUERY_VECTOR: &str = "queryVector";
 
-    /// fidx:k1 - BM25 k1 parameter (term frequency saturation)
+    /// db:distanceMetric - distance metric for vector search (cosine, dot, euclidean)
+    pub const DISTANCE_METRIC: &str = "distanceMetric";
+
+    /// db:graphSource - graph source alias for search patterns
+    pub const GRAPH_SOURCE: &str = "graphSource";
+
+    /// BM25 k1 parameter (term frequency saturation) - config key
     pub const BM25_K1: &str = "k1";
 
-    /// fidx:b - BM25 b parameter (document length normalization)
+    /// BM25 b parameter (document length normalization) - config key
     pub const BM25_B: &str = "b";
 
-    /// fidx:property - property to index for BM25
+    /// Property to index for BM25 - config key
     pub const PROPERTY: &str = "property";
+}
 
-    /// fidx:vector - vector property for similarity search
-    pub const VECTOR: &str = "vector";
+/// Full IRI constants for search query keys
+///
+/// Used by the query parser for IRI-based pattern matching after JSON-LD expansion.
+pub mod search_iris {
+    /// `https://ns.flur.ee/db#searchText`
+    pub const SEARCH_TEXT: &str = "https://ns.flur.ee/db#searchText";
 
-    /// Virtual graph configuration properties
-    ///
-    /// fidx:config - VG configuration JSON (stored in nameservice)
-    pub const CONFIG: &str = "config";
+    /// `https://ns.flur.ee/db#searchLimit`
+    pub const SEARCH_LIMIT: &str = "https://ns.flur.ee/db#searchLimit";
 
-    /// fidx:dependencies - VG dependency ledger aliases
-    pub const DEPENDENCIES: &str = "dependencies";
+    /// `https://ns.flur.ee/db#searchResult`
+    pub const SEARCH_RESULT: &str = "https://ns.flur.ee/db#searchResult";
 
-    /// fidx:index - VG index address
-    pub const INDEX: &str = "index";
+    /// `https://ns.flur.ee/db#resultId`
+    pub const RESULT_ID: &str = "https://ns.flur.ee/db#resultId";
 
-    /// fidx:indexT - VG index watermark (commit t value)
-    pub const INDEX_T: &str = "indexT";
+    /// `https://ns.flur.ee/db#resultScore`
+    pub const RESULT_SCORE: &str = "https://ns.flur.ee/db#resultScore";
+
+    /// `https://ns.flur.ee/db#resultLedger`
+    pub const RESULT_LEDGER: &str = "https://ns.flur.ee/db#resultLedger";
+
+    /// `https://ns.flur.ee/db#syncBeforeQuery`
+    pub const SYNC_BEFORE_QUERY: &str = "https://ns.flur.ee/db#syncBeforeQuery";
+
+    /// `https://ns.flur.ee/db#timeoutMs`
+    pub const TIMEOUT_MS: &str = "https://ns.flur.ee/db#timeoutMs";
+
+    /// `https://ns.flur.ee/db#queryVector`
+    pub const QUERY_VECTOR: &str = "https://ns.flur.ee/db#queryVector";
+
+    /// `https://ns.flur.ee/db#distanceMetric`
+    pub const DISTANCE_METRIC: &str = "https://ns.flur.ee/db#distanceMetric";
+
+    /// `https://ns.flur.ee/db#graphSource`
+    pub const GRAPH_SOURCE: &str = "https://ns.flur.ee/db#graphSource";
+}
+
+/// Nameservice record type IRIs (full IRIs for `@type` values)
+pub mod ns_types {
+    /// `https://ns.flur.ee/db#LedgerSource` - ledger-backed knowledge graph
+    pub const LEDGER_SOURCE: &str = "https://ns.flur.ee/db#LedgerSource";
+
+    /// `https://ns.flur.ee/db#IndexSource` - index-backed graph source (BM25/HNSW/GEO)
+    pub const INDEX_SOURCE: &str = "https://ns.flur.ee/db#IndexSource";
+
+    /// `https://ns.flur.ee/db#MappedSource` - mapped database (Iceberg, etc.)
+    pub const MAPPED_SOURCE: &str = "https://ns.flur.ee/db#MappedSource";
+
+    /// `https://ns.flur.ee/db#Bm25Index` - BM25 full-text search index
+    pub const BM25_INDEX: &str = "https://ns.flur.ee/db#Bm25Index";
+
+    /// `https://ns.flur.ee/db#HnswIndex` - HNSW/vector similarity search index
+    pub const HNSW_INDEX: &str = "https://ns.flur.ee/db#HnswIndex";
+
+    /// `https://ns.flur.ee/db#GeoIndex` - geospatial index
+    pub const GEO_INDEX: &str = "https://ns.flur.ee/db#GeoIndex";
+
+    /// `https://ns.flur.ee/db#IcebergMapping` - Iceberg-mapped database
+    pub const ICEBERG_MAPPING: &str = "https://ns.flur.ee/db#IcebergMapping";
+
+    /// `https://ns.flur.ee/db#R2rmlMapping` - R2RML relational mapping
+    pub const R2RML_MAPPING: &str = "https://ns.flur.ee/db#R2rmlMapping";
+}
+
+/// Graph source nameservice field local names (under `https://ns.flur.ee/db#`)
+pub mod graph_source {
+    /// db:graphSourceConfig - graph source configuration JSON
+    pub const CONFIG: &str = "graphSourceConfig";
+
+    /// db:graphSourceDependencies - dependent ledger aliases
+    pub const DEPENDENCIES: &str = "graphSourceDependencies";
+
+    /// db:graphSourceIndex - graph source index address
+    pub const INDEX: &str = "graphSourceIndex";
+
+    /// db:graphSourceIndexT - graph source index watermark (commit t value)
+    pub const INDEX_T: &str = "graphSourceIndexT";
+
+    /// db:graphSourceIndexAddress - graph source index address (string)
+    pub const INDEX_ADDRESS: &str = "graphSourceIndexAddress";
+}
+
+/// Full IRI constants for Fluree policy vocabulary
+///
+/// Used by the policy builder for programmatic policy construction.
+/// All IRIs are under `https://ns.flur.ee/db#`.
+pub mod policy_iris {
+    /// `https://ns.flur.ee/db#policyClass` - policy class marker
+    pub const POLICY_CLASS: &str = "https://ns.flur.ee/db#policyClass";
+
+    /// `https://ns.flur.ee/db#allow` - allow/deny flag
+    pub const ALLOW: &str = "https://ns.flur.ee/db#allow";
+
+    /// `https://ns.flur.ee/db#action` - action predicate (view/modify)
+    pub const ACTION: &str = "https://ns.flur.ee/db#action";
+
+    /// `https://ns.flur.ee/db#view` - view action IRI
+    pub const VIEW: &str = "https://ns.flur.ee/db#view";
+
+    /// `https://ns.flur.ee/db#modify` - modify action IRI
+    pub const MODIFY: &str = "https://ns.flur.ee/db#modify";
+
+    /// `https://ns.flur.ee/db#onProperty` - property-level targeting
+    pub const ON_PROPERTY: &str = "https://ns.flur.ee/db#onProperty";
+
+    /// `https://ns.flur.ee/db#onSubject` - subject-level targeting
+    pub const ON_SUBJECT: &str = "https://ns.flur.ee/db#onSubject";
+
+    /// `https://ns.flur.ee/db#onClass` - class-level targeting
+    pub const ON_CLASS: &str = "https://ns.flur.ee/db#onClass";
+
+    /// `https://ns.flur.ee/db#query` - policy query predicate
+    pub const QUERY: &str = "https://ns.flur.ee/db#query";
+
+    /// `https://ns.flur.ee/db#required` - required flag
+    pub const REQUIRED: &str = "https://ns.flur.ee/db#required";
+
+    /// `https://ns.flur.ee/db#exMessage` - exception/error message
+    pub const EX_MESSAGE: &str = "https://ns.flur.ee/db#exMessage";
 }

@@ -25,7 +25,7 @@ async fn test_encrypted_memory_create_and_query() {
         .await
         .expect("Failed to create ledger");
 
-    assert_eq!(ledger.alias(), "test/encrypted:main");
+    assert_eq!(ledger.ledger_id(), "test/encrypted:main");
 
     // Insert some data
     let txn = json!({

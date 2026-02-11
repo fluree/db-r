@@ -37,7 +37,6 @@ use crate::ir::R2rmlPattern;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 use fluree_db_r2rml::mapping::{CompiledR2rmlMapping, ObjectMap, TriplesMap};
 use fluree_db_r2rml::materialize::{
     get_join_key_from_batch, materialize_object_from_batch, materialize_subject_from_batch, RdfTerm,
@@ -56,9 +55,9 @@ pub type ParentLookup = HashMap<Vec<String>, RdfTerm>;
 /// R2RML scan operator for `Pattern::R2rml`.
 ///
 /// Scans an Iceberg table through an R2RML mapping and produces RDF term bindings.
-pub struct R2rmlScanOperator<S: Storage + 'static> {
+pub struct R2rmlScanOperator {
     /// Child operator providing input solutions (may be EmptyOperator seed)
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// R2RML pattern from the query IR
     pattern: R2rmlPattern,
     /// Output schema (child schema + new vars from R2RML scan)
@@ -73,9 +72,9 @@ pub struct R2rmlScanOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> R2rmlScanOperator<S> {
+impl R2rmlScanOperator {
     /// Create a new R2RML scan operator.
-    pub fn new(child: BoxedOperator<S>, pattern: R2rmlPattern) -> Self {
+    pub fn new(child: BoxedOperator, pattern: R2rmlPattern) -> Self {
         let child_schema = child.schema();
 
         // Build output schema: start with child vars, then add R2RML pattern vars
@@ -119,21 +118,21 @@ impl<S: Storage + 'static> R2rmlScanOperator<S> {
     /// This is where we bridge R2RML materialized terms to the query engine's
     /// binding representation.
     ///
-    /// # Virtual Graph IRI Handling
+    /// # Graph Source IRI Handling
     ///
     /// IRIs generated from R2RML templates are kept as raw strings (`Binding::Iri`)
     /// rather than being encoded to SIDs. This is because:
     ///
-    /// 1. VG IRIs are dynamically generated and may not exist in any Fluree ledger
+    /// 1. Graph source IRIs are dynamically generated and may not exist in any Fluree ledger
     /// 2. Cross-ledger SIDs don't match anyway (different namespace codes)
     /// 3. Encoding would silently drop rows for IRIs not in namespace table
     ///
-    /// This matches the Clojure implementation which uses `match-iri` for VG results.
-    fn term_to_binding(&self, term: &RdfTerm, ctx: &ExecutionContext<'_, S>) -> Result<Binding> {
+    /// This matches the Clojure implementation which uses `match-iri` for graph source results.
+    fn term_to_binding(&self, term: &RdfTerm, ctx: &ExecutionContext<'_>) -> Result<Binding> {
         match term {
             RdfTerm::Iri(iri) => {
                 // Keep IRI as raw string - don't try to encode to SID
-                // VG IRIs are independent of Fluree's namespace table
+                // Graph source IRIs are independent of Fluree's namespace table
                 Ok(Binding::iri(iri.as_str()))
             }
             RdfTerm::BlankNode(id) => {
@@ -159,7 +158,7 @@ impl<S: Storage + 'static> R2rmlScanOperator<S> {
                     ctx.db.encode_iri(dt_iri).unwrap_or_else(|| {
                         // Default to xsd:string if datatype not found
                         ctx.db
-                            .encode_iri("http://www.w3.org/2001/XMLSchema#string")
+                            .encode_iri(xsd::STRING)
                             .unwrap_or(xsd_string_fallback)
                     })
                 } else if language.is_some() {
@@ -245,12 +244,12 @@ fn build_parent_lookup(
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
+impl Operator for R2rmlScanOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         // Open child first
         self.child.open(ctx).await?;
 
@@ -268,7 +267,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
             Some(ctx.to_t)
         };
         let mapping = provider
-            .compiled_mapping(&self.pattern.vg_alias, as_of_t)
+            .compiled_mapping(&self.pattern.graph_source_id, as_of_t)
             .await?;
 
         self.mapping = Some(mapping);
@@ -277,7 +276,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state == OperatorState::Exhausted {
             return Ok(None);
         }
@@ -407,7 +406,12 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
                     Some(ctx.to_t)
                 };
                 let batches = table_provider
-                    .scan_table(&self.pattern.vg_alias, table_name, &projection, as_of_t)
+                    .scan_table(
+                        &self.pattern.graph_source_id,
+                        table_name,
+                        &projection,
+                        as_of_t,
+                    )
                     .await?;
 
                 // Build parent lookup tables for RefObjectMap POMs that match predicate_filter
@@ -490,7 +494,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
                         };
                         let parent_batches = table_provider
                             .scan_table(
-                                &self.pattern.vg_alias,
+                                &self.pattern.graph_source_id,
                                 parent_table,
                                 &parent_projection,
                                 as_of_t,

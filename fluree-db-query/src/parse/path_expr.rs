@@ -21,10 +21,9 @@
 use super::ast::UnresolvedPathExpr;
 use super::error::{ParseError, Result};
 use fluree_graph_json_ld::{expand_iri, ParsedContext};
+use fluree_vocab::rdf;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
-
-const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 
 // ============================================================================
 // String form parser (SPARQL 1.1 property path syntax)
@@ -175,7 +174,7 @@ fn parse_primary(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<Un
         // Prefixed name or 'a' keyword
         let name = parse_pname(input, pos)?;
         if name == "a" {
-            Ok(UnresolvedPathExpr::Iri(Arc::from(RDF_TYPE)))
+            Ok(UnresolvedPathExpr::Iri(Arc::from(rdf::TYPE)))
         } else {
             let expanded = expand_iri(&name, ctx);
             Ok(UnresolvedPathExpr::Iri(Arc::from(expanded.as_str())))
@@ -322,7 +321,7 @@ fn parse_array_operand(val: &JsonValue, context: &ParsedContext) -> Result<Unres
     match val {
         JsonValue::String(s) => {
             if s == "a" {
-                Ok(UnresolvedPathExpr::Iri(Arc::from(RDF_TYPE)))
+                Ok(UnresolvedPathExpr::Iri(Arc::from(rdf::TYPE)))
             } else {
                 let expanded = expand_iri(s, context);
                 Ok(UnresolvedPathExpr::Iri(Arc::from(expanded.as_str())))
@@ -461,7 +460,7 @@ mod tests {
         let expr = parse_path_string("a+", &ctx).unwrap();
         assert_eq!(
             expr,
-            UnresolvedPathExpr::OneOrMore(Box::new(UnresolvedPathExpr::Iri(Arc::from(RDF_TYPE))))
+            UnresolvedPathExpr::OneOrMore(Box::new(UnresolvedPathExpr::Iri(Arc::from(rdf::TYPE))))
         );
     }
 
@@ -664,7 +663,7 @@ mod tests {
         let expr = parse_path_array(arr.as_array().unwrap(), &ctx).unwrap();
         assert_eq!(
             expr,
-            UnresolvedPathExpr::OneOrMore(Box::new(UnresolvedPathExpr::Iri(Arc::from(RDF_TYPE))))
+            UnresolvedPathExpr::OneOrMore(Box::new(UnresolvedPathExpr::Iri(Arc::from(rdf::TYPE))))
         );
     }
 

@@ -5,7 +5,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+fluree-db-core = { path = "../fluree-db-core" }
 fluree-db-nameservice = { path = "../fluree-db-nameservice" }
+fluree-db-novelty = { path = "../fluree-db-novelty" }
 fluree-sse = { path = "../fluree-sse" }
 
 async-trait = { workspace = true }
@@ -19,9 +21,11 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 bytes = { workspace = true }
 parking_lot = "0.12"
+urlencoding = { workspace = true }
 async-stream = "0.3"
 
 [dev-dependencies]
+fluree-db-core = { path = "../fluree-db-core" }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "test-util"] }
 wiremock = { workspace = true }
 tempfile = "3.19"

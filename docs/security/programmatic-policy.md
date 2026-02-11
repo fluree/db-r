@@ -20,7 +20,7 @@ First, insert policies with types that will be referenced by identities:
 ```rust
 let policies = json!({
     "@context": {
-        "f": "https://ns.flur.ee/ledger#",
+        "f": "https://ns.flur.ee/db#",
         "ex": "http://example.org/ns/",
         "schema": "http://schema.org/"
     },

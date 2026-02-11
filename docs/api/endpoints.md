@@ -2,6 +2,43 @@
 
 Complete reference for all Fluree HTTP API endpoints.
 
+## Base URL / versioning
+
+All endpoints listed below are relative to the server’s **API base URL** (`api_base_url` from `GET /.well-known/fluree.json`).
+
+- Standalone `fluree-server` default: `api_base_url = "/v1/fluree"`
+- Example full URL: `http://localhost:8090/v1/fluree/query/<ledger...>`
+
+## Discovery and diagnostics
+
+### GET /.well-known/fluree.json
+
+CLI auth discovery endpoint. Used by `fluree remote add` and `fluree auth login` to auto-configure authentication for a remote.
+
+See [Auth contract (CLI ↔ Server)](../design/auth-contract.md) for the full schema.
+
+Standalone `fluree-server` returns:
+
+- `{"version":1,"api_base_url":"/v1/fluree"}` when no server auth is enabled
+- `{"version":1,"api_base_url":"/v1/fluree","auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
+
+OIDC-capable implementations should return `auth.type="oidc_device"` plus `issuer`, `client_id`, and `exchange_url`.
+The CLI treats `oidc_device` as "OIDC interactive login": it uses device-code when the IdP supports it, otherwise authorization-code + PKCE.
+
+Implementations MAY also return `api_base_url` to tell the CLI where the Fluree API is mounted (for example,
+when the API is hosted under `/v1/fluree` or on a separate `data` subdomain).
+
+### GET {api_base_url}/whoami
+
+Diagnostic endpoint for Bearer tokens. Returns a summary of the principal:
+
+- `token_present`: whether a Bearer token was present
+- `verified`: whether cryptographic verification succeeded
+- `auth_method`: `"embedded_jwk"` (Ed25519) or `"oidc"` (JWKS/RS256)
+- identity + scope summary (when verified)
+
+This endpoint is intended for debugging and operator support. See also [Admin, health, and stats](../operations/admin-and-health.md).
+
 ## Transaction Endpoints
 
 ### POST /transact
@@ -10,7 +47,7 @@ Submit a transaction to write data to a ledger. Supports both JSON-LD and SPARQL
 
 **URL:**
 ```
-POST /transact?ledger={ledger-alias}&mode={mode}
+POST /transact?ledger={ledger-id}&mode={mode}
 POST /:ledger/transact
 ```
 
@@ -113,11 +150,10 @@ WHERE {
 {
   "t": 5,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456789...",
-  "address": "fluree:memory:commit:abc123...",
+  "commit_id": "bafybeig...commitT5",
   "flakes_added": 3,
   "flakes_retracted": 1,
-  "previous_commit": "def456abc789..."
+  "previous_commit_id": "bafybeig...commitT4"
 }
 ```
 
@@ -190,7 +226,7 @@ Insert new data into a ledger. Data must not conflict with existing data.
 
 **URL:**
 ```
-POST /insert?ledger={ledger-alias}
+POST /insert?ledger={ledger-id}
 POST /:ledger/insert
 POST /fluree/insert
 ```
@@ -225,7 +261,7 @@ Upsert data into a ledger. For each (subject, predicate) pair, existing values a
 
 **URL:**
 ```
-POST /upsert?ledger={ledger-alias}
+POST /upsert?ledger={ledger-id}
 POST /:ledger/upsert
 POST /fluree/upsert
 ```
@@ -260,6 +296,390 @@ curl -X POST "http://localhost:8090/upsert?ledger=mydb:main" \
           ex:widget ex:name "Widget" ;
                     ex:price "29.99"^^xsd:decimal .
       }'
+```
+
+### POST /push/*ledger
+
+Push precomputed commit v2 blobs to the server.
+
+This endpoint is intended for Git-like workflows (`fluree push`) where a client has written commits locally and wants the server to validate and commit them.
+
+**URL:**
+
+```
+POST /push/<ledger...>
+```
+
+**Request Headers:**
+
+```http
+Content-Type: application/json
+Accept: application/json
+Authorization: Bearer <token>
+Idempotency-Key: <string>   (optional; recommended)
+```
+
+If `Idempotency-Key` is provided, servers MAY treat `POST /push/*ledger` as idempotent for that key (same request body + key should yield the same response), returning the prior success response instead of `409` on client retry after timeouts.
+
+**Request Body:**
+
+JSON object:
+
+- `commits`: array of base64-encoded commit v2 blobs (oldest → newest)
+- `blobs` (optional): map of `{ cid: base64Bytes }` for referenced blobs (currently: `commit.txn` when present)
+
+**Response Body (200 OK):**
+
+```json
+{
+  "ledger": "mydb:main",
+  "accepted": 3,
+  "head": {
+    "t": 42,
+    "commit_id": "bafy...headCommit"
+  },
+  "indexing": {
+    "enabled": false,
+    "needed": true,
+    "novelty_size": 524288,
+    "index_t": 30,
+    "commit_t": 42
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `indexing.enabled` | Whether background indexing is active on this server. |
+| `indexing.needed` | Whether novelty has exceeded `reindex_min_bytes` and indexing should be triggered. |
+| `indexing.novelty_size` | Current novelty size in bytes after the push. |
+| `indexing.index_t` | Transaction time of the last indexed state. |
+| `indexing.commit_t` | Transaction time of the latest committed data (after push). |
+
+When `enabled` is `false` (external indexer mode), the caller should use `needed` and related fields to decide whether to trigger indexing through its own mechanism.
+
+**Error Responses:**
+
+- `409 Conflict`: head changed / diverged / first commit `t` did not match next-t
+- `422 Unprocessable Entity`: invalid commit bytes, missing referenced blob, or retraction invariant violation
+
+### GET /commits/*ledger
+
+Export commit blobs from a ledger using stable cursors. Pages walk backward via `previous_ref` — O(limit) per page regardless of ledger size. Used by `fluree pull` and `fluree clone`.
+
+**Requires replication-grade permissions** (`fluree.storage.*`). The storage proxy must be enabled on the server.
+
+**URL:**
+
+```
+GET /commits/<ledger...>?limit=100&cursor_id=<cid>
+```
+
+**Query Parameters:**
+
+- `limit` (optional): Max commits per page (default 100, server clamps to max 500)
+- `cursor_id` (optional): Commit CID cursor for pagination. Omit for first page (starts from head). Use `next_cursor_id` from the previous response for subsequent pages.
+
+**Request Headers:**
+
+```http
+Authorization: Bearer <token>   (requires fluree.storage.* claims)
+```
+
+**Response Body (200 OK):**
+
+```json
+{
+  "ledger": "mydb:main",
+  "head_commit_id": "bafy...headCommit",
+  "head_t": 42,
+  "commits": ["<base64>", "<base64>"],
+  "blobs": { "bafy...txnBlob": "<base64>" },
+  "newest_t": 42,
+  "oldest_t": 41,
+  "next_cursor_id": "bafy...prevCommit",
+  "count": 2,
+  "effective_limit": 100
+}
+```
+
+- `commits`: Raw commit v2 blobs, newest → oldest within each page.
+- `blobs`: Referenced txn blobs keyed by CID string.
+- `next_cursor_id`: CID cursor for the next page; `null` when genesis is reached.
+- `effective_limit`: Actual limit used (after server clamping).
+
+**Responses:**
+
+- `200 OK`: Page of commits returned
+- `401 Unauthorized`: Missing or invalid storage token
+- `404 Not Found`: Storage proxy not enabled, ledger not found, or not authorized for this ledger
+
+**Pagination:**
+
+Commit CIDs in the immutable chain are stable cursors. New commits appended to the head do not affect backward pointers, so cursors remain valid across pages even when new commits arrive between requests.
+
+### POST /pack/*ledger
+
+Stream all missing CAS objects for a ledger in a single binary response. This is the primary transport for `fluree clone` and `fluree pull`, replacing multiple paginated `GET /commits` requests or per-object `GET /storage/objects` fetches with a single streaming request.
+
+**Requires replication-grade permissions** (`fluree.storage.*`). The storage proxy must be enabled on the server.
+
+**URL:**
+
+```
+POST /pack/<ledger...>
+```
+
+**Request Headers:**
+
+```http
+Content-Type: application/json
+Accept: application/x-fluree-pack
+Authorization: Bearer <token>   (requires fluree.storage.* claims)
+```
+
+**Request Body:**
+
+```json
+{
+  "protocol": "fluree-pack-v1",
+  "want": ["bafy...remoteHead"],
+  "have": ["bafy...localHead"],
+  "include_indexes": true,
+  "want_index_root_id": "bafy...indexRoot",
+  "have_index_root_id": "bafy...localIndexRoot"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `protocol` | string | Yes | Must be `"fluree-pack-v1"` |
+| `want` | string[] | Yes | ContentId CIDs the client wants (typically the remote commit head) |
+| `have` | string[] | No | ContentId CIDs the client already has (typically the local commit head). Server stops walking the commit chain when it reaches a `have` CID. Empty for full clone. |
+| `want_index_root_id` | string | No | Index root CID the client wants (typically remote nameservice `index_head_id`). Required when `include_indexes=true`. |
+| `have_index_root_id` | string | No | Index root CID the client already has (typically local nameservice `index_head_id`). Used for index artifact diff. |
+| `include_indexes` | bool | Yes | Include index artifacts in the stream. When true, the stream contains commit + txn objects plus index root/branch/leaf/dict artifacts. |
+
+**Response:**
+
+Binary stream using the `fluree-pack-v1` wire format (`Content-Type: application/x-fluree-pack`):
+
+```
+[Preamble: FPK1 + version(1)] [Header frame] [Data frames...] [End frame]
+```
+
+| Frame | Type byte | Content |
+|-------|-----------|---------|
+| Header | `0x00` | JSON metadata: protocol version, capabilities, `commit_count`, `index_artifact_count`, `estimated_total_bytes` |
+| Data | `0x01` | CID binary + raw object bytes (commit, txn blob, or index artifact) |
+| Error | `0x02` | UTF-8 error message (terminates stream) |
+| Manifest | `0x03` | JSON metadata for phase transitions (e.g. start of index phase) |
+| End | `0xFF` | End of stream (no payload) |
+
+Data frames are streamed in **oldest-first topological order** (parents before children), so the client can write objects to CAS as they arrive without buffering the entire stream.
+
+The Header frame includes an `estimated_total_bytes` field that the CLI uses to warn users before large transfers (~1 GiB or more). The estimate is ratio-based (derived from commit count) and may differ from actual transfer size. Set to `0` for commits-only requests.
+
+**Status Codes:**
+
+- `200 OK`: Binary pack stream
+- `401 Unauthorized`: Missing or invalid storage token
+- `404 Not Found`: Storage proxy not enabled, ledger not found, or not authorized for this ledger
+
+**Example:**
+
+```bash
+# Download all commits for a ledger (full clone)
+curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/x-fluree-pack" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...head"],"have":[]}' \
+  --output pack.bin
+
+# Download only missing commits (incremental pull)
+curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/x-fluree-pack" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...remoteHead"],"have":["bafy...localHead"]}' \
+  --output pack.bin
+
+# Download commits + index artifacts (default for CLI pull/clone)
+curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/x-fluree-pack" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...head"],"have":[],"include_indexes":true,"want_index_root_id":"bafy...indexRoot"}' \
+  --output pack.bin
+```
+
+## Storage Proxy Endpoints
+
+These endpoints are intended for peer mode and `fluree clone`/`pull` workflows. They require the storage proxy to be enabled on the server and use replication-grade Bearer tokens (`fluree.storage.*` claims).
+
+### GET /storage/ns/:ledger-id
+
+Fetch the nameservice record for a ledger.
+
+**URL:**
+
+```
+GET /storage/ns/{ledger-id}
+```
+
+**Request Headers:**
+
+```http
+Authorization: Bearer <token>   (requires fluree.storage.* claims)
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "ledger_id": "mydb:main",
+  "name": "mydb",
+  "branch": "main",
+  "commit_head_id": "bafy...commitCid",
+  "commit_t": 42,
+  "index_head_id": "bafy...indexCid",
+  "index_t": 40,
+  "default_context": null,
+  "retracted": false,
+  "config_id": "bafy...configCid"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `ledger_id` | Canonical ledger ID (e.g., "mydb:main") |
+| `name` | Ledger name without branch (e.g., "mydb") |
+| `config_id` | CID of the `LedgerConfig` object (origin discovery), if set |
+
+**Status Codes:**
+
+- `200 OK`: Record found
+- `404 Not Found`: Storage proxy disabled, ledger not found, or not authorized
+
+### POST /storage/block
+
+Fetch a storage block (index branch or leaf) by CID. The server derives the storage address internally. Leaf blocks are always policy-filtered before return.
+
+Only replication-relevant content kinds are allowed (commits, txns, config, index roots/branches/leaves, dict blobs). Internal metadata kinds (GC records, stats sketches, graph source snapshots) are rejected with 404.
+
+**URL:**
+
+```
+POST /storage/block
+```
+
+**Request Headers:**
+
+```http
+Content-Type: application/json
+Authorization: Bearer <token>
+Accept: application/octet-stream | application/x-fluree-flakes | application/x-fluree-flakes+json
+```
+
+**Request Body:**
+
+Both fields are required:
+
+```json
+{
+  "cid": "bafy...branchOrLeafCid",
+  "ledger": "mydb:main"
+}
+```
+
+**Responses:**
+
+- `200 OK`: Block bytes (branches) or encoded flakes (leaves)
+- `400 Bad Request`: Invalid CID string
+- `404 Not Found`: Block not found, disallowed kind, or not authorized
+
+### GET /storage/objects/:cid
+
+Fetch a CAS (content-addressed storage) object by its content identifier. Returns the raw bytes of the stored object after verifying integrity.
+
+This is a **replication-grade** endpoint for `fluree clone`/`pull` workflows. The client knows the CID (from the nameservice record or the commit chain) and wants the raw bytes.
+
+**URL:**
+
+```
+GET /storage/objects/{cid}?ledger={ledger-id}
+```
+
+**Path Parameters:**
+
+- `cid`: CIDv1 string (base32-lower multibase, e.g., `"bafybeig..."`)
+
+**Query Parameters:**
+
+- `ledger` (required): Ledger ID (e.g., `"mydb:main"`). Required because storage paths are ledger-scoped.
+
+**Request Headers:**
+
+```http
+Authorization: Bearer <token>   (requires fluree.storage.* claims)
+```
+
+**Kind Allowlist:**
+
+All replication-relevant content kinds are served:
+
+| Kind | Description |
+|------|-------------|
+| `commit` | Commit chain blobs |
+| `txn` | Transaction data blobs |
+| `config` | LedgerConfig origin discovery objects |
+| `index-root` | Binary index root JSON |
+| `index-branch` | Index branch manifests |
+| `index-leaf` | Index leaf files |
+| `dict` | Dictionary artifacts (predicates, subjects, strings, etc.) |
+
+Only `GarbageRecord` (internal GC metadata) returns 404.
+
+**Response Headers:**
+
+- `Content-Type: application/octet-stream`
+- `X-Fluree-Content-Kind`: Content kind label (`commit`, `txn`, `config`, `index-root`, `index-branch`, `index-leaf`, `dict`)
+
+**Response Body:**
+
+Raw bytes of the stored object.
+
+**Integrity Verification:**
+
+The server verifies the hash of the stored bytes against the CID before returning. Commit blobs are format-sniffed:
+
+- **Commit-v2 blobs** (`FCV2` magic): Uses the canonical sub-range hash (SHA-256 over the payload excluding the trailing hash + signature block).
+- **All other blobs** (txn, config, future commit formats): Full-bytes SHA-256.
+
+If verification fails, the server returns `500 Internal Server Error` — this indicates storage corruption.
+
+**Status Codes:**
+
+- `200 OK`: Object found and integrity verified
+- `400 Bad Request`: Invalid CID string
+- `404 Not Found`: Object not found, disallowed kind, not authorized, or storage proxy disabled
+- `500 Internal Server Error`: Hash verification failed (storage corruption)
+
+**Example:**
+
+```bash
+# Fetch a commit blob by CID
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/v1/fluree/storage/objects/bafybeig...commitCid?ledger=mydb:main"
+
+# Fetch a config blob by CID
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/v1/fluree/storage/objects/bafybeig...configCid?ledger=mydb:main"
+
+# Fetch an index leaf by CID
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:8090/v1/fluree/storage/objects/bafybeig...leafCid?ledger=mydb:main"
 ```
 
 ## Query Endpoints
@@ -425,7 +845,7 @@ curl -X POST http://localhost:8090/query \
 curl -X POST http://localhost:8090/query \
   -H "Content-Type: application/sparql-query" \
   -d 'PREFIX ex: <http://example.org/ns/>
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?name ?t ?op
 FROM <mydb:main@t:1>
@@ -441,7 +861,7 @@ ORDER BY ?t'
 
 ### POST /nameservice/query
 
-Query metadata about all ledgers and virtual graphs in the nameservice.
+Query metadata about all ledgers and graph sources in the nameservice.
 
 **URL:**
 ```
@@ -465,11 +885,11 @@ Accept: application/sparql-results+json
 ```json
 {
   "@context": {
-    "f": "https://ns.flur.ee/ledger#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?ledger", "?branch", "?t"],
   "where": [
-    { "@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger", "f:branch": "?branch", "f:t": "?t" }
+    { "@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger", "f:branch": "?branch", "f:t": "?t" }
   ],
   "orderBy": [{"var": "?t", "desc": true}]
 }
@@ -478,11 +898,11 @@ Accept: application/sparql-results+json
 **Request Body (SPARQL):**
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?ledger ?branch ?t
 WHERE {
-  ?ns a f:PhysicalDatabase ;
+  ?ns a f:LedgerSource ;
       f:ledger ?ledger ;
       f:branch ?branch ;
       f:t ?t .
@@ -521,21 +941,21 @@ ORDER BY DESC(?t)
 
 **Available Properties:**
 
-Ledger records (`@type: "f:PhysicalDatabase"`):
+Ledger records (`@type: "f:LedgerSource"`):
 - `f:ledger` - Ledger name
 - `f:branch` - Branch name
 - `f:t` - Transaction number
 - `f:status` - "ready" or "retracted"
-- `f:commit` - Commit address reference
-- `f:index` - Index info with address and t
+- `f:ledgerCommit` - Commit ContentId reference
+- `f:ledgerIndex` - Index info with ContentId and t
 
-Virtual graph records (`@type: "f:VirtualGraphDatabase"`):
-- `f:name` - Virtual graph name
+Graph source records (`@type: "f:GraphSourceDatabase"`):
+- `f:name` - Graph source name
 - `f:branch` - Branch name
-- `fidx:config` - Configuration JSON
-- `fidx:dependencies` - Source ledger dependencies
-- `fidx:indexAddress` - Index address
-- `fidx:indexT` - Index t value
+- `f:config` - Configuration JSON
+- `f:dependencies` - Source ledger dependencies
+- `f:indexId` - Index ContentId
+- `f:indexT` - Index t value
 
 **Status Codes:**
 - `200 OK` - Query successful
@@ -549,18 +969,18 @@ Virtual graph records (`@type: "f:VirtualGraphDatabase"`):
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
-    "@context": {"f": "https://ns.flur.ee/ledger#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?ledger"],
     "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
   }'
 
-# Find all virtual graphs
+# Find all graph sources
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
-    "@context": {"f": "https://ns.flur.ee/ledger#", "fidx": "https://ns.flur.ee/index#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?name", "?type"],
-    "where": [{"@id": "?vg", "@type": "f:VirtualGraphDatabase", "f:name": "?name"}]
+    "where": [{"@id": "?gs", "@type": "f:GraphSourceDatabase", "f:name": "?name"}]
   }'
 ```
 
@@ -581,7 +1001,7 @@ GET /ledgers
 {
   "ledgers": [
     {
-      "alias": "mydb:main",
+      "ledger_id": "mydb:main",
       "branch": "main",
       "commit_t": 5,
       "index_t": 5,
@@ -589,7 +1009,7 @@ GET /ledgers
       "last_updated": "2024-01-22T10:30:00.000Z"
     },
     {
-      "alias": "mydb:dev",
+      "ledger_id": "mydb:dev",
       "branch": "dev",
       "commit_t": 3,
       "index_t": 2,
@@ -606,28 +1026,28 @@ GET /ledgers
 curl http://localhost:8090/ledgers
 ```
 
-### GET /ledgers/:alias
+### GET /ledgers/:id
 
 Get metadata for a specific ledger.
 
 **URL:**
 ```
-GET /ledgers/{ledger-alias}
+GET /ledgers/{ledger-id}
 ```
 
 **Path Parameters:**
-- `ledger-alias`: Ledger identifier (format: `name:branch`)
+- `ledger-id`: Ledger identifier (format: `name:branch`)
 
 **Response:**
 
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_id": "mydb:main",
   "branch": "main",
   "commit_t": 5,
   "index_t": 5,
-  "commit_address": "fluree:memory:commit:abc123...",
-  "index_address": "fluree:memory:index:def456...",
+  "commit_id": "bafybeig...commitT5",
+  "index_id": "bafybeig...indexRootT5",
   "created": "2024-01-22T10:00:00.000Z",
   "last_updated": "2024-01-22T10:30:00.000Z",
   "retracted": false
@@ -653,7 +1073,7 @@ POST /ledgers
 
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_id": "mydb:main",
   "config": {
     "default_context": "http://example.org/context.jsonld"
   }
@@ -664,7 +1084,7 @@ POST /ledgers
 
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_id": "mydb:main",
   "branch": "main",
   "commit_t": 0,
   "index_t": 0,
@@ -677,7 +1097,7 @@ POST /ledgers
 ```bash
 curl -X POST http://localhost:8090/ledgers \
   -H "Content-Type: application/json" \
-  -d '{"alias": "mydb:main"}'
+  -d '{"ledger_id": "mydb:main"}'
 ```
 
 ### POST /fluree/create
@@ -701,7 +1121,7 @@ POST /fluree/create
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `ledger` | string | Yes | Ledger alias (e.g., "mydb" or "mydb:main") |
+| `ledger` | string | Yes | Ledger ID (e.g., "mydb" or "mydb:main") |
 
 **Response:**
 
@@ -709,20 +1129,15 @@ POST /fluree/create
 {
   "ledger": "mydb:main",
   "t": 0,
-  "tx-id": "fluree:tx:sha256:abc123...",
-  "commit": {
-    "address": "fluree:memory://mydb/main/head",
-    "hash": ""
-  }
+  "commit_id": "bafybeig...commitT0"
 }
 ```
 
 | Field | Description |
 |-------|-------------|
-| `ledger` | Normalized ledger alias |
+| `ledger` | Normalized ledger ID |
 | `t` | Transaction time (0 for new ledger) |
-| `tx-id` | Transaction ID (SHA-256 hash of request) |
-| `commit` | Commit information |
+| `commit_id` | ContentId of the initial commit |
 
 **Status Codes:**
 - `201 Created` - Ledger created successfully
@@ -745,7 +1160,7 @@ curl -X POST http://localhost:8090/fluree/create \
   -H "Authorization: Bearer eyJ..." \
   -d '{"ledger": "mydb:main"}'
 
-# Create with short alias (auto-resolves to :main)
+# Create with short ledger ID (auto-resolves to :main)
 curl -X POST http://localhost:8090/fluree/create \
   -H "Content-Type: application/json" \
   -d '{"ledger": "mydb"}'
@@ -773,7 +1188,7 @@ POST /fluree/drop
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `ledger` | string | Yes | Ledger alias (e.g., "mydb" or "mydb:main") |
+| `ledger` | string | Yes | Ledger ID (e.g., "mydb" or "mydb:main") |
 | `hard` | boolean | No | If `true`, permanently delete all storage files. Default: `false` (soft drop) |
 
 **Drop Modes:**
@@ -796,7 +1211,7 @@ POST /fluree/drop
 
 | Field | Description |
 |-------|-------------|
-| `ledger` | Normalized ledger alias |
+| `ledger` | Normalized ledger ID |
 | `status` | One of: `"dropped"`, `"already_retracted"`, `"not_found"` |
 | `files_deleted` | File counts (only populated for hard drop) |
 
@@ -808,7 +1223,7 @@ POST /fluree/drop
 
 **Drop Sequence:**
 
-1. Normalizes the alias (ensures branch suffix like `:main`)
+1. Normalizes the ledger ID (ensures branch suffix like `:main`)
 2. Cancels any pending background indexing
 3. Waits for in-progress indexing to complete
 4. In hard mode: deletes all storage artifacts (commits + indexes)
@@ -840,10 +1255,86 @@ curl -X POST http://localhost:8090/fluree/drop \
   -H "Authorization: Bearer eyJ..." \
   -d '{"ledger": "mydb:main", "hard": true}'
 
-# Drop with short alias (auto-resolves to :main)
+# Drop with short ledger ID (auto-resolves to :main)
 curl -X POST http://localhost:8090/fluree/drop \
   -H "Content-Type: application/json" \
   -d '{"ledger": "mydb"}'
+```
+
+### GET /fluree/info
+
+Get ledger metadata. Used by the CLI for `info`, `push`, `pull`, and `clone`.
+
+**URL:**
+```
+GET /fluree/info?ledger={ledger-id}
+```
+
+**Query Parameters:**
+- `ledger` (required): Ledger ID (e.g., "mydb" or "mydb:main")
+
+**Alternative:** Use the `fluree-ledger` header instead of query parameter.
+
+**Response (non-proxy mode):**
+
+Returns comprehensive ledger metadata including namespace codes, property stats, and class counts. Always includes:
+
+```json
+{
+  "ledger_id": "mydb:main",
+  "t": 42,
+  "commitId": "bafybeig...headCommitCid",
+  "indexId": "bafybeig...indexRootCid",
+  "namespaces": { ... },
+  "properties": { ... },
+  "classes": [ ... ]
+}
+```
+
+**Response (proxy storage mode):**
+
+Returns simplified nameservice-only metadata:
+
+```json
+{
+  "ledger_id": "mydb:main",
+  "t": 42,
+  "commit_head_id": "bafybeig...commitCid",
+  "index_head_id": "bafybeig...indexCid"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger_id` | string | Yes | Canonical ledger ID |
+| `t` | integer | **Yes** | Current transaction time. Used by push/pull for head comparison. |
+| `commitId` | string | No | Head commit CID (non-proxy mode) |
+| `commit_head_id` | string | No | Head commit CID (proxy mode) |
+
+> **Important:** The `t` field is required by the CLI for push/pull/clone operations. See [CLI-Server API Contract](../design/cli-server-contract.md) for details.
+
+**Optional query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `realtime_property_details` | boolean | false | Compute live property stats (slower) |
+| `include_property_datatypes` | boolean | false | Include datatype info for properties |
+
+**Status Codes:**
+- `200 OK` - Ledger found
+- `400 Bad Request` - Missing ledger parameter
+- `401 Unauthorized` - Authentication required
+- `404 Not Found` - Ledger not found
+
+**Examples:**
+
+```bash
+# Get ledger info
+curl "http://localhost:8090/fluree/info?ledger=mydb:main"
+
+# With auth token
+curl "http://localhost:8090/fluree/info?ledger=mydb:main" \
+  -H "Authorization: Bearer eyJ..."
 ```
 
 ### GET /fluree/exists
@@ -852,11 +1343,11 @@ Check if a ledger exists in the nameservice.
 
 **URL:**
 ```
-GET /fluree/exists?ledger={ledger-alias}
+GET /fluree/exists?ledger={ledger-id}
 ```
 
 **Query Parameters:**
-- `ledger`: Ledger alias (e.g., "mydb" or "mydb:main")
+- `ledger`: Ledger ID (e.g., "mydb" or "mydb:main")
 
 **Alternative:** Use the `fluree-ledger` header instead of query parameter.
 
@@ -871,7 +1362,7 @@ GET /fluree/exists?ledger={ledger-alias}
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ledger` | string | Ledger alias (echoed back) |
+| `ledger` | string | Ledger ID (echoed back) |
 | `exists` | boolean | Whether the ledger is registered in the nameservice |
 
 **Status Codes:**
@@ -885,7 +1376,7 @@ This is a lightweight check that only queries the nameservice without loading th
 
 - Check if a ledger exists before attempting to load it
 - Implement conditional create-or-load logic
-- Validate ledger aliases in application code
+- Validate ledger IDs in application code
 
 **Examples:**
 
@@ -1005,7 +1496,7 @@ GET /version
 curl http://localhost:8090/version
 ```
 
-## Virtual Graph Endpoints
+## Graph Source Endpoints
 
 ### POST /index/bm25
 
@@ -1013,7 +1504,7 @@ Create or update a BM25 full-text search index.
 
 **URL:**
 ```
-POST /index/bm25?ledger={ledger-alias}
+POST /index/bm25?ledger={ledger-id}
 ```
 
 **Request Body:**
@@ -1046,7 +1537,7 @@ Create or configure a vector search index. Requires the `vector` feature flag.
 
 **URL:**
 ```
-POST /index/vector?ledger={ledger-alias}
+POST /index/vector?ledger={ledger-id}
 ```
 
 **Request Body:**
@@ -1069,7 +1560,7 @@ Trigger manual indexing for a ledger.
 
 **URL:**
 ```
-POST /admin/index?ledger={ledger-alias}
+POST /admin/index?ledger={ledger-id}
 ```
 
 **Response:**
@@ -1088,7 +1579,7 @@ Trigger compaction for a ledger (cleanup old indexes).
 
 **URL:**
 ```
-POST /admin/compact?ledger={ledger-alias}
+POST /admin/compact?ledger={ledger-id}
 ```
 
 ### GET /admin/stats
@@ -1178,20 +1669,68 @@ If no admin-specific issuers are configured, admin auth falls back to `--events-
 
 ## Error Responses
 
-All endpoints may return error responses in this format:
+All endpoints may return error responses in this format (and should return `Content-Type: application/json`):
 
 ```json
 {
-  "error": "ErrorType",
-  "message": "Human-readable error message",
-  "code": "ERROR_CODE",
-  "details": {
-    "field": "Additional context"
+  "error": "Human-readable error message",
+  "status": 409,
+  "@type": "err:db/Conflict",
+  "cause": {
+    "error": "Optional nested error detail",
+    "status": 409,
+    "@type": "err:db/SomeInnerError"
   }
 }
 ```
 
 See [Errors and Status Codes](errors.md) for complete error reference.
+
+## CLI Compatibility Requirements
+
+This section summarizes the contract that third-party server implementations (e.g., Solo) must follow to be compatible with the Fluree CLI (`fluree-db-cli`). The CLI discovers the API base URL via `fluree remote add` and constructs endpoint URLs as `{base_url}/{operation}/{ledger}`.
+
+### Required endpoints
+
+| Endpoint | CLI commands |
+|----------|-------------|
+| `GET /info/{ledger}` | `info`, `push`, `pull`, `clone` |
+| `POST /query/{ledger}` | `query` (FQL and SPARQL) |
+| `POST /insert/{ledger}` | `insert` |
+| `POST /upsert/{ledger}` | `upsert` |
+| `GET /exists/{ledger}` | `clone` (pre-create check) |
+| `GET /ledgers` | `list --remote` |
+
+For sync workflows (`clone`/`push`/`pull`), these additional endpoints are needed:
+
+| Endpoint | CLI commands | Notes |
+|----------|-------------|-------|
+| `POST /push/{ledger}` | `push` | Required for push |
+| `GET /commits/{ledger}` | `clone`, `pull` | Paginated export fallback |
+| `POST /pack/{ledger}` | `clone`, `pull` | Preferred bulk transport; CLI falls back to `/commits` on 404/405/501 |
+| `GET /storage/ns/{ledger}` | `clone`, `pull` | Pack preflight (head CID discovery) |
+
+### Critical response field: `t`
+
+The `GET /info/{ledger}` response **must** include a `t` field (integer) representing the current transaction time. This field is used by the CLI for:
+
+- **push**: Comparing `local_t` vs `remote_t` to determine what commits to send and detect divergence
+- **pull**: Comparing `remote_t` vs `local_t` to determine if new commits are available
+- **clone**: Guarding against cloning empty ledgers (`t == 0`) and displaying progress
+
+Omitting `t` from the info response will cause `push` and `pull` to fail with `"remote ledger-info response missing 't'"`.
+
+### Transaction response format
+
+The `/insert` and `/upsert` endpoints should return a JSON object. The CLI displays the full response as pretty-printed JSON. Common fields include `t`, `tx-id`, and `commit.hash`, but the exact shape is not prescribed — the CLI does not parse individual fields from transaction responses.
+
+### Authentication
+
+All endpoints accept `Authorization: Bearer <token>`. On `401`, the CLI attempts a single token refresh (if OIDC is configured) and retries. See [Auth contract](../design/auth-contract.md) for the full authentication lifecycle.
+
+### Error responses
+
+Error bodies should be JSON with an `error` or `message` field. The CLI extracts the first available string from `message` or `error` for display. Plain-text error bodies are also accepted.
 
 ## Related Documentation
 

@@ -2,7 +2,7 @@
 //!
 //! This module provides structures for representing and executing user-defined
 //! datalog rules that use `where`/`insert` patterns. Rules are stored in the
-//! database using the `f:rule` predicate (https://ns.flur.ee/ledger#rule).
+//! database using the `f:rule` predicate (https://ns.flur.ee/db#rule).
 //!
 //! ## Rule Format
 //!

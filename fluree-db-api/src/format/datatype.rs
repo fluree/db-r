@@ -34,7 +34,7 @@ pub fn is_inferable_datatype(dt_iri: &str) -> bool {
             | xsd::DOUBLE
             | xsd::BOOLEAN
             | xsd::DECIMAL
-            | fluree::VECTOR
+            | fluree::EMBEDDING_VECTOR
     )
 }
 
@@ -56,7 +56,7 @@ mod tests {
         assert!(is_inferable_datatype(xsd::BOOLEAN));
         assert!(is_inferable_datatype(xsd::DECIMAL));
 
-        assert!(is_inferable_datatype(fluree::VECTOR));
+        assert!(is_inferable_datatype(fluree::EMBEDDING_VECTOR));
 
         // Non-inferable types
         assert!(!is_inferable_datatype(xsd::DATE_TIME));

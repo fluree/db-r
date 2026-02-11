@@ -10,8 +10,10 @@ use tokio::sync::mpsc;
 
 use crate::config::PeerConfig;
 use crate::error::SseError;
-use crate::sse::events::{LedgerRecord, NsRecordEvent, NsRetractedEvent, SseClientEvent, VgRecord};
-use fluree_sse::SseParser;
+use crate::sse::events::{
+    GraphSourceRecord, LedgerRecord, NsRecordEvent, NsRetractedEvent, SseClientEvent,
+};
+use fluree_sse::{SseParser, SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 
 /// SSE client that handles connection, reconnect, and event parsing
 pub struct SseClient {
@@ -163,13 +165,13 @@ impl SseClient {
                 let data: NsRecordEvent = serde_json::from_str(&event.data)?;
 
                 match data.kind.as_str() {
-                    "ledger" => {
+                    SSE_KIND_LEDGER => {
                         let record: LedgerRecord = serde_json::from_value(data.record)?;
                         Ok(Some(SseClientEvent::LedgerRecord(record)))
                     }
-                    "virtual-graph" => {
-                        let record: VgRecord = serde_json::from_value(data.record)?;
-                        Ok(Some(SseClientEvent::VgRecord(record)))
+                    SSE_KIND_GRAPH_SOURCE => {
+                        let record: GraphSourceRecord = serde_json::from_value(data.record)?;
+                        Ok(Some(SseClientEvent::GraphSourceRecord(record)))
                     }
                     _ => {
                         tracing::debug!(kind = %data.kind, "Unknown ns-record kind");
@@ -181,7 +183,7 @@ impl SseClient {
                 let data: NsRetractedEvent = serde_json::from_str(&event.data)?;
                 Ok(Some(SseClientEvent::Retracted {
                     kind: data.kind,
-                    alias: data.alias,
+                    resource_id: data.resource_id,
                 }))
             }
             Some("snapshot-complete") => {

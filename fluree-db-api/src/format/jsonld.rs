@@ -10,7 +10,6 @@ use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
-use fluree_db_core::Sid;
 use fluree_db_query::binding::Binding;
 use fluree_vocab::rdf;
 use serde_json::{json, Map, Value as JsonValue};
@@ -94,7 +93,7 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
         // IriMatch: use canonical IRI, then compact (multi-ledger mode)
         Binding::IriMatch { iri, .. } => Ok(JsonValue::String(compactor.compact_iri(iri)?)),
 
-        // Raw IRI string (from virtual graph, not in namespace table)
+        // Raw IRI string (from graph source, not in namespace table)
         // Output as-is without compaction (no namespace mapping available)
         Binding::Iri(iri) => Ok(JsonValue::String(iri.to_string())),
 
@@ -272,86 +271,15 @@ pub(crate) fn format_binding_with_result(
     binding: &Binding,
     compactor: &IriCompactor,
 ) -> Result<JsonValue> {
-    match binding {
-        Binding::EncodedLit { .. } => {
-            let store = result.binary_store.as_ref().ok_or_else(|| {
-                FormatError::InvalidBinding(
-                    "Encountered EncodedLit during formatting but QueryResult has no binary_store"
-                        .to_string(),
-                )
-            })?;
-            let materialized = materialize_encoded_lit(binding, store).map_err(|e| {
-                FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e))
-            })?;
-            format_binding_with_result(result, &materialized, compactor)
-        }
-        Binding::EncodedSid { s_id } => {
-            let store = result.binary_store.as_ref().ok_or_else(|| {
-                FormatError::InvalidBinding(
-                    "Encountered EncodedSid during formatting but QueryResult has no binary_store"
-                        .to_string(),
-                )
-            })?;
-            let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
-                FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e))
-            })?;
-            Ok(JsonValue::String(compactor.compact_iri(&iri)?))
-        }
-        Binding::EncodedPid { p_id } => {
-            let store = result.binary_store.as_ref().ok_or_else(|| {
-                FormatError::InvalidBinding(
-                    "Encountered EncodedPid during formatting but QueryResult has no binary_store"
-                        .to_string(),
-                )
-            })?;
-            match store.resolve_predicate_iri(*p_id) {
-                Some(iri) => Ok(JsonValue::String(compactor.compact_iri(iri)?)),
-                None => Err(FormatError::InvalidBinding(format!(
-                    "Unknown predicate ID: {}",
-                    p_id
-                ))),
-            }
-        }
-        _ => format_binding(binding, compactor),
+    if binding.is_encoded() {
+        let materialized = super::materialize::materialize_binding(result, binding)?;
+        return format_binding_with_result(result, &materialized, compactor);
     }
+
+    format_binding(binding, compactor)
 }
 
-fn materialize_encoded_lit(
-    binding: &Binding,
-    store: &fluree_db_indexer::run_index::BinaryIndexStore,
-) -> std::io::Result<Binding> {
-    let Binding::EncodedLit {
-        o_kind,
-        o_key,
-        p_id,
-        dt_id,
-        lang_id,
-        i_val,
-        t,
-    } = binding
-    else {
-        return Ok(binding.clone());
-    };
-    let val = store.decode_value(*o_kind, *o_key, *p_id)?;
-    match val {
-        FlakeValue::Ref(sid) => Ok(Binding::Sid(sid)),
-        other => {
-            let dt_sid = store
-                .dt_sids()
-                .get(*dt_id as usize)
-                .cloned()
-                .unwrap_or_else(|| Sid::new(0, ""));
-            let meta = store.decode_meta(*lang_id, *i_val);
-            Ok(Binding::Lit {
-                val: other,
-                dt: dt_sid,
-                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
-                t: Some(*t),
-                op: None,
-            })
-        }
-    }
-}
+// NOTE: encoded binding materialization is centralized in `format::materialize`.
 
 /// Format row as array (Clojure parity)
 fn format_row_array(

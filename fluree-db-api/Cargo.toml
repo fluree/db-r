@@ -8,10 +8,10 @@ repository.workspace = true
 
 [features]
 default = ["native"]
-native = ["fluree-db-nameservice/native", "fluree-db-core/native", "fluree-db-query/native"]
+native = ["fluree-db-nameservice/native", "fluree-db-core/native", "fluree-db-query/native", "dep:sysinfo"]
 # Enable AWS-backed storage support (S3, storage-backed nameservice).
 aws = ["fluree-db-connection/aws", "dep:fluree-db-storage-aws"]
-# Iceberg / R2RML virtual graph support (pulls in AWS SDK + native deps)
+# Iceberg / R2RML graph source support (pulls in AWS SDK + native deps)
 iceberg = ["dep:fluree-db-iceberg", "fluree-db-iceberg/aws"]
 # Opt-in LocalStack-backed S3/DynamoDB tests (auto-start via testcontainers)
 aws-testcontainers = [
@@ -71,6 +71,7 @@ tokio.workspace = true
 tracing.workspace = true
 # Base64 for encryption key decoding
 base64 = "0.22"
+hex.workspace = true
 
 # Opt-in AWS + LocalStack testing deps (feature-gated)
 testcontainers = { version = "0.23", optional = true }
@@ -80,6 +81,9 @@ aws-sdk-dynamodb = { workspace = true, optional = true }
 
 # HTTP client for remote search service (feature-gated)
 reqwest = { workspace = true, optional = true }
+
+# System memory detection for import memory budget auto-sizing (native only)
+sysinfo = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
@@ -93,10 +97,12 @@ num-bigdecimal = { package = "bigdecimal", version = "0.4" }
 # may still compile. The main compile-time win is avoiding fluree-db-credential
 # and its full dep tree when the feature is off.
 ed25519-dalek = "2.1"
+criterion = "0.5"
+rand = { workspace = true }
 
 [[test]]
-name = "it_virtual_graph_r2rml"
-path = "tests/it_virtual_graph_r2rml.rs"
+name = "it_graph_source_r2rml"
+path = "tests/it_graph_source_r2rml.rs"
 required-features = ["iceberg"]
 
 [[test]]
@@ -108,3 +114,11 @@ required-features = ["credential"]
 name = "it_storage_s3_testcontainers"
 path = "tests/it_storage_s3_testcontainers.rs"
 required-features = ["aws-testcontainers"]
+
+[[bench]]
+name = "vector_query"
+harness = false
+
+[[bench]]
+name = "insert_formats"
+harness = false

@@ -5,7 +5,7 @@
 
 use crate::{ApiError, Result};
 use crate::{TrackedErrorResponse, Tracker, TrackingOptions, TrackingTally};
-use fluree_db_core::{ContentAddressedWrite, Storage};
+use fluree_db_core::{ContentAddressedWrite, ContentId, ContentKind, Storage};
 use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
@@ -21,9 +21,10 @@ use fluree_db_transact::{
     NamedGraphBlock, NamespaceRegistry, RawTrigMeta, StageOptions, TemplateTerm, TripleTemplate,
     Txn, TxnOpts, TxnType,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-fn ledger_alias_from_txn(txn_json: &JsonValue) -> Result<&str> {
+fn ledger_id_from_txn(txn_json: &JsonValue) -> Result<&str> {
     let obj = txn_json
         .as_object()
         .ok_or_else(|| ApiError::config("Invalid transaction, missing required key: ledger."))?;
@@ -153,7 +154,7 @@ impl IndexingMode {
 ///
 /// Provides hints for external indexers (in disabled mode) and confirms
 /// indexing was triggered (in background mode).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexingStatus {
     /// True if indexing is enabled (background mode)
     pub enabled: bool,
@@ -168,14 +169,14 @@ pub struct IndexingStatus {
 }
 
 /// Result of a committed transaction
-pub struct TransactResult<S> {
+pub struct TransactResult {
     pub receipt: CommitReceipt,
-    pub ledger: LedgerState<S>,
+    pub ledger: LedgerState,
     /// Indexing status and hints
     pub indexing: IndexingStatus,
 }
 
-impl<S> std::fmt::Debug for TransactResult<S> {
+impl std::fmt::Debug for TransactResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransactResult")
             .field("receipt", &self.receipt)
@@ -186,7 +187,7 @@ impl<S> std::fmt::Debug for TransactResult<S> {
 
 /// Result of a committed transaction via reference (cache already updated)
 ///
-/// Unlike `TransactResult<S>`, this does not contain the ledger state because
+/// Unlike `TransactResult`, this does not contain the ledger state because
 /// the LedgerHandle's internal state has already been updated in place.
 #[derive(Debug)]
 pub struct TransactResultRef {
@@ -196,8 +197,8 @@ pub struct TransactResultRef {
 }
 
 /// Result of staging a transaction
-pub struct StageResult<S> {
-    pub view: LedgerView<S>,
+pub struct StageResult {
+    pub view: LedgerView,
     pub ns_registry: NamespaceRegistry,
     /// User-provided transaction metadata (extracted from envelope-form JSON-LD)
     pub txn_meta: Vec<TxnMetaEntry>,
@@ -342,47 +343,17 @@ where
     S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher,
 {
-    fn default_index_config(&self) -> IndexConfig {
-        let indexing = self
-            .connection
-            .config()
-            .defaults
-            .as_ref()
-            .and_then(|d| d.indexing.as_ref());
-
-        IndexConfig {
-            reindex_min_bytes: indexing
-                .and_then(|i| i.reindex_min_bytes)
-                .map(|v| v as usize)
-                .unwrap_or(IndexConfig::default().reindex_min_bytes),
-            reindex_max_bytes: indexing
-                .and_then(|i| i.reindex_max_bytes)
-                .map(|v| v as usize)
-                .unwrap_or(IndexConfig::default().reindex_max_bytes),
-        }
-    }
-
-    fn defaults_indexing_enabled(&self) -> bool {
-        self.connection
-            .config()
-            .defaults
-            .as_ref()
-            .and_then(|d| d.indexing.as_ref())
-            .and_then(|i| i.indexing_enabled)
-            .unwrap_or(true)
-    }
-
     /// Stage a transaction against a ledger (no persistence).
     ///
     /// Respects `opts.max-fuel` in the transaction JSON for fuel limits (consistent with query behavior).
     pub async fn stage_transaction(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         txn_type: TxnType,
         txn_json: &JsonValue,
         txn_opts: TxnOpts,
         index_config: Option<&IndexConfig>,
-    ) -> Result<StageResult<S>> {
+    ) -> Result<StageResult> {
         self.stage_transaction_with_trig_meta(
             ledger,
             txn_type,
@@ -401,13 +372,13 @@ where
     /// will be resolved and merged into the transaction's txn_meta.
     pub async fn stage_transaction_with_trig_meta(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         txn_type: TxnType,
         txn_json: &JsonValue,
         txn_opts: TxnOpts,
         index_config: Option<&IndexConfig>,
         trig_meta: Option<&RawTrigMeta>,
-    ) -> Result<StageResult<S>> {
+    ) -> Result<StageResult> {
         self.stage_transaction_with_named_graphs(
             ledger,
             txn_type,
@@ -429,14 +400,14 @@ where
     #[allow(clippy::too_many_arguments)]
     pub async fn stage_transaction_with_named_graphs(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         txn_type: TxnType,
         txn_json: &JsonValue,
         txn_opts: TxnOpts,
         index_config: Option<&IndexConfig>,
         trig_meta: Option<&RawTrigMeta>,
         named_graphs: &[NamedGraphBlock],
-    ) -> Result<StageResult<S>> {
+    ) -> Result<StageResult> {
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
 
         // Handle case where default graph is empty but named graphs are present
@@ -477,7 +448,7 @@ where
         let (view, ns_registry) = {
             // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
             let engine =
-                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
+                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
                     .await
                     .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
@@ -515,10 +486,10 @@ where
     /// lowered to the IR representation.
     pub async fn stage_transaction_from_txn(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         txn: fluree_db_transact::Txn,
         index_config: Option<&IndexConfig>,
-    ) -> Result<StageResult<S>> {
+    ) -> Result<StageResult> {
         let ns_registry = NamespaceRegistry::from_db(&ledger.db);
 
         // Extract txn_meta and graph_delta before staging consumes the Txn
@@ -528,7 +499,7 @@ where
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             let engine =
-                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
+                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
                     .await
                     .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
@@ -559,11 +530,11 @@ where
     /// This is the transaction-side equivalent of `query_connection_tracked_with_policy`.
     pub(crate) async fn stage_transaction_tracked_with_policy(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         input: TrackedTransactionInput<'_>,
         index_config: Option<&IndexConfig>,
         tracker: &Tracker,
-    ) -> std::result::Result<StageResult<S>, TrackedErrorResponse> {
+    ) -> std::result::Result<StageResult, TrackedErrorResponse> {
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
         let txn = parse_transaction(
             input.txn_json,
@@ -571,7 +542,7 @@ where
             input.txn_opts,
             &mut ns_registry,
         )
-        .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
+        .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
 
         // Extract txn_meta and graph_delta before staging consumes the Txn
         let txn_meta = txn.txn_meta.clone();
@@ -589,22 +560,18 @@ where
         let (view, ns_registry) = {
             // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
             let engine =
-                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.alias())
+                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
                     .await
-                    .map_err(|e| {
-                        TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
-                    })?;
+                    .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
             let shacl_cache = engine.cache().clone();
             stage_with_shacl(ledger, txn, ns_registry, options, &shacl_cache)
                 .await
-                .map_err(|e| {
-                    TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
-                })?
+                .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?
         };
         #[cfg(not(feature = "shacl"))]
         let (view, ns_registry) = stage_txn(ledger, txn, ns_registry, options)
             .await
-            .map_err(|e| TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally()))?;
+            .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
 
         Ok(StageResult {
             view,
@@ -619,11 +586,11 @@ where
     /// Returns `(TransactResult, TrackingTally?)` on success, or `TrackedErrorResponse` on error.
     pub async fn transact_tracked_with_policy(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         input: TrackedTransactionInput<'_>,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
-    ) -> std::result::Result<(TransactResult<S>, Option<TrackingTally>), TrackedErrorResponse> {
+    ) -> std::result::Result<(TransactResult, Option<TrackingTally>), TrackedErrorResponse> {
         let store_raw_txn = input.txn_opts.store_raw_txn.unwrap_or(false);
         let txn_json_for_commit = input.txn_json.clone();
 
@@ -656,7 +623,7 @@ where
         let (receipt, ledger) = self
             .commit_staged(view, ns_registry, index_config, commit_opts)
             .await
-            .map_err(|e| TrackedErrorResponse::from_error(500, e.to_string(), tracker.tally()))?;
+            .map_err(|e| TrackedErrorResponse::new(500, e.to_string(), tracker.tally()))?;
 
         // Compute indexing status AFTER publish_commit succeeds
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
@@ -671,7 +638,7 @@ where
 
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.alias(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -688,11 +655,11 @@ where
     /// Commit a staged transaction (persists commit record + publishes nameservice head).
     pub async fn commit_staged(
         &self,
-        view: LedgerView<S>,
+        view: LedgerView,
         ns_registry: NamespaceRegistry,
         index_config: &IndexConfig,
         commit_opts: CommitOpts,
-    ) -> Result<(CommitReceipt, LedgerState<S>)> {
+    ) -> Result<(CommitReceipt, LedgerState)> {
         let (receipt, ledger) = commit_txn(
             view,
             ns_registry,
@@ -712,13 +679,13 @@ where
     /// 2. If `indexing_mode` is `Background` and `indexing_needed`, triggers indexing
     pub async fn transact(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         txn_type: TxnType,
         txn_json: &JsonValue,
         txn_opts: TxnOpts,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
         let StageResult {
@@ -757,8 +724,7 @@ where
                 );
                 (
                     CommitReceipt {
-                        address: String::new(),
-                        commit_id: String::new(),
+                        commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
                     },
@@ -784,7 +750,7 @@ where
         // Trigger indexing AFTER publish_commit succeeds (fast operation)
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.alias(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -802,14 +768,14 @@ where
     #[allow(clippy::too_many_arguments)]
     pub async fn transact_with_trig_meta(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         txn_type: TxnType,
         txn_json: &JsonValue,
         txn_opts: TxnOpts,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
         trig_meta: Option<&RawTrigMeta>,
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
         let StageResult {
@@ -852,8 +818,7 @@ where
                 );
                 (
                     CommitReceipt {
-                        address: String::new(),
-                        commit_id: String::new(),
+                        commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
                     },
@@ -879,7 +844,7 @@ where
         // Trigger indexing AFTER publish_commit succeeds (fast operation)
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.alias(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -899,7 +864,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub async fn transact_with_named_graphs(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         txn_type: TxnType,
         txn_json: &JsonValue,
         txn_opts: TxnOpts,
@@ -907,7 +872,7 @@ where
         index_config: &IndexConfig,
         trig_meta: Option<&RawTrigMeta>,
         named_graphs: &[NamedGraphBlock],
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
         let StageResult {
@@ -951,8 +916,7 @@ where
                 );
                 (
                     CommitReceipt {
-                        address: String::new(),
-                        commit_id: String::new(),
+                        commit_id: ContentId::new(ContentKind::Commit, &[]),
                         t: base.t(),
                         flake_count: 0,
                     },
@@ -978,7 +942,7 @@ where
         // Trigger indexing AFTER publish_commit succeeds (fast operation)
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.alias(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -1009,11 +973,7 @@ where
     ///     "ex:age": 30
     /// })).await?;
     /// ```
-    pub async fn insert(
-        &self,
-        ledger: LedgerState<S>,
-        data: &JsonValue,
-    ) -> Result<TransactResult<S>> {
+    pub async fn insert(&self, ledger: LedgerState, data: &JsonValue) -> Result<TransactResult> {
         let index_config = self.default_index_config();
         self.transact(
             ledger,
@@ -1045,11 +1005,7 @@ where
     ///              ex:age 30 .
     /// "#).await?;
     /// ```
-    pub async fn insert_turtle(
-        &self,
-        ledger: LedgerState<S>,
-        turtle: &str,
-    ) -> Result<TransactResult<S>> {
+    pub async fn insert_turtle(&self, ledger: LedgerState, turtle: &str) -> Result<TransactResult> {
         let index_config = self.default_index_config();
         self.insert_turtle_with_opts(
             ledger,
@@ -1068,12 +1024,12 @@ where
     #[doc(hidden)]
     pub async fn insert_turtle_with_opts(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         turtle: &str,
         txn_opts: TxnOpts,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
         let stage_result = self
@@ -1118,7 +1074,7 @@ where
         // Trigger indexing AFTER publish_commit succeeds
         if let IndexingMode::Background(handle) = &self.indexing_mode {
             if indexing_enabled && indexing_needed {
-                handle.trigger(ledger.alias(), receipt.t).await;
+                handle.trigger(ledger.ledger_id(), receipt.t).await;
             }
         }
 
@@ -1135,10 +1091,10 @@ where
     /// `FlakeSink` which converts parser events directly to flakes.
     pub async fn stage_turtle_insert(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         turtle: &str,
         index_config: Option<&IndexConfig>,
-    ) -> Result<StageResult<S>> {
+    ) -> Result<StageResult> {
         use fluree_db_transact::{generate_txn_id, stage_flakes, FlakeSink};
 
         let span = tracing::info_span!(
@@ -1186,12 +1142,12 @@ where
     #[doc(hidden)]
     pub async fn insert_with_opts(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         data: &JsonValue,
         txn_opts: TxnOpts,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         self.transact(
             ledger,
             TxnType::Insert,
@@ -1224,11 +1180,7 @@ where
     ///     "ex:age": 31
     /// })).await?;
     /// ```
-    pub async fn upsert(
-        &self,
-        ledger: LedgerState<S>,
-        data: &JsonValue,
-    ) -> Result<TransactResult<S>> {
+    pub async fn upsert(&self, ledger: LedgerState, data: &JsonValue) -> Result<TransactResult> {
         let index_config = self.default_index_config();
         self.transact(
             ledger,
@@ -1260,11 +1212,7 @@ where
     ///     ex:alice ex:age 31 .
     /// "#).await?;
     /// ```
-    pub async fn upsert_turtle(
-        &self,
-        ledger: LedgerState<S>,
-        turtle: &str,
-    ) -> Result<TransactResult<S>> {
+    pub async fn upsert_turtle(&self, ledger: LedgerState, turtle: &str) -> Result<TransactResult> {
         let data = fluree_graph_turtle::parse_to_json(turtle)?;
         self.upsert(ledger, &data).await
     }
@@ -1276,12 +1224,12 @@ where
     #[doc(hidden)]
     pub async fn upsert_turtle_with_opts(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         turtle: &str,
         txn_opts: TxnOpts,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         let data = fluree_graph_turtle::parse_to_json(turtle)?;
         self.upsert_with_opts(ledger, &data, txn_opts, commit_opts, index_config)
             .await
@@ -1294,12 +1242,12 @@ where
     #[doc(hidden)]
     pub async fn upsert_with_opts(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         data: &JsonValue,
         txn_opts: TxnOpts,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         self.transact(
             ledger,
             TxnType::Upsert,
@@ -1334,9 +1282,9 @@ where
     /// ```
     pub async fn update(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         update_json: &JsonValue,
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         let index_config = self.default_index_config();
         self.transact(
             ledger,
@@ -1356,12 +1304,12 @@ where
     #[doc(hidden)]
     pub async fn update_with_opts(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         update_json: &JsonValue,
         txn_opts: TxnOpts,
         commit_opts: CommitOpts,
         index_config: &IndexConfig,
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         self.transact(
             ledger,
             TxnType::Update,
@@ -1397,9 +1345,9 @@ where
     #[cfg(feature = "credential")]
     pub async fn credential_transact(
         &self,
-        ledger: LedgerState<S>,
+        ledger: LedgerState,
         credential: crate::credential::Input<'_>,
-    ) -> Result<TransactResult<S>> {
+    ) -> Result<TransactResult> {
         use fluree_db_credential::CredentialInput;
 
         // Convert credential to JsonValue for raw_txn storage
@@ -1484,13 +1432,13 @@ where
     S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher,
 {
-    /// Update data using a transaction that specifies the ledger alias.
+    /// Update data using a transaction that specifies the ledger ID.
     ///
     /// This mirrors Clojure's `update!` API where the transaction payload includes
     /// a `ledger` field. The ledger is loaded by alias before executing the update.
-    pub async fn update_with_ledger(&self, update_json: &JsonValue) -> Result<TransactResult<S>> {
-        let ledger_alias = ledger_alias_from_txn(update_json)?;
-        let ledger = self.ledger(ledger_alias).await?;
+    pub async fn update_with_ledger(&self, update_json: &JsonValue) -> Result<TransactResult> {
+        let ledger_id = ledger_id_from_txn(update_json)?;
+        let ledger = self.ledger(ledger_id).await?;
         self.update(ledger, update_json).await
     }
 
@@ -1500,9 +1448,9 @@ where
     pub async fn update_with_ledger_tracked(
         &self,
         update_json: &JsonValue,
-    ) -> Result<(TransactResult<S>, Option<TrackingTally>)> {
-        let ledger_alias = ledger_alias_from_txn(update_json)?;
-        let ledger = self.ledger(ledger_alias).await?;
+    ) -> Result<(TransactResult, Option<TrackingTally>)> {
+        let ledger_id = ledger_id_from_txn(update_json)?;
+        let ledger = self.ledger(ledger_id).await?;
         let policy_ctx = crate::PolicyContext::new(fluree_db_policy::PolicyWrapper::root(), None);
         let index_config = self.default_index_config();
         let input = TrackedTransactionInput::new(

@@ -52,8 +52,8 @@ fn filter_rows_subject_ex(v: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Array(out)
 }
 
-async fn seed_people(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let ctx = ctx_ex();
 
     let insert = json!({

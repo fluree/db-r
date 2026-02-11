@@ -24,6 +24,8 @@ native = ["fluree-db-api/native"]
 # DID/JWS/VerifiableCredential support for signed requests
 # When disabled, signed requests pass through as regular JSON bodies
 credential = ["fluree-db-api/credential"]
+# Enable OIDC JWT verification via JWKS (RS256 tokens from external IdPs)
+oidc = ["fluree-db-credential/oidc", "dep:jsonwebtoken"]
 # Enable Swagger UI endpoint (requires network during build to download assets)
 swagger-ui = ["dep:utoipa-swagger-ui"]
 # Enable OpenTelemetry tracing (optional)
@@ -39,6 +41,7 @@ fluree-db-nameservice = { path = "../fluree-db-nameservice" }
 fluree-db-nameservice-sync = { path = "../fluree-db-nameservice-sync" }
 fluree-db-peer = { path = "../fluree-db-peer" }
 fluree-db-query = { path = "../fluree-db-query" }
+fluree-db-indexer = { path = "../fluree-db-indexer" }
 fluree-sse = { path = "../fluree-sse" }
 fluree-vocab = { path = "../fluree-vocab" }
 
@@ -72,6 +75,7 @@ opentelemetry_sdk = { version = "0.31.0", optional = true, features = ["rt-tokio
 
 # Concurrent data structures
 dashmap = { workspace = true }
+parking_lot = "0.12"
 
 # CLI
 clap = { workspace = true }
@@ -98,6 +102,9 @@ base64 = "0.22"
 ahash = "0.8.12"
 ciborium = "0.2"  # CBOR encoding for policy-filtered flakes transport
 
+# JWT verification (OIDC/JWKS path)
+jsonwebtoken = { workspace = true, optional = true }
+
 # Shell expansion for token CLI
 shellexpand = "3"
 
@@ -122,3 +129,5 @@ tokio = { workspace = true, features = ["test-util"] }
 http-body-util = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tempfile = "3"
+wiremock = { workspace = true }
+fluree-db-novelty = { path = "../fluree-db-novelty" }

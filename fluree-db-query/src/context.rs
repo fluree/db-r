@@ -5,20 +5,19 @@
 
 use crate::bm25::{Bm25IndexProvider, Bm25SearchProvider};
 use crate::dataset::{ActiveGraph, ActiveGraphs, DataSet};
+use crate::error::QueryError;
 use crate::policy::QueryPolicyEnforcer;
 use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{Db, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
+use fluree_db_core::{Db, NoOverlay, OverlayProvider, Sid, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
-use fluree_vocab::namespaces::{FLUREE_LEDGER, JSON_LD, OGC_GEO, RDF, XSD};
+use fluree_vocab::namespaces::{FLUREE_DB, JSON_LD, OGC_GEO, RDF, XSD};
 use fluree_vocab::{geo_names, xsd_names};
 use std::sync::Arc;
 
-/// Execution context providing access to database and query state
-///
-/// Generic over the same storage and cache types as `Db`.
+/// Execution context providing access to database and query state.
 ///
 /// # Dataset Support
 ///
@@ -29,13 +28,9 @@ use std::sync::Arc;
 ///
 /// When `dataset` is `None`, this is single-db mode and operators use `db`/`overlay()`/`to_t`.
 ///
-/// # Lifetime Bounds
-///
-/// The `'static` bound on `S` is required because storage implementations
-/// are always `'static` (they don't borrow from local data).
-pub struct ExecutionContext<'a, S: Storage + 'static> {
+pub struct ExecutionContext<'a> {
     /// Reference to the primary database (for encoding/decoding, single-db fallback)
-    pub db: &'a Db<S>,
+    pub db: &'a Db,
     /// Variable registry for this query
     pub vars: &'a VarRegistry,
     /// Target transaction time (for time-travel queries)
@@ -66,7 +61,7 @@ pub struct ExecutionContext<'a, S: Storage + 'static> {
     /// Optional R2RML table provider for Iceberg table scanning
     pub r2rml_table_provider: Option<&'a dyn R2rmlTableProvider>,
     /// Optional dataset for multi-graph queries
-    pub dataset: Option<&'a DataSet<'a, S>>,
+    pub dataset: Option<&'a DataSet<'a>>,
     /// Currently active graph (Default or Named) - only meaningful when dataset is Some
     pub active_graph: ActiveGraph,
     /// Optional execution tracker (time/fuel/policy)
@@ -92,9 +87,9 @@ pub struct ExecutionContext<'a, S: Storage + 'static> {
     pub dict_novelty: Option<Arc<DictNovelty>>,
 }
 
-impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
+impl<'a> ExecutionContext<'a> {
     /// Create a new execution context
-    pub fn new(db: &'a Db<S>, vars: &'a VarRegistry) -> Self {
+    pub fn new(db: &'a Db, vars: &'a VarRegistry) -> Self {
         Self {
             db,
             vars,
@@ -120,7 +115,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     }
 
     /// Create context with specific time-travel settings
-    pub fn with_time(db: &'a Db<S>, vars: &'a VarRegistry, to_t: i64, from_t: Option<i64>) -> Self {
+    pub fn with_time(db: &'a Db, vars: &'a VarRegistry, to_t: i64, from_t: Option<i64>) -> Self {
         Self {
             db,
             vars,
@@ -153,7 +148,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
 
     /// Create a new execution context with an overlay provider (novelty)
     pub fn with_overlay(
-        db: &'a Db<S>,
+        db: &'a Db,
         vars: &'a VarRegistry,
         overlay: &'a dyn OverlayProvider,
     ) -> Self {
@@ -183,7 +178,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
 
     /// Create context with time-travel settings and an overlay provider
     pub fn with_time_and_overlay(
-        db: &'a Db<S>,
+        db: &'a Db,
         vars: &'a VarRegistry,
         to_t: i64,
         from_t: Option<i64>,
@@ -240,7 +235,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     /// Attach R2RML providers to this context (for R2rml patterns).
     ///
     /// Both providers are required for R2RML scans:
-    /// - `mapping_provider`: Loads compiled R2RML mappings for virtual graphs
+    /// - `mapping_provider`: Loads compiled R2RML mappings for graph sources
     /// - `table_provider`: Executes Iceberg table scans
     pub fn with_r2rml_providers(
         mut self,
@@ -283,7 +278,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     }
 
     /// Get the effective overlay (NoOverlay if none set)
-    pub fn overlay(&self) -> &dyn OverlayProvider {
+    pub fn overlay(&self) -> &'a dyn OverlayProvider {
         self.overlay.unwrap_or(&NoOverlay)
     }
 
@@ -315,10 +310,10 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     ///
     /// Used in multi-ledger mode to decode SIDs from the correct ledger.
     /// Falls back to the primary db if the ledger is not found.
-    pub fn decode_sid_in_ledger(&self, sid: &Sid, ledger_alias: &str) -> Option<String> {
+    pub fn decode_sid_in_ledger(&self, sid: &Sid, ledger_id: &str) -> Option<String> {
         if let Some(ds) = &self.dataset {
-            // Search all graphs (default and named) by ledger_alias
-            if let Some(graph) = ds.find_by_ledger_alias(ledger_alias) {
+            // Search all graphs (default and named) by ledger_id
+            if let Some(graph) = ds.find_by_ledger_id(ledger_id) {
                 return graph.db.decode_sid(sid);
             }
         }
@@ -331,10 +326,10 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     /// Used in multi-ledger mode when re-encoding an IRI for a target ledger.
     /// This is needed when an IriMatch from one ledger needs to be used in
     /// a scan against a different ledger.
-    pub fn encode_iri_in_ledger(&self, iri: &str, ledger_alias: &str) -> Option<Sid> {
+    pub fn encode_iri_in_ledger(&self, iri: &str, ledger_id: &str) -> Option<Sid> {
         if let Some(ds) = &self.dataset {
-            // Search all graphs (default and named) by ledger_alias
-            if let Some(graph) = ds.find_by_ledger_alias(ledger_alias) {
+            // Search all graphs (default and named) by ledger_id
+            if let Some(graph) = ds.find_by_ledger_id(ledger_id) {
                 return graph.db.encode_iri(iri);
             }
         }
@@ -342,21 +337,21 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
         self.db.encode_iri(iri)
     }
 
-    /// Get the ledger alias for the currently active graph (if in dataset mode)
+    /// Get the ledger ID for the currently active graph (if in dataset mode)
     ///
-    /// Returns the ledger alias when a single named graph is active,
+    /// Returns the ledger ID when a single named graph is active,
     /// or None for single-db mode or when multiple default graphs are active.
-    pub fn active_ledger_alias(&self) -> Option<&str> {
+    pub fn active_ledger_id(&self) -> Option<&str> {
         match (&self.dataset, &self.active_graph) {
             (Some(ds), ActiveGraph::Named(iri)) => {
-                ds.named_graph(iri).map(|g| g.ledger_alias.as_ref())
+                ds.named_graph(iri).map(|g| g.ledger_id.as_ref())
             }
             _ => None,
         }
     }
 
     /// Attach a dataset to this execution context for multi-graph queries
-    pub fn with_dataset(mut self, dataset: &'a DataSet<'a, S>) -> Self {
+    pub fn with_dataset(mut self, dataset: &'a DataSet<'a>) -> Self {
         self.dataset = Some(dataset);
         self
     }
@@ -367,7 +362,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     /// or `Many` with the active graph(s) from the dataset.
     ///
     /// Returns `Single` when no dataset is present, or `Many` with the relevant graph references to iterate over.
-    pub fn active_graphs(&self) -> ActiveGraphs<'a, '_, S> {
+    pub fn active_graphs(&self) -> ActiveGraphs<'a, '_> {
         match (&self.dataset, &self.active_graph) {
             (None, _) => ActiveGraphs::Single,
             (Some(ds), ActiveGraph::Default) => {
@@ -379,13 +374,44 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
         }
     }
 
+    /// Require that the query targets exactly one graph.
+    ///
+    /// Returns `(db, overlay, to_t)` for the single active graph — either from
+    /// single-db mode or a dataset with exactly one active graph. Returns
+    /// `QueryError::InvalidQuery` if multiple graphs are active.
+    pub fn require_single_graph(
+        &self,
+    ) -> Result<(&'a Db, &'a dyn OverlayProvider, i64), QueryError> {
+        match self.active_graphs() {
+            ActiveGraphs::Single => Ok((self.db, self.overlay(), self.to_t)),
+            ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
+                let g = graphs[0];
+                Ok((g.db, g.overlay, g.to_t))
+            }
+            ActiveGraphs::Many(_) => Err(QueryError::InvalidQuery(
+                "Property paths over multi-graph datasets are not supported; \
+                 use GRAPH to select a single graph"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Check whether the binary index fast path is available.
+    ///
+    /// Returns `true` when a binary store is present and the query is in
+    /// single-ledger mode. Individual call sites may layer additional
+    /// conditions (e.g. `to_t >= base_t`, `!history_mode`).
+    pub fn has_binary_store(&self) -> bool {
+        !self.is_multi_ledger() && self.binary_store.is_some()
+    }
+
     /// Get the default graphs slice without allocation (for scan hot path).
     ///
     /// Returns `Some(&[GraphRef])` if in dataset mode with default graph active,
     /// `None` otherwise (single-db mode or named graph active).
     ///
     /// Use this instead of `active_graphs()` in tight loops to avoid Vec allocation.
-    pub fn default_graphs_slice(&self) -> Option<&[crate::dataset::GraphRef<'a, S>]> {
+    pub fn default_graphs_slice(&self) -> Option<&[crate::dataset::GraphRef<'a>]> {
         match (&self.dataset, &self.active_graph) {
             (Some(ds), ActiveGraph::Default) => Some(ds.default_graphs()),
             _ => None,
@@ -453,7 +479,7 @@ impl<'a, S: Storage + 'static> ExecutionContext<'a, S> {
     ///
     /// Used by SERVICE operator to execute patterns against a specific ledger.
     /// The new context uses the graph's db, overlay, and to_t settings.
-    pub fn with_graph_ref(&self, graph: &crate::dataset::GraphRef<'a, S>) -> Self {
+    pub fn with_graph_ref(&self, graph: &crate::dataset::GraphRef<'a>) -> Self {
         Self {
             db: graph.db,
             vars: self.vars,
@@ -551,7 +577,7 @@ pub struct WellKnownDatatypes {
     pub xsd_year_month_duration: Sid,
     /// $id (reference type) - returned by DATATYPE() for IRIs
     pub id_type: Sid,
-    /// fluree:vector (https://ns.flur.ee/ledger#vector)
+    /// fluree:embeddingVector (https://ns.flur.ee/db#embeddingVector)
     pub fluree_vector: Sid,
     /// rdf:JSON (@json datatype)
     pub rdf_json: Sid,
@@ -591,7 +617,7 @@ impl WellKnownDatatypes {
             xsd_day_time_duration: Sid::new(XSD, xsd_names::DAY_TIME_DURATION),
             xsd_year_month_duration: Sid::new(XSD, xsd_names::YEAR_MONTH_DURATION),
             id_type: Sid::new(JSON_LD, "id"),
-            fluree_vector: Sid::new(FLUREE_LEDGER, "vector"),
+            fluree_vector: Sid::new(FLUREE_DB, "vector"),
             rdf_json: Sid::new(RDF, "JSON"),
             geo_wkt_literal: Sid::new(OGC_GEO, geo_names::WKT_LITERAL),
         }

@@ -17,7 +17,7 @@ where
     /// This is the unified entry point for connection queries. It:
     /// 1. Parses dataset spec and options from query JSON
     /// 2. For single-ledger: builds a `FlureeView` and uses view API
-    /// 3. For multi-ledger: uses legacy `LoadedDataset` for proper merge
+    /// 3. For multi-ledger: builds a `FlureeDataSetView` for proper merge
     /// 4. Applies policy wrappers if policy options are present
     pub async fn query_connection(&self, query_json: &JsonValue) -> Result<QueryResult> {
         let (spec, qc_opts) = parse_dataset_spec(query_json)?;
@@ -48,8 +48,13 @@ where
         }
 
         // Single-ledger with time travel: use FlureeView API
-        if let Some(view) = self.try_single_view_from_spec(&spec).await? {
+        if let Some(mut view) = self.try_single_view_from_spec(&spec).await? {
             let source = &spec.default_graphs[0];
+
+            // Apply graph selector if specified in structured from
+            if let Some(selector) = &source.graph_selector {
+                view = Self::apply_graph_selector(view, selector)?;
+            }
 
             // Apply policy: per-source overrides global
             let view = self
@@ -71,18 +76,17 @@ where
 
     /// Execute a connection query and return a tracked JSON-LD response.
     ///
-    /// Uses FlureeView API for single-ledger, legacy LoadedDataset for multi-ledger.
+    /// Uses FlureeView API for single-ledger, FlureeDataSetView for multi-ledger.
     pub(crate) async fn query_connection_jsonld_tracked(
         &self,
         query_json: &JsonValue,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        let (spec, qc_opts) = parse_dataset_spec(query_json).map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
-        })?;
+        let (spec, qc_opts) = parse_dataset_spec(query_json)
+            .map_err(|e| crate::query::TrackedErrorResponse::new(400, e.to_string(), None))?;
 
         if spec.is_empty() {
-            return Err(crate::query::TrackedErrorResponse::from_error(
+            return Err(crate::query::TrackedErrorResponse::new(
                 400,
                 "Missing ledger specification in connection query",
                 None,
@@ -93,14 +97,15 @@ where
         if Self::is_single_ledger_fast_path(&spec) {
             let source = &spec.default_graphs[0];
             let alias = source.identifier.as_str();
-            let mut view = self.view(alias).await.map_err(|e| {
-                crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-            })?;
+            let mut view = self
+                .view(alias)
+                .await
+                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
             // Apply graph selector if specified in structured from
             if let Some(selector) = &source.graph_selector {
                 view = Self::apply_graph_selector(view, selector).map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), None)
                 })?;
             }
 
@@ -108,28 +113,32 @@ where
             let view = self
                 .apply_source_or_global_policy(view, source, &qc_opts)
                 .await
-                .map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-                })?;
+                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
             return self.query_view_tracked(&view, query_json).await;
         }
 
         // Single-ledger with time travel: use FlureeView API
-        let single_view = self.try_single_view_from_spec(&spec).await.map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-        })?;
+        let single_view = self
+            .try_single_view_from_spec(&spec)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
-        if let Some(view) = single_view {
+        if let Some(mut view) = single_view {
             let source = &spec.default_graphs[0];
+
+            // Apply graph selector if specified in structured from
+            if let Some(selector) = &source.graph_selector {
+                view = Self::apply_graph_selector(view, selector).map_err(|e| {
+                    crate::query::TrackedErrorResponse::new(500, e.to_string(), None)
+                })?;
+            }
 
             // Apply policy: per-source overrides global
             let view = self
                 .apply_source_or_global_policy(view, source, &qc_opts)
                 .await
-                .map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-                })?;
+                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
             return self.query_view_tracked(&view, query_json).await;
         }
@@ -138,13 +147,11 @@ where
         let dataset = if qc_opts.has_any_policy_inputs() {
             self.build_dataset_view_with_policy(&spec, &qc_opts)
                 .await
-                .map_err(|e| {
-                    crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-                })?
+                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?
         } else {
-            self.build_dataset_view(&spec).await.map_err(|e| {
-                crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-            })?
+            self.build_dataset_view(&spec)
+                .await
+                .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?
         };
 
         self.query_dataset_view_tracked(&dataset, query_json).await
@@ -161,7 +168,7 @@ where
 
     /// Execute an FQL/JSON-LD query via connection with explicit policy context.
     ///
-    /// Uses FlureeView API for single-ledger, legacy LoadedDataset for multi-ledger.
+    /// Uses FlureeView API for single-ledger, FlureeDataSetView for multi-ledger.
     pub(crate) async fn query_connection_with_policy(
         &self,
         query_json: &JsonValue,
@@ -189,19 +196,18 @@ where
 
     /// Execute a connection query with explicit policy context and return a tracked JSON-LD response.
     ///
-    /// Uses FlureeView API for single-ledger, legacy LoadedDataset for multi-ledger.
+    /// Uses FlureeView API for single-ledger, FlureeDataSetView for multi-ledger.
     pub(crate) async fn query_connection_jsonld_tracked_with_policy(
         &self,
         query_json: &JsonValue,
         policy: &PolicyContext,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        let (spec, _qc_opts) = parse_dataset_spec(query_json).map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
-        })?;
+        let (spec, _qc_opts) = parse_dataset_spec(query_json)
+            .map_err(|e| crate::query::TrackedErrorResponse::new(400, e.to_string(), None))?;
 
         if spec.is_empty() {
-            return Err(crate::query::TrackedErrorResponse::from_error(
+            return Err(crate::query::TrackedErrorResponse::new(
                 400,
                 "Missing ledger specification in connection query",
                 None,
@@ -209,9 +215,10 @@ where
         }
 
         // Try single-ledger path (including with time spec)
-        let single_view = self.try_single_view_from_spec(&spec).await.map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-        })?;
+        let single_view = self
+            .try_single_view_from_spec(&spec)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
         if let Some(view) = single_view {
             let view = view.with_policy(Arc::new(policy.clone()));
@@ -219,9 +226,10 @@ where
         }
 
         // Multi-ledger: use FlureeDataSetView and apply explicit policy to each view
-        let dataset = self.build_dataset_view(&spec).await.map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-        })?;
+        let dataset = self
+            .build_dataset_view(&spec)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
         self.query_dataset_view_tracked(&dataset, query_json).await
     }
@@ -274,24 +282,23 @@ where
         sparql: &str,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        let ast = parse_and_validate_sparql(sparql).map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
-        })?;
-        let spec = extract_sparql_dataset_spec(&ast).map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
-        })?;
+        let ast = parse_and_validate_sparql(sparql)
+            .map_err(|e| crate::query::TrackedErrorResponse::new(400, e.to_string(), None))?;
+        let spec = extract_sparql_dataset_spec(&ast)
+            .map_err(|e| crate::query::TrackedErrorResponse::new(400, e.to_string(), None))?;
 
         if spec.is_empty() {
-            return Err(crate::query::TrackedErrorResponse::from_error(
+            return Err(crate::query::TrackedErrorResponse::new(
                 400,
                 "Missing dataset specification in SPARQL connection query (no FROM / FROM NAMED)",
                 None,
             ));
         }
 
-        let dataset = self.build_dataset_view(&spec).await.map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-        })?;
+        let dataset = self
+            .build_dataset_view(&spec)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
 
         self.query_dataset_view_tracked(&dataset, sparql).await
     }
@@ -307,24 +314,23 @@ where
         policy: &PolicyContext,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
-        let ast = parse_and_validate_sparql(sparql).map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
-        })?;
-        let spec = extract_sparql_dataset_spec(&ast).map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), None)
-        })?;
+        let ast = parse_and_validate_sparql(sparql)
+            .map_err(|e| crate::query::TrackedErrorResponse::new(400, e.to_string(), None))?;
+        let spec = extract_sparql_dataset_spec(&ast)
+            .map_err(|e| crate::query::TrackedErrorResponse::new(400, e.to_string(), None))?;
 
         if spec.is_empty() {
-            return Err(crate::query::TrackedErrorResponse::from_error(
+            return Err(crate::query::TrackedErrorResponse::new(
                 400,
                 "Missing dataset specification in SPARQL connection query (no FROM / FROM NAMED)",
                 None,
             ));
         }
 
-        let dataset = self.build_dataset_view(&spec).await.map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(500, e.to_string(), None)
-        })?;
+        let dataset = self
+            .build_dataset_view(&spec)
+            .await
+            .map_err(|e| crate::query::TrackedErrorResponse::new(500, e.to_string(), None))?;
         let dataset = apply_policy_to_dataset(dataset, policy);
 
         self.query_dataset_view_tracked(&dataset, sparql).await
@@ -336,10 +342,10 @@ where
     /// If neither has policy, returns the view unchanged.
     async fn apply_source_or_global_policy(
         &self,
-        view: crate::view::FlureeView<S>,
+        view: crate::view::FlureeView,
         source: &crate::dataset::GraphSource,
         global_opts: &crate::QueryConnectionOptions,
-    ) -> Result<crate::view::FlureeView<S>> {
+    ) -> Result<crate::view::FlureeView> {
         // Per-source policy takes precedence
         if let Some(policy_override) = &source.policy_override {
             if policy_override.has_policy() {
@@ -356,10 +362,10 @@ where
     }
 }
 
-fn apply_policy_to_dataset<S: Storage + 'static>(
-    mut dataset: FlureeDataSetView<S>,
+fn apply_policy_to_dataset(
+    mut dataset: FlureeDataSetView,
     policy: &PolicyContext,
-) -> FlureeDataSetView<S> {
+) -> FlureeDataSetView {
     let policy = Arc::new(policy.clone());
 
     dataset.default = dataset

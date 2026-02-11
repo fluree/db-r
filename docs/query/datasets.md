@@ -76,7 +76,7 @@ WHERE {
 
 In SPARQL, `FROM NAMED` identifies **named graphs in the dataset**. In Fluree, these are often *graph sources* such as:
 - another ledger (federation / multi-ledger queries), or
-- a virtual graph (search, tabular mapping, etc.).
+- a graph source (search, tabular mapping, etc.).
 
 Query across multiple named graph sources:
 
@@ -139,7 +139,7 @@ Use the `#txn-meta` fragment on a ledger reference:
 ```json
 {
   "@context": {
-    "f": "https://ns.flur.ee/ledger#",
+    "f": "https://ns.flur.ee/db#",
     "ex": "http://example.org/ns/"
   },
   "from": "mydb:main#txn-meta",
@@ -154,7 +154,7 @@ Use the `#txn-meta` fragment on a ledger reference:
 **SPARQL Query:**
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX f: <https://ns.flur.ee/db#>
 PREFIX ex: <http://example.org/ns/>
 
 SELECT ?commit ?t ?machine
@@ -255,7 +255,7 @@ When using object syntax for `from` or `from-named`, the following fields are av
 | `graph` | string | No | Graph selector: `"default"`, `"txn-meta"`, or full IRI |
 | `t` | integer | No | Time-travel: specific transaction number |
 | `iso` | string | No | Time-travel: ISO-8601 timestamp |
-| `sha` | string | No | Time-travel: commit SHA prefix |
+| `commit_id` | string | No | Time-travel: commit ContentId |
 | `policy` | object | No | Per-source policy override (see below) |
 
 ### Dataset-Local Aliases
@@ -450,7 +450,7 @@ Combine default and named graph patterns:
 **SPARQL:**
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX f: <https://ns.flur.ee/db#>
 PREFIX ex: <http://example.org/ns/>
 
 SELECT ?name ?commit ?t

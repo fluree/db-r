@@ -48,7 +48,7 @@
 //! }
 //! ```
 
-use crate::address_path::alias_to_path_prefix;
+use crate::address_path::ledger_id_to_path_prefix;
 use crate::error::Result;
 use async_trait::async_trait;
 use sha2::Digest;
@@ -163,69 +163,7 @@ pub trait StorageWrite: Debug + Send + Sync {
 // Content-Addressed Write (Extension)
 // ============================================================================
 
-/// What kind of dictionary blob is being stored.
-///
-/// Used by [`ContentKind::DictBlob`] to route dictionary artifacts to
-/// typed CAS paths (e.g. `objects/dicts/{hash}.dict`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum DictKind {
-    /// Named-graph IRI dictionary (FRD1 format).
-    Graphs,
-    /// Datatype IRI dictionary (FRD1 format).
-    Datatypes,
-    /// Language tag dictionary (FRD1 format).
-    Languages,
-    /// Subject forward file — raw concatenated UTF-8 IRIs (mmap'd).
-    SubjectForward,
-    /// Subject index — offsets/lengths into subject forward file (FSI1 format).
-    SubjectIndex,
-    /// Subject reverse hash index — hash→s_id binary search table (SRV1 format, mmap'd).
-    SubjectReverse,
-    /// String value forward file — raw concatenated UTF-8 (mmap'd).
-    StringForward,
-    /// String value index — offsets/lengths into string forward file (FSI1 format).
-    StringIndex,
-    /// String value reverse hash index (SRV1 format, mmap'd).
-    StringReverse,
-    /// Per-predicate overflow BigInt/BigDecimal arena (NBA1 format).
-    NumBig { p_id: u32 },
-}
-
-/// File extension for a given [`DictKind`] (used in CAS paths).
-fn dict_kind_extension(dict: DictKind) -> &'static str {
-    match dict {
-        DictKind::Graphs | DictKind::Datatypes | DictKind::Languages => "dict",
-        DictKind::SubjectForward | DictKind::StringForward => "fwd",
-        DictKind::SubjectIndex | DictKind::StringIndex => "idx",
-        DictKind::SubjectReverse | DictKind::StringReverse => "rev",
-        DictKind::NumBig { .. } => "nba",
-    }
-}
-
-/// What a blob "is", so storage can choose its layout.
-///
-/// Filesystem-like storages typically map this to directory prefixes such as
-/// `index/spot/` vs `commit/`. Some storages may ignore it (e.g. IPFS-like
-/// content stores).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ContentKind {
-    /// Commit JSON blob
-    Commit,
-    /// Txn JSON blob
-    Txn,
-    /// DB root index node (the "root pointer" written each refresh)
-    IndexRoot,
-    /// Garbage record (GC metadata)
-    GarbageRecord,
-    /// Dictionary artifact (predicates, subjects, strings, etc.)
-    DictBlob { dict: DictKind },
-    /// Index branch manifest (FBR1 format)
-    IndexBranch,
-    /// Index leaf file (FLI1 format)
-    IndexLeaf,
-}
+use crate::content_kind::{dict_kind_extension, ContentKind};
 
 /// Result of a storage-owned content write.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -253,7 +191,7 @@ pub trait ContentAddressedWrite: StorageWrite {
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_id: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult>;
@@ -262,11 +200,11 @@ pub trait ContentAddressedWrite: StorageWrite {
     async fn content_write_bytes(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_id: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult> {
         let hash_hex = sha256_hex(bytes);
-        self.content_write_bytes_with_hash(kind, ledger_alias, &hash_hex, bytes)
+        self.content_write_bytes_with_hash(kind, ledger_id, &hash_hex, bytes)
             .await
     }
 }
@@ -275,15 +213,254 @@ pub trait ContentAddressedWrite: StorageWrite {
 // Marker Trait
 // ============================================================================
 
+/// Identifies the storage method/scheme for CID-to-address mapping.
+///
+/// Every storage backend must declare its method name (e.g., `"file"`, `"memory"`,
+/// `"s3"`). This is used by [`StorageContentStore`] to map `ContentId` values to
+/// physical storage addresses via [`content_address`].
+///
+/// This trait is a supertrait of [`Storage`], ensuring that any type-erased
+/// `dyn Storage` (e.g., [`AnyStorage`]) automatically includes `storage_method()`.
+pub trait StorageMethod {
+    /// Return the storage method identifier (e.g., `"file"`, `"memory"`, `"s3"`).
+    fn storage_method(&self) -> &str;
+}
+
 /// Full storage capability marker
 ///
-/// This trait combines `StorageRead` and `ContentAddressedWrite` (which itself
-/// requires `StorageWrite`), providing a single bound for storage backends
-/// that support all operations.
+/// This trait combines `StorageRead`, `ContentAddressedWrite`, and `StorageMethod`,
+/// providing a single bound for storage backends that support all operations.
 ///
 /// Used for type erasure in `AnyStorage`.
-pub trait Storage: StorageRead + ContentAddressedWrite {}
-impl<T: StorageRead + ContentAddressedWrite> Storage for T {}
+pub trait Storage: StorageRead + ContentAddressedWrite + StorageMethod {}
+impl<T: StorageRead + ContentAddressedWrite + StorageMethod> Storage for T {}
+
+// ============================================================================
+// ContentStore Trait (CID-first storage abstraction)
+// ============================================================================
+
+use crate::content_id::ContentId;
+
+/// Content-addressed store operating on `ContentId` (CIDv1).
+///
+/// This trait is the CID-first replacement for the address-string-based
+/// `Storage` traits above. The API is purely `id → bytes`: physical
+/// layout (ledger namespacing, codec subdirectories, etc.) is the
+/// implementation's concern, configured at construction time.
+///
+/// During the migration period, [`StorageContentStore`] provides a bridge
+/// from existing `S: Storage` implementations to this trait.
+#[async_trait]
+pub trait ContentStore: Debug + Send + Sync {
+    /// Check if an object exists by CID.
+    async fn has(&self, id: &ContentId) -> Result<bool>;
+
+    /// Retrieve object bytes by CID.
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>>;
+
+    /// Store bytes, computing CID from kind + bytes. Returns the CID.
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId>;
+
+    /// Store bytes with a caller-provided CID (for imports/replication).
+    ///
+    /// Implementations MUST call `id.verify(bytes)` and reject mismatches.
+    ///
+    /// **Not for commit-v2 blobs.** Commit CIDs are derived from a
+    /// canonical sub-range of the blob, not the full bytes, so
+    /// `id.verify(bytes)` will fail. Commit blobs should be written via
+    /// `Storage::content_write_bytes_with_hash()` with the pre-verified
+    /// canonical hash instead.
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()>;
+
+    /// Resolve a CID to a local filesystem path, if available.
+    ///
+    /// Returns `Some(path)` for storage backends where data is already on
+    /// the local filesystem (e.g., `FileContentStore`). Returns `None` for
+    /// remote or in-memory backends.
+    fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
+        let _ = id;
+        None
+    }
+}
+
+// ============================================================================
+// MemoryContentStore (CID-first in-memory store)
+// ============================================================================
+
+/// In-memory content store for testing, keyed by `ContentId`.
+///
+/// This is the CID-first counterpart to [`MemoryStorage`].
+#[derive(Debug, Clone)]
+pub struct MemoryContentStore {
+    data: Arc<RwLock<std::collections::HashMap<ContentId, Vec<u8>>>>,
+}
+
+impl Default for MemoryContentStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryContentStore {
+    /// Create a new empty in-memory content store.
+    pub fn new() -> Self {
+        Self {
+            data: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+}
+
+#[async_trait]
+impl ContentStore for MemoryContentStore {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        Ok(self.data.read().expect("RwLock poisoned").contains_key(id))
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        self.data
+            .read()
+            .expect("RwLock poisoned")
+            .get(id)
+            .cloned()
+            .ok_or_else(|| crate::error::Error::not_found(id.to_string()))
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        let id = ContentId::new(kind, bytes);
+        self.data
+            .write()
+            .expect("RwLock poisoned")
+            .insert(id.clone(), bytes.to_vec());
+        Ok(id)
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        if !id.verify(bytes) {
+            return Err(crate::error::Error::storage(format!(
+                "CID verification failed: provided CID {} does not match bytes",
+                id
+            )));
+        }
+        self.data
+            .write()
+            .expect("RwLock poisoned")
+            .insert(id.clone(), bytes.to_vec());
+        Ok(())
+    }
+}
+
+// ============================================================================
+// StorageContentStore (bridge adapter: existing Storage → ContentStore)
+// ============================================================================
+
+/// Bridge adapter that wraps an existing `S: Storage` to provide `ContentStore`.
+///
+/// This is the critical piece for incremental migration: code that already has
+/// `S: Storage` can obtain a `ContentStore` without rewriting storage
+/// implementations.
+///
+/// The adapter is constructed with a ledger scope (`ledger_id`) and a
+/// storage method name (e.g., `"file"`, `"memory"`, `"s3"`), which together
+/// determine the layout rule for mapping CIDs to legacy address strings.
+#[derive(Debug, Clone)]
+pub struct StorageContentStore<S: Storage> {
+    storage: S,
+    ledger_id: String,
+    method: String,
+}
+
+impl<S: Storage> StorageContentStore<S> {
+    /// Create a new bridge adapter.
+    ///
+    /// # Arguments
+    ///
+    /// * `storage` - The underlying legacy storage implementation
+    /// * `ledger_id` - Ledger identifier (e.g., `"mydb:main"`)
+    /// * `method` - Storage method name for address generation (e.g., `"file"`, `"memory"`)
+    pub fn new(storage: S, ledger_id: impl Into<String>, method: impl Into<String>) -> Self {
+        Self {
+            storage,
+            ledger_id: ledger_id.into(),
+            method: method.into(),
+        }
+    }
+
+    /// Map a CID to a legacy address string using the existing layout.
+    fn cid_to_address(&self, id: &ContentId) -> Result<String> {
+        let kind = id.content_kind().ok_or_else(|| {
+            crate::error::Error::storage(format!("unknown codec {} in CID {}", id.codec(), id))
+        })?;
+        let hex_digest = id.digest_hex();
+        let addr = content_address(&self.method, kind, &self.ledger_id, &hex_digest);
+        Ok(addr)
+    }
+}
+
+#[async_trait]
+impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        let address = self.cid_to_address(id)?;
+        self.storage.exists(&address).await
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        let address = self.cid_to_address(id)?;
+        self.storage.read_bytes(&address).await
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        let id = ContentId::new(kind, bytes);
+        let hex_digest = id.digest_hex();
+        self.storage
+            .content_write_bytes_with_hash(kind, &self.ledger_id, &hex_digest, bytes)
+            .await?;
+        Ok(id)
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        if !id.verify(bytes) {
+            return Err(crate::error::Error::storage(format!(
+                "CID verification failed: provided CID {} does not match bytes",
+                id
+            )));
+        }
+        let address = self.cid_to_address(id)?;
+        self.storage.write_bytes(&address, bytes).await
+    }
+
+    fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
+        let address = self.cid_to_address(id).ok()?;
+        self.storage.resolve_local_path(&address)
+    }
+}
+
+/// Convenience constructor for the `StorageContentStore` bridge adapter.
+///
+/// Wraps an existing `S: Storage` to provide `ContentStore` semantics.
+/// The `method` string (e.g., `"file"`, `"memory"`, `"s3"`) must come from
+/// the calling layer — typically from connection config or by parsing an
+/// existing address via `parse_fluree_address().method`.
+pub fn bridge_content_store<S: Storage>(
+    storage: S,
+    ledger_id: &str,
+    method: &str,
+) -> StorageContentStore<S> {
+    StorageContentStore::new(storage, ledger_id, method)
+}
+
+/// Construct a `ContentStore` from a `Storage` backend using its declared method.
+///
+/// This is the preferred way to obtain a `ContentStore` — the method is derived
+/// from the storage's [`StorageMethod::storage_method()`] implementation, so
+/// callers never need to supply a method string manually.
+///
+/// The `namespace_id` is typically a ledger ID (e.g., `"mydb:main"`) or a
+/// graph source ID (e.g., `"my-search:main"`) — it determines the CAS
+/// namespace prefix for physical key layout.
+pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageContentStore<S> {
+    let method = storage.storage_method().to_string();
+    StorageContentStore::new(storage, namespace_id, method)
+}
 
 // ============================================================================
 // Helper Functions (Public for use by other storage implementations)
@@ -299,23 +476,24 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(digest)
 }
 
-/// Convert a ledger alias to a path prefix.
+/// Convert a ledger ID to a path prefix.
 ///
-/// Handles the standard alias format (e.g., "mydb:main" -> "mydb/main").
-pub fn alias_prefix_for_path(alias: &str) -> String {
-    alias_to_path_prefix(alias).unwrap_or_else(|_| alias.replace(':', "/"))
+/// Handles the standard ledger ID format (e.g., "mydb:main" -> "mydb/main").
+pub fn ledger_id_prefix_for_path(ledger_id: &str) -> String {
+    ledger_id_to_path_prefix(ledger_id).unwrap_or_else(|_| ledger_id.replace(':', "/"))
 }
 
 /// Build a storage path for content-addressed data.
 ///
 /// This determines the directory structure for different content types:
-/// - Commits: `{alias}/commit/{hash}.json`
-/// - Index nodes: `{alias}/index/{ordering}/{hash}.json`
+/// - Commits: `{ledger_id}/commit/{hash}.fcv2`
+/// - Index nodes: `{ledger_id}/index/{ordering}/{hash}.json`
+/// - Graph sources: `graph-sources/{ledger_id}/snapshots/{hash}.gssnap`
 /// - etc.
-pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
-    let prefix = alias_prefix_for_path(alias);
+pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> String {
+    let prefix = ledger_id_prefix_for_path(ledger_id);
     match kind {
-        ContentKind::Commit => format!("{}/commit/{}.json", prefix, hash_hex),
+        ContentKind::Commit => format!("{}/commit/{}.fcv2", prefix, hash_hex),
         ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
         ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
@@ -325,6 +503,11 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
         }
         ContentKind::IndexBranch => format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex),
         ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli", prefix, hash_hex),
+        ContentKind::LedgerConfig => format!("{}/config/{}.json", prefix, hash_hex),
+        ContentKind::StatsSketch => format!("{}/index/stats/{}.hll", prefix, hash_hex),
+        ContentKind::GraphSourceSnapshot => {
+            format!("graph-sources/{}/snapshots/{}.gssnap", prefix, hash_hex)
+        }
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
         _ => format!("{}/blob/{}.bin", prefix, hash_hex),
@@ -337,35 +520,19 @@ pub fn content_path(kind: ContentKind, alias: &str, hash_hex: &str) -> String {
 ///
 /// * `method` - Storage method identifier (e.g., "file", "s3", "memory")
 /// * `kind` - The type of content being stored
-/// * `alias` - Ledger alias (e.g., "mydb:main")
+/// * `ledger_id` - Ledger ID (e.g., "mydb:main")
 /// * `hash_hex` - Content hash as hex string
 ///
 /// # Returns
 ///
-/// A Fluree address like `fluree:file://mydb/main/commit/{hash}.json`
-pub fn content_address(method: &str, kind: ContentKind, alias: &str, hash_hex: &str) -> String {
-    let path = content_path(kind, alias, hash_hex);
+/// A Fluree address like `fluree:file://mydb/main/commit/{hash}.fcv2`
+pub fn content_address(method: &str, kind: ContentKind, ledger_id: &str, hash_hex: &str) -> String {
+    let path = content_path(kind, ledger_id, hash_hex);
     format!("fluree:{}://{}", method, path)
 }
 
 /// Extract the content hash (filename stem) from a CAS address.
 ///
-/// Given an address like `"fluree:file://mydb/main/index/objects/leaves/abc123.fli"`,
-/// returns `Some("abc123".to_string())`. Works by extracting the last path segment
-/// and stripping the file extension.
-///
-/// Returns `None` if the address has no path segment or no file extension.
-pub fn extract_hash_from_address(address: &str) -> Option<String> {
-    // Find the last path segment (after the last '/')
-    let filename = address.rsplit('/').next()?;
-    // Strip the file extension (after the last '.')
-    let dot_pos = filename.rfind('.')?;
-    if dot_pos == 0 {
-        return None; // hidden file with no stem
-    }
-    Some(filename[..dot_pos].to_string())
-}
-
 /// Decode JSON from bytes
 ///
 /// Helper function for storage implementations.
@@ -471,16 +638,22 @@ impl StorageWrite for MemoryStorage {
     }
 }
 
+impl StorageMethod for MemoryStorage {
+    fn storage_method(&self) -> &str {
+        "memory"
+    }
+}
+
 #[async_trait]
 impl ContentAddressedWrite for MemoryStorage {
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_id: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult> {
-        let address = content_address("memory", kind, ledger_alias, content_hash_hex);
+        let address = content_address("memory", kind, ledger_id, content_hash_hex);
         self.write_bytes(&address, bytes).await?;
         Ok(ContentWriteResult {
             address,
@@ -723,16 +896,23 @@ impl StorageWrite for FileStorage {
 }
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+impl StorageMethod for FileStorage {
+    fn storage_method(&self) -> &str {
+        "file"
+    }
+}
+
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[async_trait]
 impl ContentAddressedWrite for FileStorage {
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_id: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult> {
-        let address = content_address("file", kind, ledger_alias, content_hash_hex);
+        let address = content_address("file", kind, ledger_id, content_hash_hex);
         self.write_bytes(&address, bytes).await?;
         Ok(ContentWriteResult {
             address,
@@ -849,10 +1029,107 @@ mod tests {
             .unwrap();
 
         assert!(res.address.starts_with("fluree:memory://mydb/main/commit/"));
-        assert!(res.address.ends_with(".json"));
+        assert!(res.address.ends_with(".fcv2"));
         assert_eq!(res.size_bytes, bytes.len());
 
         let roundtrip = storage.read_bytes(&res.address).await.unwrap();
         assert_eq!(roundtrip, bytes);
+    }
+
+    // ========================================================================
+    // ContentStore tests (CID-first)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_memory_content_store_put_get() {
+        let store = MemoryContentStore::new();
+        let data = b"content store test";
+
+        let id = store.put(ContentKind::Commit, data).await.unwrap();
+        assert!(store.has(&id).await.unwrap());
+
+        let retrieved = store.get(&id).await.unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn test_memory_content_store_not_found() {
+        let store = MemoryContentStore::new();
+        let fake_id = ContentId::new(ContentKind::Commit, b"nonexistent");
+        assert!(!store.has(&fake_id).await.unwrap());
+        assert!(store.get(&fake_id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_memory_content_store_put_with_id() {
+        let store = MemoryContentStore::new();
+        let data = b"verified content";
+        let id = ContentId::new(ContentKind::Txn, data);
+
+        // Correct bytes should succeed
+        store.put_with_id(&id, data).await.unwrap();
+        assert_eq!(store.get(&id).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn test_memory_content_store_put_with_id_rejects_mismatch() {
+        let store = MemoryContentStore::new();
+        let id = ContentId::new(ContentKind::Txn, b"original");
+
+        // Wrong bytes should be rejected
+        let result = store.put_with_id(&id, b"tampered").await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("CID verification failed"));
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_roundtrip() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage.clone(), "mydb:main", "memory");
+
+        let data = b"bridge test data";
+        let id = store.put(ContentKind::Commit, data).await.unwrap();
+
+        // Should be retrievable via ContentStore
+        assert!(store.has(&id).await.unwrap());
+        let retrieved = store.get(&id).await.unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_put_with_id() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage, "mydb:main", "memory");
+
+        let data = b"bridge put_with_id test";
+        let id = ContentId::new(ContentKind::IndexRoot, data);
+
+        store.put_with_id(&id, data).await.unwrap();
+        assert_eq!(store.get(&id).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_put_with_id_rejects_mismatch() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage, "mydb:main", "memory");
+
+        let id = ContentId::new(ContentKind::IndexRoot, b"real data");
+        let result = store.put_with_id(&id, b"fake data").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_bridge_adapter_cid_matches_content_id_new() {
+        let storage = MemoryStorage::new();
+        let store = StorageContentStore::new(storage, "test:main", "memory");
+
+        let data = b"cid consistency check";
+        let id_from_store = store.put(ContentKind::Commit, data).await.unwrap();
+        let id_from_new = ContentId::new(ContentKind::Commit, data);
+
+        assert_eq!(id_from_store, id_from_new);
     }
 }

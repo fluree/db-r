@@ -8,6 +8,7 @@ description = "Transaction support for Fluree DB"
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core" }
+fluree-db-indexer = { path = "../fluree-db-indexer" }
 fluree-db-policy = { path = "../fluree-db-policy" }
 fluree-db-query = { path = "../fluree-db-query" }
 fluree-db-sparql = { path = "../fluree-db-sparql" }

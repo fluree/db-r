@@ -7,7 +7,7 @@ use crate::reasoning::{global_reasoning_cache, reason_owl2rl, ReasoningOverlay};
 use crate::rewrite::ReasoningModes;
 use fluree_db_core::{
     is_rdfs_subclass_of, is_rdfs_subproperty_of, overlay::OverlayProvider, Db, IndexSchema,
-    SchemaHierarchy, SchemaPredicateInfo, Storage,
+    SchemaHierarchy, SchemaPredicateInfo,
 };
 use fluree_db_reasoner::{
     DerivedFactsBuilder, DerivedFactsOverlay, FrozenSameAs, ReasoningOptions,
@@ -19,8 +19,8 @@ use std::sync::Arc;
 ///
 /// Merges overlay rdfs:subClassOf and rdfs:subPropertyOf assertions
 /// with the existing database schema to create a unified hierarchy view.
-pub fn schema_hierarchy_with_overlay<S: Storage + 'static>(
-    db: &Db<S>,
+pub fn schema_hierarchy_with_overlay(
+    db: &Db,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
 ) -> Option<SchemaHierarchy> {
@@ -163,8 +163,8 @@ pub fn effective_reasoning_modes(
 /// - Datalog: Executes user-defined rules stored with `f:rule` predicate
 ///
 /// When both are enabled, derived facts from both sources are combined into a single overlay.
-pub async fn compute_derived_facts<S: Storage + 'static>(
-    db: &Db<S>,
+pub async fn compute_derived_facts(
+    db: &Db,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     reasoning: &ReasoningModes,

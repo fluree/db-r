@@ -1,5 +1,6 @@
 use crate::context;
 use crate::error::{CliError, CliResult};
+use fluree_vocab::xsd;
 use std::path::Path;
 
 pub async fn run(
@@ -8,7 +9,17 @@ pub async fn run(
     at: Option<&str>,
     fluree_dir: &Path,
 ) -> CliResult<()> {
+    // Check for tracked ledger — export requires local data
+    let store = crate::config::TomlSyncConfigStore::new(fluree_dir.to_path_buf());
     let alias = context::resolve_ledger(explicit_ledger, fluree_dir)?;
+    if store.get_tracked(&alias).is_some()
+        || store.get_tracked(&context::to_ledger_id(&alias)).is_some()
+    {
+        return Err(CliError::Usage(
+            "export is not available for tracked ledgers (no local data).".to_string(),
+        ));
+    }
+
     let fluree = context::build_fluree(fluree_dir)?;
 
     let graph = match at {
@@ -95,7 +106,7 @@ fn extract_ntriples_term(binding: Option<&serde_json::Value>) -> String {
             if let Some(lang) = b.get("xml:lang").and_then(|v| v.as_str()) {
                 format!("\"{escaped}\"@{lang}")
             } else if let Some(dt) = b.get("datatype").and_then(|v| v.as_str()) {
-                if dt == "http://www.w3.org/2001/XMLSchema#string" {
+                if dt == xsd::STRING {
                     format!("\"{escaped}\"")
                 } else {
                     format!("\"{escaped}\"^^<{dt}>")

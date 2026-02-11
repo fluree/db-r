@@ -47,6 +47,8 @@ mod value_convert;
 #[cfg(feature = "import")]
 pub mod import;
 pub mod import_sink;
+#[cfg(feature = "import")]
+pub mod turtle_splitter;
 
 // Re-exports
 pub use address::parse_commit_id;
@@ -65,6 +67,6 @@ pub use parse::{
 pub use stage::{generate_txn_id, stage, stage_flakes, StageOptions};
 
 #[cfg(feature = "shacl")]
-pub use stage::stage_with_shacl;
+pub use stage::{stage_with_shacl, validate_view_with_shacl};
 
 pub mod commit_v2;

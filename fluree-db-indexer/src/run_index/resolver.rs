@@ -23,7 +23,7 @@ use fluree_db_core::{DatatypeDictId, ListIndex};
 use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
 use fluree_db_novelty::commit_v2::{load_commit_ops, CommitV2Error};
-use fluree_vocab::{fluree, ledger};
+use fluree_vocab::{db, fluree};
 use num_bigint::BigInt;
 use std::collections::HashMap;
 use std::io;
@@ -152,7 +152,7 @@ impl CommitResolver {
     pub fn resolve_blob<W: RecordSink>(
         &mut self,
         bytes: &[u8],
-        commit_address: &str,
+        commit_hash_hex: &str,
         dicts: &mut GlobalDicts,
         writer: &mut W,
     ) -> Result<ResolvedCommit, ResolverError> {
@@ -161,7 +161,7 @@ impl CommitResolver {
         self.apply_namespace_delta(&commit_ops.envelope.namespace_delta);
         let (asserts, retracts) = self.resolve_commit_ops(&commit_ops, dicts, writer)?;
         let meta_count = self.emit_txn_meta(
-            commit_address,
+            commit_hash_hex,
             &commit_ops.envelope,
             commit_size,
             asserts,
@@ -190,11 +190,14 @@ impl CommitResolver {
     ///   t, size (commit blob bytes), asserts, retracts.
     /// - **User metadata**: any `txn_meta` entries from the envelope.
     ///
+    /// The `commit_hash_hex` parameter is the 64-char SHA-256 hex digest identifying
+    /// the commit (typically from `ContentId::digest_hex()`).
+    ///
     /// Returns the number of records emitted.
     #[allow(clippy::too_many_arguments)]
     pub fn emit_txn_meta<W: RecordSink>(
         &mut self,
-        commit_address: &str,
+        commit_hash_hex: &str,
         envelope: &CommitV2Envelope,
         commit_size: u64,
         asserts: u32,
@@ -202,23 +205,11 @@ impl CommitResolver {
         dicts: &mut GlobalDicts,
         writer: &mut W,
     ) -> Result<u32, ResolverError> {
-        // 1. Extract commit hash from address
-        let hex = match extract_commit_hex(commit_address) {
-            Some(h) => h,
-            None => {
-                tracing::warn!(
-                    address = commit_address,
-                    "cannot extract commit hash from address; skipping txn-meta"
-                );
-                return Ok(0);
-            }
-        };
+        // 1. Validate commit hash hex
+        let hex = commit_hash_hex;
 
         // 2. g_id=1 (pre-reserved in GlobalDicts::new())
-        let g_id = dicts
-            .graphs
-            .get_or_insert_parts(fluree::LEDGER, "transactions")
-            + 1;
+        let g_id = dicts.graphs.get_or_insert_parts(fluree::DB, "txn-meta") + 1;
         debug_assert_eq!(g_id, 1, "txn-meta graph must be g_id=1");
 
         let t = envelope.t;
@@ -232,25 +223,19 @@ impl CommitResolver {
         // 4. Resolve predicate p_ids
         let p_address = dicts
             .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::ADDRESS);
-        let p_time = dicts
-            .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::TIME);
+            .get_or_insert_parts(fluree::DB, db::ADDRESS);
+        let p_time = dicts.predicates.get_or_insert_parts(fluree::DB, db::TIME);
         let p_previous = dicts
             .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::PREVIOUS);
-        let p_t = dicts
-            .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::T);
-        let p_size = dicts
-            .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::SIZE);
+            .get_or_insert_parts(fluree::DB, db::PREVIOUS);
+        let p_t = dicts.predicates.get_or_insert_parts(fluree::DB, db::T);
+        let p_size = dicts.predicates.get_or_insert_parts(fluree::DB, db::SIZE);
         let p_asserts = dicts
             .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::ASSERTS);
+            .get_or_insert_parts(fluree::DB, db::ASSERTS);
         let p_retracts = dicts
             .predicates
-            .get_or_insert_parts(fluree::LEDGER, ledger::RETRACTS);
+            .get_or_insert_parts(fluree::DB, db::RETRACTS);
 
         let mut count = 0u32;
 
@@ -282,8 +267,8 @@ impl CommitResolver {
 
         // === Commit subject records ===
 
-        // ledger:address (STRING)
-        let addr_str_id = dicts.strings.get_or_insert(commit_address)?;
+        // ledger:address (STRING) — stores CID hex digest as the commit identifier
+        let addr_str_id = dicts.strings.get_or_insert(commit_hash_hex)?;
         push(
             commit_s_id,
             p_address,
@@ -343,26 +328,23 @@ impl CommitResolver {
 
         // ledger:previous (ID) -- ref to previous commit
         if let Some(prev_ref) = &envelope.previous_ref {
-            if let Some(prev_id) = &prev_ref.id {
-                // prev_id is like "fluree:commit:sha256:<hex>"
-                let prev_s_id = dicts
-                    .subjects
-                    .get_or_insert(prev_id, fluree_vocab::namespaces::FLUREE_COMMIT)?;
-                push(
-                    commit_s_id,
-                    p_previous,
-                    ObjKind::REF_ID,
-                    ObjKey::encode_sid64(prev_s_id),
-                    DatatypeDictId::ID.as_u16(),
-                )?;
-            }
+            // Use CID digest hex as the subject name in FLUREE_COMMIT namespace
+            let prev_digest = prev_ref.id.digest_hex();
+            let prev_s_id = dicts
+                .subjects
+                .get_or_insert(&prev_digest, fluree_vocab::namespaces::FLUREE_COMMIT)?;
+            push(
+                commit_s_id,
+                p_previous,
+                ObjKind::REF_ID,
+                ObjKey::encode_sid64(prev_s_id),
+                DatatypeDictId::ID.as_u16(),
+            )?;
         }
 
         // ledger:author (STRING) -- transaction signer DID
         if let Some(txn_sig) = &envelope.txn_signature {
-            let p_author = dicts
-                .predicates
-                .get_or_insert_parts(fluree::LEDGER, ledger::AUTHOR);
+            let p_author = dicts.predicates.get_or_insert_parts(fluree::DB, db::AUTHOR);
             let author_str_id = dicts.strings.get_or_insert(&txn_sig.signer)?;
             push(
                 commit_s_id,
@@ -373,12 +355,11 @@ impl CommitResolver {
             )?;
         }
 
-        // ledger:txn (STRING) -- transaction storage address
-        if let Some(txn_addr) = &envelope.txn {
-            let p_txn = dicts
-                .predicates
-                .get_or_insert_parts(fluree::LEDGER, ledger::TXN);
-            let txn_str_id = dicts.strings.get_or_insert(txn_addr)?;
+        // ledger:txn (STRING) -- transaction CID string
+        if let Some(txn_id) = &envelope.txn {
+            let p_txn = dicts.predicates.get_or_insert_parts(fluree::DB, db::TXN);
+            let txn_str = txn_id.to_string();
+            let txn_str_id = dicts.strings.get_or_insert(&txn_str)?;
             push(
                 commit_s_id,
                 p_txn,
@@ -837,13 +818,13 @@ impl CommitResolver {
                 Ok((ObjKind::GEO_POINT, key))
             }
             RawObject::Vector(v) => {
-                let json =
-                    serde_json::to_string(v).map_err(|e| format!("vector serialize: {}", e))?;
-                let id = dicts
-                    .strings
-                    .get_or_insert(&json)
-                    .map_err(|e| format!("string dict write: {}", e))?;
-                Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(id)))
+                let handle = dicts
+                    .vectors
+                    .entry(p_id)
+                    .or_default()
+                    .insert_f64(v)
+                    .map_err(|e| format!("vector arena insert: {}", e))?;
+                Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(handle)))
             }
         }
     }
@@ -904,33 +885,6 @@ impl std::error::Error for ResolverError {}
 // Helper functions
 // ============================================================================
 
-/// Extract the hex hash from a commit storage address.
-///
-/// Addresses look like `fluree:file://ledger/commit/<64-hex>.json`.
-/// Returns the hex portion (without `sha256:` prefix) or `None` if unparseable.
-fn extract_commit_hex(address: &str) -> Option<&str> {
-    // Strip the scheme: "fluree:file://..." -> path after "://"
-    let path = if let Some(rest) = address.strip_prefix("fluree:") {
-        let pos = rest.find("://")?;
-        &rest[pos + 3..]
-    } else if let Some(pos) = address.find("://") {
-        &address[pos + 3..]
-    } else {
-        return None;
-    };
-
-    // Last path segment, strip ".json" suffix
-    let filename = path.rsplit('/').next()?;
-    let hex = filename.strip_suffix(".json")?;
-
-    // Validate: must be 64 hex chars (SHA-256)
-    if hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(hex)
-    } else {
-        None
-    }
-}
-
 /// Parse ISO-8601 timestamp to epoch milliseconds.
 ///
 /// Returns `None` if parsing fails (caller skips emission rather than
@@ -969,13 +923,10 @@ mod tests {
 
         let envelope = CommitV2Envelope {
             t,
-            v: 0,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
-            data: None,
-            index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
@@ -1332,32 +1283,6 @@ mod tests {
     // ---- Txn-meta tests ----
 
     #[test]
-    fn test_extract_commit_hex() {
-        assert_eq!(
-            super::extract_commit_hex(
-                "fluree:file://test/main/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.json"
-            ),
-            Some("abc123def456abc123def456abc123def456abc123def456abc123def456abcd")
-        );
-        assert_eq!(
-            super::extract_commit_hex(
-                "fluree:s3://bucket/ledger/commit/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.json"
-            ),
-            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-        );
-        assert_eq!(
-            super::extract_commit_hex("fluree:file://test/commit/abc.json"),
-            None
-        );
-        assert_eq!(
-            super::extract_commit_hex(
-                "fluree:file://test/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
-            ),
-            None
-        );
-    }
-
-    #[test]
     fn test_iso_to_epoch_ms() {
         let ms = super::iso_to_epoch_ms("2025-01-20T12:00:00Z");
         assert!(ms.is_some());
@@ -1370,6 +1295,7 @@ mod tests {
 
     #[test]
     fn test_emit_txn_meta() {
+        use fluree_db_core::{ContentId, ContentKind};
         use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
         use fluree_db_novelty::CommitRef;
 
@@ -1389,33 +1315,24 @@ mod tests {
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
         let prev_hex = "0000000000000000000000000000000000000000000000000000000000000000";
-        let commit_address = format!("fluree:file://test/main/commit/{}.json", hex);
         let prev_commit_id = format!("fluree:commit:sha256:{}", prev_hex);
 
         let envelope = CommitV2Envelope {
             t: 42,
-            v: 2,
-            previous_ref: Some(CommitRef::new("prev-addr").with_id(prev_commit_id.clone())),
+            previous_ref: Some(CommitRef::new(ContentId::new(
+                ContentKind::Commit,
+                prev_commit_id.as_bytes(),
+            ))),
             namespace_delta: HashMap::new(),
             txn: None,
             time: Some("2025-06-15T12:00:00Z".into()),
-            data: None,
-            index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
         };
 
         let count = resolver
-            .emit_txn_meta(
-                &commit_address,
-                &envelope,
-                1024,
-                8,
-                2,
-                &mut dicts,
-                &mut writer,
-            )
+            .emit_txn_meta(hex, &envelope, 1024, 8, 2, &mut dicts, &mut writer)
             .unwrap();
 
         // 7 records on commit subject: address, time, t, size, asserts, retracts, previous
@@ -1424,7 +1341,7 @@ mod tests {
         // Verify g_id=1 reservation
         let g_id = dicts
             .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "transactions")
+            .get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta")
             + 1;
         assert_eq!(g_id, 1);
 
@@ -1445,14 +1362,14 @@ mod tests {
         }
 
         // Verify predicates were registered
-        let p_address = dicts.predicates.get("https://ns.flur.ee/ledger#address");
-        let p_time = dicts.predicates.get("https://ns.flur.ee/ledger#time");
-        let p_t = dicts.predicates.get("https://ns.flur.ee/ledger#t");
-        let p_previous = dicts.predicates.get("https://ns.flur.ee/ledger#previous");
-        assert!(p_address.is_some(), "ledger:address predicate missing");
-        assert!(p_time.is_some(), "ledger:time predicate missing");
-        assert!(p_t.is_some(), "ledger:t predicate missing");
-        assert!(p_previous.is_some(), "ledger:previous predicate missing");
+        let p_address = dicts.predicates.get("https://ns.flur.ee/db#address");
+        let p_time = dicts.predicates.get("https://ns.flur.ee/db#time");
+        let p_t = dicts.predicates.get("https://ns.flur.ee/db#t");
+        let p_previous = dicts.predicates.get("https://ns.flur.ee/db#previous");
+        assert!(p_address.is_some(), "f:address predicate missing");
+        assert!(p_time.is_some(), "f:time predicate missing");
+        assert!(p_t.is_some(), "f:t predicate missing");
+        assert!(p_previous.is_some(), "f:previous predicate missing");
 
         // Find the time record and verify it's NUM_INT with DatatypeDictId::LONG
         let time_pid = p_time.unwrap();
@@ -1521,32 +1438,20 @@ mod tests {
         let mut writer = RunWriter::new(config);
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
-        let commit_address = format!("fluree:file://test/main/commit/{}.json", hex);
 
         let envelope = CommitV2Envelope {
             t: 1,
-            v: 2,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
-            data: None,
-            index: None,
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
         };
 
         let count = resolver
-            .emit_txn_meta(
-                &commit_address,
-                &envelope,
-                512,
-                4,
-                1,
-                &mut dicts,
-                &mut writer,
-            )
+            .emit_txn_meta(hex, &envelope, 512, 4, 1, &mut dicts, &mut writer)
             .unwrap();
 
         // 5 records: address, t, size, asserts, retracts (no time, no previous)
@@ -1582,17 +1487,13 @@ mod tests {
         let mut writer = RunWriter::new(config);
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
-        let commit_address = format!("fluree:file://test/main/commit/{}.json", hex);
 
         let envelope = CommitV2Envelope {
             t: 5,
-            v: 2,
             previous_ref: None,
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
-            data: None,
-            index: None,
             txn_signature: None,
             txn_meta: vec![
                 TxnMetaEntry::new(100, "jobId", TxnMetaValue::String("job-123".into())),
@@ -1629,15 +1530,7 @@ mod tests {
         };
 
         let count = resolver
-            .emit_txn_meta(
-                &commit_address,
-                &envelope,
-                2048,
-                15,
-                5,
-                &mut dicts,
-                &mut writer,
-            )
+            .emit_txn_meta(hex, &envelope, 2048, 15, 5, &mut dicts, &mut writer)
             .unwrap();
 
         // 5 built-in records (address, t, size, asserts, retracts) + 7 user entries = 12
@@ -1720,7 +1613,7 @@ mod tests {
     #[test]
     fn test_global_dicts_reserves_g_id_1() {
         let dicts = GlobalDicts::new_memory();
-        let g_id = dicts.graphs.get("https://ns.flur.ee/ledger#transactions");
+        let g_id = dicts.graphs.get("https://ns.flur.ee/db#txn-meta");
         assert_eq!(
             g_id,
             Some(0),

@@ -4,6 +4,11 @@
 //! Ports from `db-clojure/test/fluree/db/vector/flatrank_test.clj`.
 //! Tests vector search functionality with dot product, cosine similarity,
 //! and euclidean distance scoring functions.
+//!
+//! ## Post-indexing tests (VEC-PLAN Step 11)
+//!
+//! The `vector_search_post_indexing_*` tests exercise the binary index path:
+//! transact → index build → query from arena (not novelty).
 
 mod support;
 
@@ -14,12 +19,12 @@ use serde_json::json;
 #[tokio::test]
 async fn vector_search_test() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-score:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_id = "test/vector-score:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data with vectors
@@ -29,13 +34,13 @@ async fn vector_search_test() {
             {
                 "@id": "ex:homer",
                 "ex:name": "Homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"},
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"},
                 "ex:age": 36
             },
             {
                 "@id": "ex:bart",
                 "ex:name": "Bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"},
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"},
                 "ex:age": "forever 10"
             }
         ]
@@ -47,7 +52,7 @@ async fn vector_search_test() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -82,23 +87,24 @@ async fn vector_search_test() {
 
     assert_eq!(results[0].0, "ex:homer");
     assert!((results[0].1 - 0.72).abs() < 0.001);
-    assert_eq!(results[0].2, vec![0.6, 0.5]);
+    // @vector is f32 storage; returned values are f32-quantized.
+    assert_eq!(results[0].2, vec![0.6f32 as f64, 0.5f32 as f64]);
 
     assert_eq!(results[1].0, "ex:bart");
     assert!((results[1].1 - 0.61).abs() < 0.001);
-    assert_eq!(results[1].2, vec![0.1, 0.9]);
+    assert_eq!(results[1].2, vec![0.1f32 as f64, 0.9f32 as f64]);
 }
 
 /// Test filtering results based on other properties
 #[tokio::test]
 async fn vector_search_with_filter() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-score-filter:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_id = "test/vector-score-filter:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data
@@ -108,13 +114,13 @@ async fn vector_search_with_filter() {
             {
                 "@id": "ex:homer",
                 "ex:name": "Homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"},
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"},
                 "ex:age": 36
             },
             {
                 "@id": "ex:bart",
                 "ex:name": "Bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"},
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"},
                 "ex:age": "forever 10"
             }
         ]
@@ -126,7 +132,7 @@ async fn vector_search_with_filter() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:age": 36, "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -149,12 +155,12 @@ async fn vector_search_with_filter() {
 #[tokio::test]
 async fn vector_search_score_filter() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-score-threshold:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_id = "test/vector-score-threshold:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data
@@ -164,12 +170,12 @@ async fn vector_search_score_filter() {
             {
                 "@id": "ex:homer",
                 "ex:name": "Homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:bart",
                 "ex:name": "Bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
             }
         ]
     });
@@ -180,7 +186,7 @@ async fn vector_search_score_filter() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]],
@@ -204,12 +210,12 @@ async fn vector_search_score_filter() {
 #[tokio::test]
 async fn vector_search_multi_cardinality() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-score-multi:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_id = "test/vector-score-multi:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data with multiple vectors per entity
@@ -218,13 +224,13 @@ async fn vector_search_multi_cardinality() {
         "@graph": [
             {
                 "@id": "ex:homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:bart",
                 "ex:xVec": [
-                    {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"},
-                    {"@value": [0.2, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                    {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"},
+                    {"@value": [0.2, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
                 ]
             }
         ]
@@ -236,7 +242,7 @@ async fn vector_search_multi_cardinality() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -272,12 +278,12 @@ async fn vector_search_multi_cardinality() {
 #[tokio::test]
 async fn vector_search_cosine_similarity() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-cosine:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_id = "test/vector-cosine:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data
@@ -286,11 +292,11 @@ async fn vector_search_cosine_similarity() {
         "@graph": [
             {
                 "@id": "ex:homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
             }
         ]
     });
@@ -301,7 +307,7 @@ async fn vector_search_cosine_similarity() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["cosineSimilarity", "?vec", "?targetVec"]]
@@ -327,12 +333,12 @@ async fn vector_search_cosine_similarity() {
 #[tokio::test]
 async fn vector_search_euclidean_distance() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-euclidean:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_id = "test/vector-euclidean:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data
@@ -341,11 +347,11 @@ async fn vector_search_euclidean_distance() {
         "@graph": [
             {
                 "@id": "ex:homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
             }
         ]
     });
@@ -356,7 +362,7 @@ async fn vector_search_euclidean_distance() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["euclideanDistance", "?vec", "?targetVec"]]
@@ -382,12 +388,12 @@ async fn vector_search_euclidean_distance() {
 #[tokio::test]
 async fn vector_search_mixed_datatypes() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_alias = "test/vector-mixed:main";
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger_id = "test/vector-mixed:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     let ctx = json!([
         support::default_context(),
-        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/ledger#"}
+        {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
     ]);
 
     // Insert test data with mixed datatypes
@@ -396,7 +402,7 @@ async fn vector_search_mixed_datatypes() {
         "@graph": [
             {
                 "@id": "ex:homer",
-                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
             },
             {
                 "@id": "ex:lucy",
@@ -404,7 +410,7 @@ async fn vector_search_mixed_datatypes() {
             },
             {
                 "@id": "ex:bart",
-                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/ledger#vector"}
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
             }
         ]
     });
@@ -415,7 +421,7 @@ async fn vector_search_mixed_datatypes() {
     let query = json!({
         "@context": ctx,
         "select": ["?x", "?score", "?vec"],
-        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/ledger#vector"}]],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
         "where": [
             {"@id": "?x", "ex:xVec": "?vec"},
             ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
@@ -449,4 +455,553 @@ async fn vector_search_mixed_datatypes() {
         .unwrap();
     let homer_arr = homer_row.as_array().unwrap();
     assert!((homer_arr[1].as_f64().unwrap() - 0.72).abs() < 0.001);
+}
+
+// ============================================================================
+// VEC-PLAN Step 11: Post-indexing tests (vector arena on binary index path)
+// ============================================================================
+
+/// Insert vectors → force index build → query from binary index (arena path).
+///
+/// Verifies that vectors survive the full round-trip:
+/// transact → commit → index build (vector arena shards) → load → query.
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn vector_search_post_indexing() {
+    use fluree_db_api::{IndexConfig, LedgerState, Novelty};
+    use fluree_db_core::Db;
+    use fluree_db_nameservice::NameService;
+    use fluree_db_transact::{CommitOpts, TxnOpts};
+    use support::start_background_indexer_local;
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/vector-post-index:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let db0 = Db::genesis(ledger_id);
+            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+
+            let ctx = json!([
+                support::default_context(),
+                {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
+            ]);
+
+            let insert_txn = json!({
+                "@context": ctx,
+                "@graph": [
+                    {
+                        "@id": "ex:homer",
+                        "ex:name": "Homer",
+                        "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
+                    },
+                    {
+                        "@id": "ex:bart",
+                        "ex:name": "Bart",
+                        "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
+                    }
+                ]
+            });
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            let result = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &insert_txn,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert_with_opts");
+
+            // Trigger indexing and wait for completion
+            let completion = handle.trigger(ledger_id, result.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { index_t, .. } => {
+                    assert!(index_t >= result.receipt.t);
+                }
+                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
+                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            }
+
+            // Verify nameservice has index address
+            let record = fluree
+                .nameservice()
+                .lookup(ledger_id)
+                .await
+                .expect("ns lookup")
+                .expect("ns record");
+            assert!(
+                record.index_head_id.is_some(),
+                "expected index id after indexing"
+            );
+
+            // Load indexed ledger and query
+            let loaded = fluree.ledger(ledger_id).await.expect("load indexed ledger");
+
+            let query = json!({
+                "@context": ctx,
+                "select": ["?x", "?score", "?vec"],
+                "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
+                "where": [
+                    {"@id": "?x", "ex:xVec": "?vec"},
+                    ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
+                ]
+            });
+
+            let qr = fluree.query(&loaded, &query).await.expect("query");
+            let rows = qr.to_jsonld(&loaded.db).expect("jsonld");
+            let arr = rows.as_array().expect("array");
+
+            assert_eq!(arr.len(), 2, "Should return 2 results from indexed path");
+
+            let mut results: Vec<(String, f64)> = arr
+                .iter()
+                .map(|row| {
+                    let r = row.as_array().unwrap();
+                    (r[0].as_str().unwrap().to_string(), r[1].as_f64().unwrap())
+                })
+                .collect();
+            results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            assert_eq!(results[0].0, "ex:homer");
+            assert!((results[0].1 - 0.72).abs() < 0.001);
+            assert_eq!(results[1].0, "ex:bart");
+            assert!((results[1].1 - 0.61).abs() < 0.001);
+        })
+        .await;
+}
+
+/// Insert batch1 → index → insert batch2 (novelty) → query → both batches visible.
+///
+/// Verifies that novelty vectors and indexed arena vectors are merged correctly
+/// in query results.
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn vector_search_novelty_plus_indexed() {
+    use fluree_db_api::{IndexConfig, LedgerState, Novelty};
+    use fluree_db_core::Db;
+    use fluree_db_transact::{CommitOpts, TxnOpts};
+    use support::start_background_indexer_local;
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/vector-novelty-plus-index:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let db0 = Db::genesis(ledger_id);
+            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+
+            let ctx = json!([
+                support::default_context(),
+                {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
+            ]);
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // Batch 1: Homer
+            let batch1 = json!({
+                "@context": ctx,
+                "@graph": [{
+                    "@id": "ex:homer",
+                    "ex:name": "Homer",
+                    "ex:xVec": {"@value": [0.6, 0.5], "@type": "https://ns.flur.ee/db#embeddingVector"}
+                }]
+            });
+
+            let r1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &batch1,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("batch1");
+
+            // Index batch 1
+            let completion = handle.trigger(ledger_id, r1.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
+                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            }
+
+            // Batch 2: Bart (novelty, not yet indexed)
+            let batch2 = json!({
+                "@context": ctx,
+                "@graph": [{
+                    "@id": "ex:bart",
+                    "ex:name": "Bart",
+                    "ex:xVec": {"@value": [0.1, 0.9], "@type": "https://ns.flur.ee/db#embeddingVector"}
+                }]
+            });
+
+            // Load the indexed ledger, then insert batch2 on top
+            let indexed_ledger = fluree.ledger(ledger_id).await.expect("load indexed");
+            let r2 = fluree
+                .insert_with_opts(
+                    indexed_ledger,
+                    &batch2,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("batch2");
+
+            // Query should see BOTH homer (indexed) and bart (novelty)
+            let query = json!({
+                "@context": ctx,
+                "select": ["?x", "?score"],
+                "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
+                "where": [
+                    {"@id": "?x", "ex:xVec": "?vec"},
+                    ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
+                ]
+            });
+
+            let qr = fluree.query(&r2.ledger, &query).await.expect("query");
+            let rows = qr.to_jsonld(&r2.ledger.db).expect("jsonld");
+            let arr = rows.as_array().expect("array");
+
+            assert_eq!(
+                arr.len(),
+                2,
+                "Should return both indexed and novelty vectors"
+            );
+
+            let ids: Vec<&str> = arr
+                .iter()
+                .map(|r| r.as_array().unwrap()[0].as_str().unwrap())
+                .collect();
+            assert!(ids.contains(&"ex:homer"), "indexed homer missing");
+            assert!(ids.contains(&"ex:bart"), "novelty bart missing");
+        })
+        .await;
+}
+
+/// Transact vectors using `"@type": "@vector"` shorthand and verify behavior
+/// is identical to the full IRI.
+#[tokio::test]
+async fn vector_at_type_shorthand() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "test/vector-shorthand:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
+
+    let ctx = json!([
+        support::default_context(),
+        {"ex": "http://example.org/ns/"}
+    ]);
+
+    // Use @vector shorthand instead of full IRI
+    let insert_txn = json!({
+        "@context": ctx,
+        "@graph": [
+            {
+                "@id": "ex:homer",
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "@vector"}
+            },
+            {
+                "@id": "ex:bart",
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "@vector"}
+            }
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert_txn).await.unwrap().ledger;
+
+    // Query uses full IRI in values clause (query parser doesn't resolve
+    // @vector shorthand in VALUES). The key assertion is that data inserted
+    // with @vector shorthand is queryable and scores correctly.
+    let query = json!({
+        "@context": ctx,
+        "select": ["?x", "?score"],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
+        "where": [
+            {"@id": "?x", "ex:xVec": "?vec"},
+            ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
+        ]
+    });
+
+    let result = fluree.query(&ledger, &query).await.unwrap();
+    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let arr = rows.as_array().unwrap();
+
+    assert_eq!(
+        arr.len(),
+        2,
+        "Should return 2 results with @vector shorthand"
+    );
+
+    let mut results: Vec<(String, f64)> = arr
+        .iter()
+        .map(|row| {
+            let r = row.as_array().unwrap();
+            (r[0].as_str().unwrap().to_string(), r[1].as_f64().unwrap())
+        })
+        .collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    assert_eq!(results[0].0, "ex:homer");
+    assert!((results[0].1 - 0.72).abs() < 0.001);
+    assert_eq!(results[1].0, "ex:bart");
+    assert!((results[1].1 - 0.61).abs() < 0.001);
+}
+
+/// Insert unit-normalized vectors → index → query with cosineSimilarity →
+/// verify results match dotProduct within epsilon (the cosine→dot optimization).
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn vector_cosine_normalized_optimization() {
+    use fluree_db_api::{IndexConfig, LedgerState, Novelty};
+    use fluree_db_core::Db;
+    use fluree_db_transact::{CommitOpts, TxnOpts};
+    use support::start_background_indexer_local;
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/vector-cosine-norm:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let db0 = Db::genesis(ledger_id);
+            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+
+            let ctx = json!([
+                support::default_context(),
+                {"ex": "http://example.org/ns/", "fluree": "https://ns.flur.ee/db#"}
+            ]);
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // Insert unit-normalized vectors (magnitude = 1.0)
+            let inv_sqrt2 = 1.0f64 / 2.0f64.sqrt();
+            let insert_txn = json!({
+                "@context": ctx,
+                "@graph": [
+                    {
+                        "@id": "ex:a",
+                        "ex:xVec": {"@value": [inv_sqrt2, inv_sqrt2], "@type": "https://ns.flur.ee/db#embeddingVector"}
+                    },
+                    {
+                        "@id": "ex:b",
+                        "ex:xVec": {"@value": [1.0, 0.0], "@type": "https://ns.flur.ee/db#embeddingVector"}
+                    }
+                ]
+            });
+
+            let r = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &insert_txn,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert");
+
+            // Index
+            let completion = handle.trigger(ledger_id, r.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
+                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            }
+
+            let loaded = fluree.ledger(ledger_id).await.expect("load");
+
+            // Query with cosine similarity
+            let cosine_query = json!({
+                "@context": ctx,
+                "select": ["?x", "?cosine"],
+                "values": [["?targetVec"], [{"@value": [1.0, 0.0], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
+                "where": [
+                    {"@id": "?x", "ex:xVec": "?vec"},
+                    ["bind", "?cosine", ["cosineSimilarity", "?vec", "?targetVec"]]
+                ]
+            });
+
+            // Query with dot product
+            let dot_query = json!({
+                "@context": ctx,
+                "select": ["?x", "?dot"],
+                "values": [["?targetVec"], [{"@value": [1.0, 0.0], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
+                "where": [
+                    {"@id": "?x", "ex:xVec": "?vec"},
+                    ["bind", "?dot", ["dotProduct", "?vec", "?targetVec"]]
+                ]
+            });
+
+            let cos_result = fluree
+                .query(&loaded, &cosine_query)
+                .await
+                .expect("cosine query");
+            let cos_rows = cos_result.to_jsonld(&loaded.db).expect("jsonld");
+            let cos_arr = cos_rows.as_array().expect("array");
+
+            let dot_result = fluree
+                .query(&loaded, &dot_query)
+                .await
+                .expect("dot query");
+            let dot_rows = dot_result.to_jsonld(&loaded.db).expect("jsonld");
+            let dot_arr = dot_rows.as_array().expect("array");
+
+            assert_eq!(cos_arr.len(), 2);
+            assert_eq!(dot_arr.len(), 2);
+
+            // For unit-normalized vectors, cosine ≈ dot product.
+            // Collect scores by id for comparison.
+            let cos_scores: std::collections::HashMap<&str, f64> = cos_arr
+                .iter()
+                .map(|r| {
+                    let a = r.as_array().unwrap();
+                    (a[0].as_str().unwrap(), a[1].as_f64().unwrap())
+                })
+                .collect();
+
+            let dot_scores: std::collections::HashMap<&str, f64> = dot_arr
+                .iter()
+                .map(|r| {
+                    let a = r.as_array().unwrap();
+                    (a[0].as_str().unwrap(), a[1].as_f64().unwrap())
+                })
+                .collect();
+
+            for id in &["ex:a", "ex:b"] {
+                let cos = cos_scores[id];
+                let dot = dot_scores[id];
+                assert!(
+                    (cos - dot).abs() < 0.001,
+                    "For unit vectors, cosine ({cos}) should ≈ dot ({dot}) for {id}"
+                );
+            }
+        })
+        .await;
+}
+
+/// Regression test: multi-property pattern with FILTER should use PropertyJoinOperator
+/// and produce correct results. Previously, this combination fell back to NestedLoopJoin
+/// and was ~12,000x slower. The fix allows PropertyJoinOperator with object bounds.
+#[tokio::test]
+async fn vector_search_with_date_filter_property_join() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "test/vector-date-filter:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
+
+    let ctx = json!([
+        support::default_context(),
+        {
+            "ex": "http://example.org/ns/",
+            "xsd": "http://www.w3.org/2001/XMLSchema#",
+            "fluree": "https://ns.flur.ee/db#"
+        }
+    ]);
+
+    // Insert articles with vectors and dates.
+    // homer: recent date (should pass filter), bart: old date (should be excluded)
+    let insert_txn = json!({
+        "@context": ctx,
+        "@graph": [
+            {
+                "@id": "ex:homer",
+                "ex:name": "Homer",
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "@vector"},
+                "ex:publishedDate": {"@value": "2026-02-01", "@type": "xsd:date"}
+            },
+            {
+                "@id": "ex:bart",
+                "ex:name": "Bart",
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "@vector"},
+                "ex:publishedDate": {"@value": "2025-01-15", "@type": "xsd:date"}
+            },
+            {
+                "@id": "ex:marge",
+                "ex:name": "Marge",
+                "ex:xVec": {"@value": [0.9, 0.1], "@type": "@vector"},
+                "ex:publishedDate": {"@value": "2026-01-20", "@type": "xsd:date"}
+            }
+        ]
+    });
+
+    let ledger = fluree.insert(ledger0, &insert_txn).await.unwrap().ledger;
+
+    // Query: filter to dates >= 2026-01-01, then score vectors.
+    // This exercises the PropertyJoinOperator + object bounds path.
+    let query = json!({
+        "@context": ctx,
+        "select": ["?x", "?score"],
+        "values": [["?targetVec"], [{"@value": [0.7, 0.6], "@type": "https://ns.flur.ee/db#embeddingVector"}]],
+        "where": [
+            {"@id": "?x", "ex:publishedDate": "?date", "ex:xVec": "?vec"},
+            ["filter", [">=", "?date", "2026-01-01"]],
+            ["bind", "?score", ["dotProduct", "?vec", "?targetVec"]]
+        ],
+        "orderBy": [["desc", "?score"]]
+    });
+
+    let result = fluree.query(&ledger, &query).await.unwrap();
+    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let arr = rows.as_array().unwrap();
+
+    // bart (2025-01-15) should be excluded by the date filter
+    assert_eq!(
+        arr.len(),
+        2,
+        "Only homer and marge should pass date filter >= 2026-01-01"
+    );
+
+    let mut results: Vec<(String, f64)> = arr
+        .iter()
+        .map(|r| {
+            let a = r.as_array().unwrap();
+            (a[0].as_str().unwrap().to_string(), a[1].as_f64().unwrap())
+        })
+        .collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    // homer: dot([0.6,0.5], [0.7,0.6]) = 0.42 + 0.30 = 0.72
+    // marge: dot([0.9,0.1], [0.7,0.6]) = 0.63 + 0.06 = 0.69
+    assert_eq!(results[0].0, "ex:homer");
+    assert!(
+        (results[0].1 - 0.72).abs() < 0.01,
+        "homer score ≈ 0.72, got {}",
+        results[0].1
+    );
+    assert_eq!(results[1].0, "ex:marge");
+    assert!(
+        (results[1].1 - 0.69).abs() < 0.01,
+        "marge score ≈ 0.69, got {}",
+        results[1].1
+    );
 }

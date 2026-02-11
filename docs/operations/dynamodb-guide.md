@@ -2,34 +2,69 @@
 
 ## Overview
 
-Fluree supports Amazon DynamoDB as a nameservice backend for storing ledger metadata. The DynamoDB nameservice provides:
+Fluree supports Amazon DynamoDB as a nameservice backend for storing ledger and graph source metadata. The DynamoDB nameservice provides:
 
-- **Atomic conditional updates**: No contention between transactors and indexers
+- **Item-per-concern independence**: Each concern (commit head, index, status, config) is a separate DynamoDB item, eliminating physical write contention between transactors and indexers
+- **Atomic conditional updates**: Reduced logical contention via conditional expressions
 - **Strong consistency reads**: Always see the latest data
 - **High availability**: DynamoDB's built-in redundancy and durability
-- **Scalability**: Handles high throughput without coordination
+- **Unified ledger + graph source support**: Both ledgers and graph sources (BM25, Vector, Iceberg, etc.) share the same table with a composite key
 
 ### Why DynamoDB for Nameservice?
 
-The nameservice stores metadata about ledgers: the latest commit address, commit t-value, index address, and index t-value. In high-throughput scenarios, transactors and indexers may update this metadata concurrently, leading to contention with file-based or S3 nameservices.
+The nameservice stores metadata about ledgers and graph sources: commit IDs, index state, status, and configuration. In high-throughput scenarios, transactors and indexers may update this metadata concurrently.
 
 DynamoDB solves this because:
 
-1. **Separate attributes**: Commit data and index data are stored as separate DynamoDB attributes
-2. **Conditional updates**: Each update only proceeds if the new t-value is greater than the existing one
-3. **No read-modify-write cycles**: Updates are atomic, eliminating race conditions
+1. **Item-per-concern layout**: Each concern (head, index, status, config) is a separate DynamoDB item under the same partition key, so writes to different concerns never contend at the physical level
+2. **Conditional updates**: Each update only proceeds if the new watermark advances monotonically
+3. **No read-modify-write cycles (for the write itself)**: Updates are atomic; callers should still expect occasional conditional-update conflicts under contention and retry where appropriate
+
+### Graph Sources (non-ledger)
+
+Graph sources (BM25, Vector, Iceberg, etc.) are stored in the same nameservice table as ledgers. Under the **graph-source-owned manifest** design, the nameservice does **not** store snapshot history for graph sources.
+
+- For ledgers, `index_id` points to a ledger index root.
+- For graph sources, `index_id` points to a **graph-source-owned root/manifest** in storage (opaque to nameservice).
+- Snapshot history (if any) is stored in storage and managed by the graph source implementation.
+
+This keeps DynamoDB schema stable: **no unbounded "snapshot history" list is stored in the DynamoDB item**.
 
 ## Table Setup
 
-### AWS CLI
+### Schema Overview
 
-Create the DynamoDB table with the following command:
+The table uses a **composite primary key** (`pk` + `sk`) with a Global Secondary Index (GSI) for listing by kind.
+
+- **`pk`** (Partition Key, String): Alias in `name:branch` form (e.g., `mydb:main`)
+- **`sk`** (Sort Key, String): Concern discriminator (`meta`, `head`, `index`, `config`, `status`)
+- **GSI1** (`gsi1-kind`): Enables efficient listing of all ledgers or all graph sources
+
+### AWS CLI
 
 ```bash
 aws dynamodb create-table \
   --table-name fluree-nameservice \
-  --attribute-definitions AttributeName=ledger_alias,AttributeType=S \
-  --key-schema AttributeName=ledger_alias,KeyType=HASH \
+  --attribute-definitions \
+    AttributeName=pk,AttributeType=S \
+    AttributeName=sk,AttributeType=S \
+    AttributeName=kind,AttributeType=S \
+  --key-schema \
+    AttributeName=pk,KeyType=HASH \
+    AttributeName=sk,KeyType=RANGE \
+  --global-secondary-indexes '[
+    {
+      "IndexName": "gsi1-kind",
+      "KeySchema": [
+        {"AttributeName": "kind", "KeyType": "HASH"},
+        {"AttributeName": "pk", "KeyType": "RANGE"}
+      ],
+      "Projection": {
+        "ProjectionType": "INCLUDE",
+        "NonKeyAttributes": ["name", "branch", "source_type", "dependencies", "retracted"]
+      }
+    }
+  ]' \
   --billing-mode PAY_PER_REQUEST
 ```
 
@@ -43,11 +78,32 @@ Resources:
       TableName: fluree-nameservice
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: ledger_alias
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: kind
           AttributeType: S
       KeySchema:
-        - AttributeName: ledger_alias
+        - AttributeName: pk
           KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1-kind
+          KeySchema:
+            - AttributeName: kind
+              KeyType: HASH
+            - AttributeName: pk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: INCLUDE
+            NonKeyAttributes:
+              - name
+              - branch
+              - source_type
+              - dependencies
+              - retracted
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
       Tags:
@@ -61,11 +117,36 @@ Resources:
 resource "aws_dynamodb_table" "fluree_nameservice" {
   name         = "fluree-nameservice"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "ledger_alias"
+  hash_key     = "pk"
+  range_key    = "sk"
 
   attribute {
-    name = "ledger_alias"
+    name = "pk"
     type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  attribute {
+    name = "kind"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "gsi1-kind"
+    hash_key        = "kind"
+    range_key       = "pk"
+    projection_type = "INCLUDE"
+    non_key_attributes = [
+      "name",
+      "branch",
+      "source_type",
+      "dependencies",
+      "retracted",
+    ]
   }
 
   point_in_time_recovery {
@@ -78,59 +159,193 @@ resource "aws_dynamodb_table" "fluree_nameservice" {
 }
 ```
 
+### Programmatic Table Creation
+
+Fluree's `DynamoDbNameService` also provides an `ensure_table()` method that creates the table with the correct schema if it doesn't already exist:
+
+```rust
+use fluree_db_storage_aws::dynamodb::DynamoDbNameService;
+
+let ns = DynamoDbNameService::from_client(dynamodb_client, "fluree-nameservice".to_string());
+ns.ensure_table().await?;
+```
+
+This is used by integration tests and can be used for bootstrapping development environments.
+
 ## Table Schema
 
 ### Primary Key
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `ledger_alias` | String (PK) | Ledger identifier, e.g., `my-ledger:main` |
+| `pk` | String (Partition Key) | Alias in `name:branch` form (e.g., `mydb:main`) |
+| `sk` | String (Sort Key) | Concern discriminator: `meta`, `head`, `index`, `config`, `status` |
 
-### Core Attributes
+### Items per Alias
+
+Each ledger or graph source is represented as multiple items under the same `pk`:
+
+**Ledger (5 items):**
+
+| Sort Key (`sk`) | Description | Key Attributes |
+|-----------------|-------------|----------------|
+| `meta` | Identity and metadata | `kind`, `name`, `branch`, `retracted`, `schema` |
+| `head` | Commit head pointer | `commit_id`, `commit_t` |
+| `index` | Index head pointer | `index_id`, `index_t` |
+| `config` | Ledger configuration | `default_context_id`, `config_v`, `config_meta` |
+| `status` | Operational status | `status`, `status_v`, `status_meta` |
+
+**Graph Source (4 items):**
+
+| Sort Key (`sk`) | Description | Key Attributes |
+|-----------------|-------------|----------------|
+| `meta` | Identity and metadata | `kind`, `source_type`, `name`, `branch`, `dependencies`, `retracted`, `schema` |
+| `config` | Source configuration | `config_json`, `config_v` |
+| `index` | Index head pointer | `index_id`, `index_t` |
+| `status` | Operational status | `status`, `status_v`, `status_meta` |
+
+### Attribute Reference
+
+All items share these common attributes:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `ledger_name` | String | Ledger name without branch (e.g., `mydb`) |
-| `branch` | String | Branch name (e.g., `main`) |
-| `commit_address` | String | Latest commit storage address |
-| `commit_t` | Number | Transaction time of latest commit |
-| `index_address` | String | Latest index storage address |
-| `index_t` | Number | Transaction time of latest index |
-| `default_context_address` | String | Default JSON-LD context address |
-| `status` | String | Ledger status (`ready` or `retracted`) |
-| `updated_at` | Number | Last update timestamp (Unix epoch seconds) |
+| `pk` | String | Record address (`name:branch`) |
+| `sk` | String | Concern discriminator |
+| `schema` | Number | Schema version (always `2`) |
+| `updated_at_ms` | Number | Last update timestamp (epoch milliseconds) |
 
-### V2 Extension Attributes
-
-These attributes support the four-concerns model for status and config management:
+**`meta` item:**
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `status_v` | Number | Status watermark (monotonically increasing). Defaults to 1 if missing. |
-| `status_meta` | Map | Extensible status metadata (queue_depth, locks, progress, etc.) |
-| `config_v` | Number | Config watermark (monotonically increasing). Defaults to 0 if missing. |
-| `config_meta` | Map | Extensible config metadata (index_threshold, replication, etc.) |
+| `kind` | String | `ledger` or `graph_source` |
+| `name` | String | Base name (reserved word — use `#name` in expressions) |
+| `branch` | String | Branch name |
+| `retracted` | Boolean | Soft-delete flag |
+| `source_type` | String (graph source only) | Graph-source type (e.g., `f:Bm25Index`) |
+| `dependencies` | List\<String\> (graph source only) | Dependent ledger IDs |
+
+**`head` item (ledgers only):**
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `commit_id` | String \| null | Latest commit ContentId (CIDv1) |
+| `commit_t` | Number | Commit watermark (`t`). `0` = unborn. |
+
+**`index` item (ledgers + graph sources):**
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `index_id` | String \| null | Latest index ContentId (CIDv1) |
+| `index_t` | Number | Index watermark (`t`). `0` = unborn. |
+
+**`config` item:**
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `default_context_id` | String \| null | Default JSON-LD context ContentId (ledger) |
+| `config_json` | String \| null | Opaque JSON config string (graph source) |
+| `config_v` | Number | Config version watermark |
+| `config_meta` | Map \| null | Extensible config metadata (ledger) |
+
+**`status` item:**
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `status` | String | Current state (reserved word — use `#st` in expressions) |
+| `status_v` | Number | Status version watermark |
+| `status_meta` | Map \| null | Extensible status metadata |
+
+### GSI1: `gsi1-kind`
+
+Enables listing all entities of a given kind (ledger or graph source).
+
+| GSI Attribute | Source Attribute | Description |
+|---------------|------------------|-------------|
+| Partition Key | `kind` | `ledger` or `graph_source` |
+| Sort Key | `pk` | Record address |
+| Projected | `name`, `branch`, `source_type`, `dependencies`, `retracted` | Meta fields for listing without additional reads |
+
+Only `meta` items carry the `kind` attribute and project into the GSI.
+
+### Initialization Semantics
+
+**All concern items are created atomically at initialization time.** This is a key structural decision:
+
+- `publish_ledger_init` creates all 5 items (`meta`, `head`, `index`, `config`, `status`) via `TransactWriteItems`
+- `publish_graph_source` creates all 4 items (`meta`, `config`, `index`, `status`) via `TransactWriteItems`
+
+All subsequent writes (`publish_commit`, `publish_index`, `push_status`, `push_config`) are plain `UpdateItem` operations — they never create new items, only update existing ones. This eliminates orphan-item problems and simplifies conditional logic.
 
 ### How Updates Work
 
 **Commit updates** (transactor):
 ```
-UpdateExpression: SET commit_address = :addr, commit_t = :t, ...
-ConditionExpression: attribute_not_exists(commit_t) OR commit_t < :t
+UpdateItem Key: { pk: "mydb:main", sk: "head" }
+UpdateExpression: SET commit_id = :cid, commit_t = :t, updated_at_ms = :now
+ConditionExpression: attribute_exists(pk) AND commit_t < :t
 ```
 
 **Index updates** (indexer):
 ```
-UpdateExpression: SET index_address = :addr, index_t = :t, ...
-ConditionExpression: attribute_not_exists(index_t) OR index_t < :t
+UpdateItem Key: { pk: "mydb:main", sk: "index" }
+UpdateExpression: SET index_id = :cid, index_t = :t, updated_at_ms = :now
+ConditionExpression: attribute_exists(pk) AND index_t < :t
 ```
 
-Since commit and index updates modify different attributes, they never conflict!
+Since commit and index updates target different items (different `sk`), they never contend at the DynamoDB physical level.
 
-**Retract** (with status_v bump):
+**Status updates** (CAS):
 ```
-UpdateExpression: SET status = :retracted, updated_at = :now ADD status_v :one
+UpdateItem Key: { pk: "mydb:main", sk: "status" }
+UpdateExpression: SET #st = :new_state, status_v = :new_v, updated_at_ms = :now
+ConditionExpression: status_v = :expected_v AND #st = :expected_state
 ```
+
+**Config updates** (CAS):
+```
+UpdateItem Key: { pk: "mydb:main", sk: "config" }
+UpdateExpression: SET default_context_id = :ctx, config_v = :new_v, updated_at_ms = :now
+ConditionExpression: config_v = :expected_v
+```
+
+**RefPublisher updates** (compare-and-set refs):
+
+- `CommitHead` uses strict monotonic guard: `new.t > current.t`
+- `IndexHead` allows same-watermark overwrite: `new.t >= current.t` (reindex at same `t`)
+
+When a caller attempts `compare_and_set_ref(expected=None)` on an unknown ledger ID, the DynamoDB backend bootstraps the ledger by creating all 5 ledger concern items via `TransactWriteItems` and pre-setting the target ref to the requested value.
+
+**Retract:**
+```
+UpdateItem Key: { pk: "mydb:main", sk: "meta" }
+UpdateExpression: SET retracted = :true, updated_at_ms = :now
+```
+
+### DynamoDB Reserved Words
+
+The attributes `name` and `status` are DynamoDB reserved words. All expressions (reads, updates, projections) must use `ExpressionAttributeNames`:
+
+```
+ExpressionAttributeNames: { "#name": "name", "#st": "status" }
+```
+
+## Trait Implementations
+
+The DynamoDB nameservice implements all seven nameservice traits:
+
+| Trait | Description |
+|-------|-------------|
+| `NameService` | Lookup, ledger ID resolution, list all records |
+| `Publisher` | Initialize ledgers, publish commits/indexes, retract |
+| `AdminPublisher` | Admin index publishing (allows equal-t overwrites) |
+| `RefPublisher` | Compare-and-set on commit/index refs |
+| `StatusPublisher` | CAS-based status updates |
+| `ConfigPublisher` | CAS-based config updates (ledgers only) |
+| `GraphSourcePublisher` | Graph source lifecycle: create, index, retract, list |
+
+**Note:** `ConfigPublisher` is scoped to ledgers only. Graph source configuration is managed through `GraphSourcePublisher`, which stores config as an opaque JSON string (`config_json`).
 
 ## Configuration
 
@@ -209,7 +424,7 @@ The DynamoDB nameservice uses the standard AWS SDK credential chain:
 
 ### Required IAM Permissions
 
-Full permissions:
+Full permissions (recommended):
 
 ```json
 {
@@ -221,16 +436,19 @@ Full permissions:
         "dynamodb:GetItem",
         "dynamodb:PutItem",
         "dynamodb:UpdateItem",
-        "dynamodb:DeleteItem",
-        "dynamodb:Scan"
+        "dynamodb:Query",
+        "dynamodb:BatchGetItem"
       ],
-      "Resource": "arn:aws:dynamodb:*:*:table/fluree-nameservice"
+      "Resource": [
+        "arn:aws:dynamodb:*:*:table/fluree-nameservice",
+        "arn:aws:dynamodb:*:*:table/fluree-nameservice/index/gsi1-kind"
+      ]
     }
   ]
 }
 ```
 
-Minimal permissions (if not using `all_records`):
+If you also use `ensure_table()` for automated table creation (development/testing):
 
 ```json
 {
@@ -240,8 +458,35 @@ Minimal permissions (if not using `all_records`):
       "Effect": "Allow",
       "Action": [
         "dynamodb:GetItem",
+        "dynamodb:PutItem",
         "dynamodb:UpdateItem",
-        "dynamodb:PutItem"
+        "dynamodb:Query",
+        "dynamodb:BatchGetItem",
+        "dynamodb:CreateTable",
+        "dynamodb:DescribeTable"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:*:*:table/fluree-nameservice",
+        "arn:aws:dynamodb:*:*:table/fluree-nameservice/index/gsi1-kind"
+      ]
+    }
+  ]
+}
+```
+
+Minimal permissions (if not using `all_records`, `all_graph_source_records`, or graph sources):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:Query"
       ],
       "Resource": "arn:aws:dynamodb:*:*:table/fluree-nameservice"
     }
@@ -266,8 +511,26 @@ Minimal permissions (if not using `all_records`):
    AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
    aws --endpoint-url=http://localhost:4566 dynamodb create-table \
      --table-name fluree-nameservice \
-     --attribute-definitions AttributeName=ledger_alias,AttributeType=S \
-     --key-schema AttributeName=ledger_alias,KeyType=HASH \
+     --attribute-definitions \
+       AttributeName=pk,AttributeType=S \
+       AttributeName=sk,AttributeType=S \
+       AttributeName=kind,AttributeType=S \
+     --key-schema \
+       AttributeName=pk,KeyType=HASH \
+       AttributeName=sk,KeyType=RANGE \
+     --global-secondary-indexes '[
+       {
+         "IndexName": "gsi1-kind",
+         "KeySchema": [
+           {"AttributeName": "kind", "KeyType": "HASH"},
+           {"AttributeName": "pk", "KeyType": "RANGE"}
+         ],
+         "Projection": {
+           "ProjectionType": "INCLUDE",
+           "NonKeyAttributes": ["name", "branch", "source_type", "dependencies", "retracted"]
+         }
+       }
+     ]' \
      --billing-mode PAY_PER_REQUEST
    ```
 
@@ -297,21 +560,14 @@ Minimal permissions (if not using `all_records`):
      amazon/dynamodb-local
    ```
 
-2. **Create Test Table**
-   ```bash
-   AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
-   aws --endpoint-url=http://localhost:8000 dynamodb create-table \
-     --table-name fluree-nameservice \
-     --attribute-definitions AttributeName=ledger_alias,AttributeType=S \
-     --key-schema AttributeName=ledger_alias,KeyType=HASH \
-     --billing-mode PAY_PER_REQUEST
-   ```
+2. **Create Test Table** (same command as LocalStack, change `--endpoint-url` to `http://localhost:8000`)
 
 ## Production Considerations
 
 ### Performance
 
 - DynamoDB provides single-digit millisecond latency
+- The item-per-concern layout eliminates physical contention between transactors and indexers
 - Use on-demand (PAY_PER_REQUEST) billing for variable workloads
 - Consider provisioned capacity for predictable high-throughput scenarios
 - Enable DynamoDB Accelerator (DAX) if sub-millisecond reads are needed
@@ -349,8 +605,9 @@ aws dynamodb create-backup \
 ### Cost Optimization
 
 - On-demand pricing is cost-effective for variable workloads
-- Table data is small (one item per ledger), so costs are minimal
+- Table data is small (5 items per ledger, 4 per graph source), so costs are minimal
 - Typical costs: $1-10/month for small deployments
+- GSI storage adds minimal cost (only meta items project into it)
 
 ## Troubleshooting
 
@@ -360,7 +617,7 @@ aws dynamodb create-backup \
 
 **Solutions**:
 - Verify AWS credentials are configured
-- Check IAM permissions for the table
+- Check IAM permissions for the table and GSI
 - Test with AWS CLI:
   ```bash
   aws dynamodb describe-table --table-name fluree-nameservice
@@ -373,7 +630,7 @@ aws dynamodb create-backup \
 **Solutions**:
 - Verify table name is correct
 - Check table is in the correct region
-- Ensure table has finished creating
+- Ensure table has finished creating (including GSI)
 
 ### Timeout Errors
 
@@ -388,10 +645,27 @@ aws dynamodb create-backup \
 
 **Symptoms**: High rate of ConditionalCheckFailedException in logs
 
-**Note**: This is usually normal and indicates the system is working correctly. The conditional check prevents overwriting newer data with older data.
+**Note**: This is usually normal and indicates the system is working correctly. The conditional check prevents overwriting newer data with older data. For `publish_commit` and `publish_index`, stale writes are silently accepted (the newer value is preserved). For CAS operations (`push_status`, `push_config`, `compare_and_set_ref`), the current value is returned so the caller can retry.
+
+### Unprocessed Keys (BatchGetItem)
+
+**Symptoms**: Listing graph sources intermittently returns fewer results under load, or logs show throttling.
+
+**Cause**: DynamoDB may return `UnprocessedKeys` in `BatchGetItem` responses under throttling.
+
+**Behavior**: Fluree retries `UnprocessedKeys` with exponential backoff (bounded retries). If retries are exhausted, it returns an error rather than silently dropping items.
+
+### Uninitialized Alias Errors
+
+**Symptoms**: Publish operations fail with "not found" or storage errors
+
+**Cause**: Attempting to `publish_commit` or `publish_index` on a ledger ID that was never initialized with `publish_ledger_init`.
+
+**Solution**: Ensure ledger initialization happens before any publish operations. This is normally handled automatically by the Fluree transaction pipeline.
 
 ## Related Documentation
 
 - [Storage Modes](storage.md) - Overview of all storage options
 - [Configuration](configuration.md) - Full configuration reference
 - [Nameservice Schema v2 Design](../design/nameservice-schema-v2.md) - Schema design details
+- [Ledgers and the Nameservice](../concepts/ledgers-and-nameservice.md) - Conceptual overview

@@ -236,6 +236,10 @@ pub enum ApiError {
         found: i64,
     },
 
+    /// Policy errors
+    #[error("Policy error: {0}")]
+    Policy(#[from] fluree_db_policy::PolicyError),
+
     /// Indexer crate errors
     #[error("Indexer error: {0}")]
     Indexer(#[from] fluree_db_indexer::IndexerError),
@@ -282,9 +286,9 @@ impl ApiError {
         ApiError::Internal(format!("Not implemented: {}", feature.into()))
     }
 
-    /// Create a virtual graph not found error
-    pub fn vg_not_found(alias: impl Into<String>) -> Self {
-        ApiError::NotFound(format!("Virtual graph not found: {}", alias.into()))
+    /// Create a graph source not found error
+    pub fn graph_source_not_found(alias: impl Into<String>) -> Self {
+        ApiError::NotFound(format!("Graph source not found: {}", alias.into()))
     }
 
     /// Create a ledger already exists error
@@ -292,15 +296,15 @@ impl ApiError {
         ApiError::LedgerExists(alias.into())
     }
 
-    /// Create an index not found error for a virtual graph
-    pub fn vg_index_not_found(alias: impl Into<String>) -> Self {
-        ApiError::NotFound(format!("No index for virtual graph: {}", alias.into()))
+    /// Create an index not found error for a graph source
+    pub fn graph_source_index_not_found(alias: impl Into<String>) -> Self {
+        ApiError::NotFound(format!("No index for graph source: {}", alias.into()))
     }
 
     /// Create a stale index error
-    pub fn vg_stale(alias: impl Into<String>, index_t: i64, target_t: i64) -> Self {
+    pub fn graph_source_stale(alias: impl Into<String>, index_t: i64, target_t: i64) -> Self {
         ApiError::Config(format!(
-            "Virtual graph '{}' index (t={}) is behind target (t={}). Use sync=true to catch up.",
+            "Graph source '{}' index (t={}) is behind target (t={}). Use sync=true to catch up.",
             alias.into(),
             index_t,
             target_t

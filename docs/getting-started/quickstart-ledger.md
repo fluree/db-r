@@ -2,9 +2,9 @@
 
 Ledgers are Fluree's fundamental unit of data organization—similar to databases in traditional systems. This guide shows you how to create your first ledger.
 
-## Understanding Ledger Aliases
+## Understanding Ledger IDs
 
-Ledgers are identified by **aliases** with the format `ledger-name:branch`:
+Ledgers are identified by **ledger IDs** with the format `ledger-name:branch`:
 
 - `mydb:main` - Primary branch of the "mydb" ledger
 - `customers:dev` - Development branch of the "customers" ledger
@@ -42,7 +42,7 @@ let ledger = fluree.ledger("mydb:main").await?;
 
 ### HTTP API (Server Usage)
 
-Via the HTTP API, ledgers can be created **implicitly** on the first transaction, or **explicitly** via `POST /ledgers`. Simply send a transaction to a ledger alias, and the server will create it automatically.
+Via the HTTP API, ledgers can be created **implicitly** on the first transaction, or **explicitly** via `POST /ledgers`. Simply send a transaction to a ledger ID, and the server will create it automatically.
 
 #### Method 1: Via First Transaction
 
@@ -73,8 +73,7 @@ Response:
 {
   "t": 1,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123def456...",
-  "address": "fluree:memory:abc123..."
+  "commit_id": "bafybeig...commitT1"
 }
 ```
 
@@ -109,7 +108,7 @@ Response:
 {
   "ledgers": [
     {
-      "alias": "mydb:main",
+      "ledger_id": "mydb:main",
       "branch": "main",
       "commit_t": 1,
       "index_t": 0,
@@ -234,8 +233,8 @@ Each ledger maintains metadata accessible via the nameservice:
 
 - **commit_t**: Latest transaction time
 - **index_t**: Latest indexed transaction time
-- **commit_address**: Storage address of latest commit
-- **index_address**: Storage address of latest index
+- **commit_id**: ContentId (CID) of the latest commit
+- **index_id**: ContentId (CID) of the latest index
 - **default_context**: Default JSON-LD @context for the ledger
 
 ### Checking Ledger Status
@@ -248,12 +247,12 @@ Response:
 
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_id": "mydb:main",
   "branch": "main",
   "commit_t": 1,
   "index_t": 1,
-  "commit_address": "fluree:memory:commit:abc123...",
-  "index_address": "fluree:memory:index:def456...",
+  "commit_id": "bafybeig...commitT1",
+  "index_id": "bafybeig...indexT1",
   "created": "2024-01-22T10:30:00.000Z",
   "last_updated": "2024-01-22T10:30:05.000Z"
 }

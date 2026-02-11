@@ -11,21 +11,21 @@ use tokio::sync::RwLock;
 /// This is what the transaction server has, not what the peer has locally.
 #[derive(Debug, Clone)]
 pub struct RemoteLedgerWatermark {
-    pub alias: String,
+    pub ledger_id: String,
     pub commit_t: i64,
     pub index_t: i64,
-    pub commit_address: Option<String>,
-    pub index_address: Option<String>,
+    pub commit_head_id: Option<String>,
+    pub index_head_id: Option<String>,
     pub last_updated: Instant,
 }
 
-/// Remote watermark state for a virtual graph (from SSE)
+/// Remote watermark state for a graph source (from SSE)
 #[derive(Debug, Clone)]
-pub struct RemoteVgWatermark {
-    pub alias: String,
+pub struct RemoteGraphSourceWatermark {
+    pub graph_source_id: String,
     pub index_t: i64,
     pub config_hash: String,
-    pub index_address: Option<String>,
+    pub index_id: Option<String>,
     pub last_updated: Instant,
 }
 
@@ -36,8 +36,8 @@ pub struct RemoteVgWatermark {
 pub struct PeerState {
     /// Remote ledger watermarks from SSE
     ledgers: RwLock<HashMap<String, RemoteLedgerWatermark>>,
-    /// Remote VG watermarks from SSE
-    vgs: RwLock<HashMap<String, RemoteVgWatermark>>,
+    /// Remote graph source watermarks from SSE
+    graph_sources: RwLock<HashMap<String, RemoteGraphSourceWatermark>>,
     /// Whether SSE connection is active
     connected: RwLock<bool>,
 }
@@ -46,7 +46,7 @@ impl PeerState {
     pub fn new() -> Self {
         Self {
             ledgers: RwLock::new(HashMap::new()),
-            vgs: RwLock::new(HashMap::new()),
+            graph_sources: RwLock::new(HashMap::new()),
             connected: RwLock::new(false),
         }
     }
@@ -60,14 +60,18 @@ impl PeerState {
     /// IMPORTANT: `NeedsRefresh::Unknown` means the peer hasn't received SSE state
     /// for this ledger yet. The caller should decide policy: either proceed with
     /// local state (if available) or reject the query.
-    pub async fn check_ledger_freshness(&self, alias: &str, local_index_t: i64) -> NeedsRefresh {
-        match self.ledgers.read().await.get(alias) {
+    pub async fn check_ledger_freshness(
+        &self,
+        ledger_id: &str,
+        local_index_t: i64,
+    ) -> NeedsRefresh {
+        match self.ledgers.read().await.get(ledger_id) {
             Some(remote) => {
                 if remote.index_t > local_index_t {
                     NeedsRefresh::Yes {
                         local_index_t,
                         remote_index_t: remote.index_t,
-                        remote_index_address: remote.index_address.clone(),
+                        remote_index_id: remote.index_head_id.clone(),
                     }
                 } else {
                     NeedsRefresh::No
@@ -77,61 +81,61 @@ impl PeerState {
         }
     }
 
-    /// Check if a VG needs refresh based on local vs remote state.
-    pub async fn check_vg_freshness(
+    /// Check if a graph source needs refresh based on local vs remote state.
+    pub async fn check_graph_source_freshness(
         &self,
-        alias: &str,
+        graph_source_id: &str,
         local_index_t: i64,
         local_config_hash: &str,
-    ) -> VgNeedsRefresh {
-        match self.vgs.read().await.get(alias) {
+    ) -> GraphSourceNeedsRefresh {
+        match self.graph_sources.read().await.get(graph_source_id) {
             Some(remote) => {
                 if remote.index_t > local_index_t {
-                    VgNeedsRefresh::IndexAdvanced {
+                    GraphSourceNeedsRefresh::IndexAdvanced {
                         remote_index_t: remote.index_t,
                     }
                 } else if remote.config_hash != local_config_hash {
-                    VgNeedsRefresh::ConfigChanged {
+                    GraphSourceNeedsRefresh::ConfigChanged {
                         remote_config_hash: remote.config_hash.clone(),
                     }
                 } else {
-                    VgNeedsRefresh::No
+                    GraphSourceNeedsRefresh::No
                 }
             }
-            None => VgNeedsRefresh::Unknown,
+            None => GraphSourceNeedsRefresh::Unknown,
         }
     }
 
     /// Get remote watermark for a ledger (if known from SSE)
-    pub async fn get_remote_ledger(&self, alias: &str) -> Option<RemoteLedgerWatermark> {
-        self.ledgers.read().await.get(alias).cloned()
+    pub async fn get_remote_ledger(&self, ledger_id: &str) -> Option<RemoteLedgerWatermark> {
+        self.ledgers.read().await.get(ledger_id).cloned()
     }
 
     /// Update ledger watermark from SSE event (returns true if changed)
     pub async fn update_ledger(
         &self,
-        alias: &str,
+        ledger_id: &str,
         commit_t: i64,
         index_t: i64,
-        commit_address: Option<String>,
-        index_address: Option<String>,
+        commit_head_id: Option<String>,
+        index_head_id: Option<String>,
     ) -> bool {
         let mut ledgers = self.ledgers.write().await;
 
-        let changed = match ledgers.get(alias) {
+        let changed = match ledgers.get(ledger_id) {
             Some(existing) => commit_t > existing.commit_t || index_t > existing.index_t,
             None => true,
         };
 
         if changed {
             ledgers.insert(
-                alias.to_string(),
+                ledger_id.to_string(),
                 RemoteLedgerWatermark {
-                    alias: alias.to_string(),
+                    ledger_id: ledger_id.to_string(),
                     commit_t,
                     index_t,
-                    commit_address,
-                    index_address,
+                    commit_head_id,
+                    index_head_id,
                     last_updated: Instant::now(),
                 },
             );
@@ -141,33 +145,33 @@ impl PeerState {
     }
 
     /// Remove ledger (on retraction)
-    pub async fn remove_ledger(&self, alias: &str) {
-        self.ledgers.write().await.remove(alias);
+    pub async fn remove_ledger(&self, ledger_id: &str) {
+        self.ledgers.write().await.remove(ledger_id);
     }
 
-    /// Update VG watermark from SSE event (returns true if changed)
-    pub async fn update_vg(
+    /// Update graph source watermark from SSE event (returns true if changed)
+    pub async fn update_graph_source(
         &self,
-        alias: &str,
+        graph_source_id: &str,
         index_t: i64,
         config_hash: String,
-        index_address: Option<String>,
+        index_id: Option<String>,
     ) -> bool {
-        let mut vgs = self.vgs.write().await;
+        let mut graph_sources = self.graph_sources.write().await;
 
-        let changed = match vgs.get(alias) {
+        let changed = match graph_sources.get(graph_source_id) {
             Some(existing) => index_t > existing.index_t || config_hash != existing.config_hash,
             None => true,
         };
 
         if changed {
-            vgs.insert(
-                alias.to_string(),
-                RemoteVgWatermark {
-                    alias: alias.to_string(),
+            graph_sources.insert(
+                graph_source_id.to_string(),
+                RemoteGraphSourceWatermark {
+                    graph_source_id: graph_source_id.to_string(),
                     index_t,
                     config_hash,
-                    index_address,
+                    index_id,
                     last_updated: Instant::now(),
                 },
             );
@@ -176,15 +180,15 @@ impl PeerState {
         changed
     }
 
-    /// Remove VG (on retraction)
-    pub async fn remove_vg(&self, alias: &str) {
-        self.vgs.write().await.remove(alias);
+    /// Remove graph source (on retraction)
+    pub async fn remove_graph_source(&self, graph_source_id: &str) {
+        self.graph_sources.write().await.remove(graph_source_id);
     }
 
     /// Clear all state (on reconnect, before new snapshot)
     pub async fn clear(&self) {
         self.ledgers.write().await.clear();
-        self.vgs.write().await.clear();
+        self.graph_sources.write().await.clear();
     }
 
     /// Mark connected/disconnected
@@ -201,9 +205,9 @@ impl PeerState {
         self.ledgers.read().await.keys().cloned().collect()
     }
 
-    /// Get all known VG aliases (for introspection/health)
-    pub async fn known_vgs(&self) -> Vec<String> {
-        self.vgs.read().await.keys().cloned().collect()
+    /// Get all known graph source aliases (for introspection/health)
+    pub async fn known_graph_sources(&self) -> Vec<String> {
+        self.graph_sources.read().await.keys().cloned().collect()
     }
 
     /// Get ledger count
@@ -211,9 +215,9 @@ impl PeerState {
         self.ledgers.read().await.len()
     }
 
-    /// Get VG count
-    pub async fn vg_count(&self) -> usize {
-        self.vgs.read().await.len()
+    /// Get graph source count
+    pub async fn graph_source_count(&self) -> usize {
+        self.graph_sources.read().await.len()
     }
 }
 
@@ -232,23 +236,23 @@ pub enum NeedsRefresh {
     Yes {
         local_index_t: i64,
         remote_index_t: i64,
-        remote_index_address: Option<String>,
+        remote_index_id: Option<String>,
     },
     /// SSE hasn't reported this ledger yet
     /// Caller must decide: proceed with local state or reject query
     Unknown,
 }
 
-/// Result of checking if a VG needs refresh
+/// Result of checking if a graph source needs refresh
 #[derive(Debug, Clone)]
-pub enum VgNeedsRefresh {
+pub enum GraphSourceNeedsRefresh {
     /// Local state is up-to-date
     No,
     /// Remote has newer index
     IndexAdvanced { remote_index_t: i64 },
     /// Config changed (requires rebuild)
     ConfigChanged { remote_config_hash: String },
-    /// SSE hasn't reported this VG yet
+    /// SSE hasn't reported this graph source yet
     Unknown,
 }
 
@@ -261,14 +265,17 @@ impl fluree_db_api::FreshnessSource for PeerState {
     /// - The ledger hasn't been seen in SSE yet
     ///
     /// When None is returned, the caller uses lenient policy (treat as current).
-    fn watermark(&self, alias: &str) -> Option<fluree_db_api::RemoteWatermark> {
+    fn watermark(&self, ledger_id: &str) -> Option<fluree_db_api::RemoteWatermark> {
         // Try to read without blocking
         let ledgers = self.ledgers.try_read().ok()?;
-        let w = ledgers.get(alias)?;
+        let w = ledgers.get(ledger_id)?;
         Some(fluree_db_api::RemoteWatermark {
             commit_t: w.commit_t,
             index_t: w.index_t,
-            index_address: w.index_address.clone(),
+            index_head_id: w
+                .index_head_id
+                .as_deref()
+                .and_then(|s| s.parse::<fluree_db_core::ContentId>().ok()),
             updated_at: w.last_updated,
         })
     }
@@ -287,8 +294,8 @@ mod tests {
                 "books:main",
                 5,
                 3,
-                Some("commit:5".to_string()),
-                Some("index:3".to_string()),
+                Some("commit-cid:5".to_string()),
+                Some("index-cid:3".to_string()),
             )
             .await;
 
@@ -390,58 +397,64 @@ mod tests {
         let state = PeerState::new();
         state.update_ledger("books:main", 5, 3, None, None).await;
         state
-            .update_vg("search:main", 2, "abc123".to_string(), None)
+            .update_graph_source("search:main", 2, "abc123".to_string(), None)
             .await;
 
         assert_eq!(state.ledger_count().await, 1);
-        assert_eq!(state.vg_count().await, 1);
+        assert_eq!(state.graph_source_count().await, 1);
 
         state.clear().await;
 
         assert_eq!(state.ledger_count().await, 0);
-        assert_eq!(state.vg_count().await, 0);
+        assert_eq!(state.graph_source_count().await, 0);
     }
 
     #[tokio::test]
-    async fn test_vg_freshness_no() {
+    async fn test_graph_source_freshness_no() {
         let state = PeerState::new();
         state
-            .update_vg("search:main", 2, "abc123".to_string(), None)
+            .update_graph_source("search:main", 2, "abc123".to_string(), None)
             .await;
 
-        let result = state.check_vg_freshness("search:main", 2, "abc123").await;
-        assert!(matches!(result, VgNeedsRefresh::No));
+        let result = state
+            .check_graph_source_freshness("search:main", 2, "abc123")
+            .await;
+        assert!(matches!(result, GraphSourceNeedsRefresh::No));
     }
 
     #[tokio::test]
-    async fn test_vg_freshness_index_advanced() {
+    async fn test_graph_source_freshness_index_advanced() {
         let state = PeerState::new();
         state
-            .update_vg("search:main", 5, "abc123".to_string(), None)
+            .update_graph_source("search:main", 5, "abc123".to_string(), None)
             .await;
 
-        let result = state.check_vg_freshness("search:main", 2, "abc123").await;
+        let result = state
+            .check_graph_source_freshness("search:main", 2, "abc123")
+            .await;
         match result {
-            VgNeedsRefresh::IndexAdvanced { remote_index_t } => {
+            GraphSourceNeedsRefresh::IndexAdvanced { remote_index_t } => {
                 assert_eq!(remote_index_t, 5);
             }
-            _ => panic!("Expected VgNeedsRefresh::IndexAdvanced"),
+            _ => panic!("Expected GraphSourceNeedsRefresh::IndexAdvanced"),
         }
     }
 
     #[tokio::test]
-    async fn test_vg_freshness_config_changed() {
+    async fn test_graph_source_freshness_config_changed() {
         let state = PeerState::new();
         state
-            .update_vg("search:main", 2, "def456".to_string(), None)
+            .update_graph_source("search:main", 2, "def456".to_string(), None)
             .await;
 
-        let result = state.check_vg_freshness("search:main", 2, "abc123").await;
+        let result = state
+            .check_graph_source_freshness("search:main", 2, "abc123")
+            .await;
         match result {
-            VgNeedsRefresh::ConfigChanged { remote_config_hash } => {
+            GraphSourceNeedsRefresh::ConfigChanged { remote_config_hash } => {
                 assert_eq!(remote_config_hash, "def456");
             }
-            _ => panic!("Expected VgNeedsRefresh::ConfigChanged"),
+            _ => panic!("Expected GraphSourceNeedsRefresh::ConfigChanged"),
         }
     }
 

@@ -13,10 +13,11 @@ use crate::peer::state::PeerState;
 use crate::state::FlureeInstance;
 
 use fluree_db_api::{NotifyResult, NsNotify};
-use fluree_db_core::alias;
+use fluree_db_core::ledger_id::split_ledger_id;
+use fluree_db_core::ContentId;
 use fluree_db_nameservice::NsRecord;
-use fluree_db_peer::{LedgerRecord, VgRecord};
-use fluree_sse::{SseEvent, SseParser};
+use fluree_db_peer::{GraphSourceRecord, LedgerRecord};
+use fluree_sse::{SseEvent, SseParser, SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 
 /// Background task that maintains SSE subscription to transaction server
 pub struct PeerSubscriptionTask {
@@ -154,22 +155,22 @@ impl PeerSubscriptionTask {
                 let data: NsRecordData = serde_json::from_str(&event.data)?;
 
                 match data.kind.as_str() {
-                    "ledger" => {
+                    SSE_KIND_LEDGER => {
                         let record: LedgerRecord = serde_json::from_value(data.record)?;
                         let changed = self
                             .peer_state
                             .update_ledger(
-                                &record.alias,
+                                &record.ledger_id,
                                 record.commit_t,
                                 record.index_t,
-                                record.commit_address.clone(),
-                                record.index_address.clone(),
+                                record.commit_head_id.clone(),
+                                record.index_head_id.clone(),
                             )
                             .await;
 
                         if changed {
                             tracing::info!(
-                                alias = %record.alias,
+                                ledger_id = %record.ledger_id,
                                 commit_t = record.commit_t,
                                 index_t = record.index_t,
                                 "Remote ledger watermark updated"
@@ -180,23 +181,23 @@ impl PeerSubscriptionTask {
                         // nameservice update to the library-level cache (reload if stale).
                         self.refresh_cached_ledger_from_record(&record).await;
                     }
-                    "virtual-graph" => {
-                        let record: VgRecord = serde_json::from_value(data.record)?;
+                    SSE_KIND_GRAPH_SOURCE => {
+                        let record: GraphSourceRecord = serde_json::from_value(data.record)?;
                         let changed = self
                             .peer_state
-                            .update_vg(
-                                &record.alias,
+                            .update_graph_source(
+                                &record.graph_source_id,
                                 record.index_t,
                                 record.config_hash(),
-                                record.index_address.clone(),
+                                record.index_id.clone(),
                             )
                             .await;
 
                         if changed {
                             tracing::info!(
-                                alias = %record.alias,
+                                graph_source_id = %record.graph_source_id,
                                 index_t = record.index_t,
-                                "Remote VG watermark updated"
+                                "Remote graph source watermark updated"
                             );
                         }
                     }
@@ -209,16 +210,16 @@ impl PeerSubscriptionTask {
                 let data: NsRetractedData = serde_json::from_str(&event.data)?;
 
                 match data.kind.as_str() {
-                    "ledger" => {
-                        self.peer_state.remove_ledger(&data.alias).await;
-                        tracing::info!(alias = %data.alias, "Ledger retracted from remote");
+                    SSE_KIND_LEDGER => {
+                        self.peer_state.remove_ledger(&data.resource_id).await;
+                        tracing::info!(ledger_id = %data.resource_id, "Ledger retracted from remote");
 
                         // Evict any cached state for the ledger (no-op if not cached).
-                        self.disconnect_cached_ledger(&data.alias).await;
+                        self.disconnect_cached_ledger(&data.resource_id).await;
                     }
-                    "virtual-graph" => {
-                        self.peer_state.remove_vg(&data.alias).await;
-                        tracing::info!(alias = %data.alias, "VG retracted from remote");
+                    SSE_KIND_GRAPH_SOURCE => {
+                        self.peer_state.remove_graph_source(&data.resource_id).await;
+                        tracing::info!(graph_source_id = %data.resource_id, "Graph source retracted from remote");
                     }
                     _ => {
                         tracing::debug!(kind = %data.kind, "Unknown retraction kind");
@@ -242,24 +243,28 @@ impl PeerSubscriptionTask {
             return;
         }
 
-        for alias in &sub.ledgers {
+        for ledger_id in &sub.ledgers {
             // Preload by loading into the connection-level ledger cache.
             let result = match &self.fluree {
-                FlureeInstance::File(f) => f.ledger_cached(alias).await.map(|_| ()),
-                FlureeInstance::Proxy(p) => p.ledger_cached(alias).await.map(|_| ()),
+                FlureeInstance::File(f) => f.ledger_cached(ledger_id).await.map(|_| ()),
+                FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await.map(|_| ()),
             };
 
             match result {
-                Ok(()) => tracing::info!(alias = %alias, "Preloaded ledger into peer cache"),
-                Err(e) => tracing::warn!(alias = %alias, error = %e, "Failed to preload ledger"),
+                Ok(()) => {
+                    tracing::info!(ledger_id = %ledger_id, "Preloaded ledger into peer cache")
+                }
+                Err(e) => {
+                    tracing::warn!(ledger_id = %ledger_id, error = %e, "Failed to preload ledger")
+                }
             }
         }
     }
 
-    async fn disconnect_cached_ledger(&self, alias: &str) {
+    async fn disconnect_cached_ledger(&self, ledger_id: &str) {
         match &self.fluree {
-            FlureeInstance::File(f) => f.disconnect_ledger(alias).await,
-            FlureeInstance::Proxy(p) => p.disconnect_ledger(alias).await,
+            FlureeInstance::File(f) => f.disconnect_ledger(ledger_id).await,
+            FlureeInstance::Proxy(p) => p.disconnect_ledger(ledger_id).await,
         }
     }
 
@@ -267,7 +272,7 @@ impl PeerSubscriptionTask {
         let ns_record = match ledger_record_to_ns_record(record) {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(alias = %record.alias, error = %e, "Failed to build NsRecord from SSE record");
+                tracing::warn!(ledger_id = %record.ledger_id, error = %e, "Failed to build NsRecord from SSE record");
                 return;
             }
         };
@@ -299,7 +304,7 @@ impl PeerSubscriptionTask {
     {
         match mgr
             .notify(NsNotify {
-                alias: record.alias.clone(),
+                ledger_id: record.ledger_id.clone(),
                 record: Some(ns_record),
             })
             .await
@@ -315,10 +320,10 @@ impl PeerSubscriptionTask {
                 | NotifyResult::IndexUpdated
                 | NotifyResult::CommitApplied),
             ) => {
-                tracing::info!(alias = %record.alias, ?result, "Refreshed cached ledger from SSE update");
+                tracing::info!(ledger_id = %record.ledger_id, ?result, "Refreshed cached ledger from SSE update");
             }
             Err(e) => {
-                tracing::warn!(alias = %record.alias, error = %e, "Failed to refresh cached ledger from SSE update");
+                tracing::warn!(ledger_id = %record.ledger_id, error = %e, "Failed to refresh cached ledger from SSE update");
             }
         }
     }
@@ -338,8 +343,8 @@ impl PeerSubscriptionTask {
             for l in &sub.ledgers {
                 params.push(format!("ledger={}", urlencoding::encode(l)));
             }
-            for v in &sub.vgs {
-                params.push(format!("vg={}", urlencoding::encode(v)));
+            for gs in &sub.graph_sources {
+                params.push(format!("graph-source={}", urlencoding::encode(gs)));
             }
         }
 
@@ -353,40 +358,50 @@ impl PeerSubscriptionTask {
 }
 
 fn ledger_record_to_ns_record(record: &LedgerRecord) -> Result<NsRecord, String> {
-    let (name, branch) = alias::split_alias(&record.alias)
-        .map_err(|e| format!("invalid alias '{}': {}", record.alias, e))?;
+    let (name, branch) = split_ledger_id(&record.ledger_id)
+        .map_err(|e| format!("invalid ledger ID '{}': {}", record.ledger_id, e))?;
+
+    let commit_head_id = record
+        .commit_head_id
+        .as_deref()
+        .and_then(|s| s.parse::<ContentId>().ok());
+    let index_head_id = record
+        .index_head_id
+        .as_deref()
+        .and_then(|s| s.parse::<ContentId>().ok());
 
     Ok(NsRecord {
-        address: record.alias.clone(),
-        alias: name,
+        ledger_id: record.ledger_id.clone(),
+        name,
         branch,
-        commit_address: record.commit_address.clone(),
+        commit_head_id,
+        config_id: None,
         commit_t: record.commit_t,
-        index_address: record.index_address.clone(),
+        index_head_id,
         index_t: record.index_t,
-        default_context_address: None,
+        default_context: None,
         retracted: record.retracted,
     })
 }
 
 /// Parsed ns-record event data
 #[derive(Debug, serde::Deserialize)]
-#[allow(dead_code)] // Fields used by serde deserialization
+#[expect(dead_code)] // Fields used by serde deserialization
 struct NsRecordData {
     action: String,
     kind: String,
-    alias: String,
+    resource_id: String,
     record: serde_json::Value,
     emitted_at: String,
 }
 
 /// Parsed ns-retracted event data
 #[derive(Debug, serde::Deserialize)]
-#[allow(dead_code)] // Fields used by serde deserialization
+#[expect(dead_code)] // Fields used by serde deserialization
 struct NsRetractedData {
     action: String,
     kind: String,
-    alias: String,
+    resource_id: String,
     emitted_at: String,
 }
 

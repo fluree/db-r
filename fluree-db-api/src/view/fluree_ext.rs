@@ -10,9 +10,8 @@ use crate::view::{FlureeView, ReasoningModePrecedence};
 use crate::{
     time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
 };
-use fluree_db_indexer::run_index::{
-    BinaryIndexRootV2, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION_V2,
-};
+use fluree_db_core::{ContentStore, DictNovelty, Flake, IndexType, OverlayProvider, Sid};
+use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION};
 use fluree_db_query::rewrite::ReasoningModes;
 use fluree_db_query::BinaryRangeProvider;
 
@@ -31,31 +30,136 @@ enum GraphRef {
     Named(String),
 }
 
+// ============================================================================
+// Overlay graph filtering (for overlay-only historical time travel)
+// ============================================================================
+
+#[derive(Clone)]
+struct GraphIriFilteredOverlay {
+    inner: Arc<dyn OverlayProvider>,
+    // namespace_code -> prefix mapping for reconstructing IRIs from Sids
+    namespace_codes: std::collections::HashMap<u16, String>,
+    // Target graph IRI (exact match)
+    target_graph_iri: Arc<str>,
+}
+
+impl GraphIriFilteredOverlay {
+    fn new(
+        inner: Arc<dyn OverlayProvider>,
+        namespace_codes: std::collections::HashMap<u16, String>,
+        target_graph_iri: impl Into<Arc<str>>,
+    ) -> Self {
+        Self {
+            inner,
+            namespace_codes,
+            target_graph_iri: target_graph_iri.into(),
+        }
+    }
+
+    fn flake_in_target_graph(&self, flake: &Flake) -> bool {
+        let Some(g) = flake.g.as_ref() else {
+            return false; // default graph
+        };
+        let Some(prefix) = self.namespace_codes.get(&g.namespace_code) else {
+            return false;
+        };
+        // Compare without allocating: target == prefix + name
+        let target = self.target_graph_iri.as_ref();
+        let name = g.name.as_ref();
+        target.starts_with(prefix) && &target[prefix.len()..] == name
+    }
+}
+
+impl OverlayProvider for GraphIriFilteredOverlay {
+    fn epoch(&self) -> u64 {
+        self.inner.epoch()
+    }
+
+    fn for_each_overlay_flake(
+        &self,
+        index: IndexType,
+        first: Option<&Flake>,
+        rhs: Option<&Flake>,
+        leftmost: bool,
+        to_t: i64,
+        callback: &mut dyn FnMut(&Flake),
+    ) {
+        self.inner
+            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |flake| {
+                if self.flake_in_target_graph(flake) {
+                    callback(flake);
+                }
+            })
+    }
+}
+
+#[derive(Clone)]
+struct GraphSidFilteredOverlay {
+    inner: Arc<dyn OverlayProvider>,
+    target_graph: Sid,
+}
+
+impl GraphSidFilteredOverlay {
+    fn new(inner: Arc<dyn OverlayProvider>, target_graph: Sid) -> Self {
+        Self {
+            inner,
+            target_graph,
+        }
+    }
+
+    fn flake_in_target_graph(&self, flake: &Flake) -> bool {
+        flake.g.as_ref() == Some(&self.target_graph)
+    }
+}
+
+impl OverlayProvider for GraphSidFilteredOverlay {
+    fn epoch(&self) -> u64 {
+        self.inner.epoch()
+    }
+
+    fn for_each_overlay_flake(
+        &self,
+        index: IndexType,
+        first: Option<&Flake>,
+        rhs: Option<&Flake>,
+        leftmost: bool,
+        to_t: i64,
+        callback: &mut dyn FnMut(&Flake),
+    ) {
+        self.inner
+            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, &mut |flake| {
+                if self.flake_in_target_graph(flake) {
+                    callback(flake);
+                }
+            })
+    }
+}
+
 impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
-    /// Split a graph reference like `ledger:main#txn-meta` into (ledger_alias, graph_ref).
+    /// Split a graph reference like `ledger:main#txn-meta` into (ledger_id, graph_ref).
     ///
     /// Supported fragments:
     /// - *(none)* → default graph (g_id = 0)
     /// - `#txn-meta` → txn metadata graph (g_id = 1)
     /// - `#<iri>` → user-defined named graph (resolved via binary index store)
-    fn parse_graph_ref(alias: &str) -> Result<(&str, GraphRef)> {
-        match alias.split_once('#') {
-            None => Ok((alias, GraphRef::Default)),
-            Some((ledger_alias, frag)) => {
-                if ledger_alias.is_empty() {
+    fn parse_graph_ref(ledger_id: &str) -> Result<(&str, GraphRef)> {
+        match ledger_id.split_once('#') {
+            None => Ok((ledger_id, GraphRef::Default)),
+            Some((ledger_id, frag)) => {
+                if ledger_id.is_empty() {
                     return Err(ApiError::query("Missing ledger before '#'"));
                 }
                 if frag.is_empty() {
                     return Err(ApiError::query("Missing named graph after '#'"));
                 }
                 match frag {
-                    "txn-meta" => Ok((ledger_alias, GraphRef::TxnMeta)),
+                    "txn-meta" => Ok((ledger_id, GraphRef::TxnMeta)),
                     // Any other fragment is treated as a graph IRI (or suffix)
-                    other => Ok((ledger_alias, GraphRef::Named(other.to_string()))),
+                    other => Ok((ledger_id, GraphRef::Named(other.to_string()))),
                 }
             }
         }
@@ -66,7 +170,7 @@ where
     /// For `Named` graphs, the IRI must be an exact match in the binary index.
     /// No prefix expansion or guessing is performed - use the structured
     /// `graph` field in dataset specs for cleaner IRI handling.
-    fn resolve_graph_ref(view: &FlureeView<S>, graph_ref: GraphRef) -> Result<u32> {
+    fn resolve_graph_ref(view: &FlureeView, graph_ref: GraphRef) -> Result<u32> {
         match graph_ref {
             GraphRef::Default => Ok(0),
             GraphRef::TxnMeta => Ok(1),
@@ -91,43 +195,61 @@ where
     /// Resolves the `GraphRef` to a concrete g_id, then re-scopes the view's
     /// `Db.range_provider` and sets `view.graph_id` so both range queries
     /// and binary scans use the same graph.
-    fn select_graph(mut view: FlureeView<S>, graph_ref: GraphRef) -> Result<FlureeView<S>> {
-        eprintln!(
-            "select_graph: entry graph_ref={:?} to_t={} has_novelty={}",
-            graph_ref,
-            view.to_t,
-            view.novelty.is_some()
-        );
-        let graph_id = Self::resolve_graph_ref(&view, graph_ref)?;
-        eprintln!(
-            "select_graph: resolved graph_id={} to_t={}",
-            graph_id, view.to_t
-        );
-
-        if graph_id == 0 {
-            return Ok(view);
+    fn select_graph(mut view: FlureeView, graph_ref: GraphRef) -> Result<FlureeView> {
+        match graph_ref {
+            GraphRef::Default => Ok(view),
+            GraphRef::TxnMeta => {
+                // Prefer index-backed graph scoping when we have the binary store.
+                // In overlay-only historical mode, we don't attach a binary store on purpose,
+                // so we fall back to filtering overlay flakes by the txn-meta graph IRI.
+                if view.binary_store.is_some() && view.dict_novelty.is_some() {
+                    let graph_id = Self::resolve_graph_ref(&view, GraphRef::TxnMeta)?;
+                    if graph_id == 0 {
+                        return Ok(view);
+                    }
+                    let store = view.binary_store.clone().unwrap();
+                    let dict_novelty = view.dict_novelty.clone().unwrap();
+                    let provider = BinaryRangeProvider::new(store, dict_novelty, graph_id);
+                    let mut db = (*view.db).clone();
+                    db.range_provider = Some(Arc::new(provider));
+                    view.db = Arc::new(db);
+                    Ok(view.with_graph_id(graph_id))
+                } else {
+                    // Overlay-only historical path: filter overlay flakes to txn-meta graph.
+                    // This enables `ledger#txn-meta` time travel even when we intentionally
+                    // don't attach the binary store (overlay replay path).
+                    let inner = Arc::clone(&view.overlay);
+                    let txn_meta_graph = Sid::new(fluree_vocab::namespaces::FLUREE_DB, "txn-meta");
+                    view.overlay = Arc::new(GraphSidFilteredOverlay::new(inner, txn_meta_graph));
+                    Ok(view.with_graph_id(1))
+                }
+            }
+            GraphRef::Named(iri) => {
+                // Index-backed path: resolve to g_id + rescope provider for graph-aware range queries.
+                if view.binary_store.is_some() && view.dict_novelty.is_some() {
+                    let graph_id = Self::resolve_graph_ref(&view, GraphRef::Named(iri.clone()))?;
+                    if graph_id == 0 {
+                        return Ok(view);
+                    }
+                    let store = view.binary_store.clone().unwrap();
+                    let dict_novelty = view.dict_novelty.clone().unwrap();
+                    let provider = BinaryRangeProvider::new(store, dict_novelty, graph_id);
+                    let mut db = (*view.db).clone();
+                    db.range_provider = Some(Arc::new(provider));
+                    view.db = Arc::new(db);
+                    Ok(view.with_graph_id(graph_id))
+                } else {
+                    // Overlay-only historical path: filter overlay flakes by graph IRI.
+                    // This supports named graph time travel even when the binary index
+                    // cannot answer historical queries (no Region 3 coverage).
+                    let inner = Arc::clone(&view.overlay);
+                    let ns_codes = view.db.namespace_codes.clone();
+                    view.overlay =
+                        Arc::new(GraphIriFilteredOverlay::new(inner, ns_codes, iri.clone()));
+                    Ok(view)
+                }
+            }
         }
-
-        let Some(store) = view.binary_store.clone() else {
-            return Err(ApiError::internal(
-                "Named graph queries require a binary index store".to_string(),
-            ));
-        };
-        let Some(dict_novelty) = view.dict_novelty.clone() else {
-            return Err(ApiError::internal(
-                "Named graph queries require dict novelty".to_string(),
-            ));
-        };
-
-        // Re-scope the range provider to the requested graph_id.
-        // This ensures callers of `range_with_overlay()` (planner, policy, etc.)
-        // see the correct graph.
-        let provider = BinaryRangeProvider::new(store, dict_novelty, graph_id);
-        let mut db = (*view.db).clone();
-        db.range_provider = Some(Arc::new(provider));
-        view.db = Arc::new(db);
-
-        Ok(view.with_graph_id(graph_id))
     }
 
     /// Load the current view (immutable snapshot) from a ledger.
@@ -138,34 +260,41 @@ where
     ///
     /// This is the internal loading method. For the public API, use
     /// [`graph()`](Self::graph) which returns a lazy [`Graph`](crate::Graph) handle.
-    pub(crate) async fn load_view(&self, alias: &str) -> Result<FlureeView<S>> {
-        let handle = self.ledger_cached(alias).await?;
+    pub(crate) async fn load_view(&self, ledger_id: &str) -> Result<FlureeView> {
+        let handle = self.ledger_cached(ledger_id).await?;
         let mut snapshot = handle.snapshot().await;
 
         // If no binary store attached but nameservice has an index address,
         // load the BinaryIndexStore and attach BinaryRangeProvider.
         // This handles the non-cached path (FlureeBuilder::file() without ledger_manager).
         if snapshot.binary_store.is_none() {
-            if let Some(index_addr) = snapshot
+            if let Some(index_cid) = snapshot
                 .ns_record
                 .as_ref()
-                .and_then(|r| r.index_address.as_ref())
+                .and_then(|r| r.index_head_id.as_ref())
                 .cloned()
             {
                 let storage = self.storage();
-                let bytes = storage
-                    .read_bytes(&index_addr)
+                let cs = fluree_db_core::content_store_for(storage.clone(), &snapshot.db.ledger_id);
+                let bytes = cs
+                    .get(&index_cid)
                     .await
                     .map_err(|e| ApiError::internal(format!("read index root: {}", e)))?;
-                if let Ok(root) = serde_json::from_slice::<BinaryIndexRootV2>(&bytes) {
-                    if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
+                if let Ok(root) = serde_json::from_slice::<BinaryIndexRoot>(&bytes) {
+                    if root.version == BINARY_INDEX_ROOT_VERSION {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        let store =
-                            BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
+                        let cs =
+                            fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
+                        let mut store =
+                            BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
                                 .await
                                 .map_err(|e| {
                                     ApiError::internal(format!("load binary index: {}", e))
                                 })?;
+
+                        // Augment namespace codes with entries from novelty commits.
+                        store.augment_namespace_codes(&snapshot.db.namespace_codes);
+
                         let arc_store = Arc::new(store);
                         let dn = snapshot.dict_novelty.clone();
                         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
@@ -189,47 +318,60 @@ where
     ///
     /// For named graph queries (e.g., `#txn-meta`), this also loads the binary
     /// index store if available, enabling graph-scoped queries.
-    pub(crate) async fn load_view_at_t(&self, alias: &str, target_t: i64) -> Result<FlureeView<S>> {
-        let historical = self.ledger_view_at(alias, target_t).await?;
+    pub(crate) async fn load_view_at_t(
+        &self,
+        ledger_id: &str,
+        target_t: i64,
+    ) -> Result<FlureeView> {
+        let historical = self.ledger_view_at(ledger_id, target_t).await?;
         let mut view = FlureeView::from_historical(&historical);
 
-        // Load binary index store for named graph support.
-        // We need:
-        // 1. Binary index store from the index_address
-        // 2. Dict novelty for subject/string lookups in binary scans
+        // Attach a dict_novelty derived from the historical Db's watermarks.
+        // This avoids relying on potentially-stale cached handle state and is
+        // sufficient for binary overlay translation when an overlay is present.
+        view.dict_novelty = Some(Arc::new(DictNovelty::with_watermarks(
+            view.db.subject_watermarks.clone(),
+            view.db.string_watermark,
+        )));
+
+        // Load the binary index store (for index-backed historical queries only).
         //
-        // Get these from the current ledger snapshot (cached path).
-        let handle = self.ledger_cached(alias).await?;
-        let snapshot = handle.snapshot().await;
-
-        // Get dict_novelty from the current snapshot
-        view.dict_novelty = Some(snapshot.dict_novelty.clone());
-
-        // Load binary index store if available
-        if let Some(index_addr) = snapshot
-            .ns_record
-            .as_ref()
-            .and_then(|r| r.index_address.as_ref())
-            .cloned()
-        {
-            let storage = self.storage();
-            if let Ok(bytes) = storage.read_bytes(&index_addr).await {
-                if let Ok(root) = serde_json::from_slice::<BinaryIndexRootV2>(&bytes) {
-                    if root.version == BINARY_INDEX_ROOT_VERSION_V2 {
+        // When the historical view is overlay-only (genesis Db + commit replay),
+        // we intentionally skip attaching a binary store so the query engine
+        // takes the overlay/range path instead of the binary scan path.
+        if view.db.t > 0 {
+            // Use nameservice record (not cached handle) to avoid stale index.
+            if let Some(record) = self.nameservice.lookup(ledger_id).await? {
+                if let Some(index_cid) = record.index_head_id.as_ref() {
+                    let storage = self.storage();
+                    let cs = fluree_db_core::content_store_for(storage.clone(), &record.ledger_id);
+                    let bytes = cs.get(index_cid).await.map_err(|e| {
+                        ApiError::internal(format!(
+                            "failed to read index root {}: {}",
+                            index_cid, e
+                        ))
+                    })?;
+                    let root: BinaryIndexRoot = serde_json::from_slice(&bytes).map_err(|e| {
+                        ApiError::internal(format!("failed to parse v2 root {}: {}", index_cid, e))
+                    })?;
+                    if root.version == BINARY_INDEX_ROOT_VERSION {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        if let Ok(store) =
-                            BinaryIndexStore::load_from_root_default(storage, &root, &cache_dir)
+                        let cs =
+                            fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
+                        let mut store =
+                            BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
                                 .await
-                        {
-                            // Attach the binary store so `#txn-meta` selection can re-scope
-                            // the range provider on demand via `select_graph_id()`.
-                            //
-                            // Note: We intentionally do *not* override `view.db.range_provider`
-                            // here. Historical views may have time-travel-correct providers;
-                            // forcing a binary provider rooted at the current index would change
-                            // default-graph time-travel semantics.
-                            view.binary_store = Some(Arc::new(store));
-                        }
+                                .map_err(|e| {
+                                    ApiError::internal(format!(
+                                        "load binary index store from {}: {}",
+                                        index_cid, e
+                                    ))
+                                })?;
+
+                        // Augment namespace codes with entries from novelty commits.
+                        store.augment_namespace_codes(&view.db.namespace_codes);
+
+                        view.binary_store = Some(Arc::new(store));
                     }
                 }
             }
@@ -240,13 +382,13 @@ where
 
     /// Load a view at a flexible time specification.
     ///
-    /// Resolves `@t:`, `@iso:`, `@sha:`, or `latest` time specifications.
-    pub(crate) async fn load_view_at(&self, alias: &str, spec: TimeSpec) -> Result<FlureeView<S>> {
+    /// Resolves `@t:`, `@iso:`, `@commit:`, or `latest` time specifications.
+    pub(crate) async fn load_view_at(&self, ledger_id: &str, spec: TimeSpec) -> Result<FlureeView> {
         match spec {
-            TimeSpec::Latest => self.load_view(alias).await,
-            TimeSpec::AtT(t) => self.load_view_at_t(alias, t).await,
+            TimeSpec::Latest => self.load_view(ledger_id).await,
+            TimeSpec::AtT(t) => self.load_view_at_t(ledger_id, t).await,
             TimeSpec::AtTime(iso) => {
-                let handle = self.ledger_cached(alias).await?;
+                let handle = self.ledger_cached(ledger_id).await?;
                 let snapshot = handle.snapshot().await;
                 let ledger = snapshot.to_ledger_state();
                 let current_t = ledger.t();
@@ -272,21 +414,21 @@ where
                     current_t,
                 )
                 .await?;
-                self.load_view_at_t(alias, resolved_t).await
+                self.load_view_at_t(ledger_id, resolved_t).await
             }
-            TimeSpec::AtCommit(sha_prefix) => {
-                let handle = self.ledger_cached(alias).await?;
+            TimeSpec::AtCommit(commit_prefix) => {
+                let handle = self.ledger_cached(ledger_id).await?;
                 let snapshot = handle.snapshot().await;
                 let ledger = snapshot.to_ledger_state();
                 let current_t = ledger.t();
-                let resolved_t = time_resolve::sha_to_t(
+                let resolved_t = time_resolve::commit_to_t(
                     &ledger.db,
                     Some(ledger.novelty.as_ref()),
-                    &sha_prefix,
+                    &commit_prefix,
                     current_t,
                 )
                 .await?;
-                self.load_view_at_t(alias, resolved_t).await
+                self.load_view_at_t(ledger_id, resolved_t).await
             }
         }
     }
@@ -295,23 +437,23 @@ where
     ///
     /// Returns a [`FlureeView`] — an immutable, point-in-time snapshot.
     /// For the lazy API, use [`graph()`](Self::graph) instead.
-    pub async fn view(&self, alias: &str) -> Result<FlureeView<S>> {
-        let (ledger_alias, graph_ref) = Self::parse_graph_ref(alias)?;
-        let view = self.load_view(ledger_alias).await?;
+    pub async fn view(&self, ledger_id: &str) -> Result<FlureeView> {
+        let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
+        let view = self.load_view(ledger_id).await?;
         Self::select_graph(view, graph_ref)
     }
 
     /// Load a historical snapshot at a specific transaction time.
-    pub async fn view_at_t(&self, alias: &str, target_t: i64) -> Result<FlureeView<S>> {
-        let (ledger_alias, graph_ref) = Self::parse_graph_ref(alias)?;
-        let view = self.load_view_at_t(ledger_alias, target_t).await?;
+    pub async fn view_at_t(&self, ledger_id: &str, target_t: i64) -> Result<FlureeView> {
+        let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
+        let view = self.load_view_at_t(ledger_id, target_t).await?;
         Self::select_graph(view, graph_ref)
     }
 
     /// Load a snapshot at a flexible time specification.
-    pub async fn view_at(&self, alias: &str, spec: TimeSpec) -> Result<FlureeView<S>> {
-        let (ledger_alias, graph_ref) = Self::parse_graph_ref(alias)?;
-        let view = self.load_view_at(ledger_alias, spec).await?;
+    pub async fn view_at(&self, ledger_id: &str, spec: TimeSpec) -> Result<FlureeView> {
+        let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
+        let view = self.load_view_at(ledger_id, spec).await?;
         Self::select_graph(view, graph_ref)
     }
 
@@ -323,10 +465,9 @@ where
     /// This is called by `load_view_from_source` when a `GraphSource` has
     /// an explicit `graph_selector` set.
     pub(crate) fn apply_graph_selector(
-        view: FlureeView<S>,
+        view: FlureeView,
         selector: &crate::dataset::GraphSelector,
-    ) -> Result<FlureeView<S>> {
-        eprintln!("apply_graph_selector: selector={:?}", selector);
+    ) -> Result<FlureeView> {
         let graph_ref = match selector {
             crate::dataset::GraphSelector::Default => GraphRef::Default,
             crate::dataset::GraphSelector::TxnMeta => GraphRef::TxnMeta,
@@ -365,9 +506,9 @@ where
     /// ```
     pub async fn wrap_policy(
         &self,
-        view: FlureeView<S>,
+        view: FlureeView,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S>> {
+    ) -> Result<FlureeView> {
         let policy_ctx = crate::policy_builder::build_policy_context_from_opts(
             &view.db,
             view.overlay.as_ref(),
@@ -384,21 +525,21 @@ where
     /// Convenience method that combines `view()` + `wrap_policy()`.
     pub async fn view_with_policy(
         &self,
-        alias: &str,
+        ledger_id: &str,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S>> {
-        let view = self.view(alias).await?;
+    ) -> Result<FlureeView> {
+        let view = self.view(ledger_id).await?;
         self.wrap_policy(view, opts).await
     }
 
     /// Load a view at a specific time with policy applied.
     pub async fn view_at_t_with_policy(
         &self,
-        alias: &str,
+        ledger_id: &str,
         target_t: i64,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S>> {
-        let view = self.view_at_t(alias, target_t).await?;
+    ) -> Result<FlureeView> {
+        let view = self.view_at_t(ledger_id, target_t).await?;
         self.wrap_policy(view, opts).await
     }
 }
@@ -416,17 +557,17 @@ where
     ///
     /// This is a pure function (no async) since it just attaches metadata.
     /// Uses `DefaultUnlessQueryOverrides` precedence.
-    pub fn wrap_reasoning(&self, view: FlureeView<S>, modes: ReasoningModes) -> FlureeView<S> {
+    pub fn wrap_reasoning(&self, view: FlureeView, modes: ReasoningModes) -> FlureeView {
         view.with_reasoning(modes)
     }
 
     /// Wrap a view with reasoning modes and explicit precedence.
     pub fn wrap_reasoning_with_precedence(
         &self,
-        view: FlureeView<S>,
+        view: FlureeView,
         modes: ReasoningModes,
         precedence: ReasoningModePrecedence,
-    ) -> FlureeView<S> {
+    ) -> FlureeView {
         view.with_reasoning_precedence(modes, precedence)
     }
 }
@@ -454,7 +595,7 @@ mod tests {
         // Load as view
         let view = fluree.view("testdb:main").await.unwrap();
 
-        assert_eq!(&*view.ledger_alias, "testdb:main");
+        assert_eq!(&*view.ledger_id, "testdb:main");
         assert_eq!(view.to_t, 0); // Genesis
         assert!(view.novelty().is_some());
     }

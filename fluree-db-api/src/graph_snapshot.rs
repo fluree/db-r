@@ -26,7 +26,7 @@ use crate::{Fluree, NameService, Storage};
 /// ```
 pub struct GraphSnapshot<'a, S: Storage + 'static, N> {
     pub(crate) fluree: &'a Fluree<S, N>,
-    pub(crate) view: FlureeView<S>,
+    pub(crate) view: FlureeView,
 }
 
 impl<'a, S, N> GraphSnapshot<'a, S, N>
@@ -35,7 +35,7 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new snapshot (called internally by `Graph::load()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: FlureeView<S>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: FlureeView) -> Self {
         Self { fluree, view }
     }
 
@@ -52,12 +52,12 @@ where
     }
 
     /// Access the underlying [`FlureeView`] snapshot.
-    pub fn view(&self) -> &FlureeView<S> {
+    pub fn view(&self) -> &FlureeView {
         &self.view
     }
 
     /// Unwrap into the underlying [`FlureeView`] snapshot.
-    pub fn into_view(self) -> FlureeView<S> {
+    pub fn into_view(self) -> FlureeView {
         self.view
     }
 }

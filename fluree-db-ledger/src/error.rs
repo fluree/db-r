@@ -28,30 +28,30 @@ pub enum LedgerError {
     #[error("Novelty at max capacity, waiting for indexer")]
     MaxNovelty,
 
-    /// Alias mismatch when applying index
-    #[error("Index alias '{new}' does not match ledger alias '{expected}'")]
-    AliasMismatch { new: String, expected: String },
+    /// Ledger ID mismatch when applying index
+    #[error("Index ledger_id '{new}' does not match expected '{expected}'")]
+    LedgerIdMismatch { new: String, expected: String },
 
     /// Stale index (older than current)
     #[error("Index at t={index_t} is older than current index at t={current_t}")]
     StaleIndex { index_t: i64, current_t: i64 },
 
-    /// Missing index address in nameservice record
-    #[error("Nameservice has index_t={index_t} for '{alias}' but no index_address")]
-    MissingIndexAddress { alias: String, index_t: i64 },
+    /// Missing index CID in nameservice record
+    #[error("Nameservice has index_t={index_t} for '{ledger_id}' but no index_head_id")]
+    MissingIndexId { ledger_id: String, index_t: i64 },
 
     /// No index exists at or before the requested time
-    #[error("No index available at or before t={target_t} for '{alias}' (earliest index at t={earliest_t})")]
+    #[error("No index available at or before t={target_t} for '{ledger_id}' (earliest index at t={earliest_t})")]
     NoIndexAtTime {
-        alias: String,
+        ledger_id: String,
         target_t: i64,
         earliest_t: i64,
     },
 
     /// Target time is in the future (beyond current head)
-    #[error("Target t={target_t} is beyond current head t={head_t} for '{alias}'")]
+    #[error("Target t={target_t} is beyond current head t={head_t} for '{ledger_id}'")]
     FutureTime {
-        alias: String,
+        ledger_id: String,
         target_t: i64,
         head_t: i64,
     },
@@ -63,9 +63,9 @@ impl LedgerError {
         Self::NotFound(msg.into())
     }
 
-    /// Create an alias mismatch error
-    pub fn alias_mismatch(new: impl Into<String>, expected: impl Into<String>) -> Self {
-        Self::AliasMismatch {
+    /// Create a ledger ID mismatch error
+    pub fn ledger_id_mismatch(new: impl Into<String>, expected: impl Into<String>) -> Self {
+        Self::LedgerIdMismatch {
             new: new.into(),
             expected: expected.into(),
         }
@@ -76,27 +76,27 @@ impl LedgerError {
         Self::StaleIndex { index_t, current_t }
     }
 
-    /// Create a missing index address error
-    pub fn missing_index_address(alias: impl Into<String>, index_t: i64) -> Self {
-        Self::MissingIndexAddress {
-            alias: alias.into(),
+    /// Create a missing index CID error
+    pub fn missing_index_id(ledger_id: impl Into<String>, index_t: i64) -> Self {
+        Self::MissingIndexId {
+            ledger_id: ledger_id.into(),
             index_t,
         }
     }
 
     /// Create a no index at time error
-    pub fn no_index_at_time(alias: impl Into<String>, target_t: i64, earliest_t: i64) -> Self {
+    pub fn no_index_at_time(ledger_id: impl Into<String>, target_t: i64, earliest_t: i64) -> Self {
         Self::NoIndexAtTime {
-            alias: alias.into(),
+            ledger_id: ledger_id.into(),
             target_t,
             earliest_t,
         }
     }
 
     /// Create a future time error
-    pub fn future_time(alias: impl Into<String>, target_t: i64, head_t: i64) -> Self {
+    pub fn future_time(ledger_id: impl Into<String>, target_t: i64, head_t: i64) -> Self {
         Self::FutureTime {
-            alias: alias.into(),
+            ledger_id: ledger_id.into(),
             target_t,
             head_t,
         }

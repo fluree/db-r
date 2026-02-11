@@ -216,9 +216,13 @@ See [Storage Encryption](../security/encryption.md) for full documentation.
 ├── index/                    # Index snapshots
 │   ├── mydb-main-t100.idx
 │   └── mydb-main-t150.idx
-└── vg/                      # Virtual graphs
+└── graph-sources/            # Graph sources
     └── products-search/
-        └── index.bm25
+        └── main/
+            └── bm25/
+                ├── manifest.json
+                └── t150/
+                    └── snapshot.bin
 ```
 
 ### File Formats
@@ -226,11 +230,11 @@ See [Storage Encryption](../security/encryption.md) for full documentation.
 **Nameservice (JSON):**
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_id": "mydb:main",
   "commit_t": 150,
   "index_t": 145,
-  "commit_address": "fluree:file:commit:abc123...",
-  "index_address": "fluree:file:index:def456..."
+  "commit_id": "bafybeig...commitT150",
+  "index_id": "bafybeig...indexRootT145"
 }
 ```
 
@@ -268,26 +272,34 @@ s3://fluree-prod-data/
 ├── index/
 │   ├── mydb-main-t100.idx
 │   └── mydb-main-t150.idx
-└── vg/
-    └── products-search.bm25
+└── graph-sources/
+    └── products-search/
+        └── main/
+            └── bm25/
+                ├── manifest.json
+                └── t150/
+                    └── snapshot.bin
 ```
 
 ### DynamoDB Schema
 
-The nameservice uses a DynamoDB table for ledger metadata coordination.
+The nameservice uses a DynamoDB table with a **composite primary key** (`pk` + `sk`) for ledger and graph source metadata coordination. Each ledger or graph source is stored as multiple items (one per concern) under the same partition key.
 
 See [DynamoDB Nameservice Guide](dynamodb-guide.md) for:
-- Complete table schema (including v2 status/config attributes)
+- Complete table schema with composite-key layout
 - Table creation scripts (AWS CLI, CloudFormation, Terraform)
+- GSI setup for listing by kind
 - Local development setup with LocalStack
 - Production considerations and troubleshooting
 
 **Quick Reference:**
 ```text
 Table: fluree-nameservice
-Primary Key: ledger_alias (String)
-Key Attributes: commit_t, index_t, commit_address, index_address
-V2 Extensions: status_v, status_meta, config_v, config_meta
+Primary Key: pk (String, ledger-id) + sk (String, concern)
+Sort Key Values: meta, head, index, config, status
+GSI1 (gsi1-kind): kind (HASH) + pk (RANGE)
+Items per ledger: 5 (meta, head, index, config, status)
+Items per graph source: 4 (meta, config, index, status)
 ```
 
 ### AWS Permissions
@@ -318,9 +330,13 @@ Required IAM permissions:
     "dynamodb:GetItem",
     "dynamodb:PutItem",
     "dynamodb:UpdateItem",
-    "dynamodb:Query"
+    "dynamodb:Query",
+    "dynamodb:BatchGetItem"
   ],
-  "Resource": "arn:aws:dynamodb:us-east-1:*:table/fluree-nameservice"
+  "Resource": [
+    "arn:aws:dynamodb:us-east-1:*:table/fluree-nameservice",
+    "arn:aws:dynamodb:us-east-1:*:table/fluree-nameservice/index/gsi1-kind"
+  ]
 }
 ```
 
@@ -376,11 +392,11 @@ Required IAM permissions:
 - Geographic distribution needed
 - Cloud-native architecture
 
-## Migration Between Storage Modes
+## Switching Storage Modes
 
 ### Memory to File
 
-Export and reimport:
+Export from the running system and import into the new one:
 
 ```bash
 # Export from memory
@@ -396,17 +412,22 @@ curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
 
 ### File to AWS
 
-Copy files to S3:
+Copy files to S3 and create the nameservice table:
 
 ```bash
 # Copy data directory to S3
 aws s3 sync /var/lib/fluree/ s3://fluree-prod-data/
 
-# Create DynamoDB table
+# Create DynamoDB table (see docs/operations/dynamodb-guide.md for full schema)
 aws dynamodb create-table \
   --table-name fluree-nameservice \
-  --attribute-definitions AttributeName=alias,AttributeType=S \
-  --key-schema AttributeName=alias,KeyType=HASH \
+  --attribute-definitions \
+    AttributeName=pk,AttributeType=S \
+    AttributeName=sk,AttributeType=S \
+    AttributeName=kind,AttributeType=S \
+  --key-schema \
+    AttributeName=pk,KeyType=HASH \
+    AttributeName=sk,KeyType=RANGE \
   --billing-mode PAY_PER_REQUEST
 
 # Start AWS-backed server

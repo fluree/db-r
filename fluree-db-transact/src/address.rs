@@ -5,7 +5,7 @@
 
 /// Parse a commit ID from a storage address
 ///
-/// Extracts the hash from an address like `fluree:{method}://ledger/commit/<hash>.json`
+/// Extracts the hash from an address like `fluree:{method}://ledger/commit/<hash>.fcv2`
 /// and returns `sha256:<hash>`.
 pub fn parse_commit_id(address: &str) -> Option<String> {
     // Extract path portion after :// if present (supports `fluree:*://...` and raw `*://...`)
@@ -19,8 +19,13 @@ pub fn parse_commit_id(address: &str) -> Option<String> {
         return None;
     };
 
+    // Strip any file extension from the last path segment
     let commit_part = path.rsplit('/').next()?;
-    let hash = commit_part.strip_suffix(".json")?;
+    let dot = commit_part.rfind('.')?;
+    if dot == 0 {
+        return None;
+    }
+    let hash = &commit_part[..dot];
 
     // Validate it looks like a hex hash
     if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -36,7 +41,7 @@ mod tests {
 
     #[test]
     fn test_parse_commit_id() {
-        let address = "fluree:file://test/main/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.json";
+        let address = "fluree:file://test/main/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.fcv2";
         let id = parse_commit_id(address);
 
         assert_eq!(
@@ -49,17 +54,23 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_commit_id_roundtrip() {
-        let original_id = "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
+    fn test_parse_commit_id_legacy_json() {
+        // Legacy .json extension should still work
         let address = "fluree:file://ledger/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.json".to_string();
         let parsed = parse_commit_id(&address);
 
-        assert_eq!(parsed, Some(original_id.to_string()));
+        assert_eq!(
+            parsed,
+            Some(
+                "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
+                    .to_string()
+            )
+        );
     }
 
     #[test]
     fn test_parse_commit_id_s3_method() {
-        let address = "fluree:s3://test/main/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.json";
+        let address = "fluree:s3://test/main/commit/abc123def456abc123def456abc123def456abc123def456abc123def456abcd.fcv2";
         let id = parse_commit_id(address);
 
         assert_eq!(

@@ -27,7 +27,7 @@ async fn policy_class_restricts_ssn_to_own_user() {
         "@context": {
             "ex": "http://example.org/ns/",
             "schema": "http://schema.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             // Users
@@ -55,17 +55,17 @@ async fn policy_class_restricts_ssn_to_own_user() {
             // Identity with policyClass assignment
             {
                 "@id": "http://example.org/ns/aliceIdentity",
-                "https://ns.flur.ee/ledger#policyClass": [{"@id": "http://example.org/ns/EmployeePolicy"}],
+                "https://ns.flur.ee/db#policyClass": [{"@id": "http://example.org/ns/EmployeePolicy"}],
                 "http://example.org/ns/user": {"@id": "http://example.org/ns/alice"}
             },
             // SSN restriction policy - stored in DB with type EmployeePolicy
             {
                 "@id": "http://example.org/ns/ssnRestriction",
-                "@type": ["https://ns.flur.ee/ledger#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
-                "https://ns.flur.ee/ledger#required": true,
-                "https://ns.flur.ee/ledger#onProperty": [{"@id": "http://schema.org/ssn"}],
-                "https://ns.flur.ee/ledger#action": {"@id": "https://ns.flur.ee/ledger#view"},
-                "https://ns.flur.ee/ledger#query": serde_json::to_string(&json!({
+                "@type": ["https://ns.flur.ee/db#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
+                "https://ns.flur.ee/db#required": true,
+                "https://ns.flur.ee/db#onProperty": [{"@id": "http://schema.org/ssn"}],
+                "https://ns.flur.ee/db#action": {"@id": "https://ns.flur.ee/db#view"},
+                "https://ns.flur.ee/db#query": serde_json::to_string(&json!({
                     "@context": {"ex": "http://example.org/ns/"},
                     "where": {
                         "@id": "?$identity",
@@ -76,9 +76,9 @@ async fn policy_class_restricts_ssn_to_own_user() {
             // Default allow policy for other properties
             {
                 "@id": "http://example.org/ns/defaultAllowView",
-                "@type": ["https://ns.flur.ee/ledger#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
-                "https://ns.flur.ee/ledger#action": {"@id": "https://ns.flur.ee/ledger#view"},
-                "https://ns.flur.ee/ledger#query": serde_json::to_string(&json!({})).unwrap()
+                "@type": ["https://ns.flur.ee/db#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
+                "https://ns.flur.ee/db#action": {"@id": "https://ns.flur.ee/db#view"},
+                "https://ns.flur.ee/db#query": serde_json::to_string(&json!({})).unwrap()
             }
         ]
     });
@@ -147,7 +147,7 @@ async fn policy_class_allows_non_restricted_properties() {
         "@context": {
             "ex": "http://example.org/ns/",
             "schema": "http://schema.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
@@ -166,16 +166,16 @@ async fn policy_class_allows_non_restricted_properties() {
             },
             {
                 "@id": "http://example.org/ns/aliceIdentity",
-                "https://ns.flur.ee/ledger#policyClass": [{"@id": "http://example.org/ns/EmployeePolicy"}],
+                "https://ns.flur.ee/db#policyClass": [{"@id": "http://example.org/ns/EmployeePolicy"}],
                 "http://example.org/ns/user": {"@id": "http://example.org/ns/alice"}
             },
             {
                 "@id": "http://example.org/ns/ssnRestriction",
-                "@type": ["https://ns.flur.ee/ledger#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
-                "https://ns.flur.ee/ledger#required": true,
-                "https://ns.flur.ee/ledger#onProperty": [{"@id": "http://schema.org/ssn"}],
-                "https://ns.flur.ee/ledger#action": {"@id": "https://ns.flur.ee/ledger#view"},
-                "https://ns.flur.ee/ledger#query": serde_json::to_string(&json!({
+                "@type": ["https://ns.flur.ee/db#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
+                "https://ns.flur.ee/db#required": true,
+                "https://ns.flur.ee/db#onProperty": [{"@id": "http://schema.org/ssn"}],
+                "https://ns.flur.ee/db#action": {"@id": "https://ns.flur.ee/db#view"},
+                "https://ns.flur.ee/db#query": serde_json::to_string(&json!({
                     "where": {
                         "@id": "?$identity",
                         "http://example.org/ns/user": {"@id": "?$this"}
@@ -184,9 +184,9 @@ async fn policy_class_allows_non_restricted_properties() {
             },
             {
                 "@id": "http://example.org/ns/defaultAllowView",
-                "@type": ["https://ns.flur.ee/ledger#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
-                "https://ns.flur.ee/ledger#action": {"@id": "https://ns.flur.ee/ledger#view"},
-                "https://ns.flur.ee/ledger#query": serde_json::to_string(&json!({})).unwrap()
+                "@type": ["https://ns.flur.ee/db#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
+                "https://ns.flur.ee/db#action": {"@id": "https://ns.flur.ee/db#view"},
+                "https://ns.flur.ee/db#query": serde_json::to_string(&json!({})).unwrap()
             }
         ]
     });
@@ -248,7 +248,7 @@ async fn policy_class_blocks_other_user_ssn_in_where() {
         "@context": {
             "ex": "http://example.org/ns/",
             "schema": "http://schema.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
@@ -265,16 +265,16 @@ async fn policy_class_blocks_other_user_ssn_in_where() {
             },
             {
                 "@id": "http://example.org/ns/aliceIdentity",
-                "https://ns.flur.ee/ledger#policyClass": [{"@id": "http://example.org/ns/EmployeePolicy"}],
+                "https://ns.flur.ee/db#policyClass": [{"@id": "http://example.org/ns/EmployeePolicy"}],
                 "http://example.org/ns/user": {"@id": "http://example.org/ns/alice"}
             },
             {
                 "@id": "http://example.org/ns/ssnRestriction",
-                "@type": ["https://ns.flur.ee/ledger#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
-                "https://ns.flur.ee/ledger#required": true,
-                "https://ns.flur.ee/ledger#onProperty": [{"@id": "http://schema.org/ssn"}],
-                "https://ns.flur.ee/ledger#action": {"@id": "https://ns.flur.ee/ledger#view"},
-                "https://ns.flur.ee/ledger#query": serde_json::to_string(&json!({
+                "@type": ["https://ns.flur.ee/db#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
+                "https://ns.flur.ee/db#required": true,
+                "https://ns.flur.ee/db#onProperty": [{"@id": "http://schema.org/ssn"}],
+                "https://ns.flur.ee/db#action": {"@id": "https://ns.flur.ee/db#view"},
+                "https://ns.flur.ee/db#query": serde_json::to_string(&json!({
                     "where": {
                         "@id": "?$identity",
                         "http://example.org/ns/user": {"@id": "?$this"}
@@ -283,9 +283,9 @@ async fn policy_class_blocks_other_user_ssn_in_where() {
             },
             {
                 "@id": "http://example.org/ns/defaultAllowView",
-                "@type": ["https://ns.flur.ee/ledger#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
-                "https://ns.flur.ee/ledger#action": {"@id": "https://ns.flur.ee/ledger#view"},
-                "https://ns.flur.ee/ledger#query": serde_json::to_string(&json!({})).unwrap()
+                "@type": ["https://ns.flur.ee/db#AccessPolicy", "http://example.org/ns/EmployeePolicy"],
+                "https://ns.flur.ee/db#action": {"@id": "https://ns.flur.ee/db#view"},
+                "https://ns.flur.ee/db#query": serde_json::to_string(&json!({})).unwrap()
             }
         ]
     });

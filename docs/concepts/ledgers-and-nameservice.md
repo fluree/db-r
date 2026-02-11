@@ -12,9 +12,11 @@ A **ledger** in Fluree is an independent, versioned graph database containing:
 - Configurable permissions and policies
 - Support for multiple branches
 
-### Ledger Aliases
+### Ledger IDs
 
-Ledgers are identified by **aliases** with the format `ledger-name:branch`. The alias serves as both a human-readable identifier and a query target.
+Ledgers are identified by **ledger IDs** with the format `ledger-name:branch`.
+
+A ledger ID serves as both a human-readable identifier and the canonical lookup key used across APIs, CLI, and caching.
 
 **Examples:**
 
@@ -41,11 +43,11 @@ Ledgers are created implicitly through the first transaction and persist until e
 
 **Creation Flow:**
 
-1. First transaction to a ledger alias creates the ledger automatically
+1. First transaction to a ledger ID creates the ledger automatically
 2. Transaction is committed and assigned a transaction time (`t`)
-3. Commit address is published to the nameservice
+3. Commit ID is published to the nameservice
 4. Background indexing process creates queryable indexes
-5. Index address is published to the nameservice when complete
+5. Index ID is published to the nameservice when complete
 
 **Retraction:**
 
@@ -63,7 +65,7 @@ The **nameservice** is Fluree's metadata registry that enables ledger discovery 
 
 The nameservice provides:
 
-- **Discovery**: Find ledgers by alias across distributed deployments
+- **Discovery**: Find ledgers by ledger ID across distributed deployments
 - **Coordination**: Track commit and index state for consistency
 - **Metadata Management**: Store ledger configuration and status
 - **Multi-Process Support**: Enable coordination across multiple Fluree instances
@@ -74,27 +76,27 @@ For each ledger, the nameservice maintains a **nameservice record** (`NsRecord`)
 
 #### Core Identifiers
 
-- **`alias`**: Canonical ledger identifier (e.g., `"mydb:main"`)
-- **`address`**: Lookup address (may be alias or IRI)
+- **`id`**: Canonical ledger ID with branch (e.g., `"mydb:main"`)
+- **`name`**: Ledger name without branch suffix (e.g., `"mydb"`)
 - **`branch`**: Branch name (e.g., `"main"`)
 
 #### Commit State
 
-- **`commit_address`**: Storage address of the latest commit
+- **`commit_id`**: ContentId (CIDv1) of the latest commit
 - **`commit_t`**: Transaction time of the latest commit
 
-The commit represents the most recent transaction that has been persisted. Commits are published immediately after each successful transaction.
+The commit represents the most recent transaction that has been persisted. Commits are published immediately after each successful transaction. The `commit_id` is a content-addressed identifier derived from the commit's bytes — it is storage-agnostic and does not depend on where the commit is physically stored.
 
 #### Index State
 
-- **`index_address`**: Storage address of the latest index snapshot
+- **`index_id`**: ContentId (CIDv1) of the latest index root
 - **`index_t`**: Transaction time of the latest index
 
-The index represents a queryable snapshot of the ledger state. Indexes are created by background processes and may lag behind commits.
+The index represents a queryable snapshot of the ledger state. Indexes are created by background processes and may lag behind commits. Like commits, the `index_id` is a content-addressed identifier.
 
 #### Additional Metadata
 
-- **`default_context_address`**: Default JSON-LD @context for the ledger
+- **`default_context_id`**: ContentId of the default JSON-LD @context for the ledger
 - **`retracted`**: Whether the ledger has been marked as inactive
 
 ### Commit vs Index: Understanding the Difference
@@ -135,20 +137,20 @@ The nameservice supports these key operations:
 
 #### Lookup
 
-Find ledger metadata by alias:
+Find ledger metadata by ledger ID:
 
 ```rust
 // Pseudo-code
 let record = nameservice.lookup("mydb:main").await?;
-// Returns: NsRecord with commit_address, index_address, timestamps, etc.
+// Returns: NsRecord with commit_id, index_id, timestamps, etc.
 ```
 
 #### Publishing
 
 Record new commits and indexes:
 
-- **`publish_commit(alias, commit_addr, commit_t)`**: Update commit state (monotonic: only if `new_t > existing_t`)
-- **`publish_index(alias, index_addr, index_t)`**: Update index state (monotonic: only if `new_t > existing_t`)
+- **`publish_commit(ledger_id, commit_id, commit_t)`**: Update commit state (monotonic: only if `new_t > existing_t`)
+- **`publish_index(ledger_id, index_id, index_t)`**: Update index state (monotonic: only if `new_t > existing_t`)
 
 Publishing is **monotonic**—the nameservice only accepts updates that advance time forward, ensuring consistency.
 
@@ -171,7 +173,7 @@ The nameservice can be queried using standard FQL (JSON-LD Query) or SPARQL synt
 ```rust
 // Find all ledgers on main branch
 let query = json!({
-    "@context": {"f": "https://ns.flur.ee/ledger#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?ledger"],
     "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:branch": "main"}]
 });
@@ -183,9 +185,9 @@ let results = fluree.nameservice_query()
 
 // Query with SPARQL
 let results = fluree.nameservice_query()
-    .sparql("PREFIX f: <https://ns.flur.ee/ledger#>
+    .sparql("PREFIX f: <https://ns.flur.ee/db#>
              SELECT ?ledger ?t WHERE {
-               ?ns a f:PhysicalDatabase ;
+               ?ns a f:LedgerSource ;
                    f:ledger ?ledger ;
                    f:t ?t
              }")
@@ -203,16 +205,16 @@ let results = fluree.query_nameservice(&query).await?;
 curl -X POST http://localhost:8090/nameservice/query \
   -H "Content-Type: application/json" \
   -d '{
-    "@context": {"f": "https://ns.flur.ee/ledger#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?ledger", "?branch", "?t"],
-    "where": [{"@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger", "f:branch": "?branch", "f:t": "?t"}],
+    "where": [{"@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger", "f:branch": "?branch", "f:t": "?t"}],
     "orderBy": [{"var": "?t", "desc": true}]
   }'
 ```
 
 #### Available Properties
 
-**Ledger Records** (`@type: "f:PhysicalDatabase"`):
+**Ledger Records** (`@type: "f:LedgerSource"`):
 
 | Property | Description |
 |----------|-------------|
@@ -220,28 +222,28 @@ curl -X POST http://localhost:8090/nameservice/query \
 | `f:branch` | Branch name (e.g., "main", "dev") |
 | `f:t` | Current transaction number |
 | `f:status` | Status: "ready" or "retracted" |
-| `f:commit` | Reference to latest commit address |
-| `f:index` | Index info object with `@id` (address) and `f:t` |
-| `f:defaultContext` | Default JSON-LD context address (if set) |
+| `f:ledgerCommit` | Reference to latest commit ContentId |
+| `f:ledgerIndex` | Index info object with `@id` (ContentId) and `f:t` |
+| `f:defaultContext` | Default JSON-LD context ContentId (if set) |
 
-**Virtual Graph Records** (`@type: "f:VirtualGraphDatabase"`):
+**Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
 
 | Property | Description |
 |----------|-------------|
-| `f:name` | Virtual graph name |
+| `f:name` | Graph source name |
 | `f:branch` | Branch name |
 | `f:status` | Status: "ready" or "retracted" |
-| `fidx:config` | Configuration JSON |
-| `fidx:dependencies` | Array of source ledger dependencies |
-| `fidx:indexAddress` | Index storage address |
-| `fidx:indexT` | Index transaction number |
+| `f:config` | Configuration JSON |
+| `f:dependencies` | Array of source ledger dependencies |
+| `f:indexId` | Index ContentId |
+| `f:indexT` | Index transaction number |
 
 #### Example Queries
 
 **Find all ledgers with t > 100:**
 ```json
 {
-  "@context": {"f": "https://ns.flur.ee/ledger#"},
+  "@context": {"f": "https://ns.flur.ee/db#"},
   "select": ["?ledger", "?t"],
   "where": [
     {"@id": "?ns", "f:ledger": "?ledger", "f:t": "?t"}
@@ -253,7 +255,7 @@ curl -X POST http://localhost:8090/nameservice/query \
 **Find ledgers by name pattern (hierarchical):**
 ```json
 {
-  "@context": {"f": "https://ns.flur.ee/ledger#"},
+  "@context": {"f": "https://ns.flur.ee/db#"},
   "select": ["?ledger", "?branch"],
   "where": [
     {"@id": "?ns", "f:ledger": "?ledger", "f:branch": "?branch"}
@@ -262,16 +264,15 @@ curl -X POST http://localhost:8090/nameservice/query \
 }
 ```
 
-**Find all BM25 virtual graphs:**
+**Find all BM25 graph sources:**
 ```json
 {
   "@context": {
-    "f": "https://ns.flur.ee/ledger#",
-    "fidx": "https://ns.flur.ee/index#"
+    "f": "https://ns.flur.ee/db#"
   },
   "select": ["?name", "?deps"],
   "where": [
-    {"@id": "?vg", "@type": "fidx:BM25", "f:name": "?name", "fidx:dependencies": "?deps"}
+    {"@id": "?gs", "@type": "f:Bm25Index", "f:name": "?name", "f:dependencies": "?deps"}
   ]
 }
 ```
@@ -297,12 +298,19 @@ The nameservice can be backed by various storage systems, each suited for differ
 - **Format**: JSON files per ledger (`{ledger}/{branch}.json`)
 - **Characteristics**: Simple, local, no external dependencies
 
-#### AWS S3/DynamoDB (`StorageNameService`)
+#### AWS S3 (`StorageNameService`)
 
-- **Use Case**: Distributed deployments, cloud-native applications
-- **Storage**: S3 for object storage, DynamoDB for coordination
-- **Format**: Uses compare-and-swap (CAS) operations for consistency
+- **Use Case**: Distributed deployments using S3 for both data and metadata
+- **Storage**: S3 objects with ETag-based compare-and-swap (CAS)
 - **Characteristics**: Scalable, distributed, requires AWS credentials
+
+#### AWS DynamoDB (`DynamoDbNameService`)
+
+- **Use Case**: Distributed deployments needing low-latency metadata coordination
+- **Storage**: DynamoDB table with composite-key layout (one item per concern)
+- **Format**: Separate items for `meta`, `head`, `index`, `config`, `status` per ledger/graph source
+- **Characteristics**: Single-digit millisecond latency, per-concern write independence, conditional expressions for monotonic updates
+- See [DynamoDB Nameservice Guide](../operations/dynamodb-guide.md) for setup and schema details
 
 #### Memory (`MemoryNameService`)
 
@@ -311,22 +319,22 @@ The nameservice can be backed by various storage systems, each suited for differ
 - **Format**: No persistence
 - **Characteristics**: Fast, ephemeral, process-local
 
-### Virtual Graphs
+### Graph Sources
 
-The nameservice also tracks **virtual graphs**—specialized indexes and integrations:
+The nameservice also tracks **graph sources**—specialized indexes and integrations:
 
 - **BM25**: Full-text search indexes
 - **Vector**: Vector similarity search
 - **R2RML**: Relational database mappings
 - **Iceberg**: Apache Iceberg table integrations
 
-Virtual graphs have their own nameservice records (`VgNsRecord`) with similar metadata but different semantics. See the [Virtual Graphs](../virtual-graphs/overview.md) documentation for details.
+Graph sources have their own nameservice records (`GraphSourceRecord`) with similar metadata but different semantics. See the [Graph Sources](graph-sources.md) documentation for details.
 
 ## Example Usage
 
 ### Creating a Ledger
 
-Ledgers are created automatically on the first transaction. Specify the ledger alias in your transaction:
+Ledgers are created automatically on the first transaction. Specify the ledger ID in your transaction:
 
 ```json
 POST /transact?ledger=mydb:main
@@ -350,14 +358,14 @@ Content-Type: application/json
 **What Happens:**
 
 1. Transaction is processed and committed (assigned `t=1`)
-2. Commit is stored and address published to nameservice
+2. Commit is stored and its ContentId published to nameservice
 3. Nameservice record created/updated with `commit_t=1`
 4. Background indexing begins
 5. When indexing completes, `index_t=1` is published
 
 ### Querying a Ledger
 
-Specify the ledger alias in your query:
+Specify the ledger ID in your query:
 
 **SPARQL:**
 
@@ -374,7 +382,7 @@ WHERE {
 
 The `FROM <mydb:main>` clause specifies which ledger to query. The query engine:
 1. Looks up `mydb:main` in the nameservice
-2. Retrieves the index address for efficient querying
+2. Retrieves the index ContentId for efficient querying
 3. Combines indexed data with novelty layer for current results
 
 **JSON-LD Query:**
@@ -527,12 +535,12 @@ Understanding how records evolve:
 
 2. First Transaction
    - Transaction committed at t=1
-   - publish_commit("mydb:main", "addr1", 1)
+   - publish_commit("mydb:main", commit_cid_1, 1)
    - Record: commit_t=1, index_t=0
 
 3. Indexing Completes
    - Index created for t=1
-   - publish_index("mydb:main", "idx_addr1", 1)
+   - publish_index("mydb:main", index_cid_1, 1)
    - Record: commit_t=1, index_t=1
 
 4. More Transactions
@@ -542,7 +550,7 @@ Understanding how records evolve:
 
 5. Next Index
    - Index created for t=4
-   - publish_index("mydb:main", "idx_addr2", 4)
+   - publish_index("mydb:main", index_cid_2, 4)
    - Record: commit_t=4, index_t=4 (no novelty)
 ```
 
@@ -615,14 +623,14 @@ Understanding how records evolve:
 **Symptom**: Query fails with "ledger not found"
 
 **Possible Causes:**
-- Ledger alias misspelled
+- Ledger ID misspelled
 - Ledger not yet created (no transactions yet)
 - Ledger retracted
 - Nameservice backend misconfigured
 
 **Solutions:**
-- Verify alias spelling and format
-- Check if ledger exists: `nameservice.lookup(alias)`
+- Verify ledger ID spelling and format
+- Check if ledger exists: `nameservice.lookup(ledger_id)`
 - Verify nameservice backend configuration
 - Check ledger status (retracted?)
 

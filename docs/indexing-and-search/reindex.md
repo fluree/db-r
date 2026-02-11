@@ -12,7 +12,7 @@ Unlike [background indexing](background-indexing.md) which incrementally updates
 
 1. **Index corruption** - Query errors or unexpected results suggest corrupted indexes
 2. **Configuration changes** - Changing index parameters (leaf size, branch size)
-3. **Migration** - Moving between storage backends or if new index strategies / types become available in future versions.
+3. **Storage backend changes** - If you move a deployment between storage backends or adopt a new index strategy/type.
 
 ### Before You Reindex
 
@@ -41,7 +41,7 @@ let fluree = FlureeBuilder::file("/path/to/data")
 let result: ReindexResult = fluree.reindex("mydb:main", ReindexOptions::default()).await?;
 
 println!("Reindexed to t={}", result.index_t);
-println!("Root address: {}", result.root_address);
+println!("Root ID: {}", result.root_id);
 ```
 
 ### Reindex with Custom Options
@@ -94,12 +94,12 @@ The reindex operation returns:
 
 ```rust
 pub struct ReindexResult {
-    /// Ledger alias
-    pub alias: String,
+    /// Ledger ID
+    pub ledger_id: String,
     /// Transaction time the index was built to
     pub index_t: i64,
-    /// Storage address of the new index root
-    pub root_address: String,
+    /// ContentId of the new index root
+    pub root_id: ContentId,
     /// Index build statistics
     pub stats: IndexStats,
 }
@@ -152,7 +152,7 @@ After reindex, verify the results:
 
 ```rust
 // Get ledger info to check state
-let info = fluree.ledger_info(alias).execute().await?;
+let info = fluree.ledger_info(ledger_id).execute().await?;
 println!("Index rebuilt to t={}", info["index"]["t"]);
 
 // Run a sample query to verify correctness

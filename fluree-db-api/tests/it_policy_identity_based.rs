@@ -171,7 +171,7 @@ async fn identity_based_policy_lookup() {
         "@context": {
             "ex": "http://example.org/ns/",
             "schema": "http://schema.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             // Users with sensitive SSN data
@@ -308,7 +308,7 @@ async fn wrap_identity_policy_view_api() {
         "@context": {
             "ex": "http://example.org/ns/",
             "schema": "http://schema.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             // Users with sensitive SSN data

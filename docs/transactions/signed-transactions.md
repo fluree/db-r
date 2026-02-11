@@ -130,35 +130,12 @@ curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
   -d @credential.json
 ```
 
-## Supported Algorithms
+## Supported Algorithm
 
-### Asymmetric (Recommended)
-
-**EdDSA (Ed25519):** (Recommended)
+**EdDSA (Ed25519):**
 - Fast, secure, deterministic
 - 64-byte signatures
-- Best choice for most use cases
-
-**ES256 (ECDSA P-256):**
-- NIST standard curve
-- Wider tool support
-- Slightly larger signatures
-
-**ES384, ES512:**
-- Higher security levels
-- Larger signatures
-
-**RS256 (RSA):**
-- Legacy compatibility
-- Large signatures
-- Not recommended for new implementations
-
-### Symmetric (Not Recommended)
-
-**HS256, HS384, HS512:**
-- HMAC-based
-- Requires shared secret
-- Not suitable for authentication
+- 128-bit security level
 
 ## Identity Management
 
@@ -204,7 +181,7 @@ Signed transactions include author information in commit metadata:
 {
   "t": 42,
   "timestamp": "2024-01-22T10:30:00Z",
-  "commit_sha": "abc123...",
+  "commit_id": "bafybeig...commitT42",
   "author": "did:key:z6Mkh...",
   "signature": "z58DAdFfa9...",
   "flakes_added": 3,
@@ -215,7 +192,7 @@ Signed transactions include author information in commit metadata:
 Query provenance:
 
 ```sparql
-PREFIX f: <https://ns.flur.ee/ledger#>
+PREFIX f: <https://ns.flur.ee/db#>
 
 SELECT ?t ?author ?timestamp
 WHERE {
@@ -234,7 +211,7 @@ Use signed transaction author for authorization:
 {
   "@context": {
     "ex": "http://example.org/ns/",
-    "f": "https://ns.flur.ee/ledger#"
+    "f": "https://ns.flur.ee/db#"
   },
   "@id": "ex:admin-policy",
   "f:policy": [

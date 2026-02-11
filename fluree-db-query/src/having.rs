@@ -24,16 +24,15 @@ use crate::ir::FilterExpr;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 use std::sync::Arc;
 
 /// HAVING operator - filters rows after GROUP BY/aggregation
 ///
 /// This is functionally identical to FilterOperator but conceptually
 /// applies to grouped/aggregated results.
-pub struct HavingOperator<S: Storage + 'static> {
+pub struct HavingOperator {
     /// Child operator (typically AggregateOperator or GroupByOperator)
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Filter expression to evaluate
     expr: FilterExpr,
     /// Output schema (same as child)
@@ -42,14 +41,14 @@ pub struct HavingOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> HavingOperator<S> {
+impl HavingOperator {
     /// Create a new HAVING operator
     ///
     /// # Arguments
     ///
     /// * `child` - Child operator (typically GroupByOperator or AggregateOperator)
     /// * `expr` - Filter expression to evaluate
-    pub fn new(child: BoxedOperator<S>, expr: FilterExpr) -> Self {
+    pub fn new(child: BoxedOperator, expr: FilterExpr) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -61,18 +60,18 @@ impl<S: Storage + 'static> HavingOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for HavingOperator<S> {
+impl Operator for HavingOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -137,14 +136,14 @@ mod tests {
     use super::*;
     use crate::ir::CompareOp;
     use crate::seed::SeedOperator;
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{Db, FlakeValue, Sid};
 
     fn xsd_long() -> Sid {
         Sid::new(2, "long")
     }
 
-    fn make_test_db() -> Db<MemoryStorage> {
-        Db::genesis(MemoryStorage::new(), "test/main")
+    fn make_test_db() -> Db {
+        Db::genesis("test/main")
     }
 
     #[tokio::test]
@@ -181,20 +180,20 @@ mod tests {
             batch: Option<Batch>,
         }
         #[async_trait]
-        impl<S: Storage + 'static> Operator<S> for BatchOperator {
+        impl Operator for BatchOperator {
             fn schema(&self) -> &[VarId] {
                 &self.schema
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
         }
 
-        let child: BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
+        let child: BoxedOperator = Box::new(BatchOperator {
             schema: schema.clone(),
             batch: Some(batch),
         });
@@ -262,20 +261,20 @@ mod tests {
             batch: Option<Batch>,
         }
         #[async_trait]
-        impl<S: Storage + 'static> Operator<S> for BatchOperator {
+        impl Operator for BatchOperator {
             fn schema(&self) -> &[VarId] {
                 &self.schema
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
                 Ok(self.batch.take())
             }
             fn close(&mut self) {}
         }
 
-        let child: BoxedOperator<MemoryStorage> = Box::new(BatchOperator {
+        let child: BoxedOperator = Box::new(BatchOperator {
             schema: schema.clone(),
             batch: Some(batch),
         });
@@ -314,7 +313,7 @@ mod tests {
             vec![Binding::lit(FlakeValue::Long(3), xsd_long())],
         ];
         let batch = Batch::new(schema.clone(), columns).unwrap();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(SeedOperator::from_batch_row(&batch, 0));
+        let seed: BoxedOperator = Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // Any expression that passes
         let expr = FilterExpr::Const(FilterValue::Bool(true));

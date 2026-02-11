@@ -16,7 +16,7 @@ Get Fluree up and running in minutes. Learn how to:
 
 Create your first ledger to store data. Learn how to:
 - Create a new ledger using the API
-- Understand ledger aliases and branching
+- Understand ledger IDs and branching
 - Set up initial configuration
 - Verify ledger creation
 
@@ -55,7 +55,7 @@ Fluree is a temporal graph database that stores data as RDF triples with built-i
 - **Vector Search**: Approximate nearest neighbor (ANN) queries
 - **Policy Enforcement**: Fine-grained, data-level access control
 - **Verifiable Data**: Cryptographically signed transactions
-- **Virtual Graphs**: Integration with external data sources (Iceberg, R2RML)
+- **Graph Sources**: Integration with external data sources (Iceberg, R2RML)
 
 ## Learning Path
 

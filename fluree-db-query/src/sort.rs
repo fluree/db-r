@@ -9,7 +9,7 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, Sid, Storage};
+use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -125,7 +125,7 @@ impl SortSpec {
 /// 1. Type class ordering: Unbound < Poisoned < Sid < IriMatch < Iri < Lit < Grouped
 /// 2. Within Sid: compare by (namespace_code, name)
 /// 3. Within IriMatch: compare by canonical IRI string (for cross-ledger consistency)
-/// 4. Within Iri: compare by string value (raw IRIs from virtual graphs)
+/// 4. Within Iri: compare by string value (raw IRIs from graph sources)
 /// 5. Within Lit: compare values with type-aware logic
 ///    - Numeric promotion: Long and Double are comparable
 ///    - NaN is sorted last within doubles
@@ -274,9 +274,9 @@ pub fn compare_flake_values(a: &FlakeValue, b: &FlakeValue) -> Ordering {
 /// producing any output. Memory usage is proportional to total row count.
 ///
 /// Buffers all input rows, sorts them by the given `SortSpec` columns, then emits in sorted order.
-pub struct SortOperator<S: Storage + 'static> {
+pub struct SortOperator {
     /// Child operator
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Sort specifications
     sort_specs: Vec<SortSpec>,
     /// Output schema (same as child)
@@ -291,7 +291,7 @@ pub struct SortOperator<S: Storage + 'static> {
     sort_col_indices: Vec<usize>,
 }
 
-impl<S: Storage + 'static> SortOperator<S> {
+impl SortOperator {
     /// Create a new sort operator
     ///
     /// # Arguments
@@ -303,7 +303,7 @@ impl<S: Storage + 'static> SortOperator<S> {
     ///
     /// Sort variables must exist in the child's schema. Variables not found
     /// in the schema will be ignored during sorting.
-    pub fn new(child: BoxedOperator<S>, sort_specs: Vec<SortSpec>) -> Self {
+    pub fn new(child: BoxedOperator, sort_specs: Vec<SortSpec>) -> Self {
         let schema: Arc<[VarId]> = Arc::from(child.schema().to_vec().into_boxed_slice());
 
         // Resolve sort column indices from schema
@@ -345,12 +345,12 @@ impl<S: Storage + 'static> SortOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
+impl Operator for SortOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(crate::error::QueryError::OperatorClosed);
@@ -365,7 +365,7 @@ impl<S: Storage + 'static> Operator<S> for SortOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(crate::error::QueryError::OperatorNotOpened);
@@ -488,7 +488,7 @@ mod tests {
     use super::*;
     use crate::error::QueryError;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::{Db, MemoryStorage};
+    use fluree_db_core::Db;
 
     /// Mock operator that emits predefined batches
     struct MockOperator {
@@ -514,18 +514,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static> Operator<S> for MockOperator {
+    impl Operator for MockOperator {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
             self.idx = 0;
             self.state = OperatorState::Open;
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
             if self.state != OperatorState::Open {
                 return Ok(None);
             }
@@ -716,7 +716,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_single_column_asc() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -737,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_single_column_desc() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -758,7 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_multi_column() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -786,7 +786,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_with_unbound() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -827,7 +827,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_across_batches() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -849,7 +849,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_emits_in_batches() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         // Use small batch size
         let ctx = ExecutionContext::new(&db, &vars).with_batch_size(3);
@@ -878,14 +878,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_empty_input() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
         let mock = MockOperator::new(vec![]);
 
-        let mut sort_op =
-            SortOperator::<MemoryStorage>::new(Box::new(mock), vec![SortSpec::asc(VarId(0))]);
+        let mut sort_op = SortOperator::new(Box::new(mock), vec![SortSpec::asc(VarId(0))]);
         sort_op.open(&ctx).await.unwrap();
 
         let result = sort_op.next_batch(&ctx).await.unwrap();
@@ -894,7 +893,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_preserves_schema() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -925,7 +924,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_state_transitions() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
