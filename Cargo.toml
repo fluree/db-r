@@ -35,6 +35,7 @@ members = [
     "fluree-db-ingest",
     "fluree-db-cli",
     "bench-dict-bihash",
+    "bench-filter-query",
 ]
 
 [workspace.package]
