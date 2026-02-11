@@ -9,6 +9,7 @@ use axum::http::HeaderMap;
 use axum::Json;
 use serde::Serialize;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Health check response
 #[derive(Serialize)]
@@ -56,7 +57,8 @@ pub async fn stats(
     _headers: FlureeHeaders,
 ) -> Json<StatsResponse> {
     let span = tracing::info_span!("stats");
-    let _guard = span.enter();
+    async move {
+    let _span = tracing::Span::current();
 
     tracing::info!("server stats requested");
 
@@ -67,6 +69,9 @@ pub async fn stats(
         cached_ledgers: state.fluree.cached_ledger_count().await,
         version: env!("CARGO_PKG_VERSION"),
     })
+    }
+    .instrument(span)
+    .await
 }
 
 /// Who-am-I diagnostic endpoint

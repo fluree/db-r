@@ -15,6 +15,7 @@ use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::generate_commit_flakes;
 use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Receipt returned after a successful commit
 #[derive(Debug, Clone)]
@@ -178,7 +179,8 @@ where
         max_novelty_bytes = index_config.reindex_max_bytes,
         has_raw_txn = raw_txn.is_some(),
     );
-    let _commit_guard = commit_span.enter();
+    async move {
+    let commit_span = tracing::Span::current();
 
     // 2. Check for empty transaction
     if flakes.is_empty() {
@@ -206,11 +208,10 @@ where
     }
 
     // 5. Verify sequencing
-    let current = {
-        let span = tracing::info_span!("commit_nameservice_lookup");
-        let _g = span.enter();
-        nameservice.lookup(base.ledger_id()).await?
-    };
+    let current = nameservice
+        .lookup(base.ledger_id())
+        .instrument(tracing::info_span!("commit_nameservice_lookup"))
+        .await?;
     {
         let span = tracing::info_span!("commit_verify_sequencing");
         let _g = span.enter();
@@ -245,15 +246,15 @@ where
 
     // Store original transaction JSON if provided (Clojure parity)
     let txn_id: Option<ContentId> = if let Some(txn_json) = &raw_txn {
-        let (txn_bytes, res) = {
-            let span = tracing::info_span!("commit_write_raw_txn");
-            let _g = span.enter();
+        let (txn_bytes, res) = async {
             let txn_bytes = serde_json::to_vec(txn_json)?;
             let res = storage
                 .content_write_bytes(ContentKind::Txn, base.ledger_id(), &txn_bytes)
                 .await?;
-            (txn_bytes, res)
-        };
+            Ok::<_, TransactError>((txn_bytes, res))
+        }
+        .instrument(tracing::info_span!("commit_write_raw_txn"))
+        .await?;
         tracing::info!(raw_txn_bytes = txn_bytes.len(), "raw txn stored");
         // Derive ContentId from the content hash in the write result
         ContentId::from_hex_digest(CODEC_FLUREE_TXN, &res.content_hash)
@@ -326,13 +327,10 @@ where
     commit_record.id = Some(commit_cid.clone());
 
     // 8. Publish to nameservice
-    {
-        let span = tracing::info_span!("commit_publish_nameservice");
-        let _g = span.enter();
-        nameservice
-            .publish_commit(base.ledger_id(), new_t, &commit_cid)
-            .await?;
-    }
+    nameservice
+        .publish_commit(base.ledger_id(), new_t, &commit_cid)
+        .instrument(tracing::info_span!("commit_publish_nameservice"))
+        .await?;
 
     // 9. Generate commit metadata flakes (Clojure parity)
     // Note: We merge these into novelty only, not into commit_record.flakes
@@ -383,6 +381,9 @@ where
     };
 
     Ok((receipt, new_state))
+    }
+    .instrument(commit_span)
+    .await
 }
 
 /// Populate DictNovelty with subjects and strings from committed flakes.

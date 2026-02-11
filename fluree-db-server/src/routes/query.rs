@@ -23,6 +23,7 @@ use fluree_db_api::{FlureeView, FreshnessCheck, FreshnessSource, LedgerState, Tr
 use serde_json::Value as JsonValue;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tracing::Instrument;
 
 // ============================================================================
 // Data API Auth Helpers
@@ -152,14 +153,23 @@ pub async fn query(
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
+    // Detect input format before span creation so otel.name is set at open time
+    let input_format = if headers.is_sparql_query() || credential.is_sparql {
+        "sparql"
+    } else {
+        "fql"
+    };
+
     let span = create_request_span(
         "query",
         request_id.as_deref(),
         trace_id.as_deref(),
         None, // ledger ID determined later
         None, // tenant_id not yet supported
+        Some(input_format),
     );
-    let _guard = span.enter();
+    async move {
+    let span = tracing::Span::current();
 
     tracing::info!(status = "start", "query request received");
 
@@ -268,6 +278,9 @@ pub async fn query(
 
         execute_query(&state, &ledger_id, &query_json).await
     }
+    }
+    .instrument(span)
+    .await
 }
 
 /// Execute a query with ledger in path
@@ -291,14 +304,22 @@ pub async fn query_ledger(
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
     let trace_id = extract_trace_id(&credential.headers);
 
+    let input_format = if headers.is_sparql_query() || credential.is_sparql {
+        "sparql"
+    } else {
+        "fql"
+    };
+
     let span = create_request_span(
-        "query_ledger",
+        "query",
         request_id.as_deref(),
         trace_id.as_deref(),
         Some(&ledger),
         None, // tenant_id not yet supported
+        Some(input_format),
     );
-    let _guard = span.enter();
+    async move {
+    let span = tracing::Span::current();
 
     tracing::info!(status = "start", "ledger query request received");
 
@@ -380,6 +401,9 @@ pub async fn query_ledger(
     force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
     execute_query(&state, &ledger_id, &query_json).await
+    }
+    .instrument(span)
+    .await
 }
 
 /// Execute a query with ledger as greedy tail segment.
@@ -437,7 +461,8 @@ async fn execute_query(
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create execution span
     let span = tracing::info_span!("query_execute", ledger_id = ledger_id, query_kind = "fql");
-    let _guard = span.enter();
+    async move {
+    let span = tracing::Span::current();
 
     // Check for history query: explicit "to" key indicates history mode
     // History queries must go through the dataset/connection path for correct index selection
@@ -528,6 +553,9 @@ async fn execute_query(
         }
     };
     Ok((HeaderMap::new(), Json(result)))
+    }
+    .instrument(span)
+    .await
 }
 
 /// Execute an FQL query in proxy mode (uses FlureeInstance wrapper methods)
@@ -612,7 +640,8 @@ async fn execute_sparql_ledger(
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create span for peer mode loading
     let span = tracing::info_span!("sparql_execute", ledger_id = ledger_id);
-    let _guard = span.enter();
+    async move {
+    let span = tracing::Span::current();
 
     // In proxy mode, use the unified FlureeInstance method
     if state.config.is_proxy_storage_mode() {
@@ -656,6 +685,9 @@ async fn execute_sparql_ledger(
         }
     };
     Ok((HeaderMap::new(), Json(result)))
+    }
+    .instrument(span)
+    .await
 }
 
 /// Explain a query
@@ -681,8 +713,10 @@ pub async fn explain(
         trace_id.as_deref(),
         None, // ledger ID determined later
         None, // tenant_id not yet supported
+        None, // explain is the operation, no input format needed
     );
-    let _guard = span.enter();
+    async move {
+    let span = tracing::Span::current();
 
     tracing::info!(status = "start", "explain request received");
 
@@ -775,6 +809,9 @@ pub async fn explain(
     };
 
     Ok(Json(result))
+    }
+    .instrument(span)
+    .await
 }
 
 // ===== Peer mode support =====

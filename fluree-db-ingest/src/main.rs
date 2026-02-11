@@ -821,70 +821,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             chunk_total = total,
             chunk_file = %chunk_path.display()
         );
-        let _chunk_guard = chunk_span.enter();
+        async {
+            let read_span = tracing::info_span!("chunk_read");
+            let read_start = Instant::now();
+            let ttl = {
+                let _g = read_span.enter();
+                std::fs::read_to_string(chunk_path)?
+            };
+            let read_elapsed = read_start.elapsed();
+            let size_mb = ttl.len() as f64 / (1024.0 * 1024.0);
 
-        let read_span = tracing::info_span!("chunk_read");
-        let read_start = Instant::now();
-        let ttl = {
-            let _g = read_span.enter();
-            std::fs::read_to_string(chunk_path)?
-        };
-        let read_elapsed = read_start.elapsed();
-        let size_mb = ttl.len() as f64 / (1024.0 * 1024.0);
+            info!(
+                "[{}/{}] Ingesting {} ({:.1} MB, read in {:.1}s)",
+                i + 1,
+                total,
+                chunk_path.file_name().unwrap().to_string_lossy(),
+                size_mb,
+                read_elapsed.as_secs_f64(),
+            );
 
-        info!(
-            "[{}/{}] Ingesting {} ({:.1} MB, read in {:.1}s)",
-            i + 1,
-            total,
-            chunk_path.file_name().unwrap().to_string_lossy(),
-            size_mb,
-            read_elapsed.as_secs_f64(),
-        );
+            let tx_span = tracing::info_span!(
+                "chunk_transact",
+                size_mb = size_mb,
+                ledger = %args.ledger
+            );
+            let tx_start = Instant::now();
+            let result = async {
+                fluree
+                    .stage_owned(current_ledger)
+                    .insert_turtle(&ttl)
+                    .index_config(index_config.clone())
+                    .execute()
+                    .await
+            }
+            .instrument(tx_span)
+            .await?;
+            let tx_elapsed = tx_start.elapsed();
 
-        let tx_span = tracing::info_span!(
-            "chunk_transact",
-            size_mb = size_mb,
-            ledger = %args.ledger
-        );
-        let tx_start = Instant::now();
-        let result = async {
-            fluree
-                .stage_owned(current_ledger)
-                .insert_turtle(&ttl)
-                .index_config(index_config.clone())
-                .execute()
-                .await
+            current_ledger = result.ledger;
+            let chunk_flakes = result.receipt.flake_count;
+            total_mb_ingested += size_mb;
+            total_flakes += chunk_flakes;
+
+            let tx_secs = tx_elapsed.as_secs_f64();
+            let chunk_mb_s = size_mb / tx_secs;
+            let chunk_mf_s = chunk_flakes as f64 / 1_000_000.0 / tx_secs;
+            let total_elapsed = run_start.elapsed();
+            let total_secs = total_elapsed.as_secs_f64();
+            let cumulative_mb_s = total_mb_ingested / total_secs;
+            let cumulative_mf_s = total_flakes as f64 / 1_000_000.0 / total_secs;
+
+            info!(
+                "  Committed t={}  {:.1}s  {:.2}M flakes ({:.1} MB/s, {:.2}M flakes/s)  cumulative: {:.0} MB, {:.2}M flakes in {:.0}s ({:.1} MB/s, {:.2}M flakes/s)",
+                result.receipt.t,
+                tx_secs,
+                chunk_flakes as f64 / 1_000_000.0,
+                chunk_mb_s,
+                chunk_mf_s,
+                total_mb_ingested,
+                total_flakes as f64 / 1_000_000.0,
+                total_secs,
+                cumulative_mb_s,
+                cumulative_mf_s,
+            );
+
+            Ok::<_, Box<dyn std::error::Error>>(())
         }
-        .instrument(tx_span)
+        .instrument(chunk_span)
         .await?;
-        let tx_elapsed = tx_start.elapsed();
-
-        current_ledger = result.ledger;
-        let chunk_flakes = result.receipt.flake_count;
-        total_mb_ingested += size_mb;
-        total_flakes += chunk_flakes;
-
-        let tx_secs = tx_elapsed.as_secs_f64();
-        let chunk_mb_s = size_mb / tx_secs;
-        let chunk_mf_s = chunk_flakes as f64 / 1_000_000.0 / tx_secs;
-        let total_elapsed = run_start.elapsed();
-        let total_secs = total_elapsed.as_secs_f64();
-        let cumulative_mb_s = total_mb_ingested / total_secs;
-        let cumulative_mf_s = total_flakes as f64 / 1_000_000.0 / total_secs;
-
-        info!(
-            "  Committed t={}  {:.1}s  {:.2}M flakes ({:.1} MB/s, {:.2}M flakes/s)  cumulative: {:.0} MB, {:.2}M flakes in {:.0}s ({:.1} MB/s, {:.2}M flakes/s)",
-            result.receipt.t,
-            tx_secs,
-            chunk_flakes as f64 / 1_000_000.0,
-            chunk_mb_s,
-            chunk_mf_s,
-            total_mb_ingested,
-            total_flakes as f64 / 1_000_000.0,
-            total_secs,
-            cumulative_mb_s,
-            cumulative_mf_s,
-        );
     }
 
     let total_elapsed = run_start.elapsed();

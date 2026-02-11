@@ -42,6 +42,8 @@ pub use orchestrator::{
 };
 pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 
+use tracing::Instrument;
+
 // Note: The following types/functions are defined in this module and are automatically public:
 // - build_index_for_ledger (nameservice-aware entry point)
 // - build_binary_index (direct entry point given an NsRecord)
@@ -155,28 +157,30 @@ where
     N: NameService,
 {
     let span = tracing::info_span!("index_build", ledger_id = ledger_id);
-    let _guard = span.enter();
+    async move {
+        // Look up the ledger record
+        let record = nameservice
+            .lookup(ledger_id)
+            .await
+            .map_err(|e| IndexerError::NameService(e.to_string()))?
+            .ok_or_else(|| IndexerError::LedgerNotFound(ledger_id.to_string()))?;
 
-    // Look up the ledger record
-    let record = nameservice
-        .lookup(ledger_id)
-        .await
-        .map_err(|e| IndexerError::NameService(e.to_string()))?
-        .ok_or_else(|| IndexerError::LedgerNotFound(ledger_id.to_string()))?;
-
-    // If index is already current, return it
-    if let Some(ref root_id) = record.index_head_id {
-        if record.index_t >= record.commit_t {
-            return Ok(IndexResult {
-                root_id: root_id.clone(),
-                index_t: record.index_t,
-                ledger_id: ledger_id.to_string(),
-                stats: IndexStats::default(),
-            });
+        // If index is already current, return it
+        if let Some(ref root_id) = record.index_head_id {
+            if record.index_t >= record.commit_t {
+                return Ok(IndexResult {
+                    root_id: root_id.clone(),
+                    index_t: record.index_t,
+                    ledger_id: ledger_id.to_string(),
+                    stats: IndexStats::default(),
+                });
+            }
         }
-    }
 
-    build_binary_index(storage, ledger_id, &record, config).await
+        build_binary_index(storage, ledger_id, &record, config).await
+    }
+    .instrument(span)
+    .await
 }
 
 /// Build a binary index from an existing nameservice record.
@@ -236,8 +240,10 @@ where
     let ledger_id = ledger_id.to_string();
     let prev_root_id = record.index_head_id.clone();
     let handle = tokio::runtime::Handle::current();
+    let parent_span = tracing::Span::current();
 
     tokio::task::spawn_blocking(move || {
+        let _guard = parent_span.enter(); // safe: spawn_blocking pins to one thread
         handle.block_on(async {
             std::fs::create_dir_all(&run_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;

@@ -375,7 +375,9 @@ impl FileNameService {
         T: DeserializeOwned + Serialize + Send + 'static,
         F: FnOnce(Option<T>) -> Result<Option<T>> + Send + 'static,
     {
+        let parent_span = tracing::Span::current();
         tokio::task::spawn_blocking(move || -> Result<()> {
+            let _guard = parent_span.enter(); // safe: spawn_blocking pins to one thread
             // Lock file lives alongside the target.
             let lock_path = {
                 let mut p = path.clone();

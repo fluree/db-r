@@ -13,6 +13,7 @@ use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
+use tracing::Instrument;
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{ObjectBounds, Sid, BATCHED_JOIN_SIZE};
 use fluree_db_indexer::run_index::BinaryIndexStore;
@@ -841,14 +842,15 @@ impl NestedLoopJoinOperator {
             ));
         }
 
-        let span = tracing::info_span!(
-            "join_flush_batched_binary",
-            accum_len = self.batched_accumulator.len(),
-            batch_size = ctx.batch_size,
-            to_t = ctx.to_t
-        );
-        let _g = span.enter();
-        self.flush_batched_accumulator_binary(ctx).await
+        let accum_len = self.batched_accumulator.len();
+        self.flush_batched_accumulator_binary(ctx)
+            .instrument(tracing::info_span!(
+                "join_flush_batched_binary",
+                accum_len,
+                batch_size = ctx.batch_size,
+                to_t = ctx.to_t,
+            ))
+            .await
     }
 
     /// Clear all batched accumulator state after a flush or early return.

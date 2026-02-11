@@ -38,6 +38,7 @@ use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use tracing::Instrument;
 
 use crate::binary_scan::ScanOperator;
 
@@ -333,9 +334,8 @@ impl Operator for PropertyJoinOperator {
             has_binary_store = ctx.binary_store.is_some(),
             has_bounds = !self.object_bounds.is_empty(),
         );
-        let _g = span.enter();
-
-        self.state = OperatorState::Open;
+        async {
+            self.state = OperatorState::Open;
         self.subject_values.clear();
         self.pending_subjects.clear();
         self.subject_idx = 0;
@@ -558,7 +558,10 @@ impl Operator for PropertyJoinOperator {
             "property_join: open complete"
         );
 
-        Ok(())
+            Ok(())
+        }
+        .instrument(span)
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {

@@ -34,6 +34,7 @@ async fn test_request_span_creation() {
         Some("test-trace-456"),
         Some("test-ledger"),
         None,
+        Some("fql"),
     );
 
     // Test setting error code

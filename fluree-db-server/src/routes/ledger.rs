@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Commit information in create response
 #[derive(Serialize)]
@@ -89,13 +90,15 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
     let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
-        "create_ledger",
+        "ledger:create",
         request_id.as_deref(),
         trace_id.as_deref(),
         None, // ledger alias determined later
         None,
+        None, // no input format for ledger ops
     );
-    let _guard = span.enter();
+    async move {
+    let span = tracing::Span::current();
 
     tracing::info!(status = "start", "ledger creation requested");
 
@@ -144,6 +147,9 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
 
     tracing::info!(status = "success", "ledger created");
     Ok((StatusCode::CREATED, Json(response)))
+    }
+    .instrument(span)
+    .await
 }
 
 /// Drop ledger request body
@@ -230,13 +236,15 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
     let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
-        "drop_ledger",
+        "ledger:drop",
         request_id.as_deref(),
         trace_id.as_deref(),
         Some(&req.ledger),
         None,
+        None,
     );
-    let _guard = span.enter();
+    async move {
+    let span = tracing::Span::current();
 
     tracing::info!(
         status = "start",
@@ -263,6 +271,9 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
 
     tracing::info!(status = "success", drop_status = ?report.status, "ledger dropped");
     Ok(Json(DropResponse::from(report)))
+    }
+    .instrument(span)
+    .await
 }
 
 /// Ledger info response (simplified, used in proxy storage mode fallback)
@@ -302,13 +313,15 @@ pub async fn info(
     let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
-        "ledger_info",
+        "ledger:info",
         request_id.as_deref(),
         trace_id.as_deref(),
         None, // ledger alias determined later
         None,
+        None,
     );
-    let _guard = span.enter();
+    async move {
+    let span = tracing::Span::current();
 
     tracing::info!(status = "start", "ledger info requested");
 
@@ -399,6 +412,9 @@ pub async fn info(
 
     tracing::info!(status = "success", "ledger info retrieved");
     Ok(Json(info).into_response())
+    }
+    .instrument(span)
+    .await
 }
 
 /// Get ledger information with ledger as greedy tail segment.
@@ -487,13 +503,15 @@ pub async fn exists(
     let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
-        "ledger_exists",
+        "ledger:exists",
         request_id.as_deref(),
         trace_id.as_deref(),
         None,
         None,
+        None,
     );
-    let _guard = span.enter();
+    async move {
+    let span = tracing::Span::current();
 
     tracing::info!(status = "start", "ledger exists check requested");
 
@@ -547,6 +565,9 @@ pub async fn exists(
         ledger_id: alias,
         exists,
     }))
+    }
+    .instrument(span)
+    .await
 }
 
 /// Check ledger existence with ledger as greedy tail segment.

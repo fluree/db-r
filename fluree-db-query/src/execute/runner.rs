@@ -22,6 +22,7 @@ use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_reasoner::DerivedFactsOverlay;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 use super::operator_tree::build_operator_tree;
 use super::reasoning_prep::{
@@ -101,143 +102,148 @@ pub async fn prepare_execution(
         to_t = to_t,
         pattern_count = query.query.patterns.len()
     );
-    let _guard = span.enter();
+    // Use an async block with .instrument() so the span is NOT held
+    // across .await via a thread-local guard (which would cause cross-request
+    // trace contamination in tokio's multi-threaded runtime).
+    async move {
+        tracing::debug!("preparing query execution");
 
-    tracing::debug!("preparing query execution");
+        // Step 1: Compute schema hierarchy from overlay
+        let hierarchy = schema_hierarchy_with_overlay(db, overlay, to_t);
 
-    // Step 1: Compute schema hierarchy from overlay
-    let hierarchy = schema_hierarchy_with_overlay(db, overlay, to_t);
+        // Step 2: Determine effective reasoning modes
+        let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
 
-    // Step 2: Determine effective reasoning modes
-    let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
-
-    if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl || reasoning.datalog {
-        tracing::debug!(
-            rdfs = reasoning.rdfs,
-            owl2ql = reasoning.owl2ql,
-            owl2rl = reasoning.owl2rl,
-            datalog = reasoning.datalog,
-            "reasoning enabled"
-        );
-    }
-
-    // Step 3: Compute derived facts from OWL2-RL and/or datalog rules
-    let derived_overlay = compute_derived_facts(db, overlay, to_t, &reasoning).await;
-
-    // Step 4: Build ontology for OWL2-QL mode (if enabled)
-    // Note: We need to use the effective overlay for ontology building
-    let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> = derived_overlay
-        .as_ref()
-        .map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
-
-    let effective_overlay_for_ontology: &dyn fluree_db_core::OverlayProvider =
-        reasoning_overlay_for_ontology
-            .as_ref()
-            .map(|o| o as &dyn fluree_db_core::OverlayProvider)
-            .unwrap_or(overlay);
-
-    let ontology = if reasoning.owl2ql {
-        tracing::debug!("building OWL2-QL ontology");
-        Some(
-            Ontology::from_db_with_overlay(db, effective_overlay_for_ontology, to_t as u64, to_t)
-                .await?,
-        )
-    } else {
-        None
-    };
-
-    // Step 5: Rewrite patterns for reasoning
-    //
-    // OWL2-QL rewriting (and current RDFS expansion) require SIDs for ontology/hierarchy lookup.
-    // Lowering may produce `Term::Iri` to support cross-ledger joins; for single-ledger execution
-    // we can safely encode IRIs to SIDs here.
-    fn encode_term(db: &Db, t: &Term) -> Term {
-        match t {
-            Term::Iri(iri) => db
-                .encode_iri(iri)
-                .map(Term::Sid)
-                .unwrap_or_else(|| t.clone()),
-            _ => t.clone(),
+        if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl || reasoning.datalog {
+            tracing::debug!(
+                rdfs = reasoning.rdfs,
+                owl2ql = reasoning.owl2ql,
+                owl2rl = reasoning.owl2rl,
+                datalog = reasoning.datalog,
+                "reasoning enabled"
+            );
         }
-    }
 
-    fn encode_patterns_for_reasoning(db: &Db, patterns: &[Pattern]) -> Vec<Pattern> {
-        patterns
-            .iter()
-            .map(|p| match p {
-                Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                    s: encode_term(db, &tp.s),
-                    p: encode_term(db, &tp.p),
-                    o: encode_term(db, &tp.o),
-                    dt: tp.dt.clone(),
-                    lang: tp.lang.clone(),
-                }),
-                Pattern::Optional(inner) => {
-                    Pattern::Optional(encode_patterns_for_reasoning(db, inner))
-                }
-                Pattern::Union(branches) => Pattern::Union(
-                    branches
-                        .iter()
-                        .map(|b| encode_patterns_for_reasoning(db, b))
-                        .collect(),
-                ),
-                Pattern::Minus(inner) => Pattern::Minus(encode_patterns_for_reasoning(db, inner)),
-                Pattern::Exists(inner) => Pattern::Exists(encode_patterns_for_reasoning(db, inner)),
-                Pattern::NotExists(inner) => {
-                    Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
-                }
-                Pattern::Graph { name, patterns } => Pattern::Graph {
-                    name: name.clone(),
-                    patterns: encode_patterns_for_reasoning(db, patterns),
-                },
-                _ => p.clone(),
-            })
-            .collect()
-    }
+        // Step 3: Compute derived facts from OWL2-RL and/or datalog rules
+        let derived_overlay = compute_derived_facts(db, overlay, to_t, &reasoning).await;
 
-    let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-        encode_patterns_for_reasoning(db, &query.query.patterns)
-    } else {
-        query.query.patterns.clone()
-    };
-    let (rewritten_patterns, _diag) = rewrite_query_patterns(
-        &patterns_for_rewrite,
-        hierarchy.clone(),
-        &reasoning,
-        ontology.as_ref(),
-    );
+        // Step 4: Build ontology for OWL2-QL mode (if enabled)
+        // Note: We need to use the effective overlay for ontology building
+        let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> = derived_overlay
+            .as_ref()
+            .map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
 
-    if rewritten_patterns.len() != query.query.patterns.len() {
-        tracing::debug!(
-            original_count = query.query.patterns.len(),
-            rewritten_count = rewritten_patterns.len(),
-            "patterns rewritten for reasoning"
+        let effective_overlay_for_ontology: &dyn fluree_db_core::OverlayProvider =
+            reasoning_overlay_for_ontology
+                .as_ref()
+                .map(|o| o as &dyn fluree_db_core::OverlayProvider)
+                .unwrap_or(overlay);
+
+        let ontology = if reasoning.owl2ql {
+            tracing::debug!("building OWL2-QL ontology");
+            Some(
+                Ontology::from_db_with_overlay(db, effective_overlay_for_ontology, to_t as u64, to_t)
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        // Step 5: Rewrite patterns for reasoning
+        //
+        // OWL2-QL rewriting (and current RDFS expansion) require SIDs for ontology/hierarchy lookup.
+        // Lowering may produce `Term::Iri` to support cross-ledger joins; for single-ledger execution
+        // we can safely encode IRIs to SIDs here.
+        fn encode_term(db: &Db, t: &Term) -> Term {
+            match t {
+                Term::Iri(iri) => db
+                    .encode_iri(iri)
+                    .map(Term::Sid)
+                    .unwrap_or_else(|| t.clone()),
+                _ => t.clone(),
+            }
+        }
+
+        fn encode_patterns_for_reasoning(db: &Db, patterns: &[Pattern]) -> Vec<Pattern> {
+            patterns
+                .iter()
+                .map(|p| match p {
+                    Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
+                        s: encode_term(db, &tp.s),
+                        p: encode_term(db, &tp.p),
+                        o: encode_term(db, &tp.o),
+                        dt: tp.dt.clone(),
+                        lang: tp.lang.clone(),
+                    }),
+                    Pattern::Optional(inner) => {
+                        Pattern::Optional(encode_patterns_for_reasoning(db, inner))
+                    }
+                    Pattern::Union(branches) => Pattern::Union(
+                        branches
+                            .iter()
+                            .map(|b| encode_patterns_for_reasoning(db, b))
+                            .collect(),
+                    ),
+                    Pattern::Minus(inner) => Pattern::Minus(encode_patterns_for_reasoning(db, inner)),
+                    Pattern::Exists(inner) => Pattern::Exists(encode_patterns_for_reasoning(db, inner)),
+                    Pattern::NotExists(inner) => {
+                        Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
+                    }
+                    Pattern::Graph { name, patterns } => Pattern::Graph {
+                        name: name.clone(),
+                        patterns: encode_patterns_for_reasoning(db, patterns),
+                    },
+                    _ => p.clone(),
+                })
+                .collect()
+        }
+
+        let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
+            encode_patterns_for_reasoning(db, &query.query.patterns)
+        } else {
+            query.query.patterns.clone()
+        };
+        let (rewritten_patterns, _diag) = rewrite_query_patterns(
+            &patterns_for_rewrite,
+            hierarchy.clone(),
+            &reasoning,
+            ontology.as_ref(),
         );
+
+        if rewritten_patterns.len() != query.query.patterns.len() {
+            tracing::debug!(
+                original_count = query.query.patterns.len(),
+                rewritten_count = rewritten_patterns.len(),
+                "patterns rewritten for reasoning"
+            );
+        }
+
+        // Build query with rewritten patterns
+        let rewritten_query = query.query.with_patterns(rewritten_patterns);
+
+        // Step 6: Build operator tree
+        //
+        // IMPORTANT (dataset queries):
+        // In multi-ledger dataset execution, the caller passes a "primary" default-graph db
+        // here. That db is used as the planning/optimization stats source for the whole query.
+        // The actual scan operators will still union across all default graphs via the attached
+        // `DataSet` in the `ExecutionContext`.
+        tracing::debug!("building operator tree");
+        let stats_view = db.stats.as_ref().map(|s| {
+            Arc::new(StatsView::from_db_stats_with_namespaces(
+                s,
+                &db.namespace_codes,
+            ))
+        });
+        let operator = build_operator_tree(&rewritten_query, &query.options, stats_view)?;
+
+        Ok(PreparedExecution {
+            operator,
+            derived_overlay,
+        })
     }
-
-    // Build query with rewritten patterns
-    let rewritten_query = query.query.with_patterns(rewritten_patterns);
-
-    // Step 6: Build operator tree
-    //
-    // IMPORTANT (dataset queries):
-    // In multi-ledger dataset execution, the caller passes a "primary" default-graph db
-    // here. That db is used as the planning/optimization stats source for the whole query.
-    // The actual scan operators will still union across all default graphs via the attached
-    // `DataSet` in the `ExecutionContext`.
-    tracing::debug!("building operator tree");
-    let stats_view = db.stats.as_ref().map(|s| {
-        Arc::new(StatsView::from_db_stats_with_namespaces(
-            s,
-            &db.namespace_codes,
-        ))
-    });
-    let operator = build_operator_tree(&rewritten_query, &query.options, stats_view)?;
-
-    Ok(PreparedExecution {
-        operator,
-        derived_overlay,
-    })
+    .instrument(span)
+    .await
 }
 
 /// Run an operator tree to completion and collect all result batches
@@ -263,61 +269,68 @@ pub async fn run_operator(
         total_rows = tracing::field::Empty,
         max_batch_ms = tracing::field::Empty
     );
-    let _guard = span.enter();
+    // Use an async block with .instrument() so the span is NOT held
+    // across .await via a thread-local guard (which would cause cross-request
+    // trace contamination in tokio's multi-threaded runtime).
+    async move {
+        let span = tracing::Span::current();
 
-    span.record("from_t", ctx.from_t);
+        span.record("from_t", ctx.from_t);
 
-    let open_start = Instant::now();
-    operator.open(ctx).await?;
-    span.record(
-        "open_ms",
-        (open_start.elapsed().as_secs_f64() * 1000.0) as u64,
-    );
+        let open_start = Instant::now();
+        operator.open(ctx).await?;
+        span.record(
+            "open_ms",
+            (open_start.elapsed().as_secs_f64() * 1000.0) as u64,
+        );
 
-    let mut results = Vec::new();
-    let mut batch_count = 0;
-    let mut total_rows: usize = 0;
-    let mut max_batch_ms: u64 = 0;
-    let run_start = Instant::now();
-    while {
-        let batch_start = Instant::now();
-        let next = operator.next_batch(ctx).await?;
-        let batch_ms = (batch_start.elapsed().as_secs_f64() * 1000.0) as u64;
-        if batch_ms > max_batch_ms {
-            max_batch_ms = batch_ms;
-        }
-        if let Some(batch) = next {
-            batch_count += 1;
-            total_rows += batch.len();
-            tracing::debug!(
-                batch_num = batch_count,
-                row_count = batch.len(),
-                batch_ms,
-                "received batch"
-            );
-            results.push(batch);
-            true
-        } else {
-            false
-        }
-    } {}
+        let mut results = Vec::new();
+        let mut batch_count = 0;
+        let mut total_rows: usize = 0;
+        let mut max_batch_ms: u64 = 0;
+        let run_start = Instant::now();
+        while {
+            let batch_start = Instant::now();
+            let next = operator.next_batch(ctx).await?;
+            let batch_ms = (batch_start.elapsed().as_secs_f64() * 1000.0) as u64;
+            if batch_ms > max_batch_ms {
+                max_batch_ms = batch_ms;
+            }
+            if let Some(batch) = next {
+                batch_count += 1;
+                total_rows += batch.len();
+                tracing::debug!(
+                    batch_num = batch_count,
+                    row_count = batch.len(),
+                    batch_ms,
+                    "received batch"
+                );
+                results.push(batch);
+                true
+            } else {
+                false
+            }
+        } {}
 
-    operator.close();
+        operator.close();
 
-    // If the operator is blocking, results often arrive in a small number of batches.
-    // We record overall totals here; operator-level spans provide the breakdown.
-    let total_ms = (run_start.elapsed().as_secs_f64() * 1000.0) as u64;
-    span.record("total_ms", total_ms);
-    span.record("total_batches", batch_count as u64);
-    span.record("total_rows", total_rows as u64);
-    span.record("max_batch_ms", max_batch_ms);
-    tracing::info!(
-        total_batches = batch_count,
-        total_rows,
-        "query execution completed"
-    );
+        // If the operator is blocking, results often arrive in a small number of batches.
+        // We record overall totals here; operator-level spans provide the breakdown.
+        let total_ms = (run_start.elapsed().as_secs_f64() * 1000.0) as u64;
+        span.record("total_ms", total_ms);
+        span.record("total_batches", batch_count as u64);
+        span.record("total_rows", total_rows as u64);
+        span.record("max_batch_ms", max_batch_ms);
+        tracing::info!(
+            total_batches = batch_count,
+            total_rows,
+            "query execution completed"
+        );
 
-    Ok(results)
+        Ok(results)
+    }
+    .instrument(span)
+    .await
 }
 
 /// Execution context configuration

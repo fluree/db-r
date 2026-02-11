@@ -1369,7 +1369,11 @@ where
 
     // Pre-compute language dict so upload_dicts_from_disk can start immediately.
     let run_dir_for_lang = input.run_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || precompute_language_dict(&run_dir_for_lang))
+    let parent_span = tracing::Span::current();
+    tokio::task::spawn_blocking(move || {
+        let _guard = parent_span.enter();
+        precompute_language_dict(&run_dir_for_lang)
+    })
         .await
         .map_err(|e| ImportError::IndexBuild(format!("lang dict task panicked: {}", e)))?
         .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
@@ -1389,7 +1393,9 @@ where
     // Start index build (k-way merge + leaf/branch file writes).
     let run_dir_owned = input.run_dir.to_path_buf();
     let index_dir_owned = input.index_dir.to_path_buf();
+    let parent_span = tracing::Span::current();
     let build_results = tokio::task::spawn_blocking(move || {
+        let _guard = parent_span.enter();
         build_all_indexes(
             &run_dir_owned,
             &index_dir_owned,

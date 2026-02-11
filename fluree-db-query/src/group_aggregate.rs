@@ -50,6 +50,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Specification for a streaming aggregate
 #[derive(Debug, Clone)]
@@ -588,10 +589,11 @@ impl Operator for GroupAggregateOperator {
                 groups = tracing::field::Empty,
                 drain_ms = tracing::field::Empty
             );
-            let _g = span.enter();
-            let drain_start = Instant::now();
-            let mut input_batches: u64 = 0;
-            let mut input_rows: u64 = 0;
+            async {
+                let span = tracing::Span::current();
+                let drain_start = Instant::now();
+                let mut input_batches: u64 = 0;
+                let mut input_rows: u64 = 0;
 
             // Drain all input, updating aggregate states incrementally
             loop {
@@ -652,9 +654,13 @@ impl Operator for GroupAggregateOperator {
                 (drain_start.elapsed().as_secs_f64() * 1000.0) as u64,
             );
 
-            // Prepare iterator for emission
-            let groups = std::mem::take(&mut self.groups);
-            self.emit_iter = Some(groups.into_iter());
+                // Prepare iterator for emission
+                let groups = std::mem::take(&mut self.groups);
+                self.emit_iter = Some(groups.into_iter());
+                Ok::<_, crate::error::QueryError>(())
+            }
+            .instrument(span)
+            .await?;
         }
 
         // Emit batches from accumulated groups

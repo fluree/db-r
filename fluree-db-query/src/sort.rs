@@ -13,6 +13,7 @@ use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::cmp::Ordering;
 use std::sync::Arc;
+use tracing::Instrument;
 use std::time::Instant;
 
 /// Materialize an encoded binding to its decoded form for sort comparison.
@@ -386,62 +387,70 @@ impl Operator for SortOperator {
                 child_next_ms = tracing::field::Empty,
                 build_rows_ms = tracing::field::Empty
             );
-            let _g = span.enter();
+            // Use an async block with .instrument() so the span is NOT held
+            // across .await via a thread-local guard (which would cause cross-request
+            // trace contamination in tokio's multi-threaded runtime).
+            let buffer = async {
+                let span = tracing::Span::current();
+                let mut all_rows: Vec<Vec<Binding>> = Vec::new();
 
-            let mut all_rows: Vec<Vec<Binding>> = Vec::new();
+                // Drain child operator
+                let drain_start = Instant::now();
+                let mut input_batches: u64 = 0;
+                let mut input_rows: u64 = 0;
+                let mut child_next_ms: u64 = 0;
+                let mut build_rows_ms: u64 = 0;
+                loop {
+                    let next_start = Instant::now();
+                    let next = self
+                        .child
+                        .next_batch(ctx)
+                        .instrument(tracing::info_span!("sort_child_next_batch"))
+                        .await?;
+                    child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
+                    let Some(batch) = next else {
+                        break;
+                    };
 
-            // Drain child operator
-            let drain_start = Instant::now();
-            let mut input_batches: u64 = 0;
-            let mut input_rows: u64 = 0;
-            let mut child_next_ms: u64 = 0;
-            let mut build_rows_ms: u64 = 0;
-            loop {
-                let child_span = tracing::info_span!("sort_child_next_batch");
-                let next_start = Instant::now();
-                let next = {
-                    let _cg = child_span.enter();
-                    self.child.next_batch(ctx).await?
-                };
-                child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
-                let Some(batch) = next else {
-                    break;
-                };
-
-                input_batches += 1;
-                let build_span = tracing::info_span!("sort_build_rows_batch", rows = batch.len());
-                let build_start = Instant::now();
-                let _bg = build_span.enter();
-                for row_idx in 0..batch.len() {
-                    input_rows += 1;
-                    let row: Vec<Binding> = (0..self.schema.len())
-                        .map(|col| batch.get_by_col(row_idx, col).clone())
-                        .collect();
-                    all_rows.push(row);
+                    input_batches += 1;
+                    let build_span = tracing::info_span!("sort_build_rows_batch", rows = batch.len());
+                    let build_start = Instant::now();
+                    let _bg = build_span.enter();
+                    for row_idx in 0..batch.len() {
+                        input_rows += 1;
+                        let row: Vec<Binding> = (0..self.schema.len())
+                            .map(|col| batch.get_by_col(row_idx, col).clone())
+                            .collect();
+                        all_rows.push(row);
+                    }
+                    build_rows_ms += (build_start.elapsed().as_secs_f64() * 1000.0) as u64;
                 }
-                build_rows_ms += (build_start.elapsed().as_secs_f64() * 1000.0) as u64;
+                let drain_ms = (drain_start.elapsed().as_secs_f64() * 1000.0) as u64;
+
+                // Sort rows
+                // Late materialization hook:
+                // If the batched-join path produced EncodedLit bindings, we must
+                // materialize ONLY the ORDER BY key columns before sorting.
+                if let Some(store) = ctx.binary_store.as_deref() {
+                    materialize_sort_keys_in_rows(&mut all_rows, &self.sort_col_indices, store);
+                }
+                let sort_start = Instant::now();
+                all_rows.sort_by(|a, b| self.compare_rows(a, b));
+                let sort_ms = (sort_start.elapsed().as_secs_f64() * 1000.0) as u64;
+
+                span.record("input_batches", input_batches);
+                span.record("input_rows", input_rows);
+                span.record("drain_ms", drain_ms);
+                span.record("sort_ms", sort_ms);
+                span.record("child_next_ms", child_next_ms);
+                span.record("build_rows_ms", build_rows_ms);
+
+                Ok::<_, crate::error::QueryError>(all_rows)
             }
-            let drain_ms = (drain_start.elapsed().as_secs_f64() * 1000.0) as u64;
+            .instrument(span)
+            .await?;
 
-            // Sort rows
-            // Late materialization hook:
-            // If the batched-join path produced EncodedLit bindings, we must
-            // materialize ONLY the ORDER BY key columns before sorting.
-            if let Some(store) = ctx.binary_store.as_deref() {
-                materialize_sort_keys_in_rows(&mut all_rows, &self.sort_col_indices, store);
-            }
-            let sort_start = Instant::now();
-            all_rows.sort_by(|a, b| self.compare_rows(a, b));
-            let sort_ms = (sort_start.elapsed().as_secs_f64() * 1000.0) as u64;
-
-            span.record("input_batches", input_batches);
-            span.record("input_rows", input_rows);
-            span.record("drain_ms", drain_ms);
-            span.record("sort_ms", sort_ms);
-            span.record("child_next_ms", child_next_ms);
-            span.record("build_rows_ms", build_rows_ms);
-
-            self.buffer = Some(all_rows);
+            self.buffer = Some(buffer);
         }
 
         let rows = self.buffer.as_ref().unwrap();

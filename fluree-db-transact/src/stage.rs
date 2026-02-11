@@ -29,6 +29,7 @@ use fluree_db_query::{
 };
 use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::Instrument;
 
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::{ShaclCache, ShaclEngine, ValidationReport};
@@ -135,130 +136,132 @@ pub async fn stage(
         insert_count = txn.insert_templates.len(),
         delete_count = txn.delete_templates.len()
     );
-    let _guard = span.enter();
+    async move {
+        tracing::info!("starting transaction staging");
 
-    tracing::info!("starting transaction staging");
-
-    // 1. Check backpressure - reject early if novelty is at max
-    if let Some(config) = options.index_config {
-        if ledger.at_max_novelty(config) {
-            tracing::warn!("novelty at max, rejecting transaction");
-            return Err(TransactError::NoveltyAtMax);
+        // 1. Check backpressure - reject early if novelty is at max
+        if let Some(config) = options.index_config {
+            if ledger.at_max_novelty(config) {
+                tracing::warn!("novelty at max, rejecting transaction");
+                return Err(TransactError::NoveltyAtMax);
+            }
         }
-    }
 
-    let new_t = ledger.t() + 1;
-    tracing::debug!(new_t = new_t, "computed new transaction t");
+        let new_t = ledger.t() + 1;
+        tracing::debug!(new_t = new_t, "computed new transaction t");
 
-    // Execute WHERE patterns to get bindings
-    // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
-    tracing::debug!(
-        where_pattern_count = txn.where_patterns.len(),
-        "executing WHERE patterns"
-    );
-    let bindings = execute_where(&ledger, &mut txn).await?;
-    tracing::debug!(binding_count = bindings.len(), "WHERE patterns executed");
-
-    // Generate transaction ID for blank node skolemization
-    let txn_id = generate_txn_id();
-
-    // Convert graph_delta (g_id -> IRI) to graph_sids (g_id -> Sid) for named graph support
-    let graph_sids: std::collections::HashMap<u32, Sid> = txn
-        .graph_delta
-        .iter()
-        .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
-        .collect();
-
-    // Generate retractions from DELETE templates
-    let mut generator =
-        FlakeGenerator::new(new_t, &mut ns_registry, txn_id).with_graph_sids(graph_sids.clone());
-    tracing::debug!(
-        template_count = txn.delete_templates.len(),
-        "generating retractions from DELETE templates"
-    );
-    let mut retractions = generator.generate_retractions(&txn.delete_templates, &bindings)?;
-    tracing::debug!(
-        retraction_count = retractions.len(),
-        "retractions generated"
-    );
-
-    // Clojure parity: DELETE templates often omit list indices even when retracting `@list` values.
-    //
-    // In Rust, list items are stored as flakes with `FlakeMeta.i` (list index). A retraction flake
-    // with `m=None` may not match those list-item flakes. Hydrate retractions by copying the
-    // stored list-index meta from the currently asserted flake (if present).
-    hydrate_list_index_meta_for_retractions(&ledger, &mut retractions).await?;
-
-    // For Upsert: also generate deletions for existing values of (subject, predicate) pairs
-    if txn.txn_type == TxnType::Upsert {
-        tracing::debug!("generating upsert deletions");
-        let upsert_retractions =
-            generate_upsert_deletions(&ledger, &txn, new_t, &graph_sids).await?;
+        // Execute WHERE patterns to get bindings
+        // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
         tracing::debug!(
-            upsert_retraction_count = upsert_retractions.len(),
-            "upsert deletions generated"
+            where_pattern_count = txn.where_patterns.len(),
+            "executing WHERE patterns"
         );
-        retractions.extend(upsert_retractions);
-    }
+        let bindings = execute_where(&ledger, &mut txn).await?;
+        tracing::debug!(binding_count = bindings.len(), "WHERE patterns executed");
 
-    // Generate assertions from INSERT templates
-    tracing::debug!(
-        template_count = txn.insert_templates.len(),
-        "generating assertions from INSERT templates"
-    );
-    // Clojure parity: For UPDATE transactions, it's common to write:
-    //   WHERE { ... maybe matches ... }
-    //   DELETE { ... bound vars ... }
-    //   INSERT { ... constant assertions ... }
-    //
-    // When WHERE has **no solutions**, DELETE should be a no-op (handled by bindings.is_empty()),
-    // but constant INSERT templates should still be applied once. Achieve that by using a single
-    // empty solution (0 vars, 1 row) for assertion generation in the zero-solution case.
-    let assertions = if bindings.is_empty() && txn.txn_type == TxnType::Update {
-        let empty_solution = Batch::single_empty();
-        generator.generate_assertions(&txn.insert_templates, &empty_solution)?
-    } else {
-        generator.generate_assertions(&txn.insert_templates, &bindings)?
-    };
-    tracing::debug!(assertion_count = assertions.len(), "assertions generated");
+        // Generate transaction ID for blank node skolemization
+        let txn_id = generate_txn_id();
 
-    // Apply cancellation (retraction cancels assertion and vice versa)
-    let mut all_flakes = retractions;
-    all_flakes.extend(assertions);
-    let total_before_cancel = all_flakes.len();
-    tracing::debug!(flake_count = total_before_cancel, "applying cancellation");
-    let flakes = apply_cancellation(all_flakes);
+        // Convert graph_delta (g_id -> IRI) to graph_sids (g_id -> Sid) for named graph support
+        let graph_sids: std::collections::HashMap<u32, Sid> = txn
+            .graph_delta
+            .iter()
+            .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
+            .collect();
 
-    if flakes.len() != total_before_cancel {
+        // Generate retractions from DELETE templates
+        let mut generator =
+            FlakeGenerator::new(new_t, &mut ns_registry, txn_id).with_graph_sids(graph_sids.clone());
         tracing::debug!(
-            before = total_before_cancel,
-            after = flakes.len(),
-            cancelled = total_before_cancel - flakes.len(),
-            "cancellation applied"
+            template_count = txn.delete_templates.len(),
+            "generating retractions from DELETE templates"
         );
-    }
+        let mut retractions = generator.generate_retractions(&txn.delete_templates, &bindings)?;
+        tracing::debug!(
+            retraction_count = retractions.len(),
+            "retractions generated"
+        );
 
-    // 3. Enforce modify policies (if policy context provided and not root)
-    if let Some(policy) = options.policy_ctx {
-        if !policy.wrapper().is_root() {
-            tracing::debug!("enforcing modify policies");
-            enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
-            tracing::debug!("modify policies enforced");
+        // Clojure parity: DELETE templates often omit list indices even when retracting `@list` values.
+        //
+        // In Rust, list items are stored as flakes with `FlakeMeta.i` (list index). A retraction flake
+        // with `m=None` may not match those list-item flakes. Hydrate retractions by copying the
+        // stored list-index meta from the currently asserted flake (if present).
+        hydrate_list_index_meta_for_retractions(&ledger, &mut retractions).await?;
+
+        // For Upsert: also generate deletions for existing values of (subject, predicate) pairs
+        if txn.txn_type == TxnType::Upsert {
+            tracing::debug!("generating upsert deletions");
+            let upsert_retractions =
+                generate_upsert_deletions(&ledger, &txn, new_t, &graph_sids).await?;
+            tracing::debug!(
+                upsert_retraction_count = upsert_retractions.len(),
+                "upsert deletions generated"
+            );
+            retractions.extend(upsert_retractions);
         }
+
+        // Generate assertions from INSERT templates
+        tracing::debug!(
+            template_count = txn.insert_templates.len(),
+            "generating assertions from INSERT templates"
+        );
+        // Clojure parity: For UPDATE transactions, it's common to write:
+        //   WHERE { ... maybe matches ... }
+        //   DELETE { ... bound vars ... }
+        //   INSERT { ... constant assertions ... }
+        //
+        // When WHERE has **no solutions**, DELETE should be a no-op (handled by bindings.is_empty()),
+        // but constant INSERT templates should still be applied once. Achieve that by using a single
+        // empty solution (0 vars, 1 row) for assertion generation in the zero-solution case.
+        let assertions = if bindings.is_empty() && txn.txn_type == TxnType::Update {
+            let empty_solution = Batch::single_empty();
+            generator.generate_assertions(&txn.insert_templates, &empty_solution)?
+        } else {
+            generator.generate_assertions(&txn.insert_templates, &bindings)?
+        };
+        tracing::debug!(assertion_count = assertions.len(), "assertions generated");
+
+        // Apply cancellation (retraction cancels assertion and vice versa)
+        let mut all_flakes = retractions;
+        all_flakes.extend(assertions);
+        let total_before_cancel = all_flakes.len();
+        tracing::debug!(flake_count = total_before_cancel, "applying cancellation");
+        let flakes = apply_cancellation(all_flakes);
+
+        if flakes.len() != total_before_cancel {
+            tracing::debug!(
+                before = total_before_cancel,
+                after = flakes.len(),
+                cancelled = total_before_cancel - flakes.len(),
+                "cancellation applied"
+            );
+        }
+
+        // 3. Enforce modify policies (if policy context provided and not root)
+        if let Some(policy) = options.policy_ctx {
+            if !policy.wrapper().is_root() {
+                tracing::debug!("enforcing modify policies");
+                enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
+                tracing::debug!("modify policies enforced");
+            }
+        }
+
+        let total_flakes = flakes.len();
+        let assertions = flakes.iter().filter(|f| f.op).count();
+        let retractions = total_flakes - assertions;
+
+        tracing::info!(
+            flake_count = total_flakes,
+            assertions = assertions,
+            retractions = retractions,
+            "transaction staging completed"
+        );
+
+        Ok((LedgerView::stage(ledger, flakes), ns_registry))
     }
-
-    let total_flakes = flakes.len();
-    let assertions = flakes.iter().filter(|f| f.op).count();
-    let retractions = total_flakes - assertions;
-
-    tracing::info!(
-        flake_count = total_flakes,
-        assertions = assertions,
-        retractions = retractions,
-        "transaction staging completed"
-    );
-
-    Ok((LedgerView::stage(ledger, flakes), ns_registry))
+    .instrument(span)
+    .await
 }
 
 /// Stage pre-built flakes against a ledger (bypass WHERE/template pipeline).
@@ -277,26 +280,28 @@ pub async fn stage_flakes(
     options: StageOptions<'_>,
 ) -> Result<LedgerView> {
     let span = tracing::info_span!("stage_flakes", flake_count = flakes.len());
-    let _guard = span.enter();
-
-    // 1. Backpressure check
-    if let Some(config) = options.index_config {
-        if ledger.at_max_novelty(config) {
-            tracing::warn!("novelty at max, rejecting transaction");
-            return Err(TransactError::NoveltyAtMax);
+    async move {
+        // 1. Backpressure check
+        if let Some(config) = options.index_config {
+            if ledger.at_max_novelty(config) {
+                tracing::warn!("novelty at max, rejecting transaction");
+                return Err(TransactError::NoveltyAtMax);
+            }
         }
-    }
 
-    // 2. Policy enforcement
-    if let Some(policy) = options.policy_ctx {
-        if !policy.wrapper().is_root() {
-            tracing::debug!("enforcing modify policies on pre-built flakes");
-            enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
+        // 2. Policy enforcement
+        if let Some(policy) = options.policy_ctx {
+            if !policy.wrapper().is_root() {
+                tracing::debug!("enforcing modify policies on pre-built flakes");
+                enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
+            }
         }
-    }
 
-    tracing::info!(flake_count = flakes.len(), "stage_flakes completed");
-    Ok(LedgerView::stage(ledger, flakes))
+        tracing::info!(flake_count = flakes.len(), "stage_flakes completed");
+        Ok(LedgerView::stage(ledger, flakes))
+    }
+    .instrument(span)
+    .await
 }
 
 async fn hydrate_list_index_meta_for_retractions(
