@@ -50,7 +50,11 @@ pub enum Commands {
     },
 
     /// List all ledgers
-    List,
+    List {
+        /// List ledgers on a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
 
     /// Show detailed information about a ledger
     Info {
@@ -73,15 +77,25 @@ pub enum Commands {
     },
 
     /// Insert data into a ledger
+    ///
+    /// Examples:
+    ///   fluree insert -e '<http://example.org/alice> a <http://example.org/Person> .'
+    ///   fluree insert mydb data.ttl
+    ///   fluree insert data.jsonld
+    ///   cat data.ttl | fluree insert
     Insert {
-        /// Positional args: [<ledger>] [<file>]
-        /// With 0 args: active ledger + stdin/-e
-        /// With 1 arg: if file exists, active ledger + file; else ledger name + stdin/-e
-        /// With 2 args: ledger name + file
+        /// Optional ledger name and/or data file path.
+        ///
+        /// With 0 args: uses active ledger; provide data via -e or stdin.
+        /// With 1 arg: if a file exists at that path, reads data from it
+        ///   (uses active ledger); otherwise treats it as a ledger name
+        ///   (provide data via -e or stdin).
+        /// With 2 args: first is ledger name, second is data file path.
         #[arg(num_args = 0..=2)]
         args: Vec<String>,
 
-        /// Inline expression
+        /// Inline data expression (Turtle or JSON-LD).
+        /// Use this instead of a file when passing data directly.
         #[arg(short = 'e', long = "expr")]
         expr: Option<String>,
 
@@ -99,13 +113,24 @@ pub enum Commands {
     },
 
     /// Upsert data into a ledger (insert or update existing)
+    ///
+    /// Examples:
+    ///   fluree upsert -e '<http://example.org/alice> <http://example.org/name> "Alice" .'
+    ///   fluree upsert mydb data.ttl
+    ///   cat data.jsonld | fluree upsert
     Upsert {
-        /// Positional args: [<ledger>] [<file>]
-        /// Same resolution as insert
+        /// Optional ledger name and/or data file path.
+        ///
+        /// With 0 args: uses active ledger; provide data via -e or stdin.
+        /// With 1 arg: if a file exists at that path, reads data from it
+        ///   (uses active ledger); otherwise treats it as a ledger name
+        ///   (provide data via -e or stdin).
+        /// With 2 args: first is ledger name, second is data file path.
         #[arg(num_args = 0..=2)]
         args: Vec<String>,
 
-        /// Inline expression
+        /// Inline data expression (Turtle or JSON-LD).
+        /// Use this instead of a file when passing data directly.
         #[arg(short = 'e', long = "expr")]
         expr: Option<String>,
 
@@ -123,13 +148,26 @@ pub enum Commands {
     },
 
     /// Query a ledger
+    ///
+    /// Examples:
+    ///   fluree query -e 'SELECT ?s ?p ?o WHERE { ?s ?p ?o }'
+    ///   fluree query mydb -e '{"select": ["*"], "where": {"@type": "Person"}}'
+    ///   fluree query mydb query.sparql
+    ///   fluree query query.sparql
+    ///   cat query.rq | fluree query
     Query {
-        /// Positional args: [<ledger>] [<file>]
-        /// Same resolution as insert
+        /// Optional ledger name and/or query file path.
+        ///
+        /// With 0 args: uses active ledger; provide query via -e or stdin.
+        /// With 1 arg: if a file exists at that path, reads query from it
+        ///   (uses active ledger); otherwise treats it as a ledger name
+        ///   (provide query via -e or stdin).
+        /// With 2 args: first is ledger name, second is query file path.
         #[arg(num_args = 0..=2)]
         args: Vec<String>,
 
-        /// Inline expression
+        /// Inline query expression (SPARQL or FQL JSON).
+        /// Use this instead of a file when passing a query directly.
         #[arg(short = 'e', long = "expr")]
         expr: Option<String>,
 

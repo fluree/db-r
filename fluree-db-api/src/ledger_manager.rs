@@ -553,9 +553,13 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     }
 
     let cs = fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
-    let store = BinaryIndexStore::load_from_root(&cs, &root, cache_dir, leaflet_cache)
+    let mut store = BinaryIndexStore::load_from_root(&cs, &root, cache_dir, leaflet_cache)
         .await
         .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+
+    // Augment namespace codes with entries from novelty commits (see loading.rs).
+    store.augment_namespace_codes(&state.db.namespace_codes);
+
     let arc_store = Arc::new(store);
     let dn = Arc::new(DictNovelty::new_uninitialized());
     let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);

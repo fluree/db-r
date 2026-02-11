@@ -115,7 +115,7 @@ pub async fn run(
                 detect::QueryFormat::Fql => {
                     let json_query: serde_json::Value = serde_json::from_str(&content)?;
                     let result = graph.query().jsonld(&json_query).execute().await?;
-                    let json = result.to_jsonld(&ledger.db)?;
+                    let json = result.to_jsonld_async(&ledger.db).await?;
                     (query_format, json)
                 }
             };

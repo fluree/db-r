@@ -103,7 +103,6 @@ struct DictionarySet {
     string_forward_tree: Option<DictTreeReader>,
     string_reverse_tree: Option<DictTreeReader>,
     namespace_codes: HashMap<u16, String>,
-    #[allow(dead_code)]
     namespace_reverse: HashMap<String, u16>,
     prefix_trie: PrefixTrie,
     language_tags: LanguageTagDict,
@@ -1220,6 +1219,42 @@ impl BinaryIndexStore {
                     format!("namespace code {} not in index root", ns_code),
                 )
             })
+    }
+
+    /// Augment namespace codes with entries not yet in the index root.
+    ///
+    /// When novelty introduces new namespace codes (e.g., a transaction uses a
+    /// prefix that wasn't present at index time), this method adds them so that
+    /// `namespace_prefix()`, `encode_iri()`, and `sid_to_iri()` can resolve
+    /// the new codes without requiring a reindex.
+    ///
+    /// This is safe to call multiple times — existing codes are not overwritten.
+    pub fn augment_namespace_codes(&mut self, extra: &HashMap<u16, String>) {
+        let mut changed = false;
+        for (code, prefix) in extra {
+            match self.dicts.namespace_codes.get(code) {
+                Some(existing) if existing != prefix => {
+                    tracing::warn!(
+                        ns_code = code,
+                        existing_prefix = %existing,
+                        new_prefix = %prefix,
+                        "namespace code maps to different prefix in index vs novelty — keeping index mapping"
+                    );
+                }
+                Some(_) => {} // Already present with same prefix
+                None => {
+                    self.dicts.namespace_codes.insert(*code, prefix.clone());
+                    self.dicts
+                        .namespace_reverse
+                        .insert(prefix.clone(), *code);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.dicts.prefix_trie =
+                PrefixTrie::from_namespace_codes(&self.dicts.namespace_codes);
+        }
     }
 
     // ========================================================================

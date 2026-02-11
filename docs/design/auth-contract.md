@@ -49,7 +49,8 @@ The CLI fetches this endpoint when a remote is added (`fluree remote add`) to au
     "issuer": "https://issuer.example.com",
     "client_id": "fluree-cli",
     "exchange_url": "https://data.example.com/v1/fluree/auth/exchange",
-    "scopes": ["openid", "profile"]
+    "scopes": ["openid", "profile"],
+    "redirect_port": 8400
   }
 }
 ```
@@ -82,7 +83,7 @@ It is specifically intended to support implementations that:
 
 | Type | Meaning | CLI behavior |
 |------|---------|--------------|
-| `oidc_device` | OIDC Device Authorization Grant + token exchange | `fluree auth login` runs device flow, then calls `exchange_url` |
+| `oidc_device` | OIDC interactive login + token exchange | `fluree auth login` uses device-code if the IdP supports it, otherwise auth-code+PKCE |
 | `token` | Manual Bearer token (no automated login flow) | `fluree auth login --token <value>` |
 
 ### Field reference (`oidc_device`)
@@ -90,9 +91,10 @@ It is specifically intended to support implementations that:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `issuer` | Yes | OIDC issuer URL (used for `/.well-known/openid-configuration` discovery) |
-| `client_id` | Yes | OAuth client ID for the CLI (must be registered for device flow) |
+| `client_id` | Yes | OAuth client ID for the CLI (public client; no client secret) |
 | `exchange_url` | Yes | Absolute URL for the Fluree token exchange endpoint |
 | `scopes` | No | OAuth scopes to request (default: `["openid"]`) |
+| `redirect_port` | No | Port for auth-code callback listener (default: first available in `8400..8405`; also overrideable via `FLUREE_AUTH_PORT`) |
 
 ### Fallback behavior
 
@@ -103,7 +105,7 @@ It is specifically intended to support implementations that:
 
 ### `POST {exchange_url}`
 
-After the CLI completes the OIDC device flow with the IdP, it calls the exchange endpoint to trade the IdP token for a Fluree-scoped Bearer token. This endpoint is hosted by the application that manages authorization (e.g., an app embedding Fluree and maintaining user entitlements).
+After the CLI completes OIDC login with the IdP, it calls the exchange endpoint to trade the IdP token for a Fluree-scoped Bearer token. This endpoint is hosted by the application that manages authorization (e.g., an app embedding Fluree and maintaining user entitlements).
 
 **Request:**
 
@@ -181,6 +183,8 @@ type = "oidc_device"
 issuer = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc123"
 client_id = "fluree-cli"
 exchange_url = "https://solo.example.com/v1/fluree/auth/exchange"
+scopes = ["openid", "profile"]
+redirect_port = 8400
 token = "eyJ..."           # cached Fluree Bearer token (written by 'fluree auth login')
 refresh_token = "eyJ..."   # refresh token (written by 'fluree auth login')
 
@@ -206,11 +210,17 @@ fluree auth login [--remote <name>]
 2. Check `auth.type`:
    - **`oidc_device`**:
      1. Discover OIDC endpoints from `{issuer}/.well-known/openid-configuration`.
-     2. POST to `device_authorization_endpoint` to get `device_code`, `user_code`, `verification_uri`.
-     3. Print: `Open {verification_uri} and enter code: {user_code}`
-     4. Poll `token_endpoint` until user completes browser auth.
-     5. POST IdP token to `exchange_url` → get Fluree Bearer token.
-     6. Store `token` and `refresh_token` in remote config.
+     2. If the discovery document includes `device_authorization_endpoint`, run OAuth device-code:
+        - POST to `device_authorization_endpoint` to get `device_code`, `user_code`, `verification_uri`.
+        - Print: `Open {verification_uri} and enter code: {user_code}`
+        - Poll `token_endpoint` until user completes browser auth.
+     3. Otherwise, if the discovery document includes `authorization_endpoint`, run OAuth authorization-code + PKCE:
+        - Start a localhost callback listener on `http://127.0.0.1:{port}/callback` (port selection: `redirect_port`/`FLUREE_AUTH_PORT`, else first available in `8400..8405`).
+        - Open the system browser to the `authorization_endpoint` URL including `code_challenge` and requested `scopes`.
+        - Receive the callback, then exchange the code at `token_endpoint`.
+        - Note for Cognito: callback URLs must be pre-allowlisted (no wildcard ports); allowlist `http://127.0.0.1:8400/callback` through `http://127.0.0.1:8405/callback` (or your chosen fixed port).
+     4. POST IdP token to `exchange_url` → get Fluree Bearer token.
+     5. Store `token` and `refresh_token` in remote config.
    - **`token`**: Prompt for token (or accept `--token <value|@file|@->`). Store in config.
    - **Unset / no discovery**: Attempt discovery at `{base_url}/.well-known/fluree.json`. If found, configure auth type and proceed. If not found, fall back to `token` flow.
 

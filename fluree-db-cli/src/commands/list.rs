@@ -1,11 +1,16 @@
 use crate::config::{self, TomlSyncConfigStore};
 use crate::context;
-use crate::error::CliResult;
+use crate::error::{CliError, CliResult};
+use colored::Colorize;
 use comfy_table::{ContentArrangement, Table};
 use fluree_db_nameservice::NameService;
 use std::path::Path;
 
-pub async fn run(fluree_dir: &Path) -> CliResult<()> {
+pub async fn run(fluree_dir: &Path, remote_flag: Option<&str>) -> CliResult<()> {
+    if let Some(remote_name) = remote_flag {
+        return run_remote(remote_name, fluree_dir).await;
+    }
+
     let fluree = context::build_fluree(fluree_dir)?;
     let active = config::read_active_ledger(fluree_dir);
     let records = fluree.nameservice().all_records().await?;
@@ -71,5 +76,56 @@ pub async fn run(fluree_dir: &Path) -> CliResult<()> {
         println!("{table}");
     }
 
+    Ok(())
+}
+
+/// List ledgers on a remote server.
+async fn run_remote(remote_name: &str, fluree_dir: &Path) -> CliResult<()> {
+    let client = context::build_remote_client(remote_name, fluree_dir).await?;
+
+    let result = client.list_ledgers().await.map_err(|e| {
+        CliError::Remote(format!("failed to list ledgers on '{}': {}", remote_name, e))
+    })?;
+
+    context::persist_refreshed_tokens(&client, remote_name, fluree_dir).await;
+
+    // Response should be a JSON array of ledger objects
+    let ledgers = match result.as_array() {
+        Some(arr) => arr,
+        None => {
+            return Err(CliError::Remote(
+                "unexpected response format: expected JSON array".into(),
+            ));
+        }
+    };
+
+    if ledgers.is_empty() {
+        println!("No ledgers on remote '{}'.", remote_name);
+        return Ok(());
+    }
+
+    println!(
+        "Ledgers on remote '{}':",
+        remote_name.green()
+    );
+
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec!["LEDGER", "T"]);
+
+    for ledger in ledgers {
+        let name = ledger
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)");
+        let t = ledger
+            .get("t")
+            .and_then(|v| v.as_i64())
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        table.add_row(vec![name.to_string(), t]);
+    }
+
+    println!("{table}");
     Ok(())
 }

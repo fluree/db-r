@@ -32,14 +32,21 @@ pub enum LedgerMode {
 ///
 /// Resolution precedence:
 /// 1. `--remote <name>` flag → temporary RemoteLedgerClient (caller provides this)
-/// 2. Local ledger with this alias exists → LedgerMode::Local
-/// 3. Tracked config for this alias exists → LedgerMode::Tracked
-/// 4. Error
+/// 2. Compound `remote/ledger` syntax (e.g., "origin/mydb") → remote query
+/// 3. Local ledger with this alias exists → LedgerMode::Local
+/// 4. Tracked config for this alias exists → LedgerMode::Tracked
+/// 5. Error
 pub async fn resolve_ledger_mode(
     explicit: Option<&str>,
     fluree_dir: &Path,
 ) -> CliResult<LedgerMode> {
     let alias = resolve_ledger(explicit, fluree_dir)?;
+
+    // Try compound remote/ledger syntax (e.g., "origin/mydb")
+    if let Some(mode) = try_compound_remote_syntax(&alias, fluree_dir).await? {
+        return Ok(mode);
+    }
+
     let fluree = build_fluree(fluree_dir)?;
 
     // Check if local ledger exists (local wins)
@@ -64,12 +71,75 @@ pub async fn resolve_ledger_mode(
         }
     }
 
+    // Also try the base name without branch suffix (user typed "mydb:main" but tracked as "mydb").
+    // This handles configs created before track-time normalization was added.
+    if let Some(base) = alias.split(':').next() {
+        if base != alias && base != ledger_id {
+            if let Some(tracked) = store.get_tracked(base) {
+                return build_tracked_mode(&store, &tracked, &alias).await;
+            }
+        }
+    }
+
     // Not found locally or tracked
     Err(CliError::NotFound(format!(
         "ledger '{}' not found locally or in tracked config.\n  \
-         Use `fluree create {}` to create locally, or `fluree track add {}` to track a remote.",
-        alias, alias, alias
+         Use `fluree create {}` to create locally, `fluree track add {}` to track a remote,\n  \
+         or use remote/ledger syntax (e.g., origin/{}).",
+        alias, alias, alias, alias
     )))
+}
+
+/// Try to parse `alias` as `remote_name/ledger_alias` compound syntax.
+///
+/// If the alias contains `/` and the part before the first `/` matches
+/// a configured remote name, returns `Some(LedgerMode::Tracked)`.
+/// Otherwise returns `None` to let the caller fall through to other resolution.
+///
+/// Remote names are validated to not contain `/` on `fluree remote add`,
+/// so the first `/` is always an unambiguous delimiter.
+async fn try_compound_remote_syntax(
+    alias: &str,
+    fluree_dir: &Path,
+) -> CliResult<Option<LedgerMode>> {
+    let slash_pos = match alias.find('/') {
+        Some(pos) if pos > 0 => pos,
+        _ => return Ok(None),
+    };
+
+    let remote_name = &alias[..slash_pos];
+    let ledger_alias = &alias[slash_pos + 1..];
+
+    if ledger_alias.is_empty() {
+        return Ok(None);
+    }
+
+    // Check if a remote with this name exists
+    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let remote_key = RemoteName::new(remote_name);
+    let remote = match store.get_remote(&remote_key).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return Ok(None), // Not a known remote — fall through
+        Err(e) => return Err(CliError::Config(e.to_string())),
+    };
+
+    let base_url = match &remote.endpoint {
+        RemoteEndpoint::Http { base_url } => base_url.clone(),
+        _ => {
+            return Err(CliError::Config(format!(
+                "remote '{}' is not an HTTP remote",
+                remote_name
+            )));
+        }
+    };
+
+    let client = build_client_from_auth(&base_url, &remote.auth);
+    Ok(Some(LedgerMode::Tracked {
+        client,
+        remote_alias: ledger_alias.to_string(),
+        local_alias: alias.to_string(),
+        remote_name: remote_name.to_string(),
+    }))
 }
 
 /// Build a `LedgerMode::Tracked` from a tracked config entry.
@@ -140,6 +210,35 @@ pub async fn build_remote_mode(
         local_alias: ledger_alias.to_string(),
         remote_name: remote_name_str.to_string(),
     })
+}
+
+/// Build a `RemoteLedgerClient` for a named remote (no ledger alias needed).
+///
+/// Returns `(client, remote_name)` for use by commands that operate on the
+/// remote itself rather than a specific ledger (e.g., `list --remote`).
+pub async fn build_remote_client(
+    remote_name_str: &str,
+    fluree_dir: &Path,
+) -> CliResult<RemoteLedgerClient> {
+    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let remote_name = RemoteName::new(remote_name_str);
+    let remote = store
+        .get_remote(&remote_name)
+        .await
+        .map_err(|e| CliError::Config(e.to_string()))?
+        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", remote_name_str)))?;
+
+    let base_url = match &remote.endpoint {
+        RemoteEndpoint::Http { base_url } => base_url.clone(),
+        _ => {
+            return Err(CliError::Config(format!(
+                "remote '{}' is not an HTTP remote",
+                remote_name_str
+            )));
+        }
+    };
+
+    Ok(build_client_from_auth(&base_url, &remote.auth))
 }
 
 /// Build a `RemoteLedgerClient` from auth config, wiring up refresh if available.

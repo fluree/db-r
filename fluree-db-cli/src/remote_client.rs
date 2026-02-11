@@ -622,6 +622,20 @@ impl RemoteLedgerClient {
     }
 
     // =========================================================================
+    // List ledgers
+    // =========================================================================
+
+    /// List all ledgers on the remote server.
+    ///
+    /// Calls `GET {base_url}/ledgers`. The response is expected to be a JSON
+    /// array of objects with at minimum a `name` field.
+    pub async fn list_ledgers(&self) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = format!("{}/ledgers", self.base_url);
+        self.send_json(reqwest::Method::GET, &url, "application/json", None)
+            .await
+    }
+
+    // =========================================================================
     // Push commits
     // =========================================================================
 

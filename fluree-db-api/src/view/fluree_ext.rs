@@ -285,12 +285,16 @@ where
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
                         let cs =
                             fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
-                        let store =
+                        let mut store =
                             BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
                                 .await
                                 .map_err(|e| {
                                     ApiError::internal(format!("load binary index: {}", e))
                                 })?;
+
+                        // Augment namespace codes with entries from novelty commits.
+                        store.augment_namespace_codes(&snapshot.db.namespace_codes);
+
                         let arc_store = Arc::new(store);
                         let dn = snapshot.dict_novelty.clone();
                         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
@@ -354,7 +358,7 @@ where
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
                         let cs =
                             fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
-                        let store =
+                        let mut store =
                             BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
                                 .await
                                 .map_err(|e| {
@@ -363,6 +367,10 @@ where
                                         index_cid, e
                                     ))
                                 })?;
+
+                        // Augment namespace codes with entries from novelty commits.
+                        store.augment_namespace_codes(&view.db.namespace_codes);
+
                         view.binary_store = Some(Arc::new(store));
                     }
                 }

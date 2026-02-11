@@ -358,7 +358,9 @@ impl TomlSyncConfigStore {
                     || auth.issuer.is_some()
                     || auth.client_id.is_some()
                     || auth.exchange_url.is_some()
-                    || auth.refresh_token.is_some();
+                    || auth.refresh_token.is_some()
+                    || auth.scopes.is_some()
+                    || auth.redirect_port.is_some();
 
                 if has_any {
                     let mut auth_table = Table::new();
@@ -383,6 +385,15 @@ impl TomlSyncConfigStore {
                     }
                     if let Some(ref v) = auth.refresh_token {
                         auth_table.insert("refresh_token", Value::from(v.as_str()).into());
+                    }
+                    if let Some(ref scopes) = auth.scopes {
+                        let arr: toml_edit::Array =
+                            scopes.iter().map(|s| s.as_str()).collect();
+                        auth_table.insert("scopes", Value::from(arr).into());
+                    }
+                    if let Some(port) = auth.redirect_port {
+                        auth_table
+                            .insert("redirect_port", Value::from(i64::from(port)).into());
                     }
                     table.insert("auth", Item::Table(auth_table));
                 }

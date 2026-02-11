@@ -1219,3 +1219,154 @@ async fn construct_works_after_indexing() {
         })
         .await;
 }
+
+#[tokio::test]
+async fn new_namespace_after_indexing_is_queryable() {
+    // Regression: when a transaction introduces a new namespace code that wasn't
+    // present in the index root, queries should still resolve IRIs and format
+    // results correctly. The DictOverlay delegates namespace_prefix() to the
+    // BinaryIndexStore, which only knows about namespaces from the index root.
+    // New namespace codes from novelty must also be available.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().to_string_lossy().to_string();
+
+    let fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger_id = "it/new-ns-after-index:main";
+            let db0 = Db::genesis(ledger_id);
+            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // Step 1: Insert data with namespace "ex:" and trigger indexing.
+            let tx1 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@id": "ex:alice",
+                "@type": "ex:Person",
+                "ex:name": "Alice"
+            });
+            let r1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &tx1,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert initial data");
+
+            // Trigger indexing and wait — index root will contain namespace codes
+            // for the built-in namespaces plus "http://example.org/" but NOT
+            // "http://newprefix.org/".
+            let completion = handle.trigger(ledger_id, r1.receipt.t).await;
+            match completion.wait().await {
+                fluree_db_api::IndexOutcome::Completed { .. } => {}
+                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
+                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            }
+
+            // Step 2: Insert data using a BRAND NEW namespace "np:" that was NOT
+            // in the index. This creates a new namespace code in novelty.
+            let tx2 = json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "np": "http://newprefix.org/"
+                },
+                "@id": "np:bob",
+                "@type": "ex:Person",
+                "np:label": "Bob from new prefix"
+            });
+            // After indexing, reload the ledger so the second insert builds
+            // on top of the indexed state (just like production code would).
+            let post_index = fluree.ledger(ledger_id).await.expect("load post-index");
+            assert!(
+                post_index.binary_store.is_some(),
+                "post-index state should have binary store"
+            );
+
+            let r2 = fluree
+                .insert_with_opts(
+                    post_index,
+                    &tx2,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert with new namespace");
+            assert_eq!(r2.receipt.t, 2);
+
+            // Step 3: Reload the ledger (picks up the index + novelty overlay).
+            let loaded = fluree.ledger(ledger_id).await.expect("ledger load");
+            assert_eq!(
+                loaded.t(),
+                r2.receipt.t,
+                "loaded ledger t() should be at latest commit t"
+            );
+            assert_eq!(
+                loaded.db.t, 1,
+                "index time should still be 1 (only first commit was indexed)"
+            );
+
+            // Verify Db.namespace_codes has the new prefix.
+            assert!(
+                loaded
+                    .db
+                    .namespace_codes
+                    .values()
+                    .any(|p| p == "http://newprefix.org/"),
+                "Db.namespace_codes should include the new prefix from novelty"
+            );
+
+            // Verify the Db.namespace_codes includes the new prefix (sanity check).
+            assert!(
+                loaded
+                    .db
+                    .namespace_codes
+                    .values()
+                    .any(|p| p == "http://newprefix.org/"),
+                "Db.namespace_codes should include the new prefix from novelty"
+            );
+
+            // Step 4: Query that forces resolution of a subject IRI using the new
+            // namespace — this is where the bug manifested.
+            //
+            // Before the fix, DictOverlay.resolve_subject_iri() would fail with
+            // "namespace code 13 not in index root" because the BinaryIndexStore
+            // didn't know about namespace codes introduced after the last index build.
+            //
+            // Querying for all ex:Person subjects forces the result formatter to
+            // resolve both "ex:alice" (in the index) and "np:bob" (in novelty,
+            // with the new namespace code). Without the fix, resolving "np:bob"
+            // would fail because its namespace code wasn't in the store.
+            let query = json!({
+                "@context": {
+                    "ex": "http://example.org/",
+                    "np": "http://newprefix.org/"
+                },
+                "select": ["?s"],
+                "where": { "@id": "?s", "@type": "ex:Person" }
+            });
+            let result = fluree.query(&loaded, &query).await.expect("query with new ns");
+            let json_rows = result.to_jsonld(&loaded.db).expect("jsonld format");
+            let rows = normalize_rows(&json_rows);
+            // Both Alice (from index) and Bob (from novelty with new namespace)
+            // should be returned with properly resolved IRIs.
+            assert_eq!(rows.len(), 2, "should find both Alice and Bob");
+        })
+        .await;
+}

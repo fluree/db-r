@@ -26,7 +26,7 @@ pub enum RemoteEndpoint {
 pub enum RemoteAuthType {
     /// Manual bearer token (no automated login flow)
     Token,
-    /// OIDC Device Authorization Grant + token exchange
+    /// OIDC interactive login (auto-detects device code vs auth code + PKCE)
     OidcDevice,
 }
 
@@ -48,6 +48,14 @@ pub struct RemoteAuth {
     pub exchange_url: Option<String>,
     /// Refresh token for silent token renewal (OIDC)
     pub refresh_token: Option<String>,
+    /// OAuth scopes to request (e.g., ["openid", "offline_access"]).
+    /// Defaults to ["openid"] when not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    /// Override localhost port for auth-code PKCE callback.
+    /// Default tries ports 8400..8405.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_port: Option<u16>,
 }
 
 /// Configuration for a named remote

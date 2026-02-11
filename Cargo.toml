@@ -145,3 +145,8 @@ rmcp = { git = "https://github.com/fluree/rust-sdk-fork", rev = "ed14e6d6f0e2370
     "transport-streamable-http-server",
     "tower",
 ] }
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

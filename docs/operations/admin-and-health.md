@@ -97,6 +97,7 @@ Standalone `fluree-server` returns:
 - `{"version":1,"api_base_url":"/v1/fluree","auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
 
 OIDC-capable implementations can return `auth.type="oidc_device"` plus `issuer`, `client_id`, and `exchange_url`.
+The CLI treats `oidc_device` as "OIDC interactive login": it uses device-code when the IdP supports it, otherwise authorization-code + PKCE (localhost callback).
 
 Implementations MAY also return `api_base_url` to tell the CLI where the Fluree API is mounted (for example,
 when the API is hosted under `/v1/fluree` or on a separate `data` subdomain).

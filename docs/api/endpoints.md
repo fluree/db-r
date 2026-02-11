@@ -23,6 +23,7 @@ Standalone `fluree-server` returns:
 - `{"version":1,"api_base_url":"/v1/fluree","auth":{"type":"token"}}` when any server auth mode is enabled (data/events/admin)
 
 OIDC-capable implementations should return `auth.type="oidc_device"` plus `issuer`, `client_id`, and `exchange_url`.
+The CLI treats `oidc_device` as "OIDC interactive login": it uses device-code when the IdP supports it, otherwise authorization-code + PKCE.
 
 Implementations MAY also return `api_base_url` to tell the CLI where the Fluree API is mounted (for example,
 when the API is hosted under `/v1/fluree` or on a separate `data` subdomain).
@@ -1221,6 +1222,82 @@ curl -X POST http://localhost:8090/fluree/drop \
   -d '{"ledger": "mydb"}'
 ```
 
+### GET /fluree/info
+
+Get ledger metadata. Used by the CLI for `info`, `push`, `pull`, and `clone`.
+
+**URL:**
+```
+GET /fluree/info?ledger={ledger-id}
+```
+
+**Query Parameters:**
+- `ledger` (required): Ledger ID (e.g., "mydb" or "mydb:main")
+
+**Alternative:** Use the `fluree-ledger` header instead of query parameter.
+
+**Response (non-proxy mode):**
+
+Returns comprehensive ledger metadata including namespace codes, property stats, and class counts. Always includes:
+
+```json
+{
+  "ledger_id": "mydb:main",
+  "t": 42,
+  "commitId": "bafybeig...headCommitCid",
+  "indexId": "bafybeig...indexRootCid",
+  "namespaces": { ... },
+  "properties": { ... },
+  "classes": [ ... ]
+}
+```
+
+**Response (proxy storage mode):**
+
+Returns simplified nameservice-only metadata:
+
+```json
+{
+  "ledger_id": "mydb:main",
+  "t": 42,
+  "commit_head_id": "bafybeig...commitCid",
+  "index_head_id": "bafybeig...indexCid"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger_id` | string | Yes | Canonical ledger ID |
+| `t` | integer | **Yes** | Current transaction time. Used by push/pull for head comparison. |
+| `commitId` | string | No | Head commit CID (non-proxy mode) |
+| `commit_head_id` | string | No | Head commit CID (proxy mode) |
+
+> **Important:** The `t` field is required by the CLI for push/pull/clone operations. See [CLI-Server API Contract](../design/cli-server-contract.md) for details.
+
+**Optional query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `realtime_property_details` | boolean | false | Compute live property stats (slower) |
+| `include_property_datatypes` | boolean | false | Include datatype info for properties |
+
+**Status Codes:**
+- `200 OK` - Ledger found
+- `400 Bad Request` - Missing ledger parameter
+- `401 Unauthorized` - Authentication required
+- `404 Not Found` - Ledger not found
+
+**Examples:**
+
+```bash
+# Get ledger info
+curl "http://localhost:8090/fluree/info?ledger=mydb:main"
+
+# With auth token
+curl "http://localhost:8090/fluree/info?ledger=mydb:main" \
+  -H "Authorization: Bearer eyJ..."
+```
+
 ### GET /fluree/exists
 
 Check if a ledger exists in the nameservice.
@@ -1569,6 +1646,52 @@ All endpoints may return error responses in this format (and should return `Cont
 ```
 
 See [Errors and Status Codes](errors.md) for complete error reference.
+
+## CLI Compatibility Requirements
+
+This section summarizes the contract that third-party server implementations (e.g., Solo) must follow to be compatible with the Fluree CLI (`fluree-db-cli`). The CLI discovers the API base URL via `fluree remote add` and constructs endpoint URLs as `{base_url}/{operation}/{ledger}`.
+
+### Required endpoints
+
+| Endpoint | CLI commands |
+|----------|-------------|
+| `GET /info/{ledger}` | `info`, `push`, `pull`, `clone` |
+| `POST /query/{ledger}` | `query` (FQL and SPARQL) |
+| `POST /insert/{ledger}` | `insert` |
+| `POST /upsert/{ledger}` | `upsert` |
+| `GET /exists/{ledger}` | `clone` (pre-create check) |
+| `GET /ledgers` | `list --remote` |
+
+For sync workflows (`clone`/`push`/`pull`), these additional endpoints are needed:
+
+| Endpoint | CLI commands | Notes |
+|----------|-------------|-------|
+| `POST /push/{ledger}` | `push` | Required for push |
+| `GET /commits/{ledger}` | `clone`, `pull` | Paginated export fallback |
+| `POST /pack/{ledger}` | `clone`, `pull` | Preferred bulk transport; CLI falls back to `/commits` on 404/405/501 |
+| `GET /storage/ns/{ledger}` | `clone`, `pull` | Pack preflight (head CID discovery) |
+
+### Critical response field: `t`
+
+The `GET /info/{ledger}` response **must** include a `t` field (integer) representing the current transaction time. This field is used by the CLI for:
+
+- **push**: Comparing `local_t` vs `remote_t` to determine what commits to send and detect divergence
+- **pull**: Comparing `remote_t` vs `local_t` to determine if new commits are available
+- **clone**: Guarding against cloning empty ledgers (`t == 0`) and displaying progress
+
+Omitting `t` from the info response will cause `push` and `pull` to fail with `"remote ledger-info response missing 't'"`.
+
+### Transaction response format
+
+The `/insert` and `/upsert` endpoints should return a JSON object. The CLI displays the full response as pretty-printed JSON. Common fields include `t`, `tx-id`, and `commit.hash`, but the exact shape is not prescribed — the CLI does not parse individual fields from transaction responses.
+
+### Authentication
+
+All endpoints accept `Authorization: Bearer <token>`. On `401`, the CLI attempts a single token refresh (if OIDC is configured) and retries. See [Auth contract](../design/auth-contract.md) for the full authentication lifecycle.
+
+### Error responses
+
+Error bodies should be JSON with an `error` or `message` field. The CLI extracts the first available string from `message` or `error` for display. Plain-text error bodies are also accepted.
 
 ## Related Documentation
 

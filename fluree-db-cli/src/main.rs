@@ -45,9 +45,9 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::use_cmd::run(&ledger, &fluree_dir).await
         }
 
-        Commands::List => {
+        Commands::List { remote } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::list::run(&fluree_dir).await
+            commands::list::run(&fluree_dir, remote.as_deref()).await
         }
 
         Commands::Info { ledger, remote } => {

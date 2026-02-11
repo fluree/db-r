@@ -32,9 +32,15 @@ pub async fn run(action: TrackAction, fluree_dir: &Path) -> CliResult<()> {
             )
             .await
         }
-        TrackAction::Remove { ledger } => run_remove(&store, &ledger),
+        TrackAction::Remove { ledger } => {
+            let normalized = crate::context::to_ledger_id(&ledger);
+            run_remove(&store, &normalized)
+        }
         TrackAction::List => run_list(&store),
-        TrackAction::Status { ledger } => run_status(&store, ledger.as_deref()).await,
+        TrackAction::Status { ledger } => {
+            let normalized = ledger.as_deref().map(crate::context::to_ledger_id);
+            run_status(&store, normalized.as_deref()).await
+        }
     }
 }
 
@@ -81,20 +87,25 @@ async fn run_add(
         }
     };
 
-    let effective_remote_alias = remote_alias.unwrap_or(ledger);
+    // Normalize aliases to include branch (e.g., "test4" → "test4:main")
+    // so resolution works with both "test4" and "test4:main".
+    let local_alias = crate::context::to_ledger_id(ledger);
+    let effective_remote_alias = crate::context::to_ledger_id(
+        remote_alias.unwrap_or(ledger),
+    );
 
     // Check mutual exclusion: refuse if local ledger exists
     let fluree = crate::context::build_fluree(fluree_dir)?;
-    let local_ledger_id = crate::context::to_ledger_id(ledger);
+    let local_ledger_id = &local_alias;
     if fluree
-        .ledger_exists(&local_ledger_id)
+        .ledger_exists(local_ledger_id)
         .await
         .unwrap_or(false)
     {
         return Err(CliError::Config(format!(
             "ledger '{}' already exists locally. \
              Remove it first, or use a different local alias with `--remote-alias`.",
-            ledger
+            local_alias
         )));
     }
 
@@ -113,7 +124,7 @@ async fn run_add(
     let client = RemoteLedgerClient::new(&base_url, remote.auth.token.clone());
 
     // Check ledger exists on remote
-    match client.ledger_exists(effective_remote_alias).await {
+    match client.ledger_exists(&effective_remote_alias).await {
         Ok(true) => {}
         Ok(false) => {
             return Err(CliError::NotFound(format!(
@@ -132,17 +143,17 @@ async fn run_add(
     }
 
     // Check not already tracked
-    if store.get_tracked(ledger).is_some() {
+    if store.get_tracked(&local_alias).is_some() {
         // Replace existing tracking
         eprintln!(
             "{} replacing existing tracking for '{}'",
             "note:".cyan().bold(),
-            ledger
+            local_alias
         );
     }
 
     let config = TrackedLedgerConfig {
-        local_alias: ledger.to_string(),
+        local_alias: local_alias.clone(),
         remote: remote.name.as_str().to_string(),
         remote_alias: effective_remote_alias.to_string(),
     };
@@ -151,7 +162,7 @@ async fn run_add(
 
     println!(
         "Tracking '{}' via remote '{}' ({})",
-        ledger.green(),
+        local_alias.green(),
         remote.name.as_str().green(),
         effective_remote_alias
     );

@@ -110,11 +110,9 @@ pub async fn run(
 
 /// Print transaction result from remote server JSON response.
 pub fn print_txn_result(result: &serde_json::Value) {
-    if let Some(t) = result.get("t").and_then(|v| v.as_i64()) {
-        print!("Committed t={t}");
-    }
-    if let Some(tx_id) = result.get("tx-id").and_then(|v| v.as_str()) {
-        print!(" tx={tx_id}");
-    }
-    println!();
+    // Print the full server response as pretty JSON
+    println!(
+        "{}",
+        serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string())
+    );
 }

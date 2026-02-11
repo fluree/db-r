@@ -29,6 +29,15 @@ async fn run_add(
     url: &str,
     token: Option<String>,
 ) -> CliResult<()> {
+    // Remote names cannot contain '/' — reserved as the delimiter in
+    // compound `remote/ledger` syntax (e.g., `fluree query origin/mydb ...`).
+    if name.contains('/') {
+        return Err(CliError::Input(
+            "remote name cannot contain '/' (reserved for remote/ledger syntax, e.g. origin/mydb)"
+                .into(),
+        ));
+    }
+
     let input_url = url.trim_end_matches('/').to_string();
 
     // Load token from file if @filepath
@@ -202,11 +211,36 @@ pub(crate) async fn discover_remote(remote_url: &str) -> Result<Option<Discovere
                     .ok_or("oidc_device discovery missing 'exchange_url' field")?
                     .to_string();
 
+                // Parse optional scopes: accept JSON array or space-separated string
+                let scopes = match auth_obj.get("scopes") {
+                    Some(serde_json::Value::Array(arr)) => {
+                        let v: Vec<String> = arr
+                            .iter()
+                            .filter_map(|s| s.as_str().map(String::from))
+                            .collect();
+                        if v.is_empty() { None } else { Some(v) }
+                    }
+                    Some(serde_json::Value::String(s)) => {
+                        let v: Vec<String> =
+                            s.split_whitespace().map(String::from).collect();
+                        if v.is_empty() { None } else { Some(v) }
+                    }
+                    _ => None,
+                };
+
+                // Parse optional redirect_port override
+                let redirect_port = auth_obj
+                    .get("redirect_port")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|p| u16::try_from(p).ok());
+
                 out.auth = Some(RemoteAuth {
                     auth_type: Some(RemoteAuthType::OidcDevice),
                     issuer: Some(issuer),
                     client_id: Some(client_id),
                     exchange_url: Some(exchange_url),
+                    scopes,
+                    redirect_port,
                     ..Default::default()
                 });
             }

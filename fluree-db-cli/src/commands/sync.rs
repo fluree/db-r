@@ -496,32 +496,45 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
         fluree_db_core::storage::content_store_for(fluree.storage().clone(), &ledger_id);
 
     let mut to_push_cids: Vec<fluree_db_core::ContentId> = Vec::new();
-    let mut found_base = remote_t == 0 && remote_commit_id.is_none();
 
-    let stream = fluree_db_novelty::trace_commit_envelopes_by_id(
-        content_store.clone(),
-        local_head_cid.clone(),
-        remote_t,
-    );
-    futures::pin_mut!(stream);
-    while let Some(item) = stream.next().await {
-        let (cid, env) = item.map_err(|e| CliError::Config(e.to_string()))?;
+    // trace_commit_envelopes_by_id yields commits where t > stop_at_t (exclusive
+    // of stop_at_t), so when local_t == remote_t the stream yields nothing —
+    // that means there is nothing to push and we should short-circuit.
+    let mut found_base = local_ref.t == remote_t || (remote_t == 0 && remote_commit_id.is_none());
 
-        if env.t == remote_t {
-            if remote_commit_id.as_ref() == Some(&cid)
-                || (remote_t == 0 && remote_commit_id.is_none())
-            {
-                found_base = true;
-                break;
+    if !found_base {
+        let stream = fluree_db_novelty::trace_commit_envelopes_by_id(
+            content_store.clone(),
+            local_head_cid.clone(),
+            remote_t,
+        );
+        futures::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            let (cid, env) = item.map_err(|e| CliError::Config(e.to_string()))?;
+            if env.t > remote_t {
+                to_push_cids.push(cid);
             }
-            return Err(CliError::Config(format!(
-                "cannot push: histories diverged at t={remote_t} (remote head != local history). Pull first."
-            )));
         }
 
-        if env.t > remote_t {
-            to_push_cids.push(cid);
+        // Verify chain continuity: the oldest local commit we want to push
+        // should have a previous_id that matches the remote's commitId.
+        // If the remote didn't provide commitId, we trust t-based matching.
+        if let Some(remote_cid) = remote_commit_id.as_ref() {
+            if let Some(oldest_cid) = to_push_cids.last() {
+                let oldest_env =
+                    fluree_db_novelty::load_commit_envelope_by_id(&content_store, oldest_cid)
+                        .await
+                        .map_err(|e| CliError::Config(e.to_string()))?;
+                if oldest_env.previous_id() != Some(remote_cid) {
+                    return Err(CliError::Config(format!(
+                        "cannot push: histories diverged at t={remote_t} \
+                         (remote head != local history). Pull first."
+                    )));
+                }
+            }
         }
+
+        found_base = !to_push_cids.is_empty();
     }
 
     if !found_base {
@@ -630,29 +643,35 @@ pub async fn run_clone(
 
     let client = context::build_client_from_auth(&base_url, &remote_cfg.auth);
 
-    // Verify the remote ledger exists.
+    // Verify the remote ledger exists (ledger_info returns 404 if not).
     let info = client
         .ledger_info(&ledger_id)
         .await
         .map_err(|e| CliError::Config(format!("clone failed (remote ledger info): {e}")))?;
-    let remote_t = info
-        .get("t")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| CliError::Config("remote ledger-info response missing 't'".into()))?;
 
-    if remote_t == 0 {
+    // t is informational — some servers may not include it in their response.
+    let remote_t = info.get("t").and_then(|v| v.as_i64());
+
+    if remote_t == Some(0) {
         return Err(CliError::Config(format!(
             "remote ledger '{}' is empty (t=0); nothing to clone",
             ledger_id
         )));
     }
 
-    println!(
-        "Cloning '{}' from '{}' (remote t={})...",
-        local_id.cyan(),
-        remote_name.cyan(),
-        remote_t
-    );
+    match remote_t {
+        Some(t) => println!(
+            "Cloning '{}' from '{}' (remote t={})...",
+            local_id.cyan(),
+            remote_name.cyan(),
+            t
+        ),
+        None => println!(
+            "Cloning '{}' from '{}'...",
+            local_id.cyan(),
+            remote_name.cyan(),
+        ),
+    }
 
     // Create the local ledger.
     let fluree = context::build_fluree(fluree_dir)?;

@@ -189,13 +189,29 @@ When `--remote` is omitted:
 
 ## OIDC login flow
 
-When a remote is configured with `auth.type = "oidc_device"` (auto-discovered from the server's `/.well-known/fluree.json`), `fluree auth login` runs the OAuth 2.0 Device Authorization Grant:
+When a remote is configured with `auth.type = "oidc_device"` (auto-discovered from the server's `/.well-known/fluree.json`), `fluree auth login` runs an OIDC interactive login flow and then exchanges the IdP token for a Fluree-scoped Bearer token:
 
 1. Discovers OIDC endpoints from the configured issuer
-2. Requests a device code and user code
-3. Prints a URL and code for the user to complete in a browser
-4. Polls for completion, then exchanges the IdP token for a Fluree-scoped Bearer token
-5. Stores the token and refresh token in the remote config
+2. Chooses the flow based on IdP support:
+   - If the IdP discovery document includes `device_authorization_endpoint`: use OAuth device-code (prints a URL + code and polls).
+   - Otherwise, if it includes `authorization_endpoint`: use OAuth authorization-code + PKCE (opens a browser and receives a localhost callback).
+3. Exchanges the IdP token for a Fluree-scoped Bearer token via the server's `exchange_url`
+4. Stores the token (and optional refresh token) in the remote config
+
+### Cognito note (Authorization Code + PKCE)
+
+AWS Cognito does not publish `device_authorization_endpoint`, so the CLI will use authorization-code + PKCE.
+
+Cognito requires the callback URL to be pre-allowlisted (no wildcard ports). Allowlist:
+
+- `http://127.0.0.1:8400/callback`
+- `http://127.0.0.1:8401/callback`
+- `http://127.0.0.1:8402/callback`
+- `http://127.0.0.1:8403/callback`
+- `http://127.0.0.1:8404/callback`
+- `http://127.0.0.1:8405/callback`
+
+If your app only allowlists one callback URL, configure a fixed port with `redirect_port` in `/.well-known/fluree.json` (or set `FLUREE_AUTH_PORT` locally) and allowlist that single callback URL.
 
 On subsequent 401 errors, the CLI automatically attempts a silent refresh using the stored refresh token before prompting for re-login.
 

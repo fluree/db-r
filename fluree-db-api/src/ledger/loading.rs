@@ -63,7 +63,7 @@ where
                 }
 
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
-                let store = BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
+                let mut store = BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
                     .await
                     .map_err(|e| {
                         ApiError::internal(format!(
@@ -71,6 +71,12 @@ where
                             index_cid, e
                         ))
                     })?;
+
+                // Augment namespace codes with entries from novelty commits.
+                // The index root only contains namespaces known at index time, but
+                // subsequent transactions may introduce new namespace prefixes.
+                // Db.namespace_codes already has the merged set (index + novelty).
+                store.augment_namespace_codes(&state.db.namespace_codes);
 
                 let arc_store = Arc::new(store);
                 if state.db.range_provider.is_none() {
