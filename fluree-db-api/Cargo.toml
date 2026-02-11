@@ -47,6 +47,7 @@ fluree-db-nameservice = { path = "../fluree-db-nameservice", default-features = 
 fluree-db-transact = { path = "../fluree-db-transact", features = ["import"] }
 fluree-db-indexer = { path = "../fluree-db-indexer" }
 fluree-db-sparql = { path = "../fluree-db-sparql" }
+fluree-db-spatial = { path = "../fluree-db-spatial" }
 fluree-db-iceberg = { path = "../fluree-db-iceberg", default-features = false, optional = true, features = ["aws"] }
 fluree-db-r2rml = { path = "../fluree-db-r2rml", features = ["turtle"] }
 fluree-db-storage-aws = { path = "../fluree-db-storage-aws", optional = true }

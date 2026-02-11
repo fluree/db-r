@@ -508,6 +508,7 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
         ContentKind::GraphSourceSnapshot => {
             format!("graph-sources/{}/snapshots/{}.gssnap", prefix, hash_hex)
         }
+        ContentKind::SpatialIndex => format!("{}/index/spatial/{}.bin", prefix, hash_hex),
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
         _ => format!("{}/blob/{}.bin", prefix, hash_hex),

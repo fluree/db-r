@@ -679,6 +679,26 @@ pub fn build_where_operators_seeded(
                 i += 1;
             }
 
+            Pattern::GeoSearch(gsp) => {
+                // Geographic proximity search against binary index
+                let child = get_or_empty_seed(operator.take());
+                operator = Some(Box::new(crate::geo_search::GeoSearchOperator::new(
+                    child,
+                    gsp.clone(),
+                )));
+                i += 1;
+            }
+
+            Pattern::S2Search(s2p) => {
+                // S2 spatial search against spatial index sidecar
+                let child = get_or_empty_seed(operator.take());
+                operator = Some(Box::new(crate::s2_search::S2SearchOperator::new(
+                    child,
+                    s2p.clone(),
+                )));
+                i += 1;
+            }
+
             Pattern::Graph {
                 name,
                 patterns: inner_patterns,

@@ -665,7 +665,9 @@ fn rewrite_single_pattern(
         | Pattern::Subquery(_)
         | Pattern::IndexSearch(_)
         | Pattern::VectorSearch(_)
-        | Pattern::R2rml(_) => RewriteResult::Unchanged,
+        | Pattern::R2rml(_)
+        | Pattern::GeoSearch(_)
+        | Pattern::S2Search(_) => RewriteResult::Unchanged,
     }
 }
 

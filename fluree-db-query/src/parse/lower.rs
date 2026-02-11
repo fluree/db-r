@@ -157,6 +157,8 @@ impl ParsedQuery {
                     | Pattern::PropertyPath(_)
                     | Pattern::Subquery(_)
                     | Pattern::IndexSearch(_)
+                    | Pattern::GeoSearch(_)
+                    | Pattern::S2Search(_)
                     | Pattern::VectorSearch(_)
                     | Pattern::R2rml(_) => {}
                 }

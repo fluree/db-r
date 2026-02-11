@@ -13,8 +13,10 @@ use crate::vector::VectorIndexProvider;
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{Db, NoOverlay, OverlayProvider, Sid, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_spatial::SpatialIndexProvider;
 use fluree_vocab::namespaces::{FLUREE_DB, JSON_LD, OGC_GEO, RDF, XSD};
 use fluree_vocab::{geo_names, xsd_names};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Execution context providing access to database and query state.
@@ -85,6 +87,12 @@ pub struct ExecutionContext<'a> {
     /// shared layer (populated during commit). When absent, an uninitialized
     /// `DictNovelty` is used as fallback (routes everything to persisted tree).
     pub dict_novelty: Option<Arc<DictNovelty>>,
+    /// Optional spatial index providers for `Pattern::S2Search`.
+    ///
+    /// Keys are graph-scoped: `"g{g_id}:{predicate_iri}"`.
+    /// The S2SearchOperator routes queries to the appropriate provider based on
+    /// the graph ID and predicate.
+    pub spatial_providers: Option<&'a HashMap<String, Arc<dyn SpatialIndexProvider>>>,
 }
 
 impl<'a> ExecutionContext<'a> {
@@ -111,6 +119,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            spatial_providers: None,
         }
     }
 
@@ -137,6 +146,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            spatial_providers: None,
         }
     }
 
@@ -173,6 +183,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            spatial_providers: None,
         }
     }
 
@@ -205,6 +216,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            spatial_providers: None,
         }
     }
 
@@ -244,6 +256,15 @@ impl<'a> ExecutionContext<'a> {
     ) -> Self {
         self.r2rml_provider = Some(mapping_provider);
         self.r2rml_table_provider = Some(table_provider);
+        self
+    }
+
+    /// Attach spatial index providers to this context (for S2Search patterns).
+    pub fn with_spatial_providers(
+        mut self,
+        providers: &'a HashMap<String, Arc<dyn SpatialIndexProvider>>,
+    ) -> Self {
+        self.spatial_providers = Some(providers);
         self
     }
 
@@ -444,6 +465,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: self.binary_store.clone(),
             binary_g_id: self.binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
+            spatial_providers: self.spatial_providers,
         }
     }
 
@@ -472,6 +494,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: self.binary_store.clone(),
             binary_g_id: self.binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
+            spatial_providers: self.spatial_providers,
         }
     }
 
@@ -504,6 +527,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None, // GraphRef doesn't have binary store
             binary_g_id: 0,
             dict_novelty: None, // GraphRef doesn't have dict novelty
+            spatial_providers: self.spatial_providers,
         }
     }
 

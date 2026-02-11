@@ -64,7 +64,9 @@ impl Query {
                     | Pattern::Subquery(_)
                     | Pattern::IndexSearch(_)
                     | Pattern::VectorSearch(_)
-                    | Pattern::R2rml(_) => {}
+                    | Pattern::R2rml(_)
+                    | Pattern::GeoSearch(_)
+                    | Pattern::S2Search(_) => {}
                 }
             }
         }
@@ -702,6 +704,274 @@ impl VectorSearchPattern {
 }
 
 // ============================================================================
+// GeoSearch Pattern
+// ============================================================================
+
+/// Geographic proximity search pattern - index-accelerated spatial queries.
+///
+/// Queries the binary index for GeoPoint values within a specified radius
+/// of a center point. Uses the latitude-primary encoding for efficient
+/// latitude-band scans, then applies haversine post-filter for exact distance.
+///
+/// # Example Query Pattern
+///
+/// ```json
+/// {
+///   "idx:geo": "ex:location",
+///   "idx:center": "POINT(2.3522 48.8566)",
+///   "idx:radius": 500000,
+///   "idx:result": {
+///     "idx:id": "?place",
+///     "idx:distance": "?dist"
+///   }
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct GeoSearchPattern {
+    /// Predicate SID for the location property to search
+    pub predicate: Sid,
+
+    /// Center point for proximity search
+    pub center: GeoSearchCenter,
+
+    /// Search radius in meters
+    pub radius_meters: f64,
+
+    /// Maximum number of results (optional)
+    pub limit: Option<usize>,
+
+    /// Variable to bind the subject IRI (required)
+    pub subject_var: VarId,
+
+    /// Variable to bind the distance in meters (optional)
+    pub distance_var: Option<VarId>,
+}
+
+/// Center point for geo search - can be constant or variable.
+#[derive(Debug, Clone)]
+pub enum GeoSearchCenter {
+    /// Constant lat/lng coordinates
+    Const { lat: f64, lng: f64 },
+    /// Variable reference (bound at runtime to a GeoPoint value)
+    Var(VarId),
+}
+
+impl GeoSearchPattern {
+    /// Create a new geo search pattern
+    pub fn new(
+        predicate: Sid,
+        center: GeoSearchCenter,
+        radius_meters: f64,
+        subject_var: VarId,
+    ) -> Self {
+        Self {
+            predicate,
+            center,
+            radius_meters,
+            limit: None,
+            subject_var,
+            distance_var: None,
+        }
+    }
+
+    /// Set the result limit
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Set the distance binding variable
+    pub fn with_distance_var(mut self, var: VarId) -> Self {
+        self.distance_var = Some(var);
+        self
+    }
+
+    /// Get all variables referenced by this pattern
+    pub fn variables(&self) -> Vec<VarId> {
+        let mut vars = vec![self.subject_var];
+
+        if let GeoSearchCenter::Var(v) = &self.center {
+            vars.push(*v);
+        }
+
+        if let Some(v) = self.distance_var {
+            vars.push(v);
+        }
+
+        vars
+    }
+
+    /// Get the center coordinates if constant, or None if variable
+    pub fn const_center(&self) -> Option<(f64, f64)> {
+        match &self.center {
+            GeoSearchCenter::Const { lat, lng } => Some((*lat, *lng)),
+            GeoSearchCenter::Var(_) => None,
+        }
+    }
+}
+
+// ============================================================================
+// S2 Spatial Search Pattern
+// ============================================================================
+
+/// S2-based spatial search pattern for complex geometry queries.
+///
+/// Uses the S2 spatial index sidecar for efficient queries on non-point
+/// geometries (polygons, linestrings, etc.). Supports:
+/// - `within`: subjects whose geometry is within query geometry
+/// - `contains`: subjects whose geometry contains query geometry
+/// - `intersects`: subjects whose geometry intersects query geometry
+///
+/// # Example (within query)
+///
+/// ```sparql
+/// ?building idx:within "POLYGON((...))".
+/// ```
+#[derive(Debug, Clone)]
+pub struct S2SearchPattern {
+    /// Spatial predicate type
+    pub operation: S2SpatialOp,
+
+    /// Variable to bind matching subject IRIs
+    pub subject_var: VarId,
+
+    /// Query geometry specification (WKT literal or variable)
+    pub query_geom: S2QueryGeom,
+
+    /// Predicate IRI whose geometries are indexed (e.g., "http://example.org/hasGeometry").
+    ///
+    /// Used to route to the correct spatial index provider when multiple predicates
+    /// have spatial indexes. If None, uses the default/only provider.
+    pub predicate: Option<String>,
+
+    /// Optional variable to bind distance (for nearby queries)
+    pub distance_var: Option<VarId>,
+
+    /// Optional limit on results
+    pub limit: Option<usize>,
+
+    /// Spatial index alias (e.g., "geo-index:main")
+    pub spatial_index_alias: Option<String>,
+}
+
+/// Spatial operation types for S2 queries.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum S2SpatialOp {
+    /// Subject geometry is within query geometry
+    Within,
+    /// Subject geometry contains query geometry
+    Contains,
+    /// Subject geometry intersects query geometry
+    Intersects,
+    /// Proximity query (like GeoSearch but using S2 sidecar)
+    Nearby { radius_meters: f64 },
+}
+
+/// Query geometry for S2 searches - constant WKT or variable reference.
+#[derive(Debug, Clone)]
+pub enum S2QueryGeom {
+    /// Constant WKT literal
+    Wkt(String),
+    /// Variable reference (bound to WKT string or GeoPoint at runtime)
+    Var(VarId),
+    /// Constant point (for nearby queries)
+    Point { lat: f64, lng: f64 },
+}
+
+impl S2SearchPattern {
+    /// Create a new within pattern
+    pub fn within(subject_var: VarId, query_geom: S2QueryGeom) -> Self {
+        Self {
+            operation: S2SpatialOp::Within,
+            subject_var,
+            query_geom,
+            predicate: None,
+            distance_var: None,
+            limit: None,
+            spatial_index_alias: None,
+        }
+    }
+
+    /// Create a new contains pattern
+    pub fn contains(subject_var: VarId, query_geom: S2QueryGeom) -> Self {
+        Self {
+            operation: S2SpatialOp::Contains,
+            subject_var,
+            query_geom,
+            predicate: None,
+            distance_var: None,
+            limit: None,
+            spatial_index_alias: None,
+        }
+    }
+
+    /// Create a new intersects pattern
+    pub fn intersects(subject_var: VarId, query_geom: S2QueryGeom) -> Self {
+        Self {
+            operation: S2SpatialOp::Intersects,
+            subject_var,
+            query_geom,
+            predicate: None,
+            distance_var: None,
+            limit: None,
+            spatial_index_alias: None,
+        }
+    }
+
+    /// Create a new nearby pattern
+    pub fn nearby(subject_var: VarId, center: S2QueryGeom, radius_meters: f64) -> Self {
+        Self {
+            operation: S2SpatialOp::Nearby { radius_meters },
+            subject_var,
+            query_geom: center,
+            predicate: None,
+            distance_var: None,
+            limit: None,
+            spatial_index_alias: None,
+        }
+    }
+
+    /// Set the predicate IRI for index routing
+    pub fn with_predicate(mut self, predicate: impl Into<String>) -> Self {
+        self.predicate = Some(predicate.into());
+        self
+    }
+
+    /// Set distance variable (for nearby queries)
+    pub fn with_distance_var(mut self, var: VarId) -> Self {
+        self.distance_var = Some(var);
+        self
+    }
+
+    /// Set limit
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Set spatial index alias
+    pub fn with_spatial_index(mut self, alias: impl Into<String>) -> Self {
+        self.spatial_index_alias = Some(alias.into());
+        self
+    }
+
+    /// Get all variables in this pattern
+    pub fn variables(&self) -> Vec<VarId> {
+        let mut vars = vec![self.subject_var];
+
+        if let S2QueryGeom::Var(v) = &self.query_geom {
+            vars.push(*v);
+        }
+
+        if let Some(v) = self.distance_var {
+            vars.push(v);
+        }
+
+        vars
+    }
+}
+
+// ============================================================================
 // R2RML Pattern
 // ============================================================================
 
@@ -990,6 +1260,12 @@ pub enum Pattern {
     /// Scans Iceberg tables through R2RML term maps and produces RDF bindings.
     R2rml(R2rmlPattern),
 
+    /// GeoSearch pattern - proximity search using binary index GeoPoint encoding
+    GeoSearch(GeoSearchPattern),
+
+    /// S2 spatial search pattern - complex geometry queries using S2 sidecar index
+    S2Search(S2SearchPattern),
+
     /// Named graph pattern - scopes inner patterns to a specific graph
     ///
     /// SPARQL: `GRAPH <iri> { ... }` or `GRAPH ?g { ... }`
@@ -1061,6 +1337,8 @@ impl Pattern {
             Pattern::IndexSearch(isp) => isp.variables(),
             Pattern::VectorSearch(vsp) => vsp.variables(),
             Pattern::R2rml(r2rml) => r2rml.variables(),
+            Pattern::GeoSearch(gsp) => gsp.variables(),
+            Pattern::S2Search(s2p) => s2p.variables(),
             Pattern::Graph { name, patterns } => {
                 let mut vars = patterns
                     .iter()
