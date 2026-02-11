@@ -474,7 +474,10 @@ pub fn apply_to_server_config(
     };
 
     // --- Top-level scalars ---
-    if is_default("listen-addr") {
+    // NOTE: clap derive uses the field name (underscores) as the arg ID,
+    // NOT the kebab-case long flag name. Using hyphens here would panic in
+    // debug builds and silently return None in release builds.
+    if is_default("listen_addr") {
         if let Some(ref addr_str) = file.listen_addr {
             if let Ok(addr) = addr_str.parse::<SocketAddr>() {
                 config.listen_addr = addr;
@@ -486,27 +489,27 @@ pub fn apply_to_server_config(
             }
         }
     }
-    if is_default("storage-path") {
+    if is_default("storage_path") {
         if let Some(ref path) = file.storage_path {
             config.storage_path = Some(PathBuf::from(path));
         }
     }
-    if is_default("log-level") {
+    if is_default("log_level") {
         if let Some(ref level) = file.log_level {
             config.log_level = level.clone();
         }
     }
-    if is_default("cors-enabled") {
+    if is_default("cors_enabled") {
         if let Some(v) = file.cors_enabled {
             config.cors_enabled = v;
         }
     }
-    if is_default("body-limit") {
+    if is_default("body_limit") {
         if let Some(v) = file.body_limit {
             config.body_limit = v;
         }
     }
-    if is_default("cache-max-entries") {
+    if is_default("cache_max_entries") {
         if let Some(v) = file.cache_max_entries {
             config.cache_max_entries = v;
         }
@@ -514,17 +517,17 @@ pub fn apply_to_server_config(
 
     // --- Indexing ---
     if let Some(ref idx) = file.indexing {
-        if is_default("indexing-enabled") {
+        if is_default("indexing_enabled") {
             if let Some(v) = idx.enabled {
                 config.indexing_enabled = v;
             }
         }
-        if is_default("reindex-min-bytes") {
+        if is_default("reindex_min_bytes") {
             if let Some(v) = idx.reindex_min_bytes {
                 config.reindex_min_bytes = v;
             }
         }
-        if is_default("reindex-max-bytes") {
+        if is_default("reindex_max_bytes") {
             if let Some(v) = idx.reindex_max_bytes {
                 config.reindex_max_bytes = v;
             }
@@ -534,19 +537,19 @@ pub fn apply_to_server_config(
     // --- Auth: events ---
     if let Some(ref auth) = file.auth {
         if let Some(ref events) = auth.events {
-            if is_default("events-auth-mode") {
+            if is_default("events_auth_mode") {
                 if let Some(ref mode) = events.mode {
                     if let Some(m) = parse_events_auth_mode(mode) {
                         config.events_auth_mode = m;
                     }
                 }
             }
-            if is_default("events-auth-audience") {
+            if is_default("events_auth_audience") {
                 if let Some(ref v) = events.audience {
                     config.events_auth_audience = Some(v.clone());
                 }
             }
-            if is_default("events-auth-trusted-issuer") {
+            if is_default("events_auth_trusted_issuers") {
                 if let Some(ref v) = events.trusted_issuers {
                     config.events_auth_trusted_issuers = v.clone();
                 }
@@ -555,24 +558,24 @@ pub fn apply_to_server_config(
 
         // --- Auth: data ---
         if let Some(ref data) = auth.data {
-            if is_default("data-auth-mode") {
+            if is_default("data_auth_mode") {
                 if let Some(ref mode) = data.mode {
                     if let Some(m) = parse_data_auth_mode(mode) {
                         config.data_auth_mode = m;
                     }
                 }
             }
-            if is_default("data-auth-audience") {
+            if is_default("data_auth_audience") {
                 if let Some(ref v) = data.audience {
                     config.data_auth_audience = Some(v.clone());
                 }
             }
-            if is_default("data-auth-trusted-issuer") {
+            if is_default("data_auth_trusted_issuers") {
                 if let Some(ref v) = data.trusted_issuers {
                     config.data_auth_trusted_issuers = v.clone();
                 }
             }
-            if is_default("data-auth-default-policy-class") {
+            if is_default("data_auth_default_policy_class") {
                 if let Some(ref v) = data.default_policy_class {
                     config.data_auth_default_policy_class = Some(v.clone());
                 }
@@ -581,14 +584,14 @@ pub fn apply_to_server_config(
 
         // --- Auth: admin ---
         if let Some(ref admin) = auth.admin {
-            if is_default("admin-auth-mode") {
+            if is_default("admin_auth_mode") {
                 if let Some(ref mode) = admin.mode {
                     if let Some(m) = parse_admin_auth_mode(mode) {
                         config.admin_auth_mode = m;
                     }
                 }
             }
-            if is_default("admin-auth-trusted-issuer") {
+            if is_default("admin_auth_trusted_issuers") {
                 if let Some(ref v) = admin.trusted_issuers {
                     config.admin_auth_trusted_issuers = v.clone();
                 }
@@ -598,12 +601,12 @@ pub fn apply_to_server_config(
         // --- Auth: jwks ---
         #[cfg(feature = "oidc")]
         if let Some(ref jwks) = auth.jwks {
-            if is_default("jwks-issuer") {
+            if is_default("jwks_issuers") {
                 if let Some(ref v) = jwks.issuers {
                     config.jwks_issuers = v.clone();
                 }
             }
-            if is_default("jwks-cache-ttl") {
+            if is_default("jwks_cache_ttl") {
                 if let Some(v) = jwks.cache_ttl {
                     config.jwks_cache_ttl = v;
                 }
@@ -613,56 +616,56 @@ pub fn apply_to_server_config(
 
     // --- Peer ---
     if let Some(ref peer) = file.peer {
-        if is_default("server-role") {
+        if is_default("server_role") {
             if let Some(ref role) = peer.role {
                 if let Some(r) = parse_server_role(role) {
                     config.server_role = r;
                 }
             }
         }
-        if is_default("tx-server-url") {
+        if is_default("tx_server_url") {
             if let Some(ref v) = peer.tx_server_url {
                 config.tx_server_url = Some(v.clone());
             }
         }
-        if is_default("peer-events-url") {
+        if is_default("peer_events_url") {
             if let Some(ref v) = peer.events_url {
                 config.peer_events_url = Some(v.clone());
             }
         }
-        if is_default("peer-events-token") {
+        if is_default("peer_events_token") {
             if let Some(ref v) = peer.events_token {
                 config.peer_events_token = Some(v.clone());
             }
         }
-        if is_default("peer-subscribe-all") {
+        if is_default("peer_subscribe_all") {
             if let Some(v) = peer.subscribe_all {
                 config.peer_subscribe_all = v;
             }
         }
-        if is_default("peer-ledger") {
+        if is_default("peer_ledgers") {
             if let Some(ref v) = peer.ledgers {
                 config.peer_ledgers = v.clone();
             }
         }
-        if is_default("peer-graph-source") {
+        if is_default("peer_graph_sources") {
             if let Some(ref v) = peer.graph_sources {
                 config.peer_graph_sources = v.clone();
             }
         }
-        if is_default("storage-access-mode") {
+        if is_default("storage_access_mode") {
             if let Some(ref mode) = peer.storage_access_mode {
                 if let Some(m) = parse_storage_access_mode(mode) {
                     config.storage_access_mode = m;
                 }
             }
         }
-        if is_default("storage-proxy-token") {
+        if is_default("storage_proxy_token") {
             if let Some(ref v) = peer.storage_proxy_token {
                 config.storage_proxy_token = Some(v.clone());
             }
         }
-        if is_default("storage-proxy-token-file") {
+        if is_default("storage_proxy_token_file") {
             if let Some(ref v) = peer.storage_proxy_token_file {
                 config.storage_proxy_token_file = Some(PathBuf::from(v));
             }
@@ -670,17 +673,17 @@ pub fn apply_to_server_config(
 
         // Peer reconnect
         if let Some(ref reconnect) = peer.reconnect {
-            if is_default("peer-reconnect-initial-ms") {
+            if is_default("peer_reconnect_initial_ms") {
                 if let Some(v) = reconnect.initial_ms {
                     config.peer_reconnect_initial_ms = v;
                 }
             }
-            if is_default("peer-reconnect-max-ms") {
+            if is_default("peer_reconnect_max_ms") {
                 if let Some(v) = reconnect.max_ms {
                     config.peer_reconnect_max_ms = v;
                 }
             }
-            if is_default("peer-reconnect-multiplier") {
+            if is_default("peer_reconnect_multiplier") {
                 if let Some(v) = reconnect.multiplier {
                     config.peer_reconnect_multiplier = v;
                 }
@@ -690,12 +693,12 @@ pub fn apply_to_server_config(
 
     // --- MCP ---
     if let Some(ref mcp) = file.mcp {
-        if is_default("mcp-enabled") {
+        if is_default("mcp_enabled") {
             if let Some(v) = mcp.enabled {
                 config.mcp_enabled = v;
             }
         }
-        if is_default("mcp-auth-trusted-issuer") {
+        if is_default("mcp_auth_trusted_issuers") {
             if let Some(ref v) = mcp.auth_trusted_issuers {
                 config.mcp_auth_trusted_issuers = v.clone();
             }
@@ -704,27 +707,27 @@ pub fn apply_to_server_config(
 
     // --- Storage proxy ---
     if let Some(ref sp) = file.storage_proxy {
-        if is_default("storage-proxy-enabled") {
+        if is_default("storage_proxy_enabled") {
             if let Some(v) = sp.enabled {
                 config.storage_proxy_enabled = v;
             }
         }
-        if is_default("storage-proxy-trusted-issuer") {
+        if is_default("storage_proxy_trusted_issuers") {
             if let Some(ref v) = sp.trusted_issuers {
                 config.storage_proxy_trusted_issuers = v.clone();
             }
         }
-        if is_default("storage-proxy-default-identity") {
+        if is_default("storage_proxy_default_identity") {
             if let Some(ref v) = sp.default_identity {
                 config.storage_proxy_default_identity = Some(v.clone());
             }
         }
-        if is_default("storage-proxy-default-policy-class") {
+        if is_default("storage_proxy_default_policy_class") {
             if let Some(ref v) = sp.default_policy_class {
                 config.storage_proxy_default_policy_class = Some(v.clone());
             }
         }
-        if is_default("storage-proxy-debug-headers") {
+        if is_default("storage_proxy_debug_headers") {
             if let Some(v) = sp.debug_headers {
                 config.storage_proxy_debug_headers = v;
             }

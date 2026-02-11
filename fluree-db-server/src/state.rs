@@ -21,6 +21,7 @@ use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
 use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, QueryConnectionOptions};
 use fluree_db_connection::{Connection, ConnectionConfig};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -519,7 +520,7 @@ impl AppState {
         let path = config
             .storage_path
             .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("fluree-server-data"));
+            .unwrap_or_else(|| PathBuf::from(".fluree/storage"));
 
         // Convert PathBuf to String for FlureeBuilder
         let path_str = path.to_string_lossy().to_string();

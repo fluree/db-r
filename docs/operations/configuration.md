@@ -118,17 +118,17 @@ fluree-server --listen-addr 0.0.0.0:9090
 
 ### Storage Path
 
-Path for file-based storage. If not specified, uses in-memory storage:
+Path for file-based storage. If not specified, defaults to `.fluree/storage` relative to the working directory (the same location used by `fluree init`):
 
-| Flag             | Env Var               | Default       |
-| ---------------- | --------------------- | ------------- |
-| `--storage-path` | `FLUREE_STORAGE_PATH` | None (memory) |
+| Flag             | Env Var               | Default           |
+| ---------------- | --------------------- | ----------------- |
+| `--storage-path` | `FLUREE_STORAGE_PATH` | `.fluree/storage` |
 
 ```bash
-# File storage
+# Explicit storage path (e.g. production)
 fluree-server --storage-path /var/lib/fluree
 
-# Memory storage (default - omit --storage-path)
+# Default: uses .fluree/storage in the working directory
 fluree-server
 ```
 
@@ -562,7 +562,7 @@ fluree-server \
 | `FLUREE_CONFIG`                         | Config file path               | `.fluree/config.toml` (auto-discovered) |
 | `FLUREE_PROFILE`                        | Configuration profile name     | None                                    |
 | `FLUREE_LISTEN_ADDR`                    | Server address:port            | `0.0.0.0:8090`                          |
-| `FLUREE_STORAGE_PATH`                   | File storage path              | None (memory)                           |
+| `FLUREE_STORAGE_PATH`                   | File storage path              | `.fluree/storage`                       |
 | `FLUREE_CORS_ENABLED`                   | Enable CORS                    | `true`                                  |
 | `FLUREE_INDEXING_ENABLED`               | Enable background indexing     | `false`                                 |
 | `FLUREE_REINDEX_MIN_BYTES`              | Soft reindex threshold (bytes) | `100000`                                |

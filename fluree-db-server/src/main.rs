@@ -29,6 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         version = env!("CARGO_PKG_VERSION"),
         storage = config.storage_type_str(),
         addr = %config.listen_addr,
+        log_level = %config.log_level,
         cors = config.cors_enabled,
         indexing = config.indexing_enabled,
         reindex_min_bytes = config.reindex_min_bytes,
