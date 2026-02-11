@@ -2661,6 +2661,7 @@ dependencies = [
  "ciborium",
  "clap",
  "dashmap",
+ "dirs 5.0.1",
  "ed25519-dalek",
  "fluree-db-api",
  "fluree-db-connection",

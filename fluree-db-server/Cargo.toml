@@ -93,6 +93,7 @@ clap = { workspace = true }
 
 # Config file support
 toml = "0.8"
+dirs = "5"
 
 # API documentation
 utoipa = { workspace = true }

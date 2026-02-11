@@ -13,6 +13,7 @@
 //! 5. Hardcoded defaults
 
 use clap::ArgMatches;
+use fluree_db_api::server_defaults::{self, FLUREE_DIR};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -230,32 +231,17 @@ pub enum ConfigFileError {
 // Config file discovery
 // ---------------------------------------------------------------------------
 
-const FLUREE_DIR: &str = ".fluree";
-const CONFIG_FILE_TOML: &str = "config.toml";
-const CONFIG_FILE_JSONLD: &str = "config.jsonld";
-
-/// Find a config file in a directory, checking for both TOML and JSON-LD.
-/// TOML is preferred. Warns if both exist.
+/// Find a config file in a directory using the shared detection logic.
+/// Logs a warning if both TOML and JSON-LD configs exist.
 fn find_config_in_dir(dir: &Path) -> Option<PathBuf> {
-    let toml_path = dir.join(CONFIG_FILE_TOML);
-    let jsonld_path = dir.join(CONFIG_FILE_JSONLD);
-
-    let toml_exists = toml_path.is_file();
-    let jsonld_exists = jsonld_path.is_file();
-
-    if toml_exists && jsonld_exists {
+    let detection = server_defaults::detect_config_in_dir(dir)?;
+    if detection.both_exist {
         warn!(
             dir = %dir.display(),
             "Both config.toml and config.jsonld found; using config.toml"
         );
-        Some(toml_path)
-    } else if toml_exists {
-        Some(toml_path)
-    } else if jsonld_exists {
-        Some(jsonld_path)
-    } else {
-        None
     }
+    Some(detection.path)
 }
 
 /// Resolve the config file path.
@@ -312,7 +298,7 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
 }
 
 fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    dirs::home_dir()
 }
 
 // ---------------------------------------------------------------------------

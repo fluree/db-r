@@ -5,6 +5,7 @@
 //! `fluree-db-cli` (the `fluree init` config template).
 
 use serde_json::json;
+use std::path::{Path, PathBuf};
 
 // ── Top-level server settings ───────────────────────────────────────
 
@@ -41,12 +42,22 @@ pub const DEFAULT_PEER_RECONNECT_MULTIPLIER: f64 = 2.0;
 
 pub const DEFAULT_STORAGE_PROXY_ENABLED: bool = false;
 
-// ── Config format ──────────────────────────────────────────────────
+// ── Config file discovery ────────────────────────────────────────────
+
+/// The `.fluree` directory name.
+pub const FLUREE_DIR: &str = ".fluree";
+
+/// TOML config file name within `.fluree/`.
+pub const CONFIG_FILE_TOML: &str = "config.toml";
+
+/// JSON-LD config file name within `.fluree/`.
+pub const CONFIG_FILE_JSONLD: &str = "config.jsonld";
 
 /// The JSON-LD vocabulary IRI for Fluree config properties.
 pub const CONFIG_VOCAB: &str = "https://ns.flur.ee/config#";
 
-/// Config file format for `fluree init`.
+/// Config file format. Used for init template generation, config file
+/// detection, and format-dispatched read/write in both CLI and server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigFormat {
     Toml,
@@ -57,10 +68,56 @@ impl ConfigFormat {
     /// File name for this format.
     pub fn filename(&self) -> &'static str {
         match self {
-            Self::Toml => "config.toml",
-            Self::JsonLd => "config.jsonld",
+            Self::Toml => CONFIG_FILE_TOML,
+            Self::JsonLd => CONFIG_FILE_JSONLD,
         }
     }
+}
+
+/// Detect which config file exists in a directory.
+///
+/// Checks for `config.toml` first, then `config.jsonld`. If both exist,
+/// TOML takes precedence and `both_exist` is set to `true` so callers
+/// can emit a warning in their preferred manner (e.g. `eprintln!` for
+/// CLI, `tracing::warn` for server).
+///
+/// Returns `None` if neither file exists.
+pub fn detect_config_in_dir(dir: &Path) -> Option<ConfigDetection> {
+    let toml_path = dir.join(CONFIG_FILE_TOML);
+    let jsonld_path = dir.join(CONFIG_FILE_JSONLD);
+
+    let toml_exists = toml_path.is_file();
+    let jsonld_exists = jsonld_path.is_file();
+
+    match (toml_exists, jsonld_exists) {
+        (true, true) => Some(ConfigDetection {
+            path: toml_path,
+            format: ConfigFormat::Toml,
+            both_exist: true,
+        }),
+        (true, false) => Some(ConfigDetection {
+            path: toml_path,
+            format: ConfigFormat::Toml,
+            both_exist: false,
+        }),
+        (false, true) => Some(ConfigDetection {
+            path: jsonld_path,
+            format: ConfigFormat::JsonLd,
+            both_exist: false,
+        }),
+        (false, false) => None,
+    }
+}
+
+/// Result of config file detection in a directory.
+#[derive(Debug)]
+pub struct ConfigDetection {
+    /// Path to the detected config file.
+    pub path: PathBuf,
+    /// Format of the detected config file.
+    pub format: ConfigFormat,
+    /// True if both `config.toml` and `config.jsonld` exist (TOML wins).
+    pub both_exist: bool,
 }
 
 // ── Template generation ─────────────────────────────────────────────

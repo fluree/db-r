@@ -1,20 +1,15 @@
 use crate::error::{CliError, CliResult};
+use fluree_db_api::server_defaults::{self, ConfigFormat, CONFIG_FILE_TOML, FLUREE_DIR};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FLUREE_DIR: &str = ".fluree";
 const ACTIVE_FILE: &str = "active";
 const STORAGE_DIR: &str = "storage";
-const CONFIG_FILE_TOML: &str = "config.toml";
-const CONFIG_FILE_JSONLD: &str = "config.jsonld";
 const PREFIXES_FILE: &str = "prefixes.json";
 
-/// Detected config file format within a `.fluree/` directory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigFileFormat {
-    Toml,
-    JsonLd,
-}
+/// Re-export ConfigFormat as ConfigFileFormat for backward compatibility
+/// within the CLI codebase.
+pub type ConfigFileFormat = ConfigFormat;
 
 /// Detect which config file exists in a `.fluree/` directory.
 ///
@@ -23,28 +18,14 @@ pub enum ConfigFileFormat {
 ///
 /// Returns `None` if neither file exists.
 pub fn detect_config_file(fluree_dir: &Path) -> Option<(PathBuf, ConfigFileFormat)> {
-    let toml_path = fluree_dir.join(CONFIG_FILE_TOML);
-    let jsonld_path = fluree_dir.join(CONFIG_FILE_JSONLD);
-
-    let toml_exists = toml_path.is_file();
-    let jsonld_exists = jsonld_path.is_file();
-
-    if toml_exists && jsonld_exists {
+    let detection = server_defaults::detect_config_in_dir(fluree_dir)?;
+    if detection.both_exist {
         eprintln!(
-            "warning: both {} and {} exist in {}; using {}",
-            CONFIG_FILE_TOML,
-            CONFIG_FILE_JSONLD,
+            "warning: both config.toml and config.jsonld exist in {}; using config.toml",
             fluree_dir.display(),
-            CONFIG_FILE_TOML,
         );
-        Some((toml_path, ConfigFileFormat::Toml))
-    } else if toml_exists {
-        Some((toml_path, ConfigFileFormat::Toml))
-    } else if jsonld_exists {
-        Some((jsonld_path, ConfigFileFormat::JsonLd))
-    } else {
-        None
     }
+    Some((detection.path, detection.format))
 }
 
 /// Walk up from `start` looking for a `.fluree/` directory.
