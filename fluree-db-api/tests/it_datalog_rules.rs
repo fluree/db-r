@@ -29,7 +29,7 @@ async fn datalog_grandparent_rule() {
     let rule_data = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
@@ -51,7 +51,7 @@ async fn datalog_grandparent_rule() {
     let rule_check = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "select": ["?rule", "?ruleValue"],
         "where": {"@id": "?rule", "f:rule": "?ruleValue"}
@@ -139,7 +139,7 @@ async fn datalog_sibling_rule() {
     let rule_data = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
@@ -252,7 +252,7 @@ async fn datalog_combined_with_owl2rl() {
     let schema_and_rule = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#",
+            "f": "https://ns.flur.ee/db#",
             "owl": "http://www.w3.org/2002/07/owl#",
             "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
         },
@@ -332,7 +332,7 @@ async fn datalog_recursive_ancestor_rule() {
     let rule_data = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
@@ -428,7 +428,7 @@ async fn datalog_chains_off_owl_entailments() {
     let schema_and_rule = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#",
+            "f": "https://ns.flur.ee/db#",
             "owl": "http://www.w3.org/2002/07/owl#"
         },
         "@graph": [
@@ -542,7 +542,7 @@ async fn datalog_chains_off_owl_entailments() {
     let rule_using_inverse = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
@@ -605,7 +605,7 @@ async fn datalog_filter_expression() {
     let rule_data = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#",
+            "f": "https://ns.flur.ee/db#",
             "xsd": "http://www.w3.org/2001/XMLSchema#"
         },
         "@graph": [
@@ -694,7 +694,7 @@ async fn datalog_filter_less_than() {
     let rule_data = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {
@@ -1000,7 +1000,7 @@ async fn datalog_query_time_rules_merged_with_db_rules() {
     let db_rule_data = json!({
         "@context": {
             "ex": "http://example.org/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {

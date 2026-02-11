@@ -100,7 +100,7 @@ impl<'a> MappingExtractor<'a> {
             .is_some()
         {
             return Err(R2rmlError::Unsupported(
-                "rr:sqlQuery is not supported for Iceberg virtual graphs".to_string(),
+                "rr:sqlQuery is not supported for Iceberg graph sources".to_string(),
             ));
         }
 
@@ -268,12 +268,12 @@ impl<'a> MappingExtractor<'a> {
 
             let mut join_conditions = self.extract_join_conditions(&om_triples)?;
 
-            // Iceberg VG subset: RefObjectMap without join conditions is invalid
+            // Iceberg subset: RefObjectMap without join conditions is invalid
             // (would cause cross-join explosion at runtime)
             if join_conditions.is_empty() {
                 return Err(R2rmlError::InvalidValue {
                     property: "rr:parentTriplesMap".to_string(),
-                    message: "RefObjectMap requires at least one rr:joinCondition for Iceberg virtual graphs".to_string(),
+                    message: "RefObjectMap requires at least one rr:joinCondition for Iceberg graph sources".to_string(),
                 });
             }
 

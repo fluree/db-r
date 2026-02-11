@@ -26,6 +26,7 @@
 mod error;
 #[cfg(feature = "native")]
 pub mod file;
+pub mod ledger_config;
 pub mod memory;
 pub mod storage_ns;
 pub mod storage_traits;
@@ -34,6 +35,13 @@ pub mod tracking;
 pub mod tracking_file;
 
 pub use error::{NameServiceError, Result};
+pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
+
+/// Storage path segment for graph source artifacts.
+///
+/// Used when constructing storage addresses for BM25, vector, and other graph
+/// source index artifacts, e.g. `fluree:file://graph-sources/{name}/{branch}/bm25/...`.
+pub const STORAGE_SEGMENT_GRAPH_SOURCES: &str = "graph-sources";
 pub use storage_ns::StorageNameService;
 pub use storage_traits::{
     ListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult, StorageList,
@@ -43,74 +51,84 @@ pub use tracking::{MemoryTrackingStore, RemoteName, RemoteTrackingStore, Trackin
 pub use tracking_file::FileTrackingStore;
 
 use async_trait::async_trait;
-use fluree_db_core::alias;
+use fluree_db_core::{format_ledger_id, ContentId};
+use fluree_vocab::ns_types;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use tokio::sync::broadcast;
 
 /// Nameservice record containing ledger metadata
 ///
-/// This struct preserves the distinction between the address (canonical ledger:branch)
+/// This struct preserves the distinction between the ledger_id (canonical ledger:branch)
 /// and the ledger name (without branch suffix).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NsRecord {
-    /// Canonical ledger address with branch (e.g., "mydb:main")
+    /// Canonical ledger ID with branch (e.g., "mydb:main")
     ///
     /// This is the primary cache key and the fully-qualified identifier.
     /// Use this for cache lookups and as the canonical form.
-    pub address: String,
+    pub ledger_id: String,
 
     /// Ledger name without branch suffix (e.g., "mydb")
-    ///
-    /// This matches Clojure's distinction where `alias` is the base name
-    /// and `address` includes the branch. For cache keys, use `address`.
-    pub alias: String,
+    pub name: String,
 
     /// Branch name (e.g., "main")
     pub branch: String,
 
-    /// Latest commit address
-    pub commit_address: Option<String>,
+    /// Content identifier for the head commit.
+    /// This is the authoritative identity for CAS comparisons
+    /// and commit-chain integrity checks.
+    #[serde(default)]
+    pub commit_head_id: Option<ContentId>,
 
     /// Transaction time of latest commit
     pub commit_t: i64,
 
-    /// Latest index address (may lag behind commit)
-    pub index_address: Option<String>,
+    /// Content identifier for the head index root.
+    /// This is the authoritative identity for index lookups.
+    #[serde(default)]
+    pub index_head_id: Option<ContentId>,
 
     /// Transaction time of latest index
     pub index_t: i64,
 
     /// Default context address for JSON-LD
-    pub default_context_address: Option<String>,
+    pub default_context: Option<String>,
 
     /// Whether this ledger has been retracted
     pub retracted: bool,
+
+    /// Content identifier for the ledger configuration object (origin discovery).
+    /// Points to a content-addressed `LedgerConfig` blob that describes
+    /// origins, auth requirements, and replication defaults.
+    #[serde(default)]
+    pub config_id: Option<ContentId>,
 }
 
 impl NsRecord {
     /// Create a new NsRecord with minimal required fields
-    pub fn new(alias: impl Into<String>, branch: impl Into<String>) -> Self {
-        let alias = alias.into();
+    pub fn new(name: impl Into<String>, branch: impl Into<String>) -> Self {
+        let name = name.into();
         let branch = branch.into();
-        let address = format!("{}:{}", alias, branch);
+        let ledger_id = format_ledger_id(&name, &branch);
 
         Self {
-            address,
-            alias,
+            ledger_id,
+            name,
             branch,
-            commit_address: None,
+            commit_head_id: None,
             commit_t: 0,
-            index_address: None,
+            index_head_id: None,
             index_t: 0,
-            default_context_address: None,
+            default_context: None,
             retracted: false,
+            config_id: None,
         }
     }
 
     /// Check if this record has an index
     pub fn has_index(&self) -> bool {
-        self.index_address.is_some()
+        self.index_head_id.is_some()
     }
 
     /// Check if there are commits newer than the index
@@ -119,276 +137,193 @@ impl NsRecord {
     }
 }
 
-/// Virtual graph type enumeration
+// ============================================================================
+// Graph Source types
+// ============================================================================
+
+/// Broad capability category for a graph source.
 ///
-/// Legacy/internal naming note:
-/// - This crate historically uses "VG" ("virtual graph") for non-ledger graph sources.
-/// - Product/docs may prefer the umbrella term "Graph Source".
-/// - For a low-churn transition, see the `GraphSource*` aliases defined below.
+/// This provides a first-class way to distinguish *what kind of source*
+/// a graph source is, without matching on every specific backend type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GraphSourceKind {
+    /// Default/named graphs stored in a ledger (RDF triple store)
+    Ledger,
+    /// Persisted indexes queried through graph-integrated patterns (BM25, Vector/HNSW, Geo)
+    Index,
+    /// Non-ledger data mapped into an RDF-shaped graph (Iceberg, R2RML/JDBC)
+    Mapped,
+}
+
+/// Specific backend type for a graph source.
+///
+/// Each variant maps to a concrete implementation that knows how to build,
+/// query, and sync a particular kind of graph source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VgType {
+pub enum GraphSourceType {
     /// BM25 full-text search index
     Bm25,
-    /// Vector similarity search index
+    /// Vector similarity search index (HNSW)
     Vector,
-    /// R2RML relational mapping (future)
+    /// S2 geospatial index
+    Geo,
+    /// R2RML relational mapping
     R2rml,
-    /// Apache Iceberg table (future)
+    /// Apache Iceberg table
     Iceberg,
-    /// Unknown/custom virtual graph type
+    /// Unknown/custom graph source type
     Unknown(String),
 }
 
-impl VgType {
-    /// Convert VgType to the JSON-LD @type string
-    pub fn to_type_string(&self) -> String {
+impl GraphSourceType {
+    /// Get the broad capability category for this source type.
+    pub fn kind(&self) -> GraphSourceKind {
         match self {
-            VgType::Bm25 => "fidx:BM25".to_string(),
-            VgType::Vector => "fidx:Vector".to_string(),
-            VgType::R2rml => "fidx:R2RML".to_string(),
-            VgType::Iceberg => "fidx:Iceberg".to_string(),
-            VgType::Unknown(s) => s.clone(),
+            GraphSourceType::Bm25 | GraphSourceType::Vector | GraphSourceType::Geo => {
+                GraphSourceKind::Index
+            }
+            GraphSourceType::R2rml | GraphSourceType::Iceberg => GraphSourceKind::Mapped,
+            GraphSourceType::Unknown(_) => GraphSourceKind::Index, // default assumption
         }
     }
 
-    /// Parse from a JSON-LD @type string
+    /// Convert to the compact JSON-LD @type string using `f:` prefix.
+    ///
+    /// Returns the compact form (e.g., `"f:Bm25Index"`) suitable for use in
+    /// JSON files where the `@context` provides `{"f": "https://ns.flur.ee/db#"}`.
+    pub fn to_type_string(&self) -> String {
+        match self {
+            GraphSourceType::Bm25 => "f:Bm25Index".to_string(),
+            GraphSourceType::Vector => "f:HnswIndex".to_string(),
+            GraphSourceType::Geo => "f:GeoIndex".to_string(),
+            GraphSourceType::R2rml => "f:R2rmlMapping".to_string(),
+            GraphSourceType::Iceberg => "f:IcebergMapping".to_string(),
+            GraphSourceType::Unknown(s) => s.clone(),
+        }
+    }
+
+    /// Parse from a JSON-LD @type string.
+    ///
+    /// Accepts compact (`f:Bm25Index`) and full IRI
+    /// (`https://ns.flur.ee/db#Bm25Index`) forms, plus fuzzy matching as fallback.
     pub fn from_type_string(s: &str) -> Self {
         match s {
-            "fidx:BM25" => VgType::Bm25,
-            "fidx:Vector" => VgType::Vector,
-            "fidx:R2RML" => VgType::R2rml,
-            "fidx:Iceberg" => VgType::Iceberg,
-            _ if s.contains("BM25") || s.contains("bm25") => VgType::Bm25,
-            _ if s.contains("Vector") || s.contains("vector") => VgType::Vector,
-            _ if s.contains("R2RML") || s.contains("r2rml") => VgType::R2rml,
-            _ if s.contains("Iceberg") || s.contains("iceberg") => VgType::Iceberg,
-            _ => VgType::Unknown(s.to_string()),
+            // Compact forms (primary, used in ns@v2 files)
+            "f:Bm25Index" => GraphSourceType::Bm25,
+            "f:HnswIndex" => GraphSourceType::Vector,
+            "f:GeoIndex" => GraphSourceType::Geo,
+            "f:R2rmlMapping" => GraphSourceType::R2rml,
+            "f:IcebergMapping" => GraphSourceType::Iceberg,
+            // Full IRI forms
+            ns_types::BM25_INDEX => GraphSourceType::Bm25,
+            ns_types::HNSW_INDEX => GraphSourceType::Vector,
+            ns_types::GEO_INDEX => GraphSourceType::Geo,
+            ns_types::R2RML_MAPPING => GraphSourceType::R2rml,
+            ns_types::ICEBERG_MAPPING => GraphSourceType::Iceberg,
+            _ => GraphSourceType::Unknown(s.to_string()),
         }
     }
 }
 
-/// Virtual graph nameservice record
+/// Graph source nameservice record
 ///
-/// This struct holds metadata for non-ledger graph sources (BM25, R2RML, Iceberg, etc.)
-/// stored in the nameservice. Virtual graphs are separate from ledgers but
+/// Holds metadata for non-ledger graph sources (BM25, Vector, Geo, R2RML, Iceberg, etc.)
+/// stored in the nameservice. Graph source records are separate from ledger records but
 /// follow a similar ns@v2 storage pattern.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VgNsRecord {
-    /// The address used to look up this record (e.g., "my-search:main")
-    pub address: String,
+pub struct GraphSourceRecord {
+    /// Canonical identifier for this graph source (e.g., "my-search:main")
+    pub graph_source_id: String,
 
-    /// Base name of the virtual graph (e.g., "my-search")
+    /// Base name of the graph source (e.g., "my-search")
     pub name: String,
 
     /// Branch name (e.g., "main")
     pub branch: String,
 
-    /// Virtual graph type (BM25, R2RML, Iceberg, etc.)
-    pub vg_type: VgType,
+    /// Graph source type (BM25, Vector, Geo, R2RML, Iceberg, etc.)
+    pub source_type: GraphSourceType,
 
-    /// Configuration as JSON string (parsed by VG implementation)
+    /// Configuration as JSON string (parsed by graph source implementation)
     pub config: String,
 
-    /// Dependent ledger aliases (e.g., ["source-ledger:main"])
+    /// Dependent ledger IDs (e.g., ["source-ledger:main"])
     pub dependencies: Vec<String>,
 
-    /// Index snapshot address (if any)
-    pub index_address: Option<String>,
+    /// Content identifier for the index snapshot (if any)
+    pub index_id: Option<ContentId>,
 
     /// Index watermark (transaction time of indexed data)
     pub index_t: i64,
 
-    /// Whether this virtual graph has been retracted
+    /// Whether this graph source has been retracted
     pub retracted: bool,
 }
 
-impl VgNsRecord {
-    /// Create a new VgNsRecord with required fields
+impl GraphSourceRecord {
+    /// Create a new GraphSourceRecord with required fields
     pub fn new(
         name: impl Into<String>,
         branch: impl Into<String>,
-        vg_type: VgType,
+        source_type: GraphSourceType,
         config: impl Into<String>,
         dependencies: Vec<String>,
     ) -> Self {
         let name = name.into();
         let branch = branch.into();
-        let address = format!("{}:{}", name, branch);
+        let graph_source_id = format_ledger_id(&name, &branch);
 
         Self {
-            address,
+            graph_source_id,
             name,
             branch,
-            vg_type,
+            source_type,
             config: config.into(),
             dependencies,
-            index_address: None,
+            index_id: None,
             index_t: 0,
             retracted: false,
         }
     }
 
-    /// Check if this is a BM25 virtual graph
+    /// Check if this is a BM25 graph source
     pub fn is_bm25(&self) -> bool {
-        matches!(self.vg_type, VgType::Bm25)
+        matches!(self.source_type, GraphSourceType::Bm25)
     }
 
-    /// Check if this is a Vector virtual graph
+    /// Check if this is a Vector graph source
     pub fn is_vector(&self) -> bool {
-        matches!(self.vg_type, VgType::Vector)
+        matches!(self.source_type, GraphSourceType::Vector)
     }
 
-    /// Check if this virtual graph has an index
+    /// Check if this graph source has an index
     pub fn has_index(&self) -> bool {
-        self.index_address.is_some()
-    }
-
-    /// Get the canonical alias (name:branch)
-    pub fn alias(&self) -> String {
-        format!("{}:{}", self.name, self.branch)
-    }
-}
-
-/// A single snapshot entry in VG snapshot history
-///
-/// Represents a versioned BM25 (or other VG type) index snapshot at a specific `t`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VgSnapshotEntry {
-    /// Transaction time (watermark) for this snapshot
-    pub index_t: i64,
-
-    /// Storage address of the snapshot
-    pub index_address: String,
-}
-
-impl VgSnapshotEntry {
-    /// Create a new snapshot entry
-    pub fn new(index_t: i64, index_address: impl Into<String>) -> Self {
-        Self {
-            index_t,
-            index_address: index_address.into(),
-        }
-    }
-}
-
-/// VG snapshot history for time-travel queries
-///
-/// Contains an ordered list of snapshot entries (monotonically increasing by `index_t`).
-/// Used to select the appropriate snapshot for historical queries.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct VgSnapshotHistory {
-    /// VG alias (e.g., "my-search:main")
-    pub alias: String,
-
-    /// Ordered list of snapshots (sorted by index_t ascending)
-    pub snapshots: Vec<VgSnapshotEntry>,
-}
-
-impl VgSnapshotHistory {
-    /// Create a new empty snapshot history
-    pub fn new(alias: impl Into<String>) -> Self {
-        Self {
-            alias: alias.into(),
-            snapshots: Vec::new(),
-        }
-    }
-
-    /// Select the best snapshot for a given `as_of_t`
-    ///
-    /// Returns the snapshot with `index_t = max { t | t <= as_of_t }`,
-    /// or `None` if no suitable snapshot exists.
-    pub fn select_snapshot(&self, as_of_t: i64) -> Option<&VgSnapshotEntry> {
-        // Find the largest index_t <= as_of_t
-        // Since snapshots are sorted ascending, we can iterate in reverse
-        self.snapshots.iter().rev().find(|s| s.index_t <= as_of_t)
-    }
-
-    /// Get the most recent snapshot (head)
-    pub fn head(&self) -> Option<&VgSnapshotEntry> {
-        self.snapshots.last()
-    }
-
-    /// Check if a snapshot exists at exactly the given `t`
-    pub fn has_snapshot_at(&self, t: i64) -> bool {
-        self.snapshots.iter().any(|s| s.index_t == t)
-    }
-
-    /// Append a snapshot entry (must be monotonically increasing)
-    ///
-    /// Returns `true` if the snapshot was added, `false` if it was rejected
-    /// (duplicate or lower `t` than existing).
-    pub fn append(&mut self, entry: VgSnapshotEntry) -> bool {
-        if let Some(last) = self.snapshots.last() {
-            if entry.index_t <= last.index_t {
-                return false; // Reject: not strictly increasing
-            }
-        }
-        self.snapshots.push(entry);
-        true
+        self.index_id.is_some()
     }
 }
 
 /// Result of looking up a nameservice record
 ///
-/// Can be either a ledger record or a virtual graph record.
+/// Can be either a ledger record or a graph source record.
 #[derive(Clone, Debug)]
 pub enum NsLookupResult {
     /// A ledger record
     Ledger(NsRecord),
-    /// A virtual graph record
-    VirtualGraph(VgNsRecord),
+    /// A graph source record (non-ledger)
+    GraphSource(GraphSourceRecord),
     /// Record not found
     NotFound,
 }
 
-// ============================================================================
-// Graph Source naming (non-breaking aliases)
-// ============================================================================
-//
-// We are converging on "Graph Source" as the umbrella term for anything addressable
-// by a graph IRI/name in query execution (ledger graphs, indexes, mappings, etc.).
-//
-// Internally, the nameservice has long used "VG" to mean "non-ledger graph source".
-// These aliases allow new code/docs to use "GraphSource*" names without forcing a
-// breaking rename across the crate graph.
-//
-/// Graph source type (legacy: `VgType`).
-pub type GraphSourceType = VgType;
-
-/// Graph source nameservice record (legacy: `VgNsRecord`).
-///
-/// Note: This currently represents *non-ledger* graph sources only.
-pub type GraphSourceRecord = VgNsRecord;
-
-/// Graph source snapshot entry (legacy: `VgSnapshotEntry`).
-pub type GraphSourceSnapshotEntry = VgSnapshotEntry;
-
-/// Graph source snapshot history (legacy: `VgSnapshotHistory`).
-pub type GraphSourceSnapshotHistory = VgSnapshotHistory;
-
-/// Graph source publisher (legacy: `VirtualGraphPublisher`).
-///
-/// This is intentionally a thin wrapper to allow code to speak in "graph source"
-/// terms while reusing the existing nameservice storage format and invariants.
-#[async_trait]
-pub trait GraphSourcePublisher: VirtualGraphPublisher {}
-
-impl<T: VirtualGraphPublisher + ?Sized> GraphSourcePublisher for T {}
-
 /// Read-only nameservice lookup trait
 ///
-/// Implementations provide ledger discovery by alias or address.
+/// Implementations provide ledger discovery by ledger ID.
 #[async_trait]
 pub trait NameService: Debug + Send + Sync {
-    /// Look up a ledger by address (may be alias or IRI)
+    /// Look up a ledger by its ledger ID (e.g. "mydb:main")
     ///
     /// Returns `None` if the ledger is not found.
-    async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>>;
-
-    /// Get the alias for a ledger address (if known)
-    ///
-    /// This is the reverse lookup - given an address, find the alias.
-    async fn alias(&self, ledger_address: &str) -> Result<Option<String>>;
+    async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>>;
 
     /// Get all known ledger records
     ///
@@ -405,21 +340,26 @@ pub trait Publisher: Debug + Send + Sync {
     /// Initialize a new ledger in the nameservice
     ///
     /// Creates a minimal NsRecord for a new ledger with no commits yet.
-    /// Only succeeds if no record exists for this alias.
+    /// Only succeeds if no record exists for this ledger ID.
     ///
     /// # Arguments
-    /// * `alias` - The normalized ledger alias (e.g., "mydb:main")
+    /// * `ledger_id` - The normalized ledger ID (e.g., "mydb:main")
     ///
     /// # Errors
     /// Returns an error if a record already exists (including retracted records).
-    async fn publish_ledger_init(&self, alias: &str) -> Result<()>;
+    async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()>;
 
     /// Publish a new commit
     ///
     /// Only updates if: `(not exists) OR (new_t > existing_t)`
     ///
     /// This is called by the transactor after each successful commit.
-    async fn publish_commit(&self, alias: &str, commit_addr: &str, commit_t: i64) -> Result<()>;
+    async fn publish_commit(
+        &self,
+        ledger_id: &str,
+        commit_t: i64,
+        commit_id: &ContentId,
+    ) -> Result<()>;
 
     /// Publish a new index
     ///
@@ -430,19 +370,24 @@ pub trait Publisher: Debug + Send + Sync {
     /// with commit publishing.
     ///
     /// Note: "equal t prefers index file" is a READ-TIME merge rule, not a write rule.
-    async fn publish_index(&self, alias: &str, index_addr: &str, index_t: i64) -> Result<()>;
+    async fn publish_index(
+        &self,
+        ledger_id: &str,
+        index_t: i64,
+        index_id: &ContentId,
+    ) -> Result<()>;
 
     /// Retract a ledger
     ///
     /// Marks the ledger as retracted. Future lookups will return the record
     /// with `retracted: true`.
-    async fn retract(&self, alias: &str) -> Result<()>;
+    async fn retract(&self, ledger_id: &str) -> Result<()>;
 
-    /// Get the publishing address for an alias
+    /// Get the publishing ledger ID for a ledger.
     ///
     /// Returns `None` for "private" publishing (don't write ns field to commit).
-    /// Returns `Some(address)` for the value to write into commit's ns field.
-    fn publishing_address(&self, alias: &str) -> Option<String>;
+    /// Returns `Some(ledger_id)` for the value to write into commit's ns field.
+    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String>;
 }
 
 /// Admin-level publisher operations
@@ -455,123 +400,97 @@ pub trait AdminPublisher: Publisher {
     ///
     /// Unlike `publish_index()` which enforces strict monotonicity (new_t > existing_t),
     /// this method allows overwriting when t == existing_t. This is needed for admin
-    /// operations like `reindex()` where we rebuild to the same t with a new root address.
+    /// operations like `reindex()` where we rebuild to the same t with a new root.
     ///
     /// Note: This does NOT allow t < existing_t to preserve invariants for time-travel
     /// and snapshot history.
     async fn publish_index_allow_equal(
         &self,
-        alias: &str,
-        index_addr: &str,
+        ledger_id: &str,
         index_t: i64,
+        index_id: &ContentId,
     ) -> Result<()>;
 }
 
-/// Virtual graph publisher trait
+/// Graph source publisher trait
 ///
-/// Implementations handle publishing virtual graph config and index updates.
-/// Virtual graph records are stored separately from ledger records.
+/// Implementations handle publishing graph source config and index updates.
+/// Graph source records are stored separately from ledger records.
 #[async_trait]
-pub trait VirtualGraphPublisher: Debug + Send + Sync {
-    /// Publish a virtual graph configuration record
+pub trait GraphSourcePublisher: Debug + Send + Sync {
+    /// Publish a graph source configuration record
     ///
-    /// Creates or updates the VG config in nameservice. This stores the VG
+    /// Creates or updates the graph source config in nameservice. This stores the
     /// definition (type, config, dependencies) but NOT the index state.
     ///
-    /// The config record is stored at `ns@v2/{vg-name}/{branch}.json`.
-    async fn publish_vg(
+    /// The config record is stored at `ns@v2/{name}/{branch}.json`.
+    async fn publish_graph_source(
         &self,
         name: &str,
         branch: &str,
-        vg_type: VgType,
+        source_type: GraphSourceType,
         config: &str,
         dependencies: &[String],
     ) -> Result<()>;
 
-    /// Update virtual graph index address (head pointer)
+    /// Update graph source index head pointer
     ///
     /// Only updates if: `new_index_t > existing_index_t` (strictly monotonic).
     ///
-    /// The index record is stored at `ns@v2/{vg-name}/{branch}.index.json`,
+    /// The index record is stored at `ns@v2/{name}/{branch}.index.json`,
     /// separate from the config record to avoid contention.
     ///
     /// Config updates must NOT reset index watermark.
     /// Index updates must NOT rewrite config.
-    ///
-    /// NOTE: This updates the "head" pointer only. For time-travel support,
-    /// also call `publish_vg_snapshot` to record the snapshot in history.
-    async fn publish_vg_index(
+    async fn publish_graph_source_index(
         &self,
         name: &str,
         branch: &str,
-        index_addr: &str,
+        index_id: &ContentId,
         index_t: i64,
     ) -> Result<()>;
 
-    /// Publish a snapshot to the VG snapshot history
+    /// Retract a graph source
     ///
-    /// Appends a snapshot entry to the history file. Only succeeds if
-    /// `index_t > max(existing snapshot t)` (strictly monotonic).
-    ///
-    /// The snapshot history is stored at `ns@v2/{vg-name}/{branch}.snapshots.json`.
-    ///
-    /// This is separate from `publish_vg_index` to allow:
-    /// 1. Building historical snapshots without moving head
-    /// 2. Recording all snapshots for time-travel queries
-    async fn publish_vg_snapshot(
-        &self,
-        name: &str,
-        branch: &str,
-        index_addr: &str,
-        index_t: i64,
-    ) -> Result<()>;
-
-    /// Look up the snapshot history for a virtual graph
-    ///
-    /// Returns the full snapshot history for time-travel snapshot selection.
-    /// Returns an empty history if no snapshots have been published.
-    async fn lookup_vg_snapshots(&self, alias: &str) -> Result<VgSnapshotHistory>;
-
-    /// Retract a virtual graph
-    ///
-    /// Marks the VG as retracted. Future lookups will return the record
+    /// Marks the graph source as retracted. Future lookups will return the record
     /// with `retracted: true`.
-    async fn retract_vg(&self, name: &str, branch: &str) -> Result<()>;
+    async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()>;
 
-    /// Look up a virtual graph by alias
+    /// Look up a graph source by its graph_source_id (e.g. "my-search:main").
     ///
-    /// Returns `None` if not found or if the record is a ledger (not a VG).
-    async fn lookup_vg(&self, alias: &str) -> Result<Option<VgNsRecord>>;
+    /// Returns `None` if not found or if the record is a ledger (not a graph source).
+    async fn lookup_graph_source(&self, graph_source_id: &str)
+        -> Result<Option<GraphSourceRecord>>;
 
-    /// Look up any record (ledger or VG) and return unified result
+    /// Look up any record (ledger or graph source) and return unified result.
     ///
-    /// This is useful when you don't know if an alias refers to a ledger or VG.
-    async fn lookup_any(&self, alias: &str) -> Result<NsLookupResult>;
+    /// `resource_id` can be either a ledger_id or graph_source_id.
+    async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult>;
 
-    /// Get all known virtual graph records
+    /// Get all known graph source records
     ///
     /// Used for building in-memory query indexes over the nameservice.
-    /// Returns all VG records including retracted ones (callers can filter by status).
-    async fn all_vg_records(&self) -> Result<Vec<VgNsRecord>>;
+    /// Returns all graph source records including retracted ones (callers can filter by status).
+    async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>>;
 }
 
 /// Subscription scope for filtering nameservice events.
 ///
 /// Determines which events a subscriber will receive:
-/// - `Alias(String)` - Only events matching this specific alias
-/// - `All` - All events from any ledger or virtual graph
+/// - `ResourceId(String)` - Only events matching this specific ledger_id or graph_source_id
+/// - `All` - All events from any ledger or graph source
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubscriptionScope {
-    /// Subscribe to events for a specific alias (ledger or VG)
-    Alias(String),
-    /// Subscribe to all events (all ledgers and VGs)
+    /// Subscribe to events for a specific resource (ledger_id or graph_source_id)
+    ResourceId(String),
+    /// Subscribe to all events (all ledgers and graph sources)
     All,
 }
 
 impl SubscriptionScope {
-    /// Create a scope for a specific alias
-    pub fn alias(alias: impl Into<String>) -> Self {
-        Self::Alias(alias.into())
+    /// Create a scope for a specific resource ID (ledger_id or graph_source_id)
+    pub fn resource_id(id: impl Into<String>) -> Self {
+        Self::ResourceId(id.into())
     }
 
     /// Create a scope for all events
@@ -579,11 +498,11 @@ impl SubscriptionScope {
         Self::All
     }
 
-    /// Check if this scope matches a given event alias
-    pub fn matches(&self, event_alias: &str) -> bool {
+    /// Check if this scope matches a given event's resource_id
+    pub fn matches(&self, event_resource_id: &str) -> bool {
         match self {
             Self::All => true,
-            Self::Alias(a) => a == event_alias,
+            Self::ResourceId(id) => id == event_resource_id,
         }
     }
 }
@@ -597,44 +516,38 @@ impl SubscriptionScope {
 pub enum NameServiceEvent {
     /// A ledger commit head was advanced.
     LedgerCommitPublished {
-        alias: String,
-        commit_address: String,
+        ledger_id: String,
+        commit_id: ContentId,
         commit_t: i64,
     },
     /// A ledger index head was advanced.
     LedgerIndexPublished {
-        alias: String,
-        index_address: String,
+        ledger_id: String,
+        index_id: ContentId,
         index_t: i64,
     },
     /// A ledger was retracted.
-    LedgerRetracted { alias: String },
-    /// A virtual graph config was published/updated.
-    VgConfigPublished {
-        alias: String,
-        vg_type: VgType,
+    LedgerRetracted { ledger_id: String },
+    /// A graph source config was published/updated.
+    GraphSourceConfigPublished {
+        graph_source_id: String,
+        source_type: GraphSourceType,
         dependencies: Vec<String>,
     },
-    /// A virtual graph head index pointer was advanced.
-    VgIndexPublished {
-        alias: String,
-        index_address: String,
+    /// A graph source index head pointer was advanced.
+    GraphSourceIndexPublished {
+        graph_source_id: String,
+        index_id: ContentId,
         index_t: i64,
     },
-    /// A virtual graph snapshot was appended to history.
-    VgSnapshotPublished {
-        alias: String,
-        index_address: String,
-        index_t: i64,
-    },
-    /// A virtual graph was retracted.
-    VgRetracted { alias: String },
+    /// A graph source was retracted.
+    GraphSourceRetracted { graph_source_id: String },
 }
 
 /// Subscription handle for receiving ledger updates
 #[derive(Debug)]
 pub struct Subscription {
-    /// The subscription scope (alias or all)
+    /// The subscription scope (resource_id or all)
     pub scope: SubscriptionScope,
     /// Receiver for nameservice events (in-process).
     pub receiver: broadcast::Receiver<NameServiceEvent>,
@@ -656,8 +569,8 @@ pub trait Publication: Debug + Send + Sync {
     /// Unsubscribe from updates (no-op for stateless implementations)
     async fn unsubscribe(&self, scope: &SubscriptionScope) -> Result<()>;
 
-    /// Get all known addresses for an alias (commit history)
-    async fn known_addresses(&self, alias: &str) -> Result<Vec<String>>;
+    /// Get all known ledger IDs for a ledger (commit history)
+    async fn known_ledger_ids(&self, ledger_id: &str) -> Result<Vec<String>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -675,17 +588,17 @@ pub enum RefKind {
     IndexHead,
 }
 
-/// A ref value: an optional address + transaction-time watermark.
+/// A ref value: identity + transaction-time watermark.
 ///
 /// Semantics when returned from [`RefPublisher::get_ref`]:
-/// - `Some(RefValue { address: None, t: 0 })` — ref exists but is "unborn"
+/// - `Some(RefValue { id: None, t: 0 })` — ref exists but is "unborn"
 ///   (ledger initialised, no commit yet — analogous to git's unborn HEAD).
-/// - `Some(RefValue { address: Some(..), t })` — ref exists with a value.
-/// - `None` (at the `Option` level) — alias/ref is completely unknown.
+/// - `Some(RefValue { id: Some(..), .. })` — ref exists with a CID identity.
+/// - `None` (at the `Option` level) — ledger ID/ref is completely unknown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefValue {
-    /// Address of the commit or index root. `None` means "unborn".
-    pub address: Option<String>,
+    /// Content identifier — the **identity** of the referenced object.
+    pub id: Option<ContentId>,
     /// Monotonic watermark (transaction time).
     pub t: i64,
 }
@@ -706,8 +619,8 @@ pub enum CasResult {
 
 /// Explicit ref-level CAS operations for sync.
 ///
-/// CAS compares on **address** (the ref identity — like git's "expected old
-/// OID"). `t` serves as a **kind-dependent monotonic guard**:
+/// CAS compares on **identity** via `id` (ContentId). `t` serves as a
+/// **kind-dependent monotonic guard**:
 ///
 /// | Kind         | Guard             | Rationale                          |
 /// |--------------|-------------------|------------------------------------|
@@ -719,17 +632,17 @@ pub enum CasResult {
 /// graph walk would be required — that is out of scope here.
 #[async_trait]
 pub trait RefPublisher: Debug + Send + Sync {
-    /// Read the current ref value for an alias + kind.
+    /// Read the current ref value for a ledger ID + kind.
     ///
     /// Returns:
-    /// - `Some(RefValue { address: None, .. })` — ref exists, unborn
-    /// - `Some(RefValue { address: Some(..), .. })` — ref exists with value
-    /// - `None` — alias/ref completely unknown
-    async fn get_ref(&self, alias: &str, kind: RefKind) -> Result<Option<RefValue>>;
+    /// - `Some(RefValue { id: None, t: 0 })` — ref exists, unborn
+    /// - `Some(RefValue { id: Some(..), .. })` — ref exists with CID identity
+    /// - `None` — ledger ID/ref completely unknown
+    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>>;
 
     /// Atomic compare-and-set.
     ///
-    /// Updates the ref **only if** the current address matches `expected`.
+    /// Updates the ref **only if** the current identity matches `expected`.
     /// Pass `expected = None` for initial creation (ref must not exist).
     ///
     /// The kind-dependent monotonic guard is also checked:
@@ -739,7 +652,7 @@ pub trait RefPublisher: Debug + Send + Sync {
     /// Returns [`CasResult::Conflict`] (with the actual value) on mismatch.
     async fn compare_and_set_ref(
         &self,
-        alias: &str,
+        ledger_id: &str,
         kind: RefKind,
         expected: Option<&RefValue>,
         new: &RefValue,
@@ -754,12 +667,12 @@ pub trait RefPublisher: Debug + Send + Sync {
     /// diverged (`current.t >= new.t` after re-read).
     async fn fast_forward_commit(
         &self,
-        alias: &str,
+        ledger_id: &str,
         new: &RefValue,
         max_retries: usize,
     ) -> Result<CasResult> {
         for _ in 0..max_retries {
-            let current = self.get_ref(alias, RefKind::CommitHead).await?;
+            let current = self.get_ref(ledger_id, RefKind::CommitHead).await?;
 
             // Check whether fast-forward is still possible.
             if let Some(ref cur) = current {
@@ -769,7 +682,7 @@ pub trait RefPublisher: Debug + Send + Sync {
             }
 
             match self
-                .compare_and_set_ref(alias, RefKind::CommitHead, current.as_ref(), new)
+                .compare_and_set_ref(ledger_id, RefKind::CommitHead, current.as_ref(), new)
                 .await?
             {
                 CasResult::Updated => return Ok(CasResult::Updated),
@@ -786,17 +699,9 @@ pub trait RefPublisher: Debug + Send + Sync {
             }
         }
         // Exhausted retries — return latest known state.
-        let current = self.get_ref(alias, RefKind::CommitHead).await?;
+        let current = self.get_ref(ledger_id, RefKind::CommitHead).await?;
         Ok(CasResult::Conflict { actual: current })
     }
-}
-
-/// Parse a ledger alias into (ledger_name, branch) components
-///
-/// Alias format: `ledger-name:branch` (e.g., "mydb:main")
-/// If no branch is specified, defaults to the core default branch.
-pub fn parse_alias(alias: &str) -> Result<(String, String)> {
-    alias::split_alias(alias).map_err(|e| NameServiceError::invalid_alias(format!("{}", e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +799,10 @@ pub struct ConfigPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_context: Option<String>,
 
+    /// Content ID of the LedgerConfig blob (origin discovery).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config_id: Option<ContentId>,
+
     /// Additional config (index_threshold, replication settings, etc.)
     #[serde(flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,
@@ -909,6 +818,7 @@ impl ConfigPayload {
     pub fn with_default_context(context: impl Into<String>) -> Self {
         Self {
             default_context: Some(context.into()),
+            config_id: None,
             extra: std::collections::HashMap::new(),
         }
     }
@@ -1014,19 +924,19 @@ pub enum ConfigCasResult {
 /// Status always exists once a record is created (initial state is "ready" with v=1).
 #[async_trait]
 pub trait StatusPublisher: Debug + Send + Sync {
-    /// Get current status for an alias.
+    /// Get current status for a ledger ID.
     ///
     /// Returns:
     /// - `Some(StatusValue)` — record exists with status
     /// - `None` — record doesn't exist at all
-    async fn get_status(&self, alias: &str) -> Result<Option<StatusValue>>;
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>>;
 
     /// Push status with CAS semantics.
     ///
     /// Updates only if current matches expected. Returns conflict with actual on mismatch.
     ///
     /// # Arguments
-    /// * `alias` - The ledger/entity alias
+    /// * `ledger_id` - The ledger ID
     /// * `expected` - The expected current status (`None` for initial creation)
     /// * `new` - The new status to set (must have `new.v > expected.v`)
     ///
@@ -1035,7 +945,7 @@ pub trait StatusPublisher: Debug + Send + Sync {
     /// - `Conflict { actual }` — current didn't match expected
     async fn push_status(
         &self,
-        alias: &str,
+        ledger_id: &str,
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> Result<StatusCasResult>;
@@ -1050,19 +960,19 @@ pub trait StatusPublisher: Debug + Send + Sync {
 /// Config can be "unborn" (v=0, payload=None) if no config has been set yet.
 #[async_trait]
 pub trait ConfigPublisher: Debug + Send + Sync {
-    /// Get current config for an alias.
+    /// Get current config for a ledger ID.
     ///
     /// Returns:
     /// - `Some(ConfigValue)` — record exists (may be unborn with v=0)
     /// - `None` — record doesn't exist at all
-    async fn get_config(&self, alias: &str) -> Result<Option<ConfigValue>>;
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>>;
 
     /// Push config with CAS semantics.
     ///
     /// Updates only if current matches expected. Returns conflict with actual on mismatch.
     ///
     /// # Arguments
-    /// * `alias` - The ledger/entity alias
+    /// * `ledger_id` - The ledger ID
     /// * `expected` - The expected current config (`None` for initial creation)
     /// * `new` - The new config to set (must have `new.v > expected.v`)
     ///
@@ -1071,7 +981,7 @@ pub trait ConfigPublisher: Debug + Send + Sync {
     /// - `Conflict { actual }` — current didn't match expected
     async fn push_config(
         &self,
-        alias: &str,
+        ledger_id: &str,
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult>;
@@ -1080,41 +990,14 @@ pub trait ConfigPublisher: Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_alias_with_branch() {
-        let (ledger, branch) = parse_alias("mydb:main").unwrap();
-        assert_eq!(ledger, "mydb");
-        assert_eq!(branch, "main");
-    }
-
-    #[test]
-    fn test_parse_alias_without_branch() {
-        let (ledger, branch) = parse_alias("mydb").unwrap();
-        assert_eq!(ledger, "mydb");
-        assert_eq!(branch, "main");
-    }
-
-    #[test]
-    fn test_parse_alias_with_slashes() {
-        let (ledger, branch) = parse_alias("tenant/customers:dev").unwrap();
-        assert_eq!(ledger, "tenant/customers");
-        assert_eq!(branch, "dev");
-    }
-
-    #[test]
-    fn test_parse_alias_empty() {
-        assert!(parse_alias("").is_err());
-        assert!(parse_alias(":main").is_err());
-        assert!(parse_alias("ledger:").is_err());
-    }
+    use fluree_db_core::ContentKind;
 
     #[test]
     fn test_ns_record_new() {
         let record = NsRecord::new("mydb", "main");
-        assert_eq!(record.alias, "mydb");
+        assert_eq!(record.name, "mydb");
         assert_eq!(record.branch, "main");
-        assert_eq!(record.address, "mydb:main");
+        assert_eq!(record.ledger_id, "mydb:main");
         assert_eq!(record.commit_t, 0);
         assert_eq!(record.index_t, 0);
         assert!(!record.retracted);
@@ -1134,176 +1017,103 @@ mod tests {
     }
 
     #[test]
-    fn test_vg_type_to_string() {
-        assert_eq!(VgType::Bm25.to_type_string(), "fidx:BM25");
-        assert_eq!(VgType::Vector.to_type_string(), "fidx:Vector");
-        assert_eq!(VgType::R2rml.to_type_string(), "fidx:R2RML");
-        assert_eq!(VgType::Iceberg.to_type_string(), "fidx:Iceberg");
+    fn test_graph_source_type_to_string() {
+        // to_type_string returns compact "f:" prefixed forms
+        assert_eq!(GraphSourceType::Bm25.to_type_string(), "f:Bm25Index");
+        assert_eq!(GraphSourceType::Vector.to_type_string(), "f:HnswIndex");
+        assert_eq!(GraphSourceType::Geo.to_type_string(), "f:GeoIndex");
+        assert_eq!(GraphSourceType::R2rml.to_type_string(), "f:R2rmlMapping");
         assert_eq!(
-            VgType::Unknown("fidx:Custom".to_string()).to_type_string(),
-            "fidx:Custom"
+            GraphSourceType::Iceberg.to_type_string(),
+            "f:IcebergMapping"
+        );
+        assert_eq!(
+            GraphSourceType::Unknown("https://example.com/Custom".to_string()).to_type_string(),
+            "https://example.com/Custom"
         );
     }
 
     #[test]
-    fn test_vg_type_from_string() {
-        assert_eq!(VgType::from_type_string("fidx:BM25"), VgType::Bm25);
-        assert_eq!(VgType::from_type_string("fidx:Vector"), VgType::Vector);
-        assert_eq!(VgType::from_type_string("fidx:R2RML"), VgType::R2rml);
-        assert_eq!(VgType::from_type_string("fidx:Iceberg"), VgType::Iceberg);
-        // Fuzzy matching
+    fn test_graph_source_type_from_string() {
+        // Full IRI forms
         assert_eq!(
-            VgType::from_type_string("https://ns.flur.ee/index#BM25"),
-            VgType::Bm25
+            GraphSourceType::from_type_string(ns_types::BM25_INDEX),
+            GraphSourceType::Bm25
         );
         assert_eq!(
-            VgType::from_type_string("https://ns.flur.ee/index#Vector"),
-            VgType::Vector
+            GraphSourceType::from_type_string(ns_types::HNSW_INDEX),
+            GraphSourceType::Vector
         );
         assert_eq!(
-            VgType::from_type_string("fidx:Custom"),
-            VgType::Unknown("fidx:Custom".to_string())
+            GraphSourceType::from_type_string(ns_types::GEO_INDEX),
+            GraphSourceType::Geo
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string(ns_types::R2RML_MAPPING),
+            GraphSourceType::R2rml
+        );
+        assert_eq!(
+            GraphSourceType::from_type_string(ns_types::ICEBERG_MAPPING),
+            GraphSourceType::Iceberg
+        );
+        // Unknown types
+        assert_eq!(
+            GraphSourceType::from_type_string("https://example.com/Custom"),
+            GraphSourceType::Unknown("https://example.com/Custom".to_string())
         );
     }
 
     #[test]
-    fn test_vg_ns_record_new() {
-        let record = VgNsRecord::new(
+    fn test_graph_source_type_kind() {
+        assert_eq!(GraphSourceType::Bm25.kind(), GraphSourceKind::Index);
+        assert_eq!(GraphSourceType::Vector.kind(), GraphSourceKind::Index);
+        assert_eq!(GraphSourceType::Geo.kind(), GraphSourceKind::Index);
+        assert_eq!(GraphSourceType::R2rml.kind(), GraphSourceKind::Mapped);
+        assert_eq!(GraphSourceType::Iceberg.kind(), GraphSourceKind::Mapped);
+    }
+
+    #[test]
+    fn test_graph_source_record_new() {
+        let record = GraphSourceRecord::new(
             "my-search",
             "main",
-            VgType::Bm25,
+            GraphSourceType::Bm25,
             r#"{"k1": 1.2, "b": 0.75}"#,
             vec!["source-ledger:main".to_string()],
         );
 
         assert_eq!(record.name, "my-search");
         assert_eq!(record.branch, "main");
-        assert_eq!(record.address, "my-search:main");
-        assert_eq!(record.vg_type, VgType::Bm25);
+        assert_eq!(record.graph_source_id, "my-search:main");
+        assert_eq!(record.source_type, GraphSourceType::Bm25);
         assert_eq!(record.config, r#"{"k1": 1.2, "b": 0.75}"#);
         assert_eq!(record.dependencies, vec!["source-ledger:main".to_string()]);
-        assert_eq!(record.index_address, None);
+        assert_eq!(record.index_id, None);
         assert_eq!(record.index_t, 0);
         assert!(!record.retracted);
     }
 
     #[test]
-    fn test_vg_ns_record_is_bm25() {
-        let bm25 = VgNsRecord::new("search", "main", VgType::Bm25, "{}", vec![]);
-        let r2rml = VgNsRecord::new("mapping", "main", VgType::R2rml, "{}", vec![]);
+    fn test_graph_source_record_is_bm25() {
+        let bm25 = GraphSourceRecord::new("search", "main", GraphSourceType::Bm25, "{}", vec![]);
+        let r2rml = GraphSourceRecord::new("mapping", "main", GraphSourceType::R2rml, "{}", vec![]);
 
         assert!(bm25.is_bm25());
         assert!(!r2rml.is_bm25());
     }
 
     #[test]
-    fn test_vg_ns_record_alias() {
-        let record = VgNsRecord::new("my-search", "dev", VgType::Bm25, "{}", vec![]);
-        assert_eq!(record.alias(), "my-search:dev");
-    }
-
-    #[test]
-    fn test_vg_ns_record_has_index() {
-        let mut record = VgNsRecord::new("search", "main", VgType::Bm25, "{}", vec![]);
+    fn test_graph_source_record_has_index() {
+        let mut record =
+            GraphSourceRecord::new("search", "main", GraphSourceType::Bm25, "{}", vec![]);
         assert!(!record.has_index());
 
-        record.index_address = Some("fluree:file://vg/search/snapshot.bin".to_string());
+        record.index_id = Some(ContentId::new(
+            ContentKind::IndexRoot,
+            b"test-graph-source-index",
+        ));
         record.index_t = 42;
         assert!(record.has_index());
-    }
-
-    // ========== VgSnapshotHistory Tests ==========
-
-    #[test]
-    fn test_vg_snapshot_history_new() {
-        let history = VgSnapshotHistory::new("my-search:main");
-        assert_eq!(history.alias, "my-search:main");
-        assert!(history.snapshots.is_empty());
-        assert!(history.head().is_none());
-    }
-
-    #[test]
-    fn test_vg_snapshot_history_append_monotonic() {
-        let mut history = VgSnapshotHistory::new("vg:main");
-
-        // First append should succeed
-        assert!(history.append(VgSnapshotEntry::new(5, "addr-5")));
-        assert_eq!(history.snapshots.len(), 1);
-
-        // Strictly increasing should succeed
-        assert!(history.append(VgSnapshotEntry::new(10, "addr-10")));
-        assert_eq!(history.snapshots.len(), 2);
-
-        // Equal t should be rejected
-        assert!(!history.append(VgSnapshotEntry::new(10, "addr-10-dup")));
-        assert_eq!(history.snapshots.len(), 2);
-
-        // Lower t should be rejected
-        assert!(!history.append(VgSnapshotEntry::new(7, "addr-7")));
-        assert_eq!(history.snapshots.len(), 2);
-
-        // Higher t should succeed
-        assert!(history.append(VgSnapshotEntry::new(20, "addr-20")));
-        assert_eq!(history.snapshots.len(), 3);
-    }
-
-    #[test]
-    fn test_vg_snapshot_history_select_snapshot() {
-        let mut history = VgSnapshotHistory::new("vg:main");
-        history.append(VgSnapshotEntry::new(5, "addr-5"));
-        history.append(VgSnapshotEntry::new(10, "addr-10"));
-        history.append(VgSnapshotEntry::new(20, "addr-20"));
-
-        // Exact match
-        let snap = history.select_snapshot(10).unwrap();
-        assert_eq!(snap.index_t, 10);
-        assert_eq!(snap.index_address, "addr-10");
-
-        // Should select best <= as_of_t
-        let snap = history.select_snapshot(15).unwrap();
-        assert_eq!(snap.index_t, 10); // Largest t <= 15
-
-        // at as_of_t = 5, select t=5
-        let snap = history.select_snapshot(5).unwrap();
-        assert_eq!(snap.index_t, 5);
-
-        // at as_of_t = 25, select t=20 (highest)
-        let snap = history.select_snapshot(25).unwrap();
-        assert_eq!(snap.index_t, 20);
-
-        // at as_of_t = 3, no suitable snapshot
-        assert!(history.select_snapshot(3).is_none());
-    }
-
-    #[test]
-    fn test_vg_snapshot_history_head() {
-        let mut history = VgSnapshotHistory::new("vg:main");
-        assert!(history.head().is_none());
-
-        history.append(VgSnapshotEntry::new(10, "addr-10"));
-        assert_eq!(history.head().unwrap().index_t, 10);
-
-        history.append(VgSnapshotEntry::new(20, "addr-20"));
-        assert_eq!(history.head().unwrap().index_t, 20);
-    }
-
-    #[test]
-    fn test_vg_snapshot_history_has_snapshot_at() {
-        let mut history = VgSnapshotHistory::new("vg:main");
-        history.append(VgSnapshotEntry::new(10, "addr-10"));
-        history.append(VgSnapshotEntry::new(20, "addr-20"));
-
-        assert!(history.has_snapshot_at(10));
-        assert!(history.has_snapshot_at(20));
-        assert!(!history.has_snapshot_at(15));
-        assert!(!history.has_snapshot_at(5));
-    }
-
-    #[test]
-    fn test_vg_snapshot_entry_new() {
-        let entry = VgSnapshotEntry::new(42, "fluree:file://vg/snapshot.bin");
-        assert_eq!(entry.index_t, 42);
-        assert_eq!(entry.index_address, "fluree:file://vg/snapshot.bin");
     }
 
     // ========== V2 Concern Type Tests ==========

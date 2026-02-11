@@ -14,32 +14,42 @@ mod support;
 
 use std::sync::Arc;
 
-use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
+use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState};
 use fluree_db_core::serde::json::{
     raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
 };
-use fluree_db_core::{Db, DbMetadata, DictNovelty, Storage};
-use fluree_db_indexer::run_index::{BinaryIndexRootV2, BinaryIndexStore};
+use fluree_db_core::{load_db, Db, DbMetadata, DictNovelty, Storage};
+use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore};
 use fluree_db_query::BinaryRangeProvider;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
-use support::start_background_indexer_local;
+use support::{
+    genesis_ledger_for_fluree, start_background_indexer_local, trigger_index_and_wait_outcome,
+};
 
 /// Apply a v2 binary index root to a ledger, loading the full BinaryIndexStore
 /// and attaching a BinaryRangeProvider so subsequent queries work correctly.
 async fn apply_index_v2<S: Storage + Clone + 'static>(
-    ledger: &mut LedgerState<S>,
-    root_address: &str,
+    ledger: &mut LedgerState,
+    root_id: &fluree_db_core::ContentId,
+    ledger_id: &str,
     storage: &S,
     cache_dir: &std::path::Path,
 ) {
+    let root_address = fluree_db_core::storage::content_address(
+        storage.storage_method(),
+        fluree_db_core::ContentKind::IndexRoot,
+        ledger_id,
+        &root_id.digest_hex(),
+    );
     let bytes = storage
-        .read_bytes(root_address)
+        .read_bytes(&root_address)
         .await
         .expect("read index root");
-    let root: BinaryIndexRootV2 = serde_json::from_slice(&bytes).expect("parse v2 root");
+    let root: BinaryIndexRoot = serde_json::from_slice(&bytes).expect("parse v2 root");
 
-    let store = BinaryIndexStore::load_from_root(storage, &root, cache_dir, None)
+    let cs = fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
+    let store = BinaryIndexStore::load_from_root(&cs, &root, cache_dir, None)
         .await
         .expect("load binary index");
     let arc_store = Arc::new(store);
@@ -58,7 +68,7 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
         .map(|raw| raw_schema_to_index_schema(&raw));
     let meta = DbMetadata {
-        alias: root.ledger_alias,
+        ledger_id: root.ledger_id,
         t: root.index_t,
         namespace_codes: ns_codes,
         stats,
@@ -66,15 +76,15 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         subject_watermarks: root.subject_watermarks,
         string_watermark: root.string_watermark,
     };
-    let mut db = Db::new_meta(meta, storage.clone());
+    let mut db = Db::new_meta(meta);
     db.range_provider = Some(Arc::new(provider));
 
     ledger
-        .apply_loaded_db(db, root_address)
+        .apply_loaded_db(db, Some(root_id))
         .expect("apply_loaded_db");
 }
 
-fn property_count<S: Storage>(db: &Db<S>, iri: &str) -> Option<u64> {
+fn property_count(db: &Db, iri: &str) -> Option<u64> {
     let stats = db.stats.as_ref()?;
     let props = stats.properties.as_ref()?;
     for p in props {
@@ -88,7 +98,7 @@ fn property_count<S: Storage>(db: &Db<S>, iri: &str) -> Option<u64> {
     None
 }
 
-fn class_count<S: Storage>(db: &Db<S>, iri: &str) -> Option<u64> {
+fn class_count(db: &Db, iri: &str) -> Option<u64> {
     let stats = db.stats.as_ref()?;
     let classes = stats.classes.as_ref()?;
     for c in classes {
@@ -119,9 +129,8 @@ async fn property_and_class_statistics_persist_in_db_root() {
 
     local
         .run_until(async move {
-            let alias = "it/indexing-stats:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id ="it/indexing-stats:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
@@ -149,25 +158,22 @@ async fn property_and_class_statistics_persist_in_db_root() {
                 .expect("insert_with_opts");
 
             let commit_t = result.receipt.t;
-            let completion = handle.trigger(result.ledger.alias(), commit_t).await;
-            let (index_t, root_address) = match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed {
-                    index_t,
-                    root_address,
-                } => (index_t, root_address),
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            let outcome =
+                trigger_index_and_wait_outcome(&handle, result.ledger.ledger_id(), commit_t).await;
+            let fluree_db_api::IndexOutcome::Completed {
+                index_t,
+                root_id,
+            } = outcome
+            else {
+                unreachable!("helper only returns Completed")
             };
 
             assert!(index_t >= commit_t);
-            assert!(!root_address.is_empty());
+            let root_cid = root_id.expect("expected root_id after indexing");
 
-            let loaded = Db::load(
-                fluree.storage().clone(),
-                &root_address,
-            )
+            let loaded = load_db(fluree.storage(), &root_cid, ledger_id)
             .await
-            .expect("Db::load(root_address)");
+            .expect("load_db(root_cid)");
 
             let loaded_stats = loaded.stats.as_ref().expect("db.stats should be Some after indexing");
             assert!(loaded_stats.properties.is_some(), "expected db.stats.properties");
@@ -206,9 +212,8 @@ async fn class_statistics_decrement_after_delete_refresh() {
 
     local
         .run_until(async move {
-            let alias = "it/indexing-stats-retracts:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id = "it/indexing-stats-retracts:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
@@ -234,16 +239,8 @@ async fn class_statistics_decrement_after_delete_refresh() {
                 .await
                 .expect("insert txn1");
 
-            match handle
-                .trigger(r1.ledger.alias(), r1.receipt.t)
-                .await
-                .wait()
-                .await
-            {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            };
+            let _ =
+                trigger_index_and_wait_outcome(&handle, r1.ledger.ledger_id(), r1.receipt.t).await;
 
             let del = json!({
                 "@context": { "ex": "http://example.org/" },
@@ -261,16 +258,16 @@ async fn class_statistics_decrement_after_delete_refresh() {
                 .await
                 .expect("delete bob");
 
-            let completion2 = handle.trigger(r2.ledger.alias(), r2.receipt.t).await;
-            let root2 = match completion2.wait().await {
-                fluree_db_api::IndexOutcome::Completed { root_address, .. } => root_address,
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            let outcome =
+                trigger_index_and_wait_outcome(&handle, r2.ledger.ledger_id(), r2.receipt.t).await;
+            let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
+                unreachable!("helper only returns Completed")
             };
+            let root_cid = root_id.expect("expected root_id");
 
-            let loaded2 = Db::load(fluree.storage().clone(), &root2)
+            let loaded2 = load_db(fluree.storage(), &root_cid, ledger_id)
                 .await
-                .expect("Db::load(root2)");
+                .expect("load_db(root_cid)");
             assert_eq!(class_count(&loaded2, "http://example.org/Person"), Some(2));
         })
         .await;
@@ -290,9 +287,8 @@ async fn statistics_work_with_memory_storage_when_indexed() {
 
     local
         .run_until(async move {
-            let alias = "it/indexing-stats-memory:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id = "it/indexing-stats-memory:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
@@ -317,16 +313,16 @@ async fn statistics_work_with_memory_storage_when_indexed() {
                 .await
                 .expect("insert");
 
-            let completion = handle.trigger(r.ledger.alias(), r.receipt.t).await;
-            let root = match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { root_address, .. } => root_address,
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            let outcome =
+                trigger_index_and_wait_outcome(&handle, r.ledger.ledger_id(), r.receipt.t).await;
+            let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
+                unreachable!("helper only returns Completed")
             };
+            let root_cid = root_id.expect("expected root_id");
 
-            let loaded = Db::load(fluree.storage().clone(), &root)
+            let loaded = load_db(fluree.storage(), &root_cid, ledger_id)
                 .await
-                .expect("Db::load(root)");
+                .expect("load_db(root_cid)");
 
             assert_eq!(property_count(&loaded, "http://example.org/name"), Some(2));
             assert_eq!(property_count(&loaded, "http://example.org/age"), Some(1));
@@ -376,21 +372,22 @@ async fn ledger_info_api_returns_expected_structure() {
 
     local
         .run_until(async move {
-            let alias = "test/ledger-info:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id ="test/ledger-info:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
                 reindex_max_bytes: 10_000_000,
             };
 
-            // Insert test data (like Clojure test)
+            // Insert test data (like Clojure test), including a ref property so we can
+            // validate class→property ref target stats in ledger_info.
             let txn = json!({
                 "@context": { "ex": "http://example.org/" },
                 "@graph": [
-                    {"@id": "ex:alice", "@type": "ex:Person", "ex:name": "Alice"},
-                    {"@id": "ex:bob", "@type": "ex:Person", "ex:name": "Bob"}
+                    {"@id": "ex:acme", "@type": "ex:Organization", "ex:name": "Acme"},
+                    {"@id": "ex:alice", "@type": "ex:Person", "ex:name": "Alice", "ex:worksFor": {"@id":"ex:acme"}},
+                    {"@id": "ex:bob", "@type": "ex:Person", "ex:name": "Bob", "ex:worksFor": {"@id":"ex:acme"}}
                 ]
             });
 
@@ -406,18 +403,13 @@ async fn ledger_info_api_returns_expected_structure() {
                 .expect("insert");
 
             // Trigger indexing and wait for completion
-            let completion = handle
-                .trigger(result.ledger.alias(), result.receipt.t)
-                .await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            let _ =
+                trigger_index_and_wait_outcome(&handle, result.ledger.ledger_id(), result.receipt.t)
+                    .await;
 
             // Call ledger_info without context
             let info = fluree
-                .ledger_info(alias)
+                .ledger_info(ledger_id)
                 .execute()
                 .await
                 .expect("ledger_info");
@@ -437,7 +429,7 @@ async fn ledger_info_api_returns_expected_structure() {
             // Verify commit structure (Clojure parity)
             // ================================================================
             let commit = &info["commit"];
-            assert_eq!(commit["@context"], "https://ns.flur.ee/ledger/v1");
+            assert_eq!(commit["@context"], "https://ns.flur.ee/db/v1");
             assert!(
                 commit["type"]
                     .as_array()
@@ -446,12 +438,12 @@ async fn ledger_info_api_returns_expected_structure() {
                 "commit.type should be ['Commit']"
             );
             assert!(
-                json_path_exists(commit, &["address"]),
-                "commit should have address"
+                json_path_exists(commit, &["id"]),
+                "commit should have id"
             );
             assert!(
-                json_path_exists(commit, &["alias"]),
-                "commit should have alias"
+                json_path_exists(commit, &["ledger_id"]),
+                "commit should have ledger_id"
             );
             assert!(
                 json_path_exists(commit, &["data"]),
@@ -545,8 +537,8 @@ async fn ledger_info_api_returns_expected_structure() {
                     "selectivity-value should be integer"
                 );
 
-                // ex:name has count 2 (Alice and Bob)
-                assert_eq!(name_stats["count"], 2, "ex:name count should be 2");
+                // ex:name has count 3 (Alice, Bob, and Acme)
+                assert_eq!(name_stats["count"], 3, "ex:name count should be 3");
             } else {
                 panic!("stats.properties should contain http://example.org/name");
             }
@@ -567,22 +559,27 @@ async fn ledger_info_api_returns_expected_structure() {
                 );
                 assert_eq!(person_stats["count"], 2, "ex:Person count should be 2");
 
-                // Class properties HAVE types/ref-classes/langs (unlike top-level properties)
+                // Class properties are a map keyed by property IRI.
                 if let Some(class_props) = person_stats.get("properties") {
-                    if let Some(name_in_class) = class_props.get("http://example.org/name") {
-                        assert!(
-                            name_in_class.get("types").is_some(),
-                            "class property should have types"
-                        );
-                        assert!(
-                            name_in_class.get("ref-classes").is_some(),
-                            "class property should have ref-classes"
-                        );
-                        assert!(
-                            name_in_class.get("langs").is_some(),
-                            "class property should have langs"
-                        );
-                    }
+                    assert!(class_props.is_object(), "class properties should be an object map");
+                    assert!(
+                        class_props.get("http://example.org/name").is_some(),
+                        "Person should have ex:name property"
+                    );
+                    // Validate ref stats for worksFor: Person -> Organization count 2
+                    let works_for = class_props
+                        .get("http://example.org/worksFor")
+                        .expect("Person should have ex:worksFor property");
+                    let refs = works_for
+                        .get("refs")
+                        .or_else(|| works_for.get("ref-classes"))
+                        .and_then(|v| v.as_object())
+                        .expect("worksFor should have refs/ref-classes map");
+                    assert_eq!(
+                        refs.get("http://example.org/Organization"),
+                        Some(&json!(2)),
+                        "worksFor should point to Organization twice"
+                    );
                 }
             } else {
                 panic!("stats.classes should contain http://example.org/Person");
@@ -593,7 +590,7 @@ async fn ledger_info_api_returns_expected_structure() {
             // ================================================================
             let index = &info["index"];
             assert!(index.get("t").is_some(), "index should have t");
-            assert!(index.get("address").is_some(), "index should have address");
+            assert!(index.get("id").is_some(), "index should have id");
             // index.id is optional but should be present if commit has index.id
         })
         .await;
@@ -620,9 +617,8 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
 
     local
         .run_until(async move {
-            let alias = "test/ledger-info-ctx:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id ="test/ledger-info-ctx:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
@@ -650,12 +646,12 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
                 .expect("insert");
 
             // Trigger indexing
-            let completion = handle.trigger(result.ledger.alias(), result.receipt.t).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            let _ = trigger_index_and_wait_outcome(
+                &handle,
+                result.ledger.ledger_id(),
+                result.receipt.t,
+            )
+            .await;
 
             // Define context for compaction
             let context = json!({
@@ -664,7 +660,7 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             });
 
             // Call ledger_info WITH context
-            let info = fluree.ledger_info(alias)
+            let info = fluree.ledger_info(ledger_id)
                 .with_context(&context)
                 .execute()
                 .await
@@ -697,13 +693,20 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             // Verify class properties are also compacted
             if let Some(person_stats) = classes.get("ex:Person") {
                 if let Some(class_props) = person_stats.get("properties") {
-                    let arr = class_props
-                        .as_array()
-                        .expect("class properties should be an array of compacted property IRIs");
                     assert!(
-                        arr.iter().any(|v| v.as_str() == Some("ex:name")),
-                        "Class property should be compacted to ex:name"
+                        class_props.get("ex:name").is_some(),
+                        "Class property key should be compacted to ex:name"
                     );
+                    // property-list should also be present (array) for convenience.
+                    if let Some(list) = person_stats.get("property-list") {
+                        let arr = list
+                            .as_array()
+                            .expect("property-list should be an array of compacted property IRIs");
+                        assert!(
+                            arr.iter().any(|v| v.as_str() == Some("ex:name")),
+                            "property-list should include ex:name"
+                        );
+                    }
                 }
             }
 
@@ -712,8 +715,8 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             // (they use full IRIs regardless of context)
             // ================================================================
             let commit = &info["commit"];
-            // commit.alias should still be full "test/ledger-info-ctx:main" not compacted
-            assert_eq!(commit["alias"], "test/ledger-info-ctx:main");
+            // commit.ledger_id should still be full "test/ledger-info-ctx:main" not compacted
+            assert_eq!(commit["ledger_id"], "test/ledger-info-ctx:main");
 
             // nameservice @id should still be full
             let ns = &info["nameservice"];
@@ -730,12 +733,15 @@ async fn ledger_info_before_commit_returns_null_commit() {
 
     let fluree = FlureeBuilder::memory().build_memory();
 
-    let alias = "test/ledger-info-genesis:main";
-    let _ledger = fluree.create_ledger(alias).await.expect("create_ledger");
+    let ledger_id = "test/ledger-info-genesis:main";
+    let _ledger = fluree
+        .create_ledger(ledger_id)
+        .await
+        .expect("create_ledger");
 
     // Call ledger_info on genesis ledger (no commits)
     let info = fluree
-        .ledger_info(alias)
+        .ledger_info(ledger_id)
         .execute()
         .await
         .expect("ledger_info");
@@ -749,6 +755,223 @@ async fn ledger_info_before_commit_returns_null_commit() {
 
     // Other keys should still be present
     assert!(info.get("stats").is_some(), "should have stats");
+}
+
+#[tokio::test]
+async fn ledger_info_property_datatypes_option_merges_novelty() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().to_string_lossy().to_string();
+
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        fluree.nameservice().clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+    fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
+
+    local
+        .run_until(async move {
+            let ledger_id ="test/ledger-info-datatypes:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // 1) Seed and index a float-valued property.
+            let txn1 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id": "ex:prod1", "@type": "ex:Product", "ex:price": 1.25}
+                ]
+            });
+            let result1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &txn1,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert txn1");
+            let _ = trigger_index_and_wait_outcome(&handle, result1.ledger.ledger_id(), result1.receipt.t)
+                .await;
+
+            // 2) Add an integer-valued price in novelty (do NOT index).
+            let ledger1 = fluree.ledger(ledger_id).await.expect("reload ledger after indexing");
+            let txn2 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id": "ex:prod2", "@type": "ex:Product", "ex:price": 3}
+                ]
+            });
+            let _result2 = fluree
+                .insert(ledger1, &txn2)
+                .await
+                .expect("insert txn2 (novelty)");
+
+            // 3) Indexed view: include datatypes but do not merge novelty deltas.
+            let indexed_info = fluree
+                .ledger_info(ledger_id)
+                .with_property_datatypes(true)
+                .execute()
+                .await
+                .expect("ledger_info indexed view");
+            let indexed_dts = indexed_info["stats"]["properties"]["http://example.org/price"]["datatypes"]
+                .as_object()
+                .expect("datatypes should be an object map");
+            assert!(
+                indexed_dts.contains_key("xsd:double") || indexed_dts.contains_key("xsd:float"),
+                "expected indexed ex:price to have float datatypes; got keys: {:?}",
+                indexed_dts.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                !(indexed_dts.contains_key("xsd:integer")
+                    || indexed_dts.contains_key("xsd:long")
+                    || indexed_dts.contains_key("xsd:int")
+                    || indexed_dts.contains_key("xsd:short")
+                    || indexed_dts.contains_key("xsd:byte")),
+                "expected indexed ex:price to NOT include integer-like datatypes before novelty merge; got keys: {:?}",
+                indexed_dts.keys().collect::<Vec<_>>()
+            );
+
+            // 4) Real-time view: merge novelty datatype deltas.
+            let realtime_info = fluree
+                .ledger_info(ledger_id)
+                .with_realtime_property_details(true)
+                .execute()
+                .await
+                .expect("ledger_info realtime property details");
+            let realtime_dts = realtime_info["stats"]["properties"]["http://example.org/price"]["datatypes"]
+                .as_object()
+                .expect("datatypes should be an object map");
+            assert!(
+                realtime_dts.contains_key("xsd:double") || realtime_dts.contains_key("xsd:float"),
+                "expected realtime ex:price to keep float datatypes; got keys: {:?}",
+                realtime_dts.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                realtime_dts.contains_key("xsd:integer")
+                    || realtime_dts.contains_key("xsd:long")
+                    || realtime_dts.contains_key("xsd:int")
+                    || realtime_dts.contains_key("xsd:short")
+                    || realtime_dts.contains_key("xsd:byte"),
+                "expected realtime ex:price to include integer-like datatype after novelty merge; got keys: {:?}",
+                realtime_dts.keys().collect::<Vec<_>>()
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().to_string_lossy().to_string();
+
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        fluree.nameservice().clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+    fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
+
+    local
+        .run_until(async move {
+            let ledger_id = "test/ledger-info-edges:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // 1) Seed and index a single Person -> Organization edge.
+            let txn1 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id":"ex:acme","@type":"ex:Organization","ex:name":"Acme"},
+                    {"@id":"ex:alice","@type":"ex:Person","ex:worksFor":{"@id":"ex:acme"}}
+                ]
+            });
+            let result1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &txn1,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert txn1");
+            let _ = trigger_index_and_wait_outcome(
+                &handle,
+                result1.ledger.ledger_id(),
+                result1.receipt.t,
+            )
+            .await;
+
+            // 2) Add a second edge in novelty (do NOT index).
+            let ledger1 = fluree
+                .ledger(ledger_id)
+                .await
+                .expect("reload ledger after indexing");
+            let txn2 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id":"ex:bob","@type":"ex:Person","ex:worksFor":{"@id":"ex:acme"}}
+                ]
+            });
+            let _result2 = fluree
+                .insert(ledger1, &txn2)
+                .await
+                .expect("insert txn2 (novelty)");
+
+            // 3) Base payload: edges are as-of last index (should still be 1).
+            let base_info = fluree
+                .ledger_info(ledger_id)
+                .execute()
+                .await
+                .expect("ledger_info base");
+
+            let base_refs = base_info["stats"]["classes"]["http://example.org/Person"]
+                ["properties"]["http://example.org/worksFor"]["refs"]
+                .as_object()
+                .expect("expected refs map in base payload");
+            assert_eq!(
+                base_refs.get("http://example.org/Organization"),
+                Some(&json!(1)),
+                "base payload should report indexed edge count only"
+            );
+
+            // 4) Real-time edges: merge novelty ref deltas (should be 2).
+            let rt_info = fluree
+                .ledger_info(ledger_id)
+                .with_realtime_property_details(true)
+                .execute()
+                .await
+                .expect("ledger_info realtime edges");
+
+            let rt_refs = rt_info["stats"]["classes"]["http://example.org/Person"]["properties"]
+                ["http://example.org/worksFor"]["refs"]
+                .as_object()
+                .expect("expected refs map in realtime payload");
+            assert_eq!(
+                rt_refs.get("http://example.org/Organization"),
+                Some(&json!(2)),
+                "realtime payload should include novelty edge count"
+            );
+        })
+        .await;
 }
 
 // ============================================================================
@@ -777,9 +1000,8 @@ async fn ndv_cardinality_estimates_are_accurate() {
 
     local
         .run_until(async move {
-            let alias = "test/ndv-accuracy:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id = "test/ndv-accuracy:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
@@ -816,18 +1038,20 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 .await
                 .expect("insert");
 
-            let completion = handle
-                .trigger(result.ledger.alias(), result.receipt.t)
-                .await;
-            let root = match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { root_address, .. } => root_address,
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            let outcome = trigger_index_and_wait_outcome(
+                &handle,
+                result.ledger.ledger_id(),
+                result.receipt.t,
+            )
+            .await;
+            let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
+                unreachable!("helper only returns Completed")
             };
+            let root_cid = root_id.expect("expected root_id");
 
-            let loaded = Db::load(fluree.storage().clone(), &root)
+            let loaded = load_db(fluree.storage(), &root_cid, ledger_id)
                 .await
-                .expect("Db::load(root)");
+                .expect("load_db(root_cid)");
 
             // Check ex:name: 20 distinct values, 20 distinct subjects
             let name_ndv_values = loaded
@@ -939,9 +1163,8 @@ async fn selectivity_calculation_is_correct() {
 
     local
         .run_until(async move {
-            let alias = "test/selectivity:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id = "test/selectivity:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
@@ -978,18 +1201,16 @@ async fn selectivity_calculation_is_correct() {
                 .await
                 .expect("insert");
 
-            let completion = handle
-                .trigger(result.ledger.alias(), result.receipt.t)
-                .await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            let _ = trigger_index_and_wait_outcome(
+                &handle,
+                result.ledger.ledger_id(),
+                result.receipt.t,
+            )
+            .await;
 
             // Reload to get ledger_info
             let info = fluree
-                .ledger_info(alias)
+                .ledger_info(ledger_id)
                 .execute()
                 .await
                 .expect("ledger_info");
@@ -1063,9 +1284,8 @@ async fn multi_class_entities_tracked_correctly() {
 
     local
         .run_until(async move {
-            let alias = "test/multi-class:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id = "test/multi-class:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
@@ -1108,18 +1328,16 @@ async fn multi_class_entities_tracked_correctly() {
                 .await
                 .expect("insert");
 
-            let completion = handle
-                .trigger(result.ledger.alias(), result.receipt.t)
-                .await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            let _ = trigger_index_and_wait_outcome(
+                &handle,
+                result.ledger.ledger_id(),
+                result.receipt.t,
+            )
+            .await;
 
             // Reload to get ledger_info
             let info = fluree
-                .ledger_info(alias)
+                .ledger_info(ledger_id)
                 .execute()
                 .await
                 .expect("ledger_info");
@@ -1172,8 +1390,10 @@ async fn multi_class_entities_tracked_correctly() {
 
 #[tokio::test]
 async fn class_property_type_distribution_tracked() {
-    // Tests that property types (datatypes) are tracked within class statistics.
-    // Clojure parity: types, ref-classes, langs in class property stats.
+    // Tests that class→property presence is tracked in class statistics.
+    //
+    // NOTE: DB-R no longer tracks per-class datatype distributions / langs.
+    // Ref target counts are tracked separately for ref-valued properties.
 
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
@@ -1191,9 +1411,8 @@ async fn class_property_type_distribution_tracked() {
 
     local
         .run_until(async move {
-            let alias = "test/type-distribution:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let ledger0 = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id = "test/type-distribution:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
@@ -1241,18 +1460,16 @@ async fn class_property_type_distribution_tracked() {
                 .await
                 .expect("insert");
 
-            let completion = handle
-                .trigger(result.ledger.alias(), result.receipt.t)
-                .await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            }
+            let _ = trigger_index_and_wait_outcome(
+                &handle,
+                result.ledger.ledger_id(),
+                result.receipt.t,
+            )
+            .await;
 
             // Reload to get ledger_info
             let info = fluree
-                .ledger_info(alias)
+                .ledger_info(ledger_id)
                 .execute()
                 .await
                 .expect("ledger_info");
@@ -1264,48 +1481,27 @@ async fn class_property_type_distribution_tracked() {
                 .get("http://example.org/Person")
                 .expect("Person class should exist");
 
-            // Verify class properties have type distributions
+            // Verify class properties contain the expected properties
             let class_props = person_stats
                 .get("properties")
                 .expect("Person should have properties");
 
-            // ex:name should have xsd:string type
-            if let Some(name_prop) = class_props.get("http://example.org/name") {
-                let types = name_prop.get("types").expect("should have types");
-                assert!(
-                    types
-                        .get("http://www.w3.org/2001/XMLSchema#string")
-                        .is_some(),
-                    "ex:name should have xsd:string type. Got types: {:?}",
-                    types
-                );
-            }
-
-            // ex:age should have xsd:long or xsd:integer type
-            if let Some(age_prop) = class_props.get("http://example.org/age") {
-                let types = age_prop.get("types").expect("should have types");
-                let has_integer_type = types.get("http://www.w3.org/2001/XMLSchema#long").is_some()
-                    || types
-                        .get("http://www.w3.org/2001/XMLSchema#integer")
-                        .is_some();
-                assert!(
-                    has_integer_type,
-                    "ex:age should have integer type. Got types: {:?}",
-                    types
-                );
-            }
-
-            // ex:active should have xsd:boolean type
-            if let Some(active_prop) = class_props.get("http://example.org/active") {
-                let types = active_prop.get("types").expect("should have types");
-                assert!(
-                    types
-                        .get("http://www.w3.org/2001/XMLSchema#boolean")
-                        .is_some(),
-                    "ex:active should have xsd:boolean type. Got types: {:?}",
-                    types
-                );
-            }
+            assert!(
+                class_props.get("http://example.org/name").is_some(),
+                "Person should include ex:name in class properties"
+            );
+            assert!(
+                class_props.get("http://example.org/age").is_some(),
+                "Person should include ex:age in class properties"
+            );
+            assert!(
+                class_props.get("http://example.org/salary").is_some(),
+                "Person should include ex:salary in class properties"
+            );
+            assert!(
+                class_props.get("http://example.org/active").is_some(),
+                "Person should include ex:active in class properties"
+            );
         })
         .await;
 }
@@ -1333,9 +1529,8 @@ async fn large_dataset_statistics_accuracy() {
 
     local
         .run_until(async move {
-            let alias = "test/large-dataset:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
-            let mut ledger = LedgerState::new(db0, Novelty::new(0));
+            let ledger_id = "test/large-dataset:main";
+            let mut ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
 
             // This test is intentionally about accumulation across *indexes* (Clojure parity),
             // not about background indexing races. Disable auto-trigger and explicitly
@@ -1382,36 +1577,38 @@ async fn large_dataset_statistics_accuracy() {
                 // Trigger indexing to at least this commit_t, wait for completion,
                 // then apply the persisted index to the in-memory ledger state so the
                 // next batch starts from the newly indexed db (true "across indexes").
-                let completion = handle.trigger(ledger.alias(), commit_t).await;
-                match completion.wait().await {
-                    fluree_db_api::IndexOutcome::Completed {
-                        index_t,
-                        root_address,
-                    } => {
-                        assert!(
-                            index_t >= commit_t,
-                            "index_t ({index_t}) should be >= commit_t ({commit_t})"
-                        );
-                        apply_index_v2(&mut ledger, &root_address, fluree.storage(), &cache_dir)
-                            .await;
-                    }
-                    fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                    fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-                }
+                let outcome =
+                    trigger_index_and_wait_outcome(&handle, ledger.ledger_id(), commit_t).await;
+                let fluree_db_api::IndexOutcome::Completed { index_t, root_id } = outcome else {
+                    unreachable!("helper only returns Completed")
+                };
+                assert!(
+                    index_t >= commit_t,
+                    "index_t ({index_t}) should be >= commit_t ({commit_t})"
+                );
+                let root_cid = root_id.expect("expected root_id");
+                apply_index_v2(
+                    &mut ledger,
+                    &root_cid,
+                    ledger_id,
+                    fluree.storage(),
+                    &cache_dir,
+                )
+                .await;
             }
 
             // Final sync point (should already be indexed, but keep this to ensure
             // we load stats from a persisted index root).
-            let completion = handle.trigger(ledger.alias(), ledger.t()).await;
-            let root = match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { root_address, .. } => root_address,
-                fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
-                fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
+            let outcome =
+                trigger_index_and_wait_outcome(&handle, ledger.ledger_id(), ledger.t()).await;
+            let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
+                unreachable!("helper only returns Completed")
             };
+            let root_cid = root_id.expect("expected root_id");
 
-            let loaded = Db::load(fluree.storage().clone(), &root)
+            let loaded = load_db(fluree.storage(), &root_cid, ledger_id)
                 .await
-                .expect("Db::load(root)");
+                .expect("load_db(root_cid)");
 
             // Verify counts
             // ex:name: 100 distinct values, 100 subjects
@@ -1473,7 +1670,7 @@ async fn large_dataset_statistics_accuracy() {
 
             // Verify class count
             let info = fluree
-                .ledger_info(alias)
+                .ledger_info(ledger_id)
                 .execute()
                 .await
                 .expect("ledger_info");

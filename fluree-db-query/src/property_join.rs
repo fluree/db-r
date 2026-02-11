@@ -26,12 +26,17 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
+use crate::join::NestedLoopJoinOperator;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
+use crate::seed::EmptyOperator;
+use crate::values::ValuesOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{ObjectBounds, Sid, Storage};
+use fluree_db_core::{ObjectBounds, Sid};
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::binary_scan::ScanOperator;
@@ -45,11 +50,11 @@ use crate::binary_scan::ScanOperator;
 /// 3. This var never escapes to external schemas or user code
 const TEMP_OBJECT_VAR: VarId = VarId(u16::MAX - 1);
 
-fn make_property_join_scan<S: Storage + 'static>(
+fn make_property_join_scan(
     pattern: TriplePattern,
     bounds: Option<ObjectBounds>,
-) -> BoxedOperator<S> {
-    Box::new(ScanOperator::<S>::new(pattern, bounds, Vec::new()))
+) -> BoxedOperator {
+    Box::new(ScanOperator::new(pattern, bounds, Vec::new()))
 }
 
 /// Property-join operator for same-subject multi-predicate patterns
@@ -80,16 +85,68 @@ pub struct PropertyJoinOperator {
     output_schema: Arc<[VarId]>,
     /// Operator state
     state: OperatorState,
-    /// Collected values per subject, keyed by canonical IRI for cross-ledger correctness.
-    /// Value tuple: (subject_binding, vec of value-vectors per predicate)
+    /// Collected values per subject, keyed by a join-safe subject key.
+    ///
+    /// - Single-ledger: prefer raw encoded subject IDs (no decoding)
+    /// - Dataset/multi-ledger: use canonical IRI strings (cross-ledger safe)
+    ///
+    /// Value tuple: (subject_binding, vec of value-vectors per predicate).
     /// The subject_binding is preserved from the scan to emit the correct type.
-    subject_values: HashMap<Arc<str>, (Binding, Vec<Vec<Binding>>)>,
-    /// Subject IRIs to process (collected after filtering)
-    pending_subjects: Vec<Arc<str>>,
+    subject_values: FxHashMap<SubjectKey, (Binding, Vec<Vec<Binding>>)>,
+    /// Subjects to process (collected after filtering)
+    pending_subjects: Vec<SubjectKey>,
     /// Current index into pending_subjects
     subject_idx: usize,
     /// Optional object bounds for range filter pushdown (VarId -> ObjectBounds)
     object_bounds: HashMap<VarId, ObjectBounds>,
+}
+
+/// Join-safe subject key for PropertyJoinOperator.
+///
+/// This avoids eagerly decoding subjects to canonical IRI strings in single-ledger mode,
+/// preserving the late-materialization benefits of `Binding::EncodedSid`.
+#[derive(Clone, Debug, Eq)]
+enum SubjectKey {
+    /// Single-ledger: raw subject/ref ID from the binary index (`Binding::EncodedSid`)
+    Id(u64),
+    /// Single-ledger (range/overlay paths): already-materialized SID
+    Sid(Sid),
+    /// Multi-ledger (dataset): canonical IRI string
+    Iri(Arc<str>),
+}
+
+impl PartialEq for SubjectKey {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (SubjectKey::Id(a), SubjectKey::Id(b)) => a == b,
+            (SubjectKey::Sid(a), SubjectKey::Sid(b)) => {
+                a.namespace_code == b.namespace_code && a.name == b.name
+            }
+            (SubjectKey::Iri(a), SubjectKey::Iri(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Hash for SubjectKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // discriminant
+        match self {
+            SubjectKey::Id(v) => {
+                0u8.hash(state);
+                v.hash(state);
+            }
+            SubjectKey::Sid(s) => {
+                1u8.hash(state);
+                s.namespace_code.hash(state);
+                s.name.hash(state);
+            }
+            SubjectKey::Iri(i) => {
+                2u8.hash(state);
+                i.hash(state);
+            }
+        }
+    }
 }
 
 impl PropertyJoinOperator {
@@ -145,7 +202,7 @@ impl PropertyJoinOperator {
             predicates,
             output_schema,
             state: OperatorState::Created,
-            subject_values: HashMap::new(),
+            subject_values: FxHashMap::default(),
             pending_subjects: Vec::new(),
             subject_idx: 0,
             object_bounds,
@@ -165,6 +222,48 @@ impl PropertyJoinOperator {
     /// Get the output schema (non-trait method for tests)
     pub fn output_schema(&self) -> &Arc<[VarId]> {
         &self.output_schema
+    }
+
+    fn subject_key_single(subject: &Binding) -> Option<SubjectKey> {
+        match subject {
+            Binding::EncodedSid { s_id } => Some(SubjectKey::Id(*s_id)),
+            Binding::Sid(sid) => Some(SubjectKey::Sid(sid.clone())),
+            Binding::IriMatch { primary_sid, .. } => Some(SubjectKey::Sid(primary_sid.clone())),
+            Binding::Iri(iri) => Some(SubjectKey::Iri(iri.clone())),
+            _ => None,
+        }
+    }
+
+    fn subject_key_multi(ctx: &ExecutionContext<'_>, subject: &Binding) -> Option<SubjectKey> {
+        match subject {
+            Binding::IriMatch { iri, .. } => Some(SubjectKey::Iri(iri.clone())),
+            Binding::Iri(iri) => Some(SubjectKey::Iri(iri.clone())),
+            Binding::Sid(sid) => {
+                // In dataset mode, use canonical IRI strings as join keys.
+                // Prefer decoding within the active ledger when available.
+                let iri = ctx
+                    .active_ledger_id()
+                    .and_then(|addr| ctx.decode_sid_in_ledger(sid, addr))
+                    .or_else(|| ctx.decode_sid(sid))?;
+                Some(SubjectKey::Iri(Arc::from(iri)))
+            }
+            Binding::EncodedSid { s_id } => {
+                // Resolve to canonical IRI for cross-ledger comparison.
+                ctx.binary_store
+                    .as_ref()
+                    .and_then(|store| store.resolve_subject_iri(*s_id).ok())
+                    .map(|iri| SubjectKey::Iri(Arc::from(iri)))
+            }
+            _ => None,
+        }
+    }
+
+    fn subject_key(ctx: &ExecutionContext<'_>, subject: &Binding) -> Option<SubjectKey> {
+        if ctx.is_multi_ledger() {
+            Self::subject_key_multi(ctx, subject)
+        } else {
+            Self::subject_key_single(subject)
+        }
     }
 
     /// Generate cartesian product rows for a given subject
@@ -224,24 +323,153 @@ impl PropertyJoinOperator {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
+impl Operator for PropertyJoinOperator {
     fn schema(&self) -> &[VarId] {
         &self.output_schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
+        let span = tracing::info_span!(
+            "property_join_open",
+            predicates = self.predicates.len(),
+            multi_ledger = ctx.is_multi_ledger(),
+            has_binary_store = ctx.binary_store.is_some(),
+            has_bounds = !self.object_bounds.is_empty(),
+        );
+        let _g = span.enter();
+
         self.state = OperatorState::Open;
         self.subject_values.clear();
         self.pending_subjects.clear();
         self.subject_idx = 0;
 
-        // For each predicate, scan and collect (subject -> values) mappings
-        // Key by canonical IRI for cross-ledger correctness.
-        // Value: (subject_binding, vec of value-vectors per predicate)
-        let mut all_subject_values: HashMap<Arc<str>, (Binding, Vec<Vec<Binding>>)> =
-            HashMap::new();
+        // For each predicate, scan and collect (subject -> values) mappings.
+        // Key by a join-safe subject key (encoded IDs in single-ledger mode).
+        //
+        // Optimization: if a predicate has object bounds (range filter pushdown),
+        // scan it first to get a selective subject set, then use that as a semi-join
+        // driver for subsequent predicates in single-ledger binary mode.
+        //
+        // This turns a common "date filter + vector predicate" workload from:
+        //   scan(date with bounds) + scan(vec full) + intersect
+        // into:
+        //   scan(date with bounds) + batched probe(vec for matching subjects)
+        //
+        // NOTE: The batched probe path currently requires:
+        // - single-ledger (no dataset)
+        // - binary_store present
+        // - no datatype constraint on the probed predicate (dt=None)
+        let mut all_subject_values: FxHashMap<SubjectKey, (Binding, Vec<Vec<Binding>>)> =
+            FxHashMap::default();
 
-        for (pred_idx, (pred_term, obj_var, dt)) in self.predicates.iter().enumerate() {
+        let driver_pred_idx = self
+            .predicates
+            .iter()
+            .enumerate()
+            .find(|(_idx, (_p, obj_var, _dt))| self.object_bounds.contains_key(obj_var))
+            .map(|(idx, _)| idx);
+        tracing::debug!(?driver_pred_idx, "property_join: selected driver predicate");
+
+        let mut scan_order: Vec<usize> = (0..self.predicates.len()).collect();
+        if let Some(d) = driver_pred_idx {
+            scan_order.swap(0, d);
+        }
+
+        let mut driver_subject_ids: Option<Vec<u64>> = None;
+        let mut used_batched_probe = false;
+        let mut probe_chunks: u64 = 0;
+        let mut probe_subjects_total: u64 = 0;
+        let mut scan_rows_total: u64 = 0;
+
+        for (order_pos, pred_idx) in scan_order.iter().copied().enumerate() {
+            let (pred_term, obj_var, dt) = &self.predicates[pred_idx];
+
+            // If we have a driver subject set and we're in the right execution mode,
+            // try a batched subject probe for this predicate.
+            let can_batched_probe = order_pos > 0
+                && driver_subject_ids.is_some()
+                && ctx.has_binary_store()
+                && dt.is_none();
+
+            if can_batched_probe {
+                let store = ctx.binary_store.as_ref().unwrap();
+                let pred_sid = match pred_term {
+                    Term::Sid(s) => Some(s.clone()),
+                    Term::Iri(iri) => Some(store.encode_iri(iri)),
+                    _ => None,
+                };
+
+                if let Some(pred_sid) = pred_sid {
+                    let subject_ids = driver_subject_ids.as_ref().unwrap();
+                    if !subject_ids.is_empty() {
+                        // IMPORTANT: Batched join uses the min/max s_id range of the left batch
+                        // to decide which leaf files/leaflets to scan. If the subject IDs are
+                        // sparse across the full id space, a single huge batch can still scan
+                        // nearly the entire predicate partition.
+                        //
+                        // To improve locality, chunk the subject IDs into smaller sorted ranges
+                        // and probe each chunk independently.
+                        const PROBE_CHUNK_SIZE: usize = 256;
+
+                        let mut ids = subject_ids.clone();
+                        ids.sort_unstable();
+
+                        for chunk in ids.chunks(PROBE_CHUNK_SIZE) {
+                            used_batched_probe = true;
+                            probe_chunks += 1;
+                            probe_subjects_total += chunk.len() as u64;
+
+                            let rows: Vec<Vec<Binding>> = chunk
+                                .iter()
+                                .map(|&s_id| vec![Binding::EncodedSid { s_id }])
+                                .collect();
+
+                            // Seed: VALUES ?s { <subjectIds...> }
+                            let left = Box::new(ValuesOperator::new(
+                                Box::new(EmptyOperator::new()),
+                                vec![self.subject_var],
+                                rows,
+                            ));
+                            let left_schema: Arc<[VarId]> =
+                                Arc::from(vec![self.subject_var].into_boxed_slice());
+
+                            // Probe: ?s <pred> ?o
+                            let right_pattern = TriplePattern::new(
+                                Term::Var(self.subject_var),
+                                Term::Sid(pred_sid.clone()),
+                                Term::Var(TEMP_OBJECT_VAR),
+                            );
+
+                            let mut join = NestedLoopJoinOperator::new(
+                                left,
+                                left_schema,
+                                right_pattern,
+                                None, // bounds already applied in driver; keep probe unconstrained
+                            );
+                            join.open(ctx).await?;
+
+                            while let Some(batch) = join.next_batch(ctx).await? {
+                                let subject_col = batch.column_by_idx(0);
+                                let object_col = batch.column_by_idx(1);
+                                if let (Some(subjects), Some(objects)) = (subject_col, object_col) {
+                                    scan_rows_total += batch.len() as u64;
+                                    for (subject, object) in subjects.iter().zip(objects.iter()) {
+                                        if let Some(key) = Self::subject_key(ctx, subject) {
+                                            if let Some(entry) = all_subject_values.get_mut(&key) {
+                                                entry.1[pred_idx].push(object.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            join.close();
+                        }
+
+                        continue;
+                    }
+                }
+            }
+
             // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
             // pred_term is already a Term (Sid or Iri) so use it directly
             let pattern = if let Some(dt) = dt {
@@ -264,7 +492,7 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
             // `ScanOperator` selects between binary cursor and range fallback
             // at open() time based on the execution context.
             let bounds = self.object_bounds.get(obj_var).cloned();
-            let mut scan: BoxedOperator<S> = make_property_join_scan::<S>(pattern, bounds);
+            let mut scan: BoxedOperator = make_property_join_scan(pattern, bounds);
             scan.open(ctx).await?;
 
             while let Some(batch) = scan.next_batch(ctx).await? {
@@ -273,19 +501,20 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
                 let object_col = batch.column_by_idx(1);
 
                 if let (Some(subjects), Some(objects)) = (subject_col, object_col) {
+                    scan_rows_total += batch.len() as u64;
                     for (subject, object) in subjects.iter().zip(objects.iter()) {
-                        // Extract canonical IRI for keying, preserving original binding for output
-                        let iri_key: Option<Arc<str>> = match subject {
-                            Binding::IriMatch { iri, .. } => Some(iri.clone()),
-                            Binding::Sid(sid) => {
-                                // Single-ledger mode: decode SID to IRI for keying
-                                ctx.decode_sid(sid).map(Arc::from)
+                        // Extract join-safe subject key for keying, preserving original binding for output.
+                        if let Some(key) = Self::subject_key(ctx, subject) {
+                            // If we've already built a driver subject set, don't insert new subjects.
+                            // This prevents the unbounded predicate scan from ballooning the map.
+                            if order_pos > 0 && !all_subject_values.is_empty() {
+                                if let Some(entry) = all_subject_values.get_mut(&key) {
+                                    entry.1[pred_idx].push(object.clone());
+                                }
+                                continue;
                             }
-                            _ => None,
-                        };
 
-                        if let Some(iri) = iri_key {
-                            let entry = all_subject_values.entry(iri).or_insert_with(|| {
+                            let entry = all_subject_values.entry(key).or_insert_with(|| {
                                 // Initialize with the subject binding and empty vecs for each predicate
                                 (subject.clone(), vec![Vec::new(); self.predicates.len()])
                             });
@@ -296,6 +525,22 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
             }
 
             scan.close();
+
+            // After the first scan (driver), capture the subject IDs for batched probing.
+            if order_pos == 0 && driver_pred_idx.is_some() && ctx.has_binary_store() {
+                let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
+                for k in all_subject_values.keys() {
+                    if let SubjectKey::Id(s_id) = k {
+                        ids.push(*s_id);
+                    } else {
+                        ids.clear();
+                        break;
+                    }
+                }
+                if !ids.is_empty() {
+                    driver_subject_ids = Some(ids);
+                }
+            }
         }
 
         // Filter to only subjects that have values for ALL predicates
@@ -304,13 +549,22 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
             .filter(|(_, (_, values))| values.iter().all(|v| !v.is_empty()))
             .collect();
 
-        // Collect subject IRIs for iteration
+        // Collect subjects for iteration
         self.pending_subjects = self.subject_values.keys().cloned().collect();
+
+        tracing::info!(
+            subjects = self.pending_subjects.len(),
+            used_batched_probe,
+            probe_chunks,
+            probe_subjects_total,
+            scan_rows_total,
+            "property_join: open complete"
+        );
 
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -322,10 +576,10 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
         let schema_len = self.output_schema.len();
 
         while all_rows.len() < batch_size && self.subject_idx < self.pending_subjects.len() {
-            let subject_iri = &self.pending_subjects[self.subject_idx];
+            let subject_key = &self.pending_subjects[self.subject_idx];
             self.subject_idx += 1;
 
-            if let Some((subject_binding, values_per_pred)) = self.subject_values.get(subject_iri) {
+            if let Some((subject_binding, values_per_pred)) = self.subject_values.get(subject_key) {
                 let rows = Self::generate_rows(schema_len, subject_binding, values_per_pred);
                 all_rows.extend(rows);
             }
@@ -400,6 +654,13 @@ mod tests {
         assert_eq!(schema[0], VarId(0)); // subject
         assert_eq!(schema[1], VarId(1)); // name object
         assert_eq!(schema[2], VarId(2)); // age object
+    }
+
+    #[test]
+    fn test_subject_key_single_prefers_encoded_ids() {
+        // Single-ledger mode should not require IRI decoding for EncodedSid.
+        let key = PropertyJoinOperator::subject_key_single(&Binding::EncodedSid { s_id: 42 });
+        assert!(matches!(key, Some(SubjectKey::Id(42))));
     }
 
     #[test]

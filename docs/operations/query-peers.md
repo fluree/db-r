@@ -20,13 +20,13 @@ This guide is written from an **operator / end-user** standpoint: what to deploy
 
 ## Events stream (SSE): `GET /fluree/events`
 
-The transaction server exposes a Server-Sent Events (SSE) stream that emits **nameservice changes** for ledgers and virtual graphs. Query peers use this stream to stay up to date.
+The transaction server exposes a Server-Sent Events (SSE) stream that emits **nameservice changes** for ledgers and graph sources. Query peers use this stream to stay up to date.
 
 ### Query parameters
 
-- **`all=true`**: subscribe to all ledgers and VGs
-- **`ledger=<alias>`**: subscribe to a ledger alias (repeatable)
-- **`vg=<alias>`**: subscribe to a virtual graph alias (repeatable)
+- **`all=true`**: subscribe to all ledgers and graph sources
+- **`ledger=<ledger_id>`**: subscribe to a ledger ID (`name:branch`, repeatable)
+- **`graph-source=<graph_source_id>`**: subscribe to a graph source ID (`name:branch`, repeatable)
 
 ### Authentication and authorization
 
@@ -57,7 +57,7 @@ In peer mode:
 - **`--peer-events-token <token-or-@file>`** (optional; Bearer token for `/fluree/events`)
 - Subscribe scope:
   - **`--peer-subscribe-all`** or
-  - **`--peer-ledger <alias>`** (repeatable) and/or **`--peer-vg <alias>`** (repeatable)
+  - **`--peer-ledger <ledger_id>`** (repeatable) and/or **`--peer-graph-source <graph_source_id>`** (repeatable)
 
 ### Peer storage access modes
 
@@ -95,7 +95,7 @@ Storage proxy endpoints are disabled by default. Enable them on the transaction 
 
 Storage proxy endpoints require a Bearer token that grants storage proxy permissions:
 
-- **`fluree.storage.all: true`**: access all ledgers (VG artifacts are denied in v1)
+- **`fluree.storage.all: true`**: access all ledgers (graph source artifacts are denied in v1)
 - **`fluree.storage.ledgers: ["books:main", ...]`**: access specific ledgers
 - **`fluree.identity: "ex:PeerServiceAccount"`** (optional): identity used for policy evaluation in policy-filtered read mode
 
@@ -103,19 +103,28 @@ Unauthorized requests return **404** (no existence leak).
 
 ### Endpoints
 
-#### `GET /fluree/storage/ns/{alias}`
+#### `GET /fluree/storage/ns/{ledger-id}`
 
-Fetch a nameservice record for a ledger alias. Requires storage proxy authorization for that alias.
+Fetch a nameservice record for a ledger ID. Requires storage proxy authorization for that ledger.
 
 #### `POST /fluree/storage/block`
 
-Fetch a block/blob by storage address. The server infers the ledger context from the address for authorization. Currently supports:
+Fetch a block/blob by **CID**. The request includes the **ledger ID** so the server can authorize the request and derive the physical storage address internally. Currently supports:
 
 - `Accept: application/octet-stream` (raw bytes; always available)
 - `Accept: application/x-fluree-flakes` (binary “FLKB” transport of policy-filtered **leaf** flakes only)
 - `Accept: application/x-fluree-flakes+json` (debug-only JSON flake transport; leaf flakes only)
 
 If the client requests a flakes format for a **non-leaf** block, the server returns **406 Not Acceptable**. Clients (and peers in proxy mode) should retry with `Accept: application/octet-stream` in that case.
+
+Example request body:
+
+```json
+{
+  "cid": "bafy...leafOrBranchCid",
+  "ledger": "mydb:main"
+}
+```
 
 ##### Policy filtering semantics (leaf flakes)
 
@@ -132,7 +141,7 @@ When a flakes format is requested and the block is a ledger leaf:
 ### Security notes and limitations
 
 - **Branch/commit leakage (v1 limitation)**: filtering leaves without rewriting branches/commits can leak structure/existence information to the peer identity. This is currently an accepted v1 limitation.
-- **VG artifacts (v1)**: storage proxy denies virtual-graph artifacts by returning 404 even when `fluree.storage.all` is present.
+- **Graph source artifacts (v1)**: storage proxy denies graph-source artifacts by returning 404 even when `fluree.storage.all` is present.
 
 ## Deployment examples
 
@@ -174,4 +183,3 @@ fluree-server \
   --peer-subscribe-all \
   --peer-events-token @/etc/fluree/peer-events.jwt
 ```
-

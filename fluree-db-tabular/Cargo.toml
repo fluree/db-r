@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Tabular column batch types for Fluree DB virtual graphs"
+description = "Tabular column batch types for Fluree DB graph sources"
 
 [dependencies]
 # Error handling

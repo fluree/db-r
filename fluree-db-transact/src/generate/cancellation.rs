@@ -8,7 +8,7 @@
 //! `t` and `op` but includes metadata `m`.
 
 use fluree_db_core::{Flake, IndexType};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 /// Apply cancellation to a set of flakes
 ///
@@ -19,28 +19,35 @@ use std::collections::HashMap;
 /// Returns flakes in deterministic sorted order (by SPOT index) for
 /// reproducible hashing and tests.
 pub fn apply_cancellation(flakes: Vec<Flake>) -> Vec<Flake> {
-    // Use HashMap<Flake, Flake> to leverage Flake's Eq/Hash that ignores t and op
-    let mut assertions: HashMap<Flake, Flake> = HashMap::new();
-    let mut retractions: HashMap<Flake, Flake> = HashMap::new();
+    let cap = flakes.len();
+
+    // Use map keys only (value = ()) to avoid cloning flakes.
+    //
+    // We rely on `Flake`'s `Eq`/`Hash` implementation, which ignores `t` and `op`
+    // but includes metadata `m`, so assertion/retraction pairs can be matched by key.
+    let mut assertions: FxHashMap<Flake, ()> =
+        FxHashMap::with_capacity_and_hasher(cap, Default::default());
+    let mut retractions: FxHashMap<Flake, ()> =
+        FxHashMap::with_capacity_and_hasher(cap, Default::default());
 
     for flake in flakes {
         if flake.op {
             // Assertion - try to cancel with a pending retraction
             if retractions.remove(&flake).is_none() {
-                assertions.insert(flake.clone(), flake);
+                assertions.insert(flake, ());
             }
         } else {
             // Retraction - try to cancel with a pending assertion
             if assertions.remove(&flake).is_none() {
-                retractions.insert(flake.clone(), flake);
+                retractions.insert(flake, ());
             }
         }
     }
 
     // Collect remaining flakes
     let mut result: Vec<Flake> = assertions
-        .into_values()
-        .chain(retractions.into_values())
+        .into_keys()
+        .chain(retractions.into_keys())
         .collect();
 
     // Sort for deterministic output

@@ -357,17 +357,17 @@ pub fn materialize_object(
 pub fn infer_datatype(value: &str) -> Option<&'static str> {
     // Try to parse as integer
     if value.parse::<i64>().is_ok() {
-        return Some("http://www.w3.org/2001/XMLSchema#integer");
+        return Some(fluree_vocab::xsd::INTEGER);
     }
 
     // Try to parse as decimal/double
     if value.parse::<f64>().is_ok() {
-        return Some("http://www.w3.org/2001/XMLSchema#decimal");
+        return Some(fluree_vocab::xsd::DECIMAL);
     }
 
     // Try to parse as boolean
     if value == "true" || value == "false" {
-        return Some("http://www.w3.org/2001/XMLSchema#boolean");
+        return Some(fluree_vocab::xsd::BOOLEAN);
     }
 
     // Default: xsd:string (no need to specify)

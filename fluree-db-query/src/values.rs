@@ -15,16 +15,15 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 use std::sync::Arc;
 
 /// VALUES operator - injects constant solutions into the stream
 ///
 /// Takes value rows with their variables and joins them with input solutions.
 /// Implements SPARQL VALUES semantics with overlap compatibility checking.
-pub struct ValuesOperator<S: Storage + 'static> {
+pub struct ValuesOperator {
     /// Child operator providing input solutions
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Constant rows to inject (each row has one binding per value_var)
     value_rows: Vec<Vec<Binding>>,
     /// Output schema (union of child schema + new value vars)
@@ -35,7 +34,7 @@ pub struct ValuesOperator<S: Storage + 'static> {
     overlap_positions: Vec<Option<usize>>,
 }
 
-impl<S: Storage + 'static> ValuesOperator<S> {
+impl ValuesOperator {
     /// Create a new VALUES operator
     ///
     /// # Arguments
@@ -44,7 +43,7 @@ impl<S: Storage + 'static> ValuesOperator<S> {
     /// * `value_vars` - Variables being defined by VALUES
     /// * `value_rows` - Constant rows (each row has bindings for value_vars in order)
     pub fn new(
-        child: BoxedOperator<S>,
+        child: BoxedOperator,
         value_vars: Vec<VarId>,
         value_rows: Vec<Vec<Binding>>,
     ) -> Self {
@@ -82,7 +81,7 @@ impl<S: Storage + 'static> ValuesOperator<S> {
     /// Returns false if any overlapping variable has a mismatched value.
     fn is_compatible(
         &self,
-        ctx: &ExecutionContext<'_, S>,
+        ctx: &ExecutionContext<'_>,
         input_row: &[&Binding],
         value_row: &[Binding],
     ) -> bool {
@@ -135,18 +134,18 @@ impl<S: Storage + 'static> ValuesOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for ValuesOperator<S> {
+impl Operator for ValuesOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -216,11 +215,7 @@ impl<S: Storage + 'static> Operator<S> for ValuesOperator<S> {
     }
 }
 
-fn bindings_compatible_for_values<S: Storage + 'static>(
-    ctx: &ExecutionContext<'_, S>,
-    a: &Binding,
-    b: &Binding,
-) -> bool {
+fn bindings_compatible_for_values(ctx: &ExecutionContext<'_>, a: &Binding, b: &Binding) -> bool {
     if a == b {
         return true;
     }
@@ -242,7 +237,7 @@ fn bindings_compatible_for_values<S: Storage + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{FlakeValue, Sid};
 
     fn xsd_long() -> Sid {
         Sid::new(2, "long")
@@ -266,7 +261,7 @@ mod tests {
             Binding::lit(FlakeValue::String("a".into()), xsd_string()),
         ]];
 
-        let op = ValuesOperator::<MemoryStorage>::new(child, value_vars, value_rows);
+        let op = ValuesOperator::new(child, value_vars, value_rows);
 
         // Output schema should be [?a, ?x, ?y]
         assert_eq!(op.schema().len(), 3);
@@ -289,7 +284,7 @@ mod tests {
             Binding::lit(FlakeValue::Long(100), xsd_long()),
         ]];
 
-        let op = ValuesOperator::<MemoryStorage>::new(child, value_vars, value_rows);
+        let op = ValuesOperator::new(child, value_vars, value_rows);
 
         // Output schema should be [?a, ?b, ?c] - no duplicates
         assert_eq!(op.schema().len(), 3);
@@ -302,10 +297,10 @@ mod tests {
     fn test_values_operator_compatibility_check() {
         // Test the compatibility logic directly
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::{Db, MemoryStorage};
+        use fluree_db_core::Db;
 
         let vars = VarRegistry::new();
-        let db = Db::genesis(MemoryStorage::new(), "values-test/main");
+        let db = Db::genesis("values-test/main");
         let ctx = ExecutionContext::new(&db, &vars);
 
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
@@ -319,7 +314,7 @@ mod tests {
             Binding::lit(FlakeValue::Long(20), xsd_long()),
         ]];
 
-        let op = ValuesOperator::<MemoryStorage>::new(child, value_vars, value_rows);
+        let op = ValuesOperator::new(child, value_vars, value_rows);
 
         // Compatible: child has 10, values has 10
         let binding_10 = Binding::lit(FlakeValue::Long(10), xsd_long());
@@ -364,16 +359,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static> Operator<S> for TestEmptyWithSchema {
+    impl Operator for TestEmptyWithSchema {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
             Ok(None)
         }
 

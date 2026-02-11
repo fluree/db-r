@@ -1,4 +1,4 @@
-//! R2RML Virtual Graph Support
+//! R2RML Graph Source Support
 //!
 //! This module provides query integration for R2RML-mapped Iceberg tables.
 //! It exposes tabular data as RDF triples through the query engine.
@@ -14,10 +14,10 @@
 //!
 //! R2RML patterns are typically generated during query planning when the
 //! planner detects that a triple pattern can be satisfied by an R2RML
-//! virtual graph. The operator loads the mapping, scans the underlying
+//! graph source. The operator loads the mapping, scans the underlying
 //! Iceberg table, and materializes RDF terms according to the mapping.
 //!
-//! When a GRAPH pattern targets an R2RML virtual graph, the `GraphOperator`
+//! When a GRAPH pattern targets an R2RML graph source, the `GraphOperator`
 //! uses `rewrite_patterns_for_r2rml` to convert contained triple patterns
 //! to R2RML patterns before building the operator tree.
 

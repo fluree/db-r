@@ -6,7 +6,6 @@ use crate::binding::{Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
-use fluree_db_core::Storage;
 
 use super::helpers::check_arity;
 use super::value::ComparableValue;
@@ -24,10 +23,10 @@ pub fn eval_bound<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<C
     }
 }
 
-pub fn eval_is_iri<S: Storage, R: RowAccess>(
+pub fn eval_is_iri<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "isIRI")?;
     let val = args[0].eval_to_comparable(row, ctx)?;
@@ -36,10 +35,10 @@ pub fn eval_is_iri<S: Storage, R: RowAccess>(
     }))))
 }
 
-pub fn eval_is_literal<S: Storage, R: RowAccess>(
+pub fn eval_is_literal<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "isLiteral")?;
     let val = args[0].eval_to_comparable(row, ctx)?;
@@ -54,10 +53,10 @@ pub fn eval_is_literal<S: Storage, R: RowAccess>(
     }))))
 }
 
-pub fn eval_is_numeric<S: Storage, R: RowAccess>(
+pub fn eval_is_numeric<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "isNumeric")?;
     let val = args[0].eval_to_comparable(row, ctx)?;

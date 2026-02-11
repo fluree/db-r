@@ -20,13 +20,12 @@
 use super::config::FormatterConfig;
 use super::datatype::is_inferable_datatype;
 use super::iri::IriCompactor;
-use super::jsonld::format_binding;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Flake, NoOverlay, OverlayProvider, Sid, Storage, Tracker};
+use fluree_db_core::{Db, Flake, NoOverlay, OverlayProvider, Sid, Tracker};
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::ir::{GraphSelectSpec, NestedSelectSpec, Root, SelectionSpec};
@@ -178,9 +177,9 @@ pub fn format(result: &QueryResult, _compactor: &IriCompactor) -> Result<JsonVal
 ///
 /// When `policy` is `Some`, flakes are filtered according to view policies.
 /// When `policy` is `None`, no filtering is applied (zero overhead).
-pub async fn format_async<S: Storage>(
+pub async fn format_async(
     result: &QueryResult,
-    db: &Db<S>,
+    db: &Db,
     compactor: &IriCompactor,
     _config: &FormatterConfig,
     policy: Option<&PolicyContext>,
@@ -233,16 +232,25 @@ pub async fn format_async<S: Storage>(
                 for row_idx in 0..batch.len() {
                     let root_binding = batch.get(row_idx, *var_id);
 
-                    let root_sid = match root_binding {
+                    let root_sid: Option<Sid> = match root_binding {
+                        Some(binding) if binding.is_encoded() => {
+                            let materialized =
+                                super::materialize::materialize_binding(result, binding)?;
+                            match materialized {
+                                Binding::Sid(sid) => Some(sid),
+                                Binding::IriMatch { primary_sid, .. } => Some(primary_sid),
+                                _ => None,
+                            }
+                        }
                         Some(Binding::Sid(sid)) => Some(sid.clone()),
                         Some(Binding::IriMatch { primary_sid, .. }) => Some(primary_sid.clone()),
                         Some(Binding::Unbound) | Some(Binding::Poisoned) | None => None,
                         Some(Binding::Lit { .. })
                         | Some(Binding::Grouped(_))
-                        | Some(Binding::Iri(_)) => None,
-                        Some(Binding::EncodedLit { .. }) => None,
-                        // EncodedSid/EncodedPid require materialization before graph crawl
-                        Some(Binding::EncodedSid { .. }) | Some(Binding::EncodedPid { .. }) => None,
+                        | Some(Binding::Iri(_))
+                        | Some(Binding::EncodedLit { .. })
+                        | Some(Binding::EncodedSid { .. })
+                        | Some(Binding::EncodedPid { .. }) => None,
                     };
 
                     let Some(root_sid) = root_sid else {
@@ -267,7 +275,9 @@ pub async fn format_async<S: Storage>(
                                 row.push(obj.clone());
                             } else {
                                 let value = match batch.get(row_idx, *var) {
-                                    Some(binding) => format_binding(binding, compactor)?,
+                                    Some(binding) => super::jsonld::format_binding_with_result(
+                                        result, binding, compactor,
+                                    )?,
                                     None => JsonValue::Null,
                                 };
                                 row.push(value);
@@ -286,8 +296,8 @@ pub async fn format_async<S: Storage>(
 }
 
 /// Graph crawl formatter with async DB access
-struct GraphCrawlFormatter<'a, S: Storage> {
-    db: &'a Db<S>,
+struct GraphCrawlFormatter<'a> {
+    db: &'a Db,
     overlay: &'a dyn OverlayProvider,
     compactor: &'a IriCompactor,
     spec: &'a GraphSelectSpec,
@@ -299,9 +309,9 @@ struct GraphCrawlFormatter<'a, S: Storage> {
     tracker: Option<&'a Tracker>,
 }
 
-impl<'a, S: Storage> GraphCrawlFormatter<'a, S> {
+impl<'a> GraphCrawlFormatter<'a> {
     fn new(
-        db: &'a Db<S>,
+        db: &'a Db,
         overlay: &'a dyn OverlayProvider,
         compactor: &'a IriCompactor,
         spec: &'a GraphSelectSpec,

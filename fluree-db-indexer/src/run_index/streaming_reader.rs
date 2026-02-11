@@ -9,9 +9,15 @@ use super::run_file::{deserialize_lang_dict, RunFileHeader, RUN_HEADER_LEN};
 use super::run_record::{RunRecord, RECORD_WIRE_SIZE};
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 /// Number of records to buffer per read. 8192 × 44 bytes ≈ 352 KB.
 const BUFFER_SIZE: usize = 8192;
+
+static PERF_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+static PERF_FILL_CALLS: AtomicU64 = AtomicU64::new(0);
+static PERF_FILL_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Buffered, forward-only reader for run files.
 ///
@@ -29,6 +35,8 @@ pub struct StreamingRunReader {
     lang_remap: Vec<u16>,
     /// Read buffer.
     buffer: Vec<RunRecord>,
+    /// Raw byte buffer reused across reads.
+    raw_buf: Vec<u8>,
     /// Current position within buffer.
     buf_pos: usize,
     /// Number of records still in the file (not yet read into buffer).
@@ -64,6 +72,7 @@ impl StreamingRunReader {
             lang_dict,
             lang_remap,
             buffer: Vec::with_capacity(BUFFER_SIZE),
+            raw_buf: Vec::with_capacity(BUFFER_SIZE * RECORD_WIRE_SIZE),
             buf_pos: 0,
             remaining: 0,
         };
@@ -113,6 +122,11 @@ impl StreamingRunReader {
 
     /// Fill the buffer with the next batch of records from disk.
     fn fill_buffer(&mut self) -> io::Result<()> {
+        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let t0 = perf_enabled.then(Instant::now);
+
         let to_read = (self.remaining as usize).min(BUFFER_SIZE);
         if to_read == 0 {
             self.buffer.clear();
@@ -122,16 +136,17 @@ impl StreamingRunReader {
 
         // Read raw bytes
         let byte_count = to_read * RECORD_WIRE_SIZE;
-        let mut raw = vec![0u8; byte_count];
-        self.file.read_exact(&mut raw)?;
+        self.raw_buf.resize(byte_count, 0u8);
+        self.file.read_exact(&mut self.raw_buf)?;
 
         // Decode records
         self.buffer.clear();
         self.buffer.reserve(to_read);
         for i in 0..to_read {
             let offset = i * RECORD_WIRE_SIZE;
-            let buf: &[u8; RECORD_WIRE_SIZE] =
-                raw[offset..offset + RECORD_WIRE_SIZE].try_into().unwrap();
+            let buf: &[u8; RECORD_WIRE_SIZE] = self.raw_buf[offset..offset + RECORD_WIRE_SIZE]
+                .try_into()
+                .unwrap();
             let mut rec = RunRecord::read_le(buf);
 
             // Apply lang_id remapping
@@ -148,7 +163,34 @@ impl StreamingRunReader {
         self.remaining -= to_read as u64;
         self.buf_pos = 0;
 
+        if let Some(t) = t0 {
+            PERF_FILL_CALLS.fetch_add(1, Ordering::Relaxed);
+            PERF_READ_BYTES.fetch_add(byte_count as u64, Ordering::Relaxed);
+            PERF_FILL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
         Ok(())
+    }
+}
+
+impl Drop for StreamingRunReader {
+    fn drop(&mut self) {
+        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !perf_enabled {
+            return;
+        }
+        // Aggregate across all reader instances; only emit once when the last one drops
+        // is non-trivial to detect, so we emit at drop with totals (dup logs are OK).
+        let calls = PERF_FILL_CALLS.load(std::sync::atomic::Ordering::Relaxed);
+        let bytes = PERF_READ_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+        let ns = PERF_FILL_NS.load(std::sync::atomic::Ordering::Relaxed);
+        tracing::debug!(
+            fill_calls = calls,
+            read_mb = (bytes as f64) / (1024.0 * 1024.0),
+            fill_s = (ns as f64) / 1e9,
+            "streaming run reader perf (aggregate)"
+        );
     }
 }
 

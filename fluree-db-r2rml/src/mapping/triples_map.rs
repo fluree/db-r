@@ -221,14 +221,14 @@ impl TriplesMap {
 /// Logical table source
 ///
 /// Defines where the tabular data comes from.
-/// For Iceberg VGs, only table names are supported (not SQL queries).
+/// For Iceberg graph sources, only table names are supported (not SQL queries).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LogicalTable {
     /// `rr:tableName` - direct table reference
     ///
     /// Table names are normalized to dot notation: "namespace.table"
     TableName(String),
-    // Note: rr:sqlQuery is explicitly NOT supported for Iceberg VGs
+    // Note: rr:sqlQuery is explicitly NOT supported for Iceberg graph sources
 }
 
 impl LogicalTable {

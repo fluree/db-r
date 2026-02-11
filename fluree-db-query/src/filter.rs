@@ -24,16 +24,15 @@ use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 use std::sync::Arc;
 
 /// Filter operator - applies a predicate to each row from child
 ///
 /// Rows where the filter evaluates to `false` or encounters an error
 /// (type mismatch, unbound var) are filtered out.
-pub struct FilterOperator<S: Storage + 'static> {
+pub struct FilterOperator {
     /// Child operator providing input rows
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Filter expression to evaluate
     expr: Expression,
     /// Output schema (same as child)
@@ -42,9 +41,9 @@ pub struct FilterOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> FilterOperator<S> {
+impl FilterOperator {
     /// Create a new filter operator
-    pub fn new(child: BoxedOperator<S>, expr: Expression) -> Self {
+    pub fn new(child: BoxedOperator, expr: Expression) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -61,18 +60,18 @@ impl<S: Storage + 'static> FilterOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for FilterOperator<S> {
+impl Operator for FilterOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }

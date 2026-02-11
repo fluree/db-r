@@ -36,7 +36,7 @@ use crate::r2rml::rewrite_patterns_for_r2rml;
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, Storage};
+use fluree_db_core::FlakeValue;
 use std::sync::Arc;
 // Note: tracing::debug removed to fix compilation - add tracing dependency if needed
 
@@ -44,9 +44,9 @@ use std::sync::Arc;
 ///
 /// This is a correlated operator: for each input row, it executes the inner
 /// patterns in the appropriate graph context (determined by the graph name).
-pub struct GraphOperator<S: Storage + 'static> {
+pub struct GraphOperator {
     /// Child operator providing input solutions
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Graph name (IRI or variable)
     graph_name: GraphName,
     /// Inner patterns to execute within the graph context
@@ -63,7 +63,7 @@ pub struct GraphOperator<S: Storage + 'static> {
     buffer_pos: usize,
 }
 
-impl<S: Storage + 'static> GraphOperator<S> {
+impl GraphOperator {
     /// Create a new GRAPH pattern operator
     ///
     /// # Arguments
@@ -71,11 +71,7 @@ impl<S: Storage + 'static> GraphOperator<S> {
     /// * `child` - Input solutions operator
     /// * `graph_name` - The graph name (concrete IRI or variable)
     /// * `inner_patterns` - Patterns to execute within the graph context
-    pub fn new(
-        child: BoxedOperator<S>,
-        graph_name: GraphName,
-        inner_patterns: Vec<Pattern>,
-    ) -> Self {
+    pub fn new(child: BoxedOperator, graph_name: GraphName, inner_patterns: Vec<Pattern>) -> Self {
         // Compute output schema: parent schema + new vars from inner patterns
         let parent_schema: std::collections::HashSet<VarId> =
             child.schema().iter().copied().collect();
@@ -131,7 +127,7 @@ impl<S: Storage + 'static> GraphOperator<S> {
     /// Execute inner patterns in a specific graph, seeded with parent row
     async fn execute_in_graph(
         &mut self,
-        ctx: &ExecutionContext<'_, S>,
+        ctx: &ExecutionContext<'_>,
         parent_batch: &Batch,
         row_idx: usize,
         graph_iri: Arc<str>,
@@ -141,30 +137,30 @@ impl<S: Storage + 'static> GraphOperator<S> {
         let graph_ctx = ctx.with_active_graph(graph_iri.clone());
 
         // Check if this graph is backed by an R2RML mapping
-        // The graph IRI could be a virtual graph alias (e.g., "airlines-vg:main")
-        let is_r2rml_vg = if let Some(provider) = ctx.r2rml_provider {
+        // The graph IRI could be a graph source alias (e.g., "airlines-gs:main")
+        let is_r2rml_gs = if let Some(provider) = ctx.r2rml_provider {
             provider.has_r2rml_mapping(&graph_iri).await
         } else {
             false
         };
 
         // Determine which patterns to use (rewritten for R2RML or original)
-        let patterns_to_execute: std::borrow::Cow<'_, [Pattern]> = if is_r2rml_vg {
+        let patterns_to_execute: std::borrow::Cow<'_, [Pattern]> = if is_r2rml_gs {
             // Rewrite triple patterns to R2RML patterns
             let rewrite_result =
                 rewrite_patterns_for_r2rml(&self.inner_patterns, &graph_iri, ctx.db);
 
-            // If there are unconverted patterns in an R2RML virtual graph, return an error.
-            // R2RML virtual graphs don't have ledger-backed indexes, so unconverted patterns
+            // If there are unconverted patterns in an R2RML graph source, return an error.
+            // R2RML graph sources don't have ledger-backed indexes, so unconverted patterns
             // (e.g., bound subject or bound object constraints) would silently return empty
             // results instead of the expected matches. Fail explicitly so users know their
             // query contains unsupported patterns.
             if rewrite_result.unconverted_count > 0 {
                 return Err(crate::error::QueryError::InvalidQuery(format!(
-                    "R2RML virtual graph '{}' contains {} pattern(s) that cannot be converted \
+                    "R2RML graph source '{}' contains {} pattern(s) that cannot be converted \
                      to R2RML scans. Patterns with bound subjects (e.g., <iri> ex:name ?o) or \
                      bound objects (e.g., ?s ex:name \"value\") are not yet supported in R2RML \
-                     virtual graphs.",
+                     graph sources.",
                     graph_iri, rewrite_result.unconverted_count
                 )));
             }
@@ -177,7 +173,7 @@ impl<S: Storage + 'static> GraphOperator<S> {
         // Build seed operator from parent row (like EXISTS/Subquery)
         let seed = SeedOperator::from_batch_row(parent_batch, row_idx);
         let mut inner =
-            build_where_operators_seeded::<S>(Some(Box::new(seed)), &patterns_to_execute, None)?;
+            build_where_operators_seeded(Some(Box::new(seed)), &patterns_to_execute, None)?;
 
         inner.open(&graph_ctx).await?;
 
@@ -256,12 +252,12 @@ impl<S: Storage + 'static> GraphOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
+impl Operator for GraphOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         self.result_buffer.clear();
@@ -269,7 +265,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -316,15 +312,15 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                             }
                             // else: graph not found → no output for this row
                         } else {
-                            // No dataset - check if this is an R2RML virtual graph first
-                            let is_r2rml_vg = if let Some(provider) = ctx.r2rml_provider {
+                            // No dataset - check if this is an R2RML graph source first
+                            let is_r2rml_gs = if let Some(provider) = ctx.r2rml_provider {
                                 provider.has_r2rml_mapping(iri).await
                             } else {
                                 false
                             };
 
-                            // Execute if R2RML VG or if graph name matches db's alias (Clojure parity)
-                            if is_r2rml_vg || iri.as_ref() == ctx.db.alias {
+                            // Execute if R2RML graph source or if graph name matches db's alias (Clojure parity)
+                            if is_r2rml_gs || iri.as_ref() == ctx.db.ledger_id {
                                 self.execute_in_graph(
                                     ctx,
                                     &parent_batch,
@@ -334,7 +330,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                                 )
                                 .await?;
                             }
-                            // else: graph name doesn't match alias and not R2RML VG → no output
+                            // else: graph name doesn't match alias and not R2RML graph source → no output
                         }
                     }
                     GraphName::Var(var) => {
@@ -355,15 +351,15 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                                     }
                                     // else: graph not found → no output
                                 } else {
-                                    // No dataset - check if this is an R2RML virtual graph first
-                                    let is_r2rml_vg = if let Some(provider) = ctx.r2rml_provider {
+                                    // No dataset - check if this is an R2RML graph source first
+                                    let is_r2rml_gs = if let Some(provider) = ctx.r2rml_provider {
                                         provider.has_r2rml_mapping(&bound_iri).await
                                     } else {
                                         false
                                     };
 
-                                    // Execute if R2RML VG or alias match (Clojure parity)
-                                    if is_r2rml_vg || bound_iri.as_ref() == ctx.db.alias {
+                                    // Execute if R2RML graph source or alias match (Clojure parity)
+                                    if is_r2rml_gs || bound_iri.as_ref() == ctx.db.ledger_id {
                                         self.execute_in_graph(
                                             ctx,
                                             &parent_batch,
@@ -373,7 +369,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                                         )
                                         .await?;
                                     }
-                                    // else: bound IRI doesn't match alias and not R2RML VG → no output
+                                    // else: bound IRI doesn't match alias and not R2RML graph source → no output
                                 }
                             }
                             // else: binding exists but isn't a string IRI → no output
@@ -393,7 +389,7 @@ impl<S: Storage + 'static> Operator<S> for GraphOperator<S> {
                             } else {
                                 // No dataset - single-db mode (Clojure parity):
                                 // Bind ?g to db's alias and execute
-                                let alias_iri: Arc<str> = Arc::from(ctx.db.alias.as_str());
+                                let alias_iri: Arc<str> = Arc::from(ctx.db.ledger_id.as_str());
                                 self.execute_in_graph(
                                     ctx,
                                     &parent_batch,
@@ -440,16 +436,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static> Operator<S> for TestChildOperator {
+    impl Operator for TestChildOperator {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
             Ok(None)
         }
 
@@ -459,7 +455,7 @@ mod tests {
     #[test]
     fn test_graph_operator_schema_with_iri() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestChildOperator {
+        let child: BoxedOperator = Box::new(TestChildOperator {
             schema: child_schema.clone(),
         });
 
@@ -484,7 +480,7 @@ mod tests {
     #[test]
     fn test_graph_operator_schema_with_var() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestChildOperator {
+        let child: BoxedOperator = Box::new(TestChildOperator {
             schema: child_schema,
         });
 
@@ -513,9 +509,7 @@ mod tests {
             t: None,
             op: None,
         };
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(
-            &binding,
-        );
+        let iri = GraphOperator::extract_graph_iri_from_binding(&binding);
         assert_eq!(iri, Some(Arc::from("http://example.org/graph1")));
 
         // Non-string binding returns None
@@ -526,15 +520,11 @@ mod tests {
             t: None,
             op: None,
         };
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(
-            &binding,
-        );
+        let iri = GraphOperator::extract_graph_iri_from_binding(&binding);
         assert_eq!(iri, None);
 
         // Unbound returns None
-        let iri = GraphOperator::<fluree_db_core::MemoryStorage>::extract_graph_iri_from_binding(
-            &Binding::Unbound,
-        );
+        let iri = GraphOperator::extract_graph_iri_from_binding(&Binding::Unbound);
         assert_eq!(iri, None);
     }
 }

@@ -1,7 +1,7 @@
 //! BM25 Full-Text Search Module
 //!
 //! This module implements BM25 full-text search with Clojure parity for
-//! Fluree's virtual graph system.
+//! Fluree's graph source system.
 //!
 //! # Components
 //!
@@ -16,6 +16,7 @@
 pub mod analyzer;
 pub mod builder;
 pub mod index;
+pub mod manifest;
 pub mod operator;
 pub mod scoring;
 pub mod serialize;
@@ -30,9 +31,10 @@ pub use builder::{
     MultiBm25IndexBuilder,
 };
 pub use index::{
-    Bm25Config, Bm25Index, Bm25Stats, CompiledPropertyDeps, DocKey, PropertyDeps, SparseVector,
-    TermEntry, VgWatermark,
+    Bm25Config, Bm25Index, Bm25Stats, CompiledPropertyDeps, DocKey, GraphSourceWatermark,
+    PropertyDeps, SparseVector, TermEntry,
 };
+pub use manifest::{Bm25Manifest, Bm25SnapshotEntry};
 pub use operator::{
     Bm25IndexProvider, Bm25SearchOperator, Bm25SearchProvider, Bm25SearchResult, SearchHit,
 };

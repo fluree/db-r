@@ -90,24 +90,24 @@ impl FlureeInstance {
     /// Works with both file-backed and proxy-backed instances.
     pub async fn nameservice_lookup(
         &self,
-        alias: &str,
+        ledger_id: &str,
     ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::NsRecord>> {
         use fluree_db_api::NameService;
         match self {
-            FlureeInstance::File(f) => f.nameservice().lookup(alias).await,
-            FlureeInstance::Proxy(p) => p.nameservice().lookup(alias).await,
+            FlureeInstance::File(f) => f.nameservice().lookup(ledger_id).await,
+            FlureeInstance::Proxy(p) => p.nameservice().lookup(ledger_id).await,
         }
     }
 
-    /// Check if a ledger exists by alias or address
+    /// Check if a ledger exists by ledger ID
     ///
     /// Returns `true` if the ledger is registered in the nameservice,
     /// `false` otherwise. This is a lightweight check that only queries
     /// the nameservice without loading the ledger data.
-    pub async fn ledger_exists(&self, alias: &str) -> fluree_db_api::Result<bool> {
+    pub async fn ledger_exists(&self, ledger_id: &str) -> fluree_db_api::Result<bool> {
         match self {
-            FlureeInstance::File(f) => f.ledger_exists(alias).await,
-            FlureeInstance::Proxy(p) => p.ledger_exists(alias).await,
+            FlureeInstance::File(f) => f.ledger_exists(ledger_id).await,
+            FlureeInstance::Proxy(p) => p.ledger_exists(ledger_id).await,
         }
     }
 
@@ -160,19 +160,19 @@ impl FlureeInstance {
     /// Load a graph and execute a JSON-LD query
     pub async fn query_ledger_jsonld(
         &self,
-        alias: &str,
+        ledger_id: &str,
         query_json: &serde_json::Value,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(alias)
+                f.graph(ledger_id)
                     .query()
                     .jsonld(query_json)
                     .execute_formatted()
                     .await
             }
             FlureeInstance::Proxy(p) => {
-                p.graph(alias)
+                p.graph(ledger_id)
                     .query()
                     .jsonld(query_json)
                     .execute_formatted()
@@ -184,20 +184,20 @@ impl FlureeInstance {
     /// Load a graph and execute a tracked query (with fuel metering)
     pub async fn query_ledger_tracked(
         &self,
-        alias: &str,
+        ledger_id: &str,
         query_json: &serde_json::Value,
     ) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
     {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(alias)
+                f.graph(ledger_id)
                     .query()
                     .jsonld(query_json)
                     .execute_tracked()
                     .await
             }
             FlureeInstance::Proxy(p) => {
-                p.graph(alias)
+                p.graph(ledger_id)
                     .query()
                     .jsonld(query_json)
                     .execute_tracked()
@@ -209,19 +209,19 @@ impl FlureeInstance {
     /// Load a graph and execute a SPARQL query
     pub async fn query_ledger_sparql_jsonld(
         &self,
-        alias: &str,
+        ledger_id: &str,
         sparql: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                f.graph(alias)
+                f.graph(ledger_id)
                     .query()
                     .sparql(sparql)
                     .execute_formatted()
                     .await
             }
             FlureeInstance::Proxy(p) => {
-                p.graph(alias)
+                p.graph(ledger_id)
                     .query()
                     .sparql(sparql)
                     .execute_formatted()
@@ -237,7 +237,7 @@ impl FlureeInstance {
     /// for the identity, the query is denied by default.
     pub async fn query_ledger_sparql_with_identity(
         &self,
-        alias: &str,
+        ledger_id: &str,
         sparql: &str,
         identity: Option<&str>,
     ) -> fluree_db_api::Result<serde_json::Value> {
@@ -251,14 +251,14 @@ impl FlureeInstance {
 
                 match self {
                     FlureeInstance::File(f) => {
-                        let view = f.view_with_policy(alias, &opts).await?;
+                        let view = f.view_with_policy(ledger_id, &opts).await?;
                         view.query(f.as_ref())
                             .sparql(sparql)
                             .execute_formatted()
                             .await
                     }
                     FlureeInstance::Proxy(p) => {
-                        let view = p.view_with_policy(alias, &opts).await?;
+                        let view = p.view_with_policy(ledger_id, &opts).await?;
                         view.query(p.as_ref())
                             .sparql(sparql)
                             .execute_formatted()
@@ -268,7 +268,7 @@ impl FlureeInstance {
             }
             None => {
                 // No identity - execute without policy
-                self.query_ledger_sparql_jsonld(alias, sparql).await
+                self.query_ledger_sparql_jsonld(ledger_id, sparql).await
             }
         }
     }
@@ -276,16 +276,16 @@ impl FlureeInstance {
     /// Load a ledger and explain a query plan
     pub async fn explain_ledger(
         &self,
-        alias: &str,
+        ledger_id: &str,
         query_json: &serde_json::Value,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                let ledger = f.ledger(alias).await?;
+                let ledger = f.ledger(ledger_id).await?;
                 f.explain(&ledger, query_json).await
             }
             FlureeInstance::Proxy(p) => {
-                let ledger = p.ledger(alias).await?;
+                let ledger = p.ledger(ledger_id).await?;
                 p.explain(&ledger, query_json).await
             }
         }
@@ -295,14 +295,14 @@ impl FlureeInstance {
     ///
     /// Returns the ledger state with its index_t for freshness comparison.
     /// In proxy mode, this always fetches the latest from the transaction server.
-    pub async fn ledger_index_t(&self, alias: &str) -> fluree_db_api::Result<i64> {
+    pub async fn ledger_index_t(&self, ledger_id: &str) -> fluree_db_api::Result<i64> {
         match self {
             FlureeInstance::File(f) => {
-                let ledger = f.ledger(alias).await?;
+                let ledger = f.ledger(ledger_id).await?;
                 Ok(ledger.index_t())
             }
             FlureeInstance::Proxy(p) => {
-                let ledger = p.ledger(alias).await?;
+                let ledger = p.ledger(ledger_id).await?;
                 Ok(ledger.index_t())
             }
         }
@@ -345,10 +345,10 @@ impl FlureeInstance {
     ///
     /// Releases the cached ledger state, forcing a fresh load on the next access.
     /// If caching is disabled, this is a no-op.
-    pub async fn disconnect_ledger(&self, alias: &str) {
+    pub async fn disconnect_ledger(&self, ledger_id: &str) {
         match self {
-            FlureeInstance::File(f) => f.disconnect_ledger(alias).await,
-            FlureeInstance::Proxy(p) => p.disconnect_ledger(alias).await,
+            FlureeInstance::File(f) => f.disconnect_ledger(ledger_id).await,
+            FlureeInstance::Proxy(p) => p.disconnect_ledger(ledger_id).await,
         }
     }
 
@@ -368,19 +368,22 @@ impl FlureeInstance {
     /// Works with both file-backed and proxy-backed instances. Loads the ledger
     /// into cache if not already cached, then builds metadata including commit info,
     /// namespace codes, and statistics.
-    pub async fn build_ledger_info(&self, alias: &str) -> fluree_db_api::Result<serde_json::Value> {
+    pub async fn build_ledger_info(
+        &self,
+        ledger_id: &str,
+    ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
             FlureeInstance::File(f) => {
-                let handle = f.ledger_cached(alias).await?;
+                let handle = f.ledger_cached(ledger_id).await?;
                 let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, None)
+                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, f.storage(), None)
                     .await
                     .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
             }
             FlureeInstance::Proxy(p) => {
-                let handle = p.ledger_cached(alias).await?;
+                let handle = p.ledger_cached(ledger_id).await?;
                 let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, None)
+                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, p.storage(), None)
                     .await
                     .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
             }
@@ -409,6 +412,11 @@ pub struct AppState {
 
     /// Ledger registry for tracking loaded ledgers and their watermarks
     pub registry: Arc<LedgerRegistry>,
+
+    // === OIDC / JWKS state ===
+    /// JWKS cache for OIDC token verification (None if no JWKS issuers configured)
+    #[cfg(feature = "oidc")]
+    pub jwks_cache: Option<Arc<crate::jwks::JwksCache>>,
 
     // === Peer mode state ===
     /// Peer state tracking remote watermarks (peer mode only)
@@ -464,6 +472,24 @@ impl AppState {
             (None, None)
         };
 
+        // Create JWKS cache (sync — no fetching yet)
+        #[cfg(feature = "oidc")]
+        let jwks_cache = {
+            match config.jwks_issuer_configs() {
+                Ok(configs) if !configs.is_empty() => {
+                    let ttl = Some(Duration::from_secs(config.jwks_cache_ttl));
+                    Some(Arc::new(crate::jwks::JwksCache::new(configs, ttl)))
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    return Err(fluree_db_api::ApiError::internal(format!(
+                        "Invalid JWKS configuration: {}",
+                        e
+                    )));
+                }
+            }
+        };
+
         Ok(Self {
             fluree,
             config,
@@ -471,6 +497,8 @@ impl AppState {
             start_time: Instant::now(),
             index_config: None,
             registry,
+            #[cfg(feature = "oidc")]
+            jwks_cache,
             peer_state,
             forwarding_client,
             refresh_counter: AtomicU64::new(0),

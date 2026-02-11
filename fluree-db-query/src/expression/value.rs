@@ -11,7 +11,7 @@ use bigdecimal::BigDecimal;
 use fluree_db_core::temporal::{
     Date as FlureeDate, DateTime as FlureeDateTime, Time as FlureeTime,
 };
-use fluree_db_core::{FlakeValue, GeoPointBits, Storage};
+use fluree_db_core::{FlakeValue, GeoPointBits};
 use num_bigint::BigInt;
 use num_traits::Zero;
 use std::sync::Arc;
@@ -291,9 +291,9 @@ impl ComparableValue {
     ///
     /// The `ctx` parameter is required for `Iri` and `TypedLiteral` variants
     /// which need database access to resolve IRIs to Sids.
-    pub fn to_binding<S: Storage>(
+    pub fn to_binding(
         self,
-        ctx: Option<&ExecutionContext<'_, S>>,
+        ctx: Option<&ExecutionContext<'_>>,
     ) -> crate::error::Result<Binding> {
         let datatypes = &*WELL_KNOWN_DATATYPES;
         match self {

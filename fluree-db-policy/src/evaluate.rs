@@ -792,8 +792,6 @@ mod tests {
             class_policy: false,
             for_classes: HashSet::new(),
             class_check_needed: false,
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         }
     }
 

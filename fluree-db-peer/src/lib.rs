@@ -1,14 +1,14 @@
 //! Fluree DB Query Peer
 //!
 //! A query peer that connects to a Fluree transaction server's `/fluree/events`
-//! SSE endpoint and maintains an in-memory view of ledger and virtual graph metadata.
+//! SSE endpoint and maintains an in-memory view of ledger and graph source metadata.
 //!
 //! # Overview
 //!
 //! The peer:
 //! - Connects to the transaction server's SSE endpoint with Bearer token authentication
-//! - Receives an initial snapshot of all subscribed ledgers and VGs
-//! - Receives live updates as ledgers and VGs change
+//! - Receives an initial snapshot of all subscribed ledgers and graph sources
+//! - Receives live updates as ledgers and graph sources change
 //! - Maintains state for query serving (future PR3)
 //! - Automatically reconnects with exponential backoff on disconnection
 //!
@@ -37,5 +37,5 @@ pub mod state;
 pub use config::{PeerConfig, ReadMode};
 pub use error::{PeerError, SseError};
 pub use runtime::{LoggingCallbacks, PeerCallbacks, PeerRuntime};
-pub use sse::{LedgerRecord, SseClient, SseClientEvent, VgRecord};
-pub use state::{LedgerState, PeerState, VgState};
+pub use sse::{GraphSourceRecord, LedgerRecord, SseClient, SseClientEvent};
+pub use state::{GraphSourceState, LedgerState, PeerState};

@@ -11,9 +11,6 @@
 mod support;
 
 use aws_config::meta::region::RegionProviderChain;
-use aws_sdk_dynamodb::types::{
-    AttributeDefinition, BillingMode, KeySchemaElement, KeyType, ScalarAttributeType,
-};
 use fluree_db_api::{tx, Fluree};
 use fluree_db_connection::{Connection, ConnectionConfig};
 use fluree_db_indexer::IndexerConfig;
@@ -72,52 +69,11 @@ async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
 }
 
 async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &str) {
-    let ddb = aws_sdk_dynamodb::Client::new(sdk_config);
-
-    if ddb
-        .describe_table()
-        .table_name(table_name)
-        .send()
+    let client = aws_sdk_dynamodb::Client::new(sdk_config);
+    let ns = DynamoDbNameService::from_client(client, table_name.to_string());
+    ns.ensure_table()
         .await
-        .is_ok()
-    {
-        return;
-    }
-
-    let _ = ddb
-        .create_table()
-        .table_name(table_name)
-        .attribute_definitions(
-            AttributeDefinition::builder()
-                .attribute_name("ledger_alias")
-                .attribute_type(ScalarAttributeType::S)
-                .build()
-                .expect("valid attribute definition"),
-        )
-        .key_schema(
-            KeySchemaElement::builder()
-                .attribute_name("ledger_alias")
-                .key_type(KeyType::Hash)
-                .build()
-                .expect("valid key schema element"),
-        )
-        .billing_mode(BillingMode::PayPerRequest)
-        .send()
-        .await;
-
-    for _ in 0..60 {
-        if ddb
-            .describe_table()
-            .table_name(table_name)
-            .send()
-            .await
-            .is_ok()
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    panic!("DynamoDB table was not available: {}", table_name);
+        .expect("DynamoDB table creation failed");
 }
 
 fn build_fluree(
@@ -202,8 +158,11 @@ async fn s3_testcontainers_basic_test() {
     let fluree = build_fluree(storage.clone(), nameservice.clone());
 
     // Create ledger + insert data + query
-    let alias = "testcontainers-test:main";
-    let ledger0 = fluree.create_ledger(alias).await.expect("create ledger");
+    let ledger_id = "testcontainers-test:main";
+    let ledger0 = fluree
+        .create_ledger(ledger_id)
+        .await
+        .expect("create ledger");
 
     let tx = json!({
         "@context": [support::default_context(), {"ex": "http://example.org/ns/"}],
@@ -232,7 +191,7 @@ async fn s3_testcontainers_basic_test() {
 
     // Reload from a "fresh connection" (new cache) and re-query
     let fluree2 = build_fluree(storage.clone(), nameservice.clone());
-    let reloaded = fluree2.ledger(alias).await.expect("ledger reload");
+    let reloaded = fluree2.ledger(ledger_id).await.expect("ledger reload");
     let reload_results = fluree2
         .query(&reloaded, &q)
         .await
@@ -319,8 +278,11 @@ async fn s3_testcontainers_indexing_test() {
 
     local
         .run_until(async move {
-            let alias = "indexing-test:main";
-            let ledger0 = fluree.create_ledger(alias).await.expect("create ledger");
+            let ledger_id = "indexing-test:main";
+            let ledger0 = fluree
+                .create_ledger(ledger_id)
+                .await
+                .expect("create ledger");
 
             // Insert enough data to justify indexing and force indexing_needed=true.
             let tx = json!({
@@ -351,15 +313,12 @@ async fn s3_testcontainers_indexing_test() {
 
             // Trigger indexing and wait
             let completion = handle
-                .trigger(result.ledger.alias(), result.receipt.t)
+                .trigger(result.ledger.ledger_id(), result.receipt.t)
                 .await;
             match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed {
-                    index_t,
-                    root_address,
-                } => {
+                fluree_db_api::IndexOutcome::Completed { index_t, root_id } => {
                     assert!(index_t >= result.receipt.t);
-                    assert!(!root_address.is_empty());
+                    assert!(root_id.is_some(), "expected root_id after indexing");
                 }
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
@@ -368,14 +327,11 @@ async fn s3_testcontainers_indexing_test() {
             // Verify index address got published to nameservice
             let rec = fluree
                 .nameservice()
-                .lookup(result.ledger.alias())
+                .lookup(result.ledger.ledger_id())
                 .await
                 .expect("nameservice lookup")
                 .expect("record exists");
-            assert!(
-                rec.index_address.is_some(),
-                "expected published index address"
-            );
+            assert!(rec.index_head_id.is_some(), "expected published index id");
 
             // Verify bucket contains index artifacts and no double slashes
             let keys = list_object_keys(&sdk_config, bucket).await;

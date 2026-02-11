@@ -20,11 +20,42 @@ pub enum RemoteEndpoint {
     Storage { prefix: String },
 }
 
+/// Auth type discriminator for remote authentication.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteAuthType {
+    /// Manual bearer token (no automated login flow)
+    Token,
+    /// OIDC interactive login (auto-detects device code vs auth code + PKCE)
+    OidcDevice,
+}
+
 /// Authentication for a remote
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RemoteAuth {
-    /// Bearer token for HTTP requests
+    /// Auth type discriminator. If absent, inferred as `Token` when a token is
+    /// present, or unauthenticated when absent.
+    #[serde(rename = "type")]
+    pub auth_type: Option<RemoteAuthType>,
+    /// Bearer token for HTTP requests (cached Fluree token for OIDC, or
+    /// manually provided for token auth)
     pub token: Option<String>,
+    /// OIDC issuer URL (for openid-configuration discovery)
+    pub issuer: Option<String>,
+    /// OAuth client ID registered for the CLI (device flow)
+    pub client_id: Option<String>,
+    /// Fluree token exchange endpoint URL
+    pub exchange_url: Option<String>,
+    /// Refresh token for silent token renewal (OIDC)
+    pub refresh_token: Option<String>,
+    /// OAuth scopes to request (e.g., ["openid", "offline_access"]).
+    /// Defaults to ["openid"] when not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
+    /// Override localhost port for auth-code PKCE callback.
+    /// Default tries ports 8400..8405.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_port: Option<u16>,
 }
 
 /// Configuration for a named remote
@@ -40,14 +71,14 @@ pub struct RemoteConfig {
     pub fetch_interval_secs: Option<u64>,
 }
 
-/// Maps a local alias to a remote alias for automatic sync
+/// Maps a local ledger ID to a remote ledger ID for automatic sync
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UpstreamConfig {
-    /// Local ledger alias (e.g., "mydb:main")
+    /// Local ledger ID (e.g., "mydb:main")
     pub local_alias: String,
     /// Which remote this tracks
     pub remote: RemoteName,
-    /// Alias on the remote (usually same as local_alias)
+    /// Ledger ID on the remote (usually same as local_alias)
     pub remote_alias: String,
     /// Whether to automatically fast-forward local on fetch
     pub auto_pull: bool,
@@ -186,6 +217,7 @@ mod tests {
             },
             auth: RemoteAuth {
                 token: Some("secret".to_string()),
+                ..Default::default()
             },
             fetch_interval_secs: Some(60),
         };

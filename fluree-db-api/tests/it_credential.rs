@@ -45,28 +45,28 @@ fn create_jws(payload: &str, signing_key: &SigningKey) -> String {
     format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
 }
 
-fn ctx_ct(ledger_id: &str) -> JsonValue {
+fn ctx_ct(ns_prefix: &str) -> JsonValue {
     json!({
-        "f": "https://ns.flur.ee/ledger#",
-        "ct": format!("ledger:{}/", ledger_id)
+        "f": "https://ns.flur.ee/db#",
+        "ct": format!("ledger:{}/", ns_prefix)
     })
 }
 
 async fn seed_credential_ledger(
     fluree: &MemoryFluree,
-    alias: &str,
     ledger_id: &str,
+    ns_prefix: &str,
     did_root: &str,
     did_pleb: &str,
 ) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     // Seed an open record.
     let seeded = fluree
         .insert(
             ledger0,
             &json!({
-                "@context": ctx_ct(ledger_id),
+                "@context": ctx_ct(ns_prefix),
                 "@id": "ct:open",
                 "ct:foo": "bar"
             }),
@@ -86,20 +86,13 @@ async fn seed_credential_ledger(
     //
     // This matches the proven policy-query shape used in `it_policy_tracking.rs`.
     let policy_query_str = serde_json::to_string(&json!({
-        "@context": ctx_ct(ledger_id),
+        "@context": ctx_ct(ns_prefix),
         "where": [{"@id":"?$this","ct:sameAs":"?$identity"}]
     }))
     .expect("policy query json string");
 
-    // Target only ct:User subjects (Clojure parity).
-    let target_subject_query_str = serde_json::to_string(&json!({
-        "@context": ctx_ct(ledger_id),
-        "where": [{"@id":"?$target","@type":"ct:User"}]
-    }))
-    .expect("targetSubject query json string");
-
     let tx = json!({
-        "@context": ctx_ct(ledger_id),
+        "@context": ctx_ct(ns_prefix),
         "insert": [
             {
                 "@id": did_root,
@@ -122,7 +115,6 @@ async fn seed_credential_ledger(
                 "f:required": true,
                 "f:action": [{"@id":"f:view"}, {"@id":"f:modify"}],
                 "f:exMessage": "Users can only manage their own data.",
-                "f:targetSubject": target_subject_query_str,
                 "f:query": policy_query_str
             }
         ]
@@ -154,14 +146,14 @@ async fn credential_transact_then_credential_query_enforces_policy() {
     let did_root = fluree_db_credential::did_from_pubkey(&root_sk.verifying_key().to_bytes());
     let did_pleb = fluree_db_credential::did_from_pubkey(&pleb_sk.verifying_key().to_bytes());
 
-    let ledger_id = "credentialtest";
-    let alias = "it/credentialtest:main";
+    let ns_prefix = "credentialtest";
+    let ledger_id = "it/credentialtest:main";
 
-    let ledger1 = seed_credential_ledger(&fluree, alias, ledger_id, &did_root, &did_pleb).await;
+    let ledger1 = seed_credential_ledger(&fluree, ledger_id, ns_prefix, &did_root, &did_pleb).await;
 
     // Sanity: uncredentialed query should see the open record.
     let open_q = json!({
-        "@context": ctx_ct(ledger_id),
+        "@context": ctx_ct(ns_prefix),
         "select": {"ct:open": ["*"]}
     });
     let open = fluree
@@ -180,19 +172,15 @@ async fn credential_transact_then_credential_query_enforces_policy() {
         "f:required": true,
         "f:action": [{"@id":"f:modify"}],
         "f:exMessage": "Users can only manage their own data.",
-        "f:targetSubject": serde_json::to_string(&json!({
-            "@context": ctx_ct(ledger_id),
-            "where": [{"@id":"?$target","@type":"ct:User"}]
-        })).unwrap(),
         "f:query": serde_json::to_string(&json!({
-            "@context": ctx_ct(ledger_id),
+            "@context": ctx_ct(ns_prefix),
             "where": [{"@id":"?$this","ct:sameAs":"?$identity"}]
         }))
         .unwrap()
     }]);
 
     let txn = json!({
-        "@context": ctx_ct(ledger_id),
+        "@context": ctx_ct(ns_prefix),
         "where": {"@id": did_root, "ct:name": "Daniel"},
         "delete": {"@id": did_root, "ct:name": "Daniel", "ct:favnums": 1},
         "insert": {"@id": did_root, "ct:name": "D", "ct:favnums": [4, 5, 6]},
@@ -208,20 +196,16 @@ async fn credential_transact_then_credential_query_enforces_policy() {
 
     // Signed credentialed query selecting the root user (graph crawl).
     let query = json!({
-        "@context": ctx_ct(ledger_id),
-        "from": alias,
+        "@context": ctx_ct(ns_prefix),
+        "from": ledger_id,
         "select": { did_root.clone(): ["*"] },
         "where": { "@id": did_root, "?p": "?o" },
         "opts": { "policy": [{
             "@id": "ct:inlineViewSelfOnly",
             "f:required": true,
             "f:action": [{"@id":"f:view"}],
-            "f:targetSubject": serde_json::to_string(&json!({
-                "@context": ctx_ct(ledger_id),
-                "where": [{"@id":"?$target","@type":"ct:User"}]
-            })).unwrap(),
             "f:query": serde_json::to_string(&json!({
-                "@context": ctx_ct(ledger_id),
+                "@context": ctx_ct(ns_prefix),
                 "where": [{"@id":"?$this","ct:sameAs":"?$identity"}]
             })).unwrap()
         }]}
@@ -281,16 +265,16 @@ async fn credential_query_sparql_uses_identity_based_policy() {
     let did_root = fluree_db_credential::did_from_pubkey(&root_sk.verifying_key().to_bytes());
     let did_pleb = fluree_db_credential::did_from_pubkey(&pleb_sk.verifying_key().to_bytes());
 
-    let ledger_id = "credentialtest-sparql";
-    let alias = "it/credentialtest-sparql:main";
-    let ledger = seed_credential_ledger(&fluree, alias, ledger_id, &did_root, &did_pleb).await;
+    let ns_prefix = "credentialtest-sparql";
+    let ledger_id = "it/credentialtest-sparql:main";
+    let ledger = seed_credential_ledger(&fluree, ledger_id, ns_prefix, &did_root, &did_pleb).await;
 
     // Make sure the value is "Daniel" before any credential_transact in this test.
     let sparql = format!(
         r#"
-PREFIX ct: <ledger:{ledger_id}/>
+PREFIX ct: <ledger:{ns_prefix}/>
 SELECT ?name
-FROM <{alias}>
+FROM <{ledger_id}>
 WHERE {{ <{did_root}> ct:name ?name }}
 ORDER BY ?name
 "#

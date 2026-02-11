@@ -7,10 +7,14 @@
 This document describes the design for a unified nameservice schema that supports:
 
 1. **Ledgers** with named graphs and independent indexing
-2. **Non-ledger graph sources** (historically “Virtual Graphs”: BM25, Iceberg, Vector, JDBC, etc.) with varying versioning semantics
+2. **Non-ledger graph sources** (indexes/mappings like BM25, Iceberg/R2RML, Vector/HNSW, JDBC, etc.) with varying versioning semantics
 3. **Four independent atomic concerns** that can be updated without contention
 4. **Watermarked updates** for client subscription and push notifications
 5. **Pluggable backends** (DynamoDB, S3, filesystem) with consistent semantics
+
+Terminology:
+- Prefer **graph source** in docs and user-facing API descriptions.
+- Non-ledger data sources (BM25, vector, Iceberg, R2RML) are called **graph sources**.
 
 ## Design Goals
 
@@ -28,8 +32,8 @@ Each nameservice record has four independent concerns, each with its own waterma
 
 | # | Concern | Watermark | Payload | Updated By |
 |---|---------|-----------|---------|------------|
-| 1 | **Head** | `head_v` | `head` | Transactor (on commit) |
-| 2 | **Index** | `index_v` | `index` | Indexer (on index publish) |
+| 1 | **Head** | `commit_t` | `commit` | Transactor (on commit) |
+| 2 | **Index** | `index_t` | `index` | Indexer (on index publish) |
 | 3 | **Status** | `status_v` | `status` | Various (state changes, metrics, locks) |
 | 4 | **Config** | `config_v` | `config` | Admin (settings changes) |
 
@@ -43,73 +47,59 @@ Each concern can be pushed independently without affecting or contending with th
 
 `fluree-nameservice` (configurable)
 
-### Attributes
+### Physical layout: item-per-concern (PK+SK)
 
-| Attribute | DynamoDB Type | Key | Description |
-|-----------|---------------|-----|-------------|
-| `pk` | String | Partition Key | Alias identifier (e.g., `"mydb:main"`, `"vg:search:main"`) |
-| `v` | Number | | Schema version (always `2` for this schema) |
-| `type` | String | | Entity type discriminator |
-| `name` | String | | Base name without branch (e.g., `"mydb"`) |
-| `branch` | String | | Branch name (e.g., `"main"`) |
-| `deps` | List\<String\> | | Dependencies (VGs only, nullable) |
-| `created_at` | Number | | Unix epoch seconds, immutable after creation |
-| `retracted` | Boolean | | `true` if soft-deleted, `false` otherwise |
-| `head_v` | Number | | Watermark for head concern |
-| `head` | Map | | Head state payload (JSON) |
-| `index_v` | Number | | Watermark for index concern |
-| `index` | Map | | Index state payload (JSON) |
-| `status_v` | Number | | Watermark for status concern |
-| `status` | Map | | Status payload (JSON) |
-| `config_v` | Number | | Watermark for config concern |
-| `config` | Map | | Config payload (JSON) |
+DynamoDB serializes writes per *item*, not per attribute. To achieve true per-concern independence (transactor vs indexer vs admin), represent each concern as a **separate item** under the same address partition:
 
-**Total: 16 attributes**
+- `pk` (partition key): record address in the `name:branch` form (e.g., `"mydb:main"`, `"products-search:main"`)
+- `sk` (sort key): concern discriminator
+
+Recommended `sk` values:
+- `meta`
+- `head` (ledgers only)
+- `index` (ledgers + graph sources)
+- `config` (ledgers + graph sources)
+- `status` (ledgers + graph sources)
+
+This layout aligns with the file-backed v2 pattern (`.index.json` separate) while also eliminating DynamoDB physical contention between writers.
 
 ### Design Note: Per-Concern Independence
 
 Each concern is logically independent:
-- **No shared `updated_at`**: Each concern's watermark (`head_v`, `index_v`, etc.) serves as its timestamp
-- **Disjoint attribute sets**: Updating one concern does not touch any attributes of another concern
+- **No shared `updated_at`**: Each concern’s watermark (`commit_t`, `index_t`, etc.) serves as its timestamp/version marker
+- **Disjoint items**: Updating one concern does not touch any attributes of another concern
 - **Reduced conflict probability**: Independent concerns minimize logical contention
 
-**Important**: DynamoDB still serializes writes per item. Concurrent writers to the same `pk` can still race and require retries even when updating different concerns. The independence reduces *logical* conflicts (CAS failures due to watermark checks) but does not eliminate *physical* contention at the item level.
+With the item-per-concern layout, DynamoDB contention is limited to writers of the **same concern**.
 
-### Entity Types
+### Entity kinds and graph source types
 
-The `type` attribute discriminates between entity kinds:
+The `meta` item carries the record discriminator:
+- `kind`: `ledger` | `graph_source`
+- `source_type` (graph sources only): a type string (e.g., `f:Bm25Index`, `f:HnswIndex`, `f:IcebergSource`, `f:R2rmlSource`, `f:JdbcSource`)
 
-| Type Value | Description |
-|------------|-------------|
-| `ledger` | Fluree ledger with commits, indexes, named graphs |
-| `vg:bm25` | BM25 full-text search graph source (legacy: virtual graph) |
-| `vg:vector` | Vector similarity search graph source (legacy: virtual graph) |
-| `vg:iceberg` | Apache Iceberg table graph source (legacy: virtual graph) |
-| `vg:jdbc` | JDBC connection graph source (legacy: virtual graph; live, no versioning) |
-| `vg:r2rml` | R2RML relational mapping graph source (legacy: virtual graph) |
-| `vg:*` | Future non-ledger graph source types (legacy prefix: `vg:`) |
+Use `graph_source` naming consistently in `pk` values and type strings.
 
 ---
 
 ## Watermark Semantics
 
-All watermarks are **strict monotonic counters** that increment on every publish. This ensures:
-1. Clients can detect changes by comparing watermarks
-2. No change is ever "invisible" to subscribers
-3. Simple comparison logic: `if remote_v > local_v then changed`
+Watermarks are **strict monotonic** per concern. This ensures:
+1. Clients can detect changes by comparing watermarks.
+2. No change is ever "invisible" to subscribers.
+3. Simple comparison logic: `if remote_watermark > local_watermark then changed`.
 
-### head_v (Commit Watermark)
+### commit_t (Ledger commit watermark)
 
-- **Value**: Equals the commit `t` (transaction time)
-- **Update rule**: Strict monotonic (`new_v > current_v`)
+- **Value**: Equals the commit `t` (transaction time).
+- **Update rule**: Strict monotonic (`new_t > current_t`).
 - **Rationale**: Commits are already strictly ordered by `t`, so `t` IS the version
 
-### index_v (Index Watermark)
+### index_t (Index watermark)
 
-- **Value**: Atomic incrementing integer (1, 2, 3, ...)
-- **Update rule**: Strict monotonic (`new_v > current_v`)
-- **Rationale**: Index state is multi-dimensional (named graphs at different `t` values). The watermark always increments, even for reindex operations at the same `t`. The actual `t` and `rev` values are in the payload.
-- **Reindex handling**: A reindex at `t=42` increments `index_v` and updates `index.{graph}.rev` in the payload
+- **Value**: Transaction time `t` that the published index covers.
+- **Update rule**: Strict monotonic (`new_t > current_t`).
+- **Admin reindex**: allow idempotent overwrite at the same `t` (`new_t >= current_t`) when rebuilding an index to the same watermark with a new address.
 
 ### status_v (Status Watermark)
 
@@ -129,8 +119,8 @@ When a record is initialized but has no data yet for a concern:
 
 | Concern | Unborn Watermark | Unborn Payload | Meaning |
 |---------|------------------|----------------|---------|
-| `head` | `head_v = 0` | `head = null` | Ledger initialized, no commits yet |
-| `index` | `index_v = 0` | `index = null` | No index published yet |
+| `head` | `commit_t = 0` | `commit = null` | Ledger initialized, no commits yet |
+| `index` | `index_t = 0` | `index = null` | No index published yet |
 | `status` | `status_v = 1` | `status = {state: "ready"}` | Always has initial status |
 | `config` | `config_v = 0` | `config = null` | No config set yet |
 
@@ -142,44 +132,33 @@ When a record is initialized but has no data yet for a concern:
 
 ## Payload Schemas
 
-### head (Ledger)
+### commit (Ledger)
 
 ```json
 {
-  "address": "fluree:s3://bucket/commits/abc123.json",
+  "id": "bafybeigdyr...commitCid",
   "t": 42
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `address` | String | Storage address of the commit |
-| `t` | Number | Transaction time (redundant with `head_v` but explicit) |
+| `id` | String | ContentId (CIDv1) of the commit |
+| `t` | Number | Transaction time (redundant with `commit_t` but explicit) |
 
-### head (Virtual Graph)
-
-For VGs that sync from a source ledger:
-
-```json
-{
-  "sync_t": 42,
-  "sync_address": "fluree:s3://..."
-}
-```
-
-For VGs with no sync concept (e.g., JDBC): `null` or `{}`
+> See [ContentId and ContentStore](content-id-and-contentstore.md) for details on the CID format.
 
 ### index (Ledger with Named Graphs)
 
 ```json
 {
   "default": {
-    "address": "fluree:s3://bucket/index/default-t42-r0.avro",
+    "id": "bafybeig...indexRootDefault",
     "t": 42,
     "rev": 0
   },
   "txn-metadata": {
-    "address": "fluree:s3://bucket/index/txn-meta-t42-r1.avro",
+    "id": "bafybeig...indexRootTxnMeta",
     "t": 42,
     "rev": 1
   },
@@ -190,25 +169,26 @@ For VGs with no sync concept (e.g., JDBC): `null` or `{}`
 | Field | Type | Description |
 |-------|------|-------------|
 | `{named-graph}` | Object \| null | Index state per named graph |
-| `.address` | String | Storage address of the index root |
+| `.id` | String | ContentId (CIDv1) of the index root |
 | `.t` | Number | Transaction time the index covers |
 | `.rev` | Number | Revision at that `t` (0, 1, 2... for reindex operations) |
 
 **Named graph = `null`** means that graph exists but hasn't been indexed yet.
 
-### index (Virtual Graph)
+### index (Graph Source)
 
-For VGs with snapshots (BM25, Vector, Iceberg):
+For graph sources with index state (e.g., BM25, vector, spatial, Iceberg, etc.), the nameservice stores a **head pointer** to the graph source's latest index root/manifest. The payload is intentionally **opaque** to nameservice: the graph source implementation defines what the ContentId points to and how (or whether) it supports time travel.
 
 ```json
 {
-  "address": "fluree:s3://bucket/bm25/snapshot-42.bin",
-  "sync_t": 42,
-  "snapshot_id": "abc123"
+  "id": "bafybeig...graphSourceIndexRoot",
+  "index_t": 42
 }
 ```
 
-For VGs with no index concept (JDBC): `null`
+For graph sources with no index concept (e.g., JDBC mappings): `null`.
+
+**Design note**: Snapshot history (if any) is stored in **graph-source-owned manifests in storage**, not in nameservice. See `docs/design/graph-source-index-manifests.md`.
 
 ### status
 
@@ -232,8 +212,8 @@ For VGs with no index concept (JDBC): `null`
 | `ready` | Normal operating state (default initial state) | `queue_depth`, `last_commit_ms` |
 | `indexing` | Background indexing in progress | `index_lock` |
 | `reindexing` | Full reindex in progress | `reindex_lock`, `progress` |
-| `syncing` | VG syncing from source | `progress`, `source_t`, `synced_t` |
-| `migrating` | Schema/data migration | `migration_lock` |
+| `syncing` | Graph source syncing from source | `progress`, `source_t`, `synced_t` |
+| `maintenance` | Administrative maintenance in progress | `maintenance_lock` |
 | `retracted` | Soft-deleted | `retracted_at`, `reason` |
 | `error` | Error state | `error`, `error_at` |
 
@@ -263,7 +243,7 @@ For VGs with no index concept (JDBC): `null`
 
 ```json
 {
-  "default_context": "fluree:s3://contexts/v1.json",
+  "default_context_id": "bafkreih...contextCid",
   "index_threshold": 1000,
   "replication": {
     "factor": 3,
@@ -276,11 +256,11 @@ Config is fully flexible JSON. Common fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `default_context` | String | Default JSON-LD context address |
+| `default_context_id` | String | ContentId (CIDv1) of default JSON-LD context |
 | `index_threshold` | Number | Commits before auto-index |
 | `replication` | Object | Replication settings |
 
-For Virtual Graphs, config contains type-specific settings:
+For graph sources, config contains type-specific settings:
 
 **BM25:**
 ```json
@@ -321,39 +301,33 @@ Operation: PutItem
 ConditionExpression: attribute_not_exists(#pk)
 Item: {
   pk: "mydb:main",
-  v: 2,
-  type: "ledger",
+  sk: "meta",
+  schema: 2,
+  kind: "ledger",
   name: "mydb",
   branch: "main",
-  deps: null,
-  created_at: <now>,
+  dependencies: null,
+  created_at: <now>,          // optional
+  updated_at_ms: <now_ms>,
   retracted: false,
-  head_v: 0,
-  head: null,
-  index_v: 0,
-  index: null,
-  status_v: 1,
-  status: { state: "ready" },
-  config_v: 0,
-  config: null
 }
 ```
 
-### push_head (Publish Commit)
+### push_commit (Publish Commit)
 
 **Option A: Monotonic only** (simpler, allows fast-forward by any newer commit)
 ```
 Operation: UpdateItem
-Key: { pk: "mydb:main" }
-ConditionExpression: attribute_not_exists(#hv) OR #hv < :new_t
-UpdateExpression: SET #hv = :new_t, #h = :head
+Key: { pk: "mydb:main", sk: "head" }
+ConditionExpression: attribute_not_exists(#ct) OR #ct < :new_t
+UpdateExpression: SET #ct = :new_t, #c = :commit
 ExpressionAttributeNames: {
-  "#hv": "head_v",
-  "#h": "head"
+  "#ct": "commit_t",
+  "#c": "commit"
 }
 ExpressionAttributeValues: {
   ":new_t": 42,
-  ":head": { "address": "fluree:s3://...", "t": 42 }
+  ":commit": { "id": "bafybeig...commitT42", "t": 42 }
 }
 ```
 
@@ -363,24 +337,24 @@ CAS checks both watermark equality AND payload equality. The condition is a sing
 
 ```
 Operation: UpdateItem
-Key: { pk: "mydb:main" }
+Key: { pk: "mydb:main", sk: "head" }
 
 // Single condition: existing case OR unborn case
 ConditionExpression:
-  (#hv = :expected_v AND #h = :expected_head AND :new_t > :expected_v)
+  (#ct = :expected_t AND #c = :expected_commit AND :new_t > :expected_t)
   OR
-  (#hv = :zero AND attribute_type(#h, :null_type) AND :new_t > :zero)
+  (#ct = :zero AND attribute_type(#c, :null_type) AND :new_t > :zero)
 
-UpdateExpression: SET #hv = :new_t, #h = :head
+UpdateExpression: SET #ct = :new_t, #c = :commit
 ExpressionAttributeNames: {
-  "#hv": "head_v",
-  "#h": "head"
+  "#ct": "commit_t",
+  "#c": "commit"
 }
 ExpressionAttributeValues: {
-  ":expected_v": 41,                                              // caller's last-known v
-  ":expected_head": { "address": "fluree:s3://.../t41.json", "t": 41 },  // caller's last-known payload
+  ":expected_t": 41,                                              // caller's last-known watermark
+  ":expected_commit": { "id": "bafybeig...commitT41", "t": 41 },  // caller's last-known payload
   ":new_t": 42,
-  ":head": { "address": "fluree:s3://.../t42.json", "t": 42 },
+  ":commit": { "id": "bafybeig...commitT42", "t": 42 },
   ":zero": 0,
   ":null_type": "NULL"
 }
@@ -399,34 +373,29 @@ ExpressionAttributeValues: {
 **CAS with expected watermark + monotonic enforcement:**
 ```
 Operation: UpdateItem
-Key: { pk: "mydb:main" }
-ConditionExpression: (#iv = :expected_v AND :new_v > :expected_v)
-                     OR
-                     (#iv = :zero AND attribute_type(#i, :null_type) AND :expected_v = :zero AND :new_v > :zero)
-UpdateExpression: SET #iv = :new_v, #i = :index
+Key: { pk: "mydb:main", sk: "index" }
+ConditionExpression: (attribute_not_exists(#it) OR #it < :new_t)
+UpdateExpression: SET #it = :new_t, #i = :index
 ExpressionAttributeNames: {
-  "#iv": "index_v",
+  "#it": "index_t",
   "#i": "index"
 }
 ExpressionAttributeValues: {
-  ":expected_v": 16,
-  ":zero": 0,
-  ":new_v": 17,
+  ":new_t": 42,
   ":index": {
-    "default": { "address": "...", "t": 42, "rev": 0 },
-    "txn-metadata": { "address": "...", "t": 42, "rev": 1 }
+    "default": { "id": "bafybeig...indexDefault", "t": 42, "rev": 0 },
+    "txn-metadata": { "id": "bafybeig...indexTxnMeta", "t": 42, "rev": 1 }
   },
-  ":null_type": "NULL"
 }
 ```
 
-**Note**: The condition enforces both CAS (`#iv = :expected_v`) AND monotonicity (`:new_v > :expected_v`). The unborn clause also enforces monotonicity (`:new_v > :zero`). The `rev` field in the payload tracks rebuilds at the same `t`.
+**Note**: For admin rebuilds at the same watermark, allow `#it <= :new_t` as the condition (idempotent overwrite at equal `t`).
 
 ### push_status (Update Status)
 
 ```
 Operation: UpdateItem
-Key: { pk: "mydb:main" }
+Key: { pk: "mydb:main", sk: "status" }
 ConditionExpression: (#sv = :expected_v AND :new_v > :expected_v)
                      OR
                      (attribute_not_exists(#sv) AND :expected_v = :zero)
@@ -443,13 +412,13 @@ ExpressionAttributeValues: {
 }
 ```
 
-**Note**: `status_v` starts at 1 (not 0) on creation, so `attribute_not_exists(#sv)` handles legacy/migration cases where the attribute is missing. Normal updates use the first clause.
+**Note**: `status_v` starts at 1 (not 0) on creation, so `attribute_not_exists(#sv)` handles cases where the attribute is missing (e.g., partially-written or manually-created items). Normal updates use the first clause.
 
 ### push_config (Update Config)
 
 ```
 Operation: UpdateItem
-Key: { pk: "mydb:main" }
+Key: { pk: "mydb:main", sk: "config" }
 ConditionExpression: (#cv = :expected_v AND :new_v > :expected_v)
                      OR
                      (#cv = :zero AND attribute_type(#c, :null_type) AND :expected_v = :zero)
@@ -462,7 +431,7 @@ ExpressionAttributeValues: {
   ":expected_v": 2,
   ":zero": 0,
   ":new_v": 3,
-  ":config": { "default_context": "...", "index_threshold": 500 },
+  ":config": { "default_context_id": "bafkreih...", "index_threshold": 500 },
   ":null_type": "NULL"
 }
 ```
@@ -473,7 +442,7 @@ ExpressionAttributeValues: {
 
 ```
 Operation: UpdateItem
-Key: { pk: "mydb:main" }
+Key: { pk: "mydb:main", sk: "meta" }
 UpdateExpression: SET #r = :true, #sv = :new_sv, #s = :status
 ExpressionAttributeNames: {
   "#r": "retracted",
@@ -491,22 +460,24 @@ ExpressionAttributeValues: {
 
 ```
 Operation: GetItem
-Key: { pk: "mydb:main" }
+Key: { pk: "mydb:main", sk: "meta" }
 ConsistentRead: true
 ```
 
-Returns full record with all concerns.
+To read full state, query all items for the record address: `pk = "mydb:main"` and assemble `meta + head + index + status + config` as present.
 
-### List by Type
+### List by Kind
 
 ```
-Operation: Query (requires GSI on type)
-KeyConditionExpression: #type = :type
-ExpressionAttributeNames: { "#type": "type" }
-ExpressionAttributeValues: { ":type": "ledger" }
+Operation: Query (requires GSI on kind)
+KeyConditionExpression: #kind = :kind
+ExpressionAttributeNames: { "#kind": "kind" }
+ExpressionAttributeValues: { ":kind": "ledger" }
 ```
 
-Or use Scan with FilterExpression if GSI not available.
+To list graph sources, query `kind = graph_source`.
+
+To list graph sources of a specific type (optional GSI), query `source_type = f:Bm25Index`, etc.
 
 ---
 
@@ -525,9 +496,9 @@ Each push operation returns one of:
 /// Which concern is being read or updated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ConcernKind {
-    /// The commit head pointer (head_v + head payload)
+    /// The commit head pointer (`commit_t` + `commit` payload)
     Head,
-    /// The index state (index_v + index payload)
+    /// The index state (`index_t` + `index` payload)
     Index,
     /// The status state (status_v + status payload)
     Status,
@@ -572,15 +543,15 @@ On `Conflict`, the caller receives the actual current state and can:
 ```rust
 async fn push_with_retry<T>(
     ns: &impl ConcernPublisher<T>,
-    alias: &str,
+    address: &str,
     kind: ConcernKind,
     new: ConcernValue<T>,
     max_retries: usize,
 ) -> Result<CasResult<T>> {
-    let mut expected = ns.get_concern(alias, kind).await?;
+    let mut expected = ns.get_concern(address, kind).await?;
 
     for _ in 0..max_retries {
-        match ns.push_concern(alias, kind, expected.as_ref(), &new).await? {
+        match ns.push_concern(address, kind, expected.as_ref(), &new).await? {
             CasResult::Updated => return Ok(CasResult::Updated),
             CasResult::Conflict { actual } => {
                 // Check if fast-forward is still possible
@@ -597,7 +568,7 @@ async fn push_with_retry<T>(
     }
 
     // Exhausted retries
-    let actual = ns.get_concern(alias, kind).await?;
+    let actual = ns.get_concern(address, kind).await?;
     Ok(CasResult::Conflict { actual })
 }
 ```
@@ -606,245 +577,150 @@ async fn push_with_retry<T>(
 
 ## Example Records
 
-### Ledger (Ready State)
+### DynamoDB (item-per-concern) examples
+
+This section shows the DynamoDB **physical layout** (multiple items per address partition).
+Other backends serialize the same logical concerns differently.
+
+#### Ledger (typical items)
+
+Ledger records are represented as multiple items under the same `pk`:
 
 ```json
 {
   "pk": "mydb:main",
-  "v": 2,
-  "type": "ledger",
+  "sk": "meta",
+  "schema": 2,
+  "kind": "ledger",
   "name": "mydb",
   "branch": "main",
-  "deps": null,
   "created_at": 1705312200,
-  "retracted": false,
-
-  "head_v": 42,
-  "head": {
-    "address": "fluree:s3://bucket/commits/mydb/main/t42.json",
-    "t": 42
-  },
-
-  "index_v": 17,
-  "index": {
-    "default": {
-      "address": "fluree:s3://bucket/index/mydb/main/default-t42-r0.avro",
-      "t": 42,
-      "rev": 0
-    },
-    "txn-metadata": {
-      "address": "fluree:s3://bucket/index/mydb/main/txn-meta-t40-r0.avro",
-      "t": 40,
-      "rev": 0
-    }
-  },
-
-  "status_v": 89,
-  "status": {
-    "state": "ready",
-    "queue_depth": 3,
-    "last_commit_ms": 45
-  },
-
-  "config_v": 2,
-  "config": {
-    "default_context": "fluree:s3://bucket/contexts/v1.json",
-    "index_threshold": 1000
-  }
+  "updated_at_ms": 1705312200123,
+  "retracted": false
 }
 ```
-
-### Ledger (Unborn - Just Created)
-
-```json
-{
-  "pk": "newdb:main",
-  "v": 2,
-  "type": "ledger",
-  "name": "newdb",
-  "branch": "main",
-  "deps": null,
-  "created_at": 1705312200,
-  "retracted": false,
-
-  "head_v": 0,
-  "head": null,
-
-  "index_v": 0,
-  "index": null,
-
-  "status_v": 1,
-  "status": {
-    "state": "ready"
-  },
-
-  "config_v": 0,
-  "config": null
-}
-```
-
-### Ledger (Indexing State with Lock)
 
 ```json
 {
   "pk": "mydb:main",
-  "v": 2,
-  "type": "ledger",
-  "...": "...",
+  "sk": "head",
+  "schema": 2,
+  "commit_t": 42,
+  "commit": { "id": "bafybeig...commitT42", "t": 42 }
+}
+```
 
-  "status_v": 90,
-  "status": {
-    "state": "indexing",
-    "index_lock": {
-      "holder": "indexer-7f3a",
-      "target_t": 45,
-      "acquired_at": 1705312200,
-      "expires_at": 1705316100
-    },
-    "progress": 0.45
+```json
+{
+  "pk": "mydb:main",
+  "sk": "index",
+  "schema": 2,
+  "index_t": 42,
+  "index": {
+    "default": { "id": "bafybeig...indexDefaultT42", "t": 42, "rev": 0 }
   }
 }
 ```
 
-### Ledger (Retracted)
-
 ```json
 {
-  "pk": "olddb:main",
-  "v": 2,
-  "type": "ledger",
-  "name": "olddb",
-  "branch": "main",
-  "deps": null,
-  "created_at": 1705300000,
-  "retracted": true,
-
-  "head_v": 100,
-  "head": {
-    "address": "fluree:s3://bucket/commits/olddb/main/t100.json",
-    "t": 100
-  },
-
-  "index_v": 50,
-  "index": { "...": "..." },
-
-  "status_v": 200,
-  "status": {
-    "state": "retracted",
-    "retracted_at": 1705312200,
-    "reason": "Migrated to newdb"
-  },
-
-  "config_v": 5,
-  "config": { "...": "..." }
+  "pk": "mydb:main",
+  "sk": "config",
+  "schema": 2,
+  "config_v": 2,
+  "config": { "default_context_id": "bafkreih...contextCid", "index_threshold": 1000 }
 }
 ```
 
-### Virtual Graph (BM25)
+```json
+{
+  "pk": "mydb:main",
+  "sk": "status",
+  "schema": 2,
+  "status_v": 89,
+  "status": { "state": "ready", "queue_depth": 3, "last_commit_ms": 45 }
+}
+```
+
+#### Ledger (unborn)
+
+An "unborn" ledger has all 5 concern items created atomically at initialization. The `head` and `index` items have watermarks set to `0` with null payloads. The `status` item starts at `status_v=1` with `state="ready"`. The `config` item starts at `config_v=0` (unborn).
+
+### Graph Source (BM25)
 
 ```json
 {
-  "pk": "vg:search:main",
-  "v": 2,
-  "type": "vg:bm25",
+  "pk": "search:main",
+  "sk": "meta",
+  "schema": 2,
+  "kind": "graph_source",
+  "source_type": "f:Bm25Index",
   "name": "search",
   "branch": "main",
-  "deps": ["mydb:main"],
+  "dependencies": ["mydb:main"],
   "created_at": 1705312200,
-  "retracted": false,
-
-  "head_v": 0,
-  "head": null,
-
-  "index_v": 5,
-  "index": {
-    "address": "fluree:s3://bucket/bm25/search/snapshot-t42.bin",
-    "sync_t": 42
-  },
-
-  "status_v": 12,
-  "status": {
-    "state": "ready",
-    "sync_lag": 0
-  },
-
-  "config_v": 1,
-  "config": {
-    "k1": 1.2,
-    "b": 0.75,
-    "fields": ["title", "body"]
-  }
+  "updated_at_ms": 1705312200123,
+  "retracted": false
 }
 ```
 
-### Virtual Graph (Iceberg)
+Additional concern items for the same `pk` (examples):
 
 ```json
 {
-  "pk": "vg:analytics:main",
-  "v": 2,
-  "type": "vg:iceberg",
+  "pk": "search:main",
+  "sk": "config",
+  "schema": 2,
+  "config_v": 1,
+  "config": { "k1": 1.2, "b": 0.75, "fields": ["title", "body"] }
+}
+```
+
+```json
+{
+  "pk": "search:main",
+  "sk": "index",
+  "schema": 2,
+  "index_t": 42,
+  "index": { "id": "bafybeig...bm25IndexRoot" }
+}
+```
+
+### Graph Source (Iceberg)
+
+```json
+{
+  "pk": "analytics:main",
+  "sk": "meta",
+  "schema": 2,
+  "kind": "graph_source",
+  "source_type": "f:IcebergSource",
   "name": "analytics",
   "branch": "main",
-  "deps": ["mydb:main"],
+  "dependencies": ["mydb:main"],
   "created_at": 1705312200,
+  "updated_at_ms": 1705312200123,
   "retracted": false,
-
-  "head_v": 0,
-  "head": null,
-
-  "index_v": 3,
-  "index": {
-    "address": "s3://iceberg-warehouse/analytics/metadata/v3.metadata.json",
-    "snapshot_id": "1234567890123456789",
-    "sync_t": 42
-  },
-
-  "status_v": 5,
-  "status": {
-    "state": "ready"
-  },
-
-  "config_v": 1,
-  "config": {
-    "warehouse": "s3://iceberg-warehouse",
-    "catalog": "glue",
-    "database": "fluree_exports"
-  }
+  "...": "see config/index items"
 }
 ```
 
-### Virtual Graph (JDBC - No Versioning)
+### Graph Source (JDBC - No Index)
 
 ```json
 {
-  "pk": "vg:erp:main",
-  "v": 2,
-  "type": "vg:jdbc",
+  "pk": "erp:main",
+  "sk": "meta",
+  "schema": 2,
+  "kind": "graph_source",
+  "source_type": "f:JdbcSource",
   "name": "erp",
   "branch": "main",
-  "deps": null,
+  "dependencies": null,
   "created_at": 1705312200,
+  "updated_at_ms": 1705312200123,
   "retracted": false,
-
-  "head_v": 0,
-  "head": null,
-
-  "index_v": 0,
-  "index": null,
-
-  "status_v": 1,
-  "status": {
-    "state": "ready"
-  },
-
-  "config_v": 1,
-  "config": {
-    "connection_string": "jdbc:postgresql://erp.internal:5432/production",
-    "schema": "public",
-    "pool_size": 10,
-    "read_only": true
-  }
+  "...": "see config item; index item may be absent or have index_t=0"
 }
 ```
 
@@ -943,16 +819,16 @@ Clients track watermarks to detect changes:
 {
   "subscriptions": {
     "mydb:main": {
-      "type": "ledger",
-      "head_v": 42,
-      "index_v": 17,
+      "kind": "ledger",
+      "commit_t": 42,
+      "index_t": 42,
       "status_v": 89,
       "config_v": 2
     },
-    "vg:search:main": {
-      "type": "vg:bm25",
-      "head_v": 0,
-      "index_v": 5,
+    "search:main": {
+      "kind": "graph_source",
+      "source_type": "f:Bm25Index",
+      "index_t": 42,
       "status_v": 12,
       "config_v": 1
     }
@@ -963,22 +839,32 @@ Clients track watermarks to detect changes:
 ### Change Detection
 
 1. Client polls or receives notification
-2. Compare watermarks: `if remote.head_v > local.head_v`
+2. Compare watermarks: `if remote.commit_t > local.commit_t`
 3. Fetch only the changed concern(s)
 4. Update local cache
 
 ### Subscription Granularity
 
 Clients can subscribe to:
-- **All concerns** for an alias
-- **Specific concerns** (e.g., only `head_v` for a query client)
-- **All aliases** of a type (e.g., all ledgers)
+- **All concerns** for an address
+- **Specific concerns** (e.g., only `commit_t` for a query client)
+- **All addresses** of a kind (e.g., all ledgers)
 
 ---
 
 ## File-backed Nameservice Considerations
 
-The logical schema (16 attributes, 4 concerns) can be stored in different physical layouts depending on the backend and deployment needs.
+The logical concerns (head/index/status/config) can be stored in different **physical layouts** depending on the backend.
+
+The file-backed and storage-backed implementations in this repo use the **`ns@v2` JSON-LD** format (see `fluree-db-nameservice/src/file.rs` and `fluree-db-nameservice/src/storage_ns.rs`):
+- Main record: `ns@v2/{name}/{branch}.json` (commit/head + status + config-ish fields)
+- Index record: `ns@v2/{name}/{branch}.index.json` (index head pointer only)
+
+Field names differ from the DynamoDB layout, but the **semantics match**:
+- logical `commit_t` is stored as `f:t`
+- logical `commit.id` is stored as `f:ledgerCommit.@id` (a CID string)
+- logical `index_t` is stored as `f:ledgerIndex.f:t` (or `f:indexT` for graph source index files)
+- logical `index.id` is stored as `f:ledgerIndex.@id` (a CID string, or `f:indexId` for graph source index files)
 
 ### Layout Options
 
@@ -1044,85 +930,57 @@ Each file contains JSON matching the concern's payload plus metadata:
 **head file** (`{name}/{branch}.json`):
 ```json
 {
-  "v": 2,
-  "pk": "mydb:main",
-  "type": "ledger",
-  "name": "mydb",
-  "branch": "main",
-  "created_at": 1705312200,
-  "retracted": false,
-  "deps": null,
-  "head_v": 42,
-  "head": { "address": "...", "t": 42 },
-  "status_v": 89,
-  "status": { "state": "ready", ... },
-  "config_v": 2,
-  "config": { ... }
+  "@context": { "f": "https://ns.flur.ee/db#" },
+  "@id": "mydb:main",
+  "@type": ["f:Database", "f:LedgerSource"],
+  "f:ledger": { "@id": "mydb" },
+  "f:branch": "main",
+  "f:ledgerCommit": { "@id": "bafybeig...commitT42" },
+  "f:t": 42,
+  "f:ledgerIndex": { "@id": "bafybeig...indexRootT42", "f:t": 42 },
+  "f:status": "ready"
 }
 ```
 
 **index file** (`{name}/{branch}.index.json`):
 ```json
 {
-  "v": 2,
-  "pk": "mydb:main",
-  "index_v": 17,
-  "index": {
-    "default": { "address": "...", "t": 42, "rev": 0 },
-    "txn-metadata": { "address": "...", "t": 40, "rev": 0 }
-  }
+  "@context": { "f": "https://ns.flur.ee/db#" },
+  "f:ledgerIndex": { "@id": "bafybeig...indexRootT42", "f:t": 42 }
 }
 ```
 
 ---
 
-## Migration from v1 Schema
+## Global Secondary Indexes (GSIs)
 
-### Current v1 Attributes
-
-| v1 Attribute | v2 Mapping |
-|--------------|------------|
-| `ledger_alias` | `pk` |
-| `ledger_name` | `name` |
-| `branch` | `branch` |
-| `commit_address` | `head.address` |
-| `commit_t` | `head_v` and `head.t` |
-| `index_address` | `index.default.address` |
-| `index_t` | `index.default.t` (set `index_v = 1` on migration) |
-| `default_context_address` | `config.default_context` (set `config_v = 1`) |
-| `status` | `status.state` (set `status_v = 1`) |
-| `updated_at` | Removed (each concern has its own watermark) |
-| (new) | `v = 2` (schema version) |
-| (new) | `retracted = (status == "retracted")` |
-
-### Migration Strategy
-
-1. **Read compatibility**: Support reading both v1 and v2 formats
-   - Check for `v` attribute: if missing or `v < 2`, treat as v1
-   - Map v1 fields to v2 structure on read
-2. **Write in v2**: All new writes use v2 format
-3. **Lazy migration**: Convert v1 records to v2 on first write
-   - Set initial watermarks: `index_v = 1`, `status_v = 1`, `config_v = 1`
-4. **Explicit migration**: Batch job to convert all records
-
----
-
-## Future Considerations
-
-### Global Secondary Indexes (GSIs)
+### GSI1: `gsi1-kind` (Implemented)
 
 | GSI Name | Partition Key | Sort Key | Use Case |
 |----------|---------------|----------|----------|
-| `type-index` | `type` | `pk` | List all entities of a type |
+| `gsi1-kind` | `kind` | `pk` | List all entities of a kind (`ledger`, `graph_source`) |
+
+- Only `meta` items carry the `kind` attribute and project into the GSI
+- Projection: `INCLUDE` with `name`, `branch`, `source_type`, `dependencies`, `retracted`
+- Used by `all_records()` (kind=`ledger`) and `all_vg_records()` (kind=`graph_source`)
+- After GSI query returns meta items, `BatchGetItem` fetches remaining concern items (`config`, `index`) to assemble full records
+
+### Future GSIs
+
+| GSI Name | Partition Key | Sort Key | Use Case |
+|----------|---------------|----------|----------|
+| `source-type-index` | `source_type` | `pk` | List all graph sources of a given type |
 | `state-index` | `status_state` | `pk` | Find entities in specific state |
 
 **Note on `state-index`**: DynamoDB GSIs cannot use nested map attributes as keys. To enable this GSI:
 
-1. Add an **optional denormalized attribute** `status_state` (String) at the top level
+1. Add an **optional denormalized attribute** `status_state` (String) on the `status` item
 2. Update `status_state` whenever `status.state` changes
-3. This attribute is **not part of the core 16-attribute schema** — only add it if you need GSI-based queries by state
+3. Only add it if you need GSI-based queries by state
 
 **Alternative**: Use Scan with FilterExpression on `status.state` (less efficient but no schema extension needed)
+
+## Future Considerations
 
 ### Streams and Events
 
@@ -1141,32 +999,61 @@ For global deployments:
 
 ## Appendix: Attribute Reference
 
-| Attribute | Type | Nullable | Mutable | Description |
-|-----------|------|----------|---------|-------------|
-| `pk` | String | No | No | Primary key, alias identifier |
-| `v` | Number | No | No | Schema version (always `2`) |
-| `type` | String | No | No | Entity type discriminator |
-| `name` | String | No | No | Base name |
-| `branch` | String | No | No | Branch name |
-| `deps` | List | Yes | Yes | Dependencies (VGs only) |
-| `created_at` | Number | No | No | Creation timestamp (epoch seconds) |
-| `retracted` | Boolean | No | Yes | Soft-delete flag |
-| `head_v` | Number | No | Yes | Head watermark (= `t` for ledgers) |
-| `head` | Map | Yes | Yes | Head payload |
-| `index_v` | Number | No | Yes | Index watermark (atomic counter) |
-| `index` | Map | Yes | Yes | Index payload |
-| `status_v` | Number | No | Yes | Status watermark (atomic counter) |
-| `status` | Map | No | Yes | Status payload (always present) |
-| `config_v` | Number | No | Yes | Config watermark (atomic counter) |
-| `config` | Map | Yes | Yes | Config payload |
+All items share:
 
-**Total: 16 attributes**
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `pk` | String | Record address (`name:branch`) |
+| `sk` | String | Concern discriminator (`meta`, `head`, `index`, `status`, `config`) |
+| `schema` | Number | Schema version (always `2`) |
+
+### `meta` item
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `kind` | String | `ledger` \| `graph_source` |
+| `name` | String | Base name |
+| `branch` | String | Branch name |
+| `retracted` | Boolean | Soft-delete flag |
+| `dependencies` | List\<String\> \| null | Graph-source dependencies (optional) |
+| `source_type` | String \| null | Graph-source type (e.g., `f:Bm25Index`) |
+| `created_at` | Number | Creation timestamp (epoch seconds, optional) |
+| `updated_at_ms` | Number | Last update time (epoch millis, optional) |
+
+### `head` item (ledgers only)
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `commit_t` | Number | Commit watermark (`t`) |
+| `commit` | Map \| null | `{ id, t }` (id is a ContentId CID string) |
+
+### `index` item (ledgers + graph sources)
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `index_t` | Number | Index watermark (`t`) |
+| `index` | Map \| null | Ledger index map or graph-source head pointer payload |
+
+### `status` item (ledgers + graph sources)
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `status_v` | Number | Status change counter |
+| `status` | Map | Status payload |
+| `status_state` | String \| null | Optional denormalized `status.state` for a GSI |
+
+### `config` item (ledgers + graph sources)
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `config_v` | Number | Config change counter |
+| `config` | Map \| null | Config payload |
 
 ### Watermark Semantics Summary
 
 | Watermark | Semantics | Initial Value | Update Rule |
 |-----------|-----------|---------------|-------------|
-| `head_v` | = commit `t` | 0 (unborn) | Strict: `new > current` |
-| `index_v` | Counter | 0 (unborn) | Strict: `new > current` |
+| `commit_t` | = commit `t` | 0 (unborn) | Strict: `new > current` |
+| `index_t` | = index `t` | 0 (unborn) | Strict: `new > current` (admin may allow equal) |
 | `status_v` | Counter | 1 (ready) | Strict: `new > current` |
 | `config_v` | Counter | 0 (unborn) | Strict: `new > current` |

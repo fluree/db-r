@@ -570,14 +570,14 @@ Fluree assigns internal graph IDs to named graphs:
 
 ### TriG with Transaction Metadata
 
-You can combine named graphs with transaction metadata using the special `txn-meta` graph IRI:
+You can combine named graphs with transaction metadata using the special `#txn-meta` graph fragment:
 
 ```trig
 @prefix ex: <http://example.org/ns/> .
-@prefix f: <https://ns.flur.ee/ledger#> .
+@prefix f: <https://ns.flur.ee/db#> .
 
 # Transaction metadata (stored in txn-meta graph)
-GRAPH <https://ns.flur.ee/ledger#transactions> {
+GRAPH <#txn-meta> {
     fluree:commit:this ex:jobId "batch-import-001" ;
         ex:source "warehouse-export" ;
         ex:operator "system-admin" .

@@ -11,8 +11,8 @@ use fluree_db_api::FlureeBuilder;
 use serde_json::json;
 use support::{context_ex_schema, genesis_ledger, normalize_rows, MemoryFluree, MemoryLedger};
 
-async fn seed_three_people(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_three_people(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let ctx = context_ex_schema();
 
     let insert = json!({
@@ -444,7 +444,7 @@ async fn commit_db_metadata_spo_queries_parity() {
     let ledger2 = fluree.insert(ledger1, &tx2).await.unwrap().ledger;
 
     let q_commit = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "select": ["?c","?alias"],
         "where": {"@id": "?c", "f:alias": "?alias"}
     });
@@ -463,17 +463,17 @@ async fn commit_db_metadata_spo_queries_parity() {
     for row in rows {
         let arr = row.as_array().expect("commit row array");
         let subject = arr[0].as_str().unwrap_or_default();
-        let alias = arr[1].as_str().unwrap_or_default();
+        let ledger_id = arr[1].as_str().unwrap_or_default();
         assert!(
             subject.starts_with("fluree:commit:"),
             "unexpected commit subject: {}",
             subject
         );
-        assert_eq!(alias, "misc/commit-metadata:main");
+        assert_eq!(ledger_id, "misc/commit-metadata:main");
     }
 
     let q_db = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "select": ["?c","?t"],
         "where": {"@id": "?c", "f:t": "?t"}
     });
@@ -737,9 +737,9 @@ async fn load_with_new_connection_placeholder() {
     let fluree = FlureeBuilder::file(storage_path)
         .build()
         .expect("build file fluree");
-    let ledger_alias = "new3:main";
+    let ledger_id = "new3:main";
 
-    let ledger0 = fluree.create_ledger(ledger_alias).await.unwrap();
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
     let insert = json!({
         "@context": {"ex": "http://example.org/ns/"},
         "@graph": [{"@id": "ex:created", "ex:createdAt": "now"}]
@@ -751,12 +751,12 @@ async fn load_with_new_connection_placeholder() {
         .expect("build file fluree2");
     let query = json!({
         "@context": {"ex": "http://example.org/ns/"},
-        "from": ledger_alias,
+        "from": ledger_id,
         "where": {"@id": "?s", "ex:createdAt": "now"},
         "select": {"?s": ["ex:createdAt"]}
     });
     let result = fluree2.query_connection(&query).await.unwrap();
-    let ledger = fluree2.ledger(ledger_alias).await.unwrap();
+    let ledger = fluree2.ledger(ledger_id).await.unwrap();
     let jsonld = result.to_jsonld_async(&ledger.db).await.unwrap();
 
     let rows = jsonld.as_array().expect("rows");
@@ -884,7 +884,7 @@ async fn untyped_value_matching_parity() {
 
     let q_typed = json!({
         "@context": {
-            "f": "https://ns.flur.ee/ledger#",
+            "f": "https://ns.flur.ee/db#",
             "xsd": "http://www.w3.org/2001/XMLSchema#"
         },
         "select": "?c",
@@ -908,7 +908,7 @@ async fn untyped_value_matching_parity() {
     );
 
     let q_untyped = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "select": "?c",
         "where": [{"@id": "?c", "f:t": commit_t}]
     });
@@ -941,9 +941,9 @@ async fn index_range_scans() {
     use fluree_db_core::value::FlakeValue;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "query/index-range:main";
+    let ledger_id = "query/index-range:main";
 
-    let db0 = genesis_ledger(&fluree, alias);
+    let db0 = genesis_ledger(&fluree, ledger_id);
 
     let insert_txn = json!({
         "@context": context_ex_schema(),
@@ -1120,8 +1120,8 @@ async fn index_range_scans() {
 // UNION query tests (from it_query_union.rs)
 // =============================================================================
 
-async fn seed_union_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_union_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let ctx = context_ex_schema();
 
     let insert = json!({

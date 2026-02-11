@@ -11,26 +11,17 @@ mod support;
 
 use fluree_db_api::TimeSpec;
 use fluree_db_api::{DatasetSpec, FlureeBuilder, FlureeDataSetView, FlureeView, GraphSource};
-use fluree_db_novelty::load_commit;
+use fluree_db_core::StorageContentStore;
+use fluree_db_novelty::load_commit_by_id;
 use serde_json::json;
 use support::{
-    assert_index_defaults, genesis_ledger, normalize_rows_array, MemoryFluree, MemoryLedger,
+    assert_index_defaults, genesis_ledger, normalize_flat_results, normalize_rows_array,
+    MemoryFluree, MemoryLedger,
 };
 
 // =============================================================================
 // Helper functions
 // =============================================================================
-
-/// Normalize single-variable results (flat array) for comparison
-fn normalize_flat_results(v: &serde_json::Value) -> Vec<serde_json::Value> {
-    let mut items: Vec<serde_json::Value> = v.as_array().expect("expected JSON array").to_vec();
-    items.sort_by(|a, b| {
-        serde_json::to_string(a)
-            .unwrap_or_default()
-            .cmp(&serde_json::to_string(b).unwrap_or_default())
-    });
-    items
-}
 
 // =============================================================================
 // Test data seeding helpers
@@ -56,8 +47,8 @@ fn ctx_schema_value() -> serde_json::Value {
     ])
 }
 
-async fn seed_authors_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_authors_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": ["https://schema.org", ctx_schema()],
         "@graph": [
@@ -72,8 +63,8 @@ async fn seed_authors_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger
         .ledger
 }
 
-async fn seed_books_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_books_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": ["https://schema.org", ctx_schema()],
         "@graph": [
@@ -88,8 +79,8 @@ async fn seed_books_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
         .ledger
 }
 
-async fn seed_movies_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_movies_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": ["https://schema.org", ctx_schema()],
         "@graph": [
@@ -105,8 +96,8 @@ async fn seed_movies_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger 
 }
 
 /// Seed a "people" ledger with person data
-async fn seed_people_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     let insert = json!({
         "@context": {
@@ -137,8 +128,8 @@ async fn seed_people_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger 
 }
 
 /// Seed an "organizations" ledger with organization data
-async fn seed_orgs_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_orgs_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     let insert = json!({
         "@context": {
@@ -167,8 +158,8 @@ async fn seed_orgs_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
 }
 
 /// Seed a second "people" ledger with different person data (for union tests)
-async fn seed_people2_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people2_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     let insert = json!({
         "@context": {
@@ -1150,7 +1141,8 @@ async fn dataset_time_travel_at_time_iso() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
+    let content_store = StorageContentStore::new(fluree.storage().clone(), "people:main", "memory");
+    let commit1 = load_commit_by_id(&content_store, &tx1.receipt.commit_id)
         .await
         .unwrap();
     let time1 = commit1.time.expect("commit should have ISO timestamp");
@@ -1310,26 +1302,20 @@ async fn dataset_time_travel_alias_syntax_at_t() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_at_commit_sha() {
+async fn dataset_time_travel_at_commit() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // Commit 1: Alice (capture its commit ID / SHA)
+    // Commit 1: Alice (capture its commit ID)
     let ledger0 = genesis_ledger(&fluree, "people:main");
     let insert1 = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
-        .await
-        .unwrap();
-    let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract just the SHA part (everything after "fluree:commit:sha256:")
-    let sha_prefix = commit_id
-        .strip_prefix("fluree:commit:sha256:")
-        .expect("commit ID should start with fluree:commit:sha256:");
+    // Extract the hex digest directly from the receipt's ContentId
+    let commit_prefix = tx1.receipt.commit_id.digest_hex();
 
     // Commit 2: Bob
     let insert2 = json!({
@@ -1338,9 +1324,9 @@ async fn dataset_time_travel_at_commit_sha() {
     });
     let _tx2 = fluree.insert(tx1.ledger, &insert2).await.unwrap();
 
-    // Dataset pinned at commit1 SHA should only see Alice (t=1).
+    // Dataset pinned at commit1 should only see Alice (t=1).
     let spec = DatasetSpec::new().with_default(
-        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.to_string())),
+        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(commit_prefix.clone())),
     );
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
@@ -1361,28 +1347,22 @@ async fn dataset_time_travel_at_commit_sha() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_at_commit_sha_short_prefix() {
+async fn dataset_time_travel_at_commit_short_prefix() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // Commit 1: Alice (capture its commit ID / SHA)
+    // Commit 1: Alice (capture its commit ID)
     let ledger0 = genesis_ledger(&fluree, "people:main");
     let insert1 = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
-        .await
-        .unwrap();
-    let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract just the first 10 chars of the SHA (after 'b' prefix) for prefix matching
-    let sha_full = commit_id
-        .strip_prefix("fluree:commit:sha256:")
-        .expect("commit ID should start with fluree:commit:sha256:");
-    // Use just the first 10 characters (including 'b') as a prefix
-    let sha_prefix = &sha_full[..10.min(sha_full.len())];
+    // Extract the hex digest directly from the receipt's ContentId
+    let digest_full = tx1.receipt.commit_id.digest_hex();
+    // Use just the first 10 characters as a prefix
+    let commit_prefix = &digest_full[..10.min(digest_full.len())];
 
     // Commit 2: Bob
     let insert2 = json!({
@@ -1391,9 +1371,9 @@ async fn dataset_time_travel_at_commit_sha_short_prefix() {
     });
     let _tx2 = fluree.insert(tx1.ledger, &insert2).await.unwrap();
 
-    // Dataset pinned at commit1 SHA prefix should only see Alice (t=1).
+    // Dataset pinned at commit1 prefix should only see Alice (t=1).
     let spec = DatasetSpec::new().with_default(
-        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(sha_prefix.to_string())),
+        GraphSource::new("people:main").with_time(TimeSpec::AtCommit(commit_prefix.to_string())),
     );
     let dataset = fluree.build_dataset_view(&spec).await.unwrap();
 
@@ -1414,26 +1394,20 @@ async fn dataset_time_travel_at_commit_sha_short_prefix() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_alias_syntax_sha() {
+async fn dataset_time_travel_alias_syntax_commit() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
-    // Commit 1: Alice (capture its commit ID / SHA)
+    // Commit 1: Alice (capture its commit ID)
     let ledger0 = genesis_ledger(&fluree, "people:main");
     let insert1 = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let commit1 = load_commit(fluree.storage(), &tx1.receipt.address)
-        .await
-        .unwrap();
-    let commit_id = commit1.id.expect("commit should have content-address ID");
 
-    // Extract just the SHA part (including 'b' prefix)
-    let sha_prefix = commit_id
-        .strip_prefix("fluree:commit:sha256:")
-        .expect("commit ID should start with fluree:commit:sha256:");
+    // Extract the hex digest directly from the receipt's ContentId
+    let commit_prefix = tx1.receipt.commit_id.digest_hex();
 
     // Commit 2: Bob
     let insert2 = json!({
@@ -1442,11 +1416,11 @@ async fn dataset_time_travel_alias_syntax_sha() {
     });
     let _tx2 = fluree.insert(tx1.ledger, &insert2).await.unwrap();
 
-    // Use @sha: alias syntax in "from" string
-    let alias_with_sha = format!("people:main@sha:{}", sha_prefix);
+    // Use @commit: alias syntax in "from" string
+    let alias_with_commit = format!("people:main@commit:{}", commit_prefix);
     let query = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
-        "from": alias_with_sha,
+        "from": alias_with_commit,
         "select": ["?name"],
         "where": {"@id": "?s", "schema:name": "?name"}
     });
@@ -1472,7 +1446,7 @@ async fn dataset_time_travel_alias_syntax_sha() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_sha_not_found_errors() {
+async fn dataset_time_travel_commit_not_found_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
@@ -1484,12 +1458,12 @@ async fn dataset_time_travel_sha_not_found_errors() {
     });
     let _tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
 
-    // Request a non-existent SHA - should error
+    // Request a non-existent commit prefix - should error
     let spec = DatasetSpec::new().with_default(
         GraphSource::new("people:main").with_time(TimeSpec::AtCommit("bxxxxxx".to_string())),
     );
     let result = fluree.build_dataset_view(&spec).await;
-    assert!(result.is_err(), "non-existent SHA should error");
+    assert!(result.is_err(), "non-existent commit should error");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("No commit found"),
@@ -1499,7 +1473,7 @@ async fn dataset_time_travel_sha_not_found_errors() {
 }
 
 #[tokio::test]
-async fn dataset_time_travel_sha_too_short_errors() {
+async fn dataset_time_travel_commit_too_short_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
 
@@ -1511,12 +1485,12 @@ async fn dataset_time_travel_sha_too_short_errors() {
     });
     let _tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
 
-    // SHA too short (less than 6 chars) - should error
+    // Commit prefix too short (less than 6 chars) - should error
     let spec = DatasetSpec::new().with_default(
         GraphSource::new("people:main").with_time(TimeSpec::AtCommit("babc".to_string())),
     );
     let result = fluree.build_dataset_view(&spec).await;
-    assert!(result.is_err(), "SHA too short should error");
+    assert!(result.is_err(), "commit prefix too short should error");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("at least 6 characters"),

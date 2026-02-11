@@ -28,7 +28,7 @@ use std::path::PathBuf;
 
 use fluree_db_core::db::{Db, DbMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{alias as core_alias, Storage};
+use fluree_db_core::{ledger_id::normalize_ledger_id, ContentId, ContentStore, Storage};
 use fluree_db_indexer::run_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};
@@ -64,17 +64,19 @@ fn monotonic_secs() -> u64 {
 ///
 /// Safe to pass around and use for queries without blocking other operations.
 /// This is a cheap clone of the underlying state (Db clone is cheap via Arc fields).
-pub struct LedgerSnapshot<S> {
+pub struct LedgerSnapshot {
     /// The indexed database (cheap clone - Arc fields)
-    pub db: Db<S>,
+    pub db: Db,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
     /// Dictionary novelty layer (subjects and strings since last index build)
     pub dict_novelty: Arc<fluree_db_core::DictNovelty>,
     /// Current transaction t value
     pub t: i64,
-    /// Current head commit address
-    pub head_commit: Option<String>,
+    /// Content identifier of the head commit (identity)
+    pub head_commit_id: Option<fluree_db_core::ContentId>,
+    /// Content identifier of the current index root (identity)
+    pub head_index_id: Option<fluree_db_core::ContentId>,
     /// Nameservice record (if loaded via nameservice)
     pub ns_record: Option<NsRecord>,
     /// Binary columnar index store (v2 only).
@@ -84,18 +86,19 @@ pub struct LedgerSnapshot<S> {
     pub binary_store: Option<Arc<BinaryIndexStore>>,
 }
 
-impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
+impl LedgerSnapshot {
     /// Create a snapshot from ledger state
     ///
     /// Note: `binary_store` is set to `None` here — callers that have a
     /// binary store must set it after construction (see `LedgerHandle::snapshot()`).
-    fn from_state(state: &LedgerState<S>) -> Self {
+    fn from_state(state: &LedgerState) -> Self {
         Self {
             db: state.db.clone(), // Cheap: Arc fields
             novelty: Arc::clone(&state.novelty),
             dict_novelty: Arc::clone(&state.dict_novelty),
             t: state.t(),
-            head_commit: state.head_commit.clone(),
+            head_commit_id: state.head_commit_id.clone(),
+            head_index_id: state.head_index_id.clone(),
             ns_record: state.ns_record.clone(),
             binary_store: None,
         }
@@ -104,19 +107,19 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     /// Get the ledger name (without branch suffix)
     ///
     /// Returns the base ledger name (e.g., "mydb"), NOT the canonical form (e.g., "mydb:main").
-    /// For the canonical ledger:branch address, use `address()` instead.
+    /// For the canonical ledger_id, use `ledger_id()` instead.
     ///
-    /// Note: This matches Clojure's `NsRecord.alias` semantics where "alias" is the base name.
-    pub fn alias(&self) -> Option<&str> {
-        self.ns_record.as_ref().map(|r| r.alias.as_str())
+    /// Note: This matches `NsRecord.name` semantics where "name" is the base name.
+    pub fn name(&self) -> Option<&str> {
+        self.ns_record.as_ref().map(|r| r.name.as_str())
     }
 
-    /// Get the canonical ledger address (with branch suffix)
+    /// Get the canonical ledger ID (with branch suffix)
     ///
     /// Returns the canonical form (e.g., "mydb:main") suitable for cache keys.
     /// This is the primary identifier for ledger lookups.
-    pub fn address(&self) -> Option<&str> {
-        self.ns_record.as_ref().map(|r| r.address.as_str())
+    pub fn ledger_id(&self) -> Option<&str> {
+        self.ns_record.as_ref().map(|r| r.ledger_id.as_str())
     }
 
     /// Get index_t from the underlying Db
@@ -128,13 +131,14 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     ///
     /// This creates a LedgerState with the same data as the snapshot.
     /// Use this when you need to pass the state to APIs that expect LedgerState.
-    pub fn to_ledger_state(self) -> LedgerState<S> {
+    pub fn to_ledger_state(self) -> LedgerState {
         let dict_novelty = self.dict_novelty;
         LedgerState {
             db: self.db,
             novelty: self.novelty,
             dict_novelty,
-            head_commit: self.head_commit,
+            head_commit_id: self.head_commit_id,
+            head_index_id: self.head_index_id,
             ns_record: self.ns_record,
             binary_store: self.binary_store.map(|store| TypeErasedStore(store)),
         }
@@ -149,26 +153,23 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
 ///
 /// Transactions hold this guard across stage+commit to serialize writes
 /// to the same ledger.
-pub struct LedgerWriteGuard<'a, S> {
-    guard: tokio::sync::MutexGuard<'a, LedgerState<S>>,
+pub struct LedgerWriteGuard<'a> {
+    guard: tokio::sync::MutexGuard<'a, LedgerState>,
 }
 
-impl<S: Clone> LedgerWriteGuard<'_, S> {
+impl LedgerWriteGuard<'_> {
     /// Get reference to current state
-    pub fn state(&self) -> &LedgerState<S> {
+    pub fn state(&self) -> &LedgerState {
         &self.guard
     }
 
     /// Clone current state for passing to stage (which consumes by value)
-    pub fn clone_state(&self) -> LedgerState<S>
-    where
-        LedgerState<S>: Clone,
-    {
+    pub fn clone_state(&self) -> LedgerState {
         self.guard.clone()
     }
 
     /// Replace state with new state after successful commit
-    pub fn replace(&mut self, new_state: LedgerState<S>) {
+    pub fn replace(&mut self, new_state: LedgerState) {
         *self.guard = new_state;
     }
 }
@@ -181,13 +182,13 @@ impl<S: Clone> LedgerWriteGuard<'_, S> {
 ///
 /// Provides access to cached ledger state for queries and transactions.
 /// Multiple handles can reference the same cached state (via Arc).
-pub struct LedgerHandle<S> {
-    inner: Arc<LedgerHandleInner<S>>,
+pub struct LedgerHandle {
+    inner: Arc<LedgerHandleInner>,
 }
 
 // Manual Clone impl to avoid requiring S: Clone, C: Clone bounds
 // (Arc<T> is Clone regardless of T)
-impl<S> Clone for LedgerHandle<S> {
+impl Clone for LedgerHandle {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -198,11 +199,11 @@ impl<S> Clone for LedgerHandle<S> {
 /// Lock ordering invariant: always acquire `state` before `binary_store`.
 /// All paths that touch both locks (snapshot, apply_index_v2, reload)
 /// follow this order to prevent deadlock and ensure coherence.
-struct LedgerHandleInner<S> {
+struct LedgerHandleInner {
     /// Single mutex for all access (queries clone snapshot, txns hold for duration)
-    state: Mutex<LedgerState<S>>,
-    /// Ledger alias
-    alias: String,
+    state: Mutex<LedgerState>,
+    /// Ledger ID (e.g., "mydb:main")
+    ledger_id: String,
     /// Last access time (monotonic secs since process start)
     last_access: AtomicU64,
     /// Binary columnar index store (v2 only).
@@ -212,17 +213,17 @@ struct LedgerHandleInner<S> {
     binary_store: Mutex<Option<Arc<BinaryIndexStore>>>,
 }
 
-impl<S: Storage + Clone + 'static> LedgerHandle<S> {
+impl LedgerHandle {
     /// Create a new handle wrapping ledger state
     pub fn new(
-        alias: String,
-        state: LedgerState<S>,
+        ledger_id: String,
+        state: LedgerState,
         binary_store: Option<Arc<BinaryIndexStore>>,
     ) -> Self {
         Self {
             inner: Arc::new(LedgerHandleInner {
                 state: Mutex::new(state),
-                alias,
+                ledger_id,
                 last_access: AtomicU64::new(monotonic_secs()),
                 binary_store: Mutex::new(binary_store),
             }),
@@ -233,15 +234,15 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     ///
     /// This is functionally identical to `new()`, but the naming clarifies
     /// that this handle is NOT cached and each call creates a fresh load.
-    pub fn ephemeral(alias: String, state: LedgerState<S>) -> Self {
-        Self::new(alias, state, None)
+    pub fn ephemeral(ledger_id: String, state: LedgerState) -> Self {
+        Self::new(ledger_id, state, None)
     }
 
     /// Get read-only snapshot for queries (brief lock, clone, release)
     ///
     /// IMPORTANT: Queries must NOT execute while holding the internal lock.
     /// The snapshot is a cheap clone; the lock is released immediately after.
-    pub async fn snapshot(&self) -> LedgerSnapshot<S> {
+    pub async fn snapshot(&self) -> LedgerSnapshot {
         self.touch();
         let state = self.inner.state.lock().await;
         let binary_store = self.inner.binary_store.lock().await.clone();
@@ -256,7 +257,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     }
 
     /// Acquire exclusive access for transaction (hold lock for stage+commit)
-    pub async fn lock_for_write(&self) -> LedgerWriteGuard<'_, S> {
+    pub async fn lock_for_write(&self) -> LedgerWriteGuard<'_> {
         self.touch();
         LedgerWriteGuard {
             guard: self.inner.state.lock().await,
@@ -275,9 +276,9 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
         self.inner.last_access.load(Ordering::Relaxed)
     }
 
-    /// Get ledger alias
-    pub fn alias(&self) -> &str {
-        &self.inner.alias
+    /// Get ledger ID
+    pub fn ledger_id(&self) -> &str {
+        &self.inner.ledger_id
     }
 
     /// Check if currently locked (for eviction - skip if in use)
@@ -305,8 +306,8 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
 
     /// Get state metrics for update planning
     ///
-    /// Returns (t, index_t, index_address) needed for UpdatePlan::plan()
-    pub async fn state_metrics(&self) -> (i64, i64, Option<String>) {
+    /// Returns (t, index_t, index_head_id) needed for UpdatePlan::plan()
+    pub async fn state_metrics(&self) -> (i64, i64, Option<ContentId>) {
         let state = self.inner.state.lock().await;
         (
             state.t(),
@@ -314,7 +315,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             state
                 .ns_record
                 .as_ref()
-                .and_then(|r| r.index_address.clone()),
+                .and_then(|r| r.index_head_id.clone()),
         )
     }
 
@@ -335,9 +336,9 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     /// The state lock is held for the brief atomic swap of both `state` and
     /// `binary_store`, ensuring coherence between `db.range_provider` and
     /// `binary_store` (lock ordering: state → binary_store).
-    pub async fn apply_index_v2(
+    pub async fn apply_index_v2<S: Storage + Clone>(
         &self,
-        index_address: &str,
+        index_id: &ContentId,
         storage: &S,
         cache_dir: &std::path::Path,
         leaflet_cache: Option<Arc<LeafletCache>>,
@@ -346,18 +347,26 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
         };
 
-        // All I/O outside any lock
-        let bytes = storage
-            .read_bytes(index_address)
+        // Load index root by CID via content store
+        let ledger_id = {
+            let state = self.inner.state.lock().await;
+            state.db.ledger_id.clone()
+        };
+        let store = fluree_db_core::content_store_for(storage.clone(), &ledger_id);
+        let bytes = store
+            .get(index_id)
             .await
             .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
-        let root: BinaryIndexRootV2 = serde_json::from_slice(&bytes)
+        let root: BinaryIndexRoot = serde_json::from_slice(&bytes)
             .map_err(|e| ApiError::internal(format!("failed to parse v2 root: {}", e)))?;
 
-        let store = BinaryIndexStore::load_from_root(storage, &root, cache_dir, leaflet_cache)
+        let cs = fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
+        let store = BinaryIndexStore::load_from_root(&cs, &root, cache_dir, leaflet_cache)
             .await
             .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
         let arc_store = Arc::new(store);
+        let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
+        let te_store = TypeErasedStore(te_store);
         let dn = Arc::new(DictNovelty::new_uninitialized());
         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
 
@@ -374,7 +383,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
             .map(|raw| raw_schema_to_index_schema(&raw));
         let meta = DbMetadata {
-            alias: root.ledger_alias,
+            ledger_id: root.ledger_id,
             t: root.index_t,
             namespace_codes: ns_codes,
             stats,
@@ -382,7 +391,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             subject_watermarks: root.subject_watermarks,
             string_watermark: root.string_watermark,
         };
-        let mut db = Db::new_meta(meta, storage.clone());
+        let mut db = Db::new_meta(meta);
         db.range_provider = Some(Arc::new(provider));
 
         // Brief lock: swap state + binary_store atomically.
@@ -390,9 +399,10 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
         {
             let mut state = self.inner.state.lock().await;
             state
-                .apply_loaded_db(db, index_address)
+                .apply_loaded_db(db, Some(index_id))
                 .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {}", e)))?;
             *self.inner.binary_store.lock().await = Some(arc_store);
+            state.binary_store = Some(te_store);
         }
 
         Ok(())
@@ -412,8 +422,8 @@ pub struct RemoteWatermark {
     pub commit_t: i64,
     /// Remote index_t value (used for freshness comparison)
     pub index_t: i64,
-    /// Remote index address (for potential future optimization)
-    pub index_address: Option<String>,
+    /// Remote index head CID (for potential future optimization)
+    pub index_head_id: Option<ContentId>,
     /// When this watermark was last updated
     pub updated_at: Instant,
 }
@@ -422,8 +432,8 @@ pub struct RemoteWatermark {
 ///
 /// Server's PeerState implements this; library doesn't depend on server types.
 pub trait FreshnessSource: Send + Sync {
-    /// Get remote watermark for a ledger alias
-    fn watermark(&self, alias: &str) -> Option<RemoteWatermark>;
+    /// Get remote watermark for a ledger ID
+    fn watermark(&self, ledger_id: &str) -> Option<RemoteWatermark>;
 }
 
 /// Result of checking if cached state is fresh
@@ -443,14 +453,14 @@ pub enum FreshnessCheck {
 ///
 /// Note: Loading sends `Result<LedgerHandle>` to waiters (they need the handle).
 ///       Reloading sends `Result<()>` to waiters (handle already obtained).
-enum LoadState<S> {
+enum LoadState {
     /// Initial load in progress - waiters receive handle on success
-    Loading(Vec<oneshot::Sender<std::result::Result<LedgerHandle<S>, Arc<ApiError>>>>),
+    Loading(Vec<oneshot::Sender<std::result::Result<LedgerHandle, Arc<ApiError>>>>),
     /// Loaded and cached
-    Ready(LedgerHandle<S>),
+    Ready(LedgerHandle),
     /// Reload in progress - handle stays valid, waiters receive () on success
     Reloading {
-        handle: LedgerHandle<S>,
+        handle: LedgerHandle,
         waiters: Vec<oneshot::Sender<std::result::Result<(), Arc<ApiError>>>>,
     },
 }
@@ -503,51 +513,62 @@ impl Default for LedgerManagerConfig {
 // Binary Index Loading Helper
 // ============================================================================
 
-use fluree_db_indexer::run_index::{BinaryIndexRootV2, BINARY_INDEX_ROOT_VERSION_V2};
+use fluree_db_indexer::run_index::{BinaryIndexRoot, BINARY_INDEX_ROOT_VERSION};
 use fluree_db_query::BinaryRangeProvider;
 
 /// Load BinaryIndexStore from a v2 index root, attach range_provider
 /// to the LedgerState's Db, and return the Arc'd store.
 ///
-/// Returns `Ok(None)` if no index_address is present or the root is not v2.
+/// Returns `Ok(None)` if no index_head_id is present or the root is not v2.
 async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     storage: &S,
-    state: &mut LedgerState<S>,
+    state: &mut LedgerState,
     cache_dir: &std::path::Path,
     leaflet_cache: Option<Arc<LeafletCache>>,
 ) -> std::result::Result<Option<Arc<BinaryIndexStore>>, ApiError> {
-    let index_addr = match state
+    let index_cid = match state
         .ns_record
         .as_ref()
-        .and_then(|r| r.index_address.as_ref())
+        .and_then(|r| r.index_head_id.as_ref())
     {
-        Some(addr) => addr.clone(),
+        Some(cid) => cid.clone(),
         None => return Ok(None),
     };
 
-    let bytes = storage
-        .read_bytes(&index_addr)
+    let store = fluree_db_core::content_store_for(storage.clone(), &state.db.ledger_id);
+    let bytes = store
+        .get(&index_cid)
         .await
         .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
 
-    let root: BinaryIndexRootV2 = match serde_json::from_slice(&bytes) {
+    let root: BinaryIndexRoot = match serde_json::from_slice(&bytes) {
         Ok(r) => r,
         Err(_) => return Ok(None), // Not a v2 root (could be v1 or malformed)
     };
 
-    // BinaryIndexRootV2's custom Deserialize already validates version == 2,
+    // BinaryIndexRoot's custom Deserialize already validates version == 2,
     // but belt-and-suspenders:
-    if root.version != BINARY_INDEX_ROOT_VERSION_V2 {
+    if root.version != BINARY_INDEX_ROOT_VERSION {
         return Ok(None);
     }
 
-    let store = BinaryIndexStore::load_from_root(storage, &root, cache_dir, leaflet_cache)
+    let cs = fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
+    let mut store = BinaryIndexStore::load_from_root(&cs, &root, cache_dir, leaflet_cache)
         .await
         .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+
+    // Augment namespace codes with entries from novelty commits (see loading.rs).
+    store.augment_namespace_codes(&state.db.namespace_codes);
+
     let arc_store = Arc::new(store);
     let dn = Arc::new(DictNovelty::new_uninitialized());
     let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
     state.db.range_provider = Some(Arc::new(provider));
+    // Also attach the type-erased store to the state so transaction staging
+    // (which clones LedgerState under the write lock) can construct
+    // graph-scoped BinaryRangeProviders (needed for named-graph upsert deletions).
+    let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
+    state.binary_store = Some(TypeErasedStore(te_store));
     Ok(Some(arc_store))
 }
 
@@ -561,7 +582,7 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
 /// and idle eviction.
 pub struct LedgerManager<S, N> {
     /// Cached ledger handles + loading state
-    entries: RwLock<HashMap<String, LoadState<S>>>,
+    entries: RwLock<HashMap<String, LoadState>>,
     /// Storage for ledger loading
     storage: S,
     /// Shared cache for index nodes
@@ -596,16 +617,16 @@ where
 
     /// Get cached handle or load from nameservice
     ///
-    /// Uses single-flight pattern: concurrent requests for same alias
+    /// Uses single-flight pattern: concurrent requests for same ledger ID
     /// will share one load operation, not stampede.
     ///
-    /// The alias is normalized to canonical form (e.g., "mydb" -> "mydb:main")
+    /// The ledger_id is normalized to canonical form (e.g., "mydb" -> "mydb:main")
     /// before caching to ensure consistent cache keys regardless of input form.
-    pub async fn get_or_load(&self, alias: &str) -> Result<LedgerHandle<S>> {
-        // Normalize alias to canonical form for consistent cache keys
+    pub async fn get_or_load(&self, ledger_id: &str) -> Result<LedgerHandle> {
+        // Normalize ledger_id to canonical form for consistent cache keys
         // This ensures "mydb" and "mydb:main" use the same cache entry
         let canonical_alias =
-            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+            normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
 
         // Fast path: already loaded
         {
@@ -665,9 +686,9 @@ where
         }
 
         // We're the loader - do the I/O without holding manager lock
-        // Note: We pass the original alias to nameservice (it handles resolution),
-        // but cache under the canonical alias for consistent lookup
-        let result = LedgerState::load(&self.nameservice, alias, self.storage.clone())
+        // Note: We pass the original address to nameservice (it handles resolution),
+        // but cache under the canonical address for consistent lookup
+        let result = LedgerState::load(&self.nameservice, ledger_id, self.storage.clone())
             .await
             .map_err(ApiError::from); // Convert LedgerError to ApiError
 
@@ -690,7 +711,7 @@ where
                     Ok(store) => store,
                     Err(e) => {
                         tracing::warn!(
-                            alias = %alias,
+                            ledger_id = %ledger_id,
                             error = %e,
                             "Failed to load binary store, continuing without"
                         );
@@ -736,10 +757,10 @@ where
     ///
     /// Note: If loading/reloading is in progress, waiters will receive
     /// cancellation errors. This is acceptable - disconnect is a "force evict."
-    pub async fn disconnect(&self, alias: &str) {
-        // Normalize alias to match cache key format
+    pub async fn disconnect(&self, ledger_id: &str) {
+        // Normalize ledger_id to match cache key format
         let canonical_alias =
-            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+            normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
 
         let mut entries = self.entries.write().await;
         // Removal will drop any pending oneshot senders, causing waiters to get RecvError
@@ -775,17 +796,15 @@ where
     /// - Reloading{h, waiters} → add waiter, await completion
     /// - Loading(waiters) → wait for initial load, then return Ok(())
     /// - None → Ok(()) (not loaded, nothing to reload)
-    pub async fn reload(&self, alias: &str) -> Result<()> {
-        // Normalize alias to match cache key format
+    pub async fn reload(&self, ledger_id: &str) -> Result<()> {
+        // Normalize ledger_id to match cache key format
         let canonical_alias =
-            core_alias::normalize_alias(alias).unwrap_or_else(|_| alias.to_string());
+            normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
 
-        enum ReloadAction<S> {
-            BecomeLeader(LedgerHandle<S>),
+        enum ReloadAction {
+            BecomeLeader(LedgerHandle),
             WaitForReload(oneshot::Receiver<std::result::Result<(), Arc<ApiError>>>),
-            WaitForInitialLoad(
-                oneshot::Receiver<std::result::Result<LedgerHandle<S>, Arc<ApiError>>>,
-            ),
+            WaitForInitialLoad(oneshot::Receiver<std::result::Result<LedgerHandle, Arc<ApiError>>>),
             NotLoaded,
         }
 
@@ -857,7 +876,7 @@ where
                 // We're the reload leader - do I/O without manager lock
                 let mut write_guard = handle.lock_for_write().await;
 
-                let result = LedgerState::load(&self.nameservice, alias, self.storage.clone())
+                let result = LedgerState::load(&self.nameservice, ledger_id, self.storage.clone())
                     .await
                     .map_err(ApiError::from); // Convert LedgerError to ApiError
 
@@ -879,7 +898,7 @@ where
                             Ok(store) => store,
                             Err(e) => {
                                 tracing::warn!(
-                                    alias = %alias,
+                                    ledger_id = %ledger_id,
                                     error = %e,
                                     "Failed to load binary store during reload, continuing without"
                                 );
@@ -964,7 +983,7 @@ where
             .count()
     }
 
-    /// Get list of cached ledger aliases (for introspection)
+    /// Get list of cached ledger IDs (for introspection)
     pub async fn cached_aliases(&self) -> Vec<String> {
         let entries = self.entries.read().await;
         entries
@@ -1023,8 +1042,8 @@ pub enum UpdatePlan {
     /// (ns.commit_t == local.t() BUT ns.index_t > local.index_t)
     /// Action: reload index root, trim novelty to only commits > new index_t
     IndexOnly {
-        /// New index address to load
-        index_address: String,
+        /// New index head CID to load
+        index_head_id: ContentId,
         /// New index_t value
         index_t: i64,
     },
@@ -1034,8 +1053,8 @@ pub enum UpdatePlan {
     /// Action: load and apply single commit to novelty
     /// Note: v1 falls back to Reload for simplicity
     CommitNext {
-        /// Address of the next commit
-        commit_address: String,
+        /// CID of the next commit head
+        commit_head_id: ContentId,
         /// Expected commit_t
         commit_t: i64,
     },
@@ -1057,30 +1076,30 @@ impl UpdatePlan {
     /// # Arguments
     /// * `local_t` - Local ledger's current t (max of index + novelty)
     /// * `local_index_t` - Local ledger's indexed t (db.t)
-    /// * `local_index_address` - Local ledger's current index address (if any)
+    /// * `local_index_id` - Local ledger's current index CID (if any)
     /// * `ns` - Fresh nameservice record
     pub fn plan(
         local_t: i64,
         local_index_t: i64,
-        local_index_address: Option<&str>,
+        local_index_id: Option<&ContentId>,
         ns: &NsRecord,
     ) -> Self {
         if ns.commit_t == local_t {
             // Commits are in sync - check if index advanced
-            match (&ns.index_address, local_index_address) {
+            match (&ns.index_head_id, local_index_id) {
                 (Some(ns_idx), Some(local_idx))
                     if ns_idx != local_idx && ns.index_t > local_index_t =>
                 {
                     // Index advanced, same commit_t
                     UpdatePlan::IndexOnly {
-                        index_address: ns_idx.clone(),
+                        index_head_id: ns_idx.clone(),
                         index_t: ns.index_t,
                     }
                 }
                 (Some(ns_idx), None) if ns.index_t > local_index_t => {
                     // Index appeared where there was none
                     UpdatePlan::IndexOnly {
-                        index_address: ns_idx.clone(),
+                        index_head_id: ns_idx.clone(),
                         index_t: ns.index_t,
                     }
                 }
@@ -1088,9 +1107,9 @@ impl UpdatePlan {
             }
         } else if ns.commit_t == local_t + 1 {
             // Exactly one commit ahead - fast path possible
-            match &ns.commit_address {
-                Some(addr) => UpdatePlan::CommitNext {
-                    commit_address: addr.clone(),
+            match &ns.commit_head_id {
+                Some(cid) => UpdatePlan::CommitNext {
+                    commit_head_id: cid.clone(),
                     commit_t: ns.commit_t,
                 },
                 None => UpdatePlan::Reload, // Shouldn't happen, but be safe
@@ -1121,10 +1140,10 @@ impl UpdatePlan {
     }
 }
 
-/// Input for notify: alias + optional fresh NsRecord
+/// Input for notify: ledger ID + optional fresh NsRecord
 pub struct NsNotify {
-    /// Ledger alias
-    pub alias: String,
+    /// Ledger ID
+    pub ledger_id: String,
     /// Fresh nameservice record (if already fetched)
     pub record: Option<NsRecord>,
 }
@@ -1160,7 +1179,7 @@ where
         // Check if ledger is cached
         let handle = {
             let entries = self.entries.read().await;
-            match entries.get(&input.alias) {
+            match entries.get(&input.ledger_id) {
                 Some(LoadState::Ready(h)) => h.clone(),
                 Some(LoadState::Reloading { handle, .. }) => handle.clone(),
                 _ => return Ok(NotifyResult::NotLoaded),
@@ -1170,25 +1189,20 @@ where
         // Get fresh record from nameservice if not provided
         let ns_record = match input.record {
             Some(r) => r,
-            None => match self.nameservice.lookup(&input.alias).await? {
+            None => match self.nameservice.lookup(&input.ledger_id).await? {
                 Some(r) => r,
                 None => return Ok(NotifyResult::Current), // Ledger doesn't exist
             },
         };
 
         // Get local state metrics for planning
-        let (local_t, local_index_t, local_index_address) = handle.state_metrics().await;
+        let (local_t, local_index_t, local_index_id) = handle.state_metrics().await;
 
         // Plan the update action
-        let plan = UpdatePlan::plan(
-            local_t,
-            local_index_t,
-            local_index_address.as_deref(),
-            &ns_record,
-        );
+        let plan = UpdatePlan::plan(local_t, local_index_t, local_index_id.as_ref(), &ns_record);
 
         tracing::debug!(
-            alias = %input.alias,
+            alias = %input.ledger_id,
             local_t = local_t,
             local_index_t = local_index_t,
             ns_commit_t = ns_record.commit_t,
@@ -1201,39 +1215,39 @@ where
             UpdatePlan::Noop => Ok(NotifyResult::Current),
 
             UpdatePlan::IndexOnly {
-                index_address,
+                index_head_id,
                 index_t,
             } => {
                 // v1: Fall back to full reload
-                // Future: reload index root at index_address, rebuild novelty for commits > index_t
+                // Future: reload index root at index_head_id, rebuild novelty for commits > index_t
                 tracing::debug!(
-                    alias = %input.alias,
-                    index_address = %index_address,
+                    alias = %input.ledger_id,
+                    index_head_id = %index_head_id,
                     index_t = index_t,
                     "notify: IndexOnly plan - falling back to reload in v1"
                 );
-                self.reload(&input.alias).await?;
+                self.reload(&input.ledger_id).await?;
                 Ok(NotifyResult::IndexUpdated)
             }
 
             UpdatePlan::CommitNext {
-                commit_address,
+                commit_head_id,
                 commit_t,
             } => {
                 // v1: Fall back to full reload
-                // Future: load single commit at commit_address, apply to novelty
+                // Future: load single commit at commit_head_id, apply to novelty
                 tracing::debug!(
-                    alias = %input.alias,
-                    commit_address = %commit_address,
+                    alias = %input.ledger_id,
+                    commit_head_id = %commit_head_id,
                     commit_t = commit_t,
                     "notify: CommitNext plan - falling back to reload in v1"
                 );
-                self.reload(&input.alias).await?;
+                self.reload(&input.ledger_id).await?;
                 Ok(NotifyResult::CommitApplied)
             }
 
             UpdatePlan::Reload => {
-                self.reload(&input.alias).await?;
+                self.reload(&input.ledger_id).await?;
                 Ok(NotifyResult::Reloaded)
             }
         }
@@ -1269,7 +1283,7 @@ mod tests {
         let remote = RemoteWatermark {
             commit_t: 10,
             index_t: 8,
-            index_address: None,
+            index_head_id: None,
             updated_at: Instant::now(),
         };
 
@@ -1300,21 +1314,32 @@ mod tests {
     // UpdatePlan::plan() tests - Clojure parity scenarios
     // ========================================================================
 
+    fn make_cid(label: &str) -> ContentId {
+        use fluree_db_core::ContentKind;
+        ContentId::new(ContentKind::Commit, label.as_bytes())
+    }
+
+    fn make_index_cid(label: &str) -> ContentId {
+        use fluree_db_core::ContentKind;
+        ContentId::new(ContentKind::IndexRoot, label.as_bytes())
+    }
+
     fn make_ns_record(
         commit_t: i64,
         index_t: i64,
-        commit_addr: Option<&str>,
-        index_addr: Option<&str>,
+        commit_id: Option<ContentId>,
+        index_id: Option<ContentId>,
     ) -> NsRecord {
         NsRecord {
-            address: "test:main".to_string(),
-            alias: "test:main".to_string(),
+            ledger_id: "test:main".to_string(),
+            name: "test:main".to_string(),
             branch: "main".to_string(),
-            commit_address: commit_addr.map(String::from),
+            commit_head_id: commit_id,
+            config_id: None,
             commit_t,
-            index_address: index_addr.map(String::from),
+            index_head_id: index_id,
             index_t,
-            default_context_address: None,
+            default_context: None,
             retracted: false,
         }
     }
@@ -1322,15 +1347,16 @@ mod tests {
     #[test]
     fn test_update_plan_noop_when_commit_t_matches() {
         // Local t == ns.commit_t, index unchanged -> Noop
-        let ns = make_ns_record(10, 8, Some("commit:10"), Some("index:8"));
-        let plan = UpdatePlan::plan(10, 8, Some("index:8"), &ns);
+        let idx_cid = make_index_cid("index:8");
+        let ns = make_ns_record(10, 8, Some(make_cid("commit:10")), Some(idx_cid.clone()));
+        let plan = UpdatePlan::plan(10, 8, Some(&idx_cid), &ns);
         assert_eq!(plan, UpdatePlan::Noop);
     }
 
     #[test]
     fn test_update_plan_noop_when_commit_t_matches_no_index() {
         // Local t == ns.commit_t, no index on either side -> Noop
-        let ns = make_ns_record(5, 0, Some("commit:5"), None);
+        let ns = make_ns_record(5, 0, Some(make_cid("commit:5")), None);
         let plan = UpdatePlan::plan(5, 0, None, &ns);
         assert_eq!(plan, UpdatePlan::Noop);
     }
@@ -1339,25 +1365,37 @@ mod tests {
     fn test_update_plan_noop_with_novelty_present() {
         // Key regression test: local has novelty (commit_t > index_t is normal)
         // ns.commit_t == local.t() should be Noop, not trigger reload
-        let ns = make_ns_record(10, 5, Some("commit:10"), Some("index:5"));
+        let idx_cid = make_index_cid("index:5");
+        let ns = make_ns_record(10, 5, Some(make_cid("commit:10")), Some(idx_cid.clone()));
         // Local: index_t=5, but t()=10 due to novelty
-        let plan = UpdatePlan::plan(10, 5, Some("index:5"), &ns);
+        let plan = UpdatePlan::plan(10, 5, Some(&idx_cid), &ns);
         assert_eq!(plan, UpdatePlan::Noop);
     }
 
     #[test]
     fn test_update_plan_index_only_when_index_advanced() {
         // Local t == ns.commit_t, but ns.index_t > local.index_t -> IndexOnly
-        let ns = make_ns_record(10, 10, Some("commit:10"), Some("index:10"));
+        let ns = make_ns_record(
+            10,
+            10,
+            Some(make_cid("commit:10")),
+            Some(make_index_cid("index:10")),
+        );
+        let local_idx = make_index_cid("index:5");
         // Local: t()=10, index_t=5
-        let plan = UpdatePlan::plan(10, 5, Some("index:5"), &ns);
+        let plan = UpdatePlan::plan(10, 5, Some(&local_idx), &ns);
         assert!(matches!(plan, UpdatePlan::IndexOnly { index_t: 10, .. }));
     }
 
     #[test]
     fn test_update_plan_index_only_when_index_appears() {
         // Local t == ns.commit_t, index appears where there was none -> IndexOnly
-        let ns = make_ns_record(10, 10, Some("commit:10"), Some("index:10"));
+        let ns = make_ns_record(
+            10,
+            10,
+            Some(make_cid("commit:10")),
+            Some(make_index_cid("index:10")),
+        );
         // Local: t()=10, no index
         let plan = UpdatePlan::plan(10, 0, None, &ns);
         assert!(matches!(plan, UpdatePlan::IndexOnly { index_t: 10, .. }));
@@ -1366,32 +1404,41 @@ mod tests {
     #[test]
     fn test_update_plan_commit_next_when_one_ahead() {
         // ns.commit_t == local.t() + 1 -> CommitNext
-        let ns = make_ns_record(11, 5, Some("commit:11"), Some("index:5"));
-        let plan = UpdatePlan::plan(10, 5, Some("index:5"), &ns);
+        let local_idx = make_index_cid("index:5");
+        let ns = make_ns_record(11, 5, Some(make_cid("commit:11")), Some(local_idx.clone()));
+        let plan = UpdatePlan::plan(10, 5, Some(&local_idx), &ns);
         assert!(matches!(plan, UpdatePlan::CommitNext { commit_t: 11, .. }));
     }
 
     #[test]
     fn test_update_plan_reload_when_stale() {
         // ns.commit_t > local.t() + 1 -> Reload
-        let ns = make_ns_record(15, 10, Some("commit:15"), Some("index:10"));
-        let plan = UpdatePlan::plan(10, 5, Some("index:5"), &ns);
+        let local_idx = make_index_cid("index:5");
+        let ns = make_ns_record(
+            15,
+            10,
+            Some(make_cid("commit:15")),
+            Some(make_index_cid("index:10")),
+        );
+        let plan = UpdatePlan::plan(10, 5, Some(&local_idx), &ns);
         assert_eq!(plan, UpdatePlan::Reload);
     }
 
     #[test]
     fn test_update_plan_noop_when_local_ahead() {
         // Edge case: local is somehow ahead of ns (shouldn't happen, but be safe)
-        let ns = make_ns_record(5, 5, Some("commit:5"), Some("index:5"));
-        let plan = UpdatePlan::plan(10, 5, Some("index:5"), &ns);
+        let local_idx = make_index_cid("index:5");
+        let ns = make_ns_record(5, 5, Some(make_cid("commit:5")), Some(local_idx.clone()));
+        let plan = UpdatePlan::plan(10, 5, Some(&local_idx), &ns);
         assert_eq!(plan, UpdatePlan::Noop);
     }
 
     #[test]
-    fn test_update_plan_reload_when_commit_next_missing_address() {
-        // ns.commit_t == local.t() + 1 but no commit_address -> Reload (safety)
-        let ns = make_ns_record(11, 5, None, Some("index:5"));
-        let plan = UpdatePlan::plan(10, 5, Some("index:5"), &ns);
+    fn test_update_plan_reload_when_commit_next_missing_cid() {
+        // ns.commit_t == local.t() + 1 but no commit_head_id -> Reload (safety)
+        let local_idx = make_index_cid("index:5");
+        let ns = make_ns_record(11, 5, None, Some(local_idx.clone()));
+        let plan = UpdatePlan::plan(10, 5, Some(&local_idx), &ns);
         assert_eq!(plan, UpdatePlan::Reload);
     }
 

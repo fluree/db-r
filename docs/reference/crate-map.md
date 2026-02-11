@@ -41,7 +41,7 @@ fluree-db/
 ├── Reasoning
 │   └── fluree-db-reasoner/        # OWL2-RL reasoning engine
 │
-├── Virtual Graphs
+├── Graph Sources
 │   ├── fluree-db-tabular/         # Tabular column batch types
 │   ├── fluree-db-iceberg/         # Apache Iceberg integration
 │   └── fluree-db-r2rml/           # R2RML mapping support
@@ -83,6 +83,8 @@ fluree-db/
 - Range query operations
 - Database snapshot representation
 - Statistics and cardinality tracking
+- Content-addressed identity (`ContentId`, `ContentKind`)
+- Content store trait (`ContentStore`)
 
 **Key Types:**
 - `Flake` - Indexed triple representation
@@ -90,6 +92,9 @@ fluree-db/
 - `Db` - Database snapshot
 - `IndexType` - Index selection enum
 - `StatsView` - Query statistics
+- `ContentId` - CIDv1 content-addressed identifier
+- `ContentKind` - Content type enum (Commit, Txn, IndexRoot, etc.)
+- `ContentStore` - Content-addressed storage trait
 
 **Dependencies:**
 - fluree-vocab
@@ -278,11 +283,22 @@ fluree-db/
 **Purpose:** Git-like remote sync for nameservice
 
 **Responsibilities:**
-- Remote nameservice synchronization
+- Remote nameservice synchronization (fetch/push refs)
+- Multi-origin CAS object fetching with integrity verification
+- Pack protocol client (streaming binary transport for clone/pull)
 - SSE-based change streaming
+- Sync driver (fetch/pull/push orchestration)
+
+**Key Types:**
+- `MultiOriginFetcher` - Priority-ordered HTTP origin fallback
+- `HttpOriginFetcher` - Single-origin CAS object + pack fetcher
+- `SyncDriver` - Orchestrates fetch/pull/push with remote clients
+- `PackIngestResult` - Result of streaming pack import
 
 **Dependencies:**
+- fluree-db-core
 - fluree-db-nameservice
+- fluree-db-novelty
 - fluree-sse
 
 ## Indexing Crates
@@ -386,7 +402,7 @@ fluree-db/
 - fluree-db-core
 - fluree-vocab
 
-## Virtual Graph Crates
+## Graph Source Crates
 
 ### fluree-db-tabular
 
@@ -394,9 +410,9 @@ fluree-db/
 
 **Responsibilities:**
 - Arrow-compatible column batches
-- Virtual graph data abstraction
+- Graph source data abstraction
 
-**Dependencies:** None (foundation for virtual graphs)
+**Dependencies:** None (foundation for graph sources)
 
 ### fluree-db-iceberg
 
@@ -418,7 +434,7 @@ fluree-db/
 **Responsibilities:**
 - R2RML mapping parsing
 - Relational-to-RDF mapping
-- Virtual graph generation
+- Graph source generation
 
 **Dependencies:**
 - fluree-graph-ir

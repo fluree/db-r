@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod completions;
 pub mod config_cmd;
 pub mod create;
@@ -14,6 +15,7 @@ pub mod query;
 pub mod remote;
 pub mod sync;
 pub mod token;
+pub mod track;
 pub mod upsert;
 pub mod upstream;
 pub mod use_cmd;

@@ -9,14 +9,14 @@
 //! - transact (capture `receipt.t`)
 //! - `handle.trigger(alias, receipt.t)`
 //! - `completion.wait().await`
-//! - then load `Db` from `root_address` and assert `db.t >= receipt.t`
+//! - then load `Db` from the index root and assert `db.t >= receipt.t`
 
 #![cfg(feature = "native")]
 
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig};
-use fluree_db_core::Db;
+use fluree_db_core::{load_db, Db};
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
 use support::start_background_indexer_local;
@@ -43,8 +43,8 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
     local
         .run_until(async move {
             // Genesis ledger state (uncommitted; nameservice record created on first commit).
-            let alias = "it/index-wait:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let ledger_id = "it/index-wait:main";
+            let db0 = Db::genesis(ledger_id);
             let ledger0 = fluree_db_api::LedgerState::new(db0, fluree_db_api::Novelty::new(0));
 
             // Force indexing_needed=true for the test.
@@ -77,26 +77,21 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
             assert!(commit_t >= 0);
 
             // 2) Trigger indexing predicate: index_t >= commit_t
-            let completion = handle.trigger(result.ledger.alias(), commit_t).await;
+            let completion = handle.trigger(result.ledger.ledger_id(), commit_t).await;
 
             // 3) Wait + assert we can load the persisted root
             match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed {
-                    index_t,
-                    root_address,
-                } => {
+                fluree_db_api::IndexOutcome::Completed { index_t, root_id } => {
                     assert!(
                         index_t >= commit_t,
                         "index_t ({index_t}) should be >= commit_t ({commit_t})"
                     );
-                    assert!(
-                        !root_address.is_empty(),
-                        "expected a non-empty root_address after indexing"
-                    );
+                    assert!(root_id.is_some(), "expected a root_id after indexing");
 
-                    let loaded = Db::load(fluree.storage().clone(), &root_address)
+                    let root_cid = root_id.unwrap();
+                    let loaded = load_db(fluree.storage(), &root_cid, "it/index-wait:main")
                         .await
-                        .expect("Db::load(root_address)");
+                        .expect("load_db(root_cid)");
                     assert!(
                         loaded.t >= commit_t,
                         "loaded db.t ({}) should be >= commit_t ({})",

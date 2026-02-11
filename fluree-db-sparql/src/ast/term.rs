@@ -88,7 +88,7 @@ impl Iri {
     /// Create a reference to `rdf:type` (the `a` keyword).
     pub fn rdf_type(span: SourceSpan) -> Self {
         Self {
-            value: IriValue::Full(Arc::from("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")),
+            value: IriValue::Full(Arc::from(fluree_vocab::rdf::TYPE)),
             span,
         }
     }

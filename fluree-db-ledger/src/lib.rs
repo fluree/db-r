@@ -33,9 +33,9 @@ pub use error::{LedgerError, Result};
 pub use historical::HistoricalLedgerView;
 pub use staged::LedgerView;
 
-use fluree_db_core::{Db, DictNovelty, Storage};
+use fluree_db_core::{content_store_for, ContentId, ContentStore, Db, DictNovelty, Storage};
 use fluree_db_nameservice::{NameService, NsRecord};
-use fluree_db_novelty::{generate_commit_flakes, trace_commits, Novelty};
+use fluree_db_novelty::{generate_commit_flakes, trace_commits_by_id, Novelty};
 use futures::StreamExt;
 use std::sync::Arc;
 
@@ -80,9 +80,9 @@ impl Default for IndexConfig {
 /// - The persisted index (Db)
 /// - In-memory uncommitted changes (Novelty)
 #[derive(Debug, Clone)]
-pub struct LedgerState<S> {
+pub struct LedgerState {
     /// The indexed database
-    pub db: Db<S>,
+    pub db: Db,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
     /// Dictionary novelty layer for subjects and strings.
@@ -90,8 +90,16 @@ pub struct LedgerState<S> {
     /// Tracks novel dictionary entries introduced since the last index build.
     /// Populated during commit, read during queries, reset at index application.
     pub dict_novelty: Arc<DictNovelty>,
-    /// Current head commit address
-    pub head_commit: Option<String>,
+    /// Content identifier of the head commit (identity).
+    ///
+    /// Set during commit (from the computed CID) and during ledger load
+    /// (derived from the commit blob hash).
+    pub head_commit_id: Option<ContentId>,
+    /// Content identifier of the current index root (identity).
+    ///
+    /// Set when an index is applied (from `IndexResult.root_id`) and during
+    /// ledger load (from `NsRecord.index_head_id`).
+    pub head_index_id: Option<ContentId>,
     /// Nameservice record (if loaded via nameservice)
     pub ns_record: Option<NsRecord>,
     /// Type-erased binary index store (concrete type: `Arc<BinaryIndexStore>`).
@@ -101,53 +109,74 @@ pub struct LedgerState<S> {
     pub binary_store: Option<TypeErasedStore>,
 }
 
-impl<S: Storage + Clone + 'static> LedgerState<S> {
+impl LedgerState {
     /// Load a ledger from nameservice
     ///
     /// This is resilient to missing index - if the nameservice has commits
     /// but no index yet, it creates a genesis Db and loads all commits as novelty.
-    pub async fn load<N: NameService>(ns: &N, ledger_address: &str, storage: S) -> Result<Self> {
+    pub async fn load<S: Storage + Clone + 'static, N: NameService>(
+        ns: &N,
+        ledger_id: &str,
+        storage: S,
+    ) -> Result<Self> {
         let record = ns
-            .lookup(ledger_address)
+            .lookup(ledger_id)
             .await?
-            .ok_or_else(|| LedgerError::not_found(ledger_address))?;
+            .ok_or_else(|| LedgerError::not_found(ledger_id))?;
+
+        let store = content_store_for(storage.clone(), &record.ledger_id);
 
         // Handle missing index (genesis fallback)
-        // Use record.address which includes the branch (e.g., "test:main")
-        let (mut db, dict_novelty) = match &record.index_address {
-            Some(addr) => {
-                let loaded = Db::load(storage.clone(), addr).await?;
+        let (mut db, dict_novelty) = match &record.index_head_id {
+            Some(index_cid) => {
+                let root_bytes = store.get(index_cid).await?;
+                let root_json: serde_json::Value =
+                    serde_json::from_slice(&root_bytes).map_err(|e| {
+                        fluree_db_core::Error::invalid_index(format!("invalid root JSON: {}", e))
+                    })?;
+                let loaded = Db::from_v2_json(&root_json)?;
                 let dn = DictNovelty::with_watermarks(
                     loaded.subject_watermarks.clone(),
                     loaded.string_watermark,
                 );
                 (loaded, dn)
             }
-            None => (
-                Db::genesis(storage.clone(), &record.address),
-                DictNovelty::new_genesis(),
-            ),
+            None => (Db::genesis(&record.ledger_id), DictNovelty::new_genesis()),
         };
 
         // Load novelty from commits since index_t
-        let novelty = match &record.commit_address {
-            Some(addr) if record.commit_t > db.t => {
-                let (novelty, ns_delta) =
-                    Self::load_novelty(storage, addr, db.t, &record.address).await?;
+        let head_commit_id = match &record.commit_head_id {
+            Some(head_cid) if record.commit_t > db.t => {
+                let (novelty_overlay, ns_delta, head_id) =
+                    Self::load_novelty(store, head_cid, db.t, &record.ledger_id).await?;
                 // Apply namespace deltas from commits
                 for (code, prefix) in ns_delta {
                     db.namespace_codes.insert(code, prefix);
                 }
-                novelty
+                // Replace empty novelty with loaded overlay below
+                let head_commit_id = head_id;
+                let head_index_id = record.index_head_id.clone();
+                return Ok(Self {
+                    db,
+                    novelty: Arc::new(novelty_overlay),
+                    dict_novelty: Arc::new(dict_novelty),
+                    head_commit_id,
+                    head_index_id,
+                    ns_record: Some(record),
+                    binary_store: None,
+                });
             }
-            _ => Novelty::new(db.t),
+            _ => record.commit_head_id.clone(),
         };
 
+        let head_index_id = record.index_head_id.clone();
+        let novelty_t = db.t;
         Ok(Self {
             db,
-            novelty: Arc::new(novelty),
+            novelty: Arc::new(Novelty::new(novelty_t)),
             dict_novelty: Arc::new(dict_novelty),
-            head_commit: record.commit_address.clone(),
+            head_commit_id,
+            head_index_id,
             ns_record: Some(record),
             binary_store: None,
         })
@@ -155,50 +184,69 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
 
     /// Load novelty from commits since a given index_t
     ///
-    /// Returns the novelty overlay and a merged map of namespace deltas
-    /// from all loaded commits.
-    async fn load_novelty(
-        storage: S,
-        head_address: &str,
+    /// Walks the commit chain backwards from `head_cid` using the content store,
+    /// collecting flakes for all commits with `t > index_t`.
+    ///
+    /// Returns the novelty overlay, a merged map of namespace deltas
+    /// from all loaded commits, and the head commit's ContentId.
+    async fn load_novelty<C: ContentStore + Clone + 'static>(
+        store: C,
+        head_cid: &ContentId,
         index_t: i64,
-        ledger_alias: &str,
-    ) -> Result<(Novelty, std::collections::HashMap<u16, String>)> {
+        ledger_id: &str,
+    ) -> Result<(
+        Novelty,
+        std::collections::HashMap<u16, String>,
+        Option<ContentId>,
+    )> {
         use std::collections::HashMap;
 
         let mut novelty = Novelty::new(index_t);
         let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
+        let head_commit_id: Option<ContentId> = Some(head_cid.clone());
 
-        let stream = trace_commits(storage, head_address.to_string(), index_t);
+        let stream = trace_commits_by_id(store, head_cid.clone(), index_t);
         futures::pin_mut!(stream);
 
         while let Some(result) = stream.next().await {
             let commit = result?;
-            let meta_flakes = generate_commit_flakes(&commit, ledger_alias, commit.t);
-            let mut all_flakes = commit.flakes;
-            all_flakes.extend(meta_flakes);
-            novelty.apply_commit(all_flakes, commit.t)?;
-            // Merge namespace deltas.
-            //
-            // IMPORTANT: trace_commits streams from HEAD backwards (newest -> oldest),
-            // so we must ensure newer commits win. Only insert if the code hasn't
-            // already been set by a newer commit.
-            for (code, prefix) in commit.namespace_delta {
-                merged_ns_delta.entry(code).or_insert(prefix);
-            }
+            Self::apply_commit_to_novelty(&mut novelty, &mut merged_ns_delta, commit, ledger_id)?;
         }
 
-        Ok((novelty, merged_ns_delta))
+        Ok((novelty, merged_ns_delta, head_commit_id))
+    }
+
+    /// Apply a single commit to the novelty overlay and merge namespace deltas.
+    fn apply_commit_to_novelty(
+        novelty: &mut Novelty,
+        merged_ns_delta: &mut std::collections::HashMap<u16, String>,
+        commit: fluree_db_novelty::Commit,
+        ledger_id: &str,
+    ) -> Result<()> {
+        let meta_flakes = generate_commit_flakes(&commit, ledger_id, commit.t);
+        let mut all_flakes = commit.flakes;
+        all_flakes.extend(meta_flakes);
+        novelty.apply_commit(all_flakes, commit.t)?;
+        // Merge namespace deltas.
+        // IMPORTANT: trace_commits streams from HEAD backwards (newest -> oldest),
+        // so we must ensure newer commits win. Only insert if the code hasn't
+        // already been set by a newer commit.
+        for (code, prefix) in commit.namespace_delta {
+            merged_ns_delta.entry(code).or_insert(prefix);
+        }
+        Ok(())
     }
 
     /// Create a new ledger state from components
-    pub fn new(db: Db<S>, novelty: Novelty) -> Self {
+    pub fn new(db: Db, novelty: Novelty) -> Self {
         let dict_novelty =
             DictNovelty::with_watermarks(db.subject_watermarks.clone(), db.string_watermark);
         Self {
             db,
             novelty: Arc::new(novelty),
             dict_novelty: Arc::new(dict_novelty),
-            head_commit: None,
+            head_commit_id: None,
+            head_index_id: None,
             ns_record: None,
             binary_store: None,
         }
@@ -214,9 +262,9 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         self.db.t
     }
 
-    /// Get the ledger alias
-    pub fn alias(&self) -> &str {
-        &self.db.alias
+    /// Get the ledger ID
+    pub fn ledger_id(&self) -> &str {
+        &self.db.ledger_id
     }
 
     /// Check if novelty is at max capacity (should block new commits)
@@ -264,20 +312,31 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// - The loaded Db's `t` represents `index_t` (time the index is current through)
     /// - Accepts if `new_index_t > current_index_t` (forward progress)
     /// - Allows `new_index_t <= commit_t` (index catching up to commits)
-    /// - Equal-t with different address: ignored (no-op) for now
+    /// - Equal-t with different CID: ignored (no-op) for now
     /// - Prunes novelty up to `new_index_t`
+    ///
+    /// # Arguments
+    ///
+    /// * `index_id` - Content identifier of the new index root
     ///
     /// # Errors
     ///
-    /// - `AliasMismatch` if the new index is for a different ledger
+    /// - `LedgerIdMismatch` if the new index is for a different ledger
     /// - `StaleIndex` if the new index is older than the current index
     /// - `Core` errors from loading the index
-    pub async fn apply_index(&mut self, index_address: &str) -> Result<()> {
-        let new_db = Db::load(self.db.storage.clone(), index_address).await?;
+    pub async fn apply_index(&mut self, index_id: &ContentId, cs: &dyn ContentStore) -> Result<()> {
+        let root_bytes = cs.get(index_id).await?;
+        let root_json: serde_json::Value = serde_json::from_slice(&root_bytes).map_err(|e| {
+            fluree_db_core::Error::invalid_index(format!("invalid root JSON: {}", e))
+        })?;
+        let new_db = Db::from_v2_json(&root_json)?;
 
-        // Verify alias matches
-        if new_db.alias != self.db.alias {
-            return Err(LedgerError::alias_mismatch(&new_db.alias, &self.db.alias));
+        // Verify ledger ID matches
+        if new_db.ledger_id != self.db.ledger_id {
+            return Err(LedgerError::ledger_id_mismatch(
+                &new_db.ledger_id,
+                &self.db.ledger_id,
+            ));
         }
 
         // Verify forward progress on index
@@ -304,10 +363,11 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         self.db = new_db;
         self.novelty = Arc::new(new_novelty);
         self.dict_novelty = Arc::new(new_dict_novelty);
+        self.head_index_id = Some(index_id.clone());
 
         // Update ns_record
         if let Some(ref mut record) = self.ns_record {
-            record.index_address = Some(index_address.to_string());
+            record.index_head_id = Some(index_id.clone());
             record.index_t = self.db.t;
         }
 
@@ -317,17 +377,20 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// Apply a pre-loaded Db as the new index.
     ///
     /// Same validation as `apply_index()` but takes an already-loaded Db,
-    /// avoiding the `Db::load()` I/O call. This enables the API level to:
+    /// avoiding the storage I/O call. This enables the API level to:
     /// 1. Read root bytes once
     /// 2. Load `BinaryIndexStore` and attach `BinaryRangeProvider` to the Db
     /// 3. Apply the enriched Db here in a brief, non-async swap
     ///
     /// The caller is responsible for ensuring the Db has `range_provider` set
     /// if it's a binary-only (v2) Db.
-    pub fn apply_loaded_db(&mut self, new_db: Db<S>, index_address: &str) -> Result<()> {
-        // Verify alias matches
-        if new_db.alias != self.db.alias {
-            return Err(LedgerError::alias_mismatch(&new_db.alias, &self.db.alias));
+    pub fn apply_loaded_db(&mut self, new_db: Db, index_id: Option<&ContentId>) -> Result<()> {
+        // Verify ledger ID matches
+        if new_db.ledger_id != self.db.ledger_id {
+            return Err(LedgerError::ledger_id_mismatch(
+                &new_db.ledger_id,
+                &self.db.ledger_id,
+            ));
         }
 
         // Verify forward progress on index
@@ -353,10 +416,11 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
         self.db = new_db;
         self.novelty = Arc::new(new_novelty);
         self.dict_novelty = Arc::new(new_dict_novelty);
+        self.head_index_id = index_id.cloned();
 
         // Update ns_record
         if let Some(ref mut record) = self.ns_record {
-            record.index_address = Some(index_address.to_string());
+            record.index_head_id = index_id.cloned();
             record.index_t = self.db.t;
         }
 
@@ -370,20 +434,25 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// # Errors
     ///
     /// - `NotFound` if the ledger is not in the nameservice
-    /// - `MissingIndexAddress` if nameservice has index_t but no address
+    /// - `MissingIndexAddress` if nameservice has index_t but no index CID
     /// - Other errors from `apply_index`
-    pub async fn maybe_apply_newer_index<N: NameService>(&mut self, ns: &N) -> Result<bool> {
+    pub async fn maybe_apply_newer_index<N: NameService>(
+        &mut self,
+        ns: &N,
+        cs: &dyn ContentStore,
+    ) -> Result<bool> {
         let record = ns
-            .lookup(&self.db.alias)
+            .lookup(&self.db.ledger_id)
             .await?
-            .ok_or_else(|| LedgerError::not_found(&self.db.alias))?;
+            .ok_or_else(|| LedgerError::not_found(&self.db.ledger_id))?;
 
-        // Only apply if there's a newer index AND it has an address
+        // Only apply if there's a newer index AND it has a CID
         if record.index_t > self.db.t {
-            let index_address = record.index_address.as_ref().ok_or_else(|| {
-                LedgerError::missing_index_address(&self.db.alias, record.index_t)
-            })?;
-            self.apply_index(index_address).await?;
+            let index_id = record
+                .index_head_id
+                .as_ref()
+                .ok_or_else(|| LedgerError::missing_index_id(&self.db.ledger_id, record.index_t))?;
+            self.apply_index(index_id, cs).await?;
             return Ok(true);
         }
 
@@ -410,7 +479,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// check `at_max_novelty()` instead and wait for indexing to complete.
     pub fn maybe_trigger_index(&self, config: &IndexConfig) -> Option<&str> {
         if self.should_reindex(config) {
-            Some(self.alias())
+            Some(self.ledger_id())
         } else {
             None
         }
@@ -428,12 +497,12 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
     /// if let Some(alias) = ledger.require_index(&index_config) {
     ///     // Trigger and wait for indexing
     ///     let result = indexer_handle.trigger_and_wait(alias).await?;
-    ///     ledger.apply_index(&result.root_address).await?;
+    ///     ledger.apply_index(&result.root_id, &content_store).await?;
     /// }
     /// ```
     pub fn require_index(&self, config: &IndexConfig) -> Option<&str> {
         if self.at_max_novelty(config) {
-            Some(self.alias())
+            Some(self.ledger_id())
         } else {
             None
         }
@@ -443,7 +512,7 @@ impl<S: Storage + Clone + 'static> LedgerState<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{Flake, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
 
     fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
@@ -458,10 +527,31 @@ mod tests {
         )
     }
 
+    /// Helper: store index root bytes via the content store and return the CID.
+    async fn store_index_root(
+        storage: &MemoryStorage,
+        ledger_id: &str,
+        root_json: &serde_json::Value,
+    ) -> ContentId {
+        let store = content_store_for(storage.clone(), ledger_id);
+        let bytes = serde_json::to_vec(root_json).unwrap();
+        store.put(ContentKind::IndexRoot, &bytes).await.unwrap()
+    }
+
+    /// Helper: store a commit blob via the content store and return the CID.
+    async fn store_commit(
+        storage: &MemoryStorage,
+        ledger_id: &str,
+        commit: &fluree_db_novelty::Commit,
+    ) -> ContentId {
+        let store = content_store_for(storage.clone(), ledger_id);
+        let blob = fluree_db_novelty::commit_v2::write_commit(commit, false, None).unwrap();
+        store.put(ContentKind::Commit, &blob.bytes).await.unwrap()
+    }
+
     #[tokio::test]
     async fn test_ledger_state_new() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
@@ -470,7 +560,7 @@ mod tests {
 
         let state = LedgerState::new(db, novelty);
 
-        assert_eq!(state.alias(), "test:main");
+        assert_eq!(state.ledger_id(), "test:main");
         assert_eq!(state.index_t(), 0);
         assert_eq!(state.t(), 1);
         assert_eq!(state.epoch(), 1);
@@ -478,8 +568,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ledger_state_backpressure() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         // Add some flakes to increase size
@@ -508,21 +597,21 @@ mod tests {
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
 
-        // Create a ledger in nameservice with no index
-        ns.publish_commit("test:main", "commit-1", 1).await.unwrap();
+        // Create a commit and store it via CAS
+        let commit = fluree_db_novelty::Commit::new(1, vec![make_flake(1, 1, 100, 1)]);
+        let cid = store_commit(&storage, "test:main", &commit).await;
 
-        // Store the commit as v2 binary
-        let commit = fluree_db_novelty::Commit::new("commit-1", 1, vec![make_flake(1, 1, 100, 1)]);
-        let blob = fluree_db_novelty::commit_v2::write_commit(&commit, false, None).unwrap();
-        storage.insert("commit-1", blob.bytes);
+        // Publish to nameservice (no index)
+        ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         // Load ledger - should use genesis since no index exists
         let state = LedgerState::load(&ns, "test:main", storage).await.unwrap();
 
-        assert_eq!(state.alias(), "test:main");
+        assert_eq!(state.ledger_id(), "test:main");
         assert_eq!(state.index_t(), 0); // Genesis
         assert_eq!(state.t(), 1); // From commit
-        assert_eq!(state.novelty.len(), 1);
+                                  // 1 data flake + 3 commit metadata flakes (db#address, db#alias, db#t)
+        assert_eq!(state.novelty.len(), 4);
     }
 
     #[tokio::test]
@@ -530,7 +619,7 @@ mod tests {
         use fluree_db_core::IndexType;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
 
         // Create novelty with flakes at t=1 and t=2
         let mut novelty = Novelty::new(0);
@@ -546,20 +635,20 @@ mod tests {
         // Check active flakes via index iterator (arena has 2, and 2 are active)
         assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 2);
 
-        // Create a v2 index root at t=1
+        // Create a v2 index root at t=1 and store via CAS
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_id": "test:main",
             "index_t": 1,
             "namespace_codes": { "0": "", "1": "@" },
             "dicts": {},
             "graphs": []
         });
-        let storage = state.db.storage.clone();
-        storage.insert("index-root-1", serde_json::to_vec(&root_json).unwrap());
+        let index_cid = store_index_root(&storage, "test:main", &root_json).await;
+        let store = content_store_for(storage.clone(), "test:main");
 
         // Apply the index
-        state.apply_index("index-root-1").await.unwrap();
+        state.apply_index(&index_cid, &store).await.unwrap();
 
         // Index should now be at t=1
         assert_eq!(state.index_t(), 1);
@@ -569,46 +658,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_index_alias_mismatch() {
+    async fn test_apply_index_address_mismatch() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
 
         let mut state = LedgerState::new(db, novelty);
 
-        // Create a v2 index root for a different ledger
+        // Create a v2 index root for a different ledger, stored under test:main's CAS space
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_alias": "other:ledger",
+            "ledger_id": "other:ledger",
             "index_t": 1,
             "namespace_codes": { "0": "" },
             "dicts": {},
             "graphs": []
         });
-        let storage = state.db.storage.clone();
-        storage.insert("bad-index", serde_json::to_vec(&root_json).unwrap());
+        // Store under "test:main" CAS namespace so the CID resolves
+        let index_cid = store_index_root(&storage, "test:main", &root_json).await;
+        let store = content_store_for(storage.clone(), "test:main");
 
-        // Should fail with alias mismatch
-        let result = state.apply_index("bad-index").await;
-        assert!(matches!(result, Err(LedgerError::AliasMismatch { .. })));
+        // Should fail with ledger ID mismatch
+        let result = state.apply_index(&index_cid, &store).await;
+        assert!(matches!(result, Err(LedgerError::LedgerIdMismatch { .. })));
     }
 
     #[tokio::test]
     async fn test_apply_index_stale() {
         let storage = MemoryStorage::new();
 
-        // Create a v2 index root at t=2
+        // Create a v2 index root at t=2 and store via CAS
         let root_json_t2 = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_id": "test:main",
             "index_t": 2,
             "namespace_codes": { "0": "" },
             "dicts": {},
             "graphs": []
         });
-        storage.insert("index-root-t2", serde_json::to_vec(&root_json_t2).unwrap());
+        let index_cid_t2 = store_index_root(&storage, "test:main", &root_json_t2).await;
 
-        let db = Db::load(storage.clone(), "index-root-t2").await.unwrap();
+        // Load the Db from CAS for current state
+        let store = content_store_for(storage.clone(), "test:main");
+        let root_bytes = store.get(&index_cid_t2).await.unwrap();
+        let root: serde_json::Value = serde_json::from_slice(&root_bytes).unwrap();
+        let db = Db::from_v2_json(&root).unwrap();
         let novelty = Novelty::new(2);
         let mut state = LedgerState::new(db, novelty);
         assert_eq!(state.index_t(), 2);
@@ -616,16 +710,17 @@ mod tests {
         // Create an older v2 index root at t=1
         let root_json_t1 = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_id": "test:main",
             "index_t": 1,
             "namespace_codes": { "0": "" },
             "dicts": {},
             "graphs": []
         });
-        storage.insert("index-root-t1", serde_json::to_vec(&root_json_t1).unwrap());
+        let index_cid_t1 = store_index_root(&storage, "test:main", &root_json_t1).await;
 
         // Should fail with stale index error
-        let result = state.apply_index("index-root-t1").await;
+        let cs = content_store_for(storage.clone(), "test:main");
+        let result = state.apply_index(&index_cid_t1, &cs).await;
         assert!(matches!(result, Err(LedgerError::StaleIndex { .. })));
     }
 
@@ -636,34 +731,36 @@ mod tests {
         // Create a v2 index root at t=1
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_id": "test:main",
             "index_t": 1,
             "namespace_codes": { "0": "" },
             "dicts": {},
             "graphs": []
         });
-        storage.insert("index-root", serde_json::to_vec(&root_json).unwrap());
+        let index_cid = store_index_root(&storage, "test:main", &root_json).await;
 
-        let db = Db::load(storage.clone(), "index-root").await.unwrap();
+        // Load Db from CAS
+        let store = content_store_for(storage.clone(), "test:main");
+        let root_bytes = store.get(&index_cid).await.unwrap();
+        let root: serde_json::Value = serde_json::from_slice(&root_bytes).unwrap();
+        let db = Db::from_v2_json(&root).unwrap();
         let novelty = Novelty::new(1);
         let mut state = LedgerState::new(db, novelty);
 
-        // Create another v2 index root at same t
+        // Create another v2 index root at same t (different bytes produce different CID)
         let root_json_same = serde_json::json!({
             "version": 2,
-            "ledger_alias": "test:main",
+            "ledger_id": "test:main",
             "index_t": 1,
-            "namespace_codes": { "0": "" },
+            "namespace_codes": { "0": "", "99": "extra" },
             "dicts": {},
             "graphs": []
         });
-        storage.insert(
-            "index-root-same",
-            serde_json::to_vec(&root_json_same).unwrap(),
-        );
+        let index_cid_same = store_index_root(&storage, "test:main", &root_json_same).await;
 
-        // Should succeed as no-op
-        let result = state.apply_index("index-root-same").await;
+        // Should succeed as no-op (equal t)
+        let cs = content_store_for(storage.clone(), "test:main");
+        let result = state.apply_index(&index_cid_same, &cs).await;
         assert!(result.is_ok());
         // Index_t should still be 1
         assert_eq!(state.index_t(), 1);
@@ -671,8 +768,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_maybe_trigger_index_below_threshold() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
 
         let state = LedgerState::new(db, novelty);
@@ -689,8 +785,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_maybe_trigger_index_above_threshold() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
 
         // Add some flakes to increase size
         let mut novelty = Novelty::new(0);
@@ -714,8 +809,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_require_index_below_max() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         for i in 0..10 {
@@ -738,8 +832,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_require_index_at_max() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         for i in 0..100 {

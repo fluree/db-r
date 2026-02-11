@@ -1,6 +1,6 @@
 //! Tabular column batch types for Fluree DB.
 //!
-//! This crate provides format-agnostic columnar batch types used by virtual graph
+//! This crate provides format-agnostic columnar batch types used by graph source
 //! backends (Iceberg, SQL, etc.) and the R2RML materialization layer.
 //!
 //! # Design

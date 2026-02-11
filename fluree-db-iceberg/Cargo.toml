@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Iceberg REST catalog support for Fluree DB virtual graphs"
+description = "Iceberg REST catalog support for Fluree DB graph sources"
 
 [features]
 default = []

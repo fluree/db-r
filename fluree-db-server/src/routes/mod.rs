@@ -2,9 +2,12 @@
 
 mod admin;
 mod admin_auth;
+mod commits;
 mod events;
 mod ledger;
 mod nameservice_refs;
+mod pack;
+mod push;
 mod query;
 mod storage_proxy;
 mod stubs;
@@ -22,75 +25,84 @@ use tower_http::trace::TraceLayer;
 
 /// Build the main application router
 pub fn build_router(state: Arc<AppState>) -> Router {
+    // v1 API (versioned base path).
+    //
+    // Ledger names may contain `/`, so ledger-scoped routes use `*ledger`
+    // (greedy tail) with the operation first (e.g. `/v1/fluree/query/<ledger...>`).
+
     // Admin-protected routes (create, drop) - require admin token when configured
-    let admin_protected_routes = Router::new()
-        .route("/fluree/create", post(ledger::create))
-        .route("/fluree/drop", post(ledger::drop))
+    let v1_admin_protected_routes = Router::new()
+        .route("/create", post(ledger::create))
+        .route("/drop", post(ledger::drop))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             admin_auth::require_admin_token,
         ))
         .with_state(state.clone());
 
-    let mut router = Router::new()
-        // Health check
-        .route("/health", get(admin::health))
-        // Admin endpoints (stats is read-only, no auth required)
-        .route("/fluree/stats", get(admin::stats))
+    let v1 = Router::new()
+        // Admin endpoints (stats and whoami are read-only, no auth required)
+        .route("/stats", get(admin::stats))
+        .route("/whoami", get(admin::whoami))
         // Ledger management (read-only)
-        .route("/fluree/ledger-info", get(ledger::info))
-        .route("/fluree/exists", get(ledger::exists))
+        .route("/info/*ledger", get(ledger::info_ledger_tail))
+        .route("/exists/*ledger", get(ledger::exists_ledger_tail))
         // Merge admin-protected routes
-        .merge(admin_protected_routes)
+        .merge(v1_admin_protected_routes)
         // Query endpoints
-        .route("/fluree/query", get(query::query).post(query::query))
-        .route("/fluree/explain", get(query::explain).post(query::explain))
-        // Transaction endpoints
-        // /fluree/update is the primary endpoint, /fluree/transact is legacy alias
-        .route("/fluree/update", post(transact::transact))
-        .route("/fluree/transact", post(transact::transact))
-        .route("/fluree/insert", post(transact::insert))
-        .route("/fluree/upsert", post(transact::upsert))
-        // SSE event streaming
-        .route("/fluree/events", get(events::events))
-        // Storage proxy endpoints (for peer mode)
+        .route("/query", get(query::query).post(query::query))
         .route(
-            "/fluree/storage/ns/:alias",
-            get(storage_proxy::get_ns_record),
+            "/query/*ledger",
+            get(query::query_ledger_tail).post(query::query_ledger_tail),
         )
-        .route("/fluree/storage/block", post(storage_proxy::get_block))
+        .route("/explain", get(query::explain).post(query::explain))
+        // Transaction endpoints
+        .route("/transact", post(transact::transact))
+        .route("/transact/*ledger", post(transact::transact_ledger_tail))
+        .route("/insert", post(transact::insert))
+        .route("/insert/*ledger", post(transact::insert_ledger_tail))
+        .route("/upsert", post(transact::upsert))
+        .route("/upsert/*ledger", post(transact::upsert_ledger_tail))
+        // Commit-push endpoint (precomputed commits)
+        .route("/push/*ledger", post(push::push_ledger_tail))
+        // Commit export endpoint (paginated, replication-grade auth)
+        .route("/commits/*ledger", get(commits::commits_ledger_tail))
+        // Binary pack stream endpoint (efficient clone/pull)
+        .route("/pack/*ledger", post(pack::pack_ledger_tail))
+        // SSE event streaming
+        .route("/events", get(events::events))
+        // Storage proxy endpoints (for peer mode)
+        .route("/storage/ns/:alias", get(storage_proxy::get_ns_record))
+        .route("/storage/block", post(storage_proxy::get_block))
+        .route(
+            "/storage/objects/:cid",
+            get(storage_proxy::get_object_by_cid),
+        )
         // Nameservice ref endpoints (for remote sync)
         .route(
-            "/fluree/nameservice/refs/:alias/commit",
+            "/nameservice/refs/:alias/commit",
             post(nameservice_refs::push_commit_ref),
         )
         .route(
-            "/fluree/nameservice/refs/:alias/index",
+            "/nameservice/refs/:alias/index",
             post(nameservice_refs::push_index_ref),
         )
         .route(
-            "/fluree/nameservice/refs/:alias/init",
+            "/nameservice/refs/:alias/init",
             post(nameservice_refs::init_ledger),
         )
-        .route(
-            "/fluree/nameservice/snapshot",
-            get(nameservice_refs::snapshot),
-        )
+        .route("/nameservice/snapshot", get(nameservice_refs::snapshot))
         // Stub endpoints (not yet implemented)
-        .route("/fluree/subscribe", get(stubs::subscribe))
-        .route(
-            "/fluree/remote/:path",
-            get(stubs::remote).post(stubs::remote),
-        )
-        // Dynamic ledger routes (/{ledger}/query, /{ledger}/transact, etc.)
-        .route(
-            "/:ledger/query",
-            get(query::query_ledger).post(query::query_ledger),
-        )
-        .route("/:ledger/update", post(transact::transact_ledger))
-        .route("/:ledger/transact", post(transact::transact_ledger))
-        .route("/:ledger/insert", post(transact::insert_ledger))
-        .route("/:ledger/upsert", post(transact::upsert_ledger))
+        .route("/subscribe", get(stubs::subscribe))
+        .route("/remote/:path", get(stubs::remote).post(stubs::remote));
+
+    let mut router = Router::new()
+        // Health check
+        .route("/health", get(admin::health))
+        // Auth discovery (CLI auto-configuration)
+        .route("/.well-known/fluree.json", get(admin::discovery))
+        // Versioned API
+        .nest("/v1/fluree", v1)
         // OpenAPI spec
         .route("/swagger.json", get(admin::openapi_spec));
 

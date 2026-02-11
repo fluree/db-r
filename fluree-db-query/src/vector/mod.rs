@@ -1,31 +1,31 @@
 //! Vector Similarity Search Module
 //!
-//! This module implements vector similarity search for Fluree's virtual graph system.
+//! This module implements vector similarity search for Fluree's graph source system.
 //! It provides a provider-based abstraction that supports different backends:
 //! - Embedded in-process indexes (requires `vector` feature)
 //! - External services (future)
 //!
 //! # Architecture
 //!
-//! The vector search system mirrors BM25's virtual graph pattern:
+//! The vector search system mirrors BM25's graph source pattern:
 //! - `VectorIndexProvider` trait for backend abstraction
 //! - `VectorSearchOperator` for query execution
 //! - `Pattern::VectorSearch` in query IR
 //!
 //! # Query Syntax
 //!
-//! Vector search uses the `idx:*` pattern syntax:
+//! Vector search uses the `f:*` pattern syntax:
 //!
 //! ```json
 //! {
 //!   "where": [{
-//!     "idx:graph": "embeddings:main",
-//!     "idx:vector": [0.1, 0.2, ...],  // or "?embedding" variable
-//!     "idx:metric": "cosine",          // "cosine" | "dot" | "l2"
-//!     "idx:limit": 10,
-//!     "idx:result": {
-//!       "idx:id": "?doc",
-//!       "idx:score": "?score"
+//!     "f:graphSource": "embeddings:main",
+//!     "f:queryVector": [0.1, 0.2, ...],  // or "?embedding" variable
+//!     "f:distanceMetric": "cosine",          // "cosine" | "dot" | "l2"
+//!     "f:searchLimit": 10,
+//!     "f:searchResult": {
+//!       "f:resultId": "?doc",
+//!       "f:resultScore": "?score"
 //!     }
 //!   }]
 //! }

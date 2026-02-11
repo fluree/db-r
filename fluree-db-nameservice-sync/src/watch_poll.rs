@@ -7,7 +7,7 @@
 use crate::backoff::Backoff;
 use crate::client::RemoteNameserviceClient;
 use crate::watch::RemoteEvent;
-use fluree_db_nameservice::{NsRecord, VgNsRecord};
+use fluree_db_nameservice::{GraphSourceRecord, NsRecord};
 use futures::Stream;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -38,7 +38,7 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
 
         let stream = async_stream::stream! {
             let mut prev_ledgers: HashMap<String, NsRecord> = HashMap::new();
-            let mut prev_vgs: HashMap<String, VgNsRecord> = HashMap::new();
+            let mut prev_graph_sources: HashMap<String, GraphSourceRecord> = HashMap::new();
             let mut backoff = Backoff::new(1000, 60_000);
             let mut connected = false;
 
@@ -54,16 +54,16 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                         // Diff ledgers
                         let mut current_ledgers: HashMap<String, NsRecord> = HashMap::new();
                         for record in snapshot.ledgers {
-                            let key = record.address.clone();
+                            let key = record.ledger_id.clone();
                             if record.retracted {
                                 if prev_ledgers.contains_key(&key) {
-                                    yield RemoteEvent::LedgerRetracted { alias: key.clone() };
+                                    yield RemoteEvent::LedgerRetracted { ledger_id: key.clone() };
                                 }
                             } else if let Some(prev) = prev_ledgers.get(&key) {
                                 if prev.commit_t != record.commit_t
                                     || prev.index_t != record.index_t
-                                    || prev.commit_address != record.commit_address
-                                    || prev.index_address != record.index_address
+                                    || prev.commit_head_id != record.commit_head_id
+                                    || prev.index_head_id != record.index_head_id
                                 {
                                     yield RemoteEvent::LedgerUpdated(record.clone());
                                 }
@@ -77,39 +77,39 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                         // Check for removed ledgers (present in prev but not in current)
                         for key in prev_ledgers.keys() {
                             if !current_ledgers.contains_key(key) {
-                                yield RemoteEvent::LedgerRetracted { alias: key.clone() };
+                                yield RemoteEvent::LedgerRetracted { ledger_id: key.clone() };
                             }
                         }
 
                         prev_ledgers = current_ledgers;
 
-                        // Diff VGs
-                        let mut current_vgs: HashMap<String, VgNsRecord> = HashMap::new();
-                        for record in snapshot.vgs {
-                            let key = record.alias();
+                        // Diff graph sources
+                        let mut current_graph_sources: HashMap<String, GraphSourceRecord> = HashMap::new();
+                        for record in snapshot.graph_sources {
+                            let key = record.graph_source_id.clone();
                             if record.retracted {
-                                if prev_vgs.contains_key(&key) {
-                                    yield RemoteEvent::VgRetracted { alias: key.clone() };
+                                if prev_graph_sources.contains_key(&key) {
+                                    yield RemoteEvent::GraphSourceRetracted { graph_source_id: key.clone() };
                                 }
-                            } else if let Some(prev) = prev_vgs.get(&key) {
+                            } else if let Some(prev) = prev_graph_sources.get(&key) {
                                 if prev.index_t != record.index_t
-                                    || prev.index_address != record.index_address
+                                    || prev.index_id != record.index_id
                                 {
-                                    yield RemoteEvent::VgUpdated(record.clone());
+                                    yield RemoteEvent::GraphSourceUpdated(record.clone());
                                 }
                             } else {
-                                yield RemoteEvent::VgUpdated(record.clone());
+                                yield RemoteEvent::GraphSourceUpdated(record.clone());
                             }
-                            current_vgs.insert(key, record);
+                            current_graph_sources.insert(key, record);
                         }
 
-                        for key in prev_vgs.keys() {
-                            if !current_vgs.contains_key(key) {
-                                yield RemoteEvent::VgRetracted { alias: key.clone() };
+                        for key in prev_graph_sources.keys() {
+                            if !current_graph_sources.contains_key(key) {
+                                yield RemoteEvent::GraphSourceRetracted { graph_source_id: key.clone() };
                             }
                         }
 
-                        prev_vgs = current_vgs;
+                        prev_graph_sources = current_graph_sources;
 
                         tokio::time::sleep(interval).await;
                     }
@@ -161,7 +161,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RemoteNameserviceClient for MockClient {
-        async fn lookup(&self, _alias: &str) -> error::Result<Option<NsRecord>> {
+        async fn lookup(&self, _address: &str) -> error::Result<Option<NsRecord>> {
             Ok(None)
         }
 
@@ -174,14 +174,14 @@ mod tests {
                 // Return last snapshot for subsequent calls
                 Ok(snapshots.last().cloned().unwrap_or(RemoteSnapshot {
                     ledgers: vec![],
-                    vgs: vec![],
+                    graph_sources: vec![],
                 }))
             }
         }
 
         async fn push_ref(
             &self,
-            _alias: &str,
+            _address: &str,
             _kind: RefKind,
             _expected: Option<&RefValue>,
             _new: &RefValue,
@@ -189,22 +189,23 @@ mod tests {
             Ok(CasResult::Updated)
         }
 
-        async fn init_ledger(&self, _alias: &str) -> error::Result<bool> {
+        async fn init_ledger(&self, _address: &str) -> error::Result<bool> {
             Ok(true)
         }
     }
 
-    fn make_record(alias: &str, commit_t: i64) -> NsRecord {
+    fn make_record(ledger_name: &str, commit_t: i64) -> NsRecord {
         NsRecord {
-            address: format!("{}:main", alias),
-            alias: alias.to_string(),
+            ledger_id: format!("{}:main", ledger_name),
+            name: ledger_name.to_string(),
             branch: "main".to_string(),
-            commit_address: Some(format!("commit-{}", commit_t)),
+            commit_head_id: None,
+            config_id: None,
             commit_t,
-            index_address: None,
+            index_head_id: None,
             index_t: 0,
             retracted: false,
-            default_context_address: None,
+            default_context: None,
         }
     }
 
@@ -212,7 +213,7 @@ mod tests {
     async fn test_poll_detects_new_record() {
         let client = Arc::new(MockClient::new(vec![RemoteSnapshot {
             ledgers: vec![make_record("db1", 1)],
-            vgs: vec![],
+            graph_sources: vec![],
         }]));
 
         let watch = PollRemoteWatch::new(client, Duration::from_millis(10));
@@ -238,11 +239,11 @@ mod tests {
         let client = Arc::new(MockClient::new(vec![
             RemoteSnapshot {
                 ledgers: vec![make_record("db1", 1)],
-                vgs: vec![],
+                graph_sources: vec![],
             },
             RemoteSnapshot {
                 ledgers: vec![make_record("db1", 5)],
-                vgs: vec![],
+                graph_sources: vec![],
             },
         ]));
 

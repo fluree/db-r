@@ -46,7 +46,7 @@ thiserror = { workspace = true }
 # Byte streams
 bytes = { workspace = true }
 
-# Hashing (for VG config hash, matches server)
+# Hashing (for graph source config hash, matches server)
 sha2 = { workspace = true }
 hex = { workspace = true }
 

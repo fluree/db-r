@@ -210,6 +210,16 @@ impl<S: Clone, K> Clone for EncryptedStorage<S, K> {
 // Storage Trait Implementations
 // ============================================================================
 
+impl<S, K> fluree_db_core::StorageMethod for EncryptedStorage<S, K>
+where
+    S: fluree_db_core::StorageMethod,
+    K: KeyProvider,
+{
+    fn storage_method(&self) -> &str {
+        self.inner.storage_method()
+    }
+}
+
 #[async_trait]
 impl<S, K> StorageRead for EncryptedStorage<S, K>
 where
@@ -266,7 +276,7 @@ where
     async fn content_write_bytes_with_hash(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_id: &str,
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> fluree_db_core::error::Result<ContentWriteResult> {
@@ -282,7 +292,7 @@ where
         // (file, s3, memory, etc.) while we store encrypted bytes
         let mut result = self
             .inner
-            .content_write_bytes_with_hash(kind, ledger_alias, content_hash_hex, &encrypted)
+            .content_write_bytes_with_hash(kind, ledger_id, content_hash_hex, &encrypted)
             .await?;
 
         // Restore plaintext size (inner storage reports encrypted size)
@@ -294,11 +304,11 @@ where
     async fn content_write_bytes(
         &self,
         kind: ContentKind,
-        ledger_alias: &str,
+        ledger_id: &str,
         bytes: &[u8],
     ) -> fluree_db_core::error::Result<ContentWriteResult> {
         let hash_hex = sha256_hex(bytes);
-        self.content_write_bytes_with_hash(kind, ledger_alias, &hash_hex, bytes)
+        self.content_write_bytes_with_hash(kind, ledger_id, &hash_hex, bytes)
             .await
     }
 }
@@ -616,7 +626,7 @@ mod tests {
 
         // Verify the address format is correct
         assert!(result.address.contains("mydb/main/commit/"));
-        assert!(result.address.ends_with(".json"));
+        assert!(result.address.ends_with(".fcv2"));
 
         // Verify size_bytes reports plaintext size, not encrypted size
         assert_eq!(result.size_bytes, plaintext.len());

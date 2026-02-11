@@ -15,6 +15,7 @@ fluree-db-api = { path = "../fluree-db-api" }
 fluree-db-novelty = { path = "../fluree-db-novelty" }
 fluree-db-nameservice = { path = "../fluree-db-nameservice" }
 fluree-db-core = { path = "../fluree-db-core" }
+fluree-vocab = { path = "../fluree-vocab" }
 
 clap = { workspace = true }
 tokio.workspace = true
@@ -36,6 +37,12 @@ bs58 = "0.5"
 shellexpand = "3"
 hex.workspace = true
 rand.workspace = true
+sha2.workspace = true
+
+# Remote ledger client (track mode) + OIDC discovery/exchange
+reqwest = { workspace = true }
+urlencoding = { workspace = true }
+open = "5"
 
 # Sync command dependencies
 fluree-db-nameservice-sync = { path = "../fluree-db-nameservice-sync" }

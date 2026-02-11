@@ -44,6 +44,8 @@ md-5 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 # Random number generation
 rand = { workspace = true }
+# Fast non-cryptographic HashMap/HashSet for hot paths
+rustc-hash = "2"
 # Hashing for leaflet cache keys (matches indexer)
 xxhash-rust = "0.8"
 # URL encoding
@@ -62,3 +64,8 @@ vector = ["dep:usearch"]
 
 [dev-dependencies]
 # tokio is now a regular dependency
+criterion = "0.5"
+
+[[bench]]
+name = "vector_math"
+harness = false

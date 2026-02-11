@@ -16,9 +16,9 @@ use std::sync::Arc;
 /// Result of a fetch operation
 #[derive(Debug)]
 pub struct FetchResult {
-    /// Aliases whose tracking refs were updated
+    /// Ledger IDs whose tracking refs were updated
     pub updated: Vec<(String, TrackingRecord)>,
-    /// Aliases that were unchanged
+    /// Ledger IDs that were unchanged
     pub unchanged: Vec<String>,
 }
 
@@ -27,37 +27,37 @@ pub struct FetchResult {
 pub enum PullResult {
     /// Local was fast-forwarded to match remote
     FastForwarded {
-        alias: String,
+        ledger_id: String,
         from: RefValue,
         to: RefValue,
     },
     /// Already up to date
-    Current { alias: String },
+    Current { ledger_id: String },
     /// Cannot fast-forward (local has commits remote does not)
     Diverged {
-        alias: String,
+        ledger_id: String,
         local: RefValue,
         remote: RefValue,
     },
-    /// No upstream configured for this alias
-    NoUpstream { alias: String },
+    /// No upstream configured for this ledger ID
+    NoUpstream { ledger_id: String },
     /// No tracking data available (need to fetch first)
-    NoTracking { alias: String },
+    NoTracking { ledger_id: String },
 }
 
 /// Result of a push operation
 #[derive(Debug)]
 pub enum PushResult {
     /// Push succeeded
-    Pushed { alias: String, value: RefValue },
+    Pushed { ledger_id: String, value: RefValue },
     /// Remote rejected (CAS conflict)
     Rejected {
-        alias: String,
+        ledger_id: String,
         local: RefValue,
         remote: RefValue,
     },
-    /// No upstream configured for this alias
-    NoUpstream { alias: String },
+    /// No upstream configured for this ledger ID
+    NoUpstream { ledger_id: String },
 }
 
 /// Orchestrates sync operations between local and remote nameservices
@@ -118,16 +118,16 @@ impl SyncDriver {
         let mut unchanged = Vec::new();
 
         for record in &snapshot.ledgers {
-            let alias = &record.address;
-            let existing = self.tracking.get_tracking(remote, alias).await?;
+            let ledger_id = &record.ledger_id;
+            let existing = self.tracking.get_tracking(remote, ledger_id).await?;
 
             let new_commit = Some(RefValue {
-                address: record.commit_address.clone(),
+                id: record.commit_head_id.clone(),
                 t: record.commit_t,
             });
-            let new_index = if record.index_t > 0 || record.index_address.is_some() {
+            let new_index = if record.index_t > 0 || record.index_head_id.is_some() {
                 Some(RefValue {
-                    address: record.index_address.clone(),
+                    id: record.index_head_id.clone(),
                     t: record.index_t,
                 })
             } else {
@@ -147,30 +147,30 @@ impl SyncDriver {
                 let tracking_record = TrackingRecord {
                     schema_version: 1,
                     remote: remote.clone(),
-                    alias: alias.clone(),
+                    ledger_id: ledger_id.clone(),
                     commit_ref: new_commit,
                     index_ref: new_index,
                     retracted: record.retracted,
                     last_fetched: Some(now.clone()),
                 };
                 self.tracking.set_tracking(&tracking_record).await?;
-                updated.push((alias.clone(), tracking_record));
+                updated.push((ledger_id.clone(), tracking_record));
             } else {
-                unchanged.push(alias.clone());
+                unchanged.push(ledger_id.clone());
             }
         }
 
         Ok(FetchResult { updated, unchanged })
     }
 
-    /// Pull (fast-forward) a local alias from its upstream tracking ref.
+    /// Pull (fast-forward) a local ledger ID from its upstream tracking ref.
     ///
     /// Analogous to `git pull --ff-only`. Requires a prior `fetch_remote`.
     pub async fn pull_tracked(&self, local_alias: &str) -> Result<PullResult> {
         let upstream = self.config.get_upstream(local_alias).await?;
         let Some(upstream) = upstream else {
             return Ok(PullResult::NoUpstream {
-                alias: local_alias.to_string(),
+                ledger_id: local_alias.to_string(),
             });
         };
 
@@ -180,13 +180,15 @@ impl SyncDriver {
             .await?;
         let Some(tracking) = tracking else {
             return Ok(PullResult::NoTracking {
-                alias: local_alias.to_string(),
+                ledger_id: local_alias.to_string(),
             });
         };
 
+        let remote_index = tracking.index_ref.clone();
+
         let Some(remote_commit) = &tracking.commit_ref else {
             return Ok(PullResult::Current {
-                alias: local_alias.to_string(),
+                ledger_id: local_alias.to_string(),
             });
         };
 
@@ -205,22 +207,32 @@ impl SyncDriver {
                     .await
                     .map_err(SyncError::Nameservice)?;
                 match result {
-                    CasResult::Updated => Ok(PullResult::FastForwarded {
-                        alias: local_alias.to_string(),
-                        from: RefValue {
-                            address: None,
-                            t: 0,
-                        },
-                        to: remote_commit.clone(),
-                    }),
+                    CasResult::Updated => {
+                        // Also fast-forward index head if remote provided one.
+                        if let Some(remote_index) = remote_index.as_ref() {
+                            let _ = self
+                                .local
+                                .compare_and_set_ref(
+                                    local_alias,
+                                    RefKind::IndexHead,
+                                    None,
+                                    remote_index,
+                                )
+                                .await
+                                .map_err(SyncError::Nameservice)?;
+                        }
+
+                        Ok(PullResult::FastForwarded {
+                            ledger_id: local_alias.to_string(),
+                            from: RefValue { id: None, t: 0 },
+                            to: remote_commit.clone(),
+                        })
+                    }
                     CasResult::Conflict { actual } => {
                         // Someone else created it concurrently
                         Ok(PullResult::Diverged {
-                            alias: local_alias.to_string(),
-                            local: actual.unwrap_or(RefValue {
-                                address: None,
-                                t: 0,
-                            }),
+                            ledger_id: local_alias.to_string(),
+                            local: actual.unwrap_or(RefValue { id: None, t: 0 }),
                             remote: remote_commit.clone(),
                         })
                     }
@@ -235,27 +247,41 @@ impl SyncDriver {
                         .await
                         .map_err(SyncError::Nameservice)?;
                     match result {
-                        CasResult::Updated => Ok(PullResult::FastForwarded {
-                            alias: local_alias.to_string(),
-                            from: local_commit.clone(),
-                            to: remote_commit.clone(),
-                        }),
+                        CasResult::Updated => {
+                            // Also fast-forward index head if remote provided one.
+                            if let Some(remote_index) = remote_index.as_ref() {
+                                self.fast_forward_index(local_alias, remote_index, 3)
+                                    .await
+                                    .map_err(SyncError::Nameservice)?;
+                            }
+
+                            Ok(PullResult::FastForwarded {
+                                ledger_id: local_alias.to_string(),
+                                from: local_commit.clone(),
+                                to: remote_commit.clone(),
+                            })
+                        }
                         CasResult::Conflict { actual } => Ok(PullResult::Diverged {
-                            alias: local_alias.to_string(),
+                            ledger_id: local_alias.to_string(),
                             local: actual.unwrap_or(local_commit.clone()),
                             remote: remote_commit.clone(),
                         }),
                     }
-                } else if remote_commit.t == local_commit.t
-                    && remote_commit.address == local_commit.address
-                {
+                } else if remote_commit.t == local_commit.t && remote_commit.id == local_commit.id {
+                    // Commit is current, but index may still be behind (reindex at same t).
+                    if let Some(remote_index) = remote_index.as_ref() {
+                        self.fast_forward_index(local_alias, remote_index, 3)
+                            .await
+                            .map_err(SyncError::Nameservice)?;
+                    }
+
                     Ok(PullResult::Current {
-                        alias: local_alias.to_string(),
+                        ledger_id: local_alias.to_string(),
                     })
                 } else {
                     // Local is ahead or different history
                     Ok(PullResult::Diverged {
-                        alias: local_alias.to_string(),
+                        ledger_id: local_alias.to_string(),
                         local: local_commit.clone(),
                         remote: remote_commit.clone(),
                     })
@@ -264,14 +290,57 @@ impl SyncDriver {
         }
     }
 
-    /// Push a local alias to its upstream remote.
+    /// Fast-forward the index head with a retry loop.
+    ///
+    /// Index heads are non-strict monotonic (`new.t >= cur.t`), which allows
+    /// re-index at the same commit `t`. This helper mirrors `fast_forward_commit`
+    /// but uses the `IndexHead` guard.
+    async fn fast_forward_index(
+        &self,
+        ledger_id: &str,
+        new: &RefValue,
+        max_retries: usize,
+    ) -> std::result::Result<CasResult, fluree_db_nameservice::NameServiceError> {
+        for _ in 0..max_retries {
+            let current = self.local.get_ref(ledger_id, RefKind::IndexHead).await?;
+
+            // If current index is ahead, this is not a fast-forward.
+            if let Some(ref cur) = current {
+                if new.t < cur.t {
+                    return Ok(CasResult::Conflict { actual: current });
+                }
+            }
+
+            match self
+                .local
+                .compare_and_set_ref(ledger_id, RefKind::IndexHead, current.as_ref(), new)
+                .await?
+            {
+                CasResult::Updated => return Ok(CasResult::Updated),
+                CasResult::Conflict { actual } => {
+                    // Another writer advanced the ref — still FF-able?
+                    if let Some(ref a) = actual {
+                        if new.t < a.t {
+                            return Ok(CasResult::Conflict { actual });
+                        }
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let current = self.local.get_ref(ledger_id, RefKind::IndexHead).await?;
+        Ok(CasResult::Conflict { actual: current })
+    }
+
+    /// Push a local ledger ID to its upstream remote.
     ///
     /// Analogous to `git push`. Uses CAS to ensure no concurrent changes.
     pub async fn push_tracked(&self, local_alias: &str) -> Result<PushResult> {
         let upstream = self.config.get_upstream(local_alias).await?;
         let Some(upstream) = upstream else {
             return Ok(PushResult::NoUpstream {
-                alias: local_alias.to_string(),
+                ledger_id: local_alias.to_string(),
             });
         };
 
@@ -284,10 +353,16 @@ impl SyncDriver {
             .map_err(SyncError::Nameservice)?;
         let Some(local_commit) = local_ref else {
             return Err(SyncError::Config(format!(
-                "Local alias '{}' has no commit ref",
+                "Local ledger ID '{}' has no commit ref",
                 local_alias
             )));
         };
+
+        let local_index = self
+            .local
+            .get_ref(local_alias, RefKind::IndexHead)
+            .await
+            .map_err(SyncError::Nameservice)?;
 
         // Get tracking ref (last known remote state) as CAS expected value
         let tracking = self
@@ -295,6 +370,7 @@ impl SyncDriver {
             .get_tracking(&upstream.remote, &upstream.remote_alias)
             .await?;
         let expected = tracking.as_ref().and_then(|t| t.commit_ref.as_ref());
+        let expected_index = tracking.as_ref().and_then(|t| t.index_ref.clone());
 
         let result = client
             .push_ref(
@@ -313,20 +389,35 @@ impl SyncDriver {
                 });
                 tracking_record.commit_ref = Some(local_commit.clone());
                 tracking_record.last_fetched = Some(chrono_now());
+
+                // Best-effort push of index head if we have one.
+                if let Some(local_index) = local_index.as_ref() {
+                    if local_index.id.is_some() {
+                        if let Ok(CasResult::Updated) = client
+                            .push_ref(
+                                &upstream.remote_alias,
+                                RefKind::IndexHead,
+                                expected_index.as_ref(),
+                                local_index,
+                            )
+                            .await
+                        {
+                            tracking_record.index_ref = Some(local_index.clone());
+                        }
+                    }
+                }
+
                 self.tracking.set_tracking(&tracking_record).await?;
 
                 Ok(PushResult::Pushed {
-                    alias: local_alias.to_string(),
+                    ledger_id: local_alias.to_string(),
                     value: local_commit,
                 })
             }
             CasResult::Conflict { actual } => {
-                let remote = actual.unwrap_or(RefValue {
-                    address: None,
-                    t: 0,
-                });
+                let remote = actual.unwrap_or(RefValue { id: None, t: 0 });
                 Ok(PushResult::Rejected {
-                    alias: local_alias.to_string(),
+                    ledger_id: local_alias.to_string(),
                     local: local_commit,
                     remote,
                 })
@@ -350,11 +441,16 @@ mod tests {
     use super::*;
     use crate::client::RemoteSnapshot;
     use crate::config::{MemorySyncConfigStore, UpstreamConfig};
+    use fluree_db_core::{ContentId, ContentKind};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_nameservice::{MemoryTrackingStore, NsRecord, Publisher};
 
     fn origin() -> RemoteName {
         RemoteName::new("origin")
+    }
+
+    fn test_commit_id(label: &str) -> ContentId {
+        ContentId::new(ContentKind::Commit, label.as_bytes())
     }
 
     /// Mock remote client backed by an in-memory nameservice
@@ -373,11 +469,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RemoteNameserviceClient for MockRemoteClient {
-        async fn lookup(&self, alias: &str) -> Result<Option<NsRecord>> {
+        async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
             use fluree_db_nameservice::NameService;
             Ok(self
                 .ns
-                .lookup(alias)
+                .lookup(ledger_id)
                 .await
                 .map_err(SyncError::Nameservice)?)
         }
@@ -391,24 +487,24 @@ mod tests {
                 .map_err(SyncError::Nameservice)?;
             Ok(RemoteSnapshot {
                 ledgers: records,
-                vgs: vec![],
+                graph_sources: vec![],
             })
         }
 
         async fn push_ref(
             &self,
-            alias: &str,
+            ledger_id: &str,
             kind: RefKind,
             expected: Option<&RefValue>,
             new: &RefValue,
         ) -> Result<CasResult> {
             self.ns
-                .compare_and_set_ref(alias, kind, expected, new)
+                .compare_and_set_ref(ledger_id, kind, expected, new)
                 .await
                 .map_err(SyncError::Nameservice)
         }
 
-        async fn init_ledger(&self, _alias: &str) -> Result<bool> {
+        async fn init_ledger(&self, _ledger_id: &str) -> Result<bool> {
             Ok(true)
         }
     }
@@ -444,7 +540,7 @@ mod tests {
         // Publish something on the remote
         remote
             .ns
-            .publish_commit("mydb:main", "commit-1", 5)
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
@@ -461,7 +557,7 @@ mod tests {
 
         remote
             .ns
-            .publish_commit("mydb:main", "commit-1", 5)
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
@@ -490,14 +586,14 @@ mod tests {
 
         // Create local at t=1
         local
-            .publish_commit("mydb:main", "commit-1", 1)
+            .publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
         // Remote at t=5
         remote
             .ns
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -538,12 +634,12 @@ mod tests {
 
         // Both at t=5 with same address
         local
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
         remote
             .ns
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -571,14 +667,14 @@ mod tests {
 
         // Local ahead at t=10
         local
-            .publish_commit("mydb:main", "commit-10", 10)
+            .publish_commit("mydb:main", 10, &test_commit_id("commit-10"))
             .await
             .unwrap();
 
         // Remote at t=5
         remote
             .ns
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -622,7 +718,7 @@ mod tests {
             .unwrap();
 
         local
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -651,13 +747,13 @@ mod tests {
         // Remote has data already
         remote
             .ns
-            .publish_commit("mydb:main", "commit-1", 1)
+            .publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
             .await
             .unwrap();
 
         // Local has different data
         local
-            .publish_commit("mydb:main", "commit-5", 5)
+            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
             .await
             .unwrap();
 
@@ -680,7 +776,7 @@ mod tests {
         let (local, _remote, driver, _config) = setup_driver().await;
 
         local
-            .publish_commit("mydb:main", "commit-1", 1)
+            .publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
             .await
             .unwrap();
 

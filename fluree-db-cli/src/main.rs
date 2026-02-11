@@ -6,6 +6,7 @@ mod detect;
 mod error;
 mod input;
 mod output;
+mod remote_client;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -34,9 +35,25 @@ async fn run(cli: Cli) -> error::CliResult<()> {
     match cli.command {
         Commands::Init { global } => commands::init::run(global),
 
-        Commands::Create { ledger, from } => {
+        Commands::Create {
+            ledger,
+            from,
+            chunk_size_mb,
+        } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
-            commands::create::run(&ledger, from.as_deref(), &fluree_dir, cli.verbose).await
+            let import_opts = commands::create::ImportOpts {
+                memory_budget_mb: cli.memory_budget_mb,
+                parallelism: cli.parallelism,
+                chunk_size_mb,
+            };
+            commands::create::run(
+                &ledger,
+                from.as_deref(),
+                &fluree_dir,
+                cli.verbose,
+                &import_opts,
+            )
+            .await
         }
 
         Commands::Use { ledger } => {
@@ -44,14 +61,14 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::use_cmd::run(&ledger, &fluree_dir).await
         }
 
-        Commands::List => {
+        Commands::List { remote } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::list::run(&fluree_dir).await
+            commands::list::run(&fluree_dir, remote.as_deref()).await
         }
 
-        Commands::Info { ledger } => {
+        Commands::Info { ledger, remote } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::info::run(ledger.as_deref(), &fluree_dir).await
+            commands::info::run(ledger.as_deref(), &fluree_dir, remote.as_deref()).await
         }
 
         Commands::Drop { name, force } => {
@@ -64,6 +81,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             expr,
             message,
             format,
+            remote,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::insert::run(
@@ -72,6 +90,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 message.as_deref(),
                 format.as_deref(),
                 &fluree_dir,
+                remote.as_deref(),
             )
             .await
         }
@@ -81,6 +100,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             expr,
             message,
             format,
+            remote,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::upsert::run(
@@ -89,6 +109,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 message.as_deref(),
                 format.as_deref(),
                 &fluree_dir,
+                remote.as_deref(),
             )
             .await
         }
@@ -100,6 +121,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             sparql,
             fql,
             at,
+            remote,
         } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
             commands::query::run(
@@ -110,6 +132,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 fql,
                 at.as_deref(),
                 &fluree_dir,
+                remote.as_deref(),
             )
             .await
         }
@@ -151,7 +174,12 @@ async fn run(cli: Cli) -> error::CliResult<()> {
 
         Commands::Config { action } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
-            commands::config_cmd::run(action, &fluree_dir)
+            match action {
+                cli::ConfigAction::SetOrigins { ledger, file } => {
+                    commands::config_cmd::run_set_origins(&ledger, &file, &fluree_dir).await
+                }
+                other => commands::config_cmd::run(other, &fluree_dir),
+            }
         }
 
         Commands::Prefix { action } => {
@@ -171,6 +199,11 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::remote::run(action, &fluree_dir).await
         }
 
+        Commands::Auth { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::auth::run(action, &fluree_dir).await
+        }
+
         Commands::Upstream { action } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::upstream::run(action, &fluree_dir).await
@@ -181,14 +214,61 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::sync::run_fetch(&remote, &fluree_dir).await
         }
 
-        Commands::Pull { ledger } => {
+        Commands::Pull { ledger, no_indexes } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
-            commands::sync::run_pull(ledger.as_deref(), &fluree_dir).await
+            commands::sync::run_pull(ledger.as_deref(), no_indexes, &fluree_dir).await
         }
 
         Commands::Push { ledger } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::sync::run_push(ledger.as_deref(), &fluree_dir).await
+        }
+
+        Commands::Clone {
+            args,
+            origin,
+            token,
+            alias,
+            no_indexes,
+        } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            if let Some(origin_uri) = origin {
+                // --origin mode: args = [ledger]
+                if args.len() != 1 {
+                    return Err(error::CliError::Usage(
+                        "with --origin, provide exactly one positional arg: <ledger>".into(),
+                    ));
+                }
+                commands::sync::run_clone_origin(
+                    &origin_uri,
+                    token.as_deref(),
+                    &args[0],
+                    alias.as_deref(),
+                    no_indexes,
+                    &fluree_dir,
+                )
+                .await
+            } else {
+                // Named-remote mode: args = [remote, ledger]
+                if args.len() != 2 {
+                    return Err(error::CliError::Usage(
+                        "usage: fluree clone <remote> <ledger>  or  fluree clone --origin <uri> <ledger>".into(),
+                    ));
+                }
+                commands::sync::run_clone(
+                    &args[0],
+                    &args[1],
+                    alias.as_deref(),
+                    no_indexes,
+                    &fluree_dir,
+                )
+                .await
+            }
+        }
+
+        Commands::Track { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::track::run(action, &fluree_dir).await
         }
     }
 }

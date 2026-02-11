@@ -12,8 +12,8 @@
 //! baseline so query/transaction code can reliably encode standard IRIs even
 //! before any index exists.
 use fluree_vocab::namespaces::{
-    BLANK_NODE, DID_KEY, EMPTY, FLUREE_COMMIT, FLUREE_LEDGER, JSON_LD, OGC_GEO, OWL, RDF, RDFS,
-    SHACL, XSD,
+    BLANK_NODE, DID_KEY, EMPTY, FLUREE_COMMIT, FLUREE_DB, JSON_LD, OGC_GEO, OWL, RDF, RDFS, SHACL,
+    XSD,
 };
 use fluree_vocab::predicates::*;
 use std::collections::HashMap;
@@ -109,18 +109,15 @@ pub fn default_namespace_codes() -> HashMap<u16, String> {
     let mut map = HashMap::new();
     map.insert(EMPTY, "".to_string());
     map.insert(JSON_LD, "@".to_string());
-    map.insert(XSD, "http://www.w3.org/2001/XMLSchema#".to_string());
-    map.insert(
-        RDF,
-        "http://www.w3.org/1999/02/22-rdf-syntax-ns#".to_string(),
-    );
-    map.insert(RDFS, "http://www.w3.org/2000/01/rdf-schema#".to_string());
-    map.insert(SHACL, "http://www.w3.org/ns/shacl#".to_string());
-    map.insert(OWL, "http://www.w3.org/2002/07/owl#".to_string());
-    map.insert(FLUREE_LEDGER, "https://ns.flur.ee/ledger#".to_string());
+    map.insert(XSD, fluree_vocab::xsd::NS.to_string());
+    map.insert(RDF, fluree_vocab::rdf::NS.to_string());
+    map.insert(RDFS, fluree_vocab::rdfs::NS.to_string());
+    map.insert(SHACL, fluree_vocab::shacl::NS.to_string());
+    map.insert(OWL, fluree_vocab::owl::NS.to_string());
+    map.insert(FLUREE_DB, fluree_vocab::fluree::DB.to_string());
     map.insert(DID_KEY, "did:key:".to_string());
-    map.insert(FLUREE_COMMIT, "fluree:commit:sha256:".to_string());
+    map.insert(FLUREE_COMMIT, fluree_vocab::fluree::COMMIT.to_string());
     map.insert(BLANK_NODE, "_:".to_string());
-    map.insert(OGC_GEO, "http://www.opengis.net/ont/geosparql#".to_string());
+    map.insert(OGC_GEO, fluree_vocab::geo::NS.to_string());
     map
 }

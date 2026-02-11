@@ -21,7 +21,7 @@ use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
 use crate::var_registry::VarId;
-use fluree_db_core::{StatsView, Storage};
+use fluree_db_core::StatsView;
 use std::sync::Arc;
 
 use super::where_plan::build_where_operators;
@@ -96,16 +96,16 @@ fn detect_stats_count_by_predicate(
 ///
 /// Constructs operators in the order:
 /// WHERE patterns → GROUP BY → Aggregates → HAVING → ORDER BY → PROJECT → DISTINCT → OFFSET → LIMIT
-pub fn build_operator_tree<S: Storage + 'static>(
+pub fn build_operator_tree(
     query: &ParsedQuery,
     options: &QueryOptions,
     stats: Option<Arc<StatsView>>,
-) -> Result<BoxedOperator<S>> {
+) -> Result<BoxedOperator> {
     // Fast-path: stats-based count-by-predicate query
     // This avoids scanning all triples when we can answer directly from IndexStats.
     if let Some(ref stats_view) = stats {
         if let Some((pred_var, count_var)) = detect_stats_count_by_predicate(query, options) {
-            let mut operator: BoxedOperator<S> = Box::new(StatsCountByPredicateOperator::new(
+            let mut operator: BoxedOperator = Box::new(StatsCountByPredicateOperator::new(
                 Arc::clone(stats_view),
                 pred_var,
                 count_var,
@@ -232,7 +232,7 @@ pub fn build_operator_tree<S: Storage + 'static>(
             });
 
         let use_streaming = !options.aggregates.is_empty()
-            && GroupAggregateOperator::<S>::all_streamable(&streaming_specs)
+            && GroupAggregateOperator::all_streamable(&streaming_specs)
             && !select_needs_grouped_vars;
 
         if use_streaming {
@@ -351,7 +351,7 @@ mod tests {
     use crate::parse::ParsedQuery;
     use crate::pattern::{Term, TriplePattern};
     use crate::sort::SortSpec;
-    use fluree_db_core::{MemoryStorage, Sid};
+    use fluree_db_core::Sid;
     use fluree_graph_json_ld::ParsedContext;
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
@@ -388,7 +388,7 @@ mod tests {
             graph_select: None,
         };
 
-        let result = build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
+        let result = build_operator_tree(&query, &QueryOptions::default(), None);
         match result {
             Err(e) => assert!(e.to_string().contains("not found")),
             Ok(_) => panic!("Expected error for invalid select var"),
@@ -410,7 +410,7 @@ mod tests {
 
         let options = QueryOptions::new().with_order_by(vec![SortSpec::asc(VarId(99))]); // Invalid var
 
-        let result = build_operator_tree::<MemoryStorage>(&query, &options, None);
+        let result = build_operator_tree(&query, &options, None);
         match result {
             Err(e) => assert!(e.to_string().contains("Sort variable")),
             Ok(_) => panic!("Expected error for invalid sort var"),
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn test_build_operator_tree_empty_patterns() {
         let query = make_simple_query(vec![], vec![]);
-        let result = build_operator_tree::<MemoryStorage>(&query, &QueryOptions::default(), None);
+        let result = build_operator_tree(&query, &QueryOptions::default(), None);
         assert!(result.is_ok());
 
         let op = result.unwrap();

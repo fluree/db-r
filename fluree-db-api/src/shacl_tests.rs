@@ -11,7 +11,7 @@ fn default_context() -> JsonValue {
         "schema": "http://schema.org/",
         "skos": "http://www.w3.org/2008/05/skos#",
         "wiki": "https://www.wikidata.org/wiki/",
-        "f": "https://ns.flur.ee/ledger#"
+        "f": "https://ns.flur.ee/db#"
     })
 }
 

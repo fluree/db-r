@@ -16,9 +16,18 @@ fluree push [LEDGER]
 
 ## Description
 
-Pushes local commits to the configured upstream remote. The ledger must have an upstream configured (see `fluree upstream set`).
+Pushes **local commits** to the configured upstream remote by uploading the commit v2 bytes to the server.
 
-The push uses compare-and-set (CAS) semantics - it will be rejected if the remote has commits that you don't have locally. In that case, you need to `pull` first.
+The ledger must have an upstream configured (see `fluree upstream set`).
+
+The push uses strict sequencing + CAS semantics:
+
+- The server rejects the push if the remote head is not in your local history (diverged) or if the remote is ahead.
+- The server also rejects the push if the first commit’s `t` does not match the server’s next-t.
+
+Unlike `fetch`/`pull`, this is **not** a storage-proxy replication operation. It requires **write** permissions for the ledger (Bearer token with `fluree.ledger.write.*` claims) and the server validates the pushed commits like normal transactions.
+
+If a pushed commit contains **retractions**, the server enforces a strict invariant: each retraction must target a fact that is currently asserted at that point in the push batch. (List retractions require exact list-index metadata match.)
 
 ## Examples
 
@@ -35,14 +44,13 @@ fluree push mydb
 Successful push:
 ```
 Pushing 'mydb:main' to 'origin'...
-✓ 'mydb:main' pushed successfully (t=42)
+✓ 'mydb:main' pushed 3 commit(s) (new head t=42)
 ```
 
 Push rejected (remote is ahead):
 ```
 Pushing 'mydb:main' to 'origin'...
-✗ 'mydb:main' rejected: local t=10, remote t=42
-  hint: the remote has commits you don't have; pull first
+error: push rejected; remote is ahead (local t=10, remote t=42). Pull first.
 ```
 
 No upstream configured:
@@ -56,7 +64,8 @@ error: no upstream configured for 'mydb:main'
 | Error | Description |
 |-------|-------------|
 | No upstream configured | Run `fluree upstream set <ledger> <remote>` first |
-| Push rejected | Remote has newer commits; run `fluree pull` first |
+| Push rejected (409) | Remote head changed, histories diverged, or first commit `t` does not match next-t |
+| Push rejected (422) | Invalid commit bytes, missing required referenced blob, or retraction invariant violation |
 
 ## Workflow
 
@@ -75,6 +84,7 @@ fluree push mydb        # Push your changes
 
 ## See Also
 
+- [clone](clone.md) - Clone a ledger from a remote
 - [upstream](upstream.md) - Configure upstream tracking
 - [pull](pull.md) - Pull changes from upstream
 - [fetch](fetch.md) - Fetch refs without modifying local ledger

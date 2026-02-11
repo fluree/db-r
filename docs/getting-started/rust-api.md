@@ -36,7 +36,7 @@ Available feature flags:
 - `aws` - AWS-backed storage support (S3, storage-backed nameservice). Enables `connect_s3` and `connect_json_ld` configs that use S3.
 - `vector` - Embedded vector similarity search (HNSW indexes via usearch)
 - `credential` - DID/JWS/VerifiableCredential support for signed queries and transactions (pulls in crypto dependencies like `ed25519-dalek`, `bs58`). Off by default to reduce compile times.
-- `iceberg` - Apache Iceberg/R2RML virtual graph support (pulls in AWS SDK + native deps)
+- `iceberg` - Apache Iceberg/R2RML graph source support (pulls in AWS SDK + native deps)
 - `shacl` - SHACL validation support (requires fluree-db-transact + fluree-db-shacl)
 - `search-remote-client` - Remote search service client (HTTP client for remote BM25 and vector search services)
 - `aws-testcontainers` - Opt-in LocalStack-backed S3/DynamoDB tests (auto-start via testcontainers)
@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     // Create a new ledger (or load an existing one)
     let ledger = fluree.create_ledger("mydb").await?;
 
-    // Load an existing ledger by alias
+    // Load an existing ledger by ID (`name:branch`)
     let ledger = fluree.ledger("mydb:main").await?;
 
     Ok(())
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
 
     println!(
         "import complete: t={}, flakes={}, root={:?}",
-        result.t, result.flake_count, result.root_address
+        result.t, result.flake_count, result.root_id
     );
 
     // Query normally after import (loads the published V2 root from CAS).
@@ -208,7 +208,7 @@ Publisher node:
 
 ### The Graph API
 
-The primary API revolves around `fluree.graph(alias)`, which returns a lazy `Graph` handle.
+The primary API revolves around `fluree.graph(graph_ref)`, which returns a lazy `Graph` handle.
 No I/O occurs until a terminal method (`.execute()`, `.commit()`, `.load()`) is called.
 
 **When I/O happens:**
@@ -660,7 +660,7 @@ async fn main() -> Result<()> {
 **When to use `ledger_exists`:**
 
 - **Conditional create-or-load**: Check before deciding whether to create or load
-- **Validation**: Verify ledger aliases exist before operations
+- **Validation**: Verify ledger IDs exist before operations
 - **Defensive programming**: Avoid `NotFound` errors in application logic
 
 **Performance note:** This is a lightweight check that only queries the nameservice - it does NOT load the ledger data, indexes, or novelty. Much faster than attempting to load and catching `NotFound` errors.
@@ -705,7 +705,7 @@ async fn main() -> Result<()> {
 
 **Drop Sequence:**
 
-1. Normalizes the alias (ensures `:main` suffix)
+1. Normalizes the ledger ID (ensures `:main` suffix)
 2. Cancels any pending background indexing
 3. Waits for in-progress indexing to complete
 4. In hard mode: deletes all commit and index files
@@ -1065,8 +1065,8 @@ async fn main() -> Result<()> {
         Ok(ledger) => {
             println!("Ledger created at t={}", ledger.t());
         }
-        Err(ApiError::LedgerExists(alias)) => {
-            println!("Ledger {} already exists, loading...", alias);
+        Err(ApiError::LedgerExists(ledger_id)) => {
+            println!("Ledger {} already exists, loading...", ledger_id);
             let ledger = fluree.ledger("mydb:main").await?;
             println!("Loaded at t={}", ledger.t());
         }
@@ -1245,7 +1245,7 @@ async fn main() -> Result<()> {
 
 ## Graph API Reference
 
-The Graph API follows a **lazy-handle** pattern: `fluree.graph(alias)` returns a lightweight handle, and all I/O is deferred to terminal methods.
+The Graph API follows a **lazy-handle** pattern: `fluree.graph(graph_ref)` returns a lightweight handle, and all I/O is deferred to terminal methods.
 
 ### Getting a Graph Handle
 
@@ -1312,7 +1312,7 @@ let result = fluree.graph("mydb:main")
     .transact()
     .upsert(&data)
     .txn_opts(TxnOpts { author: Some("did:admin".into()), ..Default::default() })
-    .commit_opts(CommitOpts { message: Some("migration".into()), ..Default::default() })
+    .commit_opts(CommitOpts { message: Some("admin update".into()), ..Default::default() })
     .commit().await?;
 
 // Stage without committing (preview changes)
@@ -1474,7 +1474,7 @@ Both `stage(&handle)` and `stage_owned(ledger)` return a builder with identical 
 let result = fluree.stage(&handle)  // or stage_owned(ledger)
     .insert(&data)                   // or .upsert(&data), .update(&data)
     .txn_opts(TxnOpts::default().author("did:admin"))
-    .commit_opts(CommitOpts::with_message("migration"))
+    .commit_opts(CommitOpts::with_message("admin update"))
     .execute()
     .await?;
 ```
@@ -1495,7 +1495,7 @@ let result = fluree.stage(&handle)  // or stage_owned(ledger)
 
 ### Graph API Transactions
 
-The Graph API (`fluree.graph(alias).transact()`) is built on top of `stage(&handle)` internally:
+The Graph API (`fluree.graph(graph_ref).transact()`) is built on top of `stage(&handle)` internally:
 
 ```rust
 // Graph API (convenient, uses caching internally)
@@ -1531,8 +1531,13 @@ async fn main() -> Result<()> {
         "ex": "http://example.org/ns/"
     });
 
-    let info = fluree.ledger_info("mydb:main")
+    let info = fluree
+        .ledger_info("mydb:main")
         .with_context(&context)
+        // Optional: include datatype breakdowns under stats.properties[*]
+        // .with_property_datatypes(true)
+        // Optional: make property datatype details novelty-aware (real-time)
+        // .with_realtime_property_details(true)
         .execute()
         .await?;
 
@@ -1557,11 +1562,30 @@ The response includes:
 | `nameservice` | NsRecord in JSON-LD format |
 | `namespace-codes` | Inverted mapping (prefix → code) for IRI expansion |
 | `stats` | Flake counts, size, property/class statistics with selectivity |
-| `index` | Index metadata (`t`, address, index ID) |
+| `index` | Index metadata (`t`, ContentId, index ID) |
+
+#### Stats freshness (real-time vs indexed)
+
+The `stats` section mixes **real-time** values (indexed + novelty deltas) with values that are only available **as-of the last index**.
+
+- **Real-time (includes novelty)**:
+  - `stats.flakes`, `stats.size`
+  - `stats.properties[*].count` (but not NDV)
+  - `stats.properties[*].datatypes` is real-time **only when** `with_realtime_property_details(true)` is used
+  - `stats.classes[*].count`
+  - `stats.classes[*].property-list` and `stats.classes[*].properties` (property presence)
+  - `stats.classes[*].properties[*].refs` is real-time **only when** `with_realtime_property_details(true)` is used
+
+- **As-of last index**:
+  - `stats.indexed` (the index \(t\))
+  - `stats.properties[*].ndv-values`, `stats.properties[*].ndv-subjects`
+  - `stats.properties[*].datatypes` (when included via `with_property_datatypes(true)`) is as-of last index unless `with_realtime_property_details(true)` is used
+  - Any selectivity derived from NDV values
+  - `stats.classes[*].properties[*].refs` (ref target class counts), which are computed during indexing unless `with_realtime_property_details(true)` is used
 
 ## Nameservice Query API
 
-Query metadata about all ledgers and virtual graphs using the `nameservice_query()` builder:
+Query metadata about all ledgers and graph sources using the `nameservice_query()` builder:
 
 ```rust
 use fluree_db_api::{FlureeBuilder, Result};
@@ -1573,9 +1597,9 @@ async fn main() -> Result<()> {
 
     // Find all ledgers on main branch
     let query = json!({
-        "@context": {"f": "https://ns.flur.ee/ledger#"},
+        "@context": {"f": "https://ns.flur.ee/db#"},
         "select": ["?ledger", "?t"],
-        "where": [{"@id": "?ns", "@type": "f:PhysicalDatabase", "f:ledger": "?ledger", "f:branch": "main", "f:t": "?t"}],
+        "where": [{"@id": "?ns", "@type": "f:LedgerSource", "f:ledger": "?ledger", "f:branch": "main", "f:t": "?t"}],
         "orderBy": [{"var": "?t", "desc": true}]
     });
 
@@ -1588,8 +1612,8 @@ async fn main() -> Result<()> {
 
     // SPARQL query
     let results = fluree.nameservice_query()
-        .sparql("PREFIX f: <https://ns.flur.ee/ledger#>
-                 SELECT ?ledger ?t WHERE { ?ns a f:PhysicalDatabase ; f:ledger ?ledger ; f:t ?t }")
+        .sparql("PREFIX f: <https://ns.flur.ee/db#>
+                 SELECT ?ledger ?t WHERE { ?ns a f:LedgerSource ; f:ledger ?ledger ; f:t ?t }")
         .execute_formatted()
         .await?;
 
@@ -1604,7 +1628,7 @@ async fn main() -> Result<()> {
 
 ### Available Properties
 
-**Ledger Records** (`@type: "f:PhysicalDatabase"`):
+**Ledger Records** (`@type: "f:LedgerSource"`):
 
 | Property | Description |
 |----------|-------------|
@@ -1612,19 +1636,19 @@ async fn main() -> Result<()> {
 | `f:branch` | Branch name |
 | `f:t` | Current transaction number |
 | `f:status` | Status: "ready" or "retracted" |
-| `f:commit` | Reference to latest commit address |
-| `f:index` | Index info with `@id` and `f:t` |
+| `f:ledgerCommit` | Reference to latest commit ContentId |
+| `f:ledgerIndex` | Index info with `@id` and `f:t` |
 
-**Virtual Graph Records** (`@type: "f:VirtualGraphDatabase"`):
+**Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
 
 | Property | Description |
 |----------|-------------|
-| `f:name` | Virtual graph name |
+| `f:name` | Graph source name |
 | `f:branch` | Branch name |
-| `fidx:config` | Configuration JSON |
-| `fidx:dependencies` | Source ledger dependencies |
-| `fidx:indexAddress` | Index storage address |
-| `fidx:indexT` | Index transaction number |
+| `f:config` | Configuration JSON |
+| `f:dependencies` | Source ledger dependencies |
+| `f:indexAddress` | Index ContentId |
+| `f:indexT` | Index transaction number |
 
 ### Builder Methods
 
@@ -1642,17 +1666,17 @@ async fn main() -> Result<()> {
 ```rust
 // Find ledgers with t > 100
 let query = json!({
-    "@context": {"f": "https://ns.flur.ee/ledger#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?ledger", "?t"],
     "where": [{"@id": "?ns", "f:ledger": "?ledger", "f:t": "?t"}],
     "filter": ["(> ?t 100)"]
 });
 
-// Find all BM25 virtual graphs
+// Find all BM25 graph sources
 let query = json!({
-    "@context": {"f": "https://ns.flur.ee/ledger#", "fidx": "https://ns.flur.ee/index#"},
+    "@context": {"f": "https://ns.flur.ee/db#"},
     "select": ["?name", "?deps"],
-    "where": [{"@id": "?vg", "@type": "fidx:BM25", "f:name": "?name", "fidx:dependencies": "?deps"}]
+    "where": [{"@id": "?gs", "@type": "f:Bm25Index", "f:name": "?name", "f:dependencies": "?deps"}]
 });
 ```
 

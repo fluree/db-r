@@ -147,30 +147,6 @@ pub struct PolicyRestriction {
     pub for_classes: HashSet<Sid>,
     /// True if runtime class membership check is needed
     pub class_check_needed: bool,
-
-    // Optional target constraints for default-bucket policies
-    /// Optional subject targets (HashSet for O(1) contains)
-    pub s_targets: HashSet<Sid>,
-    /// Optional property targets (HashSet for O(1) contains)
-    pub p_targets: HashSet<Sid>,
-}
-
-impl PolicyRestriction {
-    /// Check if this default-bucket policy applies to a flake
-    ///
-    /// Used for optional target constraints on default policies.
-    /// Uses the same s_targets/p_targets fields that refresh updates.
-    pub fn applies_to_flake(&self, subject: &Sid, property: &Sid) -> bool {
-        // Check optional subject targets (O(1) with HashSet)
-        if !self.s_targets.is_empty() && !self.s_targets.contains(subject) {
-            return false;
-        }
-        // Check optional property targets (O(1) with HashSet)
-        if !self.p_targets.is_empty() && !self.p_targets.contains(property) {
-            return false;
-        }
-        true
-    }
 }
 
 /// Entry in the property index
@@ -248,11 +224,7 @@ impl PolicySet {
 
         // 3. Default-bucket policies (preserve insertion order)
         for &idx in &self.defaults {
-            let r = &self.restrictions[idx];
-            // Default policies can have optional s_targets/p_targets
-            if r.applies_to_flake(subject, property) {
-                candidates.push(r);
-            }
+            candidates.push(&self.restrictions[idx]);
         }
 
         candidates
@@ -293,29 +265,15 @@ impl PolicySet {
             }
         }
 
-        // 3. Default-bucket policies (only include those whose optional constraints pass)
-        // Default policies don't need class check (they're not class policies)
+        // 3. Default-bucket policies (don't need class check)
         for &idx in &self.defaults {
-            let r = &self.restrictions[idx];
-            if r.applies_to_flake(subject, property) {
-                candidates.push(FlakePolicyEntry {
-                    idx,
-                    class_check_needed: false,
-                });
-            }
+            candidates.push(FlakePolicyEntry {
+                idx,
+                class_check_needed: false,
+            });
         }
 
         candidates
-    }
-
-    /// Get candidate restriction indices for a flake (legacy API).
-    ///
-    /// Prefer `policy_entries_for_flake` when you need per-property class_check_needed info.
-    pub fn restriction_indices_for_flake(&self, subject: &Sid, property: &Sid) -> Vec<usize> {
-        self.policy_entries_for_flake(subject, property)
-            .into_iter()
-            .map(|e| e.idx)
-            .collect()
     }
 }
 
@@ -453,8 +411,6 @@ mod tests {
             class_policy: false,
             for_classes: HashSet::new(),
             class_check_needed: false,
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         };
         set.restrictions.push(prop_restriction);
         set.by_property
@@ -477,8 +433,6 @@ mod tests {
             class_policy: false,
             for_classes: HashSet::new(),
             class_check_needed: false,
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
         };
         set.restrictions.push(default_restriction);
         set.defaults.push(1);
@@ -495,37 +449,5 @@ mod tests {
             set.restrictions_for_flake(&make_sid(100, "alice"), &make_sid(100, "age"));
         assert_eq!(other_candidates.len(), 1);
         assert_eq!(other_candidates[0].id, "default-1");
-    }
-
-    #[test]
-    fn test_restriction_applies_to_flake() {
-        let mut restriction = PolicyRestriction {
-            id: "test".to_string(),
-            target_mode: TargetMode::Default,
-            targets: HashSet::new(),
-            action: PolicyAction::Both,
-            value: PolicyValue::Allow,
-            required: false,
-            message: None,
-            class_policy: false,
-            for_classes: HashSet::new(),
-            class_check_needed: false,
-            s_targets: HashSet::new(),
-            p_targets: HashSet::new(),
-        };
-
-        // With empty targets, applies to all
-        assert!(restriction.applies_to_flake(&make_sid(100, "alice"), &make_sid(100, "name")));
-
-        // With s_targets set, only applies to matching subjects
-        restriction.s_targets = [make_sid(100, "alice")].into_iter().collect();
-        assert!(restriction.applies_to_flake(&make_sid(100, "alice"), &make_sid(100, "name")));
-        assert!(!restriction.applies_to_flake(&make_sid(100, "bob"), &make_sid(100, "name")));
-
-        // With p_targets set, only applies to matching properties
-        restriction.s_targets.clear();
-        restriction.p_targets = [make_sid(100, "name")].into_iter().collect();
-        assert!(restriction.applies_to_flake(&make_sid(100, "alice"), &make_sid(100, "name")));
-        assert!(!restriction.applies_to_flake(&make_sid(100, "alice"), &make_sid(100, "age")));
     }
 }

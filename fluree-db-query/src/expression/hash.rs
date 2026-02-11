@@ -6,7 +6,6 @@ use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
-use fluree_db_core::Storage;
 use md5::{Digest as Md5Digest, Md5};
 use sha1::Sha1;
 use sha2::{Sha256, Sha384, Sha512};
@@ -15,10 +14,10 @@ use std::sync::Arc;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-pub fn eval_md5<S: Storage, R: RowAccess>(
+pub fn eval_md5<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "MD5", |s| {
         let mut hasher = Md5::new();
@@ -27,10 +26,10 @@ pub fn eval_md5<S: Storage, R: RowAccess>(
     })
 }
 
-pub fn eval_sha1<S: Storage, R: RowAccess>(
+pub fn eval_sha1<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "SHA1", |s| {
         let mut hasher = Sha1::new();
@@ -39,10 +38,10 @@ pub fn eval_sha1<S: Storage, R: RowAccess>(
     })
 }
 
-pub fn eval_sha256<S: Storage, R: RowAccess>(
+pub fn eval_sha256<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "SHA256", |s| {
         let mut hasher = Sha256::new();
@@ -51,10 +50,10 @@ pub fn eval_sha256<S: Storage, R: RowAccess>(
     })
 }
 
-pub fn eval_sha384<S: Storage, R: RowAccess>(
+pub fn eval_sha384<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "SHA384", |s| {
         let mut hasher = Sha384::new();
@@ -63,10 +62,10 @@ pub fn eval_sha384<S: Storage, R: RowAccess>(
     })
 }
 
-pub fn eval_sha512<S: Storage, R: RowAccess>(
+pub fn eval_sha512<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "SHA512", |s| {
         let mut hasher = Sha512::new();
@@ -76,10 +75,10 @@ pub fn eval_sha512<S: Storage, R: RowAccess>(
 }
 
 /// Evaluate a hash function with the given hasher
-fn eval_hash<S: Storage, R: RowAccess, F>(
+fn eval_hash<R: RowAccess, F>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
     fn_name: &str,
     hash_fn: F,
 ) -> Result<Option<ComparableValue>>

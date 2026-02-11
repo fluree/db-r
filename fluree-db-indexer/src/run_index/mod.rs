@@ -32,30 +32,29 @@ pub mod merge;
 pub mod novelty_merge;
 pub mod numbig_dict;
 pub mod numfloat_dict;
-pub mod prefix_trie;
 pub mod query;
 pub mod replay;
 pub mod spot_cursor;
 pub mod streaming_reader;
 pub mod types;
+pub mod vector_arena;
 
 pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
 pub use binary_index_store::BinaryIndexStore;
+pub use fluree_db_core::PrefixTrie;
 pub use global_dict::{GlobalDicts, LanguageTagDict, PredicateDict, StringValueDict, SubjectDict};
 pub use index_build::{
     build_all_indexes, build_index, build_spot_index, precompute_language_dict, IndexBuildConfig,
     IndexBuildResult,
 };
 pub use index_root::{
-    BinaryGarbageRef, BinaryIndexRootV2, BinaryPrevIndexRef, CasArtifactsConfig, DictAddresses,
-    DictTreeAddresses, GraphAddresses, GraphEntryV2, GraphOrderAddresses,
-    BINARY_INDEX_ROOT_VERSION_V2,
+    BinaryGarbageRef, BinaryIndexRoot, BinaryPrevIndexRef, CasArtifactsConfig, DictRefs,
+    DictTreeRefs, GraphEntry, GraphOrderRefs, GraphRefs, VectorDictRef, BINARY_INDEX_ROOT_VERSION,
 };
 pub use lang_remap::build_lang_remap;
 pub use leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCache, LeafletCacheKey};
 pub use merge::KWayMerge;
 pub use novelty_merge::{merge_novelty, MergeInput, MergeOutput};
-pub use prefix_trie::PrefixTrie;
 pub use query::SpotQuery;
 pub use replay::{replay_leaflet, ReplayedLeaflet};
 pub use resolver::{CommitResolver, ResolverError};
@@ -68,15 +67,9 @@ pub use spot_cursor::SpotCursor;
 pub use streaming_reader::StreamingRunReader;
 pub use types::{sort_overlay_ops, OverlayOp};
 
-use fluree_db_core::StorageRead;
-use fluree_db_novelty::commit_v2::{read_commit_envelope, CommitV2Error};
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-
-// ============================================================================
-// generate_runs: top-level pipeline
-// ============================================================================
 
 /// Result of run generation.
 #[derive(Debug)]
@@ -108,46 +101,6 @@ pub struct RunGenerationResult {
     pub total_retracts: u64,
 }
 
-/// Errors from the run generation pipeline.
-#[derive(Debug)]
-pub enum RunGenError {
-    Storage(String),
-    CommitV2(CommitV2Error),
-    Resolver(ResolverError),
-    Io(io::Error),
-}
-
-impl From<CommitV2Error> for RunGenError {
-    fn from(e: CommitV2Error) -> Self {
-        Self::CommitV2(e)
-    }
-}
-
-impl From<ResolverError> for RunGenError {
-    fn from(e: ResolverError) -> Self {
-        Self::Resolver(e)
-    }
-}
-
-impl From<io::Error> for RunGenError {
-    fn from(e: io::Error) -> Self {
-        Self::Io(e)
-    }
-}
-
-impl std::fmt::Display for RunGenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Storage(msg) => write!(f, "storage: {}", msg),
-            Self::CommitV2(e) => write!(f, "commit-v2: {}", e),
-            Self::Resolver(e) => write!(f, "resolver: {}", e),
-            Self::Io(e) => write!(f, "I/O: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for RunGenError {}
-
 /// Persist namespace map to `{run_dir}/namespaces.json`.
 ///
 /// Writes a stable JSON array sorted by code for deterministic ordering:
@@ -173,130 +126,4 @@ pub fn persist_namespaces(ns_prefixes: &HashMap<u16, String>, run_dir: &Path) ->
         "namespace map persisted"
     );
     Ok(())
-}
-
-/// Walk the binary commit chain from `head_commit_address` back to genesis,
-/// resolve all ops to global numeric IDs, and produce sorted SPOT run files.
-///
-/// # Pipeline
-///
-/// 1. Walk commit chain backwards (envelope-only reads) to collect addresses.
-/// 2. Reverse to forward (chronological) order.
-/// 3. For each commit: load full blob → `load_commit_ops` → resolve → emit RunRecords.
-/// 4. Flush remaining buffer → return run files + stats.
-///
-/// The commit blobs are read from storage twice: once for the fast backward
-/// envelope scan, once for full resolution. OS page cache handles the
-/// common case where blobs fit in memory.
-pub async fn generate_runs<S: StorageRead>(
-    storage: &S,
-    head_commit_address: &str,
-    _ledger_alias: &str,
-    config: RunWriterConfig,
-) -> Result<RunGenerationResult, RunGenError> {
-    let _span = tracing::info_span!("generate_runs", head = %head_commit_address).entered();
-
-    // Ensure run directory exists
-    std::fs::create_dir_all(&config.run_dir)?;
-
-    // ---- Phase 1: Walk backward to collect commit addresses ----
-    let addresses = {
-        let _walk_span = tracing::info_span!("walk_commit_chain").entered();
-        let mut addrs = Vec::new();
-        let mut current = Some(head_commit_address.to_string());
-
-        while let Some(addr) = current {
-            let bytes = storage
-                .read_bytes(&addr)
-                .await
-                .map_err(|e| RunGenError::Storage(format!("read {}: {}", addr, e)))?;
-            let envelope = read_commit_envelope(&bytes)?;
-            current = envelope.previous_address().map(String::from);
-            addrs.push(addr);
-        }
-
-        addrs.reverse(); // chronological order (genesis first)
-        tracing::info!(commit_count = addrs.len(), "commit chain traversed");
-        addrs
-    };
-
-    // ---- Phase 2: Initialize resolver + writer + dicts ----
-    let run_dir = config.run_dir.clone();
-    let mut dicts = GlobalDicts::new(&run_dir)?;
-    let mut resolver = CommitResolver::new();
-    let mut writer = RunWriter::new(config);
-
-    // ---- Phase 3: Resolve commits in forward order ----
-    // Accumulate commit statistics
-    let mut total_commit_size = 0u64;
-    let mut total_asserts = 0u64;
-    let mut total_retracts = 0u64;
-
-    for (i, addr) in addresses.iter().enumerate() {
-        let bytes = storage
-            .read_bytes(addr)
-            .await
-            .map_err(|e| RunGenError::Storage(format!("read {}: {}", addr, e)))?;
-
-        let resolved = resolver.resolve_blob(&bytes, addr, &mut dicts, &mut writer)?;
-
-        // Accumulate totals
-        total_commit_size += resolved.size;
-        total_asserts += resolved.asserts as u64;
-        total_retracts += resolved.retracts as u64;
-
-        tracing::debug!(
-            commit = i + 1,
-            t = resolved.t,
-            ops = resolved.total_records,
-            subjects = dicts.subjects.len(),
-            predicates = dicts.predicates.len(),
-            "commit resolved"
-        );
-    }
-
-    // ---- Phase 4: Finish and return results ----
-    let writer_result = writer.finish(&mut dicts.languages)?;
-
-    // Persist dictionaries for Phase C (index build)
-    dicts.persist(&run_dir)?;
-
-    // Persist namespace map for query-time IRI encoding
-    persist_namespaces(resolver.ns_prefixes(), &run_dir)?;
-
-    // Persist subject reverse hash index for O(log N) IRI → s_id lookup
-    dicts
-        .subjects
-        .write_reverse_index(&run_dir.join("subjects.rev"))?;
-
-    // Persist string reverse hash index for O(log N) string → str_id lookup
-    dicts
-        .strings
-        .write_reverse_index(&run_dir.join("strings.rev"))?;
-
-    let result = RunGenerationResult {
-        run_files: writer_result.run_files,
-        subject_count: dicts.subjects.len(),
-        predicate_count: dicts.predicates.len(),
-        string_count: dicts.strings.len(),
-        needs_wide: dicts.subjects.needs_wide(),
-        total_records: writer_result.total_records,
-        commit_count: addresses.len(),
-        stats_hook: resolver.take_stats_hook(),
-        total_commit_size,
-        total_asserts,
-        total_retracts,
-    };
-
-    tracing::info!(
-        run_files = result.run_files.len(),
-        total_records = result.total_records,
-        subjects = result.subject_count,
-        predicates = result.predicate_count,
-        strings = result.string_count,
-        commits = result.commit_count,
-        "run generation complete"
-    );
-
-    Ok(result)
 }

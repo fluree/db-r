@@ -147,7 +147,7 @@ impl<B: SearchBackend> SearchService<B> {
         let (index_t, hits) = self
             .backend
             .search(
-                &request.vg_alias,
+                &request.graph_source_id,
                 &request.query,
                 limit,
                 request.as_of_t,
@@ -258,7 +258,7 @@ mod tests {
     impl SearchBackend for MockBackend {
         async fn search(
             &self,
-            _vg_alias: &str,
+            _graph_source_id: &str,
             _query: &QueryVariant,
             _limit: usize,
             _as_of_t: Option<i64>,
@@ -277,7 +277,7 @@ mod tests {
     async fn test_service_handle_request() {
         let service = SearchService::with_defaults(MockBackend::new());
 
-        let request = SearchRequest::bm25("vg:main", "test query", 10);
+        let request = SearchRequest::bm25("search:main", "test query", 10);
         let response = service.handle_request(request).await.unwrap();
 
         assert_eq!(response.index_t, 100);
@@ -289,7 +289,7 @@ mod tests {
     async fn test_service_unsupported_protocol() {
         let service = SearchService::with_defaults(MockBackend::new());
 
-        let mut request = SearchRequest::bm25("vg:main", "test query", 10);
+        let mut request = SearchRequest::bm25("search:main", "test query", 10);
         request.protocol_version = "0.0".to_string();
 
         let result = service.handle_request(request).await;
@@ -302,7 +302,7 @@ mod tests {
     async fn test_service_unsupported_query_type() {
         let service = SearchService::with_defaults(MockBackend::new());
 
-        let request = SearchRequest::vector("vg:main", vec![1.0, 2.0], 10);
+        let request = SearchRequest::vector("search:main", vec![1.0, 2.0], 10);
         let result = service.handle_request(request).await;
 
         assert!(result.is_err());
@@ -329,7 +329,7 @@ mod tests {
         let service = SearchService::new(MockBackend::new(), config);
 
         // Request with limit > max should be clamped (no error)
-        let request = SearchRequest::bm25("vg:main", "test", 100);
+        let request = SearchRequest::bm25("search:main", "test", 100);
         let result = service.handle_request(request).await;
 
         // Should succeed (limit is clamped, not rejected)

@@ -23,7 +23,6 @@ use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
-use fluree_db_core::Sid;
 use fluree_db_query::binding::Binding;
 use fluree_db_query::VarRegistry;
 use serde_json::{json, Map, Value as JsonValue};
@@ -120,15 +119,7 @@ fn format_binding(
 ) -> Result<Option<JsonValue>> {
     // Late materialization for encoded bindings.
     if binding.is_encoded() {
-        let store = result.binary_store.as_ref().ok_or_else(|| {
-            FormatError::InvalidBinding(
-                "Encountered encoded binding during formatting but QueryResult has no binary_store"
-                    .to_string(),
-            )
-        })?;
-        let materialized = materialize_encoded_binding(binding, store).map_err(|e| {
-            FormatError::InvalidBinding(format!("Failed to materialize encoded binding: {}", e))
-        })?;
+        let materialized = super::materialize::materialize_binding(result, binding)?;
         return format_binding(result, &materialized, compactor);
     }
 
@@ -170,7 +161,7 @@ fn format_binding(
             }
         }
 
-        // Raw IRI string (from virtual graph, not in namespace table)
+        // Raw IRI string (from graph source, not in namespace table)
         Binding::Iri(iri) => {
             // Check if it's a blank node (starts with _:)
             if iri.starts_with("_:") {
@@ -362,65 +353,7 @@ fn format_binding(
     }
 }
 
-/// Materialize any encoded binding to its decoded form.
-fn materialize_encoded_binding(
-    binding: &Binding,
-    store: &fluree_db_indexer::run_index::BinaryIndexStore,
-) -> std::io::Result<Binding> {
-    match binding {
-        Binding::EncodedSid { s_id } => {
-            let iri = store.resolve_subject_iri(*s_id)?;
-            let sid = store.encode_iri(&iri);
-            Ok(Binding::Sid(sid))
-        }
-        Binding::EncodedPid { p_id } => match store.resolve_predicate_iri(*p_id) {
-            Some(iri) => Ok(Binding::Sid(store.encode_iri(iri))),
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Unknown predicate ID: {}", p_id),
-            )),
-        },
-        Binding::EncodedLit { .. } => materialize_encoded_lit(binding, store),
-        _ => Ok(binding.clone()),
-    }
-}
-
-fn materialize_encoded_lit(
-    binding: &Binding,
-    store: &fluree_db_indexer::run_index::BinaryIndexStore,
-) -> std::io::Result<Binding> {
-    let Binding::EncodedLit {
-        o_kind,
-        o_key,
-        p_id,
-        dt_id,
-        lang_id,
-        i_val,
-        t,
-    } = binding
-    else {
-        return Ok(binding.clone());
-    };
-    let val = store.decode_value(*o_kind, *o_key, *p_id)?;
-    match val {
-        FlakeValue::Ref(sid) => Ok(Binding::Sid(sid)),
-        other => {
-            let dt_sid = store
-                .dt_sids()
-                .get(*dt_id as usize)
-                .cloned()
-                .unwrap_or_else(|| Sid::new(0, ""));
-            let meta = store.decode_meta(*lang_id, *i_val);
-            Ok(Binding::Lit {
-                val: other,
-                dt: dt_sid,
-                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
-                t: Some(*t),
-                op: None,
-            })
-        }
-    }
-}
+// NOTE: encoded binding materialization is centralized in `format::materialize`.
 
 /// Disaggregate grouped bindings into multiple rows (cartesian product)
 ///

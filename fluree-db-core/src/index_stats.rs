@@ -85,12 +85,32 @@ pub struct ClassStatEntry {
 
 /// Property usage within a class.
 ///
-/// Intentionally just the property identity. Detailed counts and datatype
-/// distributions are tracked in graph-scoped property stats (`IndexStats.graphs`).
+/// Intentionally avoids duplicating full per-property stats (counts/NDV/datatypes),
+/// which are tracked in graph-scoped property stats (`IndexStats.graphs`).
+///
+/// This structure is meant for:
+/// - class-policy indexing (which properties appear on instances of a class)
+/// - ontology / schema visualization (class→property edges, ref target classes)
 #[derive(Debug, Clone)]
 pub struct ClassPropertyUsage {
     /// The property SID.
     pub property_sid: Sid,
+    /// For reference-valued properties, counts by target class.
+    ///
+    /// Each entry indicates how many reference assertions of this property (from
+    /// instances of the owning class) point to instances of the target class.
+    ///
+    /// Stored sorted by `class_sid` for determinism.
+    pub ref_classes: Vec<ClassRefCount>,
+}
+
+/// Reference target class counts for a class-scoped property.
+#[derive(Debug, Clone)]
+pub struct ClassRefCount {
+    /// Target class SID (rdf:type of the referenced object).
+    pub class_sid: Sid,
+    /// Count of reference assertions pointing to this class.
+    pub count: u64,
 }
 
 // === Graph-Scoped Statistics (ID-Based) ===

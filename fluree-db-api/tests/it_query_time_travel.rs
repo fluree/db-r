@@ -3,7 +3,7 @@
 //! Parity reference: `db-clojure/test/fluree/db/query/time_travel_test.clj`
 //!
 //! Focus:
-//! - `query_connection` `"from"` entries containing `@t:`, `@iso:`, `@sha:`
+//! - `query_connection` `"from"` entries containing `@t:`, `@iso:`, `@commit:`
 //! - Error cases for invalid formats and missing values
 //! - Branch interaction (`ledger:main@t:<t>`)
 
@@ -31,9 +31,9 @@ fn ctx_test() -> JsonValue {
 
 async fn seed_time_travel_ledger(
     fluree: &MemoryFluree,
-    alias: &str,
+    ledger_id: &str,
 ) -> (MemoryLedger, String, std::collections::HashMap<i64, String>) {
-    let ledger0 = genesis_ledger(fluree, alias);
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     // Record wallclock times for ISO time-travel tests.
     // We record times AFTER each commit to ensure they're at or after the commit's actual timestamp.
@@ -45,7 +45,7 @@ async fn seed_time_travel_ledger(
         "@graph": [{"@id":"test:person1","@type":"Person","name":"Alice","age":30}]
     });
     let out1 = fluree.insert(ledger0, &tx1).await.expect("insert t=1");
-    let commit_id_t1 = out1.receipt.commit_id.clone();
+    let commit_hex_t1 = out1.receipt.commit_id.digest_hex();
     let ledger1 = out1.ledger;
     let time_t1 = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     iso_by_t.insert(1, time_t1);
@@ -81,12 +81,12 @@ async fn seed_time_travel_ledger(
     let time_t3 = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     iso_by_t.insert(3, time_t3);
 
-    (ledger3, commit_id_t1, iso_by_t)
+    (ledger3, commit_hex_t1, iso_by_t)
 }
 
 async fn query_names_at(
     fluree: &MemoryFluree,
-    db_for_formatting: &fluree_db_core::Db<fluree_db_core::MemoryStorage>,
+    db_for_formatting: &fluree_db_core::Db,
     from_spec: &str,
 ) -> Vec<Vec<JsonValue>> {
     let q = json!({
@@ -121,60 +121,58 @@ async fn query_names_at(
 async fn time_travel_query_connection_at_t_iso_and_sha() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/time-travel-test";
+    let ledger_id = "it/time-travel-test";
 
-    let (ledger3, commit_id_t1, iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let (ledger3, commit_hex_t1, iso_by_t) = seed_time_travel_ledger(&fluree, ledger_id).await;
     let iso_t1 = iso_by_t.get(&1).expect("iso for t=1").clone();
 
     // @t:
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@t:1")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:1")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@t:2")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:2")).await,
         normalize_rows_array(&json!([["Alice"], ["Bob"]]))
     );
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@t:3")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:3")).await,
         normalize_rows_array(&json!([["Alice"], ["Bob"], ["Carol"]]))
     );
 
     // @iso: (use commit timestamp for t=1; should resolve to exactly t=1)
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@iso:{iso_t1}")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@iso:{iso_t1}")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
 
     // Also ensure @iso: at "now" returns head state.
     let iso_now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@iso:{iso_now}")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@iso:{iso_now}")).await,
         normalize_rows_array(&json!([["Alice"], ["Bob"], ["Carol"]]))
     );
 
-    // @sha:
-    // Accept either `fluree:commit:sha256:<hex>` or `sha256:<hex>` depending on commit-id formatting.
-    let full_hash = commit_id_t1
-        .strip_prefix("fluree:commit:sha256:")
-        .or_else(|| commit_id_t1.strip_prefix("sha256:"))
-        .unwrap_or(commit_id_t1.as_str());
-    let sha_7 = &full_hash[..std::cmp::min(7, full_hash.len())];
-    // Clojure uses base32 (52 chars). Rust currently uses hex (64 chars). Either way,
-    // we just want to prove full-length prefixes resolve correctly.
-    let sha_52 = &full_hash[..std::cmp::min(52, full_hash.len())];
-    let sha_6 = &full_hash[..std::cmp::min(6, full_hash.len())];
+    // @commit: — uses hex SHA-256 digest from the ContentId
+    let sha_7 = &commit_hex_t1[..7];
+    let sha_52 = &commit_hex_t1[..52];
+    let sha_6 = &commit_hex_t1[..6];
 
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@sha:{sha_7}")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@commit:{sha_7}")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@sha:{sha_52}")).await,
+        query_names_at(
+            &fluree,
+            &ledger3.db,
+            &format!("{ledger_id}@commit:{sha_52}")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@sha:{sha_6}")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@commit:{sha_6}")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
 }
@@ -183,12 +181,12 @@ async fn time_travel_query_connection_at_t_iso_and_sha() {
 async fn time_travel_invalid_format_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/time-travel-invalid";
-    let (ledger3, _commit_id_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let ledger_id = "it/time-travel-invalid";
+    let (ledger3, _commit_hex_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, ledger_id).await;
 
     let q = json!({
         "@context": ctx_test(),
-        "from": [format!("{alias}@invalid:format")],
+        "from": [format!("{ledger_id}@invalid:format")],
         "select": ["?s"],
         "where": [{"@id":"?s"}]
     });
@@ -201,7 +199,7 @@ async fn time_travel_invalid_format_errors() {
 
     // sanity: ledger still usable
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@t:1")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:1")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
 }
@@ -210,17 +208,17 @@ async fn time_travel_invalid_format_errors() {
 async fn time_travel_missing_value_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/time-travel-missing";
-    let (_ledger3, _commit_id_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let ledger_id = "it/time-travel-missing";
+    let (_ledger3, _commit_hex_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, ledger_id).await;
 
     for (spec, expect) in [
         ("@t:", "Missing value after '@t:'"),
         ("@iso:", "Missing value after '@iso:'"),
-        ("@sha:", "Missing value after '@sha:'"),
+        ("@commit:", "Missing value after '@commit:'"),
     ] {
         let q = json!({
             "@context": ctx_test(),
-            "from": [format!("{alias}{spec}")],
+            "from": [format!("{ledger_id}{spec}")],
             "select": ["?s"],
             "where": [{"@id":"?s"}]
         });
@@ -233,12 +231,12 @@ async fn time_travel_missing_value_errors() {
 async fn time_travel_nonexistent_sha_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/time-travel-no-sha";
-    let (_ledger3, _commit_id_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let ledger_id = "it/time-travel-no-sha";
+    let (_ledger3, _commit_hex_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, ledger_id).await;
 
     let q = json!({
         "@context": ctx_test(),
-        "from": [format!("{alias}@sha:zzzzzz")],
+        "from": [format!("{ledger_id}@commit:zzzzzz")],
         "select": ["?name"],
         "where": [{"@id":"?s","name":"?name"}],
         "orderBy": ["?name"]
@@ -255,8 +253,8 @@ async fn time_travel_nonexistent_sha_errors() {
 async fn time_travel_iso_too_early_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/time-travel-iso-too-early";
-    let (ledger3, _commit_id_t1, iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let ledger_id = "it/time-travel-iso-too-early";
+    let (ledger3, _commit_hex_t1, iso_by_t) = seed_time_travel_ledger(&fluree, ledger_id).await;
     let iso_t1 = iso_by_t.get(&1).expect("iso for t=1").clone();
 
     // Compute a time before the first commit.
@@ -265,7 +263,7 @@ async fn time_travel_iso_too_early_errors() {
 
     let q = json!({
         "@context": ctx_test(),
-        "from": [format!("{alias}@iso:{too_early}")],
+        "from": [format!("{ledger_id}@iso:{too_early}")],
         "select": ["?name"],
         "where": [{"@id":"?s","name":"?name"}],
         "orderBy": ["?name"]
@@ -279,7 +277,7 @@ async fn time_travel_iso_too_early_errors() {
 
     // sanity: querying at t=1 still works
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@t:1")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:1")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
 }
@@ -288,8 +286,8 @@ async fn time_travel_iso_too_early_errors() {
 async fn time_travel_iso_between_commits_resolves_to_previous_commit() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/time-travel-iso-between";
-    let (ledger3, _commit_id_t1, iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let ledger_id = "it/time-travel-iso-between";
+    let (ledger3, _commit_hex_t1, iso_by_t) = seed_time_travel_ledger(&fluree, ledger_id).await;
 
     let iso1 = iso_by_t.get(&1).expect("iso for t=1");
     let iso2 = iso_by_t.get(&2).expect("iso for t=2");
@@ -325,26 +323,26 @@ async fn time_travel_iso_between_commits_resolves_to_previous_commit() {
 
     // Mid between t1 and t2 should resolve to t1
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@iso:{mid_12}")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@iso:{mid_12}")).await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     // Mid between t2 and t3 should resolve to t2
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{alias}@iso:{mid_23}")).await,
+        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@iso:{mid_23}")).await,
         normalize_rows_array(&json!([["Alice"], ["Bob"]]))
     );
 }
 
 #[tokio::test]
-async fn time_travel_sha_prefix_too_short_errors() {
+async fn time_travel_commit_prefix_too_short_errors() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/time-travel-sha-too-short";
-    let (_ledger3, _commit_id_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, alias).await;
+    let ledger_id = "it/time-travel-commit-too-short";
+    let (_ledger3, _commit_hex_t1, _iso_by_t) = seed_time_travel_ledger(&fluree, ledger_id).await;
 
     let q = json!({
         "@context": ctx_test(),
-        "from": [format!("{alias}@sha:abcde")],
+        "from": [format!("{ledger_id}@commit:abcde")],
         "select": ["?name"],
         "where": [{"@id":"?s","name":"?name"}],
         "orderBy": ["?name"]
@@ -361,9 +359,9 @@ async fn time_travel_branch_interaction_main_at_t() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let base = "it/branch-time-test";
-    let alias = format!("{base}:main");
+    let ledger_id = format!("{base}:main");
 
-    let ledger0 = genesis_ledger(&fluree, &alias);
+    let ledger0 = genesis_ledger(&fluree, &ledger_id);
     let out = fluree
         .insert(
             ledger0,
@@ -379,7 +377,7 @@ async fn time_travel_branch_interaction_main_at_t() {
 
     let q = json!({
         "@context": ctx_test(),
-        "from": [format!("{alias}@t:{t_main}")],
+        "from": [format!("{ledger_id}@t:{t_main}")],
         "select": ["?s", "?value"],
         "where": [{"@id":"?s","value":"?value"}]
     });

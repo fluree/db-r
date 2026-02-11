@@ -20,7 +20,7 @@ Storage backend options:
 - File system storage (single server)
 - AWS S3/DynamoDB (distributed)
 - Storage selection criteria
-- Migration between storage modes
+- Switching between storage modes
 
 ### [DynamoDB Nameservice](dynamodb-guide.md)
 

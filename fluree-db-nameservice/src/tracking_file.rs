@@ -1,7 +1,7 @@
 //! File-based implementation of [`RemoteTrackingStore`]
 //!
-//! Stores tracking records at `{base_path}/ns-sync/remotes/{remote_name}/{alias_encoded}.json`.
-//! Aliases are percent-encoded to handle `:` and `/` safely in filenames.
+//! Stores tracking records at `{base_path}/ns-sync/remotes/{remote_name}/{address_encoded}.json`.
+//! Ledger IDs are percent-encoded to handle `:` and `/` safely in filenames.
 //!
 //! This module is only available with the `native` feature (requires filesystem access).
 
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// File-based tracking store.
 ///
 /// Stores tracking state outside the `ns@v2/` tree at:
-/// `{base_path}/ns-sync/remotes/{remote}/{alias_encoded}.json`
+/// `{base_path}/ns-sync/remotes/{remote}/{address_encoded}.json`
 #[derive(Debug)]
 pub struct FileTrackingStore {
     base_path: PathBuf,
@@ -40,18 +40,18 @@ impl FileTrackingStore {
     }
 
     /// Full path to a tracking record file.
-    fn record_path(&self, remote: &RemoteName, alias: &str) -> PathBuf {
+    fn record_path(&self, remote: &RemoteName, ledger_id: &str) -> PathBuf {
         self.remote_dir(remote)
-            .join(format!("{}.json", encode_alias(alias)))
+            .join(format!("{}.json", encode_address(ledger_id)))
     }
 }
 
-/// Percent-encode an alias for use as a filename.
+/// Percent-encode a ledger ID for use as a filename.
 ///
 /// Encodes `:`, `/`, `\`, and `%` to avoid path traversal and filesystem issues.
-fn encode_alias(alias: &str) -> String {
-    let mut encoded = String::with_capacity(alias.len());
-    for ch in alias.chars() {
+fn encode_address(address: &str) -> String {
+    let mut encoded = String::with_capacity(address.len());
+    for ch in address.chars() {
         match ch {
             '%' => encoded.push_str("%25"),
             ':' => encoded.push_str("%3A"),
@@ -63,9 +63,9 @@ fn encode_alias(alias: &str) -> String {
     encoded
 }
 
-/// Decode a percent-encoded alias filename back to the original alias.
+/// Decode a percent-encoded address filename back to the original address.
 #[cfg(test)]
-fn decode_alias(encoded: &str) -> String {
+fn decode_address(encoded: &str) -> String {
     let mut decoded = String::with_capacity(encoded.len());
     let mut chars = encoded.chars();
     while let Some(ch) = chars.next() {
@@ -93,9 +93,9 @@ impl RemoteTrackingStore for FileTrackingStore {
     async fn get_tracking(
         &self,
         remote: &RemoteName,
-        alias: &str,
+        ledger_id: &str,
     ) -> Result<Option<TrackingRecord>> {
-        let path = self.record_path(remote, alias);
+        let path = self.record_path(remote, ledger_id);
         let path_clone = path.clone();
 
         tokio::task::spawn_blocking(move || match std::fs::read_to_string(&path_clone) {
@@ -115,7 +115,7 @@ impl RemoteTrackingStore for FileTrackingStore {
     }
 
     async fn set_tracking(&self, record: &TrackingRecord) -> Result<()> {
-        let path = self.record_path(&record.remote, &record.alias);
+        let path = self.record_path(&record.remote, &record.ledger_id);
         let json = serde_json::to_string_pretty(record)?;
 
         tokio::task::spawn_blocking(move || {
@@ -209,8 +209,8 @@ impl RemoteTrackingStore for FileTrackingStore {
         .map_err(|e| NameServiceError::storage(format!("Task join error: {}", e)))?
     }
 
-    async fn remove_tracking(&self, remote: &RemoteName, alias: &str) -> Result<()> {
-        let path = self.record_path(remote, alias);
+    async fn remove_tracking(&self, remote: &RemoteName, ledger_id: &str) -> Result<()> {
+        let path = self.record_path(remote, ledger_id);
 
         tokio::task::spawn_blocking(move || match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -237,21 +237,21 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_decode_alias() {
-        let alias = "mydb:main";
-        let encoded = encode_alias(alias);
+    fn test_encode_decode_address() {
+        let address = "mydb:main";
+        let encoded = encode_address(address);
         assert_eq!(encoded, "mydb%3Amain");
-        assert_eq!(decode_alias(&encoded), alias);
+        assert_eq!(decode_address(&encoded), address);
 
-        let alias_with_slash = "org/mydb:main";
-        let encoded2 = encode_alias(alias_with_slash);
+        let address_with_slash = "org/mydb:main";
+        let encoded2 = encode_address(address_with_slash);
         assert_eq!(encoded2, "org%2Fmydb%3Amain");
-        assert_eq!(decode_alias(&encoded2), alias_with_slash);
+        assert_eq!(decode_address(&encoded2), address_with_slash);
 
         // Roundtrip for percent
         let with_percent = "a%b:c";
-        let enc = encode_alias(with_percent);
-        assert_eq!(decode_alias(&enc), with_percent);
+        let enc = encode_address(with_percent);
+        assert_eq!(decode_address(&enc), with_percent);
     }
 
     #[tokio::test]
@@ -268,10 +268,7 @@ mod tests {
         let store = FileTrackingStore::new(tmp.path());
 
         let mut record = TrackingRecord::new(origin(), "mydb:main");
-        record.commit_ref = Some(RefValue {
-            address: Some("commit-1".to_string()),
-            t: 5,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 5 });
 
         store.set_tracking(&record).await.unwrap();
 
@@ -280,7 +277,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(fetched.alias, "mydb:main");
+        assert_eq!(fetched.ledger_id, "mydb:main");
         assert_eq!(fetched.commit_ref.as_ref().unwrap().t, 5);
     }
 
@@ -381,16 +378,10 @@ mod tests {
         let store = FileTrackingStore::new(tmp.path());
 
         let mut record = TrackingRecord::new(origin(), "mydb:main");
-        record.commit_ref = Some(RefValue {
-            address: Some("commit-1".to_string()),
-            t: 1,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 1 });
         store.set_tracking(&record).await.unwrap();
 
-        record.commit_ref = Some(RefValue {
-            address: Some("commit-2".to_string()),
-            t: 5,
-        });
+        record.commit_ref = Some(RefValue { id: None, t: 5 });
         store.set_tracking(&record).await.unwrap();
 
         let fetched = store

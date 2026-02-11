@@ -81,33 +81,33 @@ impl PeerSyncTask {
                 RemoteEvent::LedgerUpdated(record) => {
                     self.handle_ledger_updated(&record).await;
                 }
-                RemoteEvent::LedgerRetracted { alias } => {
-                    self.handle_ledger_retracted(&alias).await;
+                RemoteEvent::LedgerRetracted { ledger_id } => {
+                    self.handle_ledger_retracted(&ledger_id).await;
                 }
-                RemoteEvent::VgUpdated(record) => {
-                    let alias = record.alias();
-                    let config_hash = vg_config_hash(&record.config);
+                RemoteEvent::GraphSourceUpdated(record) => {
+                    let graph_source_id = record.graph_source_id.clone();
+                    let config_hash = graph_source_config_hash(&record.config);
                     let changed = self
                         .peer_state
-                        .update_vg(
-                            &alias,
+                        .update_graph_source(
+                            &graph_source_id,
                             record.index_t,
                             config_hash,
-                            record.index_address.clone(),
+                            record.index_id.as_ref().map(|id| id.to_string()),
                         )
                         .await;
 
                     if changed {
                         tracing::info!(
-                            alias = %alias,
+                            graph_source_id = %graph_source_id,
                             index_t = record.index_t,
-                            "Remote VG watermark updated"
+                            "Remote graph source watermark updated"
                         );
                     }
                 }
-                RemoteEvent::VgRetracted { alias } => {
-                    self.peer_state.remove_vg(&alias).await;
-                    tracing::info!(alias = %alias, "VG retracted from remote");
+                RemoteEvent::GraphSourceRetracted { graph_source_id } => {
+                    self.peer_state.remove_graph_source(&graph_source_id).await;
+                    tracing::info!(graph_source_id = %graph_source_id, "Graph source retracted from remote");
                 }
             }
         }
@@ -119,12 +119,12 @@ impl PeerSyncTask {
         let ns = self.fluree.nameservice();
 
         // 1. Ensure ledger exists locally (idempotent)
-        match ns.publish_ledger_init(&record.address).await {
+        match ns.publish_ledger_init(&record.ledger_id).await {
             Ok(()) => {}
             Err(NameServiceError::LedgerAlreadyExists(_)) => {}
             Err(e) => {
                 tracing::warn!(
-                    alias = %record.address,
+                    alias = %record.ledger_id,
                     error = %e,
                     "Failed to init ledger locally"
                 );
@@ -133,32 +133,32 @@ impl PeerSyncTask {
         }
 
         // 2. Fast-forward commit head (if record has a commit)
-        if record.commit_address.is_some() {
+        if record.commit_head_id.is_some() {
             let commit_ref = RefValue {
-                address: record.commit_address.clone(),
+                id: record.commit_head_id.clone(),
                 t: record.commit_t,
             };
             match ns
-                .fast_forward_commit(&record.address, &commit_ref, 3)
+                .fast_forward_commit(&record.ledger_id, &commit_ref, 3)
                 .await
             {
                 Ok(CasResult::Updated) => {}
                 Ok(CasResult::Conflict { actual }) => {
                     // Local diverged — server is authoritative in Mode B, force-follow.
                     tracing::warn!(
-                        alias = %record.address,
+                        alias = %record.ledger_id,
                         ?actual,
                         remote_t = record.commit_t,
                         "Local commit diverged from server, force-following"
                     );
-                    self.fluree.disconnect_ledger(&record.address).await;
+                    self.fluree.disconnect_ledger(&record.ledger_id).await;
                     if let Some(ref cur) = actual {
                         if cur.t > record.commit_t {
                             // This should never happen in peer Mode B (writes are forwarded),
                             // but if it does, we cannot "force-follow" due to the strict
                             // monotonic guard for commit refs (new.t must be > current.t).
                             tracing::error!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 local_t = cur.t,
                                 remote_t = record.commit_t,
                                 "Local commit_t is ahead of remote; refusing to force-follow"
@@ -168,7 +168,7 @@ impl PeerSyncTask {
                     }
                     let force_result = ns
                         .compare_and_set_ref(
-                            &record.address,
+                            &record.ledger_id,
                             RefKind::CommitHead,
                             actual.as_ref(),
                             &commit_ref,
@@ -178,14 +178,14 @@ impl PeerSyncTask {
                     match force_result {
                         Ok(CasResult::Updated) => {
                             tracing::info!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 commit_t = record.commit_t,
                                 "Force-follow CAS updated local commit head"
                             );
                         }
                         Ok(CasResult::Conflict { actual: new_actual }) => {
                             tracing::warn!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 ?new_actual,
                                 remote_t = record.commit_t,
                                 "Force-follow CAS still conflicted (local may remain divergent)"
@@ -193,7 +193,7 @@ impl PeerSyncTask {
                         }
                         Err(e) => {
                             tracing::warn!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 error = %e,
                                 "Force-follow CAS failed"
                             );
@@ -202,7 +202,7 @@ impl PeerSyncTask {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        alias = %record.address,
+                        alias = %record.ledger_id,
                         error = %e,
                         "Failed to fast-forward commit"
                     );
@@ -212,19 +212,19 @@ impl PeerSyncTask {
         }
 
         // 3. Update index head — read current first, NOT expected=None
-        if record.index_address.is_some() {
+        if record.index_head_id.is_some() {
             let index_ref = RefValue {
-                address: record.index_address.clone(),
+                id: record.index_head_id.clone(),
                 t: record.index_t,
             };
             let current = ns
-                .get_ref(&record.address, RefKind::IndexHead)
+                .get_ref(&record.ledger_id, RefKind::IndexHead)
                 .await
                 .ok()
                 .flatten();
             let index_result = ns
                 .compare_and_set_ref(
-                    &record.address,
+                    &record.ledger_id,
                     RefKind::IndexHead,
                     current.as_ref(),
                     &index_ref,
@@ -236,7 +236,7 @@ impl PeerSyncTask {
                     if let Some(ref cur) = actual {
                         if cur.t > record.index_t {
                             tracing::warn!(
-                                alias = %record.address,
+                                alias = %record.ledger_id,
                                 local_index_t = cur.t,
                                 remote_index_t = record.index_t,
                                 "Local index_t is ahead of remote; index ref not updated"
@@ -246,7 +246,7 @@ impl PeerSyncTask {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        alias = %record.address,
+                        alias = %record.ledger_id,
                         error = %e,
                         "Failed to update index ref"
                     );
@@ -258,17 +258,17 @@ impl PeerSyncTask {
         let changed = self
             .peer_state
             .update_ledger(
-                &record.address,
+                &record.ledger_id,
                 record.commit_t,
                 record.index_t,
-                record.commit_address.clone(),
-                record.index_address.clone(),
+                record.commit_head_id.as_ref().map(|id| id.to_string()),
+                record.index_head_id.as_ref().map(|id| id.to_string()),
             )
             .await;
 
         if changed {
             tracing::info!(
-                alias = %record.address,
+                alias = %record.ledger_id,
                 commit_t = record.commit_t,
                 index_t = record.index_t,
                 "Remote ledger watermark updated (persisted to local NS)"
@@ -280,24 +280,24 @@ impl PeerSyncTask {
     }
 
     /// Retract ledger locally and evict from cache.
-    async fn handle_ledger_retracted(&self, alias: &str) {
+    async fn handle_ledger_retracted(&self, ledger_id: &str) {
         // 1. Retract via Publisher::retract()
         let ns = self.fluree.nameservice();
-        if let Err(e) = ns.retract(alias).await {
+        if let Err(e) = ns.retract(ledger_id).await {
             tracing::warn!(
-                alias = %alias,
+                ledger_id = %ledger_id,
                 error = %e,
                 "Failed to retract ledger locally"
             );
         }
 
         // 2. Clear in-memory watermarks
-        self.peer_state.remove_ledger(alias).await;
+        self.peer_state.remove_ledger(ledger_id).await;
 
         // 3. Evict from cache
-        self.fluree.disconnect_ledger(alias).await;
+        self.fluree.disconnect_ledger(ledger_id).await;
 
-        tracing::info!(alias = %alias, "Ledger retracted from remote");
+        tracing::info!(ledger_id = %ledger_id, "Ledger retracted from remote");
     }
 
     /// Notify LedgerManager to refresh a cached ledger from the NS update.
@@ -308,7 +308,7 @@ impl PeerSyncTask {
 
         match mgr
             .notify(NsNotify {
-                alias: record.address.clone(),
+                ledger_id: record.ledger_id.clone(),
                 record: Some(record.clone()),
             })
             .await
@@ -325,14 +325,14 @@ impl PeerSyncTask {
                 | NotifyResult::CommitApplied),
             ) => {
                 tracing::info!(
-                    alias = %record.address,
+                    alias = %record.ledger_id,
                     ?result,
                     "Refreshed cached ledger from SSE update"
                 );
             }
             Err(e) => {
                 tracing::warn!(
-                    alias = %record.address,
+                    alias = %record.ledger_id,
                     error = %e,
                     "Failed to refresh cached ledger from SSE update"
                 );
@@ -347,14 +347,14 @@ impl PeerSyncTask {
             return;
         }
 
-        for alias in &sub.ledgers {
-            match self.fluree.ledger_cached(alias).await {
+        for ledger_id in &sub.ledgers {
+            match self.fluree.ledger_cached(ledger_id).await {
                 Ok(_) => {
-                    tracing::info!(alias = %alias, "Preloaded ledger into peer cache");
+                    tracing::info!(ledger_id = %ledger_id, "Preloaded ledger into peer cache");
                 }
                 Err(e) => {
                     tracing::warn!(
-                        alias = %alias,
+                        ledger_id = %ledger_id,
                         error = %e,
                         "Failed to preload ledger"
                     );
@@ -364,11 +364,11 @@ impl PeerSyncTask {
     }
 }
 
-/// Compute a config hash for VG change detection.
+/// Compute a config hash for graph source change detection.
 ///
-/// Uses SHA-256 truncated to 8 hex chars (4 bytes) to match the server's VG SSE
-/// event ID format. Same algorithm as `VgRecord::config_hash()` in `fluree-db-peer`.
-fn vg_config_hash(config: &str) -> String {
+/// Uses SHA-256 truncated to 8 hex chars (4 bytes) to match the server's graph source SSE
+/// event ID format. Same algorithm as `GraphSourceRecord::config_hash()` in `fluree-db-peer`.
+fn graph_source_config_hash(config: &str) -> String {
     use sha2::{Digest, Sha256};
 
     let hash = Sha256::digest(config.as_bytes());

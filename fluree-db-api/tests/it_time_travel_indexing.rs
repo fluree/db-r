@@ -1,6 +1,6 @@
 //! Time travel + indexing integration tests
 //!
-//! Tests time travel queries (`@t:N`, `@iso:`, `@sha:`) across all 3 indexing scenarios:
+//! Tests time travel queries (`@t:N`, `@iso:`, `@commit:`) across all 3 indexing scenarios:
 //!
 //! - Scenario (a): No index - all data in novelty only
 //! - Scenario (b): Index current - index covers latest t
@@ -17,10 +17,13 @@ use fluree_db_core::{Db, MemoryStorage};
 use fluree_db_nameservice::memory::MemoryNameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
-use support::{assert_index_defaults, start_background_indexer_local};
+use support::{
+    assert_index_defaults, genesis_ledger_for_fluree, start_background_indexer_local,
+    trigger_index_and_wait_outcome,
+};
 
 type MemoryFluree = fluree_db_api::Fluree<MemoryStorage, MemoryNameService>;
-type MemoryLedger = LedgerState<MemoryStorage>;
+type MemoryLedger = LedgerState;
 
 // =============================================================================
 // Shared test setup
@@ -32,11 +35,10 @@ type MemoryLedger = LedgerState<MemoryStorage>;
 /// - t=3: Carol (age 28)
 async fn seed_test_data(
     fluree: &MemoryFluree,
-    alias: &str,
+    ledger_id: &str,
     index_cfg: &IndexConfig,
 ) -> MemoryLedger {
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
-    let mut ledger = LedgerState::new(db0, Novelty::new(0));
+    let mut ledger = genesis_ledger_for_fluree(fluree, ledger_id);
 
     let txns = [
         json!({
@@ -96,7 +98,7 @@ async fn query_names_at(fluree: &MemoryFluree, from_spec: &str) -> Vec<String> {
         .expect("query_connection");
 
     // Load the ledger to get Db for formatting (strip any @t: suffix and #fragment)
-    let ledger_alias = from_spec
+    let ledger_id = from_spec
         .split('@')
         .next()
         .unwrap_or(from_spec)
@@ -104,7 +106,7 @@ async fn query_names_at(fluree: &MemoryFluree, from_spec: &str) -> Vec<String> {
         .next()
         .unwrap_or(from_spec);
     let ledger = fluree
-        .ledger(ledger_alias)
+        .ledger(ledger_id)
         .await
         .expect("ledger for formatting");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
@@ -128,7 +130,7 @@ async fn time_travel_no_index_via_novelty() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/tt-no-index:main";
+    let ledger_id = "it/tt-no-index:main";
 
     // No indexer started - all data stays in novelty
     let index_cfg = IndexConfig {
@@ -136,21 +138,21 @@ async fn time_travel_no_index_via_novelty() {
         reindex_max_bytes: 10_000_000,
     };
 
-    let _ledger = seed_test_data(&fluree, alias, &index_cfg).await;
+    let _ledger = seed_test_data(&fluree, ledger_id, &index_cfg).await;
 
     // Verify no index exists
-    let status = fluree.index_status(alias).await.expect("index_status");
+    let status = fluree.index_status(ledger_id).await.expect("index_status");
     assert_eq!(status.index_t, 0, "should have no index");
     assert_eq!(status.commit_t, 3, "should have commits");
 
     // Time travel queries should work via novelty
-    let names_t1 = query_names_at(&fluree, &format!("{alias}@t:1")).await;
+    let names_t1 = query_names_at(&fluree, &format!("{ledger_id}@t:1")).await;
     assert_eq!(names_t1, vec!["Alice"], "t=1 should have Alice only");
 
-    let names_t2 = query_names_at(&fluree, &format!("{alias}@t:2")).await;
+    let names_t2 = query_names_at(&fluree, &format!("{ledger_id}@t:2")).await;
     assert_eq!(names_t2, vec!["Alice", "Bob"], "t=2 should have Alice, Bob");
 
-    let names_t3 = query_names_at(&fluree, &format!("{alias}@t:3")).await;
+    let names_t3 = query_names_at(&fluree, &format!("{ledger_id}@t:3")).await;
     assert_eq!(
         names_t3,
         vec!["Alice", "Bob", "Carol"],
@@ -158,7 +160,7 @@ async fn time_travel_no_index_via_novelty() {
     );
 
     // Current query (no time spec) should return all
-    let names_current = query_names_at(&fluree, alias).await;
+    let names_current = query_names_at(&fluree, ledger_id).await;
     assert_eq!(
         names_current,
         vec!["Alice", "Bob", "Carol"],
@@ -176,7 +178,7 @@ async fn time_travel_index_current() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/tt-index-current:main";
+    let ledger_id = "it/tt-index-current:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -191,38 +193,35 @@ async fn time_travel_index_current() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            let ledger = seed_test_data(&fluree, alias, &index_cfg).await;
+            let ledger = seed_test_data(&fluree, ledger_id, &index_cfg).await;
 
             // Trigger indexing to latest t and wait
-            let completion = handle.trigger(alias, ledger.t()).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { index_t, .. } => {
-                    assert_eq!(index_t, 3, "should index to t=3");
-                }
-                other => panic!("indexing failed: {:?}", other),
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, ledger.t()).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 3, "should index to t=3");
             }
 
             // Verify index is current
-            let status = fluree.index_status(alias).await.expect("index_status");
+            let status = fluree.index_status(ledger_id).await.expect("index_status");
             assert_eq!(status.index_t, 3, "index should be at t=3");
             assert_eq!(status.commit_t, 3, "commit should be at t=3");
 
             // Time travel queries should work via indexed data
-            let names_t1 = query_names_at(&fluree, &format!("{alias}@t:1")).await;
+            let names_t1 = query_names_at(&fluree, &format!("{ledger_id}@t:1")).await;
             assert_eq!(
                 names_t1,
                 vec!["Alice"],
                 "t=1 should have Alice only (indexed)"
             );
 
-            let names_t2 = query_names_at(&fluree, &format!("{alias}@t:2")).await;
+            let names_t2 = query_names_at(&fluree, &format!("{ledger_id}@t:2")).await;
             assert_eq!(
                 names_t2,
                 vec!["Alice", "Bob"],
                 "t=2 should have Alice, Bob (indexed)"
             );
 
-            let names_t3 = query_names_at(&fluree, &format!("{alias}@t:3")).await;
+            let names_t3 = query_names_at(&fluree, &format!("{ledger_id}@t:3")).await;
             assert_eq!(
                 names_t3,
                 vec!["Alice", "Bob", "Carol"],
@@ -230,7 +229,7 @@ async fn time_travel_index_current() {
             );
 
             // Current query should return all
-            let names_current = query_names_at(&fluree, alias).await;
+            let names_current = query_names_at(&fluree, ledger_id).await;
             assert_eq!(
                 names_current,
                 vec!["Alice", "Bob", "Carol"],
@@ -250,7 +249,7 @@ async fn time_travel_index_plus_novelty() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/tt-index-novelty:main";
+    let ledger_id = "it/tt-index-novelty:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -265,7 +264,7 @@ async fn time_travel_index_plus_novelty() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert first 2 transactions
@@ -313,7 +312,7 @@ async fn time_travel_index_plus_novelty() {
             use fluree_db_nameservice::NameService;
             let ns_record_before = fluree
                 .nameservice()
-                .lookup(alias)
+                .lookup(ledger_id)
                 .await
                 .expect("ns lookup")
                 .expect("ns record");
@@ -323,12 +322,9 @@ async fn time_travel_index_plus_novelty() {
             );
 
             // Index at t=2
-            let completion = handle.trigger(alias, 2).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { index_t, .. } => {
-                    assert_eq!(index_t, 2, "should index to t=2");
-                }
-                other => panic!("indexing at t=2 failed: {:?}", other),
+            let outcome = trigger_index_and_wait_outcome(&handle, ledger_id, 2).await;
+            if let fluree_db_api::IndexOutcome::Completed { index_t, .. } = outcome {
+                assert_eq!(index_t, 2, "should index to t=2");
             }
 
             // Now insert third transaction (this will be in novelty only)
@@ -354,38 +350,38 @@ async fn time_travel_index_plus_novelty() {
             // Check nameservice after tx3
             let ns_record_after = fluree
                 .nameservice()
-                .lookup(alias)
+                .lookup(ledger_id)
                 .await
                 .expect("ns lookup")
                 .expect("ns record");
             eprintln!(
                 "After tx3: commit_t={}, index_t={}, commit_addr={:?}",
-                ns_record_after.commit_t, ns_record_after.index_t, ns_record_after.commit_address
+                ns_record_after.commit_t, ns_record_after.index_t, ns_record_after.commit_head_id
             );
 
             // Verify index is at t=2, commits at t=3
-            let status = fluree.index_status(alias).await.expect("index_status");
+            let status = fluree.index_status(ledger_id).await.expect("index_status");
             assert_eq!(status.index_t, 2, "index should be at t=2");
             assert_eq!(status.commit_t, 3, "commit should be at t=3");
 
             // Time travel queries:
             // t=1 and t=2 should come from index
             // t=3 should come from index + novelty overlay
-            let names_t1 = query_names_at(&fluree, &format!("{alias}@t:1")).await;
+            let names_t1 = query_names_at(&fluree, &format!("{ledger_id}@t:1")).await;
             assert_eq!(
                 names_t1,
                 vec!["Alice"],
                 "t=1 should have Alice only (from index)"
             );
 
-            let names_t2 = query_names_at(&fluree, &format!("{alias}@t:2")).await;
+            let names_t2 = query_names_at(&fluree, &format!("{ledger_id}@t:2")).await;
             assert_eq!(
                 names_t2,
                 vec!["Alice", "Bob"],
                 "t=2 should have Alice, Bob (from index)"
             );
 
-            let names_t3 = query_names_at(&fluree, &format!("{alias}@t:3")).await;
+            let names_t3 = query_names_at(&fluree, &format!("{ledger_id}@t:3")).await;
             assert_eq!(
                 names_t3,
                 vec!["Alice", "Bob", "Carol"],
@@ -393,7 +389,7 @@ async fn time_travel_index_plus_novelty() {
             );
 
             // Current query should return all
-            let names_current = query_names_at(&fluree, alias).await;
+            let names_current = query_names_at(&fluree, ledger_id).await;
             assert_eq!(
                 names_current,
                 vec!["Alice", "Bob", "Carol"],
@@ -414,7 +410,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/tt-update-boundary:main";
+    let ledger_id = "it/tt-update-boundary:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -429,7 +425,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert Alice with age 30
@@ -453,11 +449,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
             ledger = result.ledger;
 
             // Index at t=1
-            let completion = handle.trigger(alias, 1).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                other => panic!("indexing at t=1 failed: {:?}", other),
-            }
+            let _ = trigger_index_and_wait_outcome(&handle, ledger_id, 1).await;
 
             // t=2: Update Alice's age to 31 (will be in novelty)
             // Use upsert to properly retract old age and assert new age
@@ -478,19 +470,19 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 .expect("tx2");
 
             // Verify index is at t=1, commits at t=2
-            let status = fluree.index_status(alias).await.expect("index_status");
+            let status = fluree.index_status(ledger_id).await.expect("index_status");
             assert_eq!(status.index_t, 1, "index should be at t=1");
             assert_eq!(status.commit_t, 2, "commit should be at t=2");
 
             // Query age at t=1 (from index) - should be 30
             let query_t1 = json!({
                 "@context": {"ex": "http://example.org/"},
-                "from": format!("{alias}@t:1"),
+                "from": format!("{ledger_id}@t:1"),
                 "select": ["?age"],
                 "where": {"@id": "ex:alice", "ex:age": "?age"}
             });
             let result = fluree.query_connection(&query_t1).await.expect("query t=1");
-            let ledger_for_fmt = fluree.ledger(alias).await.expect("ledger");
+            let ledger_for_fmt = fluree.ledger(ledger_id).await.expect("ledger");
             let jsonld = result.to_jsonld(&ledger_for_fmt.db).expect("to_jsonld");
             let ages: Vec<i64> = jsonld
                 .as_array()
@@ -503,7 +495,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
             // Query age at t=2 (from index + novelty) - should be 31
             let query_t2 = json!({
                 "@context": {"ex": "http://example.org/"},
-                "from": format!("{alias}@t:2"),
+                "from": format!("{ledger_id}@t:2"),
                 "select": ["?age"],
                 "where": {"@id": "ex:alice", "ex:age": "?age"}
             });
@@ -520,7 +512,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
             // Query current - should be 31
             let query_current = json!({
                 "@context": {"ex": "http://example.org/"},
-                "from": alias,
+                "from": ledger_id,
                 "select": ["?age"],
                 "where": {"@id": "ex:alice", "ex:age": "?age"}
             });
@@ -547,7 +539,7 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/tt-retract-boundary:main";
+    let ledger_id = "it/tt-retract-boundary:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -562,7 +554,7 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert Alice and Bob
@@ -586,11 +578,7 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
             ledger = result.ledger;
 
             // Index at t=1
-            let completion = handle.trigger(alias, 1).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                other => panic!("indexing at t=1 failed: {:?}", other),
-            }
+            let _ = trigger_index_and_wait_outcome(&handle, ledger_id, 1).await;
 
             // t=2: Delete Bob (will be in novelty)
             let tx2 = json!({
@@ -600,12 +588,12 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
             let _result = fluree.update(ledger, &tx2).await.expect("tx2");
 
             // Verify index is at t=1, commits at t=2
-            let status = fluree.index_status(alias).await.expect("index_status");
+            let status = fluree.index_status(ledger_id).await.expect("index_status");
             assert_eq!(status.index_t, 1, "index should be at t=1");
             assert_eq!(status.commit_t, 2, "commit should be at t=2");
 
             // Query at t=1 (from index) - should have both Alice and Bob
-            let names_t1 = query_names_at(&fluree, &format!("{alias}@t:1")).await;
+            let names_t1 = query_names_at(&fluree, &format!("{ledger_id}@t:1")).await;
             assert_eq!(
                 names_t1,
                 vec!["Alice", "Bob"],
@@ -613,7 +601,7 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
             );
 
             // Query at t=2 (from index + novelty) - should have only Alice
-            let names_t2 = query_names_at(&fluree, &format!("{alias}@t:2")).await;
+            let names_t2 = query_names_at(&fluree, &format!("{ledger_id}@t:2")).await;
             assert_eq!(
                 names_t2,
                 vec!["Alice"],
@@ -621,7 +609,7 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
             );
 
             // Query current - should have only Alice
-            let names_current = query_names_at(&fluree, alias).await;
+            let names_current = query_names_at(&fluree, ledger_id).await;
             assert_eq!(
                 names_current,
                 vec!["Alice"],
@@ -664,28 +652,24 @@ async fn time_travel_consistent_results_across_scenarios() {
             };
 
             // Ledger A: No indexing
-            let alias_a = "it/tt-compare-no-index:main";
-            let _ledger_a = seed_test_data(&fluree, alias_a, &index_cfg_high).await;
+            let ledger_id_a = "it/tt-compare-no-index:main";
+            let _ledger_a = seed_test_data(&fluree, ledger_id_a, &index_cfg_high).await;
 
             // Ledger B: Fully indexed
-            let alias_b = "it/tt-compare-indexed:main";
-            let ledger_b = seed_test_data(&fluree, alias_b, &index_cfg_low).await;
-            let completion = handle.trigger(alias_b, ledger_b.t()).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                other => panic!("indexing B failed: {:?}", other),
-            }
+            let ledger_id_b = "it/tt-compare-indexed:main";
+            let ledger_b = seed_test_data(&fluree, ledger_id_b, &index_cfg_low).await;
+            let _ = trigger_index_and_wait_outcome(&handle, ledger_id_b, ledger_b.t()).await;
 
             // Verify states
-            let status_a = fluree.index_status(alias_a).await.expect("status A");
-            let status_b = fluree.index_status(alias_b).await.expect("status B");
+            let status_a = fluree.index_status(ledger_id_a).await.expect("status A");
+            let status_b = fluree.index_status(ledger_id_b).await.expect("status B");
             assert_eq!(status_a.index_t, 0, "A should have no index");
             assert_eq!(status_b.index_t, 3, "B should be fully indexed");
 
             // Query all time points and compare
             for t in 1..=3 {
-                let names_a = query_names_at(&fluree, &format!("{alias_a}@t:{t}")).await;
-                let names_b = query_names_at(&fluree, &format!("{alias_b}@t:{t}")).await;
+                let names_a = query_names_at(&fluree, &format!("{ledger_id_a}@t:{t}")).await;
+                let names_b = query_names_at(&fluree, &format!("{ledger_id_b}@t:{t}")).await;
 
                 assert_eq!(
                     names_a, names_b,
@@ -695,8 +679,8 @@ async fn time_travel_consistent_results_across_scenarios() {
             }
 
             // Query current state
-            let names_a_current = query_names_at(&fluree, alias_a).await;
-            let names_b_current = query_names_at(&fluree, alias_b).await;
+            let names_a_current = query_names_at(&fluree, ledger_id_a).await;
+            let names_b_current = query_names_at(&fluree, ledger_id_b).await;
             assert_eq!(
                 names_a_current, names_b_current,
                 "Current results should be identical"
@@ -723,8 +707,8 @@ async fn query_all_person_ages(fluree: &MemoryFluree, from_spec: &str) -> Vec<(S
         .await
         .expect("query_connection");
 
-    let ledger_alias = from_spec.split('@').next().unwrap_or(from_spec);
-    let ledger = fluree.ledger(ledger_alias).await.expect("ledger");
+    let ledger_id = from_spec.split('@').next().unwrap_or(from_spec);
+    let ledger = fluree.ledger(ledger_id).await.expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     jsonld
@@ -754,8 +738,8 @@ async fn query_person_age(fluree: &MemoryFluree, from_spec: &str, person_id: &st
         .await
         .expect("query_connection");
 
-    let ledger_alias = from_spec.split('@').next().unwrap_or(from_spec);
-    let ledger = fluree.ledger(ledger_alias).await.expect("ledger");
+    let ledger_id = from_spec.split('@').next().unwrap_or(from_spec);
+    let ledger = fluree.ledger(ledger_id).await.expect("ledger");
     let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
 
     jsonld
@@ -779,7 +763,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/tt-multi-leaf-overlay:main";
+    let ledger_id = "it/tt-multi-leaf-overlay:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -794,7 +778,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert many subjects to potentially span multiple leaves
@@ -825,11 +809,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
             ledger = result.ledger;
 
             // Index at t=1
-            let completion = handle.trigger(alias, 1).await;
-            match completion.wait().await {
-                fluree_db_api::IndexOutcome::Completed { .. } => {}
-                other => panic!("indexing at t=1 failed: {:?}", other),
-            }
+            let _ = trigger_index_and_wait_outcome(&handle, ledger_id, 1).await;
 
             // t=2: Update person0's age (will be in novelty)
             // Use upsert to create retraction + assertion
@@ -850,13 +830,13 @@ async fn time_travel_no_duplicate_overlay_emission() {
                 .expect("tx2");
 
             // Verify index is at t=1, commits at t=2
-            let status = fluree.index_status(alias).await.expect("index_status");
+            let status = fluree.index_status(ledger_id).await.expect("index_status");
             assert_eq!(status.index_t, 1, "index should be at t=1");
             assert_eq!(status.commit_t, 2, "commit should be at t=2");
 
             // Query all ages at t=2 - should have exactly 100 results (one per person)
             // If there's duplicate emission, we might get 101+ results
-            let results = query_all_person_ages(&fluree, &format!("{alias}@t:2")).await;
+            let results = query_all_person_ages(&fluree, &format!("{ledger_id}@t:2")).await;
 
             // Count unique names to detect duplicates
             let mut names: Vec<String> = results.iter().map(|(n, _)| n.clone()).collect();
@@ -885,7 +865,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
             );
 
             // Verify person0's age is 99 (the updated value)
-            let ages = query_person_age(&fluree, &format!("{alias}@t:2"), "ex:person0").await;
+            let ages = query_person_age(&fluree, &format!("{ledger_id}@t:2"), "ex:person0").await;
             assert_eq!(ages, vec![99], "person0 should have age 99, got {:?}", ages);
         })
         .await;

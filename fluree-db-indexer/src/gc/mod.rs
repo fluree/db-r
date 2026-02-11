@@ -1,6 +1,6 @@
 //! # Garbage Collection
 //!
-//! Garbage collection for content-addressed storage.
+//! Garbage collection for content-addressed storage (CID-based).
 //!
 //! During index building, CAS artifacts (dicts, branches, leaves) that are no
 //! longer referenced by the new root are recorded in a garbage manifest.
@@ -9,18 +9,21 @@
 //!
 //! ## Design
 //!
-//! 1. **During build**: Compute `old_root.all_cas_addresses() \ new_root.all_cas_addresses()`
-//! 2. **After build**: Write a garbage record with the replaced addresses
+//! 1. **During build**: Compute `old_root.all_cas_ids() \ new_root.all_cas_ids()`
+//! 2. **After build**: Write a garbage record with the obsolete CID strings
 //! 3. **On-demand cleanup**: Walk the prev-index chain, identify eligible garbage,
-//!    and delete nodes not reachable from any live index
+//!    and delete CAS artifacts by deriving storage addresses from CIDs
 //!
-//! ## Garbage Record Naming
+//! ## Garbage Record Format
 //!
-//! Garbage records are written using storage-owned addressing with sorted/deduped
-//! record bytes. Each record includes a `created_at_ms` wall-clock timestamp for
-//! time-based retention checks. Because of the timestamp, records are
-//! indexer-specific (not deterministic across concurrent indexers), but this is
-//! harmless since only one indexer wins the publish race.
+//! Garbage records are CAS-written JSON containing sorted/deduped CID strings
+//! (base32-lower multibase). Each record includes a `created_at_ms` wall-clock
+//! timestamp for time-based retention checks. Because of the timestamp, records
+//! are indexer-specific (not deterministic across concurrent indexers), but this
+//! is harmless since only one indexer wins the publish race.
+//!
+//! The collector resolves CID strings back to storage addresses using
+//! `content_address()` for deletion.
 //!
 //! ## Time-Based Retention
 //!
@@ -34,10 +37,12 @@ mod collector;
 mod record;
 
 pub use collector::clean_garbage;
-pub use record::{GarbageRecord, GarbageRef};
+pub use record::GarbageRecord;
 
 use crate::error::Result;
-use fluree_db_core::{ContentAddressedWrite, ContentKind, Storage};
+use fluree_db_core::{
+    ContentAddressedWrite, ContentId, ContentKind, Storage, CODEC_FLUREE_GARBAGE,
+};
 
 /// Default maximum number of old indexes to retain
 pub const DEFAULT_MAX_OLD_INDEXES: u32 = 5;
@@ -69,28 +74,30 @@ pub struct CleanGarbageResult {
 
 /// Write a garbage record to storage.
 ///
-/// Returns `None` if there are no garbage addresses to record.
-/// The garbage addresses are sorted and deduplicated before writing.
+/// Returns `None` if there are no obsolete CID strings to record.
+/// The CID strings are sorted and deduplicated before writing.
 /// Includes a wall-clock `created_at_ms` timestamp for time-based GC retention.
+///
+/// Returns the `ContentId` of the written garbage record.
 pub async fn write_garbage_record<S: ContentAddressedWrite>(
     storage: &S,
-    alias: &str,
+    ledger_id: &str,
     t: i64,
-    garbage_addresses: Vec<String>,
-) -> Result<Option<GarbageRef>> {
-    let mut garbage_addresses = garbage_addresses;
-    if garbage_addresses.is_empty() {
+    garbage_cid_strings: Vec<String>,
+) -> Result<Option<ContentId>> {
+    let mut garbage_cid_strings = garbage_cid_strings;
+    if garbage_cid_strings.is_empty() {
         return Ok(None);
     }
 
     // Sort and dedupe for determinism
-    garbage_addresses.sort();
-    garbage_addresses.dedup();
+    garbage_cid_strings.sort();
+    garbage_cid_strings.dedup();
 
     let record = GarbageRecord {
-        alias: alias.to_string(),
+        ledger_id: ledger_id.to_string(),
         t,
-        garbage: garbage_addresses,
+        garbage: garbage_cid_strings,
         created_at_ms: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -99,12 +106,11 @@ pub async fn write_garbage_record<S: ContentAddressedWrite>(
 
     let bytes = serde_json::to_vec(&record)?;
     let res = storage
-        .content_write_bytes(ContentKind::GarbageRecord, alias, &bytes)
+        .content_write_bytes(ContentKind::GarbageRecord, ledger_id, &bytes)
         .await?;
 
-    Ok(Some(GarbageRef {
-        address: res.address,
-    }))
+    let cid = ContentId::from_hex_digest(CODEC_FLUREE_GARBAGE, &res.content_hash);
+    Ok(cid)
 }
 
 /// Load a garbage record from storage.

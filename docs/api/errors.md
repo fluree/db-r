@@ -4,24 +4,28 @@ This document provides a complete reference for HTTP status codes and error resp
 
 ## Error Response Format
 
-All errors return a consistent JSON structure:
+`fluree-server` errors return a consistent JSON structure:
 
 ```json
 {
-  "error": "ErrorType",
-  "message": "Human-readable error description",
-  "code": "MACHINE_READABLE_CODE",
-  "details": {
-    "field": "Additional context"
+  "error": "Human-readable error description",
+  "status": 400,
+  "@type": "err:db/BadRequest",
+  "cause": {
+    "error": "Optional nested cause",
+    "status": 400,
+    "@type": "err:db/JsonParse"
   }
 }
 ```
 
 **Fields:**
-- `error`: Error type (class of error)
-- `message`: Human-readable description
-- `code`: Machine-readable error code for programmatic handling
-- `details`: Optional additional context (varies by error)
+- `error`: Human-readable error message (primary diagnostic text)
+- `status`: HTTP status code (numeric)
+- `@type`: Compact error type IRI (stable, machine-readable category)
+- `cause`: Optional nested cause chain (only present for select errors)
+
+**Stability note:** clients (including the Fluree CLI) may pattern-match on substrings within the `error` field for targeted hints, so error messages should be stable across releases.
 
 ## HTTP Status Codes
 
@@ -41,7 +45,7 @@ The request succeeded.
 {
   "t": 5,
   "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_sha": "abc123..."
+  "commit_id": "bafybeig...commitT5"
 }
 ```
 
@@ -56,7 +60,7 @@ A new resource was created.
 **Example:**
 ```json
 {
-  "alias": "mydb:main",
+  "ledger_id": "mydb:main",
   "created": "2024-01-22T10:00:00.000Z"
 }
 ```
@@ -82,24 +86,17 @@ The request is malformed or contains invalid data.
 - Invalid IRI format
 - Type mismatch
 
-**Error Codes:**
-- `PARSE_ERROR` - JSON or SPARQL parsing failed
-- `INVALID_IRI` - Malformed IRI
-- `INVALID_CONTEXT` - Invalid JSON-LD @context
-- `TYPE_ERROR` - Type mismatch
-- `CONSTRAINT_VIOLATION` - Data constraint violated
+**Error typing:**
+
+The server includes a compact error type IRI in the `@type` field. This is the
+preferred stable, machine-readable category for programmatic handling.
 
 **Example:**
 ```json
 {
-  "error": "ParseError",
-  "message": "Invalid JSON-LD: unexpected token at line 5",
-  "code": "PARSE_ERROR",
-  "details": {
-    "line": 5,
-    "column": 12,
-    "token": "}"
-  }
+  "error": "Invalid JSON: expected value at line 5, column 12",
+  "status": 400,
+  "@type": "err:db/JsonParse"
 }
 ```
 
@@ -107,7 +104,7 @@ The request is malformed or contains invalid data.
 - Validate JSON syntax
 - Check IRI formats
 - Verify JSON-LD structure
-- Review error details for specific issue
+- Review the `error` message and optional `cause`
 
 #### 401 Unauthorized
 
@@ -119,18 +116,12 @@ Authentication is required but not provided or invalid.
 - Expired JWT token
 - Invalid signature (for signed requests)
 
-**Error Codes:**
-- `MISSING_AUTH` - No authentication provided
-- `INVALID_API_KEY` - API key not valid
-- `TOKEN_EXPIRED` - JWT token expired
-- `INVALID_SIGNATURE` - Signature verification failed
-
 **Example:**
 ```json
 {
-  "error": "Unauthorized",
-  "message": "Authentication required",
-  "code": "MISSING_AUTH"
+  "error": "Bearer token required",
+  "status": 401,
+  "@type": "err:db/Unauthorized"
 }
 ```
 
@@ -149,22 +140,12 @@ Authentication succeeded but authorization failed.
 - Policy denies access
 - Ledger access restricted
 
-**Error Codes:**
-- `FORBIDDEN` - Operation not allowed
-- `POLICY_DENIED` - Policy explicitly denies access
-- `INSUFFICIENT_PERMISSIONS` - User lacks required permissions
-
 **Example:**
 ```json
 {
-  "error": "Forbidden",
-  "message": "Policy denies access to ledger mydb:main",
-  "code": "POLICY_DENIED",
-  "details": {
-    "ledger": "mydb:main",
-    "subject": "did:key:z6Mkh...",
-    "action": "transact"
-  }
+  "error": "access denied (403)",
+  "status": 403,
+  "@type": "err:db/Forbidden"
 }
 ```
 
@@ -182,20 +163,12 @@ The requested resource doesn't exist.
 - Entity not found
 - Endpoint doesn't exist
 
-**Error Codes:**
-- `LEDGER_NOT_FOUND` - Ledger doesn't exist
-- `ENTITY_NOT_FOUND` - Entity not found
-- `RESOURCE_NOT_FOUND` - General resource not found
-
 **Example:**
 ```json
 {
-  "error": "NotFound",
-  "message": "Ledger not found: mydb:main",
-  "code": "LEDGER_NOT_FOUND",
-  "details": {
-    "ledger": "mydb:main"
-  }
+  "error": "Ledger not found: mydb:main",
+  "status": 404,
+  "@type": "err:db/LedgerNotFound"
 }
 ```
 
@@ -213,20 +186,12 @@ The request took too long to process.
 - Complex query taking too long
 - Database under heavy load
 
-**Error Codes:**
-- `QUERY_TIMEOUT` - Query execution timeout
-- `TRANSACTION_TIMEOUT` - Transaction processing timeout
-
 **Example:**
 ```json
 {
-  "error": "Timeout",
-  "message": "Query execution exceeded timeout of 30000ms",
-  "code": "QUERY_TIMEOUT",
-  "details": {
-    "timeout_ms": 30000,
-    "elapsed_ms": 31245
-  }
+  "error": "Query execution exceeded timeout",
+  "status": 408,
+  "@type": "err:db/Timeout"
 }
 ```
 
@@ -246,20 +211,12 @@ The request conflicts with current server state.
 - Ledger already exists
 - Resource state conflict
 
-**Error Codes:**
-- `CONFLICT` - General conflict
-- `LEDGER_EXISTS` - Ledger already exists
-- `CONCURRENT_MODIFICATION` - Concurrent update conflict
-
 **Example:**
 ```json
 {
-  "error": "Conflict",
-  "message": "Ledger already exists: mydb:main",
-  "code": "LEDGER_EXISTS",
-  "details": {
-    "ledger": "mydb:main"
-  }
+  "error": "Ledger already exists: mydb:main",
+  "status": 409,
+  "@type": "err:db/LedgerExists"
 }
 ```
 
@@ -277,20 +234,12 @@ The request or response exceeds size limits.
 - Query result too large
 - Request body exceeds limit
 
-**Error Codes:**
-- `PAYLOAD_TOO_LARGE` - Request too large
-- `RESPONSE_TOO_LARGE` - Result set too large
-
 **Example:**
 ```json
 {
-  "error": "PayloadTooLarge",
-  "message": "Transaction exceeds maximum size of 10485760 bytes",
-  "code": "PAYLOAD_TOO_LARGE",
-  "details": {
-    "max_size": 10485760,
-    "actual_size": 15000000
-  }
+  "error": "request body exceeds configured limit",
+  "status": 413,
+  "@type": "err:db/PayloadTooLarge"
 }
 ```
 
@@ -309,19 +258,12 @@ The Content-Type is not supported.
 - Unsupported format
 - Missing Content-Type header
 
-**Error Codes:**
-- `UNSUPPORTED_MEDIA_TYPE` - Content-Type not supported
-
 **Example:**
 ```json
 {
-  "error": "UnsupportedMediaType",
-  "message": "Content-Type not supported: text/plain",
-  "code": "UNSUPPORTED_MEDIA_TYPE",
-  "details": {
-    "provided": "text/plain",
-    "supported": ["application/json", "application/sparql-query", "text/turtle"]
-  }
+  "error": "Content-Type not supported: text/plain",
+  "status": 415,
+  "@type": "err:db/UnsupportedMediaType"
 }
 ```
 
@@ -339,21 +281,12 @@ The request is well-formed but semantically invalid.
 - Business rule violation
 - Semantic constraint violation
 
-**Error Codes:**
-- `VALIDATION_ERROR` - Data validation failed
-- `SEMANTIC_ERROR` - Semantic constraint violated
-
 **Example:**
 ```json
 {
-  "error": "ValidationError",
-  "message": "Invalid email format",
-  "code": "VALIDATION_ERROR",
-  "details": {
-    "field": "schema:email",
-    "value": "not-an-email",
-    "constraint": "must be valid email"
-  }
+  "error": "semantic constraint violation",
+  "status": 422,
+  "@type": "err:db/ConstraintViolation"
 }
 ```
 
@@ -370,20 +303,12 @@ Rate limit exceeded.
 - Too many requests in time window
 - Exceeded quota
 
-**Error Codes:**
-- `RATE_LIMIT_EXCEEDED` - Too many requests
-
 **Example:**
 ```json
 {
-  "error": "RateLimitExceeded",
-  "message": "Rate limit exceeded: 100 requests per minute",
-  "code": "RATE_LIMIT_EXCEEDED",
-  "details": {
-    "limit": 100,
-    "window_seconds": 60,
-    "retry_after": 45
-  }
+  "error": "rate limit exceeded",
+  "status": 429,
+  "@type": "err:db/RateLimited"
 }
 ```
 
@@ -412,19 +337,12 @@ An unexpected error occurred on the server.
 - Database error
 - Internal logic error
 
-**Error Codes:**
-- `INTERNAL_ERROR` - General internal error
-- `DATABASE_ERROR` - Database operation failed
-
 **Example:**
 ```json
 {
-  "error": "InternalError",
-  "message": "An unexpected error occurred",
-  "code": "INTERNAL_ERROR",
-  "details": {
-    "request_id": "abc-123-def-456"
-  }
+  "error": "internal error",
+  "status": 500,
+  "@type": "err:db/Internal"
 }
 ```
 
@@ -443,20 +361,12 @@ Error communicating with upstream service.
 - Nameservice unavailable
 - Network error
 
-**Error Codes:**
-- `BAD_GATEWAY` - Upstream service error
-- `STORAGE_ERROR` - Storage backend error
-
 **Example:**
 ```json
 {
-  "error": "BadGateway",
-  "message": "Cannot connect to storage backend",
-  "code": "STORAGE_ERROR",
-  "details": {
-    "backend": "s3",
-    "error": "Connection timeout"
-  }
+  "error": "upstream service error",
+  "status": 502,
+  "@type": "err:db/BadGateway"
 }
 ```
 
@@ -475,20 +385,12 @@ The server is temporarily unavailable.
 - Maintenance mode
 - Resource exhaustion
 
-**Error Codes:**
-- `SERVICE_UNAVAILABLE` - Service temporarily down
-- `OVERLOADED` - Server at capacity
-- `MAINTENANCE` - Maintenance mode
-
 **Example:**
 ```json
 {
-  "error": "ServiceUnavailable",
-  "message": "Server is under maintenance",
-  "code": "MAINTENANCE",
-  "details": {
-    "retry_after": 300
-  }
+  "error": "service unavailable",
+  "status": 503,
+  "@type": "err:db/ServiceUnavailable"
 }
 ```
 
@@ -511,15 +413,12 @@ Upstream service didn't respond in time.
 - Long-running query
 - Network latency
 
-**Error Codes:**
-- `GATEWAY_TIMEOUT` - Upstream timeout
-
 **Example:**
 ```json
 {
-  "error": "GatewayTimeout",
-  "message": "Storage backend did not respond in time",
-  "code": "GATEWAY_TIMEOUT"
+  "error": "gateway timeout",
+  "status": 504,
+  "@type": "err:db/GatewayTimeout"
 }
 ```
 
@@ -528,56 +427,6 @@ Upstream service didn't respond in time.
 - Check storage backend performance
 - Simplify query
 - Increase timeout settings
-
-## Error Codes Reference
-
-### Transaction Errors
-
-| Code | Description | HTTP Status |
-|------|-------------|-------------|
-| `PARSE_ERROR` | Invalid JSON-LD syntax | 400 |
-| `INVALID_IRI` | Malformed IRI | 400 |
-| `INVALID_CONTEXT` | Invalid @context | 400 |
-| `TYPE_ERROR` | Type mismatch | 400 |
-| `CONSTRAINT_VIOLATION` | Data constraint violated | 422 |
-| `LEDGER_NOT_FOUND` | Ledger doesn't exist | 404 |
-| `TRANSACTION_TIMEOUT` | Transaction took too long | 408 |
-| `PAYLOAD_TOO_LARGE` | Transaction too large | 413 |
-
-### Query Errors
-
-| Code | Description | HTTP Status |
-|------|-------------|-------------|
-| `PARSE_ERROR` | Invalid query syntax | 400 |
-| `INVALID_FILTER` | Invalid filter expression | 400 |
-| `LEDGER_NOT_FOUND` | Ledger doesn't exist | 404 |
-| `QUERY_TIMEOUT` | Query execution timeout | 408 |
-| `RESPONSE_TOO_LARGE` | Result set too large | 413 |
-| `FUEL_EXHAUSTED` | Query fuel limit exceeded | 503 |
-
-### Authentication/Authorization Errors
-
-| Code | Description | HTTP Status |
-|------|-------------|-------------|
-| `MISSING_AUTH` | No credentials provided | 401 |
-| `INVALID_API_KEY` | API key invalid | 401 |
-| `TOKEN_EXPIRED` | JWT token expired | 401 |
-| `INVALID_SIGNATURE` | Signature verification failed | 401 |
-| `FORBIDDEN` | Operation not allowed | 403 |
-| `POLICY_DENIED` | Policy denies access | 403 |
-| `INSUFFICIENT_PERMISSIONS` | Lacks permissions | 403 |
-
-### System Errors
-
-| Code | Description | HTTP Status |
-|------|-------------|-------------|
-| `INTERNAL_ERROR` | Unexpected server error | 500 |
-| `DATABASE_ERROR` | Database operation failed | 500 |
-| `STORAGE_ERROR` | Storage backend error | 502 |
-| `SERVICE_UNAVAILABLE` | Service temporarily down | 503 |
-| `OVERLOADED` | Server at capacity | 503 |
-| `MAINTENANCE` | Maintenance mode | 503 |
-| `GATEWAY_TIMEOUT` | Upstream timeout | 504 |
 
 ## Error Handling Best Practices
 
@@ -588,8 +437,9 @@ Check HTTP status before parsing response:
 ```javascript
 const response = await fetch(url, options);
 if (!response.ok) {
-  const error = await response.json();
-  throw new Error(`${error.code}: ${error.message}`);
+  const err = await response.json();
+  // err.error is the primary human-readable message, err["@type"] is the stable category.
+  throw new Error(`${err["@type"] || "err:unknown"}: ${err.error}`);
 }
 ```
 
@@ -636,9 +486,8 @@ Log complete error context for debugging:
 console.error({
   status: response.status,
   error: errorData.error,
-  code: errorData.code,
-  message: errorData.message,
-  details: errorData.details,
+  error_type: errorData["@type"],
+  cause: errorData.cause,
   requestId: response.headers.get('X-Request-ID')
 });
 ```
@@ -649,12 +498,12 @@ Show appropriate messages to users:
 
 ```javascript
 function getUserMessage(error) {
-  switch (error.code) {
-    case 'LEDGER_NOT_FOUND':
+  switch (error["@type"]) {
+    case 'err:db/LedgerNotFound':
       return 'Database not found. Please check the name.';
-    case 'QUERY_TIMEOUT':
+    case 'err:db/Timeout':
       return 'Query took too long. Please try a simpler query.';
-    case 'RATE_LIMIT_EXCEEDED':
+    case 'err:db/RateLimited':
       return 'Too many requests. Please wait a moment.';
     default:
       return 'An error occurred. Please try again.';
@@ -671,7 +520,7 @@ try {
   const data = await query(ledger);
   return data;
 } catch (err) {
-  if (err.code === 'LEDGER_NOT_FOUND') {
+  if (err["@type"] === 'err:db/LedgerNotFound') {
     // Create ledger and retry
     await createLedger(ledger);
     return await query(ledger);

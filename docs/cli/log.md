@@ -46,17 +46,17 @@ fluree log production --oneline -n 10
 ### Full Format (default)
 
 ```
-commit fluree:file://storage/mydb/commit/abc123...
+commit bafybeig2k5...
 t: 3
 Date: 2024-01-15T10:30:00Z
 
     Added new users
 
-commit fluree:file://storage/mydb/commit/def456...
+commit bafybeig7x3...
 t: 2
 Date: 2024-01-14T09:15:00Z
 
-commit fluree:file://storage/mydb/commit/ghi789...
+commit bafybeig9m1...
 t: 1
 Date: 2024-01-13T08:00:00Z
 
@@ -66,9 +66,9 @@ Date: 2024-01-13T08:00:00Z
 ### One-line Format
 
 ```
-abc123 t=3 Added new users
-def456 t=2
-ghi789 t=1 Initial data load
+bafybeig2k5 t=3 Added new users
+bafybeig7x3 t=2
+bafybeig9m1 t=1 Initial data load
 ```
 
 ## See Also

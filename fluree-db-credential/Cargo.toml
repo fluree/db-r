@@ -26,10 +26,15 @@ sha2 = { workspace = true }
 # Error handling
 thiserror.workspace = true
 
+# Standard JWT verification (OIDC/JWKS path — RS256)
+jsonwebtoken = { workspace = true, optional = true }
+
 [features]
 default = []
 # Enable VerifiableCredential support (requires JSON-LD canonization - not yet implemented)
 vc = []
+# Enable standard OIDC JWT verification (RS256 via JWKS key material)
+oidc = ["dep:jsonwebtoken"]
 
 [dev-dependencies]
 # For test vector generation

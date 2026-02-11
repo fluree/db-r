@@ -8,7 +8,7 @@
 
 use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
-use crate::extract::{tracking_headers, FlureeHeaders, MaybeCredential};
+use crate::extract::{tracking_headers, FlureeHeaders, MaybeCredential, MaybeDataBearer};
 // Note: NeedsRefresh is no longer used - replaced by FreshnessSource trait
 use crate::state::AppState;
 use crate::telemetry::{
@@ -23,6 +23,49 @@ use fluree_db_api::{FlureeView, FreshnessCheck, FreshnessSource, LedgerState, Tr
 use serde_json::Value as JsonValue;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+// ============================================================================
+// Data API Auth Helpers
+// ============================================================================
+
+/// Resolve the effective request identity for policy enforcement.
+///
+/// Precedence:
+/// 1) Signed request DID (credential)
+/// 2) Bearer token identity (fluree.identity ?? sub)
+fn effective_identity(credential: &MaybeCredential, bearer: &MaybeDataBearer) -> Option<String> {
+    credential
+        .did()
+        .map(|d| d.to_string())
+        .or_else(|| bearer.0.as_ref().and_then(|p| p.identity.clone()))
+}
+
+/// Force auth identity/policy-class into FQL query opts, overriding client-provided values.
+fn force_query_auth_opts(
+    query: &mut JsonValue,
+    identity: Option<&str>,
+    policy_class: Option<&str>,
+) {
+    let Some(obj) = query.as_object_mut() else {
+        return;
+    };
+    let opts = obj
+        .entry("opts")
+        .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+    let Some(opts_obj) = opts.as_object_mut() else {
+        return;
+    };
+
+    if let Some(id) = identity {
+        opts_obj.insert("identity".to_string(), JsonValue::String(id.to_string()));
+    }
+    if let Some(pc) = policy_class {
+        opts_obj.insert(
+            "policy-class".to_string(),
+            JsonValue::String(pc.to_string()),
+        );
+    }
+}
 
 /// Check if tracking is requested in query opts
 fn has_tracking_opts(query_json: &JsonValue) -> bool {
@@ -53,8 +96,8 @@ fn has_tracking_opts(query_json: &JsonValue) -> bool {
     false
 }
 
-/// Helper to extract ledger alias from request (for FQL queries)
-fn get_ledger_alias(
+/// Helper to extract ledger ID from request (for FQL queries)
+fn get_ledger_id(
     path_ledger: Option<&str>,
     headers: &FlureeHeaders,
     body: &JsonValue,
@@ -89,21 +132,6 @@ fn inject_headers_into_query(query: &mut JsonValue, headers: &FlureeHeaders) {
     }
 }
 
-/// Inject credential DID as identity (takes precedence over header identity)
-fn inject_credential_did(query: &mut JsonValue, did: &str) {
-    if let Some(obj) = query.as_object_mut() {
-        // Get or create opts object
-        let opts = obj
-            .entry("opts")
-            .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
-
-        if let Some(opts_obj) = opts.as_object_mut() {
-            // Credential DID overrides header identity
-            opts_obj.insert("identity".to_string(), JsonValue::String(did.to_string()));
-        }
-    }
-}
-
 /// Execute a query
 ///
 /// POST /fluree/query
@@ -117,6 +145,7 @@ fn inject_credential_did(query: &mut JsonValue, did: &str) {
 pub async fn query(
     State(state): State<Arc<AppState>>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     credential: MaybeCredential,
 ) -> Result<impl IntoResponse> {
     // Create request span with correlation context
@@ -127,16 +156,27 @@ pub async fn query(
         "query",
         request_id.as_deref(),
         trace_id.as_deref(),
-        None, // ledger alias determined later
+        None, // ledger ID determined later
         None, // tenant_id not yet supported
     );
     let _guard = span.enter();
 
     tracing::info!(status = "start", "query request received");
+
+    // Enforce data auth if configured (Bearer token OR signed request)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required
+        && !credential.is_signed()
+        && bearer.0.is_none()
+    {
+        return Err(ServerError::unauthorized(
+            "Authentication required (signed request or Bearer token)",
+        ));
+    }
     // SPARQL UPDATE should use the transact endpoint, not query
     if headers.is_sparql_update() || credential.is_sparql_update {
         let error = ServerError::bad_request(
-            "SPARQL UPDATE requests should use the /fluree/transact endpoint, not /fluree/query",
+            "SPARQL UPDATE requests should use the /v1/fluree/transact endpoint, not /v1/fluree/query",
         );
         set_span_error_code(&span, "error:BadRequest");
         tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
@@ -154,6 +194,22 @@ pub async fn query(
         //
         // NOTE: We intentionally do NOT fall back to the fluree-ledger header here.
         // Ledger-scoped SPARQL without FROM is supported via the /:ledger/query route.
+
+        // Enforce bearer ledger scope for unsigned SPARQL requests
+        if let Some(p) = bearer.0.as_ref() {
+            if !credential.is_signed() {
+                // Extract ledger IDs from FROM/FROM NAMED clauses.
+                // Parse failure → fall through (let the engine produce a proper error).
+                if let Ok(ledger_ids) = fluree_db_api::sparql_dataset_ledger_ids(&sparql) {
+                    for ledger_id in &ledger_ids {
+                        if !p.can_read(ledger_id) {
+                            return Err(ServerError::not_found("Ledger not found"));
+                        }
+                    }
+                }
+            }
+        }
+
         match state.fluree.query_connection_sparql_jsonld(&sparql).await {
             Ok(result) => {
                 tracing::info!(
@@ -181,15 +237,15 @@ pub async fn query(
             }
         }
 
-        // Get ledger alias
-        let alias = match get_ledger_alias(None, &headers, &query_json) {
-            Ok(alias) => {
-                span.record("ledger_alias", alias.as_str());
-                alias
+        // Get ledger id
+        let ledger_id = match get_ledger_id(None, &headers, &query_json) {
+            Ok(ledger_id) => {
+                span.record("ledger_id", ledger_id.as_str());
+                ledger_id
             }
             Err(e) => {
                 set_span_error_code(&span, "error:BadRequest");
-                tracing::warn!(error = %e, "missing ledger alias");
+                tracing::warn!(error = %e, "missing ledger ID");
                 return Err(e);
             }
         };
@@ -197,12 +253,20 @@ pub async fn query(
         // Inject header values into query opts
         inject_headers_into_query(&mut query_json, &headers);
 
-        // If request was signed, credential DID takes precedence as identity
-        if let Some(did) = credential.did() {
-            inject_credential_did(&mut query_json, did);
+        // Enforce bearer ledger scope for unsigned requests
+        if let Some(p) = bearer.0.as_ref() {
+            if !credential.is_signed() && !p.can_read(&ledger_id) {
+                // Avoid existence leak
+                return Err(ServerError::not_found("Ledger not found"));
+            }
         }
 
-        execute_query(&state, &alias, &query_json).await
+        // Force auth-derived identity and policy-class into opts (non-spoofable)
+        let identity = effective_identity(&credential, &bearer);
+        let policy_class = data_auth.default_policy_class.as_deref();
+        force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
+
+        execute_query(&state, &ledger_id, &query_json).await
     }
 }
 
@@ -220,6 +284,7 @@ pub async fn query_ledger(
     State(state): State<Arc<AppState>>,
     Path(ledger): Path<String>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     credential: MaybeCredential,
 ) -> Result<impl IntoResponse> {
     // Create request span with correlation context
@@ -237,10 +302,21 @@ pub async fn query_ledger(
 
     tracing::info!(status = "start", "ledger query request received");
 
+    // Enforce data auth if configured (Bearer token OR signed request)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required
+        && !credential.is_signed()
+        && bearer.0.is_none()
+    {
+        return Err(ServerError::unauthorized(
+            "Authentication required (signed request or Bearer token)",
+        ));
+    }
+
     // SPARQL UPDATE should use the transact endpoint, not query
     if headers.is_sparql_update() || credential.is_sparql_update {
         let error = ServerError::bad_request(
-            "SPARQL UPDATE requests should use the /:ledger/transact endpoint, not /:ledger/query",
+            "SPARQL UPDATE requests should use the /v1/fluree/transact/<ledger...> endpoint, not /v1/fluree/query/<ledger...>",
         );
         set_span_error_code(&span, "error:BadRequest");
         tracing::warn!(error = %error, "SPARQL UPDATE sent to query endpoint");
@@ -254,7 +330,15 @@ pub async fn query_ledger(
         // Log query text according to configuration
         log_query_text(&sparql, &state.telemetry_config, &span);
 
-        return execute_sparql_ledger(&state, &ledger, &sparql).await;
+        // Enforce bearer ledger scope for unsigned requests
+        if let Some(p) = bearer.0.as_ref() {
+            if !credential.is_signed() && !p.can_read(&ledger) {
+                return Err(ServerError::not_found("Ledger not found"));
+            }
+        }
+
+        let identity = effective_identity(&credential, &bearer);
+        return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref()).await;
     }
 
     // Handle FQL query (JSON body)
@@ -267,15 +351,15 @@ pub async fn query_ledger(
         }
     }
 
-    // Get ledger alias (path takes precedence)
-    let alias = match get_ledger_alias(Some(&ledger), &headers, &query_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", alias.as_str());
-            alias
+    // Get ledger id (path takes precedence)
+    let ledger_id = match get_ledger_id(Some(&ledger), &headers, &query_json) {
+        Ok(ledger_id) => {
+            span.record("ledger_id", ledger_id.as_str());
+            ledger_id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "ledger alias mismatch");
+            tracing::warn!(error = %e, "ledger ID mismatch");
             return Err(e);
         }
     };
@@ -283,12 +367,35 @@ pub async fn query_ledger(
     // Inject header values into query opts
     inject_headers_into_query(&mut query_json, &headers);
 
-    // If request was signed, credential DID takes precedence as identity
-    if let Some(did) = credential.did() {
-        inject_credential_did(&mut query_json, did);
+    // Enforce bearer ledger scope for unsigned requests
+    if let Some(p) = bearer.0.as_ref() {
+        if !credential.is_signed() && !p.can_read(&ledger) {
+            return Err(ServerError::not_found("Ledger not found"));
+        }
     }
 
-    execute_query(&state, &alias, &query_json).await
+    // Force auth-derived identity and policy-class into opts (non-spoofable)
+    let identity = effective_identity(&credential, &bearer);
+    let policy_class = data_auth.default_policy_class.as_deref();
+    force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
+
+    execute_query(&state, &ledger_id, &query_json).await
+}
+
+/// Execute a query with ledger as greedy tail segment.
+///
+/// POST /fluree/query/<ledger...>
+/// GET /fluree/query/<ledger...>
+///
+/// This avoids ambiguity when ledger names contain `/`.
+pub async fn query_ledger_tail(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
+    credential: MaybeCredential,
+) -> Result<impl IntoResponse> {
+    query_ledger(State(state), Path(ledger), headers, bearer, credential).await
 }
 
 /// Check if a query requires dataset features (multi-ledger, named graphs, etc.)
@@ -325,32 +432,32 @@ fn requires_dataset_features(query: &JsonValue) -> bool {
 
 async fn execute_query(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     query_json: &JsonValue,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create execution span
-    let span = tracing::info_span!("query_execute", ledger_alias = alias, query_kind = "fql");
+    let span = tracing::info_span!("query_execute", ledger_id = ledger_id, query_kind = "fql");
     let _guard = span.enter();
 
     // Check for history query: explicit "to" key indicates history mode
     // History queries must go through the dataset/connection path for correct index selection
     if query_json.get("to").is_some() {
-        return execute_history_query(state, alias, query_json, &span).await;
+        return execute_history_query(state, ledger_id, query_json, &span).await;
     }
 
     // Check for dataset features (from-named, from array, from object with graph/alias/time)
     // These require the connection execution path for proper dataset handling
     if requires_dataset_features(query_json) {
-        return execute_dataset_query(state, alias, query_json, &span).await;
+        return execute_dataset_query(state, ledger_id, query_json, &span).await;
     }
 
     // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
     if state.config.is_proxy_storage_mode() {
-        return execute_query_proxy(state, alias, query_json, &span).await;
+        return execute_query_proxy(state, ledger_id, query_json, &span).await;
     }
 
     // Shared storage mode: use load_ledger_for_query with freshness checking
-    let ledger = load_ledger_for_query(state, alias, &span).await?;
+    let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
     let graph = FlureeView::from_ledger_state(&ledger);
     let fluree = state.fluree.as_file();
 
@@ -426,14 +533,18 @@ async fn execute_query(
 /// Execute an FQL query in proxy mode (uses FlureeInstance wrapper methods)
 async fn execute_query_proxy(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Check if tracking is requested
     if has_tracking_opts(query_json) {
         // Execute tracked query via FlureeInstance wrapper
-        let response = match state.fluree.query_ledger_tracked(alias, query_json).await {
+        let response = match state
+            .fluree
+            .query_ledger_tracked(ledger_id, query_json)
+            .await
+        {
             Ok(response) => response,
             Err(e) => {
                 let server_error =
@@ -469,7 +580,11 @@ async fn execute_query_proxy(
     }
 
     // Execute query via FlureeInstance wrapper
-    let result = match state.fluree.query_ledger_jsonld(alias, query_json).await {
+    let result = match state
+        .fluree
+        .query_ledger_jsonld(ledger_id, query_json)
+        .await
+    {
         Ok(result) => {
             tracing::info!(
                 status = "success",
@@ -491,34 +606,55 @@ async fn execute_query_proxy(
 /// Execute a SPARQL query against a specific ledger and return JSON result
 async fn execute_sparql_ledger(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     sparql: &str,
+    identity: Option<&str>,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create span for peer mode loading
-    let span = tracing::info_span!("sparql_execute", ledger_alias = alias);
+    let span = tracing::info_span!("sparql_execute", ledger_id = ledger_id);
     let _guard = span.enter();
 
     // In proxy mode, use the unified FlureeInstance method
     if state.config.is_proxy_storage_mode() {
-        let result = state
-            .fluree
-            .query_ledger_sparql_jsonld(alias, sparql)
-            .await?;
+        let result = match identity {
+            Some(id) => {
+                state
+                    .fluree
+                    .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
+                    .await?
+            }
+            None => {
+                state
+                    .fluree
+                    .query_ledger_sparql_jsonld(ledger_id, sparql)
+                    .await?
+            }
+        };
         return Ok((HeaderMap::new(), Json(result)));
     }
 
     // Shared storage mode: use load_ledger_for_query with freshness checking
-    let ledger = load_ledger_for_query(state, alias, &span).await?;
+    let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
     let graph = FlureeView::from_ledger_state(&ledger);
     let fluree = state.fluree.as_file();
 
     // Execute SPARQL query via builder
     // Note: SPARQL tracking not yet implemented - returns empty headers
-    let result = graph
-        .query(fluree.as_ref())
-        .sparql(sparql)
-        .execute_formatted()
-        .await?;
+    let result = match identity {
+        Some(id) => {
+            state
+                .fluree
+                .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
+                .await?
+        }
+        None => {
+            graph
+                .query(fluree.as_ref())
+                .sparql(sparql)
+                .execute_formatted()
+                .await?
+        }
+    };
     Ok((HeaderMap::new(), Json(result)))
 }
 
@@ -532,6 +668,7 @@ async fn execute_sparql_ledger(
 pub async fn explain(
     State(state): State<Arc<AppState>>,
     headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
     credential: MaybeCredential,
 ) -> Result<Json<JsonValue>> {
     // Create request span with correlation context
@@ -542,12 +679,23 @@ pub async fn explain(
         "explain",
         request_id.as_deref(),
         trace_id.as_deref(),
-        None, // ledger alias determined later
+        None, // ledger ID determined later
         None, // tenant_id not yet supported
     );
     let _guard = span.enter();
 
     tracing::info!(status = "start", "explain request received");
+
+    // Enforce data auth if configured (Bearer token OR signed request)
+    let data_auth = state.config.data_auth();
+    if data_auth.mode == crate::config::DataAuthMode::Required
+        && !credential.is_signed()
+        && bearer.0.is_none()
+    {
+        return Err(ServerError::unauthorized(
+            "Authentication required (signed request or Bearer token)",
+        ));
+    }
 
     // Parse body as JSON
     let mut query_json = match credential.body_json() {
@@ -566,15 +714,15 @@ pub async fn explain(
         }
     }
 
-    // Get ledger alias
-    let alias = match get_ledger_alias(None, &headers, &query_json) {
-        Ok(alias) => {
-            span.record("ledger_alias", alias.as_str());
-            alias
+    // Get ledger id
+    let ledger_id = match get_ledger_id(None, &headers, &query_json) {
+        Ok(ledger_id) => {
+            span.record("ledger_id", ledger_id.as_str());
+            ledger_id
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias");
+            tracing::warn!(error = %e, "missing ledger ID");
             return Err(e);
         }
     };
@@ -582,15 +730,22 @@ pub async fn explain(
     // Inject header values into query opts
     inject_headers_into_query(&mut query_json, &headers);
 
-    // If request was signed, credential DID takes precedence as identity
-    if let Some(did) = credential.did() {
-        inject_credential_did(&mut query_json, did);
+    // Enforce bearer ledger scope for unsigned requests
+    if let Some(p) = bearer.0.as_ref() {
+        if !credential.is_signed() && !p.can_read(&ledger_id) {
+            return Err(ServerError::not_found("Ledger not found"));
+        }
     }
+
+    // Force auth-derived identity and policy-class into opts (non-spoofable)
+    let identity = effective_identity(&credential, &bearer);
+    let policy_class = data_auth.default_policy_class.as_deref();
+    force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
     // Execute explain
     let result = if state.config.is_proxy_storage_mode() {
         // Proxy mode: use FlureeInstance wrapper
-        match state.fluree.explain_ledger(&alias, &query_json).await {
+        match state.fluree.explain_ledger(&ledger_id, &query_json).await {
             Ok(result) => {
                 tracing::info!(status = "success", "explain completed (proxy)");
                 result
@@ -604,7 +759,7 @@ pub async fn explain(
         }
     } else {
         // Shared storage mode: use load_ledger_for_query with freshness checking
-        let ledger = load_ledger_for_query(&state, &alias, &span).await?;
+        let ledger = load_ledger_for_query(&state, &ledger_id, &span).await?;
         match state.fluree.as_file().explain(&ledger, &query_json).await {
             Ok(result) => {
                 tracing::info!(status = "success", "explain completed");
@@ -636,13 +791,13 @@ pub async fn explain(
 /// and reloads if needed using LedgerManager::reload() for coalesced reloading.
 pub(crate) async fn load_ledger_for_query(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     span: &tracing::Span,
-) -> Result<LedgerState<fluree_db_api::FileStorage>> {
+) -> Result<LedgerState> {
     let fluree = state.fluree.as_file();
 
     // Get cached handle (loads if not cached)
-    let handle = fluree.ledger_cached(alias).await.map_err(|e| {
+    let handle = fluree.ledger_cached(ledger_id).await.map_err(|e| {
         set_span_error_code(span, "error:NotFound");
         tracing::error!(error = %e, "ledger not found");
         ServerError::Api(e)
@@ -661,19 +816,19 @@ pub(crate) async fn load_ledger_for_query(
 
     // Check freshness using FreshnessSource trait
     // If no watermark available (SSE hasn't seen ledger), treat as current (lenient policy)
-    if let Some(watermark) = peer_state.watermark(alias) {
+    if let Some(watermark) = peer_state.watermark(ledger_id) {
         match handle.check_freshness(&watermark).await {
             FreshnessCheck::Stale => {
                 // Remote is ahead - reload ledger from shared storage
                 // Uses LedgerManager::reload() which handles coalescing
                 tracing::info!(
-                    alias = alias,
+                    ledger_id = ledger_id,
                     remote_index_t = watermark.index_t,
                     "Refreshing ledger for peer query"
                 );
 
                 if let Some(mgr) = fluree.ledger_manager() {
-                    mgr.reload(alias).await.map_err(ServerError::Api)?;
+                    mgr.reload(ledger_id).await.map_err(ServerError::Api)?;
                     state.refresh_counter.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -684,12 +839,11 @@ pub(crate) async fn load_ledger_for_query(
     } else {
         // No watermark = lenient policy: proceed with cached state
         tracing::debug!(
-            alias = alias,
+            ledger_id = ledger_id,
             "Ledger not yet seen in SSE, using cached state"
         );
     }
 
-    // Return snapshot as LedgerState for backward compatibility
     Ok(handle.snapshot().await.to_ledger_state())
 }
 
@@ -703,21 +857,21 @@ pub(crate) async fn load_ledger_for_query(
 /// - Correct index selection for history mode (includes retracted data)
 /// - `@op` binding population (true = assert, false = retract)
 ///
-/// If the query doesn't have a `from` key, the ledger alias from the URL path is injected.
+/// If the query doesn't have a `from` key, the ledger ID from the URL path is injected.
 async fn execute_history_query(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Clone the query so we can potentially inject the `from` key
     let mut query = query_json.clone();
 
-    // If query doesn't have a `from` key, inject the ledger alias from the URL path
+    // If query doesn't have a `from` key, inject the ledger ID from the URL path
     // This allows users to POST to /:ledger/query with just `{ "to": "...", ... }`
     if query.get("from").is_none() {
         if let Some(obj) = query.as_object_mut() {
-            obj.insert("from".to_string(), JsonValue::String(alias.to_string()));
+            obj.insert("from".to_string(), JsonValue::String(ledger_id.to_string()));
         }
     }
 
@@ -797,21 +951,21 @@ async fn execute_history_query(
 /// - Graph selectors (from object with graph field)
 /// - Dataset-local aliases for GRAPH patterns
 ///
-/// If the query doesn't have a `from` key, the ledger alias from the URL path is injected.
+/// If the query doesn't have a `from` key, the ledger ID from the URL path is injected.
 async fn execute_dataset_query(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Clone the query so we can potentially inject the `from` key
     let mut query = query_json.clone();
 
-    // If query doesn't have a `from` key, inject the ledger alias from the URL path
+    // If query doesn't have a `from` key, inject the ledger ID from the URL path
     // This allows users to POST to /:ledger/query with just `{ "from-named": [...], ... }`
     if query.get("from").is_none() {
         if let Some(obj) = query.as_object_mut() {
-            obj.insert("from".to_string(), JsonValue::String(alias.to_string()));
+            obj.insert("from".to_string(), JsonValue::String(ledger_id.to_string()));
         }
     }
 

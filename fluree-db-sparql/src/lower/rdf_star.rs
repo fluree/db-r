@@ -11,6 +11,7 @@ use fluree_db_query::ir::{Expression, Function, Pattern};
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::pattern::{Term, TriplePattern};
 use fluree_db_query::var_registry::VarId;
+use fluree_vocab::fluree;
 
 use std::collections::HashMap;
 
@@ -74,18 +75,14 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     // Check if the predicate is a metadata annotation (f:t or f:op)
                     let predicate_iri = self.get_predicate_iri(&tp.predicate)?;
 
-                    if predicate_iri == "https://ns.flur.ee/ledger#t"
-                        || predicate_iri == "http://www.w3.org/1999/02/22-rdf-syntax-ns#t"
-                    {
+                    if predicate_iri == fluree::DB_T {
                         // f:t annotation - bind t() function result
                         let bound_var = self.lower_object_to_var(&tp.object)?;
                         result.push(Pattern::Bind {
                             var: bound_var,
                             expr: Expression::call(Function::T, vec![Expression::Var(object_var)]),
                         });
-                    } else if predicate_iri == "https://ns.flur.ee/ledger#op"
-                        || predicate_iri == "http://www.w3.org/1999/02/22-rdf-syntax-ns#op"
-                    {
+                    } else if predicate_iri == fluree::DB_OP {
                         // f:op annotation - bind op() function result
                         let bound_var = self.lower_object_to_var(&tp.object)?;
                         result.push(Pattern::Bind {

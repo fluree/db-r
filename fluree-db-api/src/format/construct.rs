@@ -11,7 +11,6 @@ use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::FlakeValue;
-use fluree_db_core::Sid;
 use fluree_db_query::binding::Binding;
 use fluree_db_query::parse::ConstructTemplate;
 use fluree_db_query::pattern::Term;
@@ -94,8 +93,8 @@ fn instantiate_row(
 ) -> Result<()> {
     for pattern in &template.patterns {
         // Resolve template terms with bindings (all IRIs are EXPANDED)
-        let subject = resolve_subject_term(&pattern.s, batch, row_idx, compactor)?;
-        let predicate = resolve_predicate_term(&pattern.p, batch, row_idx, compactor)?;
+        let subject = resolve_subject_term(result, &pattern.s, batch, row_idx, compactor)?;
+        let predicate = resolve_predicate_term(result, &pattern.p, batch, row_idx, compactor)?;
         let object = resolve_object_term(result, &pattern.o, batch, row_idx, compactor)?;
 
         // Skip if any term is unbound (incomplete triple)
@@ -114,6 +113,7 @@ fn instantiate_row(
 /// Subjects must be IRIs or blank nodes, never literals.
 /// Returns expanded IRI (via decode_sid, not compact_sid).
 fn resolve_subject_term(
+    result: &QueryResult,
     term: &Term,
     batch: &Batch,
     row_idx: usize,
@@ -121,33 +121,50 @@ fn resolve_subject_term(
 ) -> Result<Option<IrTerm>> {
     match term {
         Term::Var(var_id) => match batch.get(row_idx, *var_id) {
-            Some(Binding::Sid(sid)) => {
-                let expanded_iri = compactor.decode_sid(sid)?;
-                Ok(Some(IrTerm::iri(expanded_iri)))
-            }
-            Some(Binding::IriMatch { iri, .. }) => {
-                // IriMatch: use canonical IRI (already decoded)
-                if let Some(bnode_id) = iri.strip_prefix("_:") {
-                    Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
+            Some(binding) => {
+                let materialized;
+                let binding = if binding.is_encoded() {
+                    materialized = super::materialize::materialize_binding(result, binding)?;
+                    &materialized
                 } else {
-                    Ok(Some(IrTerm::iri(iri)))
+                    binding
+                };
+
+                match binding {
+                    Binding::Sid(sid) => {
+                        let expanded_iri = compactor.decode_sid(sid)?;
+                        Ok(Some(IrTerm::iri(expanded_iri)))
+                    }
+                    Binding::IriMatch { iri, .. } => {
+                        // IriMatch: use canonical IRI (already decoded)
+                        if let Some(bnode_id) = iri.strip_prefix("_:") {
+                            Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
+                        } else {
+                            Ok(Some(IrTerm::iri(iri)))
+                        }
+                    }
+                    Binding::Iri(iri) => {
+                        // Raw IRI from graph source - check for blank node prefix
+                        if let Some(bnode_id) = iri.strip_prefix("_:") {
+                            Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
+                        } else {
+                            Ok(Some(IrTerm::iri(iri)))
+                        }
+                    }
+                    Binding::Unbound | Binding::Poisoned => Ok(None),
+                    Binding::Lit { .. } => Ok(None), // Literals can't be subjects
+                    Binding::EncodedLit { .. }
+                    | Binding::EncodedSid { .. }
+                    | Binding::EncodedPid { .. } => unreachable!(
+                        "Encoded bindings should have been materialized before CONSTRUCT subject resolution"
+                    ),
+                    Binding::Grouped(_) => Err(FormatError::InvalidBinding(
+                        "CONSTRUCT does not support GROUP BY (Binding::Grouped encountered)"
+                            .to_string(),
+                    )),
                 }
             }
-            Some(Binding::Iri(iri)) => {
-                // Raw IRI from virtual graph - check for blank node prefix
-                if let Some(bnode_id) = iri.strip_prefix("_:") {
-                    Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
-                } else {
-                    Ok(Some(IrTerm::iri(iri)))
-                }
-            }
-            Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
-            Some(Binding::Lit { .. }) => Ok(None), // Literals can't be subjects
-            Some(Binding::EncodedLit { .. }) => Ok(None),
-            Some(Binding::EncodedSid { .. }) | Some(Binding::EncodedPid { .. }) => Ok(None), // Require materialization
-            Some(Binding::Grouped(_)) => Err(FormatError::InvalidBinding(
-                "CONSTRUCT does not support GROUP BY (Binding::Grouped encountered)".to_string(),
-            )),
+            None => Ok(None),
         },
         Term::Sid(sid) => {
             let expanded_iri = compactor.decode_sid(sid)?;
@@ -170,6 +187,7 @@ fn resolve_subject_term(
 /// Predicates must be IRIs, never literals or blank nodes.
 /// Returns expanded IRI (via decode_sid, not compact_sid).
 fn resolve_predicate_term(
+    result: &QueryResult,
     term: &Term,
     batch: &Batch,
     row_idx: usize,
@@ -177,33 +195,50 @@ fn resolve_predicate_term(
 ) -> Result<Option<IrTerm>> {
     match term {
         Term::Var(var_id) => match batch.get(row_idx, *var_id) {
-            Some(Binding::Sid(sid)) => {
-                let expanded_iri = compactor.decode_sid(sid)?;
-                Ok(Some(IrTerm::iri(expanded_iri)))
-            }
-            Some(Binding::IriMatch { iri, .. }) => {
-                // IriMatch: use canonical IRI - blank nodes not allowed as predicates
-                if iri.starts_with("_:") {
-                    Ok(None)
+            Some(binding) => {
+                let materialized;
+                let binding = if binding.is_encoded() {
+                    materialized = super::materialize::materialize_binding(result, binding)?;
+                    &materialized
                 } else {
-                    Ok(Some(IrTerm::iri(iri)))
+                    binding
+                };
+
+                match binding {
+                    Binding::Sid(sid) => {
+                        let expanded_iri = compactor.decode_sid(sid)?;
+                        Ok(Some(IrTerm::iri(expanded_iri)))
+                    }
+                    Binding::IriMatch { iri, .. } => {
+                        // IriMatch: use canonical IRI - blank nodes not allowed as predicates
+                        if iri.starts_with("_:") {
+                            Ok(None)
+                        } else {
+                            Ok(Some(IrTerm::iri(iri)))
+                        }
+                    }
+                    Binding::Iri(iri) => {
+                        // Raw IRI from graph source - blank nodes not allowed as predicates
+                        if iri.starts_with("_:") {
+                            Ok(None)
+                        } else {
+                            Ok(Some(IrTerm::iri(iri)))
+                        }
+                    }
+                    Binding::Unbound | Binding::Poisoned => Ok(None),
+                    Binding::Lit { .. } => Ok(None), // Literals can't be predicates
+                    Binding::EncodedLit { .. }
+                    | Binding::EncodedSid { .. }
+                    | Binding::EncodedPid { .. } => unreachable!(
+                        "Encoded bindings should have been materialized before CONSTRUCT predicate resolution"
+                    ),
+                    Binding::Grouped(_) => Err(FormatError::InvalidBinding(
+                        "CONSTRUCT does not support GROUP BY (Binding::Grouped encountered)"
+                            .to_string(),
+                    )),
                 }
             }
-            Some(Binding::Iri(iri)) => {
-                // Raw IRI from virtual graph - blank nodes not allowed as predicates
-                if iri.starts_with("_:") {
-                    Ok(None)
-                } else {
-                    Ok(Some(IrTerm::iri(iri)))
-                }
-            }
-            Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
-            Some(Binding::Lit { .. }) => Ok(None), // Literals can't be predicates
-            Some(Binding::EncodedLit { .. }) => Ok(None),
-            Some(Binding::EncodedSid { .. }) | Some(Binding::EncodedPid { .. }) => Ok(None), // Require materialization
-            Some(Binding::Grouped(_)) => Err(FormatError::InvalidBinding(
-                "CONSTRUCT does not support GROUP BY (Binding::Grouped encountered)".to_string(),
-            )),
+            None => Ok(None),
         },
         Term::Sid(sid) => {
             let expanded_iri = compactor.decode_sid(sid)?;
@@ -259,6 +294,11 @@ fn binding_to_ir_term(
     binding: &Binding,
     compactor: &IriCompactor,
 ) -> Result<Option<IrTerm>> {
+    if binding.is_encoded() {
+        let materialized = super::materialize::materialize_binding(result, binding)?;
+        return binding_to_ir_term(result, &materialized, compactor);
+    }
+
     match binding {
         Binding::Unbound | Binding::Poisoned => Ok(None),
 
@@ -277,7 +317,7 @@ fn binding_to_ir_term(
             }
         }
 
-        // Raw IRI from virtual graph - check for blank node prefix
+        // Raw IRI from graph source - check for blank node prefix
         Binding::Iri(iri) => {
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
@@ -416,47 +456,10 @@ fn binding_to_ir_term(
             }
         }
 
-        Binding::EncodedLit { .. } => {
-            let store = result.binary_store.as_ref().ok_or_else(|| {
-                FormatError::InvalidBinding(
-                    "Encountered EncodedLit during CONSTRUCT formatting but QueryResult has no binary_store".to_string(),
-                )
-            })?;
-            let materialized = materialize_encoded_lit(binding, store).map_err(|e| {
-                FormatError::InvalidBinding(format!("Failed to materialize EncodedLit: {}", e))
-            })?;
-            binding_to_ir_term(result, &materialized, compactor)
-        }
-
-        Binding::EncodedSid { s_id } => {
-            let store = result.binary_store.as_ref().ok_or_else(|| {
-                FormatError::InvalidBinding(
-                    "Encountered EncodedSid during CONSTRUCT formatting but QueryResult has no binary_store".to_string(),
-                )
-            })?;
-            let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
-                FormatError::InvalidBinding(format!("Failed to resolve subject IRI: {}", e))
-            })?;
-            if let Some(bnode_id) = iri.strip_prefix("_:") {
-                Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
-            } else {
-                Ok(Some(IrTerm::iri(iri)))
-            }
-        }
-
-        Binding::EncodedPid { p_id } => {
-            let store = result.binary_store.as_ref().ok_or_else(|| {
-                FormatError::InvalidBinding(
-                    "Encountered EncodedPid during CONSTRUCT formatting but QueryResult has no binary_store".to_string(),
-                )
-            })?;
-            match store.resolve_predicate_iri(*p_id) {
-                Some(iri) => Ok(Some(IrTerm::iri(iri))),
-                None => Err(FormatError::InvalidBinding(format!(
-                    "Unknown predicate ID: {}",
-                    p_id
-                ))),
-            }
+        Binding::EncodedLit { .. } | Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
+            unreachable!(
+                "Encoded bindings should have been materialized before CONSTRUCT IR conversion"
+            )
         }
 
         // GROUP BY + CONSTRUCT is not supported (semantics undefined)
@@ -466,42 +469,7 @@ fn binding_to_ir_term(
     }
 }
 
-fn materialize_encoded_lit(
-    binding: &Binding,
-    store: &fluree_db_indexer::run_index::BinaryIndexStore,
-) -> std::io::Result<Binding> {
-    let Binding::EncodedLit {
-        o_kind,
-        o_key,
-        p_id,
-        dt_id,
-        lang_id,
-        i_val,
-        t,
-    } = binding
-    else {
-        return Ok(binding.clone());
-    };
-    let val = store.decode_value(*o_kind, *o_key, *p_id)?;
-    match val {
-        FlakeValue::Ref(sid) => Ok(Binding::Sid(sid)),
-        other => {
-            let dt_sid = store
-                .dt_sids()
-                .get(*dt_id as usize)
-                .cloned()
-                .unwrap_or_else(|| Sid::new(0, ""));
-            let meta = store.decode_meta(*lang_id, *i_val);
-            Ok(Binding::Lit {
-                val: other,
-                dt: dt_sid,
-                lang: meta.and_then(|m| m.lang.map(std::sync::Arc::from)),
-                t: Some(*t),
-                op: None,
-            })
-        }
-    }
-}
+// NOTE: encoded binding materialization is centralized in `format::materialize`.
 
 /// Convert a FlakeValue constant to an IR Term
 fn flake_value_to_ir_term(val: &FlakeValue) -> Result<Option<IrTerm>> {

@@ -6,52 +6,50 @@ use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{ArithmeticOp, Expression};
-use fluree_db_core::Storage;
-
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
 /// Evaluate addition
-pub fn eval_add<S: Storage, R: RowAccess>(
+pub fn eval_add<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_arithmetic(args, row, ctx, ArithmeticOp::Add, "Add")
 }
 
 /// Evaluate subtraction
-pub fn eval_sub<S: Storage, R: RowAccess>(
+pub fn eval_sub<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_arithmetic(args, row, ctx, ArithmeticOp::Sub, "Sub")
 }
 
 /// Evaluate multiplication
-pub fn eval_mul<S: Storage, R: RowAccess>(
+pub fn eval_mul<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_arithmetic(args, row, ctx, ArithmeticOp::Mul, "Mul")
 }
 
 /// Evaluate division
-pub fn eval_div<S: Storage, R: RowAccess>(
+pub fn eval_div<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_arithmetic(args, row, ctx, ArithmeticOp::Div, "Div")
 }
 
 /// Evaluate unary negation
-pub fn eval_negate<S: Storage, R: RowAccess>(
+pub fn eval_negate<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "Negate")?;
 
@@ -68,10 +66,10 @@ pub fn eval_negate<S: Storage, R: RowAccess>(
 }
 
 /// Helper for binary arithmetic operations
-fn eval_binary_arithmetic<S: Storage, R: RowAccess>(
+fn eval_binary_arithmetic<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
     op: ArithmeticOp,
     name: &str,
 ) -> Result<Option<ComparableValue>> {

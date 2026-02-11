@@ -5,7 +5,6 @@
 
 use fluree_db_core::{
     range_with_overlay, Db, FlakeValue, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
-    Storage,
 };
 use fluree_vocab::namespaces::RDF;
 use fluree_vocab::predicates::RDF_TYPE;
@@ -30,16 +29,12 @@ use crate::Result;
 ///
 /// A map from subject SID to a vector of class SIDs. Subjects with no
 /// rdf:type assertions will not be present in the map.
-pub async fn lookup_subject_classes<S, O>(
+pub async fn lookup_subject_classes(
     subjects: &[Sid],
-    db: &Db<S>,
-    overlay: &O,
+    db: &Db,
+    overlay: &dyn OverlayProvider,
     to_t: i64,
-) -> Result<HashMap<Sid, Vec<Sid>>>
-where
-    S: Storage,
-    O: OverlayProvider + ?Sized,
-{
+) -> Result<HashMap<Sid, Vec<Sid>>> {
     if subjects.is_empty() {
         return Ok(HashMap::new());
     }
@@ -47,15 +42,35 @@ where
     // Create the rdf:type SID
     let rdf_type = Sid::new(RDF, RDF_TYPE);
 
+    // Prefer an index-native batched lookup when available (binary range provider).
+    if let Some(provider) = db.range_provider.as_ref() {
+        let opts = RangeOptions::new().with_to_t(to_t);
+        match provider.lookup_subject_predicate_refs_batched(
+            fluree_db_core::IndexType::Psot,
+            &rdf_type,
+            subjects,
+            &opts,
+            overlay,
+        ) {
+            Ok(map) => return Ok(map),
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
+                // Fall through to the per-subject SPOT lookup on Unsupported.
+            }
+            Err(e) => {
+                return Err(PolicyError::ClassLookup {
+                    message: format!("Batched class lookup failed: {}", e),
+                });
+            }
+        }
+    }
+
     let mut result: HashMap<Sid, Vec<Sid>> = HashMap::new();
 
-    // Query rdf:type for each unique subject
+    // Fallback: Query rdf:type for each unique subject (correct but can be slow).
     let unique_subjects: HashSet<&Sid> = subjects.iter().collect();
-
     for subject in unique_subjects {
         let range_match = RangeMatch::subject_predicate(subject.clone(), rdf_type.clone());
         let opts = RangeOptions::new().with_to_t(to_t);
-
         let flakes = range_with_overlay(
             db,
             overlay,
@@ -69,18 +84,15 @@ where
             message: format!("Failed to look up classes for subject: {}", e),
         })?;
 
-        // Extract class SIDs from rdf:type flakes
-        let classes: Vec<Sid> = flakes
+        let mut classes: Vec<Sid> = flakes
             .into_iter()
-            .filter_map(|f| {
-                if let FlakeValue::Ref(class_sid) = f.o {
-                    Some(class_sid)
-                } else {
-                    None
-                }
+            .filter_map(|f| match f.o {
+                FlakeValue::Ref(class_sid) => Some(class_sid),
+                _ => None,
             })
             .collect();
-
+        classes.sort();
+        classes.dedup();
         if !classes.is_empty() {
             result.insert(subject.clone(), classes);
         }
@@ -100,17 +112,13 @@ where
 /// * `overlay` - Optional overlay (novelty) to include staged flakes
 /// * `to_t` - The transaction time to query as-of
 /// * `policy_ctx` - The policy context whose cache to populate
-pub async fn populate_class_cache<S, O>(
+pub async fn populate_class_cache(
     subjects: &[Sid],
-    db: &Db<S>,
-    overlay: &O,
+    db: &Db,
+    overlay: &dyn OverlayProvider,
     to_t: i64,
     policy_ctx: &crate::evaluate::PolicyContext,
-) -> Result<()>
-where
-    S: Storage,
-    O: OverlayProvider + ?Sized,
-{
+) -> Result<()> {
     // Skip if no class policies need checking
     if !policy_ctx.wrapper().has_class_policies() {
         return Ok(());

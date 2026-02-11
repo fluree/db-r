@@ -29,7 +29,7 @@ pub struct CommitWriteResult {
 /// Encodes flakes using Sid-direct encoding (namespace_code + name dict entries).
 /// No NamespaceRegistry is needed — Sid fields are read directly from flakes.
 ///
-/// When `signing` is `Some((key, ledger_alias))`, the commit is signed with
+/// When `signing` is `Some((key, ledger_id))`, the commit is signed with
 /// Ed25519 and a signature block is appended after the hash. The header's
 /// `FLAG_HAS_COMMIT_SIG` flag and `sig_block_len` are set *before* hash
 /// computation so they are covered by the content hash.
@@ -176,9 +176,9 @@ pub fn write_commit(
     output.extend_from_slice(&hash_bytes);
 
     // 13. If signing, compute domain-separated digest and append signature block
-    if let Some((signing_key, ledger_alias)) = signing {
+    if let Some((signing_key, ledger_id)) = signing {
         let _span = tracing::debug_span!("v2_write_sign").entered();
-        let signature = sign_commit_digest(signing_key, &hash_bytes, ledger_alias);
+        let signature = sign_commit_digest(signing_key, &hash_bytes, ledger_id);
         let timestamp = chrono::Utc::now().timestamp_millis();
         let commit_sig = CommitSignature {
             signer: signer_did.expect("signer_did set when signing is Some"),

@@ -4,7 +4,7 @@
 //! - Vector index loading from storage
 //! - Caching with LRU eviction and TTL
 //! - Similarity search execution
-//! - Sync/time-travel semantics
+//! - Sync semantics (head-only; no time-travel)
 
 use super::SearchBackend;
 use crate::error::{Result, ServiceError};
@@ -49,37 +49,35 @@ impl Default for VectorBackendConfig {
 ///
 /// This abstracts the storage layer so the backend can be used
 /// with different storage implementations.
+///
+/// Vector indexes are **head-only**: they do not support time-travel queries.
+/// The loader provides access to the latest snapshot only.
 #[async_trait]
 pub trait VectorIndexLoader: std::fmt::Debug + Send + Sync {
-    /// Load the vector index for a virtual graph at a specific transaction.
+    /// Load the vector index for a graph source.
+    ///
+    /// Vector is head-only: implementations always load from the nameservice
+    /// head pointer. The `index_t` parameter is used as a cache key by the
+    /// backend, not for time-travel selection.
     ///
     /// # Arguments
     ///
-    /// * `vg_alias` - Virtual graph alias
-    /// * `index_t` - Transaction number of the index snapshot
-    ///
-    /// # Returns
-    ///
-    /// The loaded vector index, or an error if not found.
-    async fn load_index(&self, vg_alias: &str, index_t: i64) -> Result<VectorIndex>;
+    /// * `graph_source_id` - Graph source alias
+    /// * `index_t` - Head transaction (used as cache key, not for snapshot selection)
+    async fn load_index(&self, graph_source_id: &str, index_t: i64) -> Result<VectorIndex>;
 
-    /// Get the latest available index transaction for a virtual graph.
+    /// Get the latest available index transaction for a graph source.
     ///
     /// Returns `None` if no index has been built yet.
-    async fn get_latest_index_t(&self, vg_alias: &str) -> Result<Option<i64>>;
-
-    /// Find the newest index snapshot with watermark <= target_t.
-    ///
-    /// Returns `None` if no suitable snapshot exists.
-    async fn find_snapshot_for_t(&self, vg_alias: &str, target_t: i64) -> Result<Option<i64>>;
+    async fn get_latest_index_t(&self, graph_source_id: &str) -> Result<Option<i64>>;
 
     /// Get the current nameservice index head for sync operations.
     ///
     /// This is the latest committed transaction that should be indexed.
-    async fn get_index_head(&self, vg_alias: &str) -> Result<Option<i64>>;
+    async fn get_index_head(&self, graph_source_id: &str) -> Result<Option<i64>>;
 }
 
-/// Cache key: (vg_alias, index_t)
+/// Cache key: (graph_source_id, index_t)
 type VectorCacheKey = (String, i64);
 
 /// Cache entry with timestamp for TTL expiration.
@@ -142,7 +140,8 @@ impl std::fmt::Debug for VectorIndexCache {
 
 /// Vector search backend.
 ///
-/// Handles vector similarity search with caching, sync, and time-travel support.
+/// Handles vector similarity search with caching and sync support.
+/// Vector indexes are head-only and do not support time-travel queries (`as_of_t`).
 pub struct VectorBackend<L: VectorIndexLoader> {
     /// Index loader (storage access).
     loader: L,
@@ -173,13 +172,17 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
         Self::new(loader, VectorBackendConfig::default())
     }
 
-    /// Get or load an index for the given virtual graph and transaction.
-    async fn get_or_load_index(&self, vg_alias: &str, index_t: i64) -> Result<Arc<VectorIndex>> {
-        let cache_key = (vg_alias.to_string(), index_t);
+    /// Get or load an index for the given graph source and transaction.
+    async fn get_or_load_index(
+        &self,
+        graph_source_id: &str,
+        index_t: i64,
+    ) -> Result<Arc<VectorIndex>> {
+        let cache_key = (graph_source_id.to_string(), index_t);
 
         // Check cache first
         if let Some(index) = self.cache.get(&cache_key) {
-            tracing::debug!(vg_alias, index_t, "Vector index cache hit");
+            tracing::debug!(graph_source_id, index_t, "Vector index cache hit");
             return Ok(index);
         }
 
@@ -198,8 +201,12 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
         }
 
         // Load from storage
-        tracing::debug!(vg_alias, index_t, "Loading vector index from storage");
-        let index = self.loader.load_index(vg_alias, index_t).await?;
+        tracing::debug!(
+            graph_source_id,
+            index_t,
+            "Loading vector index from storage"
+        );
+        let index = self.loader.load_index(graph_source_id, index_t).await?;
         let index = Arc::new(index);
 
         // Insert into cache
@@ -210,46 +217,30 @@ impl<L: VectorIndexLoader> VectorBackend<L> {
 
     /// Resolve the index transaction to use for a search request.
     ///
-    /// Handles sync and time-travel semantics:
-    /// - If `as_of_t` is Some, find the newest snapshot <= target
-    /// - If `sync` is true, wait for index to reach head first
-    /// - Otherwise, use the latest available snapshot
+    /// Vector indexes are head-only: always returns the latest snapshot.
+    /// If `sync` is true, waits for any index head to appear first.
     async fn resolve_index_t(
         &self,
-        vg_alias: &str,
-        as_of_t: Option<i64>,
+        graph_source_id: &str,
         sync: bool,
         timeout: Duration,
     ) -> Result<i64> {
         if sync {
-            let target_t = as_of_t;
             wait_for_head(
-                || async { self.loader.get_index_head(vg_alias).await },
-                target_t,
+                || async { self.loader.get_index_head(graph_source_id).await },
+                None,
                 timeout,
                 &self.config.sync_config,
             )
             .await?;
         }
 
-        match as_of_t {
-            Some(target_t) => {
-                // Find newest snapshot <= target_t
-                self.loader
-                    .find_snapshot_for_t(vg_alias, target_t)
-                    .await?
-                    .ok_or(ServiceError::NoSnapshotForAsOfT { as_of_t: target_t })
-            }
-            None => {
-                // Use latest available
-                self.loader
-                    .get_latest_index_t(vg_alias)
-                    .await?
-                    .ok_or_else(|| ServiceError::IndexNotBuilt {
-                        alias: vg_alias.to_string(),
-                    })
-            }
-        }
+        self.loader
+            .get_latest_index_t(graph_source_id)
+            .await?
+            .ok_or_else(|| ServiceError::IndexNotBuilt {
+                address: graph_source_id.to_string(),
+            })
     }
 }
 
@@ -267,13 +258,24 @@ impl<L: VectorIndexLoader> std::fmt::Debug for VectorBackend<L> {
 impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
     async fn search(
         &self,
-        vg_alias: &str,
+        graph_source_id: &str,
         query: &QueryVariant,
         limit: usize,
         as_of_t: Option<i64>,
         sync: bool,
         timeout_ms: Option<u64>,
     ) -> Result<(i64, Vec<SearchHit>)> {
+        // Vector indexes are head-only: reject as_of_t
+        if as_of_t.is_some() {
+            return Err(ServiceError::InvalidRequest {
+                message: format!(
+                    "Vector index '{}' does not support time-travel queries (as_of_t). \
+                     Only the latest snapshot is available.",
+                    graph_source_id
+                ),
+            });
+        }
+
         // Extract query vector and optional metric
         let (query_vector, requested_metric) = match query {
             QueryVariant::Vector { vector, metric } => (vector, metric.as_deref()),
@@ -289,13 +291,11 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
 
         let timeout = Duration::from_millis(timeout_ms.unwrap_or(self.config.default_timeout_ms));
 
-        // Resolve which index snapshot to use
-        let index_t = self
-            .resolve_index_t(vg_alias, as_of_t, sync, timeout)
-            .await?;
+        // Resolve which index snapshot to use (always head)
+        let index_t = self.resolve_index_t(graph_source_id, sync, timeout).await?;
 
         // Load the index (from cache or storage)
-        let index = self.get_or_load_index(vg_alias, index_t).await?;
+        let index = self.get_or_load_index(graph_source_id, index_t).await?;
 
         // Validate metric if the client specified one
         if let Some(metric_str) = requested_metric {
@@ -309,7 +309,7 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
                 return Err(ServiceError::InvalidRequest {
                     message: format!(
                         "Metric mismatch for '{}': request asks for {} but index uses {}",
-                        vg_alias, requested, index_metric
+                        graph_source_id, requested, index_metric
                     ),
                 });
             }
@@ -352,69 +352,57 @@ mod tests {
     /// on each load (since `VectorIndex` doesn't implement `Clone`).
     #[derive(Debug, Default)]
     struct MockLoader {
-        /// Set of (vg_alias, index_t) pairs that have indexes.
+        /// Set of (graph_source_id, index_t) pairs that have indexes.
         known_indexes: StdRwLock<HashSet<(String, i64)>>,
         latest_t: StdRwLock<HashMap<String, i64>>,
         head_t: StdRwLock<HashMap<String, i64>>,
     }
 
     impl MockLoader {
-        fn add_index(&self, vg_alias: &str, index_t: i64, _index: VectorIndex) {
+        fn add_index(&self, graph_source_id: &str, index_t: i64, _index: VectorIndex) {
             self.known_indexes
                 .write()
                 .unwrap()
-                .insert((vg_alias.to_string(), index_t));
+                .insert((graph_source_id.to_string(), index_t));
             let mut latest = self.latest_t.write().unwrap();
-            let current = latest.entry(vg_alias.to_string()).or_insert(0);
+            let current = latest.entry(graph_source_id.to_string()).or_insert(0);
             if index_t > *current {
                 *current = index_t;
             }
         }
 
-        fn set_head(&self, vg_alias: &str, t: i64) {
-            self.head_t.write().unwrap().insert(vg_alias.to_string(), t);
+        fn set_head(&self, graph_source_id: &str, t: i64) {
+            self.head_t
+                .write()
+                .unwrap()
+                .insert(graph_source_id.to_string(), t);
         }
     }
 
     #[async_trait]
     impl VectorIndexLoader for MockLoader {
-        async fn load_index(&self, vg_alias: &str, index_t: i64) -> Result<VectorIndex> {
+        async fn load_index(&self, graph_source_id: &str, index_t: i64) -> Result<VectorIndex> {
             if self
                 .known_indexes
                 .read()
                 .unwrap()
-                .contains(&(vg_alias.to_string(), index_t))
+                .contains(&(graph_source_id.to_string(), index_t))
             {
                 // Rebuild a fresh test index (same content each time)
                 Ok(build_test_index())
             } else {
                 Err(ServiceError::IndexNotBuilt {
-                    alias: vg_alias.to_string(),
+                    address: graph_source_id.to_string(),
                 })
             }
         }
 
-        async fn get_latest_index_t(&self, vg_alias: &str) -> Result<Option<i64>> {
-            Ok(self.latest_t.read().unwrap().get(vg_alias).copied())
+        async fn get_latest_index_t(&self, graph_source_id: &str) -> Result<Option<i64>> {
+            Ok(self.latest_t.read().unwrap().get(graph_source_id).copied())
         }
 
-        async fn find_snapshot_for_t(&self, vg_alias: &str, target_t: i64) -> Result<Option<i64>> {
-            let indexes = self.known_indexes.read().unwrap();
-            let mut best: Option<i64> = None;
-            for key in indexes.iter() {
-                if key.0 == vg_alias && key.1 <= target_t {
-                    match best {
-                        None => best = Some(key.1),
-                        Some(b) if key.1 > b => best = Some(key.1),
-                        _ => {}
-                    }
-                }
-            }
-            Ok(best)
-        }
-
-        async fn get_index_head(&self, vg_alias: &str) -> Result<Option<i64>> {
-            Ok(self.head_t.read().unwrap().get(vg_alias).copied())
+        async fn get_index_head(&self, graph_source_id: &str) -> Result<Option<i64>> {
+            Ok(self.head_t.read().unwrap().get(graph_source_id).copied())
         }
     }
 
@@ -459,97 +447,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_vector_backend_time_travel() {
+    async fn test_vector_backend_rejects_as_of_t() {
         let loader = MockLoader::default();
-
-        // Register indexes at different times.
-        // Note: MockLoader always returns the same build_test_index() content,
-        // but the important thing is that the correct snapshot time is resolved.
-        loader.add_index("vg:main", 100, build_test_index());
-        loader.add_index("vg:main", 200, build_test_index());
+        loader.add_index("search:main", 100, build_test_index());
+        loader.set_head("search:main", 100);
 
         let backend = VectorBackend::with_defaults(loader);
 
-        // Query with as_of_t=150 should select the snapshot at t=100
-        let (index_t, hits) = backend
-            .search(
-                "vg:main",
-                &QueryVariant::Vector {
-                    vector: vec![0.9, 0.1, 0.05],
-                    metric: None,
-                },
-                10,
-                Some(150),
-                false,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(index_t, 100);
-        assert!(
-            !hits.is_empty(),
-            "Should return results from the resolved snapshot"
-        );
-
-        // Query with as_of_t=250 should select the snapshot at t=200
-        let (index_t_2, _) = backend
-            .search(
-                "vg:main",
-                &QueryVariant::Vector {
-                    vector: vec![0.9, 0.1, 0.05],
-                    metric: None,
-                },
-                10,
-                Some(250),
-                false,
-                None,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(index_t_2, 200);
-    }
-
-    #[tokio::test]
-    async fn test_vector_backend_no_snapshot_error() {
-        let loader = MockLoader::default();
-        loader.add_index("vg:main", 200, build_test_index());
-
-        let backend = VectorBackend::with_defaults(loader);
-
-        // Query with as_of_t=100 should fail (no snapshot at or before t=100)
+        // Vector indexes are head-only: as_of_t must be rejected
         let result = backend
             .search(
-                "vg:main",
+                "search:main",
                 &QueryVariant::Vector {
-                    vector: vec![0.5, 0.5, 0.0],
+                    vector: vec![0.9, 0.1, 0.05],
                     metric: None,
                 },
                 10,
-                Some(100),
+                Some(50),
                 false,
                 None,
             )
             .await;
 
-        assert!(matches!(
-            result,
-            Err(ServiceError::NoSnapshotForAsOfT { .. })
-        ));
+        assert!(matches!(result, Err(ServiceError::InvalidRequest { .. })));
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("does not support time-travel"),
+            "Error message should mention time-travel, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_vector_backend_index_not_built() {
+        let loader = MockLoader::default();
+        // No indexes registered
+
+        let backend = VectorBackend::with_defaults(loader);
+
+        // Query without any index should return IndexNotBuilt
+        let result = backend
+            .search(
+                "search:main",
+                &QueryVariant::Vector {
+                    vector: vec![0.5, 0.5, 0.0],
+                    metric: None,
+                },
+                10,
+                None,
+                false,
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(ServiceError::IndexNotBuilt { .. })));
     }
 
     #[tokio::test]
     async fn test_vector_backend_caching() {
         let loader = MockLoader::default();
-        loader.add_index("vg:main", 100, build_test_index());
+        loader.add_index("search:main", 100, build_test_index());
 
         let backend = VectorBackend::with_defaults(loader);
 
         // First search loads from storage
         let _ = backend
             .search(
-                "vg:main",
+                "search:main",
                 &QueryVariant::Vector {
                     vector: vec![0.9, 0.1, 0.05],
                     metric: None,
@@ -565,7 +529,7 @@ mod tests {
         // Second search should use cache
         let _ = backend
             .search(
-                "vg:main",
+                "search:main",
                 &QueryVariant::Vector {
                     vector: vec![0.1, 0.9, 0.05],
                     metric: None,
@@ -604,13 +568,13 @@ mod tests {
     #[tokio::test]
     async fn test_vector_backend_rejects_bm25_query() {
         let loader = MockLoader::default();
-        loader.add_index("vg:main", 100, build_test_index());
+        loader.add_index("search:main", 100, build_test_index());
 
         let backend = VectorBackend::with_defaults(loader);
 
         let result = backend
             .search(
-                "vg:main",
+                "search:main",
                 &QueryVariant::Bm25 {
                     text: "test".to_string(),
                 },

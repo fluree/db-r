@@ -48,7 +48,7 @@ impl std::fmt::Debug for CompositeBackend {
 impl SearchBackend for CompositeBackend {
     async fn search(
         &self,
-        vg_alias: &str,
+        graph_source_id: &str,
         query: &QueryVariant,
         limit: usize,
         as_of_t: Option<i64>,
@@ -58,7 +58,7 @@ impl SearchBackend for CompositeBackend {
         for backend in &self.backends {
             if backend.supports(query) {
                 return backend
-                    .search(vg_alias, query, limit, as_of_t, sync, timeout_ms)
+                    .search(graph_source_id, query, limit, as_of_t, sync, timeout_ms)
                     .await;
             }
         }
@@ -91,7 +91,7 @@ mod tests {
     impl SearchBackend for FixedBackend {
         async fn search(
             &self,
-            _vg_alias: &str,
+            _graph_source_id: &str,
             _query: &QueryVariant,
             _limit: usize,
             _as_of_t: Option<i64>,
@@ -135,7 +135,7 @@ mod tests {
 
         let (_, hits) = composite
             .search(
-                "vg:main",
+                "search:main",
                 &QueryVariant::Bm25 {
                     text: "test".to_string(),
                 },
@@ -167,7 +167,7 @@ mod tests {
 
         let (_, hits) = composite
             .search(
-                "vg:main",
+                "search:main",
                 &QueryVariant::Vector {
                     vector: vec![0.5],
                     metric: None,
@@ -193,7 +193,7 @@ mod tests {
 
         let result = composite
             .search(
-                "vg:main",
+                "search:main",
                 &QueryVariant::Vector {
                     vector: vec![0.5],
                     metric: None,
@@ -242,7 +242,7 @@ mod tests {
 
         let result = composite
             .search(
-                "vg:main",
+                "search:main",
                 &QueryVariant::Bm25 {
                     text: "test".to_string(),
                 },

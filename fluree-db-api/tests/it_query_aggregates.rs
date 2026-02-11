@@ -15,8 +15,8 @@ use fluree_db_api::FlureeBuilder;
 use serde_json::{json, Value as JsonValue};
 use support::{context_ex_schema, genesis_ledger, normalize_rows, MemoryFluree, MemoryLedger};
 
-async fn seed_people(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let ctx = context_ex_schema();
 
     // Matches `db-clojure/test/fluree/db/test_utils.cljc` `people-strings`

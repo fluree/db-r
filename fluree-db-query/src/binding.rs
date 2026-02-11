@@ -59,9 +59,9 @@ pub enum Binding {
         /// Ledger alias where this SID came from (for re-encoding decisions)
         ledger_alias: Arc<str>,
     },
-    /// Raw IRI string (for virtual graph results not in namespace table)
+    /// Raw IRI string (for graph source results not in namespace table)
     ///
-    /// Virtual graph queries (e.g., R2RML over Iceberg) generate IRIs from
+    /// Graph source queries (e.g., R2RML over Iceberg) generate IRIs from
     /// templates that may not exist in the namespace table. Instead of
     /// silently dropping rows, we keep the full IRI string.
     ///
@@ -269,7 +269,7 @@ impl Binding {
 
     /// Create a binding from a raw IRI string.
     ///
-    /// Used for virtual graph results where IRIs are generated from templates
+    /// Used for graph source results where IRIs are generated from templates
     /// and may not exist in the namespace table. The IRI is kept as a full
     /// string rather than being encoded to a SID.
     pub fn iri(iri: impl Into<Arc<str>>) -> Self {

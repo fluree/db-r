@@ -1,4 +1,5 @@
 use crate::cli::ConfigAction;
+use crate::context;
 use crate::error::{CliError, CliResult};
 use std::path::Path;
 
@@ -8,6 +9,9 @@ pub fn run(action: ConfigAction, fluree_dir: &Path) -> CliResult<()> {
     let config_path = fluree_dir.join(CONFIG_FILE);
 
     match action {
+        // SetOrigins is handled in main.rs (async dispatch) before calling run().
+        ConfigAction::SetOrigins { .. } => unreachable!("handled in main.rs"),
+
         ConfigAction::Get { key } => {
             let content = std::fs::read_to_string(&config_path).unwrap_or_default();
             let doc: toml::Value = content.parse().map_err(|e: toml::de::Error| {
@@ -122,6 +126,69 @@ fn print_toml_flat(prefix: &str, val: &toml::Value) {
             println!("{prefix} = {}", format_toml_value(val));
         }
     }
+}
+
+/// Set origin configuration for a ledger (stores LedgerConfig blob in CAS
+/// and updates the config_id on the NsRecord).
+pub async fn run_set_origins(ledger: &str, file: &Path, fluree_dir: &Path) -> CliResult<()> {
+    use fluree_db_core::ContentKind;
+    use fluree_db_core::ContentStore;
+    use fluree_db_nameservice::{
+        ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, LedgerConfig,
+    };
+
+    let config_json = std::fs::read(file)
+        .map_err(|e| CliError::Config(format!("failed to read origins file: {e}")))?;
+    let config: LedgerConfig = serde_json::from_slice(&config_json)
+        .map_err(|e| CliError::Config(format!("invalid origins config: {e}")))?;
+
+    let ledger_id = context::to_ledger_id(ledger);
+    let fluree = context::build_fluree(fluree_dir)?;
+
+    // Serialize to canonical bytes and store in CAS.
+    let canonical_bytes = config.to_bytes();
+    let content_store =
+        fluree_db_core::storage::content_store_for(fluree.storage().clone(), &ledger_id);
+    let cid = content_store
+        .put(ContentKind::LedgerConfig, &canonical_bytes)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to store LedgerConfig: {e}")))?;
+
+    // Update config_id on the NsRecord via ConfigPublisher.
+    let current = fluree
+        .nameservice()
+        .get_config(&ledger_id)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to get config: {e}")))?;
+    let existing_payload = current
+        .as_ref()
+        .and_then(|c| c.payload.clone())
+        .unwrap_or_default();
+    let new_config = ConfigValue::new(
+        current.as_ref().map_or(1, |c| c.v + 1),
+        Some(ConfigPayload {
+            config_id: Some(cid.clone()),
+            default_context: existing_payload.default_context,
+            extra: existing_payload.extra,
+        }),
+    );
+    match fluree
+        .nameservice()
+        .push_config(&ledger_id, current.as_ref(), &new_config)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to set config: {e}")))?
+    {
+        ConfigCasResult::Updated => {}
+        ConfigCasResult::Conflict { .. } => {
+            return Err(CliError::Config(format!(
+                "config for '{}' was modified concurrently; retry",
+                ledger_id
+            )));
+        }
+    }
+
+    println!("Config set for '{}' (CID: {})", ledger_id, cid);
+    Ok(())
 }
 
 /// Format a TOML value for display.

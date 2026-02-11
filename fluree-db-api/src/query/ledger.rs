@@ -20,11 +20,7 @@ where
     N: crate::NameService,
 {
     /// Execute a JSON-LD query against a ledger
-    pub async fn query(
-        &self,
-        ledger: &LedgerState<S>,
-        query_json: &JsonValue,
-    ) -> Result<QueryResult> {
+    pub async fn query(&self, ledger: &LedgerState, query_json: &JsonValue) -> Result<QueryResult> {
         let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db)?;
         let executable = ExecutableQuery::simple(parsed.clone());
         let tracker = tracker_for_limits(query_json);
@@ -55,7 +51,7 @@ where
     /// correct IRI-to-SID resolution at scan time.
     async fn execute_query_internal(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         vars: &VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -95,23 +91,19 @@ where
     }
 
     /// Explain a JSON-LD query (query optimization plan).
-    pub async fn explain(
-        &self,
-        ledger: &LedgerState<S>,
-        query_json: &JsonValue,
-    ) -> Result<JsonValue> {
+    pub async fn explain(&self, ledger: &LedgerState, query_json: &JsonValue) -> Result<JsonValue> {
         crate::explain::explain_jsonld(&ledger.db, query_json).await
     }
 
     /// Explain a SPARQL query (query optimization plan).
-    pub async fn explain_sparql(&self, ledger: &LedgerState<S>, sparql: &str) -> Result<JsonValue> {
+    pub async fn explain_sparql(&self, ledger: &LedgerState, sparql: &str) -> Result<JsonValue> {
         crate::explain::explain_sparql(&ledger.db, sparql).await
     }
 
     /// Execute a JSON-LD query and return formatted JSON-LD output.
     pub async fn query_jsonld(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> Result<JsonValue> {
         let result = self.query(ledger, query_json).await?;
@@ -121,7 +113,7 @@ where
     /// Clojure-parity alias: tracked query entrypoint for a loaded ledger.
     pub async fn query_tracked(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -131,14 +123,14 @@ where
     /// Execute a JSON-LD query and return a Clojure-parity tracked response.
     pub async fn query_jsonld_tracked(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
         let tracker = tracker_from_query_json(query_json);
 
         let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db).map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(400, e.to_string(), tracker.tally())
+            crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
         })?;
 
         let executable = prepare_for_execution(&parsed);
@@ -160,7 +152,7 @@ where
         )
         .await
         .map_err(|e| {
-            crate::query::TrackedErrorResponse::from_error(
+            crate::query::TrackedErrorResponse::new(
                 status_for_query_error(&e),
                 e.to_string(),
                 tracker.tally(),
@@ -180,7 +172,7 @@ where
             .to_jsonld_async_tracked(&ledger.db, &tracker)
             .await
             .map_err(|e| {
-                crate::query::TrackedErrorResponse::from_error(500, e.to_string(), tracker.tally())
+                crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
             })?;
 
         Ok(crate::query::TrackedQueryResponse::success(
@@ -192,7 +184,7 @@ where
     /// Execute a JSON-LD query and format results using a custom formatter config (async).
     pub async fn query_format(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         query_json: &JsonValue,
         config: &FormatterConfig,
     ) -> Result<JsonValue> {
@@ -203,7 +195,7 @@ where
     /// Execute a JSON-LD query with policy enforcement
     pub async fn query_with_policy(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         query_json: &JsonValue,
         policy: &PolicyContext,
     ) -> Result<QueryResult> {
@@ -232,7 +224,7 @@ where
     /// Execute a SPARQL query with policy enforcement
     pub async fn query_sparql_with_policy(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         sparql: &str,
         policy: &PolicyContext,
     ) -> Result<QueryResult> {
@@ -261,7 +253,7 @@ where
     /// Execute a pre-built triple pattern query (advanced/testing API)
     pub async fn query_pattern(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         vars: &VarRegistry,
         pattern: crate::TriplePattern,
     ) -> Result<Vec<crate::Batch>> {
@@ -278,7 +270,7 @@ where
     }
 
     /// Execute a SPARQL query against a ledger
-    pub async fn query_sparql(&self, ledger: &LedgerState<S>, sparql: &str) -> Result<QueryResult> {
+    pub async fn query_sparql(&self, ledger: &LedgerState, sparql: &str) -> Result<QueryResult> {
         let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;
         let executable = ExecutableQuery::simple(parsed.clone());
         let tracker = Tracker::disabled();
@@ -300,7 +292,7 @@ where
     /// Execute a SPARQL query with tracking (fuel counting, time, policy stats).
     pub async fn query_sparql_tracked(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         sparql: &str,
         options: TrackingOptions,
     ) -> Result<(QueryResult, Option<TrackingTally>)> {
@@ -330,7 +322,7 @@ where
     /// Execute a JSON-LD query against a historical ledger view
     pub async fn query_historical(
         &self,
-        view: &HistoricalLedgerView<S>,
+        view: &HistoricalLedgerView,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_jsonld_query(query_json, &view.db)?;

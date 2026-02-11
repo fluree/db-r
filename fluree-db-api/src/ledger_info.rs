@@ -12,19 +12,40 @@
 //! - Stats with decoded IRIs and computed selectivity
 
 use crate::format::iri::IriCompactor;
-use fluree_db_core::alias as core_alias;
+use fluree_db_core::address_path::ledger_id_to_path_prefix;
+use fluree_db_core::comparator::IndexType;
+use fluree_db_core::ledger_id::{format_ledger_id, split_ledger_id};
 use fluree_db_core::value_id::ValueTypeTag;
+use fluree_db_core::{
+    is_rdf_type, ClassPropertyUsage, ClassRefCount, Db, FlakeValue, OverlayProvider, Sid, Storage,
+};
 use fluree_db_core::{
     ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexSchema, IndexStats,
     PropertyStatEntry, SchemaPredicateInfo,
 };
-use fluree_db_core::{Sid, Storage};
 use fluree_db_ledger::LedgerState;
-use fluree_db_nameservice::{parse_alias, NsRecord, VgNsRecord};
-use fluree_db_novelty::load_commit;
+use fluree_db_nameservice::{GraphSourceRecord, NsRecord};
+use fluree_db_novelty::{load_commit_by_id, Novelty};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Options controlling `ledger-info` stats detail and freshness.
+///
+/// Defaults preserve the fast, small “base” payload; callers can opt into
+/// heavier/real-time details when needed.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LedgerInfoOptions {
+    /// When true, augment property “details” with novelty deltas so the result
+    /// is real-time (novelty-aware) rather than “as of last index”.
+    pub realtime_property_details: bool,
+
+    /// When true, include `datatypes` under `stats.properties[*]`.
+    ///
+    /// By default the API omits datatype breakdowns at the top-level property
+    /// map to keep payloads small.
+    pub include_property_datatypes: bool,
+}
 
 /// Schema index for fast SID → hierarchy lookup
 type SchemaIndex<'a> = HashMap<Sid, &'a SchemaPredicateInfo>;
@@ -42,8 +63,8 @@ fn build_schema_index(schema: &IndexSchema) -> SchemaIndex<'_> {
 /// Error type for ledger info operations
 #[derive(Debug, thiserror::Error)]
 pub enum LedgerInfoError {
-    #[error("No commit address available")]
-    NoCommitAddress,
+    #[error("No commit ID available")]
+    NoCommitId,
 
     #[error("Failed to load commit: {0}")]
     CommitLoad(String),
@@ -53,6 +74,9 @@ pub enum LedgerInfoError {
 
     #[error("Unknown namespace code: {0}")]
     UnknownNamespace(u16),
+
+    #[error("Class lookup failed: {0}")]
+    ClassLookup(String),
 }
 
 /// Result type for ledger info operations
@@ -80,13 +104,21 @@ pub type Result<T> = std::result::Result<T, LedgerInfoError>;
 ///
 /// The nameservice section uses standard JSON-LD keywords.
 /// The stats section has IRIs optionally compacted via the provided context.
-pub async fn build_ledger_info<S>(
-    ledger: &LedgerState<S>,
+pub async fn build_ledger_info<S: Storage + Clone>(
+    ledger: &LedgerState,
+    storage: &S,
     context: Option<&JsonValue>,
-) -> Result<JsonValue>
-where
-    S: Storage + Clone + 'static,
-{
+) -> Result<JsonValue> {
+    build_ledger_info_with_options(ledger, storage, context, LedgerInfoOptions::default()).await
+}
+
+/// Build comprehensive ledger metadata, with optional extra/real-time stats.
+pub async fn build_ledger_info_with_options<S: Storage + Clone>(
+    ledger: &LedgerState,
+    storage: &S,
+    context: Option<&JsonValue>,
+    options: LedgerInfoOptions,
+) -> Result<JsonValue> {
     // Build the IRI compactor for stats decoding
     let parsed_context = context
         .map(|c| ParsedContext::parse(None, c).unwrap_or_default())
@@ -104,13 +136,32 @@ where
     // Get current stats (always returns IndexStats)
     let mut stats = ledger.current_stats();
 
+    // Optional: real-time property details (merge novelty datatype deltas).
+    //
+    // `current_stats()` updates property counts and preserves indexed datatype
+    // breakdowns, but does not adjust datatype counts for novelty by default.
+    if options.realtime_property_details && options.include_property_datatypes {
+        merge_property_datatypes_from_novelty(&mut stats, &ledger.novelty);
+    }
+
+    // Optional: real-time “details” (merge novelty ref-edge deltas).
+    if options.realtime_property_details {
+        merge_class_ref_edges_from_novelty(
+            &ledger.db,
+            ledger.novelty.as_ref(),
+            ledger.t(),
+            &mut stats,
+        )
+        .await?;
+    }
+
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
-        let alias_prefix = fluree_db_core::address_path::alias_to_path_prefix(&ledger.db.alias)
-            .unwrap_or_else(|_| ledger.db.alias.replace(':', "/"));
+        let alias_prefix = ledger_id_to_path_prefix(&ledger.db.ledger_id)
+            .unwrap_or_else(|_| ledger.db.ledger_id.replace(':', "/"));
         let manifest_addr_primary =
             format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
-        if let Ok(bytes) = ledger.db.storage.read_bytes(&manifest_addr_primary).await {
+        if let Ok(bytes) = storage.read_bytes(&manifest_addr_primary).await {
             match parse_pre_index_manifest(&bytes) {
                 Ok(graphs) => {
                     tracing::debug!(graphs = graphs.len(), "loaded pre-index stats manifest");
@@ -127,12 +178,10 @@ where
     let mut result = Map::new();
 
     // 1. Commit section (ALWAYS include, even if None - for Clojure parity)
-    let mut index_id_from_commit: Option<String> = None;
-    if let Some(commit_addr) = &ledger.head_commit {
-        match build_commit_jsonld(&ledger.db.storage, commit_addr, &ledger.db.alias).await {
-            Ok((commit_json, idx_id)) => {
+    if let Some(head_cid) = &ledger.head_commit_id {
+        match build_commit_jsonld(storage, head_cid, &ledger.db.ledger_id).await {
+            Ok(commit_json) => {
                 result.insert("commit".to_string(), commit_json);
-                index_id_from_commit = idx_id;
             }
             Err(e) => {
                 // Include error in response for debugging
@@ -144,6 +193,14 @@ where
         result.insert("commit".to_string(), JsonValue::Null);
     }
 
+    // Include content identifiers when available
+    if let Some(ref cid) = ledger.head_commit_id {
+        result.insert("commitId".to_string(), json!(cid.to_string()));
+    }
+    if let Some(ref cid) = ledger.head_index_id {
+        result.insert("indexId".to_string(), json!(cid.to_string()));
+    }
+
     // 2. Nameservice section
     if let Some(ns_record) = &ledger.ns_record {
         result.insert("nameservice".to_string(), ns_record_to_jsonld(ns_record));
@@ -152,19 +209,20 @@ where
     // 3. Stats section (with hierarchy fields)
     result.insert(
         "stats".to_string(),
-        build_stats(ledger, &stats, &compactor, &schema_index)?,
+        build_stats(ledger, &stats, &compactor, &schema_index, options)?,
     );
 
-    // 5. Index section (if available) - include id from commit
+    // 5. Index section (if available)
     if let Some(ns_record) = &ledger.ns_record {
-        if let Some(index_addr) = &ns_record.index_address {
+        if ns_record.index_head_id.is_some() || ns_record.index_t > 0 {
             let mut index_obj = json!({
                 "t": ns_record.index_t,
-                "address": index_addr,
             });
-            // Add index id if we got it from the commit
-            if let Some(idx_id) = index_id_from_commit {
-                index_obj["id"] = json!(idx_id);
+            // Prefer head_index_id from LedgerState; fall back to ns_record
+            if let Some(ref cid) = ledger.head_index_id {
+                index_obj["id"] = json!(cid.to_string());
+            } else if let Some(ref cid) = ns_record.index_head_id {
+                index_obj["id"] = json!(cid.to_string());
             }
             result.insert("index".to_string(), index_obj);
         }
@@ -173,30 +231,264 @@ where
     Ok(JsonValue::Object(result))
 }
 
+/// Merge novelty deltas into top-level property datatype counts.
+///
+/// This is intentionally scoped to *property*-level datatype stats (not class-scoped),
+/// so it can be computed cheaply from novelty without additional index lookups.
+fn merge_property_datatypes_from_novelty(stats: &mut IndexStats, novelty: &Novelty) {
+    if novelty.is_empty() {
+        return;
+    }
+
+    let Some(props) = stats.properties.as_mut() else {
+        return;
+    };
+
+    // Property SID -> datatype tag -> delta count
+    let mut deltas: HashMap<(u16, String), HashMap<u8, i64>> = HashMap::new();
+    for flake_id in novelty.iter_index(IndexType::Post) {
+        let flake = novelty.get_flake(flake_id);
+        let delta = if flake.op { 1i64 } else { -1i64 };
+
+        let prop_sid = (flake.p.namespace_code, flake.p.name.to_string());
+        let tag = ValueTypeTag::from_ns_name(flake.dt.namespace_code, &flake.dt.name);
+        if tag == ValueTypeTag::UNKNOWN {
+            continue;
+        }
+
+        *deltas
+            .entry(prop_sid)
+            .or_default()
+            .entry(tag.as_u8())
+            .or_insert(0) += delta;
+    }
+
+    if deltas.is_empty() {
+        return;
+    }
+
+    // Index existing entries for in-place updates.
+    let mut by_sid: HashMap<(u16, String), usize> = HashMap::with_capacity(props.len());
+    for (idx, entry) in props.iter().enumerate() {
+        by_sid.insert(entry.sid.clone(), idx);
+    }
+
+    for (sid, delta_map) in deltas {
+        let Some(&idx) = by_sid.get(&sid) else {
+            continue;
+        };
+        let entry = &mut props[idx];
+
+        let mut merged: HashMap<u8, i64> = entry
+            .datatypes
+            .iter()
+            .map(|(tag, count)| (*tag, *count as i64))
+            .collect();
+        for (tag, delta) in delta_map {
+            *merged.entry(tag).or_insert(0) += delta;
+        }
+
+        let mut out: Vec<(u8, u64)> = merged
+            .into_iter()
+            .filter_map(|(tag, count)| (count > 0).then_some((tag, count as u64)))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        entry.datatypes = out;
+    }
+}
+
+/// Merge novelty deltas into class-scoped ref-edge counts.
+///
+/// Updates `IndexStats.classes[*].properties[*].ref_classes` by applying deltas from
+/// ref-valued novelty flakes, attributed using the *current* (novelty-aware) rdf:type
+/// of both the subject and the referenced object.
+///
+/// Notes:
+/// - This is intentionally *on-demand*; it can be more expensive than the base payload.
+/// - This currently accounts for **ref assertions/retractions in novelty**. It does not
+///   attempt to reattribute *indexed* ref edges when only rdf:type changes in novelty.
+async fn merge_class_ref_edges_from_novelty(
+    db: &Db,
+    novelty: &Novelty,
+    to_t: i64,
+    stats: &mut IndexStats,
+) -> Result<()> {
+    if novelty.is_empty() {
+        return Ok(());
+    }
+
+    // Collect ref flakes from novelty (subject, predicate, object, delta) and the set of
+    // subjects/objects we need rdf:type for.
+    let mut subj_set: HashSet<Sid> = HashSet::new();
+    let mut obj_set: HashSet<Sid> = HashSet::new();
+    let mut events: Vec<(Sid, Sid, Sid, i64)> = Vec::new();
+
+    for flake_id in novelty.iter_index(IndexType::Post) {
+        let flake = novelty.get_flake(flake_id);
+
+        // Skip rdf:type itself (not an “edge property”).
+        if is_rdf_type(&flake.p) {
+            continue;
+        }
+
+        let FlakeValue::Ref(obj_sid) = &flake.o else {
+            continue;
+        };
+
+        let delta = if flake.op { 1i64 } else { -1i64 };
+        events.push((flake.s.clone(), flake.p.clone(), obj_sid.clone(), delta));
+        subj_set.insert(flake.s.clone());
+        obj_set.insert(obj_sid.clone());
+    }
+
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    let overlay: &dyn OverlayProvider = novelty;
+
+    // Look up current classes for all involved subjects/objects (novelty-aware).
+    let mut subjects: Vec<Sid> = subj_set.into_iter().collect();
+    subjects.sort();
+    let mut objects: Vec<Sid> = obj_set.into_iter().collect();
+    objects.sort();
+
+    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t)
+        .await
+        .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
+
+    let obj_classes = fluree_db_policy::lookup_subject_classes(&objects, db, overlay, to_t)
+        .await
+        .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
+
+    // Aggregate deltas: subject_class -> predicate -> object_class -> delta
+    let mut deltas: HashMap<Sid, HashMap<Sid, HashMap<Sid, i64>>> = HashMap::new();
+    for (s, p, o, delta) in events {
+        let Some(s_classes) = subj_classes.get(&s) else {
+            continue;
+        };
+        let Some(o_classes) = obj_classes.get(&o) else {
+            continue;
+        };
+
+        for sc in s_classes {
+            for oc in o_classes {
+                *deltas
+                    .entry(sc.clone())
+                    .or_default()
+                    .entry(p.clone())
+                    .or_default()
+                    .entry(oc.clone())
+                    .or_insert(0) += delta;
+            }
+        }
+    }
+
+    if deltas.is_empty() {
+        return Ok(());
+    }
+
+    let classes = stats.classes.get_or_insert_with(Vec::new);
+
+    // Index class entries by SID for quick upsert.
+    let mut class_idx: HashMap<Sid, usize> = HashMap::with_capacity(classes.len());
+    for (i, c) in classes.iter().enumerate() {
+        class_idx.insert(c.class_sid.clone(), i);
+    }
+
+    for (class_sid, prop_map) in deltas {
+        let idx = match class_idx.get(&class_sid).copied() {
+            Some(i) => i,
+            None => {
+                classes.push(ClassStatEntry {
+                    class_sid: class_sid.clone(),
+                    count: 0,
+                    properties: Vec::new(),
+                });
+                let i = classes.len() - 1;
+                class_idx.insert(class_sid.clone(), i);
+                i
+            }
+        };
+
+        let class_entry = &mut classes[idx];
+
+        for (prop_sid, target_map) in prop_map {
+            // Find or insert property usage.
+            let pidx = class_entry
+                .properties
+                .iter()
+                .position(|u| u.property_sid == prop_sid)
+                .unwrap_or_else(|| {
+                    class_entry.properties.push(ClassPropertyUsage {
+                        property_sid: prop_sid.clone(),
+                        ref_classes: Vec::new(),
+                    });
+                    class_entry.properties.len() - 1
+                });
+
+            let usage = &mut class_entry.properties[pidx];
+
+            // Merge deltas into existing ref_classes.
+            let mut merged: HashMap<Sid, i64> = usage
+                .ref_classes
+                .iter()
+                .map(|rc| (rc.class_sid.clone(), rc.count as i64))
+                .collect();
+
+            for (target_class, delta) in target_map {
+                *merged.entry(target_class).or_insert(0) += delta;
+            }
+
+            let mut out: Vec<ClassRefCount> = merged
+                .into_iter()
+                .filter_map(|(sid, count)| {
+                    (count > 0).then_some(ClassRefCount {
+                        class_sid: sid,
+                        count: count as u64,
+                    })
+                })
+                .collect();
+            out.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+            usage.ref_classes = out;
+        }
+
+        // Keep deterministic ordering.
+        class_entry
+            .properties
+            .sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
+    }
+
+    classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+    Ok(())
+}
+
 /// Build commit JSON-LD in Clojure parity format.
 ///
 /// Uses `"id"` not `"@id"`, `"type"` as array not `"@type"`.
 /// Returns (commit_json, index_id) tuple.
-async fn build_commit_jsonld<S: Storage>(
+///
+/// Loads commit by ContentId via the content store.
+async fn build_commit_jsonld<S: Storage + Clone>(
     storage: &S,
-    commit_address: &str,
+    head_id: &fluree_db_core::ContentId,
     alias: &str,
-) -> Result<(JsonValue, Option<String>)> {
-    let commit = load_commit(storage, commit_address)
+) -> Result<JsonValue> {
+    let store = fluree_db_core::content_store_for(storage.clone(), alias);
+    let commit = load_commit_by_id(&store, head_id)
         .await
         .map_err(|e| LedgerInfoError::CommitLoad(e.to_string()))?;
 
     let mut obj = json!({
-        "@context": "https://ns.flur.ee/ledger/v1",
+        "@context": "https://ns.flur.ee/db/v1",
         "type": ["Commit"],
-        "v": commit.v,
-        "address": commit_address,
-        "alias": alias,
+        "id": head_id.to_string(),
+        "ledger_id": alias,
     });
 
-    // Add content-address IRI if available
+    // Add content-address IRI if available (now ContentId)
     if let Some(id) = &commit.id {
-        obj["id"] = json!(id);
+        obj["id"] = json!(id.to_string());
     }
 
     // Add timestamp if available
@@ -206,80 +498,30 @@ async fn build_commit_jsonld<S: Storage>(
 
     // NOTE: `t` is NOT on commit itself in Clojure - it's inside `data`
 
-    // Previous commit reference
+    // Previous commit reference (CommitRef now has only `id: ContentId`)
     if let Some(prev_ref) = &commit.previous_ref {
-        let mut prev_obj = json!({
+        let prev_obj = json!({
             "type": ["Commit"],
-            "address": &prev_ref.address,
+            "id": prev_ref.id.to_string(),
         });
-        if let Some(prev_id) = &prev_ref.id {
-            prev_obj["id"] = json!(prev_id);
-        }
         obj["previous"] = prev_obj;
     }
 
-    // Data block - embedded DB metadata (t goes HERE, not on commit)
-    if let Some(data) = &commit.data {
-        let mut data_obj = json!({
-            "type": ["DB"],
-            "t": commit.t,
-            "flakes": data.flakes,
-            "size": data.size,
-        });
-        if let Some(data_id) = &data.id {
-            data_obj["id"] = json!(data_id);
-        }
-        if let Some(data_addr) = &data.address {
-            data_obj["address"] = json!(data_addr);
-        }
-        // Add data.previous reference if available
-        if let Some(prev_data) = &data.previous {
-            let mut prev_data_obj = json!({
-                "type": ["DB"],
-            });
-            if let Some(prev_id) = &prev_data.id {
-                prev_data_obj["id"] = json!(prev_id);
-            }
-            if let Some(prev_addr) = &prev_data.address {
-                prev_data_obj["address"] = json!(prev_addr);
-            }
-            data_obj["previous"] = prev_data_obj;
-        }
-        obj["data"] = data_obj;
-    } else {
-        // Even without CommitData struct, still include data block with t
-        obj["data"] = json!({
-            "type": ["DB"],
-            "t": commit.t,
-        });
-    }
+    // Data block - embedded DB metadata (t goes HERE, not on commit).
+    // CommitData has been removed; we always include a minimal data block with t.
+    obj["data"] = json!({
+        "type": ["DB"],
+        "t": commit.t,
+    });
 
     // NS block
     obj["ns"] = json!([{"id": alias}]);
 
-    // Index block (if indexed at this commit)
-    let mut index_id_out: Option<String> = None;
-    if let Some(index) = &commit.index {
-        let mut index_obj = json!({
-            "type": ["Index"],
-            "address": &index.address,
-            "v": index.v,
-        });
-        if let Some(index_id) = &index.id {
-            index_obj["id"] = json!(index_id);
-            index_id_out = Some(index_id.clone());
-        }
-        // Add index.data with the indexed t
-        if let Some(index_t) = index.t {
-            index_obj["data"] = json!({
-                "type": ["DB"],
-                "t": index_t,
-            });
-        }
-        obj["index"] = index_obj;
-    }
+    // Index info is NOT embedded in commits — it is tracked via the nameservice
+    // and LedgerState.head_index_id. The caller populates the index section
+    // from those canonical sources.
 
-    Ok((obj, index_id_out))
+    Ok(obj)
 }
 
 /// Convert NsRecord to JSON-LD format for nameservice queries.
@@ -291,12 +533,12 @@ async fn build_commit_jsonld<S: Storage>(
 /// `query-nameservice` temporary ledger population.
 pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
     // Use parse_alias for ledger name extraction (avoids edge cases)
-    let ledger_name = parse_alias(&record.alias)
+    let ledger_name = split_ledger_id(&record.ledger_id)
         .map(|(ledger, _branch)| ledger)
-        .unwrap_or_else(|_| record.alias.clone());
+        .unwrap_or_else(|_| record.name.clone());
 
     // Use canonical form for @id: "{ledger_name}:{branch}"
-    let canonical_id = core_alias::format_alias(&ledger_name, &record.branch);
+    let canonical_id = format_ledger_id(&ledger_name, &record.branch);
 
     // Reflect retracted state in status
     let status = if record.retracted {
@@ -306,38 +548,42 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
     };
 
     let mut obj = json!({
-        "@context": { "f": "https://ns.flur.ee/ledger#" },
+        "@context": { "f": "https://ns.flur.ee/db#" },
         "@id": &canonical_id,
-        "@type": ["f:Database", "f:PhysicalDatabase"],
+        "@type": ["f:LedgerSource"],
         "f:ledger": { "@id": &ledger_name },
         "f:branch": &record.branch,
         "f:t": record.commit_t,
         "f:status": status,
     });
 
-    if let Some(ref commit_addr) = record.commit_address {
-        obj["f:commit"] = json!({ "@id": commit_addr });
+    // Emit commit ref when CID is present
+    if let Some(ref cid) = record.commit_head_id {
+        let mut commit_obj = serde_json::Map::new();
+        commit_obj.insert("@id".to_string(), json!(cid.to_string()));
+        obj["f:ledgerCommit"] = JsonValue::Object(commit_obj);
     }
-    if let Some(ref index_addr) = record.index_address {
-        obj["f:index"] = json!({
-            "@id": index_addr,
-            "f:t": record.index_t
-        });
+    // Emit index ref when CID is present
+    if let Some(ref cid) = record.index_head_id {
+        let mut index_obj = serde_json::Map::new();
+        index_obj.insert("@id".to_string(), json!(cid.to_string()));
+        index_obj.insert("f:t".to_string(), json!(record.index_t));
+        obj["f:ledgerIndex"] = JsonValue::Object(index_obj);
     }
-    if let Some(ref ctx_addr) = record.default_context_address {
+    if let Some(ref ctx_addr) = record.default_context {
         obj["f:defaultContext"] = json!({ "@id": ctx_addr });
     }
 
     obj
 }
 
-/// Convert VgNsRecord to JSON-LD format for nameservice queries.
+/// Convert GraphSourceRecord to JSON-LD format for nameservice queries.
 ///
-/// Uses standard JSON-LD keywords with both `f:` (ledger) and `fidx:` (index) namespaces.
+/// Uses standard JSON-LD keywords with `f:` namespace.
 /// Includes `f:status` field that reflects retracted state.
-pub fn vg_record_to_jsonld(record: &VgNsRecord) -> JsonValue {
+pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
     // Use canonical form for @id: "{name}:{branch}"
-    let canonical_id = core_alias::format_alias(&record.name, &record.branch);
+    let canonical_id = format_ledger_id(&record.name, &record.branch);
 
     // Reflect retracted state in status
     let status = if record.retracted {
@@ -346,39 +592,41 @@ pub fn vg_record_to_jsonld(record: &VgNsRecord) -> JsonValue {
         "ready"
     };
 
+    // Determine the kind type string
+    let kind_type_str = match record.source_type.kind() {
+        fluree_db_nameservice::GraphSourceKind::Index => "f:IndexSource",
+        fluree_db_nameservice::GraphSourceKind::Mapped => "f:MappedSource",
+        fluree_db_nameservice::GraphSourceKind::Ledger => "f:LedgerSource",
+    };
+
     let mut obj = json!({
-        "@context": {
-            "f": "https://ns.flur.ee/ledger#",
-            "fidx": "https://ns.flur.ee/index#"
-        },
+        "@context": { "f": "https://ns.flur.ee/db#" },
         "@id": &canonical_id,
-        "@type": ["f:VirtualGraphDatabase", record.vg_type.to_type_string()],
+        "@type": [kind_type_str, record.source_type.to_type_string()],
         "f:name": &record.name,
         "f:branch": &record.branch,
         "f:status": status,
-        "fidx:config": { "@value": &record.config },
-        "fidx:dependencies": &record.dependencies,
+        "f:graphSourceConfig": { "@value": &record.config },
+        "f:graphSourceDependencies": &record.dependencies,
     });
 
     // Include index fields if present (matching ns@v2 on-disk format)
-    if let Some(ref index_addr) = record.index_address {
-        obj["fidx:indexAddress"] = json!(index_addr);
-        obj["fidx:indexT"] = json!(record.index_t);
+    if let Some(ref index_id) = record.index_id {
+        obj["f:graphSourceIndex"] = json!(index_id.to_string());
+        obj["f:graphSourceIndexT"] = json!(record.index_t);
     }
 
     obj
 }
 
 /// Build stats section with decoded IRIs and hierarchy fields.
-fn build_stats<S>(
-    ledger: &LedgerState<S>,
+fn build_stats(
+    ledger: &LedgerState,
     stats: &IndexStats,
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
-) -> Result<JsonValue>
-where
-    S: Storage + Clone + 'static,
-{
+    options: LedgerInfoOptions,
+) -> Result<JsonValue> {
     // CANONICAL RULE for indexed_t:
     // 1. Use ns_record.index_t if ns_record exists (even if 0 when no index yet)
     // 2. Fall back to db.t if no ns_record
@@ -392,7 +640,7 @@ where
         "flakes": stats.flakes,
         "size": stats.size,
         "indexed": indexed_t,
-        "properties": decode_property_stats(&stats.properties, compactor, schema_index)?,
+        "properties": decode_property_stats(&stats.properties, compactor, schema_index, options)?,
         "classes": decode_class_stats(&stats.classes, compactor, schema_index)?,
     });
 
@@ -413,6 +661,7 @@ fn decode_property_stats(
     properties: &Option<Vec<PropertyStatEntry>>,
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
+    options: LedgerInfoOptions,
 ) -> Result<JsonValue> {
     let mut result = Map::new();
 
@@ -435,6 +684,16 @@ fn decode_property_stats(
         prop_obj.insert("ndv-values".to_string(), json!(entry.ndv_values));
         prop_obj.insert("ndv-subjects".to_string(), json!(entry.ndv_subjects));
         prop_obj.insert("last-modified-t".to_string(), json!(entry.last_modified_t));
+
+        // Optional datatype breakdown (normally omitted to keep payloads small).
+        if options.include_property_datatypes {
+            let mut dts = Map::new();
+            for (tag, count) in &entry.datatypes {
+                let label = ValueTypeTag::from_u8(*tag).to_string();
+                dts.insert(label, json!(*count));
+            }
+            prop_obj.insert("datatypes".to_string(), JsonValue::Object(dts));
+        }
 
         // Compute selectivity as integers
         prop_obj.insert(
@@ -516,8 +775,14 @@ fn decode_class_stats(
             }
         }
 
-        // Decode class→property list (no per-property breakdowns here; those live in graph stats)
-        let mut props_arr: Vec<JsonValue> = Vec::new();
+        // Decode class→property stats (map keyed by property IRI).
+        //
+        // This is used by:
+        // - f:onClass policy indexing (class→property presence)
+        // - Ontology/graph visualization (ref target class counts)
+        let mut props_map = Map::new();
+        let mut props_list: Vec<JsonValue> = Vec::new();
+
         for usage in &entry.properties {
             let prop_iri = compactor
                 .decode_sid(&usage.property_sid)
@@ -528,9 +793,36 @@ fn decode_class_stats(
                     _ => LedgerInfoError::Storage(e.to_string()),
                 })?;
             let prop_compacted = compactor.compact_vocab_iri(&prop_iri);
-            props_arr.push(json!(prop_compacted));
+            props_list.push(json!(prop_compacted.clone()));
+
+            let mut prop_obj = Map::new();
+
+            if !usage.ref_classes.is_empty() {
+                let mut refs_obj = Map::new();
+                let mut total: u64 = 0;
+                for rc in &usage.ref_classes {
+                    let class_iri = compactor.decode_sid(&rc.class_sid).map_err(|e| match e {
+                        crate::format::FormatError::UnknownNamespace(code) => {
+                            LedgerInfoError::UnknownNamespace(code)
+                        }
+                        _ => LedgerInfoError::Storage(e.to_string()),
+                    })?;
+                    let class_compacted = compactor.compact_vocab_iri(&class_iri);
+                    refs_obj.insert(class_compacted, json!(rc.count));
+                    total = total.saturating_add(rc.count);
+                }
+                // Primary key (new): `refs`
+                prop_obj.insert("refs".to_string(), JsonValue::Object(refs_obj.clone()));
+                // Compatibility key: `ref-classes`
+                prop_obj.insert("ref-classes".to_string(), JsonValue::Object(refs_obj));
+                prop_obj.insert("count".to_string(), json!(total));
+            }
+
+            props_map.insert(prop_compacted, JsonValue::Object(prop_obj));
         }
-        class_obj.insert("properties".to_string(), JsonValue::Array(props_arr));
+
+        class_obj.insert("properties".to_string(), JsonValue::Object(props_map));
+        class_obj.insert("property-list".to_string(), JsonValue::Array(props_list));
 
         result.insert(compacted, JsonValue::Object(class_obj));
     }
@@ -714,8 +1006,9 @@ use fluree_db_nameservice::NameService;
 /// ```
 pub struct LedgerInfoBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    alias: String,
+    ledger_id: String,
     context: Option<&'a JsonValue>,
+    options: LedgerInfoOptions,
 }
 
 impl<'a, S, N> LedgerInfoBuilder<'a, S, N>
@@ -724,11 +1017,12 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::ledger_info()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, alias: String) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger_id: String) -> Self {
         Self {
             fluree,
-            alias,
+            ledger_id,
             context: None,
+            options: LedgerInfoOptions::default(),
         }
     }
 
@@ -741,6 +1035,24 @@ where
         self
     }
 
+    /// Include datatype breakdowns under `stats.properties[*]` (indexed view by default).
+    pub fn with_property_datatypes(mut self, enabled: bool) -> Self {
+        self.options.include_property_datatypes = enabled;
+        self
+    }
+
+    /// When enabled, make property “details” real-time (novelty-aware).
+    ///
+    /// This enables the heavier, novelty-aware details used by UIs/optimizers:
+    /// - merges novelty datatype deltas into `stats.properties[*].datatypes`
+    /// - merges novelty ref-edge deltas into `stats.classes[*].properties[*].refs`
+    pub fn with_realtime_property_details(mut self, enabled: bool) -> Self {
+        self.options.realtime_property_details = enabled;
+        // If you want real-time property details, include the datatype payload.
+        self.options.include_property_datatypes = enabled;
+        self
+    }
+
     /// Execute the ledger info request.
     ///
     /// Loads the ledger (using cache if available) and returns comprehensive
@@ -748,10 +1060,10 @@ where
     /// and index information.
     pub async fn execute(self) -> crate::Result<JsonValue> {
         // Load the ledger (uses cache if caching is enabled)
-        let ledger = self.fluree.ledger(&self.alias).await?;
+        let ledger = self.fluree.ledger(&self.ledger_id).await?;
 
         // Build and return the ledger info
-        build_ledger_info(&ledger, self.context)
+        build_ledger_info_with_options(&ledger, self.fluree.storage(), self.context, self.options)
             .await
             .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))
     }
@@ -773,44 +1085,48 @@ mod tests {
 
     #[test]
     fn test_ns_record_to_jsonld() {
+        use fluree_db_core::{ContentId, ContentKind};
+        let commit_cid = ContentId::new(ContentKind::Commit, b"abc");
+        let index_cid = ContentId::new(ContentKind::IndexRoot, b"def");
         let record = NsRecord {
-            address: "mydb:main".to_string(),
-            alias: "mydb:main".to_string(),
+            ledger_id: "mydb:main".to_string(),
+            name: "mydb:main".to_string(),
             branch: "main".to_string(),
-            commit_address: Some("fluree:file://mydb/main/commit/abc.json".to_string()),
+            commit_head_id: Some(commit_cid.clone()),
+            config_id: None,
             commit_t: 42,
-            index_address: Some("fluree:file://mydb/main/index/def.json".to_string()),
+            index_head_id: Some(index_cid),
             index_t: 40,
-            default_context_address: None,
+            default_context: None,
             retracted: false,
         };
 
         let json = ns_record_to_jsonld(&record);
 
         assert_eq!(json["@id"], "mydb:main");
-        assert_eq!(json["@type"], json!(["f:Database", "f:PhysicalDatabase"]));
+        assert_eq!(json["@type"], json!(["f:LedgerSource"]));
         assert_eq!(json["f:ledger"]["@id"], "mydb");
         assert_eq!(json["f:branch"], "main");
         assert_eq!(json["f:t"], 42);
         assert_eq!(json["f:status"], "ready");
-        assert_eq!(
-            json["f:commit"]["@id"],
-            "fluree:file://mydb/main/commit/abc.json"
-        );
-        assert_eq!(json["f:index"]["f:t"], 40);
+        assert_eq!(json["f:ledgerCommit"]["@id"], commit_cid.to_string());
+        assert_eq!(json["f:ledgerIndex"]["f:t"], 40);
     }
 
     #[test]
     fn test_ns_record_to_jsonld_retracted() {
+        use fluree_db_core::{ContentId, ContentKind};
+        let commit_cid = ContentId::new(ContentKind::Commit, b"commit-data");
         let record = NsRecord {
-            address: "mydb:main".to_string(),
-            alias: "mydb:main".to_string(),
+            ledger_id: "mydb:main".to_string(),
+            name: "mydb:main".to_string(),
             branch: "main".to_string(),
-            commit_address: Some("commit-addr".to_string()),
+            commit_head_id: Some(commit_cid),
+            config_id: None,
             commit_t: 10,
-            index_address: None,
+            index_head_id: None,
             index_t: 0,
-            default_context_address: None,
+            default_context: None,
             retracted: true,
         };
 
@@ -819,32 +1135,38 @@ mod tests {
     }
 
     #[test]
-    fn test_vg_record_to_jsonld() {
-        let record = VgNsRecord {
-            address: "my-search:main".to_string(),
+    fn test_gs_record_to_jsonld() {
+        use fluree_db_core::{ContentId, ContentKind};
+        let index_cid = ContentId::new(ContentKind::IndexRoot, b"snapshot-data");
+        let record = GraphSourceRecord {
+            graph_source_id: "my-search:main".to_string(),
             name: "my-search".to_string(),
             branch: "main".to_string(),
-            vg_type: fluree_db_nameservice::VgType::Bm25,
+            source_type: fluree_db_nameservice::GraphSourceType::Bm25,
             config: r#"{"k1":1.2,"b":0.75}"#.to_string(),
             dependencies: vec!["source-ledger:main".to_string()],
-            index_address: Some("fluree:file://vg/snapshot.bin".to_string()),
+            index_id: Some(index_cid.clone()),
             index_t: 42,
             retracted: false,
         };
 
-        let json = vg_record_to_jsonld(&record);
+        let json = gs_record_to_jsonld(&record);
 
         assert_eq!(json["@id"], "my-search:main");
-        assert_eq!(
-            json["@type"],
-            json!(["f:VirtualGraphDatabase", "fidx:BM25"])
-        );
+        assert_eq!(json["@type"], json!(["f:IndexSource", "f:Bm25Index"]));
         assert_eq!(json["f:name"], "my-search");
         assert_eq!(json["f:branch"], "main");
         assert_eq!(json["f:status"], "ready");
-        assert_eq!(json["fidx:config"]["@value"], r#"{"k1":1.2,"b":0.75}"#);
-        assert_eq!(json["fidx:dependencies"], json!(["source-ledger:main"]));
-        assert_eq!(json["fidx:indexAddress"], "fluree:file://vg/snapshot.bin");
-        assert_eq!(json["fidx:indexT"], 42);
+        assert_eq!(
+            json["f:graphSourceConfig"]["@value"],
+            r#"{"k1":1.2,"b":0.75}"#
+        );
+        assert_eq!(
+            json["f:graphSourceDependencies"],
+            json!(["source-ledger:main"])
+        );
+        // The index CID is rendered as a base32 multibase string
+        assert_eq!(json["f:graphSourceIndex"], index_cid.to_string());
+        assert_eq!(json["f:graphSourceIndexT"], 42);
     }
 }

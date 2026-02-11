@@ -6,18 +6,16 @@ use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::ir::Expression;
-use fluree_db_core::Storage;
-
 use super::value::ComparableValue;
 
 /// Evaluate logical AND
 ///
 /// Returns true if all arguments evaluate to true.
 /// Short-circuits on first false value.
-pub fn eval_and<S: Storage, R: RowAccess>(
+pub fn eval_and<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     for arg in args {
         if !arg.eval_to_bool(row, ctx)? {
@@ -31,10 +29,10 @@ pub fn eval_and<S: Storage, R: RowAccess>(
 ///
 /// Returns true if any argument evaluates to true.
 /// Short-circuits on first true value.
-pub fn eval_or<S: Storage, R: RowAccess>(
+pub fn eval_or<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     for arg in args {
         if arg.eval_to_bool(row, ctx)? {
@@ -47,10 +45,10 @@ pub fn eval_or<S: Storage, R: RowAccess>(
 /// Evaluate logical NOT
 ///
 /// Returns the logical negation of the single argument.
-pub fn eval_not<S: Storage, R: RowAccess>(
+pub fn eval_not<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     if args.is_empty() {
         return Ok(Some(ComparableValue::Bool(true))); // NOT of nothing is true
@@ -63,10 +61,10 @@ pub fn eval_not<S: Storage, R: RowAccess>(
 ///
 /// First argument is the test value, remaining arguments are the set values.
 /// Returns true if test value equals any set value.
-pub fn eval_in<S: Storage, R: RowAccess>(
+pub fn eval_in<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     if args.is_empty() {
         return Ok(Some(ComparableValue::Bool(false)));
@@ -92,10 +90,10 @@ pub fn eval_in<S: Storage, R: RowAccess>(
 ///
 /// First argument is the test value, remaining arguments are the set values.
 /// Returns true if test value does not equal any set value.
-pub fn eval_not_in<S: Storage, R: RowAccess>(
+pub fn eval_not_in<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     if args.is_empty() {
         return Ok(Some(ComparableValue::Bool(true)));

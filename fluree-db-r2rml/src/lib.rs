@@ -1,8 +1,8 @@
-//! R2RML mapping support for Fluree DB virtual graphs
+//! R2RML mapping support for Fluree DB graph sources
 //!
 //! This crate provides R2RML (RDB to RDF Mapping Language) support for
 //! transforming Iceberg tabular data into RDF triples. It implements a
-//! subset of the W3C R2RML specification tailored for Iceberg virtual graphs.
+//! subset of the W3C R2RML specification tailored for Iceberg graph sources.
 //!
 //! # Key Features
 //!

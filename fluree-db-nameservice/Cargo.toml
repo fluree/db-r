@@ -11,6 +11,7 @@ native = ["tokio/fs", "libc"]
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core", default-features = false }
+fluree-vocab = { path = "../fluree-vocab" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -5,7 +5,7 @@
 //!
 //! - `DocKey` uses canonical IRI strings (not `Sid`) for multi-ledger safety
 //! - Sparse vector representation for term frequencies
-//! - Per-ledger watermarks for multi-source virtual graphs
+//! - Per-ledger watermarks for multi-source graph sources
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -212,18 +212,18 @@ impl Bm25Stats {
 // Watermarks (Multi-Ledger Support)
 // ============================================================================
 
-/// Watermark tracking for multi-ledger virtual graphs.
+/// Watermark tracking for multi-ledger graph sources.
 ///
-/// BM25 is valid at `T` iff ALL dependency ledgers have watermark ≥ T.
+/// BM25 is valid at `T` iff ALL dependency ledgers have watermark >= T.
 ///
 /// Uses `BTreeMap` for deterministic serialization (content-addressable snapshots).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct VgWatermark {
+pub struct GraphSourceWatermark {
     /// Per-ledger watermarks (ledger_alias -> commit_t)
     pub ledger_watermarks: BTreeMap<String, i64>,
 }
 
-impl VgWatermark {
+impl GraphSourceWatermark {
     /// Create a new empty watermark tracker
     pub fn new() -> Self {
         Self::default()
@@ -241,7 +241,7 @@ impl VgWatermark {
         self.ledger_watermarks.values().copied().min().unwrap_or(0)
     }
 
-    /// Check if VG can answer query at target_t
+    /// Check if graph source can answer query at target_t
     pub fn is_valid_at(&self, target_t: i64) -> bool {
         self.ledger_watermarks.values().all(|&t| t >= target_t)
     }
@@ -569,7 +569,7 @@ pub struct Bm25Index {
     /// BM25 configuration parameters
     pub config: Bm25Config,
     /// Multi-ledger watermarks
-    pub watermark: VgWatermark,
+    pub watermark: GraphSourceWatermark,
     /// Property dependencies for incremental updates
     pub property_deps: PropertyDeps,
     /// Next term index to allocate
@@ -595,7 +595,7 @@ impl Bm25Index {
             doc_vectors: BTreeMap::new(),
             stats: Bm25Stats::new(),
             config,
-            watermark: VgWatermark::new(),
+            watermark: GraphSourceWatermark::new(),
             property_deps: PropertyDeps::new(),
             next_term_idx: 0,
         }
@@ -766,8 +766,8 @@ mod tests {
     }
 
     #[test]
-    fn test_vg_watermark() {
-        let mut wm = VgWatermark::new();
+    fn test_graph_source_watermark() {
+        let mut wm = GraphSourceWatermark::new();
 
         wm.update("ledger1:main", 10);
         wm.update("ledger2:main", 20);
@@ -899,7 +899,7 @@ mod tests {
         // @id should be excluded; @type should be tracked as rdf:type
         assert!(!deps.contains("@id"));
         assert!(
-            deps.contains("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+            deps.contains(fluree_vocab::rdf::TYPE),
             "should include rdf:type when query uses @type"
         );
 

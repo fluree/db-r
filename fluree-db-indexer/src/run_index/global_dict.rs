@@ -723,6 +723,8 @@ pub struct GlobalDicts {
     pub datatypes: PredicateDict,
     /// Per-predicate overflow numeric arenas (BigInt/BigDecimal). Key = p_id.
     pub numbigs: FxHashMap<u32, super::numbig_dict::NumBigArena>,
+    /// Per-predicate vector arenas (packed f32). Key = p_id.
+    pub vectors: FxHashMap<u32, super::vector_arena::VectorArena>,
 }
 
 impl GlobalDicts {
@@ -731,8 +733,8 @@ impl GlobalDicts {
     /// Creates `subjects.fwd` and `strings.fwd` in the given `run_dir`.
     /// The same `run_dir` must be passed to `persist()` later.
     ///
-    /// Pre-inserts the txn-meta graph name (`ledger#transactions`) as the first
-    /// graph entry, guaranteeing `g_id = 1` for txn-meta regardless of import order.
+    /// Pre-inserts the txn-meta graph name (`#txn-meta`) as the first graph entry,
+    /// guaranteeing `g_id = 1` for txn-meta regardless of import order.
     pub fn new(run_dir: impl AsRef<Path>) -> io::Result<Self> {
         let dir = run_dir.as_ref();
         let mut dicts = Self {
@@ -743,18 +745,19 @@ impl GlobalDicts {
             languages: LanguageTagDict::new(),
             datatypes: new_datatype_dict(),
             numbigs: FxHashMap::default(),
+            vectors: FxHashMap::default(),
         };
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
         dicts
             .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "transactions");
+            .get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
         Ok(dicts)
     }
 
     /// Create GlobalDicts with in-memory dictionaries (no disk files, for tests).
     ///
-    /// Pre-inserts the txn-meta graph name (`ledger#transactions`) as the first
-    /// graph entry, guaranteeing `g_id = 1` for txn-meta regardless of import order.
+    /// Pre-inserts the txn-meta graph name (`#txn-meta`) as the first graph entry,
+    /// guaranteeing `g_id = 1` for txn-meta regardless of import order.
     pub fn new_memory() -> Self {
         let mut dicts = Self {
             subjects: SubjectDict::new_memory(),
@@ -764,11 +767,12 @@ impl GlobalDicts {
             languages: LanguageTagDict::new(),
             datatypes: new_datatype_dict(),
             numbigs: FxHashMap::default(),
+            vectors: FxHashMap::default(),
         };
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
         dicts
             .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::LEDGER, "transactions");
+            .get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
         dicts
     }
 
@@ -837,6 +841,47 @@ impl GlobalDicts {
                 predicates = self.numbigs.len(),
                 total_entries = self.numbigs.values().map(|a| a.len()).sum::<usize>(),
                 "numbig arenas persisted"
+            );
+        }
+
+        // Write vector arenas (shards + manifests per predicate)
+        if !self.vectors.is_empty() {
+            let vec_dir = run_dir.join("vectors");
+            std::fs::create_dir_all(&vec_dir)?;
+            for (&p_id, arena) in &self.vectors {
+                if arena.is_empty() {
+                    continue;
+                }
+                let shard_paths = super::vector_arena::write_vector_shards(&vec_dir, p_id, arena)?;
+                // Write manifest with placeholder CAS addresses (local paths).
+                // The real CAS addresses are filled in during upload_dicts_to_cas.
+                let shard_infos: Vec<super::vector_arena::ShardInfo> = shard_paths
+                    .iter()
+                    .enumerate()
+                    .map(|(i, path)| {
+                        let cap = super::vector_arena::SHARD_CAPACITY;
+                        let start = i as u32 * cap;
+                        let count = (arena.len() - start).min(cap);
+                        super::vector_arena::ShardInfo {
+                            cas: path.display().to_string(),
+                            count,
+                        }
+                    })
+                    .collect();
+                super::vector_arena::write_vector_manifest(
+                    &vec_dir.join(format!("p_{}.vam", p_id)),
+                    arena,
+                    &shard_infos,
+                )?;
+            }
+            tracing::info!(
+                predicates = self.vectors.len(),
+                total_vectors = self
+                    .vectors
+                    .values()
+                    .map(|a| a.len() as usize)
+                    .sum::<usize>(),
+                "vector arenas persisted"
             );
         }
 
@@ -1217,17 +1262,14 @@ mod tests {
     fn test_datatype_dict_dynamic_assignment() {
         let mut d = new_datatype_dict();
         // Custom/unknown types get dynamic IDs starting at 14
-        let g_year_id = d.get_or_insert("http://www.w3.org/2001/XMLSchema#gYear");
+        let g_year_id = d.get_or_insert(fluree_vocab::xsd::G_YEAR);
         assert_eq!(g_year_id, DatatypeDictId::RESERVED_COUNT as u32); // 14
         let custom_id = d.get_or_insert("http://example.org/custom#myType");
         assert_eq!(custom_id, 15);
         assert_eq!(d.len(), 16);
 
         // Re-insert returns same ID
-        assert_eq!(
-            d.get_or_insert("http://www.w3.org/2001/XMLSchema#gYear"),
-            g_year_id
-        );
+        assert_eq!(d.get_or_insert(fluree_vocab::xsd::G_YEAR), g_year_id);
     }
 
     // ---- String reverse index tests ----

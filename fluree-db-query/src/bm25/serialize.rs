@@ -2,7 +2,7 @@
 //!
 //! Provides snapshot serialization and deserialization for the BM25 index
 //! using the postcard binary format. This enables persistence of the index
-//! for virtual graph storage.
+//! for graph source storage.
 
 use std::io::{Read, Write};
 

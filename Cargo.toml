@@ -32,9 +32,7 @@ members = [
     "fluree-search-protocol",
     "fluree-search-service",
     "fluree-search-httpd",
-    "fluree-db-ingest",
     "fluree-db-cli",
-    "bench-dict-bihash",
     "bench-filter-query",
 ]
 
@@ -50,7 +48,6 @@ futures = "0.3"
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
-simd-json = "0.14"
 mimalloc = { version = "0.1", default-features = false }
 thiserror = "1.0"
 winnow = "0.7"
@@ -59,6 +56,10 @@ winnow = "0.7"
 postcard = { version = "1.0", features = ["alloc", "use-std"] }
 sha2 = "0.10"
 hex = "0.4"
+
+# Content identifiers (CIDv1 / multiformats)
+cid = { version = "0.11", default-features = false, features = ["std"] }
+multihash = { version = "0.19", default-features = false, features = ["std"] }
 
 # For unique ID generation
 ulid = "1.1"
@@ -115,6 +116,9 @@ bytes = "1.4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 urlencoding = "2"
 
+# JWT verification (standard OIDC JWT with JWKS support)
+jsonwebtoken = "9"
+
 # HTTP mocking for tests
 wiremock = "0.6"
 
@@ -141,3 +145,8 @@ rmcp = { git = "https://github.com/fluree/rust-sdk-fork", rev = "ed14e6d6f0e2370
     "transport-streamable-http-server",
     "tower",
 ] }
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

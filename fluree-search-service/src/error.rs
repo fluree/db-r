@@ -10,17 +10,17 @@ use thiserror::Error;
 /// Internal service errors.
 #[derive(Debug, Error)]
 pub enum ServiceError {
-    /// Virtual graph not found in nameservice.
-    #[error("virtual graph not found: {alias}")]
-    VgNotFound { alias: String },
+    /// Graph source not found in nameservice.
+    #[error("graph source not found: {address}")]
+    GraphSourceNotFound { address: String },
 
     /// No snapshot available for the requested as_of_t.
     #[error("no snapshot available for as_of_t={as_of_t}")]
     NoSnapshotForAsOfT { as_of_t: i64 },
 
-    /// Index has never been built for this virtual graph.
-    #[error("index not built for virtual graph: {alias}")]
-    IndexNotBuilt { alias: String },
+    /// Index has never been built for this graph source.
+    #[error("index not built for graph source: {address}")]
+    IndexNotBuilt { address: String },
 
     /// Sync timeout - index didn't reach expected head in time.
     #[error("sync timeout after {elapsed:?} waiting for t={target_t:?}")]
@@ -58,7 +58,7 @@ impl ServiceError {
     /// Convert to protocol error code.
     pub fn error_code(&self) -> ErrorCode {
         match self {
-            ServiceError::VgNotFound { .. } => ErrorCode::VgNotFound,
+            ServiceError::GraphSourceNotFound { .. } => ErrorCode::GraphSourceNotFound,
             ServiceError::NoSnapshotForAsOfT { .. } => ErrorCode::NoSnapshotForAsOfT,
             ServiceError::IndexNotBuilt { .. } => ErrorCode::IndexNotBuilt,
             ServiceError::SyncTimeout { .. } => ErrorCode::SyncTimeout,

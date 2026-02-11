@@ -5,7 +5,7 @@
 use crate::context::ExecutionContext;
 use crate::execute::build_where_operators_seeded;
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{Db, OverlayProvider, Sid, Storage};
+use fluree_db_core::{Db, OverlayProvider, Sid};
 use fluree_db_policy::{
     PolicyQuery, PolicyQueryExecutor, PolicyQueryFut, Result as PolicyResult,
     UNBOUND_IDENTITY_PREFIX,
@@ -16,18 +16,18 @@ use std::collections::HashMap;
 ///
 /// This executor converts `PolicyQuery` to the query engine's IR and
 /// executes with a root context (no policy filtering).
-pub struct QueryPolicyExecutor<'a, S: Storage> {
+pub struct QueryPolicyExecutor<'a> {
     /// The database to query
-    pub db: &'a Db<S>,
+    pub db: &'a Db,
     /// Optional overlay provider (for staged flakes)
     pub overlay: Option<&'a dyn OverlayProvider>,
     /// Target transaction time
     pub to_t: i64,
 }
 
-impl<'a, S: Storage> QueryPolicyExecutor<'a, S> {
+impl<'a> QueryPolicyExecutor<'a> {
     /// Create a new query executor
-    pub fn new(db: &'a Db<S>) -> Self {
+    pub fn new(db: &'a Db) -> Self {
         Self {
             db,
             overlay: None,
@@ -36,7 +36,7 @@ impl<'a, S: Storage> QueryPolicyExecutor<'a, S> {
     }
 
     /// Create a query executor with overlay support
-    pub fn with_overlay(db: &'a Db<S>, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
+    pub fn with_overlay(db: &'a Db, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
         Self {
             db,
             overlay: Some(overlay),
@@ -45,7 +45,7 @@ impl<'a, S: Storage> QueryPolicyExecutor<'a, S> {
     }
 }
 
-impl<'a, S: Storage + 'static> PolicyQueryExecutor for QueryPolicyExecutor<'a, S> {
+impl<'a> PolicyQueryExecutor for QueryPolicyExecutor<'a> {
     fn evaluate_policy_query<'b>(
         &'b self,
         query: &'b PolicyQuery,
@@ -55,7 +55,7 @@ impl<'a, S: Storage + 'static> PolicyQueryExecutor for QueryPolicyExecutor<'a, S
     }
 }
 
-impl<'a, S: Storage + 'static> QueryPolicyExecutor<'a, S> {
+impl<'a> QueryPolicyExecutor<'a> {
     /// Async implementation of policy query evaluation
     async fn evaluate_async(
         &self,

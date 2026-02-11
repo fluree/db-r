@@ -1,12 +1,13 @@
 //! Adapter for Fluree server `/fluree/events` SSE payloads.
 //!
 //! The server's SSE payload schema is intentionally stable and independent from
-//! internal `NsRecord` / `VgNsRecord` serialization. This module parses the
+//! internal `NsRecord` / `GraphSourceRecord` serialization. This module parses the
 //! server-emitted JSON and converts it into canonical `fluree-db-nameservice`
 //! types used by the sync layer.
 
 use crate::watch::RemoteEvent;
-use fluree_db_nameservice::{NsRecord, VgNsRecord, VgType};
+use fluree_db_nameservice::{GraphSourceRecord, GraphSourceType, NsRecord};
+use fluree_sse::{SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerSseParseError {
@@ -47,32 +48,34 @@ struct NsRecordEnvelope {
 #[derive(Debug, serde::Deserialize)]
 struct NsRetractedEnvelope {
     kind: String,
-    alias: String,
+    resource_id: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct LedgerSseRecord {
-    /// Canonical alias, e.g. "books:main"
-    alias: String,
+    /// Canonical ledger alias, e.g. "books:main"
+    ledger_id: String,
     branch: String,
-    commit_address: Option<String>,
+    #[serde(default)]
+    commit_head_id: Option<String>,
     commit_t: i64,
-    index_address: Option<String>,
+    #[serde(default)]
+    index_head_id: Option<String>,
     index_t: i64,
     retracted: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct VgSseRecord {
-    /// Canonical alias, e.g. "search:main"
-    alias: String,
+struct GraphSourceSseRecord {
+    /// Canonical graph source alias, e.g. "search:main"
+    graph_source_id: String,
     name: String,
     branch: String,
-    /// String form of VG type, e.g. "fidx:BM25"
-    vg_type: String,
+    /// String form of graph source type, e.g. "f:Bm25Index"
+    source_type: String,
     config: String,
     dependencies: Vec<String>,
-    index_address: Option<String>,
+    index_id: Option<String>,
     index_t: i64,
     retracted: bool,
 }
@@ -81,15 +84,17 @@ fn parse_ns_record(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseErro
     let payload: NsRecordEnvelope = serde_json::from_str(data)?;
 
     match payload.kind.as_str() {
-        "ledger" => {
+        SSE_KIND_LEDGER => {
             let record: LedgerSseRecord = serde_json::from_value(payload.record)?;
             Ok(Some(RemoteEvent::LedgerUpdated(ledger_sse_to_ns_record(
                 record,
             ))))
         }
-        "virtual-graph" => {
-            let record: VgSseRecord = serde_json::from_value(payload.record)?;
-            Ok(Some(RemoteEvent::VgUpdated(vg_sse_to_vg_ns_record(record))))
+        SSE_KIND_GRAPH_SOURCE => {
+            let record: GraphSourceSseRecord = serde_json::from_value(payload.record)?;
+            Ok(Some(RemoteEvent::GraphSourceUpdated(
+                gs_sse_to_graph_source_record(record),
+            )))
         }
         // Unknown kind is not an error; ignore for forwards compatibility.
         _ => Ok(None),
@@ -100,55 +105,60 @@ fn parse_ns_retracted(data: &str) -> Result<Option<RemoteEvent>, ServerSseParseE
     let payload: NsRetractedEnvelope = serde_json::from_str(data)?;
 
     match payload.kind.as_str() {
-        "ledger" => Ok(Some(RemoteEvent::LedgerRetracted {
-            alias: payload.alias,
+        SSE_KIND_LEDGER => Ok(Some(RemoteEvent::LedgerRetracted {
+            ledger_id: payload.resource_id,
         })),
-        "virtual-graph" => Ok(Some(RemoteEvent::VgRetracted {
-            alias: payload.alias,
+        SSE_KIND_GRAPH_SOURCE => Ok(Some(RemoteEvent::GraphSourceRetracted {
+            graph_source_id: payload.resource_id,
         })),
         _ => Ok(None),
     }
 }
 
 fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
-    let (alias_name, branch) = split_alias_or_fallback(&record.alias, &record.branch);
+    use fluree_db_core::ContentId;
+
+    let (ledger_name, branch) = split_ledger_id_or_fallback(&record.ledger_id, &record.branch);
     NsRecord {
-        address: record.alias.clone(),
-        alias: alias_name,
+        ledger_id: record.ledger_id.clone(),
+        name: ledger_name,
         branch,
-        commit_address: record.commit_address,
+        commit_head_id: record
+            .commit_head_id
+            .and_then(|s| s.parse::<ContentId>().ok()),
+        config_id: None,
         commit_t: record.commit_t,
-        index_address: record.index_address,
+        index_head_id: record
+            .index_head_id
+            .and_then(|s| s.parse::<ContentId>().ok()),
         index_t: record.index_t,
-        default_context_address: None,
+        default_context: None,
         retracted: record.retracted,
     }
 }
 
-fn vg_sse_to_vg_ns_record(record: VgSseRecord) -> VgNsRecord {
-    VgNsRecord {
-        address: record.alias,
+fn gs_sse_to_graph_source_record(record: GraphSourceSseRecord) -> GraphSourceRecord {
+    use fluree_db_core::ContentId;
+
+    GraphSourceRecord {
+        graph_source_id: record.graph_source_id,
         name: record.name,
         branch: record.branch,
-        vg_type: VgType::from_type_string(&record.vg_type),
+        source_type: GraphSourceType::from_type_string(&record.source_type),
         config: record.config,
         dependencies: record.dependencies,
-        index_address: record.index_address,
+        index_id: record.index_id.and_then(|s| s.parse::<ContentId>().ok()),
         index_t: record.index_t,
         retracted: record.retracted,
     }
 }
 
-/// Split canonical alias into (name, branch) using the last ':' as delimiter.
+/// Split a ledger_id into (name, branch) using the canonical alias parser.
 ///
-/// Supports ledger names with '/' and other characters; branch delimiter is ':'.
-fn split_alias_or_fallback(alias: &str, fallback_branch: &str) -> (String, String) {
-    match alias.rsplit_once(':') {
-        Some((name, branch)) if !name.is_empty() && !branch.is_empty() => {
-            (name.to_string(), branch.to_string())
-        }
-        _ => (alias.to_string(), fallback_branch.to_string()),
-    }
+/// Falls back to (ledger_id, fallback_branch) if parsing fails.
+fn split_ledger_id_or_fallback(ledger_id: &str, fallback_branch: &str) -> (String, String) {
+    fluree_db_core::ledger_id::split_ledger_id(ledger_id)
+        .unwrap_or_else(|_| (ledger_id.to_string(), fallback_branch.to_string()))
 }
 
 #[cfg(test)]
@@ -163,13 +173,13 @@ mod tests {
             data: r#"{
                 "action": "ns-record",
                 "kind": "ledger",
-                "alias": "mydb:main",
+                "resource_id": "mydb:main",
                 "record": {
-                    "alias": "mydb:main",
+                    "ledger_id": "mydb:main",
                     "branch": "main",
-                    "commit_address": "fluree:file://commit/abc",
+                    "commit_head_id": null,
                     "commit_t": 5,
-                    "index_address": null,
+                    "index_head_id": null,
                     "index_t": 0,
                     "retracted": false
                 },
@@ -182,8 +192,8 @@ mod tests {
         match parse_server_sse_event(&event).unwrap() {
             Some(RemoteEvent::LedgerUpdated(record)) => {
                 assert_eq!(record.commit_t, 5);
-                assert_eq!(record.address, "mydb:main");
-                assert_eq!(record.alias, "mydb");
+                assert_eq!(record.ledger_id, "mydb:main");
+                assert_eq!(record.name, "mydb");
                 assert_eq!(record.branch, "main");
             }
             other => panic!("expected LedgerUpdated, got {:?}", other),
@@ -197,7 +207,7 @@ mod tests {
             data: r#"{
                 "action": "ns-retracted",
                 "kind": "ledger",
-                "alias": "mydb:main",
+                "resource_id": "mydb:main",
                 "emitted_at": "2025-01-01T00:00:00Z"
             }"#
             .to_string(),
@@ -205,27 +215,27 @@ mod tests {
         };
 
         match parse_server_sse_event(&event).unwrap() {
-            Some(RemoteEvent::LedgerRetracted { alias }) => assert_eq!(alias, "mydb:main"),
+            Some(RemoteEvent::LedgerRetracted { ledger_id }) => assert_eq!(ledger_id, "mydb:main"),
             other => panic!("expected LedgerRetracted, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_parse_virtual_graph_ns_record_event() {
+    fn test_parse_graph_source_ns_record_event() {
         let event = SseEvent {
             event_type: Some("ns-record".to_string()),
             data: r#"{
                 "action": "ns-record",
-                "kind": "virtual-graph",
-                "alias": "search:main",
+                "kind": "graph-source",
+                "resource_id": "search:main",
                 "record": {
-                    "alias": "search:main",
+                    "graph_source_id": "search:main",
                     "name": "search",
                     "branch": "main",
-                    "vg_type": "fidx:BM25",
+                    "source_type": "f:Bm25Index",
                     "config": "{\"k1\":1.2}",
                     "dependencies": ["books:main"],
-                    "index_address": null,
+                    "index_head_id": null,
                     "index_t": 0,
                     "retracted": false
                 },
@@ -236,13 +246,13 @@ mod tests {
         };
 
         match parse_server_sse_event(&event).unwrap() {
-            Some(RemoteEvent::VgUpdated(record)) => {
-                assert_eq!(record.address, "search:main");
+            Some(RemoteEvent::GraphSourceUpdated(record)) => {
+                assert_eq!(record.graph_source_id, "search:main");
                 assert_eq!(record.name, "search");
                 assert_eq!(record.branch, "main");
                 assert_eq!(record.index_t, 0);
             }
-            other => panic!("expected VgUpdated, got {:?}", other),
+            other => panic!("expected GraphSourceUpdated, got {:?}", other),
         }
     }
 

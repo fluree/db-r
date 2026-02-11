@@ -1,4 +1,4 @@
-//! Iceberg REST catalog support for Fluree DB virtual graphs.
+//! Iceberg REST catalog support for Fluree DB graph sources.
 //!
 //! This crate provides Iceberg table access via REST catalogs (primarily Polaris),
 //! including authentication, vended credentials, metadata loading, and data scanning.
@@ -16,7 +16,7 @@
 //! - [`catalog`] - REST catalog client for table discovery and metadata location
 //! - [`credential`] - Vended credentials handling and caching
 //! - [`metadata`] - Iceberg table metadata parsing and snapshot selection
-//! - [`config`] - VG configuration schemas for nameservice integration
+//! - [`config`] - Graph source configuration schemas for nameservice integration
 //! - [`manifest`] - Manifest list and manifest file parsing (Avro format)
 //! - [`scan`] - Scan planning with partition/file pruning
 //! - [`io`] - Storage abstraction and Parquet reading
@@ -27,7 +27,7 @@
 //! use fluree_db_iceberg::{
 //!     auth::{AuthConfig, BearerTokenAuth},
 //!     catalog::{RestCatalogClient, RestCatalogConfig, CatalogClient},
-//!     config::IcebergVgConfig,
+//!     config::IcebergGsConfig,
 //!     scan::{ScanConfig, ScanPlanner},
 //! };
 //!
@@ -63,7 +63,7 @@ pub mod metadata;
 pub mod scan;
 
 // Re-export commonly used types
-pub use config::{CatalogConfig, IcebergVgConfig, IoConfig, MappingSource, TableConfig};
+pub use config::{CatalogConfig, IcebergGsConfig, IoConfig, MappingSource, TableConfig};
 pub use config_value::ConfigValue;
 pub use error::{IcebergError, Result};
 

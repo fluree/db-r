@@ -42,7 +42,7 @@ use fluree_db_nameservice::Publisher;
 /// ```
 pub struct Graph<'a, S: Storage + 'static, N> {
     pub(crate) fluree: &'a Fluree<S, N>,
-    pub(crate) alias: String,
+    pub(crate) ledger_id: String,
     pub(crate) time_spec: TimeSpec,
 }
 
@@ -52,10 +52,10 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new lazy graph handle.
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, alias: String, time_spec: TimeSpec) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger_id: String, time_spec: TimeSpec) -> Self {
         Self {
             fluree,
-            alias,
+            ledger_id,
             time_spec,
         }
     }
@@ -73,7 +73,7 @@ where
     pub async fn load(&self) -> Result<GraphSnapshot<'a, S, N>> {
         let view = self
             .fluree
-            .load_view_at(&self.alias, self.time_spec.clone())
+            .load_view_at(&self.ledger_id, self.time_spec.clone())
             .await?;
         Ok(GraphSnapshot::new(self.fluree, view))
     }

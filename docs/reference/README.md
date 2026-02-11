@@ -13,15 +13,32 @@ Definitions of key terms and concepts:
 - Query terminology
 - Index terminology
 
-### [Compatibility and Feature Flags](compatibility.md)
+### [Fluree System Vocabulary](vocabulary.md)
 
-Compatibility information:
+Complete reference for Fluree's system vocabulary under `https://ns.flur.ee/db#`:
+- Commit metadata predicates (`f:t`, `f:address`, `f:time`, `f:previous`, etc.)
+- Search query vocabulary (BM25 and vector search patterns)
+- Nameservice record fields and type taxonomy
+- Policy vocabulary
+- Namespace codes
+
+### [Standards and Feature Flags](compatibility.md)
+
+Standards and feature-flag reference:
 - SPARQL 1.1 compliance
 - JSON-LD specifications
 - W3C standards support
 - Feature flags
 - Experimental features
 - Deprecated features
+
+### [Graph Identities and Naming](graph-identities.md)
+
+Naming conventions for graphs, ledgers, and identifiers:
+- User-facing terminology (ledger, graph IRI, graph source, graph snapshot)
+- Time pinning syntax (`@t:`, `@iso:`, `@commit:`)
+- Named graphs within a ledger
+- Base resolution for graph references
 
 ### [Crate Map](crate-map.md)
 
@@ -48,9 +65,7 @@ Overview of Fluree's Rust crate architecture:
 ### Fluree Namespaces
 
 ```turtle
-@prefix f: <https://ns.flur.ee/ledger#> .
-@prefix bm25: <https://ns.flur.ee/bm25#> .
-@prefix vector: <https://ns.flur.ee/vector#> .
+@prefix f: <https://ns.flur.ee/db#> .
 ```
 
 ### Time Specifiers
@@ -58,7 +73,7 @@ Overview of Fluree's Rust crate architecture:
 ```text
 ledger:branch@t:123             # Transaction number
 ledger:branch@iso:2024-01-22    # ISO timestamp
-ledger:branch@sha:abc123        # Commit SHA
+ledger:branch@commit:bafybeig...  # Commit ContentId
 ```
 
 ### HTTP Status Codes

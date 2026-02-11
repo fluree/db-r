@@ -9,7 +9,7 @@ A policy consists of four main components:
 ```json
 {
   "@context": {
-    "f": "https://ns.flur.ee/ledger#",
+    "f": "https://ns.flur.ee/db#",
     "ex": "http://example.org/ns/"
   },
   "@id": "ex:example-policy",

@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 /// Handle representing a loaded ledger's tracking state
 #[derive(Debug)]
 pub struct LoadedLedgerHandle {
-    /// The ledger alias (e.g., "mydb:main")
-    pub alias: String,
+    /// The ledger ID (e.g., "mydb:main")
+    pub ledger_id: String,
 
     /// Last time this ledger was accessed
     pub last_access: RwLock<Instant>,
@@ -34,9 +34,9 @@ pub struct LoadedLedgerHandle {
 
 impl LoadedLedgerHandle {
     /// Create a new handle for a ledger
-    pub fn new(alias: impl Into<String>) -> Self {
+    pub fn new(ledger_id: impl Into<String>) -> Self {
         Self {
-            alias: alias.into(),
+            ledger_id: ledger_id.into(),
             last_access: RwLock::new(Instant::now()),
             last_commit_t: RwLock::new(0),
             last_index_t: RwLock::new(0),
@@ -93,7 +93,7 @@ impl LoadedLedgerHandle {
 /// with support for idle eviction.
 #[derive(Debug)]
 pub struct LedgerRegistry {
-    /// Map of alias -> handle for tracked ledgers
+    /// Map of ledger_id -> handle for tracked ledgers
     entries: RwLock<HashMap<String, Arc<LoadedLedgerHandle>>>,
 
     /// Time-to-live for idle entries before they can be swept
@@ -113,10 +113,10 @@ impl LedgerRegistry {
     ///
     /// If the ledger is already tracked, returns the existing handle and touches it.
     /// Otherwise, creates a new handle.
-    pub fn get_or_create(&self, alias: &str) -> Arc<LoadedLedgerHandle> {
+    pub fn get_or_create(&self, ledger_id: &str) -> Arc<LoadedLedgerHandle> {
         // Fast path: read lock to check if exists
         if let Ok(entries) = self.entries.read() {
-            if let Some(handle) = entries.get(alias) {
+            if let Some(handle) = entries.get(ledger_id) {
                 handle.touch();
                 return handle.clone();
             }
@@ -125,64 +125,64 @@ impl LedgerRegistry {
         // Slow path: write lock to create
         if let Ok(mut entries) = self.entries.write() {
             // Double-check after acquiring write lock
-            if let Some(handle) = entries.get(alias) {
+            if let Some(handle) = entries.get(ledger_id) {
                 handle.touch();
                 return handle.clone();
             }
 
-            let handle = Arc::new(LoadedLedgerHandle::new(alias));
-            entries.insert(alias.to_string(), handle.clone());
+            let handle = Arc::new(LoadedLedgerHandle::new(ledger_id));
+            entries.insert(ledger_id.to_string(), handle.clone());
             return handle;
         }
 
         // Fallback: create new handle without storing (lock poisoned)
-        Arc::new(LoadedLedgerHandle::new(alias))
+        Arc::new(LoadedLedgerHandle::new(ledger_id))
     }
 
     /// Touch a ledger to update its last access time
     ///
     /// No-op if the ledger is not tracked.
-    pub fn touch(&self, alias: &str) {
+    pub fn touch(&self, ledger_id: &str) {
         if let Ok(entries) = self.entries.read() {
-            if let Some(handle) = entries.get(alias) {
+            if let Some(handle) = entries.get(ledger_id) {
                 handle.touch();
             }
         }
     }
 
     /// Check if a ledger is currently being tracked
-    pub fn is_tracked(&self, alias: &str) -> bool {
+    pub fn is_tracked(&self, ledger_id: &str) -> bool {
         self.entries
             .read()
-            .map(|e| e.contains_key(alias))
+            .map(|e| e.contains_key(ledger_id))
             .unwrap_or(false)
     }
 
     /// Disconnect (remove) a ledger from tracking
     ///
     /// Returns the handle if it was tracked, None otherwise.
-    pub fn disconnect(&self, alias: &str) -> Option<Arc<LoadedLedgerHandle>> {
-        self.entries.write().ok()?.remove(alias)
+    pub fn disconnect(&self, ledger_id: &str) -> Option<Arc<LoadedLedgerHandle>> {
+        self.entries.write().ok()?.remove(ledger_id)
     }
 
-    /// Sweep idle entries and return the aliases that were removed
+    /// Sweep idle entries and return the ledger IDs that were removed
     pub fn sweep_idle(&self) -> Vec<String> {
         let Ok(mut entries) = self.entries.write() else {
             return Vec::new();
         };
         let ttl = self.idle_ttl;
 
-        let idle_aliases: Vec<String> = entries
+        let idle_ledger_ids: Vec<String> = entries
             .iter()
             .filter(|(_, handle)| handle.is_idle(ttl))
-            .map(|(alias, _)| alias.clone())
+            .map(|(ledger_id, _)| ledger_id.clone())
             .collect();
 
-        for alias in &idle_aliases {
-            entries.remove(alias);
+        for ledger_id in &idle_ledger_ids {
+            entries.remove(ledger_id);
         }
 
-        idle_aliases
+        idle_ledger_ids
     }
 
     /// Process a nameservice event to update watermarks
@@ -191,28 +191,32 @@ impl LedgerRegistry {
     pub fn on_ns_event(&self, event: &NameServiceEvent) {
         match event {
             NameServiceEvent::LedgerCommitPublished {
-                alias, commit_t, ..
+                ledger_id,
+                commit_t,
+                ..
             } => {
                 if let Ok(entries) = self.entries.read() {
-                    if let Some(handle) = entries.get(alias) {
+                    if let Some(handle) = entries.get(ledger_id) {
                         handle.update_commit_t(*commit_t);
                     }
                 }
             }
-            NameServiceEvent::LedgerIndexPublished { alias, index_t, .. } => {
+            NameServiceEvent::LedgerIndexPublished {
+                ledger_id, index_t, ..
+            } => {
                 if let Ok(entries) = self.entries.read() {
-                    if let Some(handle) = entries.get(alias) {
+                    if let Some(handle) = entries.get(ledger_id) {
                         handle.update_index_t(*index_t);
                     }
                 }
             }
-            NameServiceEvent::LedgerRetracted { alias } => {
+            NameServiceEvent::LedgerRetracted { ledger_id } => {
                 // Remove retracted ledgers from tracking
                 if let Ok(mut entries) = self.entries.write() {
-                    entries.remove(alias);
+                    entries.remove(ledger_id);
                 }
             }
-            // VG events are not tracked in the ledger registry
+            // Graph source events are not tracked in the ledger registry
             _ => {}
         }
     }
@@ -227,8 +231,8 @@ impl LedgerRegistry {
         self.entries.read().map(|e| e.is_empty()).unwrap_or(true)
     }
 
-    /// Get all tracked ledger aliases
-    pub fn aliases(&self) -> Vec<String> {
+    /// Get all tracked ledger IDs
+    pub fn ledger_ids(&self) -> Vec<String> {
         self.entries
             .read()
             .map(|e| e.keys().cloned().collect())
@@ -282,7 +286,7 @@ impl LedgerRegistry {
                         if !swept.is_empty() {
                             tracing::debug!(
                                 count = swept.len(),
-                                aliases = ?swept,
+                                ledger_ids = ?swept,
                                 "Swept idle ledger registry entries"
                             );
                         }
@@ -303,11 +307,12 @@ impl Default for LedgerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::{ContentId, ContentKind};
 
     #[test]
     fn test_loaded_ledger_handle_new() {
         let handle = LoadedLedgerHandle::new("test:main");
-        assert_eq!(handle.alias, "test:main");
+        assert_eq!(handle.ledger_id, "test:main");
         assert_eq!(handle.commit_t(), 0);
         assert_eq!(handle.index_t(), 0);
     }
@@ -370,24 +375,24 @@ mod tests {
 
         // Process commit event
         registry.on_ns_event(&NameServiceEvent::LedgerCommitPublished {
-            alias: "test:main".to_string(),
-            commit_address: "addr".to_string(),
+            ledger_id: "test:main".to_string(),
+            commit_id: ContentId::new(ContentKind::Commit, b"test-commit"),
             commit_t: 42,
         });
         assert_eq!(handle.commit_t(), 42);
 
         // Process index event
         registry.on_ns_event(&NameServiceEvent::LedgerIndexPublished {
-            alias: "test:main".to_string(),
-            index_address: "idx-addr".to_string(),
+            ledger_id: "test:main".to_string(),
+            index_id: ContentId::new(ContentKind::IndexRoot, b"test-index"),
             index_t: 40,
         });
         assert_eq!(handle.index_t(), 40);
 
         // Untracked ledger should be ignored
         registry.on_ns_event(&NameServiceEvent::LedgerCommitPublished {
-            alias: "other:main".to_string(),
-            commit_address: "addr".to_string(),
+            ledger_id: "other:main".to_string(),
+            commit_id: ContentId::new(ContentKind::Commit, b"other-commit"),
             commit_t: 100,
         });
         assert_eq!(registry.len(), 1);
@@ -401,7 +406,7 @@ mod tests {
         assert!(registry.is_tracked("test:main"));
 
         registry.on_ns_event(&NameServiceEvent::LedgerRetracted {
-            alias: "test:main".to_string(),
+            ledger_id: "test:main".to_string(),
         });
         assert!(!registry.is_tracked("test:main"));
     }

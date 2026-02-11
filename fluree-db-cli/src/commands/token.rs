@@ -30,43 +30,43 @@ struct TokenPermissions<'a> {
     events_ledgers: &'a [String],
     /// Ledgers for storage access.
     storage_ledgers: &'a [String],
-    /// Virtual graphs for access.
-    vgs: &'a [String],
+    /// Data API read-all.
+    read_all: bool,
+    /// Ledgers for data API read access.
+    read_ledgers: &'a [String],
+    /// Data API write-all.
+    write_all: bool,
+    /// Ledgers for data API write access.
+    write_ledgers: &'a [String],
+    /// Graph sources for access.
+    graph_sources: &'a [String],
 }
 
 pub fn run(action: TokenAction) -> CliResult<()> {
     match action {
-        TokenAction::Create {
-            private_key,
-            expires_in,
-            subject,
-            audiences,
-            identity,
-            all,
-            events_ledgers,
-            storage_ledgers,
-            vgs,
-            output,
-            print_claims,
-        } => {
+        TokenAction::Create(args) => {
             let claims = TokenClaims {
-                subject: subject.as_deref(),
-                audiences: &audiences,
-                identity: identity.as_deref(),
+                subject: args.subject.as_deref(),
+                audiences: &args.audiences,
+                identity: args.identity.as_deref(),
             };
             let permissions = TokenPermissions {
-                all,
-                events_ledgers: &events_ledgers,
-                storage_ledgers: &storage_ledgers,
-                vgs: &vgs,
+                all: args.all,
+                events_ledgers: &args.events_ledgers,
+                storage_ledgers: &args.storage_ledgers,
+                read_all: args.read_all,
+                read_ledgers: &args.read_ledgers,
+                write_all: args.write_all,
+                write_ledgers: &args.write_ledgers,
+                graph_sources: &args.graph_sources,
             };
             run_create(
-                &private_key,
-                &expires_in,
+                &args.private_key,
+                &args.expires_in,
                 claims,
                 permissions,
-                output,
-                print_claims,
+                args.output,
+                args.print_claims,
             )
         }
         TokenAction::Keygen { format, output } => run_keygen(format, output),
@@ -90,10 +90,14 @@ fn run_create(
     if !permissions.all
         && permissions.events_ledgers.is_empty()
         && permissions.storage_ledgers.is_empty()
-        && permissions.vgs.is_empty()
+        && !permissions.read_all
+        && permissions.read_ledgers.is_empty()
+        && !permissions.write_all
+        && permissions.write_ledgers.is_empty()
+        && permissions.graph_sources.is_empty()
     {
         return Err(CliError::Usage(
-            "no permissions granted; use --all, --events-ledger, --storage-ledger, or --vg".into(),
+            "no permissions granted; use --all, --events-ledger, --storage-ledger, --read-ledger/--read-all, --write-ledger/--write-all, or --graph-source".into(),
         ));
     }
 
@@ -147,6 +151,8 @@ fn run_create(
     if permissions.all {
         claims["fluree.events.all"] = json!(true);
         claims["fluree.storage.all"] = json!(true);
+        claims["fluree.ledger.read.all"] = json!(true);
+        claims["fluree.ledger.write.all"] = json!(true);
     }
 
     if !permissions.events_ledgers.is_empty() {
@@ -157,8 +163,22 @@ fn run_create(
         claims["fluree.storage.ledgers"] = json!(permissions.storage_ledgers);
     }
 
-    if !permissions.vgs.is_empty() {
-        claims["fluree.events.vgs"] = json!(permissions.vgs);
+    // Data API permissions
+    if permissions.read_all {
+        claims["fluree.ledger.read.all"] = json!(true);
+    }
+    if !permissions.read_ledgers.is_empty() {
+        claims["fluree.ledger.read.ledgers"] = json!(permissions.read_ledgers);
+    }
+    if permissions.write_all {
+        claims["fluree.ledger.write.all"] = json!(true);
+    }
+    if !permissions.write_ledgers.is_empty() {
+        claims["fluree.ledger.write.ledgers"] = json!(permissions.write_ledgers);
+    }
+
+    if !permissions.graph_sources.is_empty() {
+        claims["fluree.events.graph_sources"] = json!(permissions.graph_sources);
     }
 
     // Create JWS
@@ -187,8 +207,11 @@ fn run_create(
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
         TokenOutputFormat::Curl => {
-            let params =
-                build_curl_params(permissions.all, permissions.events_ledgers, permissions.vgs);
+            let params = build_curl_params(
+                permissions.all,
+                permissions.events_ledgers,
+                permissions.graph_sources,
+            );
             println!(
                 r#"curl -N -H "Authorization: Bearer {}" "http://localhost:8090/fluree/events?{}""#,
                 token, params
@@ -516,7 +539,7 @@ fn create_jws(claims: &serde_json::Value, signing_key: &SigningKey) -> CliResult
 }
 
 /// Build URL params for curl output
-fn build_curl_params(all: bool, ledgers: &[String], vgs: &[String]) -> String {
+fn build_curl_params(all: bool, ledgers: &[String], graph_sources: &[String]) -> String {
     let mut params = String::new();
     if all {
         params.push_str("all=true");
@@ -527,11 +550,11 @@ fn build_curl_params(all: bool, ledgers: &[String], vgs: &[String]) -> String {
             }
             params.push_str(&format!("ledger={}", url_encode(l)));
         }
-        for v in vgs {
+        for gs in graph_sources {
             if !params.is_empty() {
                 params.push('&');
             }
-            params.push_str(&format!("vg={}", url_encode(v)));
+            params.push_str(&format!("graph-source={}", url_encode(gs)));
         }
     }
     params
@@ -645,8 +668,8 @@ fn print_pretty_inspect(
         println!("Events ledgers: {}", ledgers);
     }
 
-    if let Some(vgs) = payload.get("fluree.events.vgs") {
-        println!("Events VGs:     {}", vgs);
+    if let Some(gs) = payload.get("fluree.events.graph_sources") {
+        println!("Graph sources:  {}", gs);
     }
 
     // Storage permissions

@@ -6,7 +6,6 @@ use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
-use fluree_db_core::Storage;
 
 use super::value::ComparableValue;
 use super::{
@@ -22,11 +21,11 @@ impl Function {
     ///
     /// Generic over `RowAccess` to support both `RowView` (batch rows) and
     /// `BindingRow` (pre-batch filtering).
-    pub fn eval<S: Storage, R: RowAccess>(
+    pub fn eval<R: RowAccess>(
         &self,
         args: &[Expression],
         row: &R,
-        ctx: Option<&ExecutionContext<'_, S>>,
+        ctx: Option<&ExecutionContext<'_>>,
     ) -> Result<Option<ComparableValue>> {
         match self {
             // Comparison operators
@@ -142,11 +141,11 @@ impl Function {
     ///
     /// Generic over `RowAccess` to support both `RowView` (batch rows) and
     /// `BindingRow` (pre-batch filtering).
-    pub fn eval_to_bool<S: Storage, R: RowAccess>(
+    pub fn eval_to_bool<R: RowAccess>(
         &self,
         args: &[Expression],
         row: &R,
-        ctx: Option<&ExecutionContext<'_, S>>,
+        ctx: Option<&ExecutionContext<'_>>,
     ) -> Result<bool> {
         let value = self.eval(args, row, ctx)?;
         Ok(value.is_some_and(Into::into))

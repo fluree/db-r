@@ -6,7 +6,6 @@ use crate::binding::{Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
-use fluree_db_core::Storage;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -38,10 +37,10 @@ pub fn eval_datatype<R: RowAccess>(
     }
 }
 
-pub fn eval_lang_matches<S: Storage, R: RowAccess>(
+pub fn eval_lang_matches<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "LANGMATCHES")?;
     let tag = args[0].eval_to_comparable(row, ctx)?;
@@ -66,10 +65,10 @@ pub fn eval_lang_matches<S: Storage, R: RowAccess>(
     }
 }
 
-pub fn eval_same_term<S: Storage, R: RowAccess>(
+pub fn eval_same_term<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "SAMETERM")?;
     let v1 = args[0].eval_to_comparable(row, ctx)?;
@@ -78,10 +77,10 @@ pub fn eval_same_term<S: Storage, R: RowAccess>(
     Ok(Some(ComparableValue::Bool(same)))
 }
 
-pub fn eval_iri<S: Storage, R: RowAccess>(
+pub fn eval_iri<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "IRI")?;
     match args[0].eval_to_comparable(row, ctx)? {

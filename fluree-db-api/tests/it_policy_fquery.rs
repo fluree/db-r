@@ -62,13 +62,13 @@ async fn policy_baseline_allow_true() {
 }
 
 /// Helper to seed simple classified data
-async fn seed_classified_data(fluree: &MemoryFluree, alias: &str) {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_classified_data(fluree: &MemoryFluree, ledger_id: &str) {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     let txn = json!({
         "@context": {
             "ex": "http://example.org/ns/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "@graph": [
             {

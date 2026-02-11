@@ -10,8 +10,8 @@ use fluree_db_api::FlureeBuilder;
 use serde_json::json;
 use support::{genesis_ledger, normalize_rows, MemoryFluree, MemoryLedger};
 
-async fn seed_knows_chain(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_knows_chain(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": {"ex":"http://example.org/"},
         "@graph": [
@@ -33,8 +33,8 @@ async fn seed_knows_chain(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
 ///   ex:carol --ex:address--> ex:addr1
 ///   ex:addr1 --ex:city--> "Springfield"
 ///   ex:bob   --ex:parent--> ex:alice  (inverse: alice is bob's parent)
-async fn seed_chain_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_chain_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": {"ex":"http://example.org/"},
         "@graph": [
@@ -47,8 +47,8 @@ async fn seed_chain_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
     fluree.insert(ledger0, &insert).await.unwrap().ledger
 }
 
-async fn seed_y_chain(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_y_chain(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": {"ex":"http://example.org/"},
         "@graph": [
@@ -855,8 +855,8 @@ async fn property_path_sequence_transitive_step_errors() {
 ///   ex:alice --ex:colleague--> ex:carol
 ///   ex:bob   --ex:name--> "Bob"
 ///   ex:carol --ex:name--> "Carol"
-async fn seed_alt_seq_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_alt_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": {"ex":"http://example.org/"},
         "@graph": [
@@ -1063,8 +1063,8 @@ async fn property_path_inverse_zero_or_more() {
 // Alternative-in-Sequence distribution tests
 // =============================================================================
 
-async fn seed_alt_in_seq_data(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_alt_in_seq_data(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": {"ex":"http://example.org/"},
         "@graph": [

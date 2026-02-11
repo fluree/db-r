@@ -37,7 +37,7 @@ where
     /// let dataset = fluree.build_dataset_view(&spec).await?;
     /// let result = fluree.query_dataset_view(&dataset, &query).await?;
     /// ```
-    pub async fn build_dataset_view(&self, spec: &DatasetSpec) -> Result<FlureeDataSetView<S>> {
+    pub async fn build_dataset_view(&self, spec: &DatasetSpec) -> Result<FlureeDataSetView> {
         // History/changes queries are a Fluree dataset extension.
         // In this mode, the "from" array specifies a (from,to) range on ONE ledger,
         // not two distinct default graphs.
@@ -91,7 +91,7 @@ where
         &self,
         spec: &DatasetSpec,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeDataSetView<S>> {
+    ) -> Result<FlureeDataSetView> {
         // History mode: load head view, resolve range, then wrap policy.
         if let Some(range) = spec.history_range() {
             let ledger = self.ledger(&range.identifier).await?;
@@ -134,9 +134,9 @@ where
     /// This is used by `build_dataset_view` when no global policy is provided.
     async fn maybe_apply_source_policy(
         &self,
-        view: FlureeView<S>,
+        view: FlureeView,
         source: &dataset::GraphSource,
-    ) -> Result<FlureeView<S>> {
+    ) -> Result<FlureeView> {
         if let Some(policy_override) = &source.policy_override {
             if policy_override.has_policy() {
                 let opts = policy_override.to_query_connection_options();
@@ -152,10 +152,10 @@ where
     /// policy to override the global policy from `QueryConnectionOptions`.
     async fn apply_policy_with_override(
         &self,
-        view: FlureeView<S>,
+        view: FlureeView,
         source: &dataset::GraphSource,
         global_opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S>> {
+    ) -> Result<FlureeView> {
         // Per-source policy override takes precedence
         if let Some(policy_override) = &source.policy_override {
             if policy_override.has_policy() {
@@ -180,7 +180,7 @@ where
     pub(crate) async fn load_view_from_source(
         &self,
         source: &dataset::GraphSource,
-    ) -> Result<FlureeView<S>> {
+    ) -> Result<FlureeView> {
         let view = match &source.time_spec {
             None => self.view(&source.identifier).await?,
             Some(time_spec) => {
@@ -206,7 +206,7 @@ where
     pub async fn try_single_view_from_spec(
         &self,
         spec: &DatasetSpec,
-    ) -> Result<Option<FlureeView<S>>> {
+    ) -> Result<Option<FlureeView>> {
         // Single default graph, no named graphs, no history range = single-ledger
         // (load_view_from_source handles both with and without time_spec)
         if spec.default_graphs.len() == 1
@@ -232,8 +232,8 @@ where
     }
 }
 
-async fn resolve_history_endpoint_t<S: Storage + Clone + Send + Sync + 'static>(
-    ledger: &fluree_db_ledger::LedgerState<S>,
+async fn resolve_history_endpoint_t(
+    ledger: &fluree_db_ledger::LedgerState,
     spec: &dataset::TimeSpec,
     latest_t: i64,
 ) -> Result<i64> {
@@ -262,11 +262,11 @@ async fn resolve_history_endpoint_t<S: Storage + Clone + Send + Sync + 'static>(
             )
             .await
         }
-        dataset::TimeSpec::AtCommit(sha_prefix) => {
-            time_resolve::sha_to_t(
+        dataset::TimeSpec::AtCommit(commit_prefix) => {
+            time_resolve::commit_to_t(
                 &ledger.db,
                 Some(ledger.novelty.as_ref()),
-                sha_prefix,
+                commit_prefix,
                 latest_t,
             )
             .await

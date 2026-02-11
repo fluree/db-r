@@ -9,7 +9,6 @@ use crate::binding::{Binding, RowAccess, RowView};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{Expression, FilterValue, Function};
-use fluree_db_core::Storage;
 use std::sync::Arc;
 
 use super::helpers::has_unbound_vars;
@@ -27,10 +26,10 @@ impl Expression {
     ///
     /// This method is generic over `RowAccess`, allowing it to work with both
     /// `RowView` (batch rows) and `BindingRow` (pre-batch filtering).
-    pub fn eval_to_bool<S: Storage, R: RowAccess>(
+    pub fn eval_to_bool<R: RowAccess>(
         &self,
         row: &R,
-        ctx: Option<&ExecutionContext<'_, S>>,
+        ctx: Option<&ExecutionContext<'_>>,
     ) -> Result<bool> {
         match self {
             Expression::Var(var) => Ok(row.get(*var).is_some_and(Into::into)),
@@ -55,10 +54,10 @@ impl Expression {
     ///
     /// This method is generic over `RowAccess`, allowing it to work with both
     /// `RowView` (batch rows) and `BindingRow` (pre-batch filtering).
-    pub fn eval_to_comparable<S: Storage, R: RowAccess>(
+    pub fn eval_to_comparable<R: RowAccess>(
         &self,
         row: &R,
-        ctx: Option<&ExecutionContext<'_, S>>,
+        ctx: Option<&ExecutionContext<'_>>,
     ) -> Result<Option<ComparableValue>> {
         match self {
             Expression::Var(var) => match row.get(*var) {
@@ -124,10 +123,10 @@ impl Expression {
     ///
     /// The `ctx` parameter provides access to the execution context for resolving
     /// `Binding::EncodedLit` values (late materialization).
-    pub fn eval_to_binding<S: Storage>(
+    pub fn eval_to_binding(
         &self,
         row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
+        ctx: Option<&ExecutionContext<'_>>,
     ) -> Binding {
         match self.try_eval_to_binding(row, ctx) {
             Ok(binding) => binding,
@@ -139,10 +138,10 @@ impl Expression {
     ///
     /// Unlike [`eval_to_binding`], this returns errors rather than converting
     /// them to `Binding::Unbound`.
-    pub fn try_eval_to_binding<S: Storage>(
+    pub fn try_eval_to_binding(
         &self,
         row: &RowView,
-        ctx: Option<&ExecutionContext<'_, S>>,
+        ctx: Option<&ExecutionContext<'_>>,
     ) -> Result<Binding> {
         let comparable = match self.eval_to_comparable(row, ctx) {
             Ok(Some(val)) => val,
@@ -179,7 +178,7 @@ mod tests {
     use super::*;
     use crate::binding::Batch;
     use crate::var_registry::VarId;
-    use fluree_db_core::{FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{FlakeValue, Sid};
 
     fn make_test_batch() -> Batch {
         let schema: Arc<[crate::var_registry::VarId]> =
@@ -223,15 +222,15 @@ mod tests {
 
         // Row 0: age=25 > 20 → true
         let row0 = batch.row_view(0).unwrap();
-        assert!(expr.eval_to_bool::<MemoryStorage, _>(&row0, None).unwrap());
+        assert!(expr.eval_to_bool::<_>(&row0, None).unwrap());
 
         // Row 2: age=18 > 20 → false
         let row2 = batch.row_view(2).unwrap();
-        assert!(!expr.eval_to_bool::<MemoryStorage, _>(&row2, None).unwrap());
+        assert!(!expr.eval_to_bool::<_>(&row2, None).unwrap());
 
         // Row 3: age=Unbound → false
         let row3 = batch.row_view(3).unwrap();
-        assert!(!expr.eval_to_bool::<MemoryStorage, _>(&row3, None).unwrap());
+        assert!(!expr.eval_to_bool::<_>(&row3, None).unwrap());
     }
 
     #[test]
@@ -252,11 +251,11 @@ mod tests {
 
         // Row 0: age=25 → true (25 > 20 AND 25 < 28)
         let row0 = batch.row_view(0).unwrap();
-        assert!(expr.eval_to_bool::<MemoryStorage, _>(&row0, None).unwrap());
+        assert!(expr.eval_to_bool::<_>(&row0, None).unwrap());
 
         // Row 1: age=30 → false (30 > 20 but 30 < 28 is false)
         let row1 = batch.row_view(1).unwrap();
-        assert!(!expr.eval_to_bool::<MemoryStorage, _>(&row1, None).unwrap());
+        assert!(!expr.eval_to_bool::<_>(&row1, None).unwrap());
     }
 
     #[test]
@@ -277,15 +276,15 @@ mod tests {
 
         // Row 0: age=25 → false
         let row0 = batch.row_view(0).unwrap();
-        assert!(!expr.eval_to_bool::<MemoryStorage, _>(&row0, None).unwrap());
+        assert!(!expr.eval_to_bool::<_>(&row0, None).unwrap());
 
         // Row 1: age=30 → true (30 > 28)
         let row1 = batch.row_view(1).unwrap();
-        assert!(expr.eval_to_bool::<MemoryStorage, _>(&row1, None).unwrap());
+        assert!(expr.eval_to_bool::<_>(&row1, None).unwrap());
 
         // Row 2: age=18 → true (18 < 20)
         let row2 = batch.row_view(2).unwrap();
-        assert!(expr.eval_to_bool::<MemoryStorage, _>(&row2, None).unwrap());
+        assert!(expr.eval_to_bool::<_>(&row2, None).unwrap());
     }
 
     #[test]
@@ -300,10 +299,10 @@ mod tests {
 
         // Row 0: age=25 → NOT(25 > 25) = NOT(false) = true
         let row0 = batch.row_view(0).unwrap();
-        assert!(expr.eval_to_bool::<MemoryStorage, _>(&row0, None).unwrap());
+        assert!(expr.eval_to_bool::<_>(&row0, None).unwrap());
 
         // Row 1: age=30 → NOT(30 > 25) = NOT(true) = false
         let row1 = batch.row_view(1).unwrap();
-        assert!(!expr.eval_to_bool::<MemoryStorage, _>(&row1, None).unwrap());
+        assert!(!expr.eval_to_bool::<_>(&row1, None).unwrap());
     }
 }

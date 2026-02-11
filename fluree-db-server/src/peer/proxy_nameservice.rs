@@ -1,6 +1,6 @@
 //! Proxy nameservice implementation for peer mode
 //!
-//! Fetches nameservice records via the transaction server's `/fluree/storage/ns/{alias}`
+//! Fetches nameservice records via the transaction server's `/v1/fluree/storage/ns/{alias}`
 //! endpoint instead of direct file access. This allows peers to operate without storage
 //! credentials.
 
@@ -30,32 +30,57 @@ impl Debug for ProxyNameService {
     }
 }
 
-/// Response from nameservice lookup endpoint
-/// Must match `NsRecordResponse` from routes/storage_proxy.rs
+/// Response from nameservice lookup endpoint.
+/// Must match `NsRecordResponse` from routes/storage_proxy.rs.
+///
+/// Uses `#[serde(default)]` on optional fields so that missing JSON keys
+/// deserialize as `None` rather than failing — this keeps the peer
+/// forward-compatible when the server adds new fields.
 #[derive(Debug, Deserialize)]
 struct NsRecordResponse {
-    alias: String,
+    #[serde(default)]
+    name: Option<String>,
     branch: String,
-    commit_address: Option<String>,
+    commit_head_id: Option<String>,
     commit_t: i64,
-    index_address: Option<String>,
+    index_head_id: Option<String>,
     index_t: i64,
+    #[serde(default)]
+    default_context: Option<String>,
     retracted: bool,
+    #[serde(default)]
+    config_id: Option<String>,
 }
 
 impl NsRecordResponse {
-    /// Convert to NsRecord, using the original lookup key as the address
+    /// Convert to NsRecord, using the original lookup key as the ledger_id.
+    ///
+    /// When the server omits `name`, derive it from `lookup_key` by splitting
+    /// on `:` (e.g., `"books:main"` → `"books"`). This avoids copying the full
+    /// `ledger_id` (which includes the branch) into the `name` field.
     fn into_ns_record(self, lookup_key: &str) -> NsRecord {
+        use fluree_db_core::ContentId;
+
+        let derived_name = self.name.unwrap_or_else(|| {
+            lookup_key
+                .split_once(':')
+                .map(|(name, _branch)| name.to_string())
+                .unwrap_or_else(|| lookup_key.to_string())
+        });
+
         NsRecord {
-            // address is the key used for lookup (may differ from alias)
-            address: lookup_key.to_string(),
-            alias: self.alias,
+            // ledger_id is the key used for lookup (may differ from name)
+            ledger_id: lookup_key.to_string(),
+            name: derived_name,
             branch: self.branch,
-            commit_address: self.commit_address,
+            commit_head_id: self
+                .commit_head_id
+                .and_then(|s| s.parse::<ContentId>().ok()),
+            config_id: self.config_id.and_then(|s| s.parse::<ContentId>().ok()),
             commit_t: self.commit_t,
-            index_address: self.index_address,
+            index_head_id: self.index_head_id.and_then(|s| s.parse::<ContentId>().ok()),
             index_t: self.index_t,
-            default_context_address: None, // Not exposed via proxy API
+            default_context: self.default_context,
             retracted: self.retracted,
         }
     }
@@ -87,7 +112,7 @@ impl ProxyNameService {
     /// Build the nameservice lookup endpoint URL
     fn ns_url(&self, alias: &str) -> String {
         format!(
-            "{}/fluree/storage/ns/{}",
+            "{}/v1/fluree/storage/ns/{}",
             self.base_url,
             urlencoding::encode(alias)
         )
@@ -96,8 +121,8 @@ impl ProxyNameService {
 
 #[async_trait]
 impl NameService for ProxyNameService {
-    async fn lookup(&self, ledger_address: &str) -> Result<Option<NsRecord>> {
-        let url = self.ns_url(ledger_address);
+    async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
+        let url = self.ns_url(ledger_id);
 
         let response = self
             .client
@@ -116,12 +141,12 @@ impl NameService for ProxyNameService {
                 let ns_response: NsRecordResponse = response.json().await.map_err(|e| {
                     NameServiceError::storage(format!("Failed to parse NS response: {}", e))
                 })?;
-                Ok(Some(ns_response.into_ns_record(ledger_address)))
+                Ok(Some(ns_response.into_ns_record(ledger_id)))
             }
             StatusCode::NOT_FOUND => Ok(None),
             StatusCode::UNAUTHORIZED => Err(NameServiceError::storage(format!(
                 "Nameservice proxy authentication failed for {}: check token validity",
-                ledger_address
+                ledger_id
             ))),
             StatusCode::FORBIDDEN => {
                 // Not in token scope - treat as not found (no existence leak)
@@ -129,16 +154,9 @@ impl NameService for ProxyNameService {
             }
             _ => Err(NameServiceError::storage(format!(
                 "Nameservice proxy unexpected status {} for {}",
-                status, ledger_address
+                status, ledger_id
             ))),
         }
-    }
-
-    async fn alias(&self, ledger_address: &str) -> Result<Option<String>> {
-        // Delegate to lookup
-        self.lookup(ledger_address)
-            .await
-            .map(|opt| opt.map(|r| r.alias))
     }
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
@@ -165,7 +183,7 @@ impl Publication for ProxyNameService {
         Ok(())
     }
 
-    async fn known_addresses(&self, _alias: &str) -> Result<Vec<String>> {
+    async fn known_ledger_ids(&self, _ledger_id: &str) -> Result<Vec<String>> {
         // Proxy mode doesn't track commit history locally.
         // Return empty - the transaction server has this information.
         Ok(Vec::new())
@@ -197,7 +215,7 @@ mod tests {
         );
         assert_eq!(
             ns.ns_url("books:main"),
-            "http://localhost:8090/fluree/storage/ns/books%3Amain"
+            "http://localhost:8090/v1/fluree/storage/ns/books%3Amain"
         );
     }
 
@@ -210,32 +228,75 @@ mod tests {
         // Alias without colon doesn't need encoding
         assert_eq!(
             ns.ns_url("books"),
-            "http://localhost:8090/fluree/storage/ns/books"
+            "http://localhost:8090/v1/fluree/storage/ns/books"
         );
     }
 
     #[test]
     fn test_ns_record_conversion() {
         let response = NsRecordResponse {
-            alias: "books:main".to_string(),
+            name: Some("books".to_string()),
             branch: "main".to_string(),
-            commit_address: Some("fluree:file://books:main/commit/abc.json".to_string()),
+            commit_head_id: None,
             commit_t: 42,
-            index_address: Some("fluree:file://books/main/index/def.json".to_string()),
+            index_head_id: None,
             index_t: 40,
+            default_context: None,
             retracted: false,
+            config_id: None,
         };
 
-        // Use the lookup key as address (simulating lookup("books"))
+        // Use the lookup key as ledger_id (simulating lookup("books"))
         let record = response.into_ns_record("books");
-        // address should be the lookup key, not the alias
-        assert_eq!(record.address, "books");
-        assert_eq!(record.alias, "books:main");
+        // ledger_id should be the lookup key, not the alias
+        assert_eq!(record.ledger_id, "books");
+        assert_eq!(record.name, "books");
         assert_eq!(record.branch, "main");
         assert_eq!(record.commit_t, 42);
         assert_eq!(record.index_t, 40);
         assert!(!record.retracted);
-        // default_context_address is not exposed via proxy API
-        assert!(record.default_context_address.is_none());
+        // default_context is not exposed via proxy API
+        assert!(record.default_context.is_none());
+    }
+
+    #[test]
+    fn test_ns_record_name_derived_from_lookup_key() {
+        // When server omits `name`, derive it by splitting lookup_key on ':'
+        let response = NsRecordResponse {
+            name: None,
+            branch: "main".to_string(),
+            commit_head_id: None,
+            commit_t: 10,
+            index_head_id: None,
+            index_t: 0,
+            default_context: None,
+            retracted: false,
+            config_id: None,
+        };
+
+        let record = response.into_ns_record("books:main");
+        assert_eq!(record.ledger_id, "books:main");
+        // name should be "books", NOT "books:main"
+        assert_eq!(record.name, "books");
+    }
+
+    #[test]
+    fn test_ns_record_name_no_branch_in_lookup_key() {
+        // When lookup_key has no colon, use it as-is
+        let response = NsRecordResponse {
+            name: None,
+            branch: "main".to_string(),
+            commit_head_id: None,
+            commit_t: 10,
+            index_head_id: None,
+            index_t: 0,
+            default_context: None,
+            retracted: false,
+            config_id: None,
+        };
+
+        let record = response.into_ns_record("books");
+        assert_eq!(record.ledger_id, "books");
+        assert_eq!(record.name, "books");
     }
 }

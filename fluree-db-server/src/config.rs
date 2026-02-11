@@ -27,12 +27,12 @@ pub enum StorageAccessMode {
 /// Peer subscription configuration
 #[derive(Debug, Clone, Default)]
 pub struct PeerSubscription {
-    /// Subscribe to all ledgers and VGs
+    /// Subscribe to all ledgers and graph sources
     pub all: bool,
     /// Specific ledger aliases
     pub ledgers: Vec<String>,
-    /// Specific virtual graph aliases
-    pub vgs: Vec<String>,
+    /// Specific graph source aliases
+    pub graph_sources: Vec<String>,
 }
 
 /// Authentication mode for the events endpoint
@@ -44,6 +44,18 @@ pub enum EventsAuthMode {
     /// Accept tokens but don't require them (DEV ONLY - not a security boundary)
     Optional,
     /// Require valid Bearer token (PRODUCTION)
+    Required,
+}
+
+/// Authentication mode for the data API endpoints (query/transact/info/exists).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum DataAuthMode {
+    /// No authentication required (default)
+    #[default]
+    None,
+    /// Accept tokens but don't require them (DEV ONLY - not a security boundary)
+    Optional,
+    /// Require valid auth (Bearer token or signed request) (PRODUCTION)
     Required,
 }
 
@@ -59,6 +71,56 @@ pub struct EventsAuthConfig {
     /// DANGEROUS: Accept any valid signature regardless of issuer.
     /// Only for development/testing.
     pub insecure_accept_any_issuer: bool,
+    /// Whether JWKS issuers are configured (for validation check)
+    pub has_jwks_issuers: bool,
+}
+
+/// Configuration for data API endpoint authentication.
+#[derive(Debug, Clone, Default)]
+pub struct DataAuthConfig {
+    /// Authentication mode
+    pub mode: DataAuthMode,
+    /// Expected audience claim (optional)
+    pub audience: Option<String>,
+    /// Trusted issuer did:key identifiers for Bearer tokens
+    pub trusted_issuers: Vec<String>,
+    /// Default policy class IRI (optional). Applied when request does not specify one.
+    pub default_policy_class: Option<String>,
+    /// DANGEROUS: Accept any valid signature regardless of issuer.
+    /// Only for development/testing.
+    pub insecure_accept_any_issuer: bool,
+    /// Whether JWKS issuers are configured (for validation check)
+    pub has_jwks_issuers: bool,
+}
+
+impl DataAuthConfig {
+    /// Validate configuration at startup
+    pub fn validate(&self) -> Result<(), String> {
+        if self.mode == DataAuthMode::Required
+            && self.trusted_issuers.is_empty()
+            && !self.has_jwks_issuers
+            && !self.insecure_accept_any_issuer
+        {
+            return Err(
+                "data_auth.mode=required requires --data-auth-trusted-issuer, \
+                 --jwks-issuer, or --data-auth-insecure-accept-any-issuer flag"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Check if an issuer is trusted.
+    /// When a token is presented, issuer MUST be trusted (unless insecure flag).
+    pub fn is_issuer_trusted(&self, issuer: &str) -> bool {
+        if self.insecure_accept_any_issuer {
+            return true;
+        }
+        if self.trusted_issuers.is_empty() {
+            return false;
+        }
+        self.trusted_issuers.iter().any(|i| i == issuer)
+    }
 }
 
 impl EventsAuthConfig {
@@ -66,11 +128,12 @@ impl EventsAuthConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.mode == EventsAuthMode::Required
             && self.trusted_issuers.is_empty()
+            && !self.has_jwks_issuers
             && !self.insecure_accept_any_issuer
         {
             return Err(
-                "events_auth.mode=required requires --events-auth-trusted-issuer or \
-                 --events-auth-insecure-accept-any-issuer flag"
+                "events_auth.mode=required requires --events-auth-trusted-issuer, \
+                 --jwks-issuer, or --events-auth-insecure-accept-any-issuer flag"
                     .to_string(),
             );
         }
@@ -122,21 +185,26 @@ pub struct StorageProxyConfig {
     /// DANGEROUS: Accept any valid signature regardless of issuer.
     /// Only for development/testing.
     pub insecure_accept_any_issuer: bool,
+
+    /// Whether any JWKS issuers are configured (enables OIDC trust path).
+    pub has_jwks_issuers: bool,
 }
 
 impl StorageProxyConfig {
     /// Validate configuration at startup
     pub fn validate(&self, events_auth: &EventsAuthConfig) -> Result<(), String> {
         if self.enabled {
-            // Must have some trusted issuers (own or from events_auth)
+            // Must have some trusted issuers (own, from events_auth, JWKS, or insecure)
             let has_trusted = self.trusted_issuers.as_ref().is_some_and(|v| !v.is_empty())
                 || !events_auth.trusted_issuers.is_empty()
+                || self.has_jwks_issuers
                 || self.insecure_accept_any_issuer;
 
             if !has_trusted {
                 return Err(
                     "storage_proxy.enabled requires --storage-proxy-trusted-issuer, \
-                     --events-auth-trusted-issuer, or --storage-proxy-insecure-accept-any-issuer"
+                     --events-auth-trusted-issuer, --jwks-issuer, \
+                     or --storage-proxy-insecure-accept-any-issuer"
                         .to_string(),
                 );
             }
@@ -245,6 +313,8 @@ pub struct AdminAuthConfig {
     /// DANGEROUS: Accept any valid signature regardless of issuer.
     /// Only for development/testing.
     pub insecure_accept_any_issuer: bool,
+    /// Whether JWKS issuers are configured (for validation check)
+    pub has_jwks_issuers: bool,
 }
 
 impl AdminAuthConfig {
@@ -254,12 +324,13 @@ impl AdminAuthConfig {
             // Must have some trusted issuers (own or from events_auth)
             let has_trusted = !self.trusted_issuers.is_empty()
                 || !events_auth.trusted_issuers.is_empty()
+                || self.has_jwks_issuers
                 || self.insecure_accept_any_issuer;
 
             if !has_trusted {
                 return Err(
                     "admin_auth.mode=required requires --admin-auth-trusted-issuer, \
-                     --events-auth-trusted-issuer, or --admin-auth-insecure flag"
+                     --events-auth-trusted-issuer, --jwks-issuer, or --admin-auth-insecure flag"
                         .to_string(),
                 );
             }
@@ -355,6 +426,52 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_EVENTS_AUTH_INSECURE", hide = true)]
     pub events_auth_insecure_accept_any_issuer: bool,
 
+    // === Data API authentication options (query/transact/info/exists) ===
+    /// Authentication mode for data API endpoints (query/transact/info/exists)
+    #[arg(
+        long,
+        env = "FLUREE_DATA_AUTH_MODE",
+        default_value = "none",
+        value_enum
+    )]
+    pub data_auth_mode: DataAuthMode,
+
+    /// Expected audience claim for data API Bearer tokens (optional)
+    #[arg(long, env = "FLUREE_DATA_AUTH_AUDIENCE")]
+    pub data_auth_audience: Option<String>,
+
+    /// Trusted issuer did:key for data API Bearer tokens (can be specified multiple times)
+    #[arg(
+        long = "data-auth-trusted-issuer",
+        env = "FLUREE_DATA_AUTH_TRUSTED_ISSUERS"
+    )]
+    pub data_auth_trusted_issuers: Vec<String>,
+
+    /// Default policy class IRI for data API requests (optional)
+    #[arg(long, env = "FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS")]
+    pub data_auth_default_policy_class: Option<String>,
+
+    /// DANGEROUS: Accept any valid signature regardless of issuer (dev only)
+    #[arg(long, env = "FLUREE_DATA_AUTH_INSECURE", hide = true)]
+    pub data_auth_insecure_accept_any_issuer: bool,
+
+    // === OIDC / JWKS options (data auth) ===
+    /// JWKS issuer mapping: issuer_url=jwks_url (repeatable).
+    /// Both the issuer URL and JWKS endpoint URL are required.
+    /// Example: --jwks-issuer "https://solo.example.com=https://solo.example.com/.well-known/jwks.json"
+    #[cfg(feature = "oidc")]
+    #[arg(
+        long = "jwks-issuer",
+        env = "FLUREE_JWKS_ISSUERS",
+        value_delimiter = ','
+    )]
+    pub jwks_issuers: Vec<String>,
+
+    /// JWKS cache TTL in seconds (default 300 = 5 minutes)
+    #[cfg(feature = "oidc")]
+    #[arg(long, env = "FLUREE_JWKS_CACHE_TTL", default_value = "300")]
+    pub jwks_cache_ttl: u64,
+
     // === Server role (peer mode) ===
     /// Server operating mode: transaction (write-enabled) or peer (read-only with forwarding)
     #[arg(
@@ -370,7 +487,7 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_TX_SERVER_URL")]
     pub tx_server_url: Option<String>,
 
-    /// Events endpoint URL for peer subscription (defaults to {tx_server_url}/fluree/events)
+    /// Events endpoint URL for peer subscription (defaults to {tx_server_url}/v1/fluree/events)
     #[arg(long, env = "FLUREE_PEER_EVENTS_URL")]
     pub peer_events_url: Option<String>,
 
@@ -378,7 +495,7 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_PEER_EVENTS_TOKEN")]
     pub peer_events_token: Option<String>,
 
-    /// Subscribe to all ledgers and VGs on transaction server (peer mode)
+    /// Subscribe to all ledgers and graph sources on transaction server (peer mode)
     #[arg(long)]
     pub peer_subscribe_all: bool,
 
@@ -386,9 +503,9 @@ pub struct ServerConfig {
     #[arg(long = "peer-ledger")]
     pub peer_ledgers: Vec<String>,
 
-    /// Subscribe to specific VGs in peer mode (repeatable)
-    #[arg(long = "peer-vg")]
-    pub peer_vgs: Vec<String>,
+    /// Subscribe to specific graph sources in peer mode (repeatable)
+    #[arg(long = "peer-graph-source")]
+    pub peer_graph_sources: Vec<String>,
 
     /// Initial reconnect delay in ms for peer SSE subscription
     #[arg(long, default_value = "1000")]
@@ -504,6 +621,17 @@ impl Default for ServerConfig {
             events_auth_audience: None,
             events_auth_trusted_issuers: Vec::new(),
             events_auth_insecure_accept_any_issuer: false,
+            // Data auth defaults
+            data_auth_mode: DataAuthMode::None,
+            data_auth_audience: None,
+            data_auth_trusted_issuers: Vec::new(),
+            data_auth_default_policy_class: None,
+            data_auth_insecure_accept_any_issuer: false,
+            // JWKS defaults
+            #[cfg(feature = "oidc")]
+            jwks_issuers: Vec::new(),
+            #[cfg(feature = "oidc")]
+            jwks_cache_ttl: 300,
             // Peer mode defaults
             server_role: ServerRole::Transaction,
             tx_server_url: None,
@@ -511,7 +639,7 @@ impl Default for ServerConfig {
             peer_events_token: None,
             peer_subscribe_all: false,
             peer_ledgers: Vec::new(),
-            peer_vgs: Vec::new(),
+            peer_graph_sources: Vec::new(),
             peer_reconnect_initial_ms: 1000,
             peer_reconnect_max_ms: 30000,
             peer_reconnect_multiplier: 2.0,
@@ -565,7 +693,60 @@ impl ServerConfig {
             audience: self.events_auth_audience.clone(),
             trusted_issuers: self.events_auth_trusted_issuers.clone(),
             insecure_accept_any_issuer: self.events_auth_insecure_accept_any_issuer,
+            has_jwks_issuers: self.has_jwks_issuers(),
         }
+    }
+
+    /// Get the data API authentication configuration
+    pub fn data_auth(&self) -> DataAuthConfig {
+        DataAuthConfig {
+            mode: self.data_auth_mode,
+            audience: self.data_auth_audience.clone(),
+            trusted_issuers: self.data_auth_trusted_issuers.clone(),
+            default_policy_class: self.data_auth_default_policy_class.clone(),
+            insecure_accept_any_issuer: self.data_auth_insecure_accept_any_issuer,
+            has_jwks_issuers: self.has_jwks_issuers(),
+        }
+    }
+
+    /// Check whether any JWKS issuers are configured.
+    pub fn has_jwks_issuers(&self) -> bool {
+        #[cfg(feature = "oidc")]
+        {
+            !self.jwks_issuers.is_empty()
+        }
+        #[cfg(not(feature = "oidc"))]
+        {
+            false
+        }
+    }
+
+    /// Parse JWKS issuer configurations from CLI args.
+    ///
+    /// Each entry is formatted as `issuer_url=jwks_url`.
+    /// Returns parsed configs, or an error if any entry is malformed.
+    #[cfg(feature = "oidc")]
+    pub fn jwks_issuer_configs(&self) -> Result<Vec<crate::jwks::JwksIssuerConfig>, String> {
+        let mut configs = Vec::new();
+        for entry in &self.jwks_issuers {
+            let (issuer, jwks_url) = entry.split_once('=').ok_or_else(|| {
+                format!(
+                    "Invalid --jwks-issuer format: '{}'. Expected 'issuer_url=jwks_url'",
+                    entry
+                )
+            })?;
+            if issuer.is_empty() || jwks_url.is_empty() {
+                return Err(format!(
+                    "Invalid --jwks-issuer format: '{}'. Both issuer_url and jwks_url must be non-empty",
+                    entry
+                ));
+            }
+            configs.push(crate::jwks::JwksIssuerConfig {
+                issuer: issuer.to_string(),
+                jwks_url: jwks_url.to_string(),
+            });
+        }
+        Ok(configs)
     }
 
     /// Get the storage proxy configuration
@@ -581,6 +762,7 @@ impl ServerConfig {
             default_policy_class: self.storage_proxy_default_policy_class.clone(),
             emit_debug_headers: self.storage_proxy_debug_headers,
             insecure_accept_any_issuer: self.storage_proxy_insecure_accept_any_issuer,
+            has_jwks_issuers: self.has_jwks_issuers(),
         }
     }
 
@@ -598,14 +780,24 @@ impl ServerConfig {
             mode: self.admin_auth_mode,
             trusted_issuers: self.admin_auth_trusted_issuers.clone(),
             insecure_accept_any_issuer: self.admin_auth_insecure_accept_any_issuer,
+            has_jwks_issuers: self.has_jwks_issuers(),
         }
     }
 
     /// Validate all configuration at startup
     pub fn validate(&self) -> Result<(), String> {
+        // Validate JWKS issuer configs (parse early to catch format errors)
+        #[cfg(feature = "oidc")]
+        {
+            self.jwks_issuer_configs()?;
+        }
+
         // Validate events auth
         let events_auth = self.events_auth();
         events_auth.validate()?;
+
+        // Validate data auth
+        self.data_auth().validate()?;
 
         // Validate storage proxy
         self.storage_proxy().validate(&events_auth)?;
@@ -658,10 +850,12 @@ impl ServerConfig {
             }
 
             // Require subscription scope
-            if !self.peer_subscribe_all && self.peer_ledgers.is_empty() && self.peer_vgs.is_empty()
+            if !self.peer_subscribe_all
+                && self.peer_ledgers.is_empty()
+                && self.peer_graph_sources.is_empty()
             {
                 return Err(
-                    "server_role=peer requires --peer-subscribe-all or at least one --peer-ledger/--peer-vg"
+                    "server_role=peer requires --peer-subscribe-all or at least one --peer-ledger/--peer-graph-source"
                         .to_string(),
                 );
             }
@@ -688,7 +882,7 @@ impl ServerConfig {
         self.peer_events_url.clone().or_else(|| {
             self.tx_server_url
                 .as_ref()
-                .map(|base| format!("{}/fluree/events", base))
+                .map(|base| format!("{}/v1/fluree/events", base))
         })
     }
 
@@ -710,7 +904,7 @@ impl ServerConfig {
         PeerSubscription {
             all: self.peer_subscribe_all,
             ledgers: self.peer_ledgers.clone(),
-            vgs: self.peer_vgs.clone(),
+            graph_sources: self.peer_graph_sources.clone(),
         }
     }
 

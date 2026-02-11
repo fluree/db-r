@@ -13,7 +13,7 @@
 //! The search service protocol provides:
 //!
 //! - **Unified request/response envelope** for BM25 and vector search
-//! - **Time-travel semantics** via `as_of_t` parameter
+//! - **Time-travel semantics** via `as_of_t` parameter (BM25 only; vector is head-only)
 //! - **Sync semantics** via `sync` parameter
 //! - **Watermark tracking** via `index_t` in responses
 //!
@@ -25,7 +25,7 @@
 //! let request = SearchRequest {
 //!     protocol_version: PROTOCOL_VERSION.to_string(),
 //!     request_id: Some("req-123".to_string()),
-//!     vg_alias: "products-search:main".to_string(),
+//!     graph_source_id: "products-search:main".to_string(),
 //!     limit: 10,
 //!     as_of_t: None,
 //!     sync: false,

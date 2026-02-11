@@ -7,17 +7,17 @@ use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::ir::Expression;
-use fluree_db_core::{FlakeValue, Storage};
+use fluree_db_core::FlakeValue;
 use std::cmp::Ordering;
 
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
 /// Evaluate equality comparison
-pub fn eval_eq<S: Storage, R: RowAccess>(
+pub fn eval_eq<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Eq")?;
     let result = match (
@@ -31,10 +31,10 @@ pub fn eval_eq<S: Storage, R: RowAccess>(
 }
 
 /// Evaluate inequality comparison
-pub fn eval_ne<S: Storage, R: RowAccess>(
+pub fn eval_ne<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Ne")?;
     let result = match (
@@ -49,10 +49,10 @@ pub fn eval_ne<S: Storage, R: RowAccess>(
 }
 
 /// Evaluate less-than comparison
-pub fn eval_lt<S: Storage, R: RowAccess>(
+pub fn eval_lt<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Lt")?;
     let result = match (
@@ -66,10 +66,10 @@ pub fn eval_lt<S: Storage, R: RowAccess>(
 }
 
 /// Evaluate less-than-or-equal comparison
-pub fn eval_le<S: Storage, R: RowAccess>(
+pub fn eval_le<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Le")?;
     let result = match (
@@ -83,10 +83,10 @@ pub fn eval_le<S: Storage, R: RowAccess>(
 }
 
 /// Evaluate greater-than comparison
-pub fn eval_gt<S: Storage, R: RowAccess>(
+pub fn eval_gt<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Gt")?;
     let result = match (
@@ -100,10 +100,10 @@ pub fn eval_gt<S: Storage, R: RowAccess>(
 }
 
 /// Evaluate greater-than-or-equal comparison
-pub fn eval_ge<S: Storage, R: RowAccess>(
+pub fn eval_ge<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Ge")?;
     let result = match (

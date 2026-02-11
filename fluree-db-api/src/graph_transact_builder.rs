@@ -153,7 +153,11 @@ where
     ///     .await?;
     /// ```
     pub async fn commit(self) -> Result<TransactResultRef> {
-        let handle = self.graph.fluree.ledger_cached(&self.graph.alias).await?;
+        let handle = self
+            .graph
+            .fluree
+            .ledger_cached(&self.graph.ledger_id)
+            .await?;
         commit_with_handle(self.graph.fluree, &handle, self.core).await
     }
 
@@ -185,7 +189,7 @@ where
         let index_config = self.core.index_config.unwrap_or_default();
 
         // Load the current ledger state
-        let ledger_state = self.graph.fluree.ledger(&self.graph.alias).await?;
+        let ledger_state = self.graph.fluree.ledger(&self.graph.ledger_id).await?;
 
         // Stage
         // TODO: Add trig_meta support to tracked+policy path
@@ -260,8 +264,8 @@ where
 /// ```
 pub struct StagedGraph<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    staged: Staged<S>,
-    staged_view: FlureeView<S>,
+    staged: Staged,
+    staged_view: FlureeView,
 }
 
 impl<'a, S, N> StagedGraph<'a, S, N>
@@ -281,7 +285,7 @@ where
     }
 
     /// Access the underlying [`Staged`] transaction.
-    pub fn staged(&self) -> &Staged<S> {
+    pub fn staged(&self) -> &Staged {
         &self.staged
     }
 

@@ -72,7 +72,7 @@ async fn transact_policy_denied_includes_policy_and_fuel_tracking() {
     let txn = json!({
         "@context": {
             "a": "http://a.co/",
-            "f": "https://ns.flur.ee/ledger#"
+            "f": "https://ns.flur.ee/db#"
         },
         "insert": [
             {

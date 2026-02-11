@@ -24,10 +24,6 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// JSON parsing error (simd-json, SIMD-accelerated)
-    #[error("SIMD JSON error: {0}")]
-    SimdJson(#[from] simd_json::Error),
-
     /// Invalid index type
     #[error("Invalid index: {0}")]
     InvalidIndex(String),

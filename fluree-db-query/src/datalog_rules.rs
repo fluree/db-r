@@ -3,7 +3,7 @@
 //! This module provides functionality for extracting user-defined datalog rules
 //! from a Fluree database and parsing them into executable form.
 //!
-//! Rules are stored with the `f:rule` predicate (`https://ns.flur.ee/ledger#rule`)
+//! Rules are stored with the `f:rule` predicate (`https://ns.flur.ee/db#rule`)
 //! and have a JSON format:
 //!
 //! ```json
@@ -19,14 +19,13 @@ use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
-use fluree_db_core::storage::Storage;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Sid};
 use fluree_db_reasoner::{
     BindingValue, Bindings, CompareOp, DatalogRule, DatalogRuleSet, DerivedFactsBuilder,
     FrozenSameAs, RuleFilter, RuleTerm, RuleTriplePattern, RuleValue,
 };
-use fluree_vocab::namespaces::FLUREE_LEDGER;
+use fluree_vocab::namespaces::FLUREE_DB;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -50,15 +49,15 @@ const RULE_LOCAL_NAME: &str = "rule";
 ///
 /// Queries for all `f:rule` triples and parses the rule definitions.
 /// Returns a `DatalogRuleSet` ready for execution in the reasoning loop.
-pub async fn extract_datalog_rules<S: Storage>(
-    db: &Db<S>,
+pub async fn extract_datalog_rules(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<DatalogRuleSet> {
     let mut rule_set = DatalogRuleSet::new();
 
     // Create the SID for f:rule predicate
-    let rule_predicate_sid = Sid::new(FLUREE_LEDGER, RULE_LOCAL_NAME);
+    let rule_predicate_sid = Sid::new(FLUREE_DB, RULE_LOCAL_NAME);
 
     // Query PSOT index for all f:rule assertions
     let opts = RangeOptions {
@@ -113,15 +112,11 @@ pub async fn extract_datalog_rules<S: Storage>(
 /// Query-time rules can have two formats:
 /// 1. Direct rule format: `{"where": ..., "insert": ...}`
 /// 2. Stored rule format: `{"@id": "...", "f:rule": {"@value": {"where": ..., "insert": ...}}}`
-fn parse_query_time_rule<S: Storage>(
-    json: &JsonValue,
-    db: &Db<S>,
-    index: usize,
-) -> Result<DatalogRule> {
+fn parse_query_time_rule(json: &JsonValue, db: &Db, index: usize) -> Result<DatalogRule> {
     // Check if this is a stored rule format with f:rule wrapper
     if let Some(f_rule) = json
         .get("f:rule")
-        .or_else(|| json.get("https://ns.flur.ee/ledger#rule"))
+        .or_else(|| json.get(fluree_vocab::fluree::RULE))
     {
         // Extract the actual rule from the @value wrapper
         let rule_value = if let Some(value) = f_rule.get("@value") {
@@ -147,11 +142,7 @@ fn parse_query_time_rule<S: Storage>(
 }
 
 /// Parse a rule definition JSON into a DatalogRule
-fn parse_rule_definition<S: Storage>(
-    rule_id: &Sid,
-    json: &JsonValue,
-    db: &Db<S>,
-) -> Result<DatalogRule> {
+fn parse_rule_definition(rule_id: &Sid, json: &JsonValue, db: &Db) -> Result<DatalogRule> {
     // Extract context for IRI resolution
     let context = json.get("@context").cloned().unwrap_or(JsonValue::Null);
 
@@ -185,10 +176,10 @@ fn parse_rule_definition<S: Storage>(
 /// The where clause can be:
 /// - A single node pattern object: `{"@id": "?x", "ex:age": "?age"}`
 /// - An array of patterns and filters: `[{"@id": "?x", "ex:age": "?age"}, ["filter", "(>= ?age 62)"]]`
-fn parse_where_clause<S: Storage>(
+fn parse_where_clause(
     json: &JsonValue,
     context: &JsonValue,
-    db: &Db<S>,
+    db: &Db,
 ) -> Result<(Vec<RuleTriplePattern>, Vec<RuleFilter>)> {
     let mut patterns = Vec::new();
     let mut filters = Vec::new();
@@ -315,10 +306,10 @@ fn parse_filter_term(s: &str) -> Result<RuleTerm> {
 }
 
 /// Parse a node-map pattern into triple patterns
-fn parse_node_pattern<S: Storage>(
+fn parse_node_pattern(
     map: &serde_json::Map<String, JsonValue>,
     context: &JsonValue,
-    db: &Db<S>,
+    db: &Db,
     patterns: &mut Vec<RuleTriplePattern>,
 ) -> Result<()> {
     // Get subject (@id or generate implicit variable)
@@ -337,7 +328,7 @@ fn parse_node_pattern<S: Storage>(
         if key == "@id" || key == "@context" || key == "@type" {
             if key == "@type" {
                 // Handle @type as rdf:type
-                let type_pred = resolve_iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type", db)?;
+                let type_pred = resolve_iri(fluree_vocab::rdf::TYPE, db)?;
                 let type_obj = parse_term(value, context, db)?;
                 patterns.push(RuleTriplePattern {
                     subject: subject.clone(),
@@ -408,10 +399,10 @@ fn parse_node_pattern<S: Storage>(
 }
 
 /// Parse an object value, handling nested structures
-fn parse_object_value<S: Storage>(
+fn parse_object_value(
     value: &JsonValue,
     context: &JsonValue,
-    db: &Db<S>,
+    db: &Db,
     patterns: &mut Vec<RuleTriplePattern>,
     _parent_subject: &RuleTerm,
     _predicate_sid: &Sid,
@@ -438,7 +429,7 @@ fn parse_object_value<S: Storage>(
 }
 
 /// Parse a JSON value into a RuleTerm
-fn parse_term<S: Storage>(value: &JsonValue, context: &JsonValue, db: &Db<S>) -> Result<RuleTerm> {
+fn parse_term(value: &JsonValue, context: &JsonValue, db: &Db) -> Result<RuleTerm> {
     match value {
         JsonValue::String(s) => {
             if s.starts_with('?') {
@@ -485,10 +476,10 @@ fn parse_term<S: Storage>(value: &JsonValue, context: &JsonValue, db: &Db<S>) ->
 }
 
 /// Parse the insert clause into triple patterns (templates)
-fn parse_insert_patterns<S: Storage>(
+fn parse_insert_patterns(
     json: &JsonValue,
     context: &JsonValue,
-    db: &Db<S>,
+    db: &Db,
 ) -> Result<Vec<RuleTriplePattern>> {
     // Insert patterns use the same format as where patterns (but we ignore any filters)
     let (patterns, _filters) = parse_where_clause(json, context, db)?;
@@ -524,7 +515,7 @@ fn expand_iri(compact: &str, context: &JsonValue) -> Result<String> {
 }
 
 /// Resolve an IRI to a SID
-fn resolve_iri<S: Storage>(iri: &str, db: &Db<S>) -> Result<Sid> {
+fn resolve_iri(iri: &str, db: &Db) -> Result<Sid> {
     // Use the database's IRI encoding
     db.encode_iri(iri)
         .ok_or_else(|| QueryError::InvalidQuery(format!("Failed to encode IRI '{}'", iri)))
@@ -538,9 +529,9 @@ fn resolve_iri<S: Storage>(iri: &str, db: &Db<S>) -> Result<Sid> {
 ///
 /// Finds all bindings that satisfy the rule's where patterns and filters, and returns them.
 /// The bindings can then be used with `execute_rule_with_bindings` to generate flakes.
-pub async fn execute_rule_matching<S: Storage>(
+pub async fn execute_rule_matching(
     rule: &DatalogRule,
-    db: &Db<S>,
+    db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<Vec<Bindings>> {
@@ -683,9 +674,9 @@ fn compare_values(left: &FilterValue, right: &FilterValue, op: CompareOp) -> boo
 ///
 /// If `existing_bindings` is provided, uses those bindings to constrain the pattern.
 /// Returns all binding rows that satisfy the pattern.
-async fn match_pattern<S: Storage>(
+async fn match_pattern(
     pattern: &RuleTriplePattern,
-    db: &Db<S>,
+    db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     existing_bindings: &[Bindings],
@@ -711,9 +702,9 @@ async fn match_pattern<S: Storage>(
 }
 
 /// Match a single pattern with existing bindings, returning extended binding rows
-async fn match_pattern_with_bindings<S: Storage>(
+async fn match_pattern_with_bindings(
     pattern: &RuleTriplePattern,
-    db: &Db<S>,
+    db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     bindings: &Bindings,
@@ -1023,8 +1014,8 @@ pub struct DatalogExecutionResult {
 /// * `to_t` - Time point for queries
 /// * `max_iterations` - Maximum number of fixpoint iterations
 /// * `query_time_rules` - Optional rules provided at query time (JSON-LD format)
-pub async fn execute_datalog_rules<S: Storage>(
-    db: &Db<S>,
+pub async fn execute_datalog_rules(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     max_iterations: usize,
@@ -1036,8 +1027,8 @@ pub async fn execute_datalog_rules<S: Storage>(
 ///
 /// This is the full implementation that supports both database-stored rules
 /// and query-time rules passed as JSON-LD.
-pub async fn execute_datalog_rules_with_query_rules<S: Storage>(
-    db: &Db<S>,
+pub async fn execute_datalog_rules_with_query_rules(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     max_iterations: usize,

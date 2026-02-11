@@ -5,7 +5,6 @@
 
 use fluree_db_core::namespaces::is_rdf_type;
 use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::storage::Storage;
 use fluree_db_core::{
     range_with_overlay, Db, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid,
 };
@@ -144,8 +143,8 @@ pub fn one_of_sid() -> Sid {
 /// (e.g., all owl:SymmetricProperty instances, all owl:Restriction instances)
 ///
 /// Returns flakes of the form: (?entity rdf:type owl:Class)
-pub async fn find_owl_typed_entities<S: Storage>(
-    db: &Db<S>,
+pub async fn find_owl_typed_entities(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     owl_class: &str,
     to_t: i64,

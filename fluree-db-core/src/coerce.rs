@@ -396,7 +396,7 @@ pub fn coerce_json_value(
 
         serde_json::Value::Array(arr) => {
             // Only vectors are supported
-            if datatype_iri == fluree_vocab::fluree::VECTOR {
+            if datatype_iri == fluree_vocab::fluree::EMBEDDING_VECTOR {
                 coerce_array_to_vector(arr)
             } else {
                 Err(CoercionError::incompatible(
@@ -652,16 +652,35 @@ fn coerce_bool_value(b: bool, datatype_iri: &str) -> CoercionResult<FlakeValue> 
     Ok(FlakeValue::Boolean(b))
 }
 
-/// Coerce an array to a vector
+/// Coerce an array to a vector.
+///
+/// **Precision contract**: `f:vector` / `@vector` values are quantized to f32
+/// at ingest. Each JSON number is parsed as f64, then downcast to f32 and
+/// promoted back to f64. This ensures the stored value is exactly
+/// representable in f32, giving a lossless round-trip through the packed
+/// f32 vector arena used for SIMD scoring at query time.
+///
+/// Non-finite values (NaN, ±Infinity) and values outside f32 range are
+/// rejected. Users needing higher-precision numeric arrays can use a custom
+/// datatype (stored as a string literal).
 fn coerce_array_to_vector(arr: &[serde_json::Value]) -> CoercionResult<FlakeValue> {
     let mut vector = Vec::with_capacity(arr.len());
-    for item in arr {
+    for (i, item) in arr.iter().enumerate() {
         match item {
             serde_json::Value::Number(n) => {
                 let f = n.as_f64().ok_or_else(|| {
                     CoercionError::new(format!("Vector element must be a number, got: {}", n))
                 })?;
-                vector.push(f);
+                // Quantize to f32: reject non-finite and out-of-range values.
+                let f32_val = f as f32;
+                if !f32_val.is_finite() {
+                    return Err(CoercionError::new(format!(
+                        "Vector element [{}] is not representable as f32: {}",
+                        i, f
+                    )));
+                }
+                // Store the f32 bit pattern as f64 for exact round-trip.
+                vector.push(f32_val as f64);
             }
             _ => {
                 return Err(CoercionError::new(format!(

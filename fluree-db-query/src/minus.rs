@@ -19,7 +19,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::EmptyOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{StatsView, Storage};
+use fluree_db_core::StatsView;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -27,9 +27,9 @@ use std::sync::Arc;
 ///
 /// For each input row, executes the MINUS patterns with an empty seed (fresh scope).
 /// If any result matches the input row on shared variables, the input row is filtered out.
-pub struct MinusOperator<S: Storage + 'static> {
+pub struct MinusOperator {
     /// Child operator providing input solutions
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// MINUS patterns to execute
     minus_patterns: Vec<Pattern>,
     /// Shared variables (appear in both child schema and MINUS patterns)
@@ -42,7 +42,7 @@ pub struct MinusOperator<S: Storage + 'static> {
     stats: Option<Arc<StatsView>>,
 }
 
-impl<S: Storage + 'static> MinusOperator<S> {
+impl MinusOperator {
     /// Create a new MINUS operator
     ///
     /// # Arguments
@@ -51,7 +51,7 @@ impl<S: Storage + 'static> MinusOperator<S> {
     /// * `minus_patterns` - Patterns to execute for anti-join matching
     /// * `stats` - Optional stats for nested query optimization (Arc for cheap cloning)
     pub fn new(
-        child: BoxedOperator<S>,
+        child: BoxedOperator,
         minus_patterns: Vec<Pattern>,
         stats: Option<Arc<StatsView>>,
     ) -> Self {
@@ -99,18 +99,18 @@ impl<S: Storage + 'static> MinusOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for MinusOperator<S> {
+impl Operator for MinusOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -138,7 +138,7 @@ impl<S: Storage + 'static> Operator<S> for MinusOperator<S> {
             for row_idx in 0..input_batch.len() {
                 // Execute MINUS patterns with empty seed (fresh scope)
                 #[allow(clippy::box_default)]
-                let seed: BoxedOperator<S> = Box::new(EmptyOperator::new());
+                let seed: BoxedOperator = Box::new(EmptyOperator::new());
                 let mut minus_op = build_where_operators_seeded(
                     Some(seed),
                     &self.minus_patterns,
@@ -227,7 +227,7 @@ mod tests {
     fn test_shared_vars_computation() {
         // Create a child with schema [?s, ?name]
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestEmptyWithSchema {
+        let child: BoxedOperator = Box::new(TestEmptyWithSchema {
             schema: child_schema,
         });
 
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn test_minus_schema_preserved() {
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
-        let child: BoxedOperator<fluree_db_core::MemoryStorage> = Box::new(TestEmptyWithSchema {
+        let child: BoxedOperator = Box::new(TestEmptyWithSchema {
             schema: child_schema.clone(),
         });
 
@@ -264,16 +264,16 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static> Operator<S> for TestEmptyWithSchema {
+    impl Operator for TestEmptyWithSchema {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
             Ok(None)
         }
 

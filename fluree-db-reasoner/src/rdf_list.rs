@@ -13,7 +13,6 @@ use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::is_rdf_nil;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
-use fluree_db_core::storage::Storage;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Sid};
 use fluree_vocab::namespaces::RDF;
@@ -59,8 +58,8 @@ const MAX_LIST_LENGTH: usize = 10_000;
 /// ```
 ///
 /// `collect_list_elements(db, overlay, &_:list1, to_t)` returns `[ex:A, ex:B]`
-pub async fn collect_list_elements<S: Storage>(
-    db: &Db<S>,
+pub async fn collect_list_elements(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     list_head: &Sid,
     to_t: i64,
@@ -170,8 +169,8 @@ pub async fn collect_list_elements<S: Storage>(
 /// # Returns
 ///
 /// A vector of FlakeValues representing the list elements.
-pub async fn collect_list_values<S: Storage>(
-    db: &Db<S>,
+pub async fn collect_list_values(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     list_head: &Sid,
     to_t: i64,
@@ -283,8 +282,8 @@ pub async fn collect_list_values<S: Storage>(
 /// ```
 ///
 /// Returns: `[ChainElement::direct(ex:hasParent), ChainElement::inverse(ex:hasChild)]`
-pub async fn collect_chain_elements<S: Storage>(
-    db: &Db<S>,
+pub async fn collect_chain_elements(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     list_head: &Sid,
     to_t: i64,
@@ -384,8 +383,8 @@ pub async fn collect_chain_elements<S: Storage>(
 /// - `_:b2 owl:inverseOf _:b1` where `_:b1 owl:inverseOf P` → `ChainElement { property: P, is_inverse: false }`
 ///
 /// The `depth` parameter tracks recursion to prevent infinite loops on malformed data.
-fn resolve_chain_element<'a, S: Storage>(
-    db: &'a Db<S>,
+fn resolve_chain_element<'a>(
+    db: &'a Db,
     overlay: &'a dyn OverlayProvider,
     element_sid: &'a Sid,
     to_t: i64,
@@ -460,8 +459,8 @@ fn resolve_chain_element<'a, S: Storage>(
 /// # Returns
 ///
 /// A PropertyExpression representing the resolved property.
-pub async fn resolve_property_expression<S: Storage>(
-    db: &Db<S>,
+pub async fn resolve_property_expression(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     property_sid: &Sid,
     to_t: i64,
@@ -470,8 +469,8 @@ pub async fn resolve_property_expression<S: Storage>(
 }
 
 /// Inner implementation with depth tracking for recursion safety.
-fn resolve_property_expression_inner<'a, S: Storage>(
-    db: &'a Db<S>,
+fn resolve_property_expression_inner<'a>(
+    db: &'a Db,
     overlay: &'a dyn OverlayProvider,
     property_sid: &'a Sid,
     to_t: i64,

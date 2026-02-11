@@ -25,7 +25,6 @@ use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::is_rdf_type;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
-use fluree_db_core::storage::Storage;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, Sid};
 use fluree_vocab::namespaces::OWL;
@@ -480,8 +479,8 @@ impl RestrictionIndex {
 ///    - owl:onProperty
 ///    - owl:hasValue / owl:someValuesFrom / owl:allValuesFrom / etc.
 /// 3. Builds a RestrictionIndex for efficient lookup during rule application
-pub async fn extract_restrictions<S: Storage>(
-    db: &Db<S>,
+pub async fn extract_restrictions(
+    db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<RestrictionIndex> {

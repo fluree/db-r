@@ -6,16 +6,15 @@ use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
-use fluree_db_core::Storage;
 use rand::random;
 
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-pub fn eval_abs<S: Storage, R: RowAccess>(
+pub fn eval_abs<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "ABS")?;
     match args[0].eval_to_comparable(row, ctx)? {
@@ -28,10 +27,10 @@ pub fn eval_abs<S: Storage, R: RowAccess>(
     }
 }
 
-pub fn eval_round<S: Storage, R: RowAccess>(
+pub fn eval_round<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "ROUND")?;
     match args[0].eval_to_comparable(row, ctx)? {
@@ -44,10 +43,10 @@ pub fn eval_round<S: Storage, R: RowAccess>(
     }
 }
 
-pub fn eval_ceil<S: Storage, R: RowAccess>(
+pub fn eval_ceil<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "CEIL")?;
     match args[0].eval_to_comparable(row, ctx)? {
@@ -60,10 +59,10 @@ pub fn eval_ceil<S: Storage, R: RowAccess>(
     }
 }
 
-pub fn eval_floor<S: Storage, R: RowAccess>(
+pub fn eval_floor<R: RowAccess>(
     args: &[Expression],
     row: &R,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "FLOOR")?;
     match args[0].eval_to_comparable(row, ctx)? {

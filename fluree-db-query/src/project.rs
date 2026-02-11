@@ -9,21 +9,20 @@ use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 
 /// Project operator - selects and reorders columns from child
-pub struct ProjectOperator<S: Storage + 'static> {
+pub struct ProjectOperator {
     /// Child operator
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Variables to project (in output order)
     vars: Vec<VarId>,
     /// Operator state
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> ProjectOperator<S> {
+impl ProjectOperator {
     /// Create a new project operator
-    pub fn new(child: BoxedOperator<S>, vars: Vec<VarId>) -> Self {
+    pub fn new(child: BoxedOperator, vars: Vec<VarId>) -> Self {
         Self {
             child,
             vars,
@@ -33,12 +32,12 @@ impl<S: Storage + 'static> ProjectOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for ProjectOperator<S> {
+impl Operator for ProjectOperator {
     fn schema(&self) -> &[VarId] {
         &self.vars
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -51,7 +50,7 @@ impl<S: Storage + 'static> Operator<S> for ProjectOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);

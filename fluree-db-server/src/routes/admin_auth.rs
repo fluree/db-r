@@ -13,6 +13,7 @@ use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+#[cfg(not(feature = "oidc"))]
 use fluree_db_credential::{verify_jws, EventsTokenPayload};
 use std::sync::Arc;
 
@@ -60,7 +61,18 @@ pub async fn require_admin_token(
     };
 
     // Verify token and build principal
-    let principal = match verify_admin_token(&token, &admin_auth, &events_auth) {
+    let principal = {
+        #[cfg(feature = "oidc")]
+        {
+            let jwks_cache = state.jwks_cache.as_deref();
+            verify_admin_token(&token, &admin_auth, &events_auth, jwks_cache).await
+        }
+        #[cfg(not(feature = "oidc"))]
+        {
+            verify_admin_token(&token, &admin_auth, &events_auth)
+        }
+    };
+    let principal = match principal {
         Ok(p) => p,
         Err(e) => {
             // Log detailed error but return generic message to client
@@ -83,7 +95,8 @@ pub async fn require_admin_token(
     next.run(request).await
 }
 
-/// Verify admin token and build principal
+/// Verify admin token and build principal (embedded JWK only — non-oidc builds)
+#[cfg(not(feature = "oidc"))]
 fn verify_admin_token(
     token: &str,
     admin_auth: &AdminAuthConfig,
@@ -104,36 +117,78 @@ fn verify_admin_token(
         .map_err(|e| ServerError::unauthorized(e.to_string()))?;
 
     // 4. Check issuer trust
-    if !admin_auth.is_issuer_trusted(&payload.iss, events_auth) {
+    if !admin_auth.is_issuer_trusted(&verified.did, events_auth) {
         return Err(ServerError::unauthorized("Untrusted issuer"));
     }
 
     // 5. Build principal
     let identity = payload.resolve_identity();
     Ok(AdminPrincipal {
-        issuer: payload.iss,
+        issuer: verified.did,
         subject: payload.sub,
         identity,
     })
 }
 
+/// Verify admin token with dual-path dispatch (oidc builds)
+///
+/// Supports both embedded-JWK (Ed25519) and OIDC/JWKS (RS256) tokens,
+/// mirroring the same dual-path dispatch used by data endpoints.
+#[cfg(feature = "oidc")]
+async fn verify_admin_token(
+    token: &str,
+    admin_auth: &AdminAuthConfig,
+    events_auth: &crate::config::EventsAuthConfig,
+    jwks_cache: Option<&crate::jwks::JwksCache>,
+) -> Result<AdminPrincipal, ServerError> {
+    // 1. Dual-path dispatch (reuse shared verify_bearer_token)
+    let verified = crate::token_verify::verify_bearer_token(token, jwks_cache).await?;
+
+    // 2. Path-specific claims validation
+    if verified.is_oidc {
+        // OIDC: validate iss == expected_issuer, exp/nbf
+        // No audience required for admin tokens
+        verified
+            .payload
+            .validate_oidc(None, &verified.issuer, false)
+            .map_err(|e| ServerError::unauthorized(e.to_string()))?;
+        // OIDC trust already verified by JWKS path (only configured issuers' keys work)
+    } else {
+        // Embedded JWK: validate iss == did:key, exp/nbf
+        verified
+            .payload
+            .validate(None, &verified.issuer, false)
+            .map_err(|e| ServerError::unauthorized(e.to_string()))?;
+        // Check did:key trust — use verified.issuer for consistency
+        if !admin_auth.is_issuer_trusted(&verified.issuer, events_auth) {
+            return Err(ServerError::unauthorized("Untrusted issuer"));
+        }
+    }
+
+    // 3. Build principal — use verified.issuer as the authoritative identity
+    let identity = verified.payload.resolve_identity();
+    Ok(AdminPrincipal {
+        issuer: verified.issuer,
+        subject: verified.payload.sub,
+        identity,
+    })
+}
+
+/// Shared test helpers for admin auth tests (both oidc and non-oidc paths)
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::EventsAuthConfig;
+mod test_helpers {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use ed25519_dalek::{Signer, SigningKey};
-    use fluree_db_credential::did_from_pubkey;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn now_secs() -> u64 {
+    pub fn now_secs() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
     }
 
-    fn create_test_token(claims: &serde_json::Value, signing_key: &SigningKey) -> String {
+    pub fn create_test_token(claims: &serde_json::Value, signing_key: &SigningKey) -> String {
         let pubkey = signing_key.verifying_key().to_bytes();
         let pubkey_b64 = URL_SAFE_NO_PAD.encode(pubkey);
 
@@ -155,6 +210,17 @@ mod tests {
 
         format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
     }
+}
+
+/// Tests for non-oidc build path (sync verify_admin_token with 3 params)
+#[cfg(test)]
+#[cfg(not(feature = "oidc"))]
+mod tests {
+    use super::test_helpers::*;
+    use super::*;
+    use crate::config::EventsAuthConfig;
+    use ed25519_dalek::SigningKey;
+    use fluree_db_credential::did_from_pubkey;
 
     #[test]
     fn test_verify_admin_token_trusted_issuer() {
@@ -175,6 +241,7 @@ mod tests {
             mode: AdminAuthMode::Required,
             trusted_issuers: vec![did.clone()],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let events_auth = EventsAuthConfig::default();
@@ -206,6 +273,7 @@ mod tests {
             mode: AdminAuthMode::Required,
             trusted_issuers: vec!["did:key:z6MkOTHER".to_string()],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let events_auth = EventsAuthConfig::default();
@@ -230,11 +298,11 @@ mod tests {
 
         let token = create_test_token(&claims, &signing_key);
 
-        // Admin has no trusted issuers, but events_auth does
         let admin_auth = AdminAuthConfig {
             mode: AdminAuthMode::Required,
             trusted_issuers: vec![],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let events_auth = EventsAuthConfig {
@@ -265,6 +333,7 @@ mod tests {
             mode: AdminAuthMode::Required,
             trusted_issuers: vec![],
             insecure_accept_any_issuer: true,
+            has_jwks_issuers: false,
         };
 
         let events_auth = EventsAuthConfig::default();
@@ -292,6 +361,7 @@ mod tests {
             mode: AdminAuthMode::Required,
             trusted_issuers: vec![did.clone()],
             insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
         };
 
         let events_auth = EventsAuthConfig::default();
@@ -299,5 +369,211 @@ mod tests {
         let result = verify_admin_token(&token, &admin_auth, &events_auth);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("expired"));
+    }
+}
+
+/// Tests for oidc build path (async verify_admin_token with 4 params)
+///
+/// Exercises both the embedded-JWK path (jwks_cache=None) through the async
+/// code path, and OIDC-specific error handling.
+#[cfg(test)]
+#[cfg(feature = "oidc")]
+mod tests_oidc {
+    use super::test_helpers::*;
+    use super::*;
+    use crate::config::EventsAuthConfig;
+    use ed25519_dalek::SigningKey;
+    use fluree_db_credential::did_from_pubkey;
+
+    #[tokio::test]
+    async fn test_verify_admin_token_trusted_issuer() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "admin@example.com",
+            "exp": now_secs() + 3600
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let admin_auth = AdminAuthConfig {
+            mode: AdminAuthMode::Required,
+            trusted_issuers: vec![did.clone()],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let events_auth = EventsAuthConfig::default();
+
+        let result = verify_admin_token(&token, &admin_auth, &events_auth, None).await;
+        assert!(result.is_ok());
+
+        let principal = result.unwrap();
+        assert_eq!(principal.issuer, did);
+        assert_eq!(principal.subject, Some("admin@example.com".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_verify_admin_token_untrusted_issuer() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "admin@example.com",
+            "exp": now_secs() + 3600
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let admin_auth = AdminAuthConfig {
+            mode: AdminAuthMode::Required,
+            trusted_issuers: vec!["did:key:z6MkOTHER".to_string()],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let events_auth = EventsAuthConfig::default();
+
+        let result = verify_admin_token(&token, &admin_auth, &events_auth, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Untrusted issuer"));
+    }
+
+    #[tokio::test]
+    async fn test_verify_admin_token_fallback_to_events_issuers() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "admin@example.com",
+            "exp": now_secs() + 3600
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let admin_auth = AdminAuthConfig {
+            mode: AdminAuthMode::Required,
+            trusted_issuers: vec![],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let events_auth = EventsAuthConfig {
+            trusted_issuers: vec![did.clone()],
+            ..Default::default()
+        };
+
+        let result = verify_admin_token(&token, &admin_auth, &events_auth, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_verify_admin_token_insecure_mode() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "admin@example.com",
+            "exp": now_secs() + 3600
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let admin_auth = AdminAuthConfig {
+            mode: AdminAuthMode::Required,
+            trusted_issuers: vec![],
+            insecure_accept_any_issuer: true,
+            has_jwks_issuers: false,
+        };
+
+        let events_auth = EventsAuthConfig::default();
+
+        let result = verify_admin_token(&token, &admin_auth, &events_auth, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_verify_admin_token_expired() {
+        let secret = [0u8; 32];
+        let signing_key = SigningKey::from_bytes(&secret);
+        let pubkey = signing_key.verifying_key().to_bytes();
+        let did = did_from_pubkey(&pubkey);
+
+        let claims = serde_json::json!({
+            "iss": did,
+            "sub": "admin@example.com",
+            "exp": now_secs() - 120 // Expired 2 minutes ago
+        });
+
+        let token = create_test_token(&claims, &signing_key);
+
+        let admin_auth = AdminAuthConfig {
+            mode: AdminAuthMode::Required,
+            trusted_issuers: vec![did.clone()],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let events_auth = EventsAuthConfig::default();
+
+        let result = verify_admin_token(&token, &admin_auth, &events_auth, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("expired"));
+    }
+
+    /// Test that a token with a kid header (OIDC-style) but no JWKS cache
+    /// returns a clear error about OIDC not being configured.
+    #[tokio::test]
+    async fn test_verify_admin_token_oidc_no_jwks_cache() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        // Create a token with kid header (OIDC-style) instead of embedded JWK
+        let header = serde_json::json!({
+            "alg": "RS256",
+            "kid": "test-key-1",
+            "typ": "JWT"
+        });
+        let claims = serde_json::json!({
+            "iss": "https://auth.example.com",
+            "sub": "admin@example.com",
+            "exp": now_secs() + 3600
+        });
+
+        let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
+        let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
+        // Fake signature — won't get to verification since no JWKS cache
+        let sig_b64 = URL_SAFE_NO_PAD.encode(b"fake-signature");
+        let token = format!("{}.{}.{}", header_b64, payload_b64, sig_b64);
+
+        let admin_auth = AdminAuthConfig {
+            mode: AdminAuthMode::Required,
+            trusted_issuers: vec![],
+            insecure_accept_any_issuer: false,
+            has_jwks_issuers: false,
+        };
+
+        let events_auth = EventsAuthConfig::default();
+
+        let result = verify_admin_token(&token, &admin_auth, &events_auth, None).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("OIDC issuer not configured"),
+            "Expected OIDC-specific error, got: {}",
+            err_msg
+        );
     }
 }
