@@ -19,8 +19,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::filter::evaluate_with_context;
-use crate::ir::FilterExpr;
+use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -34,7 +33,7 @@ pub struct HavingOperator {
     /// Child operator (typically AggregateOperator or GroupByOperator)
     child: BoxedOperator,
     /// Filter expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
     /// Output schema (same as child)
     schema: Arc<[VarId]>,
     /// Operator state
@@ -48,7 +47,7 @@ impl HavingOperator {
     ///
     /// * `child` - Child operator (typically GroupByOperator or AggregateOperator)
     /// * `expr` - Filter expression to evaluate
-    pub fn new(child: BoxedOperator, expr: FilterExpr) -> Self {
+    pub fn new(child: BoxedOperator, expr: Expression) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -102,7 +101,7 @@ impl Operator for HavingOperator {
                 };
 
                 // Evaluate the HAVING expression
-                let passes = evaluate_with_context(&self.expr, &row, ctx)?;
+                let passes = self.expr.eval_to_bool(&row, Some(ctx))?;
 
                 if passes {
                     // Copy this row to output
@@ -134,7 +133,6 @@ impl Operator for HavingOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::CompareOp;
     use crate::seed::SeedOperator;
     use fluree_db_core::{Db, FlakeValue, Sid};
 
@@ -199,11 +197,10 @@ mod tests {
         });
 
         // HAVING ?count > 10
-        let expr = FilterExpr::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(VarId(1))), // ?count
-            right: Box::new(FilterExpr::Const(FilterValue::Long(10))),
-        };
+        let expr = Expression::gt(
+            Expression::Var(VarId(1)), // ?count
+            Expression::Const(FilterValue::Long(10)),
+        );
 
         let mut op = HavingOperator::new(child, expr);
         op.open(&ctx).await.unwrap();
@@ -280,11 +277,10 @@ mod tests {
         });
 
         // HAVING ?count > 100 (no rows match)
-        let expr = FilterExpr::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(VarId(1))),
-            right: Box::new(FilterExpr::Const(FilterValue::Long(100))),
-        };
+        let expr = Expression::gt(
+            Expression::Var(VarId(1)),
+            Expression::Const(FilterValue::Long(100)),
+        );
 
         let mut op = HavingOperator::new(child, expr);
         op.open(&ctx).await.unwrap();
@@ -316,7 +312,7 @@ mod tests {
         let seed: BoxedOperator = Box::new(SeedOperator::from_batch_row(&batch, 0));
 
         // Any expression that passes
-        let expr = FilterExpr::Const(FilterValue::Bool(true));
+        let expr = Expression::Const(FilterValue::Bool(true));
 
         let mut op = HavingOperator::new(seed, expr);
         op.open(&ctx).await.unwrap();

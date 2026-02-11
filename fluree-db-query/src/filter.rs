@@ -1,17 +1,30 @@
 //! Filter operator
 //!
-//! Wraps a child operator and filters rows based on a predicate expression.
+//! This module provides the FilterOperator which wraps a child operator
+//! and filters rows based on a predicate expression.
+//!
+//! # Filter Evaluation Semantics
+//!
+//! This uses **two-valued logic** (true/false), not SQL 3-valued NULL logic:
+//!
+//! - **Unbound variables**: Comparisons involving unbound vars yield `false`
+//! - **Type mismatches**: Comparisons between incompatible types yield `false`
+//!   (except `!=` which yields `true` for mismatched types)
+//! - **NaN**: Comparisons involving NaN yield `false` (except `!=` → `true`)
+//! - **Logical operators**: Standard boolean logic (AND, OR, NOT)
+//!
+//! Note: `NOT(unbound_comparison)` evaluates to `true` because the inner
+//! comparison returns `false`, which is then negated. This differs from
+//! SQL NULL semantics where NULL comparisons propagate.
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::ir::FilterExpr;
+use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use std::sync::Arc;
-
-use super::eval::evaluate_with_context;
 
 /// Filter operator - applies a predicate to each row from child
 ///
@@ -21,7 +34,7 @@ pub struct FilterOperator {
     /// Child operator providing input rows
     child: BoxedOperator,
     /// Filter expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
     /// Output schema (same as child)
     schema: Arc<[VarId]>,
     /// Operator state
@@ -30,7 +43,7 @@ pub struct FilterOperator {
 
 impl FilterOperator {
     /// Create a new filter operator
-    pub fn new(child: BoxedOperator, expr: FilterExpr) -> Self {
+    pub fn new(child: BoxedOperator, expr: Expression) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -41,7 +54,7 @@ impl FilterOperator {
     }
 
     /// Get the filter expression
-    pub fn expr(&self) -> &FilterExpr {
+    pub fn expr(&self) -> &Expression {
         &self.expr
     }
 }
@@ -80,7 +93,8 @@ impl Operator for FilterOperator {
             let keep_indices: Vec<usize> = (0..batch.len())
                 .filter_map(|row_idx| {
                     let row = batch.row_view(row_idx)?;
-                    evaluate_with_context(&self.expr, &row, ctx)
+                    self.expr
+                        .eval_to_bool(&row, Some(ctx))
                         .ok()
                         .filter(|&pass| pass)
                         .map(|_| row_idx)

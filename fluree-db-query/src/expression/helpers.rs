@@ -2,10 +2,10 @@
 //!
 //! Contains arity checks, regex caching, datetime parsing, and other utilities.
 
-use crate::binding::{Binding, RowView};
+use crate::binding::{Binding, RowAccess};
 use crate::context::WellKnownDatatypes;
 use crate::error::{QueryError, Result};
-use crate::ir::FilterExpr;
+use crate::ir::Expression;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone};
 use fluree_db_core::FlakeValue;
 use once_cell::sync::Lazy;
@@ -94,7 +94,7 @@ pub fn build_regex_with_flags(pattern: &str, flags: &str) -> Result<Regex> {
 
 /// Check that a function has the expected number of arguments
 #[inline]
-pub fn check_arity(args: &[FilterExpr], expected: usize, fn_name: &str) -> Result<()> {
+pub fn check_arity(args: &[Expression], expected: usize, fn_name: &str) -> Result<()> {
     if args.len() != expected {
         Err(QueryError::InvalidFilter(format!(
             "{} requires exactly {} argument{}",
@@ -178,7 +178,7 @@ pub fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOf
 // =============================================================================
 
 /// Check if any variables in the expression are unbound
-pub fn has_unbound_vars(expr: &FilterExpr, row: &RowView) -> bool {
+pub fn has_unbound_vars<R: RowAccess>(expr: &Expression, row: &R) -> bool {
     expr.variables().into_iter().any(|var| {
         matches!(
             row.get(var),

@@ -951,8 +951,9 @@ async fn update_where_bind_error_handling_runtime_type_mismatch() {
 
     assert!(run_err.is_err(), "expected runtime bind error");
     if let Err(err) = run_err {
+        // Error should indicate type mismatch for ABS function
         assert!(
-            err.to_string().contains("bind evaluation failed"),
+            err.to_string().contains("ABS requires a numeric argument"),
             "unexpected error: {}",
             err
         );

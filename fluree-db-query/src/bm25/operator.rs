@@ -23,7 +23,7 @@
 //! - The operator is correlated: it consumes a child stream (often an EmptyOperator seed)
 //!   and may read the query target from an input variable.
 
-use crate::binding::{Batch, Binding};
+use crate::binding::{Batch, Binding, RowAccess};
 use crate::bm25::{Analyzer, Bm25Index, Bm25Scorer};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};

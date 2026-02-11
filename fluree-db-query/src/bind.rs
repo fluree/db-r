@@ -12,11 +12,10 @@
 //!
 //! For example, `BIND(?x + 10 AS ?y)` evaluates the expression for each input row and binds the result to `?y`.
 
-use crate::binding::{Batch, Binding};
+use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::Result;
-use crate::filter::{evaluate_to_binding_with_context, evaluate_to_binding_with_context_strict};
-use crate::ir::FilterExpr;
+use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -34,7 +33,7 @@ pub struct BindOperator {
     /// Variable to bind the result to
     var: VarId,
     /// Expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
     /// Output schema (child schema with var added if new)
     schema: Arc<[VarId]>,
     /// Position of var in output schema
@@ -53,7 +52,7 @@ impl BindOperator {
     /// * `child` - Child operator providing input solutions
     /// * `var` - Variable to bind the computed value to
     /// * `expr` - Expression to evaluate
-    pub fn new(child: BoxedOperator, var: VarId, expr: FilterExpr) -> Self {
+    pub fn new(child: BoxedOperator, var: VarId, expr: Expression) -> Self {
         let child_schema = child.schema();
 
         // Check if var already exists in child schema
@@ -134,9 +133,9 @@ impl Operator for BindOperator {
 
                 // Evaluate expression (errors become Unbound)
                 let computed = if ctx.strict_bind_errors {
-                    evaluate_to_binding_with_context_strict(&self.expr, &row_view, Some(ctx))?
+                    self.expr.try_eval_to_binding(&row_view, Some(ctx))?
                 } else {
-                    evaluate_to_binding_with_context(&self.expr, &row_view, Some(ctx))
+                    self.expr.eval_to_binding(&row_view, Some(ctx))
                 };
 
                 // Check clobber prevention if variable already exists
@@ -221,7 +220,7 @@ mod tests {
             schema: child_schema,
         });
 
-        let expr = FilterExpr::Const(FilterValue::Long(42));
+        let expr = Expression::Const(FilterValue::Long(42));
         let op = BindOperator::new(child, VarId(1), expr);
 
         // Output schema should be [?a, ?b]
@@ -239,7 +238,7 @@ mod tests {
             schema: child_schema,
         });
 
-        let expr = FilterExpr::Const(FilterValue::Long(42));
+        let expr = Expression::Const(FilterValue::Long(42));
         let op = BindOperator::new(child, VarId(0), expr);
 
         // Schema should stay [?a, ?b]

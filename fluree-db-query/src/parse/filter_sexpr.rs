@@ -23,7 +23,7 @@
 //! - Quoted strings cannot contain whitespace, parentheses, or escape sequences
 //! - For complex string comparisons, use data expression format instead
 
-use super::ast::{UnresolvedArithmeticOp, UnresolvedCompareOp, UnresolvedFilterExpr};
+use super::ast::{UnresolvedArithmeticOp, UnresolvedCompareOp, UnresolvedExpression};
 use super::error::{ParseError, Result};
 use super::filter_common;
 use super::sexpr_tokenize;
@@ -41,7 +41,7 @@ use std::sync::Arc;
 ///   (e.g., `"Smith Jr"` with a space will not parse correctly)
 /// - For complex string comparisons, use the data expression format instead:
 ///   `["filter", ["=", "?name", "Smith Jr"]]`
-pub fn parse_s_expression(s: &str) -> Result<UnresolvedFilterExpr> {
+pub fn parse_s_expression(s: &str) -> Result<UnresolvedExpression> {
     let s = s.trim();
 
     // Must start with (
@@ -59,7 +59,7 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedFilterExpr> {
 
     if op_lower.as_str() == "in" || op_lower.as_str() == "not-in" || op_lower.as_str() == "notin" {
         let (expr, values) = parse_s_expression_in_args(rest)?;
-        return Ok(UnresolvedFilterExpr::In {
+        return Ok(UnresolvedExpression::In {
             expr: Box::new(expr),
             values,
             negated: op_lower.as_str() != "in",
@@ -70,7 +70,7 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedFilterExpr> {
     let args = parse_s_expression_args(rest)?;
 
     // Helper closure to clone already-parsed expressions
-    let clone_expr = |e: &UnresolvedFilterExpr| -> Result<UnresolvedFilterExpr> { Ok(e.clone()) };
+    let clone_expr = |e: &UnresolvedExpression| -> Result<UnresolvedExpression> { Ok(e.clone()) };
 
     // Convert to filter expression based on operator
     match op_lower.as_str() {
@@ -131,50 +131,50 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedFilterExpr> {
             op,
         ),
         // Function call
-        _ => Ok(UnresolvedFilterExpr::Function {
-            name: Arc::from(op),
+        _ => Ok(UnresolvedExpression::Call {
+            func: Arc::from(op),
             args,
         }),
     }
 }
 
 /// Parse an atom in an S-expression (variable, number, string, boolean)
-fn parse_s_expression_atom(s: &str) -> Result<UnresolvedFilterExpr> {
+fn parse_s_expression_atom(s: &str) -> Result<UnresolvedExpression> {
     let s = s.trim();
 
     // Variable
     if s.starts_with('?') {
-        return Ok(UnresolvedFilterExpr::var(s));
+        return Ok(UnresolvedExpression::var(s));
     }
 
     // Boolean
     if s == "true" {
-        return Ok(UnresolvedFilterExpr::boolean(true));
+        return Ok(UnresolvedExpression::boolean(true));
     }
     if s == "false" {
-        return Ok(UnresolvedFilterExpr::boolean(false));
+        return Ok(UnresolvedExpression::boolean(false));
     }
 
     // Try to parse as number
     if let Ok(i) = s.parse::<i64>() {
-        return Ok(UnresolvedFilterExpr::long(i));
+        return Ok(UnresolvedExpression::long(i));
     }
     if let Ok(f) = s.parse::<f64>() {
-        return Ok(UnresolvedFilterExpr::double(f));
+        return Ok(UnresolvedExpression::double(f));
     }
 
     // String (might be quoted)
     if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
         let unquoted = &s[1..s.len() - 1];
-        return Ok(UnresolvedFilterExpr::string(unquoted));
+        return Ok(UnresolvedExpression::string(unquoted));
     }
 
     // Plain string
-    Ok(UnresolvedFilterExpr::string(s))
+    Ok(UnresolvedExpression::string(s))
 }
 
 /// Parse arguments in an S-expression
-fn parse_s_expression_args(s: &str) -> Result<Vec<UnresolvedFilterExpr>> {
+fn parse_s_expression_args(s: &str) -> Result<Vec<UnresolvedExpression>> {
     let mut args = Vec::new();
     let mut remaining = s.trim();
 
@@ -211,7 +211,7 @@ fn parse_s_expression_args(s: &str) -> Result<Vec<UnresolvedFilterExpr>> {
 /// Format: `expr [val1 val2 ...]`
 fn parse_s_expression_in_args(
     s: &str,
-) -> Result<(UnresolvedFilterExpr, Vec<UnresolvedFilterExpr>)> {
+) -> Result<(UnresolvedExpression, Vec<UnresolvedExpression>)> {
     let mut remaining = s.trim();
     let (expr, rest) = parse_s_expression_arg(remaining)?;
     remaining = rest.trim();
@@ -225,7 +225,7 @@ fn parse_s_expression_in_args(
     let list_expr = &remaining[..=end];
     let values_expr = parse_s_expression_list(list_expr)?;
     let values = match values_expr {
-        UnresolvedFilterExpr::Function { args, .. } => args,
+        UnresolvedExpression::Call { args, .. } => args,
         other => vec![other],
     };
 
@@ -233,7 +233,7 @@ fn parse_s_expression_in_args(
 }
 
 /// Parse a single argument in an S-expression, returning the expression and remaining string
-fn parse_s_expression_arg(s: &str) -> Result<(UnresolvedFilterExpr, &str)> {
+fn parse_s_expression_arg(s: &str) -> Result<(UnresolvedExpression, &str)> {
     let s = s.trim_start();
     if s.is_empty() {
         return Err(ParseError::InvalidFilter("missing argument".to_string()));
@@ -259,7 +259,7 @@ fn parse_s_expression_arg(s: &str) -> Result<(UnresolvedFilterExpr, &str)> {
 }
 
 /// Parse a bracketed list `[...]` as a function call with name "list"
-fn parse_s_expression_list(s: &str) -> Result<UnresolvedFilterExpr> {
+fn parse_s_expression_list(s: &str) -> Result<UnresolvedExpression> {
     let s = s.trim();
     if !s.starts_with('[') || !s.ends_with(']') {
         return Err(ParseError::InvalidFilter(
@@ -268,8 +268,8 @@ fn parse_s_expression_list(s: &str) -> Result<UnresolvedFilterExpr> {
     }
     let inner = &s[1..s.len() - 1];
     let args = parse_s_expression_args(inner)?;
-    Ok(UnresolvedFilterExpr::Function {
-        name: Arc::from("list"),
+    Ok(UnresolvedExpression::Call {
+        func: Arc::from("list"),
         args,
     })
 }
@@ -282,7 +282,7 @@ mod tests {
     fn test_parse_simple_comparison() {
         let expr = parse_s_expression("(> ?age 18)").unwrap();
         match expr {
-            UnresolvedFilterExpr::Compare { op, .. } => {
+            UnresolvedExpression::Compare { op, .. } => {
                 assert_eq!(op, UnresolvedCompareOp::Gt);
             }
             _ => panic!("Expected comparison"),
@@ -293,7 +293,7 @@ mod tests {
     fn test_parse_logical_and() {
         let expr = parse_s_expression("(and (> ?x 10) (< ?y 20))").unwrap();
         match expr {
-            UnresolvedFilterExpr::And(exprs) => {
+            UnresolvedExpression::And(exprs) => {
                 assert_eq!(exprs.len(), 2);
             }
             _ => panic!("Expected AND"),
@@ -304,7 +304,7 @@ mod tests {
     fn test_parse_atom_variable() {
         let expr = parse_s_expression_atom("?name").unwrap();
         match expr {
-            UnresolvedFilterExpr::Var(name) => {
+            UnresolvedExpression::Var(name) => {
                 assert_eq!(name.as_ref(), "?name");
             }
             _ => panic!("Expected variable"),
@@ -315,7 +315,7 @@ mod tests {
     fn test_parse_atom_boolean() {
         let expr = parse_s_expression_atom("true").unwrap();
         match expr {
-            UnresolvedFilterExpr::Const(_) => {}
+            UnresolvedExpression::Const(_) => {}
             _ => panic!("Expected constant"),
         }
     }
@@ -324,7 +324,7 @@ mod tests {
     fn test_parse_atom_number() {
         let expr = parse_s_expression_atom("42").unwrap();
         match expr {
-            UnresolvedFilterExpr::Const(_) => {}
+            UnresolvedExpression::Const(_) => {}
             _ => panic!("Expected constant"),
         }
     }
@@ -333,7 +333,7 @@ mod tests {
     fn test_parse_in_operator() {
         let expr = parse_s_expression("(in ?status [\"active\" \"pending\"])").unwrap();
         match expr {
-            UnresolvedFilterExpr::In {
+            UnresolvedExpression::In {
                 negated, values, ..
             } => {
                 assert!(!negated);
@@ -347,8 +347,8 @@ mod tests {
     fn test_parse_function_call() {
         let expr = parse_s_expression("(strlen ?name)").unwrap();
         match expr {
-            UnresolvedFilterExpr::Function { name, args } => {
-                assert_eq!(name.as_ref(), "strlen");
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "strlen");
                 assert_eq!(args.len(), 1);
             }
             _ => panic!("Expected function call"),
@@ -359,7 +359,7 @@ mod tests {
     fn test_parse_arithmetic() {
         let expr = parse_s_expression("(+ ?x 5)").unwrap();
         match expr {
-            UnresolvedFilterExpr::Arithmetic { op, .. } => {
+            UnresolvedExpression::Arithmetic { op, .. } => {
                 assert_eq!(op, UnresolvedArithmeticOp::Add);
             }
             _ => panic!("Expected arithmetic"),
@@ -370,7 +370,7 @@ mod tests {
     fn test_parse_unary_negation() {
         let expr = parse_s_expression("(- ?x)").unwrap();
         match expr {
-            UnresolvedFilterExpr::Negate(_) => {}
+            UnresolvedExpression::Negate(_) => {}
             _ => panic!("Expected negation"),
         }
     }

@@ -118,11 +118,11 @@ Understand join strategies:
 
 ### Filter Application
 
-See where filters are applied:
+Filters are automatically optimized by the query engine:
 
-- **Index Pushdown**: Filters applied during index scan
-- **Post-Scan**: Filters applied after scan
-- **Post-Join**: Filters applied after joins
+- **Dependency-Based Placement**: Filters are applied as soon as all their required variables are bound, regardless of where they appear in the query
+- **Index Pushdown**: Range-safe filters (comparisons on indexed properties) are pushed down to the index scan
+- **Inline Evaluation**: Filters are evaluated during scan/join operations when possible, reducing operator overhead
 
 ## Optimization Tips
 

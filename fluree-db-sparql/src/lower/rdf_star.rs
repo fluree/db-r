@@ -7,7 +7,7 @@ use crate::ast::term::{ObjectTerm, PredicateTerm, SubjectTerm, Term as SparqlTer
 use crate::ast::TriplePattern as SparqlTriplePattern;
 use crate::span::SourceSpan;
 
-use fluree_db_query::ir::{FilterExpr, FunctionName as IrFunctionName, Pattern};
+use fluree_db_query::ir::{Expression, Function, Pattern};
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::pattern::{Term, TriplePattern};
 use fluree_db_query::var_registry::VarId;
@@ -80,20 +80,14 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                         let bound_var = self.lower_object_to_var(&tp.object)?;
                         result.push(Pattern::Bind {
                             var: bound_var,
-                            expr: FilterExpr::Function {
-                                name: IrFunctionName::T,
-                                args: vec![FilterExpr::Var(object_var)],
-                            },
+                            expr: Expression::call(Function::T, vec![Expression::Var(object_var)]),
                         });
                     } else if predicate_iri == fluree::DB_OP {
                         // f:op annotation - bind op() function result
                         let bound_var = self.lower_object_to_var(&tp.object)?;
                         result.push(Pattern::Bind {
                             var: bound_var,
-                            expr: FilterExpr::Function {
-                                name: IrFunctionName::Op,
-                                args: vec![FilterExpr::Var(object_var)],
-                            },
+                            expr: Expression::call(Function::Op, vec![Expression::Var(object_var)]),
                         });
                     } else {
                         // Other predicates on quoted triples are not supported

@@ -534,6 +534,35 @@ impl Binding {
     }
 }
 
+/// Compute the Effective Boolean Value (EBV) of a Binding.
+///
+/// EBV is used in SPARQL FILTER and conditional expressions.
+/// See: <https://www.w3.org/TR/sparql11-query/#ebv>
+///
+/// - Bound values (Sid, IriMatch, Iri, Lit, Encoded*) are truthy
+/// - Lit with Boolean(false) is falsy
+/// - Unbound and Poisoned are falsy
+/// - Grouped is falsy (should not appear in filter evaluation)
+impl From<&Binding> for bool {
+    fn from(binding: &Binding) -> bool {
+        match binding {
+            Binding::Lit {
+                val: FlakeValue::Boolean(b),
+                ..
+            } => *b,
+            Binding::Lit { .. } => true,
+            Binding::EncodedLit { .. } => true,
+            Binding::Sid(_) => true,
+            Binding::IriMatch { .. } => true,
+            Binding::Iri(_) => true,
+            Binding::EncodedSid { .. } => true,
+            Binding::EncodedPid { .. } => true,
+            Binding::Unbound | Binding::Poisoned => false,
+            Binding::Grouped(_) => false,
+        }
+    }
+}
+
 impl PartialEq for Binding {
     /// Equality for bindings - used for joins, DISTINCT, GROUP BY, etc.
     ///
@@ -1028,6 +1057,19 @@ impl<'a> BatchView<'a> {
     }
 }
 
+/// Trait for types that provide access to bindings by variable ID.
+///
+/// This abstraction allows expression evaluation to work with both:
+/// - `RowView` - a view into a batch row
+/// - `BindingRow` - a lightweight view over a slice of bindings
+///
+/// Using this trait enables pre-batch filtering where we evaluate filters
+/// on bindings before constructing a full batch.
+pub trait RowAccess {
+    /// Get a binding by variable ID.
+    fn get(&self, var: VarId) -> Option<&Binding>;
+}
+
 /// Zero-copy view of a single row in a batch
 #[derive(Debug, Clone, Copy)]
 pub struct RowView<'a> {
@@ -1035,20 +1077,16 @@ pub struct RowView<'a> {
     row: usize,
 }
 
-impl<'a> RowView<'a> {
-    /// Get binding by VarId
-    pub fn get(&self, var: VarId) -> Option<&'a Binding> {
+impl<'a> RowAccess for RowView<'a> {
+    fn get(&self, var: VarId) -> Option<&Binding> {
         self.batch.get(self.row, var)
     }
+}
 
+impl<'a> RowView<'a> {
     /// Get binding by column index
     pub fn get_by_col(&self, col: usize) -> Option<&'a Binding> {
         self.batch.columns.get(col)?.get(self.row)
-    }
-
-    /// Get the schema
-    pub fn schema(&self) -> &[VarId] {
-        self.batch.schema()
     }
 
     /// Get the row index
@@ -1063,6 +1101,41 @@ impl<'a> RowView<'a> {
             .iter()
             .map(|col| col[self.row].clone())
             .collect()
+    }
+}
+
+/// Lightweight view over a slice of bindings for pre-batch filter evaluation.
+///
+/// This struct enables evaluating filter expressions on bindings before they're
+/// added to a batch, avoiding allocations for rows that will be filtered out.
+#[derive(Debug, Clone, Copy)]
+pub struct BindingRow<'a> {
+    schema: &'a [VarId],
+    bindings: &'a [Binding],
+}
+
+impl<'a> BindingRow<'a> {
+    /// Create a new binding row view.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `schema.len() != bindings.len()`.
+    pub fn new(schema: &'a [VarId], bindings: &'a [Binding]) -> Self {
+        debug_assert_eq!(
+            schema.len(),
+            bindings.len(),
+            "schema and bindings must have same length"
+        );
+        Self { schema, bindings }
+    }
+}
+
+impl<'a> RowAccess for BindingRow<'a> {
+    fn get(&self, var: VarId) -> Option<&Binding> {
+        self.schema
+            .iter()
+            .position(|&v| v == var)
+            .and_then(|idx| self.bindings.get(idx))
     }
 }
 
