@@ -13,13 +13,13 @@ use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
-use tracing::Instrument;
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{ObjectBounds, Sid, BATCHED_JOIN_SIZE};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Create a right-side scan operator for a join.
 ///

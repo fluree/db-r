@@ -378,7 +378,7 @@ impl FileNameService {
         let parent_span = tracing::Span::current();
         tokio::task::spawn_blocking(move || -> Result<()> {
             let _guard = parent_span.enter(); // safe: spawn_blocking pins to one thread
-            // Lock file lives alongside the target.
+                                              // Lock file lives alongside the target.
             let lock_path = {
                 let mut p = path.clone();
                 let file_name = p

@@ -1374,9 +1374,9 @@ where
         let _guard = parent_span.enter();
         precompute_language_dict(&run_dir_for_lang)
     })
-        .await
-        .map_err(|e| ImportError::IndexBuild(format!("lang dict task panicked: {}", e)))?
-        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+    .await
+    .map_err(|e| ImportError::IndexBuild(format!("lang dict task panicked: {}", e)))?
+    .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
     // Start dict upload (reads flat files from run_dir, builds CoW trees, uploads to CAS).
     // This runs concurrently with the index build below.

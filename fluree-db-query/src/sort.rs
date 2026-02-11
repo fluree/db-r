@@ -13,8 +13,8 @@ use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::cmp::Ordering;
 use std::sync::Arc;
-use tracing::Instrument;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Materialize an encoded binding to its decoded form for sort comparison.
 ///
@@ -413,7 +413,8 @@ impl Operator for SortOperator {
                     };
 
                     input_batches += 1;
-                    let build_span = tracing::info_span!("sort_build_rows_batch", rows = batch.len());
+                    let build_span =
+                        tracing::info_span!("sort_build_rows_batch", rows = batch.len());
                     let build_start = Instant::now();
                     let _bg = build_span.enter();
                     for row_idx in 0..batch.len() {

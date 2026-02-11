@@ -58,17 +58,17 @@ pub async fn stats(
 ) -> Json<StatsResponse> {
     let span = tracing::info_span!("stats");
     async move {
-    let _span = tracing::Span::current();
+        let _span = tracing::Span::current();
 
-    tracing::info!("server stats requested");
+        tracing::info!("server stats requested");
 
-    Json(StatsResponse {
-        uptime_secs: state.uptime_secs(),
-        storage_type: state.config.storage_type_str(),
-        indexing_enabled: state.config.indexing_enabled,
-        cached_ledgers: state.fluree.cached_ledger_count().await,
-        version: env!("CARGO_PKG_VERSION"),
-    })
+        Json(StatsResponse {
+            uptime_secs: state.uptime_secs(),
+            storage_type: state.config.storage_type_str(),
+            indexing_enabled: state.config.indexing_enabled,
+            cached_ledgers: state.fluree.cached_ledger_count().await,
+            version: env!("CARGO_PKG_VERSION"),
+        })
     }
     .instrument(span)
     .await
