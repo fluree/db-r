@@ -638,17 +638,37 @@ fluree-server --help
 
 ## Best Practices
 
-### 1. Use Environment Variables for Secrets
+### 1. Keep Secrets Out of Config Files
 
-Don't pass tokens on the command line:
+Tokens and credentials should not be stored as plaintext in config files (which may be committed to version control or readable by other processes). Three options, in order of preference:
+
+**Environment variables** (recommended for production):
 
 ```bash
-# Good - use @filepath syntax
---peer-events-token @/etc/fluree/token.jwt
-
-# Good - use environment variable
 export FLUREE_PEER_EVENTS_TOKEN=$(cat /etc/fluree/token.jwt)
+export FLUREE_STORAGE_PROXY_TOKEN=$(cat /etc/fluree/proxy-token.jwt)
 ```
+
+**`@filepath` references** in config files or CLI flags (reads the file at startup):
+
+```toml
+[server.peer]
+events_token = "@/etc/fluree/peer-token.jwt"
+storage_proxy_token = "@/etc/fluree/proxy-token.jwt"
+```
+
+```bash
+--peer-events-token @/etc/fluree/token.jwt
+```
+
+**Direct values** (development only): If a secret-bearing field contains a literal token in the config file, the server logs a warning at startup recommending `@filepath` or env vars.
+
+The following config file fields support `@filepath` resolution:
+
+| Config file key | Env var alternative |
+|---|---|
+| `peer.events_token` | `FLUREE_PEER_EVENTS_TOKEN` |
+| `peer.storage_proxy_token` | `FLUREE_STORAGE_PROXY_TOKEN` |
 
 ### 2. Enable Admin Auth in Production
 

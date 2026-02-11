@@ -473,6 +473,57 @@ fn merge_data_auth(base: &mut Option<DataAuthFileConfig>, overlay: &Option<DataA
 // Apply file config to ServerConfig (value_source gating)
 // ---------------------------------------------------------------------------
 
+/// All clap arg IDs referenced by `apply_to_server_config`.
+///
+/// This list is validated by `test_config_file_arg_ids_match_server_config`
+/// to ensure every ID actually exists in `ServerConfig`'s clap definition.
+/// When adding new config file fields, add the arg ID here AND in the
+/// `apply_to_server_config` function body.
+pub const CONFIG_FILE_ARG_IDS: &[&str] = &[
+    "listen_addr",
+    "storage_path",
+    "log_level",
+    "cors_enabled",
+    "body_limit",
+    "cache_max_entries",
+    "indexing_enabled",
+    "reindex_min_bytes",
+    "reindex_max_bytes",
+    "events_auth_mode",
+    "events_auth_audience",
+    "events_auth_trusted_issuers",
+    "data_auth_mode",
+    "data_auth_audience",
+    "data_auth_trusted_issuers",
+    "data_auth_default_policy_class",
+    "admin_auth_mode",
+    "admin_auth_trusted_issuers",
+    "server_role",
+    "tx_server_url",
+    "peer_events_url",
+    "peer_events_token",
+    "peer_subscribe_all",
+    "peer_ledgers",
+    "peer_graph_sources",
+    "storage_access_mode",
+    "storage_proxy_token",
+    "storage_proxy_token_file",
+    "peer_reconnect_initial_ms",
+    "peer_reconnect_max_ms",
+    "peer_reconnect_multiplier",
+    "mcp_enabled",
+    "mcp_auth_trusted_issuers",
+    "storage_proxy_enabled",
+    "storage_proxy_trusted_issuers",
+    "storage_proxy_default_identity",
+    "storage_proxy_default_policy_class",
+    "storage_proxy_debug_headers",
+];
+
+/// Arg IDs that are only available when the `oidc` feature is enabled.
+#[cfg(feature = "oidc")]
+pub const CONFIG_FILE_ARG_IDS_OIDC: &[&str] = &["jwks_issuers", "jwks_cache_ttl"];
+
 /// Apply config file values to a `ServerConfig`, but only for fields where
 /// the user did NOT provide a CLI argument or environment variable.
 ///
@@ -657,7 +708,25 @@ pub fn apply_to_server_config(
         }
         if is_default("peer_events_token") {
             if let Some(ref v) = peer.events_token {
-                config.peer_events_token = Some(v.clone());
+                match server_defaults::resolve_at_filepath(v) {
+                    Ok(resolved) => {
+                        if server_defaults::is_plaintext_secret(v) {
+                            warn!(
+                                "peer.events_token is stored as plaintext in the config file. \
+                                 Consider using @filepath (e.g. \"@/etc/fluree/token.jwt\") \
+                                 or the FLUREE_PEER_EVENTS_TOKEN env var instead."
+                            );
+                        }
+                        config.peer_events_token = Some(resolved);
+                    }
+                    Err(e) => {
+                        warn!(
+                            field = "peer.events_token",
+                            error = %e,
+                            "Failed to read @filepath for peer events token"
+                        );
+                    }
+                }
             }
         }
         if is_default("peer_subscribe_all") {
@@ -684,7 +753,25 @@ pub fn apply_to_server_config(
         }
         if is_default("storage_proxy_token") {
             if let Some(ref v) = peer.storage_proxy_token {
-                config.storage_proxy_token = Some(v.clone());
+                match server_defaults::resolve_at_filepath(v) {
+                    Ok(resolved) => {
+                        if server_defaults::is_plaintext_secret(v) {
+                            warn!(
+                                "peer.storage_proxy_token is stored as plaintext in the config file. \
+                                 Consider using @filepath (e.g. \"@/etc/fluree/token.jwt\") \
+                                 or the FLUREE_STORAGE_PROXY_TOKEN env var instead."
+                            );
+                        }
+                        config.storage_proxy_token = Some(resolved);
+                    }
+                    Err(e) => {
+                        warn!(
+                            field = "peer.storage_proxy_token",
+                            error = %e,
+                            "Failed to read @filepath for storage proxy token"
+                        );
+                    }
+                }
             }
         }
         if is_default("storage_proxy_token_file") {
@@ -1053,5 +1140,36 @@ auto_pull = true
         let dev = profiles.get("dev").unwrap();
         let dev_server = dev.server.as_ref().unwrap();
         assert_eq!(dev_server.log_level.as_deref(), Some("debug"));
+    }
+
+    /// Verify that every arg ID referenced by `apply_to_server_config` (via
+    /// `CONFIG_FILE_ARG_IDS`) actually exists in the clap definition of
+    /// `ServerConfig`. This catches silent breakage when fields are renamed.
+    #[test]
+    fn test_config_file_arg_ids_match_server_config() {
+        use clap::CommandFactory;
+
+        let cmd = ServerConfig::command();
+        let known_args: Vec<&str> = cmd
+            .get_arguments()
+            .map(|arg| arg.get_id().as_str())
+            .collect();
+
+        for id in CONFIG_FILE_ARG_IDS {
+            assert!(
+                known_args.contains(id),
+                "CONFIG_FILE_ARG_IDS contains '{id}' which does not exist in \
+                 ServerConfig's clap definition. Did a field get renamed?"
+            );
+        }
+
+        #[cfg(feature = "oidc")]
+        for id in CONFIG_FILE_ARG_IDS_OIDC {
+            assert!(
+                known_args.contains(id),
+                "CONFIG_FILE_ARG_IDS_OIDC contains '{id}' which does not exist in \
+                 ServerConfig's clap definition. Did a field get renamed?"
+            );
+        }
     }
 }

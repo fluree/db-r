@@ -120,6 +120,30 @@ pub struct ConfigDetection {
     pub both_exist: bool,
 }
 
+// ── Secret resolution ───────────────────────────────────────────────
+
+/// Resolve a config value that may be an `@filepath` reference.
+///
+/// If the value starts with `@`, the remainder is treated as a file path;
+/// the file is read and its contents returned (trimmed of leading/trailing
+/// whitespace). Otherwise the value is returned as-is.
+///
+/// This is the same convention used by CLI flags like `--peer-events-token`.
+pub fn resolve_at_filepath(value: &str) -> Result<String, std::io::Error> {
+    if let Some(path) = value.strip_prefix('@') {
+        let content = std::fs::read_to_string(path)?;
+        Ok(content.trim().to_string())
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+/// Returns `true` if `value` looks like a plaintext secret (not an
+/// `@filepath` reference and not empty).
+pub fn is_plaintext_secret(value: &str) -> bool {
+    !value.is_empty() && !value.starts_with('@')
+}
+
 // ── Template generation ─────────────────────────────────────────────
 
 /// Generate a commented-out TOML config template using the canonical
@@ -183,6 +207,7 @@ pub fn generate_config_template() -> String {
 # [server.peer]
 # role = "{peer_role}"               # transaction, peer
 # # tx_server_url = "http://tx.internal:8090"
+# # events_token = "@/etc/fluree/peer-token.jwt"  # use @filepath for secrets
 # # subscribe_all = false
 # # ledgers = ["books:main"]
 # # graph_sources = []
@@ -393,5 +418,36 @@ mod tests {
         let jsonld = generate_config_template_for(ConfigFormat::JsonLd);
         let v: serde_json::Value = serde_json::from_str(&jsonld).unwrap();
         assert!(v.get("@context").is_some());
+    }
+
+    #[test]
+    fn resolve_at_filepath_passthrough() {
+        assert_eq!(resolve_at_filepath("plain-value").unwrap(), "plain-value");
+        assert_eq!(resolve_at_filepath("").unwrap(), "");
+    }
+
+    #[test]
+    fn resolve_at_filepath_reads_file() {
+        let dir = std::env::temp_dir().join("fluree-test-at-filepath");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secret.txt");
+        std::fs::write(&path, "  my-secret-token\n").unwrap();
+
+        let value = format!("@{}", path.display());
+        assert_eq!(resolve_at_filepath(&value).unwrap(), "my-secret-token");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_at_filepath_missing_file() {
+        assert!(resolve_at_filepath("@/nonexistent/path/token.txt").is_err());
+    }
+
+    #[test]
+    fn is_plaintext_secret_detection() {
+        assert!(is_plaintext_secret("eyJhbGciOiJFZDI1NTE5..."));
+        assert!(!is_plaintext_secret("@/etc/fluree/token.jwt"));
+        assert!(!is_plaintext_secret(""));
     }
 }
