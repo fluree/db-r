@@ -4,9 +4,9 @@ Fluree server is configured via a configuration file, command-line flags, and en
 
 ## Configuration Methods
 
-### Configuration File (TOML or JSON)
+### Configuration File (TOML, JSON, or JSON-LD)
 
-The server reads configuration from `.fluree/config.toml` — the same file used by the Fluree CLI. Server settings live under the `[server]` section. The server walks up from the current working directory looking for `.fluree/config.toml`, falling back to `~/.fluree/config.toml`.
+The server reads configuration from `.fluree/config.toml` (or `.fluree/config.jsonld`) — the same file used by the Fluree CLI. Server settings live under the `[server]` section (or `"server"` key in JSON/JSON-LD). The server walks up from the current working directory looking for `.fluree/config.toml` or `.fluree/config.jsonld`, falling back to `~/.fluree/config.{toml,jsonld}`.
 
 ```bash
 # Use default config file discovery
@@ -49,6 +49,45 @@ JSON is also supported (detected by `.json` file extension):
   }
 }
 ```
+
+#### JSON-LD Format
+
+JSON-LD config files (`.jsonld` extension) add a `@context` that maps config keys to the Fluree config vocabulary (`https://ns.flur.ee/config#`), making the file valid JSON-LD. Generate one with:
+
+```bash
+fluree init --format jsonld
+```
+
+Example `.fluree/config.jsonld`:
+
+```json
+{
+  "@context": {
+    "@vocab": "https://ns.flur.ee/config#"
+  },
+  "_comment": "Fluree Configuration — JSON-LD format.",
+  "server": {
+    "listen_addr": "0.0.0.0:8090",
+    "storage_path": ".fluree/storage",
+    "log_level": "info",
+    "indexing": {
+      "enabled": false,
+      "reindex_min_bytes": 100000,
+      "reindex_max_bytes": 1000000
+    }
+  },
+  "profiles": {
+    "prod": {
+      "server": {
+        "log_level": "warn",
+        "indexing": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+The `@context` is validated at load time (using the JSON-LD parser) but does not affect config value resolution — `serde` ignores unknown keys like `@context` and `_comment`. If both `config.toml` and `config.jsonld` exist in the same directory, TOML takes precedence and a warning is logged.
 
 ### Profiles
 
@@ -557,33 +596,33 @@ fluree-server \
 
 ## Environment Variables Reference
 
-| Variable                                | Description                    | Default                                 |
-| --------------------------------------- | ------------------------------ | --------------------------------------- |
-| `FLUREE_CONFIG`                         | Config file path               | `.fluree/config.toml` (auto-discovered) |
-| `FLUREE_PROFILE`                        | Configuration profile name     | None                                    |
-| `FLUREE_LISTEN_ADDR`                    | Server address:port            | `0.0.0.0:8090`                          |
-| `FLUREE_STORAGE_PATH`                   | File storage path              | `.fluree/storage`                       |
-| `FLUREE_CORS_ENABLED`                   | Enable CORS                    | `true`                                  |
-| `FLUREE_INDEXING_ENABLED`               | Enable background indexing     | `false`                                 |
-| `FLUREE_REINDEX_MIN_BYTES`              | Soft reindex threshold (bytes) | `100000`                                |
-| `FLUREE_REINDEX_MAX_BYTES`              | Hard reindex threshold (bytes) | `1000000`                               |
-| `FLUREE_CACHE_MAX_ENTRIES`              | Cache size per ledger          | `10000`                                 |
-| `FLUREE_BODY_LIMIT`                     | Max request body bytes         | `52428800`                              |
-| `FLUREE_LOG_LEVEL`                      | Log level                      | `info`                                  |
-| `FLUREE_SERVER_ROLE`                    | Server role                    | `transaction`                           |
-| `FLUREE_TX_SERVER_URL`                  | Transaction server URL         | None                                    |
-| `FLUREE_EVENTS_AUTH_MODE`               | Events auth mode               | `none`                                  |
-| `FLUREE_EVENTS_AUTH_TRUSTED_ISSUERS`    | Events trusted issuers         | None                                    |
-| `FLUREE_DATA_AUTH_MODE`                 | Data API auth mode             | `none`                                  |
-| `FLUREE_DATA_AUTH_AUDIENCE`             | Data API expected audience     | None                                    |
-| `FLUREE_DATA_AUTH_TRUSTED_ISSUERS`      | Data API trusted issuers       | None                                    |
-| `FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS` | Data API default policy class  | None                                    |
-| `FLUREE_ADMIN_AUTH_MODE`                | Admin auth mode                | `none`                                  |
-| `FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS`     | Admin trusted issuers          | None                                    |
-| `FLUREE_MCP_ENABLED`                    | Enable MCP endpoint            | `false`                                 |
-| `FLUREE_MCP_AUTH_TRUSTED_ISSUERS`       | MCP trusted issuers            | None                                    |
-| `FLUREE_STORAGE_ACCESS_MODE`            | Peer storage mode              | `shared`                                |
-| `FLUREE_STORAGE_PROXY_ENABLED`          | Enable storage proxy           | `false`                                 |
+| Variable                                | Description                    | Default                                          |
+| --------------------------------------- | ------------------------------ | ------------------------------------------------ |
+| `FLUREE_CONFIG`                         | Config file path               | `.fluree/config.{toml,jsonld}` (auto-discovered) |
+| `FLUREE_PROFILE`                        | Configuration profile name     | None                                             |
+| `FLUREE_LISTEN_ADDR`                    | Server address:port            | `0.0.0.0:8090`                                   |
+| `FLUREE_STORAGE_PATH`                   | File storage path              | `.fluree/storage`                                |
+| `FLUREE_CORS_ENABLED`                   | Enable CORS                    | `true`                                           |
+| `FLUREE_INDEXING_ENABLED`               | Enable background indexing     | `false`                                          |
+| `FLUREE_REINDEX_MIN_BYTES`              | Soft reindex threshold (bytes) | `100000`                                         |
+| `FLUREE_REINDEX_MAX_BYTES`              | Hard reindex threshold (bytes) | `1000000`                                        |
+| `FLUREE_CACHE_MAX_ENTRIES`              | Cache size per ledger          | `10000`                                          |
+| `FLUREE_BODY_LIMIT`                     | Max request body bytes         | `52428800`                                       |
+| `FLUREE_LOG_LEVEL`                      | Log level                      | `info`                                           |
+| `FLUREE_SERVER_ROLE`                    | Server role                    | `transaction`                                    |
+| `FLUREE_TX_SERVER_URL`                  | Transaction server URL         | None                                             |
+| `FLUREE_EVENTS_AUTH_MODE`               | Events auth mode               | `none`                                           |
+| `FLUREE_EVENTS_AUTH_TRUSTED_ISSUERS`    | Events trusted issuers         | None                                             |
+| `FLUREE_DATA_AUTH_MODE`                 | Data API auth mode             | `none`                                           |
+| `FLUREE_DATA_AUTH_AUDIENCE`             | Data API expected audience     | None                                             |
+| `FLUREE_DATA_AUTH_TRUSTED_ISSUERS`      | Data API trusted issuers       | None                                             |
+| `FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS` | Data API default policy class  | None                                             |
+| `FLUREE_ADMIN_AUTH_MODE`                | Admin auth mode                | `none`                                           |
+| `FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS`     | Admin trusted issuers          | None                                             |
+| `FLUREE_MCP_ENABLED`                    | Enable MCP endpoint            | `false`                                          |
+| `FLUREE_MCP_AUTH_TRUSTED_ISSUERS`       | MCP trusted issuers            | None                                             |
+| `FLUREE_STORAGE_ACCESS_MODE`            | Peer storage mode              | `shared`                                         |
+| `FLUREE_STORAGE_PROXY_ENABLED`          | Enable storage proxy           | `false`                                          |
 
 ## Command-Line Reference
 

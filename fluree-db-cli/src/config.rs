@@ -5,8 +5,47 @@ use std::path::{Path, PathBuf};
 const FLUREE_DIR: &str = ".fluree";
 const ACTIVE_FILE: &str = "active";
 const STORAGE_DIR: &str = "storage";
-const CONFIG_FILE: &str = "config.toml";
+const CONFIG_FILE_TOML: &str = "config.toml";
+const CONFIG_FILE_JSONLD: &str = "config.jsonld";
 const PREFIXES_FILE: &str = "prefixes.json";
+
+/// Detected config file format within a `.fluree/` directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFileFormat {
+    Toml,
+    JsonLd,
+}
+
+/// Detect which config file exists in a `.fluree/` directory.
+///
+/// Checks for `config.toml` first, then `config.jsonld`. If both exist,
+/// TOML wins and a warning is printed to stderr.
+///
+/// Returns `None` if neither file exists.
+pub fn detect_config_file(fluree_dir: &Path) -> Option<(PathBuf, ConfigFileFormat)> {
+    let toml_path = fluree_dir.join(CONFIG_FILE_TOML);
+    let jsonld_path = fluree_dir.join(CONFIG_FILE_JSONLD);
+
+    let toml_exists = toml_path.is_file();
+    let jsonld_exists = jsonld_path.is_file();
+
+    if toml_exists && jsonld_exists {
+        eprintln!(
+            "warning: both {} and {} exist in {}; using {}",
+            CONFIG_FILE_TOML,
+            CONFIG_FILE_JSONLD,
+            fluree_dir.display(),
+            CONFIG_FILE_TOML,
+        );
+        Some((toml_path, ConfigFileFormat::Toml))
+    } else if toml_exists {
+        Some((toml_path, ConfigFileFormat::Toml))
+    } else if jsonld_exists {
+        Some((jsonld_path, ConfigFileFormat::JsonLd))
+    } else {
+        None
+    }
+}
 
 /// Walk up from `start` looking for a `.fluree/` directory.
 fn find_fluree_dir_from(start: &Path) -> Option<PathBuf> {
@@ -104,9 +143,14 @@ pub fn require_fluree_dir_or_global(config_override: Option<&Path>) -> CliResult
 
 /// Create `.fluree/` directory with config template and storage subdirectory.
 ///
-/// The `config_template` is written to `config.toml` if the file does not already exist.
-/// Pass an empty string to create an empty config file.
-pub fn init_fluree_dir(global: bool, config_template: &str) -> CliResult<PathBuf> {
+/// The `config_template` is written to the file named by `config_filename`
+/// (e.g. `"config.toml"` or `"config.jsonld"`) if no config file already exists.
+/// Pass an empty string for `config_template` to create an empty config file.
+pub fn init_fluree_dir(
+    global: bool,
+    config_template: &str,
+    config_filename: &str,
+) -> CliResult<PathBuf> {
     let base = if global {
         dirs::home_dir()
             .ok_or_else(|| CliError::Config("cannot determine home directory".into()))?
@@ -120,7 +164,7 @@ pub fn init_fluree_dir(global: bool, config_template: &str) -> CliResult<PathBuf
         CliError::Config(format!("failed to create {}: {e}", storage_dir.display()))
     })?;
 
-    let config_path = fluree_dir.join(CONFIG_FILE);
+    let config_path = fluree_dir.join(config_filename);
     if !config_path.exists() {
         fs::write(&config_path, config_template).map_err(|e| {
             CliError::Config(format!("failed to create {}: {e}", config_path.display()))
@@ -294,7 +338,11 @@ impl From<RemoteConfigToml> for RemoteConfig {
     }
 }
 
-/// File-backed sync config store using `.fluree/config.toml`
+/// File-backed sync config store using `.fluree/config.toml` or `.fluree/config.jsonld`.
+///
+/// Detects which config file exists and adapts read/write accordingly.
+/// For TOML, uses `toml_edit` to preserve comments and non-sync sections.
+/// For JSON-LD, uses `serde_json::Value` to preserve `@context` and non-sync sections.
 #[derive(Debug)]
 pub struct TomlSyncConfigStore {
     fluree_dir: PathBuf,
@@ -305,26 +353,93 @@ impl TomlSyncConfigStore {
         Self { fluree_dir }
     }
 
-    fn config_path(&self) -> PathBuf {
-        self.fluree_dir.join(CONFIG_FILE)
+    /// Returns `(path, format)` for the active config file.
+    /// Defaults to TOML path if neither file exists.
+    fn config_file(&self) -> (PathBuf, ConfigFileFormat) {
+        detect_config_file(&self.fluree_dir).unwrap_or_else(|| {
+            (
+                self.fluree_dir.join(CONFIG_FILE_TOML),
+                ConfigFileFormat::Toml,
+            )
+        })
     }
 
     fn read_sync_config(&self) -> SyncToml {
-        let path = self.config_path();
-        fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        let (path, format) = self.config_file();
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return SyncToml::default(),
+        };
+        match format {
+            ConfigFileFormat::Toml => toml::from_str(&content).unwrap_or_default(),
+            ConfigFileFormat::JsonLd => serde_json::from_str(&content).unwrap_or_default(),
+        }
     }
 
-    /// Write sync config using toml_edit to preserve other keys in config.toml
+    /// Write sync config, dispatching to format-specific writer.
     fn write_sync_config(&self, config: &SyncToml) -> CliResult<()> {
+        let (path, format) = self.config_file();
+        match format {
+            ConfigFileFormat::Toml => self.write_sync_config_toml(&path, config),
+            ConfigFileFormat::JsonLd => self.write_sync_config_jsonld(&path, config),
+        }
+    }
+
+    /// Write sync config to a JSON-LD file, preserving `@context`, `server`, etc.
+    fn write_sync_config_jsonld(&self, path: &Path, config: &SyncToml) -> CliResult<()> {
+        // Read existing file as generic JSON Value to preserve non-sync keys
+        let mut doc: serde_json::Value = fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        let obj = doc
+            .as_object_mut()
+            .ok_or_else(|| CliError::Config("config.jsonld root is not a JSON object".into()))?;
+
+        // Update only sync sections; serde_json handles internally-tagged enums correctly
+        if config.remotes.is_empty() {
+            obj.remove("remotes");
+        } else {
+            obj.insert(
+                "remotes".into(),
+                serde_json::to_value(&config.remotes)
+                    .map_err(|e| CliError::Config(e.to_string()))?,
+            );
+        }
+
+        if config.upstreams.is_empty() {
+            obj.remove("upstreams");
+        } else {
+            obj.insert(
+                "upstreams".into(),
+                serde_json::to_value(&config.upstreams)
+                    .map_err(|e| CliError::Config(e.to_string()))?,
+            );
+        }
+
+        if config.tracked_ledgers.is_empty() {
+            obj.remove("tracked_ledgers");
+        } else {
+            obj.insert(
+                "tracked_ledgers".into(),
+                serde_json::to_value(&config.tracked_ledgers)
+                    .map_err(|e| CliError::Config(e.to_string()))?,
+            );
+        }
+
+        let pretty =
+            serde_json::to_string_pretty(&doc).map_err(|e| CliError::Config(e.to_string()))?;
+        fs::write(path, pretty)
+            .map_err(|e| CliError::Config(format!("failed to write config: {e}")))
+    }
+
+    /// Write sync config to a TOML file using toml_edit to preserve other keys.
+    fn write_sync_config_toml(&self, path: &Path, config: &SyncToml) -> CliResult<()> {
         use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
-        let path = self.config_path();
-
         // Parse existing file or start fresh
-        let mut doc: DocumentMut = fs::read_to_string(&path)
+        let mut doc: DocumentMut = fs::read_to_string(path)
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or_default();
@@ -459,7 +574,7 @@ impl TomlSyncConfigStore {
             doc["tracked_ledgers"] = Item::ArrayOfTables(tracked_aot);
         }
 
-        fs::write(&path, doc.to_string())
+        fs::write(path, doc.to_string())
             .map_err(|e| CliError::Config(format!("failed to write config: {e}")))
     }
 }

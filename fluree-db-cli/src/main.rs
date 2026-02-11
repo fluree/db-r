@@ -33,7 +33,13 @@ async fn run(cli: Cli) -> error::CliResult<()> {
     let config_path = cli.config.as_deref();
 
     match cli.command {
-        Commands::Init { global } => commands::init::run(global),
+        Commands::Init { global, format } => {
+            let config_format = match format {
+                cli::InitFormat::Toml => fluree_db_api::server_defaults::ConfigFormat::Toml,
+                cli::InitFormat::Jsonld => fluree_db_api::server_defaults::ConfigFormat::JsonLd,
+            };
+            commands::init::run(global, config_format)
+        }
 
         Commands::Create {
             ledger,

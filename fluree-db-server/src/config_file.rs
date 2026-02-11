@@ -183,9 +183,21 @@ pub fn load_config(path: &Path) -> Result<FlureeFileConfig, ConfigFileError> {
 
     let is_json = path
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("jsonld"));
 
     if is_json {
+        // For .jsonld files, validate the @context using the JSON-LD library
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonld"))
+        {
+            if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Err(e) = fluree_db_api::server_defaults::validate_jsonld_context(&raw) {
+                    warn!(path = %path.display(), error = %e, "JSON-LD config context validation issue");
+                }
+            }
+        }
+
         serde_json::from_str(&content).map_err(|e| ConfigFileError::Parse {
             path: path.to_path_buf(),
             detail: e.to_string(),
@@ -219,44 +231,68 @@ pub enum ConfigFileError {
 // ---------------------------------------------------------------------------
 
 const FLUREE_DIR: &str = ".fluree";
-const CONFIG_FILE: &str = "config.toml";
+const CONFIG_FILE_TOML: &str = "config.toml";
+const CONFIG_FILE_JSONLD: &str = "config.jsonld";
+
+/// Find a config file in a directory, checking for both TOML and JSON-LD.
+/// TOML is preferred. Warns if both exist.
+fn find_config_in_dir(dir: &Path) -> Option<PathBuf> {
+    let toml_path = dir.join(CONFIG_FILE_TOML);
+    let jsonld_path = dir.join(CONFIG_FILE_JSONLD);
+
+    let toml_exists = toml_path.is_file();
+    let jsonld_exists = jsonld_path.is_file();
+
+    if toml_exists && jsonld_exists {
+        warn!(
+            dir = %dir.display(),
+            "Both config.toml and config.jsonld found; using config.toml"
+        );
+        Some(toml_path)
+    } else if toml_exists {
+        Some(toml_path)
+    } else if jsonld_exists {
+        Some(jsonld_path)
+    } else {
+        None
+    }
+}
 
 /// Resolve the config file path.
 ///
 /// 1. Use explicit `--config` override if provided
-/// 2. Walk up from cwd looking for `.fluree/config.toml`
-/// 3. Check `~/.fluree/config.toml` as global fallback
+/// 2. Walk up from cwd looking for `.fluree/config.toml` or `.fluree/config.jsonld`
+/// 3. Check `~/.fluree/config.{toml,jsonld}` as global fallback
 ///
 /// Returns `None` if no config file is found (this is not an error).
 pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
-        // Explicit path: could be a file or a directory containing config.toml
+        // Explicit path: could be a file or a directory containing config
         if p.is_file() {
             return Some(p.to_path_buf());
         }
         if p.is_dir() {
-            let candidate = p.join(CONFIG_FILE);
-            if candidate.is_file() {
-                return Some(candidate);
+            if let Some(found) = find_config_in_dir(p) {
+                return Some(found);
             }
         }
-        // If the explicit path contains ".fluree" as a component, try it
-        let candidate = p.join(FLUREE_DIR).join(CONFIG_FILE);
-        if candidate.is_file() {
-            return Some(candidate);
+        // Try as parent of a .fluree/ directory
+        let fluree_subdir = p.join(FLUREE_DIR);
+        if let Some(found) = find_config_in_dir(&fluree_subdir) {
+            return Some(found);
         }
         // Explicit path not found — warn and continue without file config
         warn!(path = %p.display(), "Config file not found at specified path");
         return None;
     }
 
-    // Walk up from cwd looking for .fluree/config.toml
+    // Walk up from cwd looking for .fluree/config.{toml,jsonld}
     if let Ok(cwd) = std::env::current_dir() {
-        let mut current = cwd.as_path().to_path_buf();
+        let mut current = cwd.to_path_buf();
         loop {
-            let candidate = current.join(FLUREE_DIR).join(CONFIG_FILE);
-            if candidate.is_file() {
-                return Some(candidate);
+            let fluree_subdir = current.join(FLUREE_DIR);
+            if let Some(found) = find_config_in_dir(&fluree_subdir) {
+                return Some(found);
             }
             if !current.pop() {
                 break;
@@ -264,11 +300,11 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
         }
     }
 
-    // Global fallback: ~/.fluree/config.toml
+    // Global fallback: ~/.fluree/config.{toml,jsonld}
     if let Some(home) = dirs_home() {
-        let candidate = home.join(FLUREE_DIR).join(CONFIG_FILE);
-        if candidate.is_file() {
-            return Some(candidate);
+        let fluree_subdir = home.join(FLUREE_DIR);
+        if let Some(found) = find_config_in_dir(&fluree_subdir) {
+            return Some(found);
         }
     }
 
@@ -997,5 +1033,39 @@ auto_pull = true
 
         let config: FlureeFileConfig = toml::from_str(toml).unwrap();
         assert!(config.server.is_none());
+    }
+
+    #[test]
+    fn test_load_jsonld_config_with_context() {
+        // @context is silently ignored by serde — config values parse normally
+        let json = r#"{
+            "@context": {
+                "@vocab": "https://ns.flur.ee/config#"
+            },
+            "_comment": "Test config",
+            "server": {
+                "listen_addr": "0.0.0.0:7070",
+                "indexing": {
+                    "enabled": true
+                }
+            },
+            "profiles": {
+                "dev": {
+                    "server": {
+                        "log_level": "debug"
+                    }
+                }
+            }
+        }"#;
+
+        let config: FlureeFileConfig = serde_json::from_str(json).unwrap();
+        let server = config.server.unwrap();
+        assert_eq!(server.listen_addr.as_deref(), Some("0.0.0.0:7070"));
+        assert_eq!(server.indexing.unwrap().enabled, Some(true));
+
+        let profiles = config.profiles.unwrap();
+        let dev = profiles.get("dev").unwrap();
+        let dev_server = dev.server.as_ref().unwrap();
+        assert_eq!(dev_server.log_level.as_deref(), Some("debug"));
     }
 }
