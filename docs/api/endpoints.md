@@ -328,9 +328,38 @@ JSON object:
 - `commits`: array of base64-encoded commit v2 blobs (oldest → newest)
 - `blobs` (optional): map of `{ cid: base64Bytes }` for referenced blobs (currently: `commit.txn` when present)
 
-**Responses:**
+**Response Body (200 OK):**
 
-- `200 OK`: commit(s) accepted and head advanced
+```json
+{
+  "ledger": "mydb:main",
+  "accepted": 3,
+  "head": {
+    "t": 42,
+    "commit_id": "bafy...headCommit"
+  },
+  "indexing": {
+    "enabled": false,
+    "needed": true,
+    "novelty_size": 524288,
+    "index_t": 30,
+    "commit_t": 42
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `indexing.enabled` | Whether background indexing is active on this server. |
+| `indexing.needed` | Whether novelty has exceeded `reindex_min_bytes` and indexing should be triggered. |
+| `indexing.novelty_size` | Current novelty size in bytes after the push. |
+| `indexing.index_t` | Transaction time of the last indexed state. |
+| `indexing.commit_t` | Transaction time of the latest committed data (after push). |
+
+When `enabled` is `false` (external indexer mode), the caller should use `needed` and related fields to decide whether to trigger indexing through its own mechanism.
+
+**Error Responses:**
+
 - `409 Conflict`: head changed / diverged / first commit `t` did not match next-t
 - `422 Unprocessable Entity`: invalid commit bytes, missing referenced blob, or retraction invariant violation
 
@@ -416,8 +445,9 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
   "protocol": "fluree-pack-v1",
   "want": ["bafy...remoteHead"],
   "have": ["bafy...localHead"],
-  "include_indexes": false,
-  "include_graph_sources": false
+  "include_indexes": true,
+  "want_index_root_id": "bafy...indexRoot",
+  "have_index_root_id": "bafy...localIndexRoot"
 }
 ```
 
@@ -428,8 +458,7 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 | `have` | string[] | No | ContentId CIDs the client already has (typically the local commit head). Server stops walking the commit chain when it reaches a `have` CID. Empty for full clone. |
 | `want_index_root_id` | string | No | Index root CID the client wants (typically remote nameservice `index_head_id`). Required when `include_indexes=true`. |
 | `have_index_root_id` | string | No | Index root CID the client already has (typically local nameservice `index_head_id`). Used for index artifact diff. |
-| `include_indexes` | bool | No | Include index artifacts in the stream (default: `false`). When true, the stream contains commit + txn objects plus index root/branch/leaf/dict artifacts. |
-| `include_graph_sources` | bool | No | Reserved for future graph source packing. Currently ignored. |
+| `include_indexes` | bool | Yes | Include index artifacts in the stream. When true, the stream contains commit + txn objects plus index root/branch/leaf/dict artifacts. |
 
 **Response:**
 
@@ -441,13 +470,15 @@ Binary stream using the `fluree-pack-v1` wire format (`Content-Type: application
 
 | Frame | Type byte | Content |
 |-------|-----------|---------|
-| Header | `0x00` | JSON metadata: protocol version, capabilities, commit count |
+| Header | `0x00` | JSON metadata: protocol version, capabilities, `commit_count`, `index_artifact_count`, `estimated_total_bytes` |
 | Data | `0x01` | CID binary + raw object bytes (commit, txn blob, or index artifact) |
 | Error | `0x02` | UTF-8 error message (terminates stream) |
 | Manifest | `0x03` | JSON metadata for phase transitions (e.g. start of index phase) |
 | End | `0xFF` | End of stream (no payload) |
 
 Data frames are streamed in **oldest-first topological order** (parents before children), so the client can write objects to CAS as they arrive without buffering the entire stream.
+
+The Header frame includes an `estimated_total_bytes` field that the CLI uses to warn users before large transfers (~1 GiB or more). The estimate is ratio-based (derived from commit count) and may differ from actual transfer size. Set to `0` for commits-only requests.
 
 **Status Codes:**
 
@@ -472,6 +503,14 @@ curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
   -H "Accept: application/x-fluree-pack" \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"protocol":"fluree-pack-v1","want":["bafy...remoteHead"],"have":["bafy...localHead"]}' \
+  --output pack.bin
+
+# Download commits + index artifacts (default for CLI pull/clone)
+curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/x-fluree-pack" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...head"],"have":[],"include_indexes":true,"want_index_root_id":"bafy...indexRoot"}' \
   --output pack.bin
 ```
 

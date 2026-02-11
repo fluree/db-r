@@ -35,8 +35,10 @@ If you do not implement discovery, users must configure the CLI remote URL to al
 Required:
 
 - `GET {api_base_url}/info/*ledger` (existence + remote `t` preflight; see `/info` minimum fields below)
-- `GET {api_base_url}/storage/ns/:ledger-id` (remote NsRecord, includes `commit_head_id` and optional `config_id`)
+- `GET {api_base_url}/storage/ns/:ledger-id` (remote NsRecord, includes `commit_head_id`, optional `index_head_id`, and optional `config_id`)
 - `POST {api_base_url}/pack/*ledger` (binary `fluree-pack-v1` stream)
+
+The CLI sends pack requests with **index artifacts** by default (`include_indexes: true`, `want_index_root_id` from the NsRecord) when the remote advertises an `index_head_id`. Use `--no-indexes` on clone/pull to request commits and txns only. Servers that support pack should support both commits-only and index-inclusive requests.
 
 Fallbacks (strongly recommended):
 
@@ -69,7 +71,7 @@ Data API endpoints use normal read/write auth (`fluree.ledger.read.*`, `fluree.l
 ## Pack Protocol Contract
 
 - Endpoint: `POST {api_base_url}/pack/*ledger`
-- Request: JSON `PackRequest` with `"protocol":"fluree-pack-v1"`
+- Request: JSON `PackRequest` with `"protocol":"fluree-pack-v1"`. May include `include_indexes: true`, `want_index_root_id`, and `have_index_root_id` when the CLI requests index data (default for clone/pull unless `--no-indexes`).
 - Response: `Content-Type: application/x-fluree-pack`, streaming frames:
   - Preamble `FPK1` + version byte
   - Header frame (mandatory, first)

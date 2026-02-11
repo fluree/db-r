@@ -37,6 +37,8 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 | `-q, --quiet` | Suppress non-essential output |
 | `--no-color` | Disable colored output (also respects `NO_COLOR` env var) |
 | `--config <PATH>` | Path to config file |
+| `--memory-budget-mb <MB>` | Memory budget in MB for bulk import (0 = auto: 75% of system RAM). Affects chunk size, concurrency, and run budget when creating a ledger with `--from`. |
+| `--parallelism <N>` | Number of parallel parse threads for bulk import (0 = auto: system cores, default cap 6). Used when creating a ledger with `--from`. |
 | `-h, --help` | Print help |
 | `-V, --version` | Print version |
 
@@ -70,6 +72,8 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 | [`pull`](pull.md) | Pull commits from upstream |
 | [`push`](push.md) | Push to upstream remote |
 | [`track`](track.md) | Track remote-only ledgers (no local data) |
+
+**Clone and pull** transfer commits and, by default, **binary index data** from the remote (pack protocol), so the local ledger is query-ready without a separate reindex. Use `--no-indexes` to skip index transfer and reduce download size; run `fluree reindex` afterward if you need the index. Large transfers may prompt for confirmation before streaming.
 
 ### Implementers
 

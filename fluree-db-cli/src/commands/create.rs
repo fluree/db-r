@@ -49,6 +49,18 @@ pub async fn run(
             if import_opts.chunk_size_mb > 0 {
                 builder = builder.chunk_size_mb(import_opts.chunk_size_mb);
             }
+            let settings = builder.effective_import_settings();
+            let mem_auto = import_opts.memory_budget_mb == 0;
+            let par_auto = import_opts.parallelism == 0;
+            eprintln!(
+                "Import settings: memory budget {} MB{}, parallelism {}{}, chunk size {} MB, run budget {} MB",
+                settings.memory_budget_mb,
+                if mem_auto { " (auto)" } else { "" },
+                settings.parallelism,
+                if par_auto { " (auto)" } else { "" },
+                settings.chunk_size_mb,
+                settings.run_budget_mb,
+            );
             let result = builder.execute().await?;
 
             config::write_active_ledger(fluree_dir, ledger)?;
@@ -116,10 +128,7 @@ fn is_import_path(path: &Path) -> CliResult<bool> {
         return Ok(true);
     }
 
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let name_lower = name.to_ascii_lowercase();
 
     // Reject compressed Turtle with a clear message.

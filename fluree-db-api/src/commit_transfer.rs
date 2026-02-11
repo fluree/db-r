@@ -21,6 +21,7 @@
 use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
 use crate::policy_builder::build_policy_context_from_opts;
+use crate::tx::{IndexingMode, IndexingStatus};
 use crate::{Fluree, IndexConfig, LedgerHandle};
 use base64::Engine as _;
 use fluree_db_core::ContentId;
@@ -94,6 +95,8 @@ pub struct PushCommitsResponse {
     pub ledger: String,
     pub accepted: usize,
     pub head: PushedHead,
+    /// Indexing status hints for external indexers.
+    pub indexing: IndexingStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,7 +268,27 @@ where
         // 7) Update in-memory ledger state (now committed).
         let new_state =
             apply_pushed_commits_to_state(base_state, &accepted_all_flakes, &stored_commits);
+
+        // 8) Compute indexing status from the updated state.
+        let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
+        let indexing_needed = new_state.should_reindex(index_config);
+
+        let indexing_status = IndexingStatus {
+            enabled: indexing_enabled,
+            needed: indexing_needed,
+            novelty_size: new_state.novelty_size(),
+            index_t: new_state.index_t(),
+            commit_t: final_head.t,
+        };
+
         guard.replace(new_state);
+
+        // 9) Trigger background indexing if enabled and needed.
+        if let IndexingMode::Background(idx_handle) = &self.indexing_mode {
+            if indexing_enabled && indexing_needed {
+                idx_handle.trigger(handle.ledger_id(), final_head.t).await;
+            }
+        }
 
         Ok(PushCommitsResponse {
             ledger: handle.ledger_id().to_string(),
@@ -274,6 +297,7 @@ where
                 t: final_head.t,
                 commit_id: final_head.commit_id.clone(),
             },
+            indexing: indexing_status,
         })
     }
 }
@@ -972,6 +996,8 @@ pub struct CommitImportResult {
     pub head_t: i64,
     /// New local head commit CID.
     pub head_commit_id: ContentId,
+    /// Indexing status hints for external indexers.
+    pub indexing: IndexingStatus,
 }
 
 impl<S, N> Fluree<S, N>
@@ -1091,6 +1117,49 @@ where
         }
     }
 
+    /// Set the index head after pull/clone with index transfer.
+    ///
+    /// Points `IndexHead` at the given CID/t so that the next `ledger()` load
+    /// picks up the pulled binary index. `IndexHead` uses `t >= current.t`
+    /// monotonic guard (allows equal-t overwrites, unlike `CommitHead`).
+    pub async fn set_index_head(
+        &self,
+        handle: &LedgerHandle,
+        index_id: &ContentId,
+        index_t: i64,
+    ) -> Result<()> {
+        let ledger_id = handle.ledger_id();
+        let new_ref = RefValue {
+            id: Some(index_id.clone()),
+            t: index_t,
+        };
+
+        let current_ref = self
+            .nameservice()
+            .get_ref(ledger_id, RefKind::IndexHead)
+            .await?;
+
+        match self
+            .nameservice()
+            .compare_and_set_ref(
+                ledger_id,
+                RefKind::IndexHead,
+                current_ref.as_ref(),
+                &new_ref,
+            )
+            .await?
+        {
+            CasResult::Updated => Ok(()),
+            CasResult::Conflict { actual } => Err(ApiError::http(
+                409,
+                format!(
+                    "index head changed during transfer (expected {:?}, actual {:?})",
+                    current_ref, actual
+                ),
+            )),
+        }
+    }
+
     /// Incrementally import commits (pull path).
     ///
     /// Validates the commit chain, verifies ancestry against the local head,
@@ -1194,12 +1263,34 @@ where
             .collect();
 
         let new_state = apply_pushed_commits_to_state(base_state, &all_flakes, &stored_commits);
+
+        // 9) Compute indexing status from the updated state.
+        let index_config = self.default_index_config();
+        let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
+        let indexing_needed = new_state.should_reindex(&index_config);
+
+        let indexing_status = IndexingStatus {
+            enabled: indexing_enabled,
+            needed: indexing_needed,
+            novelty_size: new_state.novelty_size(),
+            index_t: new_state.index_t(),
+            commit_t: final_head.t,
+        };
+
         guard.replace(new_state);
+
+        // 10) Trigger background indexing if enabled and needed.
+        if let IndexingMode::Background(idx_handle) = &self.indexing_mode {
+            if indexing_enabled && indexing_needed {
+                idx_handle.trigger(handle.ledger_id(), final_head.t).await;
+            }
+        }
 
         Ok(CommitImportResult {
             imported: decoded.len(),
             head_t: final_head.t,
             head_commit_id: final_head.commit_id.clone(),
+            indexing: indexing_status,
         })
     }
 }

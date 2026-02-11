@@ -313,6 +313,10 @@ pub enum Commands {
     Pull {
         /// Ledger name (defaults to active ledger)
         ledger: Option<String>,
+
+        /// Skip pulling binary index data (indexes are pulled by default)
+        #[arg(long)]
+        no_indexes: bool,
     },
 
     /// Push a ledger to its upstream remote
@@ -321,7 +325,7 @@ pub enum Commands {
         ledger: Option<String>,
     },
 
-    /// Clone a ledger from a remote server (downloads all commits)
+    /// Clone a ledger from a remote server (downloads all commits and indexes)
     ///
     /// Usage:
     ///   fluree clone <remote> <ledger>                        # named-remote clone
@@ -345,6 +349,10 @@ pub enum Commands {
         /// requires address rewriting (planned for a future release).
         #[arg(long, hide = true)]
         alias: Option<String>,
+
+        /// Skip pulling binary index data (indexes are pulled by default)
+        #[arg(long)]
+        no_indexes: bool,
     },
 
     /// Track a remote ledger (remote-only, no local data)

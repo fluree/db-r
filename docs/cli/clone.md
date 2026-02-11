@@ -6,10 +6,10 @@ Clone a ledger from a remote server, similar to `git clone`.
 
 ```bash
 # Named-remote clone
-fluree clone <REMOTE> <LEDGER>
+fluree clone [OPTIONS] <REMOTE> <LEDGER>
 
 # Origin-based clone (no pre-configured remote)
-fluree clone --origin <URI> [--token <TOKEN>] <LEDGER>
+fluree clone --origin <URI> [--token <TOKEN>] [OPTIONS] <LEDGER>
 ```
 
 ## Arguments
@@ -20,6 +20,7 @@ fluree clone --origin <URI> [--token <TOKEN>] <LEDGER>
 | `<LEDGER>` | Ledger name on the remote server |
 | `--origin <URI>` | Bootstrap URI for CID-based clone (replaces `<REMOTE>`) |
 | `--token <TOKEN>` | Auth token for origin server (with `--origin` only) |
+| `--no-indexes` | Skip pulling binary index data; only transfer commits and txn blobs (queries will replay from commits until you run `fluree reindex`) |
 
 ## Description
 
@@ -30,12 +31,21 @@ Downloads all commits from a remote ledger and creates a local copy:
 3. Attempts bulk download via the **pack protocol** (single streaming request)
 4. Falls back to paginated JSON export if the server does not support pack
 5. Stores all commit and transaction blobs to local CAS
-6. Sets the local head to match the remote head
-7. Configures the remote as upstream for future `pull`/`push` (named-remote only)
+6. By default, also transfers **binary index** artifacts when the remote has an index (see [Index transfer](#index-transfer))
+7. Sets the local commit head (and index head when index data was transferred) to match the remote
+8. Configures the remote as upstream for future `pull`/`push` (named-remote only)
+
+### Index transfer
+
+When using the pack protocol, the CLI requests **index artifacts** by default so the local ledger is query-ready without a full reindex. The server sends missing commit blobs, txn blobs, and binary index artifacts (dictionaries, branches, leaves) in one stream.
+
+- Use **`--no-indexes`** to transfer only commits and txn blobs. This reduces transfer size and time; afterward, run `fluree reindex` to build the index locally if needed.
+- For large transfers (estimated size above ~1 GiB), the CLI prompts: *"Estimated transfer size: ~X. This may take several minutes. Continue? [Y/n]"*. Answer `n` to abort or to re-request without index data (commits-only).
+- If the remote has no index yet (e.g. a fresh ledger), only commits and txns are transferred regardless of the flag.
 
 ### Transport
 
-The CLI uses the **pack protocol** (`fluree-pack-v1`) as the primary transport for clone and pull. Pack transfers all missing CAS objects (commits + txn blobs) in a single streaming HTTP request, avoiding per-object round-trips.
+The CLI uses the **pack protocol** (`fluree-pack-v1`) as the primary transport for clone and pull. Pack transfers all missing CAS objects (commits + txn blobs, and by default index artifacts) in a single streaming HTTP request, avoiding per-object round-trips.
 
 If the remote server does not support the pack endpoint (returns 404, 405, 406, or 501), the CLI automatically falls back to:
 - **Named-remote mode**: paginated JSON export via `GET /commits/{ledger}` (500 commits per page)
@@ -78,17 +88,22 @@ fluree clone --origin http://localhost:8090 mydb
 
 # Origin-based clone with auth
 fluree clone --origin https://api.example.com --token @~/.fluree/token mydb
+
+# Clone without index data (faster; run fluree reindex afterward if needed)
+fluree clone --no-indexes origin mydb
 ```
 
 ## Output
 
-Successful clone (via pack):
+Successful clone (via pack, with index data):
 ```
 Cloning 'mydb:main' from 'origin' (remote t=1042)...
   fetched 2084 object(s) via pack
 ✓ Cloned 'mydb:main' (1042 commits, head t=1042)
   → upstream set to 'origin/mydb:main'
 ```
+
+With `--no-indexes` (commits and txns only), the object count will be lower and the local index head is not set until you run `fluree reindex`.
 
 Successful clone (fallback to paginated export):
 ```
@@ -123,7 +138,7 @@ Remote ledger 'mydb:main' has no commits (t=0), nothing to clone.
 
 ## Limitations
 
-- **Post-clone indexing:** After cloning a large ledger, you may want to run `fluree reindex` to build a binary index. Without an index, queries must replay all novelty from commits, which can be slow for large ledgers.
+- **Post-clone indexing:** If you used `--no-indexes`, run `fluree reindex` to build a binary index locally. Without an index, queries replay from commits and can be slow for large ledgers. When index data is transferred by default (no `--no-indexes`), the local index head is set and no reindex is needed for the core ledger.
 - **Graph source indexes not replicated:** Graph source snapshots (BM25/vector/geo, etc.) are not replicated by `fluree clone` yet. After cloning, rebuild graph source indexes in the target environment as needed.
 
 ## See Also

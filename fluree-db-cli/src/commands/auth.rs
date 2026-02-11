@@ -456,10 +456,7 @@ async fn discover_oidc_endpoints(http: &reqwest::Client, issuer: &str) -> CliRes
     }
 
     // Fall back to authorization code (e.g., AWS Cognito)
-    if let Some(auth_ep) = body
-        .get("authorization_endpoint")
-        .and_then(|v| v.as_str())
-    {
+    if let Some(auth_ep) = body.get("authorization_endpoint").and_then(|v| v.as_str()) {
         return Ok(OidcFlow::AuthorizationCode {
             authorization_endpoint: auth_ep.to_string(),
             token_endpoint,
@@ -486,8 +483,7 @@ async fn run_device_code_flow(
     scopes: &str,
 ) -> CliResult<IdpTokenResponse> {
     eprintln!("Requesting device authorization...");
-    let device_resp =
-        request_device_code(http, device_auth_endpoint, client_id, scopes).await?;
+    let device_resp = request_device_code(http, device_auth_endpoint, client_id, scopes).await?;
 
     eprintln!();
     eprintln!("  {} Open this URL and enter the code below:", ">>".bold());
@@ -720,9 +716,8 @@ async fn run_auth_code_flow(
     // Use Url::parse + query_pairs_mut to safely append params even if
     // authorization_endpoint already contains query parameters.
     let auth_url = {
-        let mut url = reqwest::Url::parse(authorization_endpoint).map_err(|e| {
-            CliError::Remote(format!("invalid authorization_endpoint URL: {e}"))
-        })?;
+        let mut url = reqwest::Url::parse(authorization_endpoint)
+            .map_err(|e| CliError::Remote(format!("invalid authorization_endpoint URL: {e}")))?;
         url.query_pairs_mut()
             .append_pair("response_type", "code")
             .append_pair("client_id", client_id)
@@ -735,10 +730,7 @@ async fn run_auth_code_flow(
     };
 
     eprintln!();
-    eprintln!(
-        "  {} Opening browser for authentication...",
-        ">>".bold()
-    );
+    eprintln!("  {} Opening browser for authentication...", ">>".bold());
     eprintln!("  URL: {}", auth_url.cyan());
     eprintln!();
 
@@ -752,10 +744,7 @@ async fn run_auth_code_flow(
     }
 
     // Step 4: Wait for callback
-    eprintln!(
-        "Waiting for authorization callback on port {}...",
-        port
-    );
+    eprintln!("Waiting for authorization callback on port {}...", port);
     let (code, received_state) = accept_callback(&listener).await?;
 
     // Validate state (CSRF protection)
@@ -858,9 +847,7 @@ async fn bind_callback_listener(
 /// Loops accepting connections until a `GET /callback?...` request arrives
 /// (ignoring browser requests to `/`, `/favicon.ico`, etc.).
 /// Returns the authorization `code` and `state` from query parameters.
-async fn accept_callback(
-    listener: &tokio::net::TcpListener,
-) -> CliResult<(String, String)> {
+async fn accept_callback(listener: &tokio::net::TcpListener) -> CliResult<(String, String)> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let deadline = tokio::time::Instant::now() + CALLBACK_TIMEOUT;
@@ -875,10 +862,7 @@ async fn accept_callback(
                 )));
             }
             Err(_) => {
-                let port = listener
-                    .local_addr()
-                    .map(|a| a.port())
-                    .unwrap_or(0);
+                let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
                 return Err(CliError::Remote(format!(
                     "authorization timed out after {} seconds.\n  \
                      Callback was listening on http://127.0.0.1:{port}/callback\n  \
@@ -922,9 +906,7 @@ async fn accept_callback(
 
         // Check for error response from IdP
         if let Some(error) = params.get("error") {
-            let desc = params
-                .get("error_description")
-                .unwrap_or(&"unknown error");
+            let desc = params.get("error_description").unwrap_or(&"unknown error");
             // Don't echo raw query params into HTML — serve a static error page
             let error_html = "HTTP/1.1 200 OK\r\n\
                  Content-Type: text/html\r\n\
@@ -975,8 +957,7 @@ async fn accept_callback(
 /// Generate a random PKCE code_verifier (128 chars, RFC 7636 Section 4.1).
 fn generate_code_verifier() -> String {
     use rand::Rng;
-    const CHARSET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
     let mut rng = rand::thread_rng();
     (0..128)
         .map(|_| {

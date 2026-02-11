@@ -21,6 +21,7 @@ use fluree_db_transact::{
     NamedGraphBlock, NamespaceRegistry, RawTrigMeta, StageOptions, TemplateTerm, TripleTemplate,
     Txn, TxnOpts, TxnType,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 fn ledger_id_from_txn(txn_json: &JsonValue) -> Result<&str> {
@@ -153,7 +154,7 @@ impl IndexingMode {
 ///
 /// Provides hints for external indexers (in disabled mode) and confirms
 /// indexing was triggered (in background mode).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexingStatus {
     /// True if indexing is enabled (background mode)
     pub enabled: bool,
@@ -342,36 +343,6 @@ where
     S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher,
 {
-    fn default_index_config(&self) -> IndexConfig {
-        let indexing = self
-            .connection
-            .config()
-            .defaults
-            .as_ref()
-            .and_then(|d| d.indexing.as_ref());
-
-        IndexConfig {
-            reindex_min_bytes: indexing
-                .and_then(|i| i.reindex_min_bytes)
-                .map(|v| v as usize)
-                .unwrap_or(IndexConfig::default().reindex_min_bytes),
-            reindex_max_bytes: indexing
-                .and_then(|i| i.reindex_max_bytes)
-                .map(|v| v as usize)
-                .unwrap_or(IndexConfig::default().reindex_max_bytes),
-        }
-    }
-
-    fn defaults_indexing_enabled(&self) -> bool {
-        self.connection
-            .config()
-            .defaults
-            .as_ref()
-            .and_then(|d| d.indexing.as_ref())
-            .and_then(|i| i.indexing_enabled)
-            .unwrap_or(true)
-    }
-
     /// Stage a transaction against a ledger (no persistence).
     ///
     /// Respects `opts.max-fuel` in the transaction JSON for fuel limits (consistent with query behavior).

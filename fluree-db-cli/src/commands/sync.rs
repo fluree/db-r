@@ -4,7 +4,7 @@ use crate::config::{storage_path, TomlSyncConfigStore};
 use crate::context;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
-use fluree_db_core::pack::PackRequest;
+use fluree_db_core::pack::{PackRequest, LARGE_TRANSFER_THRESHOLD};
 use fluree_db_core::storage::ContentAddressedWrite;
 use fluree_db_core::ContentKind;
 use fluree_db_core::ContentStore;
@@ -13,8 +13,8 @@ use fluree_db_nameservice::{
     RefKind, RefPublisher, RemoteName, RemoteTrackingStore,
 };
 use fluree_db_nameservice_sync::{
-    ingest_pack_stream, FetchResult, HttpRemoteClient, MultiOriginFetcher, RemoteEndpoint,
-    SyncConfigStore, SyncDriver,
+    ingest_pack_stream, ingest_pack_stream_with_header, peek_pack_header, FetchResult,
+    HttpRemoteClient, MultiOriginFetcher, RemoteEndpoint, SyncConfigStore, SyncDriver,
 };
 use fluree_db_novelty::commit_v2::{read_commit_envelope, verify_commit_v2_blob};
 use futures::StreamExt;
@@ -51,6 +51,42 @@ fn replication_permission_error(remote: &str) -> CliError {
         "hint:".cyan().bold(),
         remote
     ))
+}
+
+/// Format bytes as a human-readable size (e.g., "1.2 GiB", "342 MiB").
+fn format_human_bytes(bytes: u64) -> String {
+    const GIB: f64 = 1_073_741_824.0;
+    const MIB: f64 = 1_048_576.0;
+    const KIB: f64 = 1_024.0;
+
+    let b = bytes as f64;
+    if b >= GIB {
+        format!("{:.1} GiB", b / GIB)
+    } else if b >= MIB {
+        format!("{:.0} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.0} KiB", b / KIB)
+    } else {
+        format!("{} bytes", bytes)
+    }
+}
+
+/// Prompt the user to confirm a large transfer. Returns `true` if confirmed.
+fn confirm_large_transfer(estimated_bytes: u64) -> bool {
+    use std::io::{self, BufRead, Write};
+    eprint!(
+        "  Estimated transfer size: ~{}. This may take several minutes. Continue? [Y/n] ",
+        format_human_bytes(estimated_bytes)
+    );
+    io::stderr().flush().ok();
+
+    let stdin = io::stdin();
+    let mut line = String::new();
+    if stdin.lock().read_line(&mut line).is_err() {
+        return true; // Non-interactive: proceed
+    }
+    let trimmed = line.trim().to_lowercase();
+    trimmed.is_empty() || trimmed == "y" || trimmed == "yes"
 }
 
 fn map_sync_auth_error(remote: &str, err: &str) -> Option<CliError> {
@@ -177,7 +213,7 @@ fn print_fetch_result(result: &FetchResult) {
 ///
 /// Falls back to origin-based pull (CID chain walk via LedgerConfig) when
 /// no upstream remote is configured.
-pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
+pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, fluree_dir: &Path) -> CliResult<()> {
     let ledger_id = context::resolve_ledger(ledger, fluree_dir)?;
     let ledger_id = context::to_ledger_id(&ledger_id);
 
@@ -189,7 +225,7 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
 
     let Some(upstream) = upstream else {
         // No named upstream — try origin-based pull via LedgerConfig.
-        return run_pull_via_origins(&ledger_id, fluree_dir).await;
+        return run_pull_via_origins(&ledger_id, no_indexes, fluree_dir).await;
     };
 
     // Resolve remote config → build client.
@@ -261,43 +297,185 @@ pub async fn run_pull(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
             if let Some(ref remote_head_cid) = remote_ns.commit_head_id {
                 let have: Vec<fluree_db_core::ContentId> =
                     local_ref.id.clone().into_iter().collect();
-                let pack_request = PackRequest::commits(vec![remote_head_cid.clone()], have);
+
+                // Build pack request — include indexes by default.
+                let pack_request = if !no_indexes {
+                    if let Some(ref remote_index_id) = remote_ns.index_head_id {
+                        let local_index_id = fluree
+                            .nameservice()
+                            .get_ref(&ledger_id, RefKind::IndexHead)
+                            .await
+                            .ok()
+                            .flatten()
+                            .and_then(|r| r.id);
+                        PackRequest::with_indexes(
+                            vec![remote_head_cid.clone()],
+                            have,
+                            remote_index_id.clone(),
+                            local_index_id,
+                        )
+                    } else {
+                        PackRequest::commits(vec![remote_head_cid.clone()], have)
+                    }
+                } else {
+                    PackRequest::commits(vec![remote_head_cid.clone()], have)
+                };
+
                 match client
                     .fetch_pack_response(remote_ledger_id, &pack_request)
                     .await
                 {
                     Ok(Some(response)) => {
-                        match ingest_pack_stream(response, fluree.storage(), &ledger_id).await {
-                            Ok(result) => {
-                                let count = result.commits_stored;
-                                let handle =
-                                    fluree.ledger_cached(&ledger_id).await.map_err(|e| {
-                                        CliError::Config(format!("failed to load ledger: {e}"))
-                                    })?;
-                                fluree
-                                    .set_commit_head(&handle, remote_head_cid, remote_ns.commit_t)
+                        // Peek the header to check estimated transfer size.
+                        let mut body_stream = response.bytes_stream();
+                        match peek_pack_header(&mut body_stream).await {
+                            Ok((header, buf_tail)) => {
+                                // Check if transfer is large and indexes are included.
+                                let wants_indexes = pack_request.include_indexes;
+                                let is_large =
+                                    header.estimated_total_bytes > LARGE_TRANSFER_THRESHOLD;
+
+                                let ingest_result = if wants_indexes && is_large {
+                                    if confirm_large_transfer(header.estimated_total_bytes) {
+                                        // User confirmed — proceed with indexes.
+                                        ingest_pack_stream_with_header(
+                                            &header,
+                                            buf_tail,
+                                            &mut body_stream,
+                                            fluree.storage(),
+                                            &ledger_id,
+                                        )
+                                        .await
+                                    } else {
+                                        // User declined — drop stream, re-request commits only.
+                                        drop(body_stream);
+                                        eprintln!(
+                                            "  Skipping index transfer, pulling commits only..."
+                                        );
+                                        let have: Vec<fluree_db_core::ContentId> =
+                                            local_ref.id.clone().into_iter().collect();
+                                        let commits_only = PackRequest::commits(
+                                            vec![remote_head_cid.clone()],
+                                            have,
+                                        );
+                                        match client
+                                            .fetch_pack_response(
+                                                remote_ledger_id,
+                                                &commits_only,
+                                            )
+                                            .await
+                                        {
+                                            Ok(Some(resp2)) => {
+                                                ingest_pack_stream(
+                                                    resp2,
+                                                    fluree.storage(),
+                                                    &ledger_id,
+                                                )
+                                                .await
+                                            }
+                                            Ok(None) => Err(
+                                                fluree_db_nameservice_sync::SyncError::PackNotSupported,
+                                            ),
+                                            Err(e) => Err(
+                                                fluree_db_nameservice_sync::SyncError::Remote(
+                                                    e.to_string(),
+                                                ),
+                                            ),
+                                        }
+                                    }
+                                } else {
+                                    // Small transfer or no indexes — proceed directly.
+                                    ingest_pack_stream_with_header(
+                                        &header,
+                                        buf_tail,
+                                        &mut body_stream,
+                                        fluree.storage(),
+                                        &ledger_id,
+                                    )
                                     .await
-                                    .map_err(|e| {
-                                        CliError::Config(format!("pull failed (set head): {e}"))
-                                    })?;
-                                println!(
-                                    "{} '{}' pulled {} commit(s) via pack (new head t={})",
-                                    "✓".green(),
-                                    ledger_id,
-                                    count,
-                                    remote_ns.commit_t
-                                );
-                                context::persist_refreshed_tokens(
-                                    &client,
-                                    upstream.remote.as_str(),
-                                    fluree_dir,
-                                )
-                                .await;
-                                return Ok(());
+                                };
+
+                                match ingest_result {
+                                    Ok(result) => {
+                                        let count = result.commits_stored;
+                                        let idx_count = result.index_artifacts_stored;
+                                        let handle = fluree
+                                            .ledger_cached(&ledger_id)
+                                            .await
+                                            .map_err(|e| {
+                                                CliError::Config(format!(
+                                                    "failed to load ledger: {e}"
+                                                ))
+                                            })?;
+                                        fluree
+                                            .set_commit_head(
+                                                &handle,
+                                                remote_head_cid,
+                                                remote_ns.commit_t,
+                                            )
+                                            .await
+                                            .map_err(|e| {
+                                                CliError::Config(format!(
+                                                    "pull failed (set head): {e}"
+                                                ))
+                                            })?;
+
+                                        if idx_count > 0 {
+                                            if let Some(ref remote_index_id) =
+                                                remote_ns.index_head_id
+                                            {
+                                                fluree
+                                                    .set_index_head(
+                                                        &handle,
+                                                        remote_index_id,
+                                                        remote_ns.index_t,
+                                                    )
+                                                    .await
+                                                    .map_err(|e| {
+                                                        CliError::Config(format!(
+                                                            "pull failed (set index head): {e}"
+                                                        ))
+                                                    })?;
+                                            }
+                                        }
+
+                                        if idx_count > 0 {
+                                            println!(
+                                                "{} '{}' pulled {} commit(s) + {} index artifact(s) via pack (new head t={})",
+                                                "✓".green(),
+                                                ledger_id,
+                                                count,
+                                                idx_count,
+                                                remote_ns.commit_t
+                                            );
+                                        } else {
+                                            println!(
+                                                "{} '{}' pulled {} commit(s) via pack (new head t={})",
+                                                "✓".green(),
+                                                ledger_id,
+                                                count,
+                                                remote_ns.commit_t
+                                            );
+                                        }
+                                        context::persist_refreshed_tokens(
+                                            &client,
+                                            upstream.remote.as_str(),
+                                            fluree_dir,
+                                        )
+                                        .await;
+                                        return Ok(());
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "  {} pack import failed: {e}, falling back to paginated export",
+                                            "warning:".yellow().bold()
+                                        );
+                                    }
+                                }
                             }
                             Err(e) => {
                                 eprintln!(
-                                    "  {} pack import failed: {e}, falling back to paginated export",
+                                    "  {} pack header read failed: {e}, falling back to paginated export",
                                     "warning:".yellow().bold()
                                 );
                             }
@@ -609,6 +787,7 @@ pub async fn run_clone(
     remote_name: &str,
     ledger: &str,
     alias: Option<&str>,
+    no_indexes: bool,
     fluree_dir: &Path,
 ) -> CliResult<()> {
     let ledger_id = context::to_ledger_id(ledger);
@@ -692,26 +871,110 @@ pub async fn run_clone(
 
     // Try pack protocol first (needs NsRecord for head CID).
     let mut used_pack = false;
+    let mut remote_ns_record: Option<fluree_db_nameservice::NsRecord> = None;
+    let mut index_artifacts_stored: usize = 0;
     match client.fetch_ns_record(&ledger_id).await {
         Ok(Some(ns)) => {
             if let Some(ref hcid) = ns.commit_head_id {
-                let pack_request = PackRequest::commits(vec![hcid.clone()], vec![]);
+                // Build pack request — include indexes by default for clone.
+                let pack_request = if !no_indexes {
+                    if let Some(ref remote_index_id) = ns.index_head_id {
+                        PackRequest::with_indexes(
+                            vec![hcid.clone()],
+                            vec![],
+                            remote_index_id.clone(),
+                            None, // Clone has no local index
+                        )
+                    } else {
+                        PackRequest::commits(vec![hcid.clone()], vec![])
+                    }
+                } else {
+                    PackRequest::commits(vec![hcid.clone()], vec![])
+                };
+
                 match client.fetch_pack_response(&ledger_id, &pack_request).await {
                     Ok(Some(response)) => {
-                        match ingest_pack_stream(response, fluree.storage(), &local_id).await {
-                            Ok(result) => {
-                                total_commits = result.commits_stored;
-                                head_commit_id = Some(hcid.clone());
-                                head_t = ns.commit_t;
-                                used_pack = true;
-                                let objects = result.commits_stored
-                                    + result.txn_blobs_stored
-                                    + result.index_artifacts_stored;
-                                eprint!("  fetched {} object(s) via pack\r", objects);
+                        // Peek header for size estimation.
+                        let mut body_stream = response.bytes_stream();
+                        match peek_pack_header(&mut body_stream).await {
+                            Ok((header, buf_tail)) => {
+                                let wants_indexes = pack_request.include_indexes;
+                                let is_large =
+                                    header.estimated_total_bytes > LARGE_TRANSFER_THRESHOLD;
+
+                                let ingest_result = if wants_indexes && is_large {
+                                    if confirm_large_transfer(header.estimated_total_bytes) {
+                                        ingest_pack_stream_with_header(
+                                            &header,
+                                            buf_tail,
+                                            &mut body_stream,
+                                            fluree.storage(),
+                                            &local_id,
+                                        )
+                                        .await
+                                    } else {
+                                        drop(body_stream);
+                                        eprintln!(
+                                            "  Skipping index transfer, cloning commits only..."
+                                        );
+                                        let commits_only =
+                                            PackRequest::commits(vec![hcid.clone()], vec![]);
+                                        match client
+                                            .fetch_pack_response(&ledger_id, &commits_only)
+                                            .await
+                                        {
+                                            Ok(Some(resp2)) => {
+                                                ingest_pack_stream(
+                                                    resp2,
+                                                    fluree.storage(),
+                                                    &local_id,
+                                                )
+                                                .await
+                                            }
+                                            Ok(None) => Err(
+                                                fluree_db_nameservice_sync::SyncError::PackNotSupported,
+                                            ),
+                                            Err(e) => Err(
+                                                fluree_db_nameservice_sync::SyncError::Remote(
+                                                    e.to_string(),
+                                                ),
+                                            ),
+                                        }
+                                    }
+                                } else {
+                                    ingest_pack_stream_with_header(
+                                        &header,
+                                        buf_tail,
+                                        &mut body_stream,
+                                        fluree.storage(),
+                                        &local_id,
+                                    )
+                                    .await
+                                };
+
+                                match ingest_result {
+                                    Ok(result) => {
+                                        total_commits = result.commits_stored;
+                                        index_artifacts_stored = result.index_artifacts_stored;
+                                        head_commit_id = Some(hcid.clone());
+                                        head_t = ns.commit_t;
+                                        used_pack = true;
+                                        let objects = result.commits_stored
+                                            + result.txn_blobs_stored
+                                            + result.index_artifacts_stored;
+                                        eprint!("  fetched {} object(s) via pack\r", objects);
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "  {} pack import failed: {e}, falling back to paginated export",
+                                            "warning:".yellow().bold()
+                                        );
+                                    }
+                                }
                             }
                             Err(e) => {
                                 eprintln!(
-                                    "  {} pack import failed: {e}, falling back to paginated export",
+                                    "  {} pack header read failed: {e}, falling back to paginated export",
                                     "warning:".yellow().bold()
                                 );
                             }
@@ -726,6 +989,7 @@ pub async fn run_clone(
                     }
                 }
             }
+            remote_ns_record = Some(ns);
         }
         Ok(None) => {} // ledger not found via proxy; fall back
         Err(e) => {
@@ -779,6 +1043,18 @@ pub async fn run_clone(
         .await
         .map_err(|e| CliError::Config(format!("clone failed (set head): {e}")))?;
 
+    // Set index head if index artifacts were transferred.
+    if index_artifacts_stored > 0 {
+        if let Some(ref ns) = remote_ns_record {
+            if let Some(ref remote_index_id) = ns.index_head_id {
+                fluree
+                    .set_index_head(&handle, remote_index_id, ns.index_t)
+                    .await
+                    .map_err(|e| CliError::Config(format!("clone failed (set index head): {e}")))?;
+            }
+        }
+    }
+
     // Configure upstream tracking.
     // Note: UpstreamConfig fields use `_alias` naming (pre-existing; should be `_id`).
     use fluree_db_nameservice_sync::UpstreamConfig;
@@ -792,13 +1068,24 @@ pub async fn run_clone(
         .await
         .map_err(|e| CliError::Config(format!("failed to set upstream: {e}")))?;
 
-    println!(
-        "{} Cloned '{}' ({} commits, head t={})",
-        "✓".green(),
-        local_id,
-        total_commits,
-        head_t
-    );
+    if index_artifacts_stored > 0 {
+        println!(
+            "{} Cloned '{}' ({} commits + {} index artifacts, head t={})",
+            "✓".green(),
+            local_id,
+            total_commits,
+            index_artifacts_stored,
+            head_t
+        );
+    } else {
+        println!(
+            "{} Cloned '{}' ({} commits, head t={})",
+            "✓".green(),
+            local_id,
+            total_commits,
+            head_t
+        );
+    }
     println!(
         "  {} upstream set to '{}/{}'",
         "→".cyan(),
@@ -822,6 +1109,7 @@ pub async fn run_clone_origin(
     token: Option<&str>,
     ledger: &str,
     alias: Option<&str>,
+    no_indexes: bool,
     fluree_dir: &Path,
 ) -> CliResult<()> {
     let ledger_id = context::to_ledger_id(ledger);
@@ -895,22 +1183,88 @@ pub async fn run_clone_origin(
     let content_store =
         fluree_db_core::storage::content_store_for(fluree.storage().clone(), &local_id);
     let mut commits_fetched = 0usize;
+    let mut index_artifacts_fetched = 0usize;
 
-    let pack_request = PackRequest::commits(vec![head_cid.clone()], vec![]);
+    // Build pack request — include indexes by default for clone.
+    let pack_request = if !no_indexes {
+        if let Some(ref remote_index_id) = ns_record.index_head_id {
+            PackRequest::with_indexes(
+                vec![head_cid.clone()],
+                vec![],
+                remote_index_id.clone(),
+                None, // Clone has no local index
+            )
+        } else {
+            PackRequest::commits(vec![head_cid.clone()], vec![])
+        }
+    } else {
+        PackRequest::commits(vec![head_cid.clone()], vec![])
+    };
     let used_pack = match fetcher.fetch_pack_response(&ledger_id, &pack_request).await {
         Ok(Some(response)) => {
-            match ingest_pack_stream(response, fluree.storage(), &local_id).await {
-                Ok(result) => {
-                    commits_fetched = result.commits_stored;
-                    let objects = result.commits_stored
-                        + result.txn_blobs_stored
-                        + result.index_artifacts_stored;
-                    eprint!("  fetched {} object(s) via pack\r", objects);
-                    true
+            let mut body_stream = response.bytes_stream();
+            match peek_pack_header(&mut body_stream).await {
+                Ok((header, buf_tail)) => {
+                    let wants_indexes = pack_request.include_indexes;
+                    let is_large = header.estimated_total_bytes > LARGE_TRANSFER_THRESHOLD;
+
+                    let ingest_result = if wants_indexes && is_large {
+                        if confirm_large_transfer(header.estimated_total_bytes) {
+                            ingest_pack_stream_with_header(
+                                &header,
+                                buf_tail,
+                                &mut body_stream,
+                                fluree.storage(),
+                                &local_id,
+                            )
+                            .await
+                        } else {
+                            drop(body_stream);
+                            eprintln!("  Skipping index transfer, cloning commits only...");
+                            let commits_only = PackRequest::commits(vec![head_cid.clone()], vec![]);
+                            match fetcher.fetch_pack_response(&ledger_id, &commits_only).await {
+                                Ok(Some(resp2)) => {
+                                    ingest_pack_stream(resp2, fluree.storage(), &local_id).await
+                                }
+                                Ok(None) => {
+                                    Err(fluree_db_nameservice_sync::SyncError::PackNotSupported)
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    } else {
+                        ingest_pack_stream_with_header(
+                            &header,
+                            buf_tail,
+                            &mut body_stream,
+                            fluree.storage(),
+                            &local_id,
+                        )
+                        .await
+                    };
+
+                    match ingest_result {
+                        Ok(result) => {
+                            commits_fetched = result.commits_stored;
+                            index_artifacts_fetched = result.index_artifacts_stored;
+                            let objects = result.commits_stored
+                                + result.txn_blobs_stored
+                                + result.index_artifacts_stored;
+                            eprint!("  fetched {} object(s) via pack\r", objects);
+                            true
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "  {} pack import failed: {e}, falling back to object fetch",
+                                "warning:".yellow().bold()
+                            );
+                            false
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!(
-                        "  {} pack import failed: {e}, falling back to object fetch",
+                        "  {} pack header read failed: {e}, falling back to object fetch",
                         "warning:".yellow().bold()
                     );
                     false
@@ -1014,6 +1368,16 @@ pub async fn run_clone_origin(
         .await
         .map_err(|e| CliError::Config(format!("clone failed (set head): {e}")))?;
 
+    // Set index head if index artifacts were transferred.
+    if index_artifacts_fetched > 0 {
+        if let Some(ref remote_index_id) = ns_record.index_head_id {
+            fluree
+                .set_index_head(&handle, remote_index_id, ns_record.index_t)
+                .await
+                .map_err(|e| CliError::Config(format!("clone failed (set index head): {e}")))?;
+        }
+    }
+
     // 7. Store LedgerConfig blob + update config_id on local NsRecord (if fetched).
     if let Some((config_cid, config_bytes)) = config_bytes_for_storage {
         use fluree_db_nameservice::ConfigCasResult;
@@ -1061,13 +1425,24 @@ pub async fn run_clone_origin(
         }
     }
 
-    println!(
-        "{} Cloned '{}' ({} commit(s), head t={})",
-        "✓".green(),
-        local_id,
-        commits_fetched,
-        head_t
-    );
+    if index_artifacts_fetched > 0 {
+        println!(
+            "{} Cloned '{}' ({} commit(s) + {} index artifact(s), head t={})",
+            "✓".green(),
+            local_id,
+            commits_fetched,
+            index_artifacts_fetched,
+            head_t
+        );
+    } else {
+        println!(
+            "{} Cloned '{}' ({} commit(s), head t={})",
+            "✓".green(),
+            local_id,
+            commits_fetched,
+            head_t
+        );
+    }
 
     Ok(())
 }
@@ -1077,7 +1452,11 @@ pub async fn run_clone_origin(
 /// Loads the local LedgerConfig from CAS, builds a MultiOriginFetcher,
 /// fetches the remote NsRecord, then walks the commit chain from the remote
 /// head to the local head, storing blobs along the way.
-async fn run_pull_via_origins(ledger_id: &str, fluree_dir: &Path) -> CliResult<()> {
+async fn run_pull_via_origins(
+    ledger_id: &str,
+    no_indexes: bool,
+    fluree_dir: &Path,
+) -> CliResult<()> {
     let fluree = context::build_fluree(fluree_dir)?;
 
     let ns_record = fluree
@@ -1156,29 +1535,135 @@ async fn run_pull_via_origins(ledger_id: &str, fluree_dir: &Path) -> CliResult<(
 
     // Try pack protocol first (single round-trip).
     let have: Vec<fluree_db_core::ContentId> = local_ref.id.clone().into_iter().collect();
-    let pack_request = PackRequest::commits(vec![remote_head_cid.clone()], have);
+    let pack_request = if !no_indexes {
+        if let Some(ref remote_index_id) = remote_ns.index_head_id {
+            let local_index_id = fluree
+                .nameservice()
+                .get_ref(ledger_id, RefKind::IndexHead)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|r| r.id);
+            PackRequest::with_indexes(
+                vec![remote_head_cid.clone()],
+                have,
+                remote_index_id.clone(),
+                local_index_id,
+            )
+        } else {
+            PackRequest::commits(vec![remote_head_cid.clone()], have)
+        }
+    } else {
+        PackRequest::commits(vec![remote_head_cid.clone()], have)
+    };
     match fetcher.fetch_pack_response(ledger_id, &pack_request).await {
         Ok(Some(response)) => {
-            let result = ingest_pack_stream(response, fluree.storage(), ledger_id)
-                .await
-                .map_err(|e| CliError::Config(format!("pull failed (pack import): {e}")))?;
-            let count = result.commits_stored;
-            let handle = fluree
-                .ledger_cached(ledger_id)
-                .await
-                .map_err(|e| CliError::Config(format!("failed to load ledger: {e}")))?;
-            fluree
-                .set_commit_head(&handle, &remote_head_cid, remote_t)
-                .await
-                .map_err(|e| CliError::Config(format!("pull failed (set head): {e}")))?;
-            println!(
-                "{} '{}' pulled {} commit(s) via pack (new head t={})",
-                "✓".green(),
-                ledger_id,
-                count,
-                remote_t
-            );
-            return Ok(());
+            let mut body_stream = response.bytes_stream();
+            match peek_pack_header(&mut body_stream).await {
+                Ok((header, buf_tail)) => {
+                    let wants_indexes = pack_request.include_indexes;
+                    let is_large = header.estimated_total_bytes > LARGE_TRANSFER_THRESHOLD;
+
+                    let ingest_result = if wants_indexes && is_large {
+                        if confirm_large_transfer(header.estimated_total_bytes) {
+                            ingest_pack_stream_with_header(
+                                &header,
+                                buf_tail,
+                                &mut body_stream,
+                                fluree.storage(),
+                                ledger_id,
+                            )
+                            .await
+                        } else {
+                            drop(body_stream);
+                            eprintln!("  Skipping index transfer, pulling commits only...");
+                            let have: Vec<fluree_db_core::ContentId> =
+                                local_ref.id.clone().into_iter().collect();
+                            let commits_only =
+                                PackRequest::commits(vec![remote_head_cid.clone()], have);
+                            match fetcher.fetch_pack_response(ledger_id, &commits_only).await {
+                                Ok(Some(resp2)) => {
+                                    ingest_pack_stream(resp2, fluree.storage(), ledger_id).await
+                                }
+                                Ok(None) => {
+                                    Err(fluree_db_nameservice_sync::SyncError::PackNotSupported)
+                                }
+                                Err(e) => Err(e),
+                            }
+                        }
+                    } else {
+                        ingest_pack_stream_with_header(
+                            &header,
+                            buf_tail,
+                            &mut body_stream,
+                            fluree.storage(),
+                            ledger_id,
+                        )
+                        .await
+                    };
+
+                    match ingest_result {
+                        Ok(result) => {
+                            let count = result.commits_stored;
+                            let idx_count = result.index_artifacts_stored;
+                            let handle = fluree.ledger_cached(ledger_id).await.map_err(|e| {
+                                CliError::Config(format!("failed to load ledger: {e}"))
+                            })?;
+                            fluree
+                                .set_commit_head(&handle, &remote_head_cid, remote_t)
+                                .await
+                                .map_err(|e| {
+                                    CliError::Config(format!("pull failed (set head): {e}"))
+                                })?;
+
+                            if idx_count > 0 {
+                                if let Some(ref remote_index_id) = remote_ns.index_head_id {
+                                    fluree
+                                        .set_index_head(&handle, remote_index_id, remote_ns.index_t)
+                                        .await
+                                        .map_err(|e| {
+                                            CliError::Config(format!(
+                                                "pull failed (set index head): {e}"
+                                            ))
+                                        })?;
+                                }
+                            }
+
+                            if idx_count > 0 {
+                                println!(
+                                    "{} '{}' pulled {} commit(s) + {} index artifact(s) via pack (new head t={})",
+                                    "✓".green(),
+                                    ledger_id,
+                                    count,
+                                    idx_count,
+                                    remote_t
+                                );
+                            } else {
+                                println!(
+                                    "{} '{}' pulled {} commit(s) via pack (new head t={})",
+                                    "✓".green(),
+                                    ledger_id,
+                                    count,
+                                    remote_t
+                                );
+                            }
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "  {} pack import failed: {e}, falling back to CID walk",
+                                "warning:".yellow().bold()
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  {} pack header read failed: {e}, falling back to CID walk",
+                        "warning:".yellow().bold()
+                    );
+                }
+            }
         }
         Ok(None) => {} // server doesn't support pack — fall through
         Err(e) => {

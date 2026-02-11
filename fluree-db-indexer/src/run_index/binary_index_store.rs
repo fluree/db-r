@@ -1244,16 +1244,13 @@ impl BinaryIndexStore {
                 Some(_) => {} // Already present with same prefix
                 None => {
                     self.dicts.namespace_codes.insert(*code, prefix.clone());
-                    self.dicts
-                        .namespace_reverse
-                        .insert(prefix.clone(), *code);
+                    self.dicts.namespace_reverse.insert(prefix.clone(), *code);
                     changed = true;
                 }
             }
         }
         if changed {
-            self.dicts.prefix_trie =
-                PrefixTrie::from_namespace_codes(&self.dicts.namespace_codes);
+            self.dicts.prefix_trie = PrefixTrie::from_namespace_codes(&self.dicts.namespace_codes);
         }
     }
 

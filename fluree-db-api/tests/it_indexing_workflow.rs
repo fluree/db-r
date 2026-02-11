@@ -1361,7 +1361,10 @@ async fn new_namespace_after_indexing_is_queryable() {
                 "select": ["?s"],
                 "where": { "@id": "?s", "@type": "ex:Person" }
             });
-            let result = fluree.query(&loaded, &query).await.expect("query with new ns");
+            let result = fluree
+                .query(&loaded, &query)
+                .await
+                .expect("query with new ns");
             let json_rows = result.to_jsonld(&loaded.db).expect("jsonld format");
             let rows = normalize_rows(&json_rows);
             // Both Alice (from index) and Bob (from novelty with new namespace)

@@ -90,18 +90,12 @@ async fn run_add(
     // Normalize aliases to include branch (e.g., "test4" → "test4:main")
     // so resolution works with both "test4" and "test4:main".
     let local_alias = crate::context::to_ledger_id(ledger);
-    let effective_remote_alias = crate::context::to_ledger_id(
-        remote_alias.unwrap_or(ledger),
-    );
+    let effective_remote_alias = crate::context::to_ledger_id(remote_alias.unwrap_or(ledger));
 
     // Check mutual exclusion: refuse if local ledger exists
     let fluree = crate::context::build_fluree(fluree_dir)?;
     let local_ledger_id = &local_alias;
-    if fluree
-        .ledger_exists(local_ledger_id)
-        .await
-        .unwrap_or(false)
-    {
+    if fluree.ledger_exists(local_ledger_id).await.unwrap_or(false) {
         return Err(CliError::Config(format!(
             "ledger '{}' already exists locally. \
              Remove it first, or use a different local alias with `--remote-alias`.",

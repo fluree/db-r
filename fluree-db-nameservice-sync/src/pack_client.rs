@@ -19,8 +19,8 @@ use crate::error::{Result, SyncError};
 use crate::origin::verify_object_integrity;
 use bytes::BytesMut;
 use fluree_db_core::pack::{
-    decode_frame, read_stream_preamble, PackFrame, PackRequest, DEFAULT_MAX_PAYLOAD, PACK_PROTOCOL,
-    PREAMBLE_SIZE,
+    decode_frame, read_stream_preamble, PackFrame, PackHeader, PackRequest, DEFAULT_MAX_PAYLOAD,
+    PACK_PROTOCOL, PREAMBLE_SIZE,
 };
 use fluree_db_core::{ContentAddressedWrite, ContentId, ContentKind};
 use futures::StreamExt;
@@ -241,6 +241,192 @@ pub async fn ingest_pack_stream<S: ContentAddressedWrite>(
                 // Stream ended without End frame.
                 if buf.is_empty() && !preamble_consumed {
                     return Err(SyncError::PackProtocol("empty pack stream".to_string()));
+                }
+                return Err(SyncError::PackProtocol(
+                    "pack stream ended without End frame".to_string(),
+                ));
+            }
+        }
+    }
+}
+
+/// Read just the preamble and header frame from a pack stream.
+///
+/// Consumes the body stream until the preamble + header frame are parsed.
+/// Returns the parsed `PackHeader` and a `BytesMut` containing any leftover
+/// bytes already read past the header frame (start of the next frame).
+///
+/// The caller retains the body stream (advanced past the header). To continue
+/// ingestion, pass the header, buffer tail, and stream to
+/// [`ingest_pack_stream_with_header`].
+pub async fn peek_pack_header(
+    stream: &mut (impl futures::Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>>
+              + Unpin),
+) -> Result<(PackHeader, BytesMut)> {
+    let mut buf = BytesMut::new();
+    let mut preamble_consumed = false;
+
+    loop {
+        if !preamble_consumed {
+            if buf.len() >= PREAMBLE_SIZE {
+                read_stream_preamble(&buf).map_err(|e| {
+                    SyncError::PackProtocol(format!("invalid pack preamble: {}", e))
+                })?;
+                let _ = buf.split_to(PREAMBLE_SIZE);
+                preamble_consumed = true;
+                continue;
+            }
+        } else {
+            // Try to decode the header frame.
+            match decode_frame(&buf, DEFAULT_MAX_PAYLOAD) {
+                Ok((frame, consumed)) => {
+                    let _ = buf.split_to(consumed);
+                    match frame {
+                        PackFrame::Header(header) => {
+                            if header.protocol != PACK_PROTOCOL {
+                                return Err(SyncError::PackProtocol(format!(
+                                    "unsupported pack protocol: expected {}, got {}",
+                                    PACK_PROTOCOL, header.protocol
+                                )));
+                            }
+                            return Ok((header, buf));
+                        }
+                        PackFrame::Error(msg) => {
+                            return Err(SyncError::PackProtocol(format!(
+                                "server error in pack stream: {}",
+                                msg
+                            )));
+                        }
+                        _ => {
+                            return Err(SyncError::PackProtocol(
+                                "pack stream must start with Header frame".to_string(),
+                            ));
+                        }
+                    }
+                }
+                Err(fluree_db_core::pack::PackError::Incomplete(_)) => {
+                    // Need more bytes.
+                }
+                Err(e) => {
+                    return Err(SyncError::PackProtocol(format!(
+                        "pack frame decode error: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        // Read more bytes from the stream.
+        match stream.next().await {
+            Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
+            Some(Err(e)) => {
+                return Err(SyncError::Remote(format!(
+                    "error reading pack stream: {}",
+                    e
+                )));
+            }
+            None => {
+                return Err(SyncError::PackProtocol(
+                    "pack stream ended before header frame".to_string(),
+                ));
+            }
+        }
+    }
+}
+
+/// Ingest a pack stream with a pre-parsed header.
+///
+/// Like [`ingest_pack_stream`], but skips preamble and header parsing — uses
+/// the header already obtained via [`peek_pack_header`]. The `initial_buf`
+/// contains any leftover bytes from the header peek, which are consumed before
+/// reading from `stream`.
+pub async fn ingest_pack_stream_with_header<S: ContentAddressedWrite>(
+    header: &PackHeader,
+    initial_buf: BytesMut,
+    stream: &mut (impl futures::Stream<Item = std::result::Result<bytes::Bytes, reqwest::Error>>
+              + Unpin),
+    storage: &S,
+    ledger_id: &str,
+) -> Result<PackIngestResult> {
+    let mut buf = initial_buf;
+    let mut result = PackIngestResult::default();
+
+    debug!(
+        protocol = %header.protocol,
+        capabilities = ?header.capabilities,
+        commit_count = ?header.commit_count,
+        "pack: received header (pre-parsed)"
+    );
+
+    // Decode remaining frames (data, manifest, end).
+    loop {
+        match decode_frame(&buf, DEFAULT_MAX_PAYLOAD) {
+            Ok((frame, consumed)) => {
+                let _ = buf.split_to(consumed);
+
+                match frame {
+                    PackFrame::Header(_) => {
+                        return Err(SyncError::PackProtocol(
+                            "pack stream contains multiple Header frames".to_string(),
+                        ));
+                    }
+                    PackFrame::Data { cid, payload } => {
+                        result.total_bytes += payload.len() as u64;
+                        ingest_pack_frame(&cid, &payload, storage, ledger_id).await?;
+
+                        match cid.content_kind() {
+                            Some(ContentKind::Commit) => result.commits_stored += 1,
+                            Some(ContentKind::Txn) => result.txn_blobs_stored += 1,
+                            _ => result.index_artifacts_stored += 1,
+                        }
+                    }
+                    PackFrame::Error(msg) => {
+                        return Err(SyncError::PackProtocol(format!(
+                            "server error in pack stream: {}",
+                            msg
+                        )));
+                    }
+                    PackFrame::Manifest(manifest) => {
+                        debug!(manifest = %manifest, "pack: received manifest");
+                    }
+                    PackFrame::End => {
+                        debug!(
+                            commits = result.commits_stored,
+                            txns = result.txn_blobs_stored,
+                            index_artifacts = result.index_artifacts_stored,
+                            total_bytes = result.total_bytes,
+                            "pack: stream complete"
+                        );
+                        return Ok(result);
+                    }
+                }
+                continue;
+            }
+            Err(fluree_db_core::pack::PackError::Incomplete(_)) => {
+                // Need more bytes.
+            }
+            Err(e) => {
+                return Err(SyncError::PackProtocol(format!(
+                    "pack frame decode error: {}",
+                    e
+                )));
+            }
+        }
+
+        // Read more bytes from the stream.
+        match stream.next().await {
+            Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
+            Some(Err(e)) => {
+                return Err(SyncError::Remote(format!(
+                    "error reading pack stream: {}",
+                    e
+                )));
+            }
+            None => {
+                if buf.is_empty() {
+                    return Err(SyncError::PackProtocol(
+                        "pack stream ended without End frame".to_string(),
+                    ));
                 }
                 return Err(SyncError::PackProtocol(
                     "pack stream ended without End frame".to_string(),

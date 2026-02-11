@@ -102,7 +102,9 @@ pub use graph_source::{
     FlureeIndexProvider, SnapshotSelection,
 };
 pub use graph_transact_builder::{GraphTransactBuilder, StagedGraph};
-pub use import::{CreateBuilder, ImportBuilder, ImportConfig, ImportError, ImportResult};
+pub use import::{
+    CreateBuilder, EffectiveImportSettings, ImportBuilder, ImportConfig, ImportError, ImportResult,
+};
 pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{
     FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager, LedgerManagerConfig,
@@ -2062,6 +2064,40 @@ where
     /// Set the indexing mode
     pub fn set_indexing_mode(&mut self, mode: tx::IndexingMode) {
         self.indexing_mode = mode;
+    }
+
+    /// Derive `IndexConfig` from connection defaults (or fall back to compiled defaults).
+    pub(crate) fn default_index_config(&self) -> IndexConfig {
+        let indexing = self
+            .connection
+            .config()
+            .defaults
+            .as_ref()
+            .and_then(|d| d.indexing.as_ref());
+
+        IndexConfig {
+            reindex_min_bytes: indexing
+                .and_then(|i| i.reindex_min_bytes)
+                .map(|v| v as usize)
+                .unwrap_or(IndexConfig::default().reindex_min_bytes),
+            reindex_max_bytes: indexing
+                .and_then(|i| i.reindex_max_bytes)
+                .map(|v| v as usize)
+                .unwrap_or(IndexConfig::default().reindex_max_bytes),
+        }
+    }
+
+    /// Check whether indexing is enabled in connection defaults.
+    ///
+    /// Defaults to `true` if not explicitly configured.
+    pub(crate) fn defaults_indexing_enabled(&self) -> bool {
+        self.connection
+            .config()
+            .defaults
+            .as_ref()
+            .and_then(|d| d.indexing.as_ref())
+            .and_then(|i| i.indexing_enabled)
+            .unwrap_or(true)
     }
 
     /// Get a reference to the nameservice

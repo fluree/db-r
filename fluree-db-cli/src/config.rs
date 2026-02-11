@@ -387,13 +387,11 @@ impl TomlSyncConfigStore {
                         auth_table.insert("refresh_token", Value::from(v.as_str()).into());
                     }
                     if let Some(ref scopes) = auth.scopes {
-                        let arr: toml_edit::Array =
-                            scopes.iter().map(|s| s.as_str()).collect();
+                        let arr: toml_edit::Array = scopes.iter().map(|s| s.as_str()).collect();
                         auth_table.insert("scopes", Value::from(arr).into());
                     }
                     if let Some(port) = auth.redirect_port {
-                        auth_table
-                            .insert("redirect_port", Value::from(i64::from(port)).into());
+                        auth_table.insert("redirect_port", Value::from(i64::from(port)).into());
                     }
                     table.insert("auth", Item::Table(auth_table));
                 }

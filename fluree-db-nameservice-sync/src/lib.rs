@@ -41,7 +41,10 @@ pub use error::{Result, SyncError};
 // Re-export LedgerConfig types from fluree-db-nameservice (canonical home)
 pub use fluree_db_nameservice::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
 pub use origin::{HttpOriginFetcher, MultiOriginFetcher};
-pub use pack_client::{fetch_and_ingest_pack, ingest_pack_stream, PackIngestResult};
+pub use pack_client::{
+    fetch_and_ingest_pack, ingest_pack_stream, ingest_pack_stream_with_header, peek_pack_header,
+    PackIngestResult,
+};
 pub use watch::{RemoteEvent, RemoteWatch};
 pub use watch_poll::PollRemoteWatch;
 pub use watch_sse::SseRemoteWatch;

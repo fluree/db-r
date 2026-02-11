@@ -84,7 +84,10 @@ async fn run_remote(remote_name: &str, fluree_dir: &Path) -> CliResult<()> {
     let client = context::build_remote_client(remote_name, fluree_dir).await?;
 
     let result = client.list_ledgers().await.map_err(|e| {
-        CliError::Remote(format!("failed to list ledgers on '{}': {}", remote_name, e))
+        CliError::Remote(format!(
+            "failed to list ledgers on '{}': {}",
+            remote_name, e
+        ))
     })?;
 
     context::persist_refreshed_tokens(&client, remote_name, fluree_dir).await;
@@ -104,10 +107,7 @@ async fn run_remote(remote_name: &str, fluree_dir: &Path) -> CliResult<()> {
         return Ok(());
     }
 
-    println!(
-        "Ledgers on remote '{}':",
-        remote_name.green()
-    );
+    println!("Ledgers on remote '{}':", remote_name.green());
 
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);

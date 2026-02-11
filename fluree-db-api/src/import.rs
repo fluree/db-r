@@ -196,6 +196,34 @@ impl ImportConfig {
             "import pipeline computed settings"
         );
     }
+
+    /// Effective settings that will be used for the import (auto-derived when not set).
+    /// Callers can use this to report to the user what resources the import will use.
+    pub fn effective_import_settings(&self) -> EffectiveImportSettings {
+        EffectiveImportSettings {
+            memory_budget_mb: self.effective_memory_budget_mb(),
+            parallelism: self.parse_threads,
+            chunk_size_mb: self.effective_chunk_size_mb(),
+            max_inflight_chunks: self.effective_max_inflight(),
+            run_budget_mb: self.effective_run_budget_mb(),
+        }
+    }
+}
+
+/// Effective import resource settings (memory budget, parallelism, chunk size, etc.).
+/// Used to report to the user what the import pipeline will use when values are auto-detected.
+#[derive(Debug, Clone)]
+pub struct EffectiveImportSettings {
+    /// Memory budget in MB (75% of system RAM when not set).
+    pub memory_budget_mb: usize,
+    /// Number of parallel parse threads (system cores capped at 6 when not set).
+    pub parallelism: usize,
+    /// Chunk size in MB for large-file splitting (derived from budget when not set).
+    pub chunk_size_mb: usize,
+    /// Max inflight chunks (derived from budget when not set).
+    pub max_inflight_chunks: usize,
+    /// Run budget in MB for multi-order indexing (derived when not set).
+    pub run_budget_mb: usize,
 }
 
 // ============================================================================
@@ -486,6 +514,12 @@ where
     pub fn publish_every(mut self, n: usize) -> Self {
         self.config.publish_every = n;
         self
+    }
+
+    /// Effective resource settings that will be used for this import (auto-derived when not set).
+    /// Use this to report to the user what memory budget and parallelism the import will use.
+    pub fn effective_import_settings(&self) -> EffectiveImportSettings {
+        self.config.effective_import_settings()
     }
 
     /// Execute the bulk import pipeline.

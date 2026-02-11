@@ -218,12 +218,19 @@ pub(crate) async fn discover_remote(remote_url: &str) -> Result<Option<Discovere
                             .iter()
                             .filter_map(|s| s.as_str().map(String::from))
                             .collect();
-                        if v.is_empty() { None } else { Some(v) }
+                        if v.is_empty() {
+                            None
+                        } else {
+                            Some(v)
+                        }
                     }
                     Some(serde_json::Value::String(s)) => {
-                        let v: Vec<String> =
-                            s.split_whitespace().map(String::from).collect();
-                        if v.is_empty() { None } else { Some(v) }
+                        let v: Vec<String> = s.split_whitespace().map(String::from).collect();
+                        if v.is_empty() {
+                            None
+                        } else {
+                            Some(v)
+                        }
                     }
                     _ => None,
                 };

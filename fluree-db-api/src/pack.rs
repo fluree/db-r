@@ -19,7 +19,8 @@ use crate::error::{ApiError, Result};
 use crate::LedgerHandle;
 use fluree_db_core::pack::{
     encode_data_frame, encode_end_frame, encode_error_frame, encode_header_frame,
-    encode_manifest_frame, write_stream_preamble, PackHeader, PackRequest, PACK_PROTOCOL,
+    encode_manifest_frame, estimate_pack_bytes, write_stream_preamble, PackHeader, PackRequest,
+    PACK_PROTOCOL,
 };
 use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentId, ContentStore, Storage};
@@ -299,9 +300,11 @@ where
 
     // --- Build and send header ---
     let header = if let Some(ref artifacts) = missing_artifacts {
+        let estimated = estimate_pack_bytes(missing_commits.len() as u32);
         PackHeader::with_indexes(
             Some(missing_commits.len() as u32),
             Some(artifacts.len() as u32),
+            estimated,
         )
     } else {
         PackHeader::commits_only(Some(missing_commits.len() as u32))

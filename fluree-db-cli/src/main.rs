@@ -46,8 +46,14 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 parallelism: cli.parallelism,
                 chunk_size_mb,
             };
-            commands::create::run(&ledger, from.as_deref(), &fluree_dir, cli.verbose, &import_opts)
-                .await
+            commands::create::run(
+                &ledger,
+                from.as_deref(),
+                &fluree_dir,
+                cli.verbose,
+                &import_opts,
+            )
+            .await
         }
 
         Commands::Use { ledger } => {
@@ -208,9 +214,9 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             commands::sync::run_fetch(&remote, &fluree_dir).await
         }
 
-        Commands::Pull { ledger } => {
+        Commands::Pull { ledger, no_indexes } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
-            commands::sync::run_pull(ledger.as_deref(), &fluree_dir).await
+            commands::sync::run_pull(ledger.as_deref(), no_indexes, &fluree_dir).await
         }
 
         Commands::Push { ledger } => {
@@ -223,6 +229,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             origin,
             token,
             alias,
+            no_indexes,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             if let Some(origin_uri) = origin {
@@ -237,6 +244,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                     token.as_deref(),
                     &args[0],
                     alias.as_deref(),
+                    no_indexes,
                     &fluree_dir,
                 )
                 .await
@@ -247,7 +255,14 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                         "usage: fluree clone <remote> <ledger>  or  fluree clone --origin <uri> <ledger>".into(),
                     ));
                 }
-                commands::sync::run_clone(&args[0], &args[1], alias.as_deref(), &fluree_dir).await
+                commands::sync::run_clone(
+                    &args[0],
+                    &args[1],
+                    alias.as_deref(),
+                    no_indexes,
+                    &fluree_dir,
+                )
+                .await
             }
         }
 

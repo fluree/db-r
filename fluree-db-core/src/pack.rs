@@ -135,12 +135,7 @@ pub struct PackRequest {
     pub have_index_root_id: Option<ContentId>,
 
     /// Whether to include index artifacts in the pack.
-    #[serde(default)]
     pub include_indexes: bool,
-
-    /// Whether to include graph source artifacts.
-    #[serde(default)]
-    pub include_graph_sources: bool,
 }
 
 /// Server response header, the mandatory first frame in the pack stream.
@@ -166,6 +161,13 @@ pub struct PackHeader {
     /// Number of index artifact objects (if known up front).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_artifact_count: Option<u32>,
+
+    /// Estimated total transfer size in bytes (commits + indexes).
+    ///
+    /// This is a rough estimate based on object counts and average sizes,
+    /// used by clients to warn before large downloads. Not an exact measurement.
+    /// Zero when not computed (e.g. commits-only transfers).
+    pub estimated_total_bytes: u64,
 }
 
 // ============================================================================
@@ -377,6 +379,30 @@ fn check_payload_size(size: u32, max: u32) -> PackResult<()> {
 }
 
 // ============================================================================
+// Size estimation
+// ============================================================================
+
+/// Average bytes per commit object (commit blob + txn blob).
+pub const AVG_COMMIT_BYTES: u64 = 50_000;
+
+/// Ratio of index artifact bytes to commit bytes.
+/// Based on observed data: index artifacts are roughly 1.1× the size of commit data.
+pub const INDEX_TO_COMMIT_SIZE_RATIO: f64 = 1.1;
+
+/// Threshold above which clients should prompt for confirmation (1 GiB).
+pub const LARGE_TRANSFER_THRESHOLD: u64 = 1_073_741_824;
+
+/// Estimate total pack transfer bytes from commit count.
+///
+/// Uses `commit_count` × average commit size × index ratio to produce a rough
+/// byte estimate for the combined commit + index transfer.
+pub fn estimate_pack_bytes(commit_count: u32) -> u64 {
+    let commit_est = commit_count as u64 * AVG_COMMIT_BYTES;
+    let index_est = (commit_est as f64 * INDEX_TO_COMMIT_SIZE_RATIO) as u64;
+    commit_est + index_est
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -390,7 +416,6 @@ impl PackRequest {
             want_index_root_id: None,
             have_index_root_id: None,
             include_indexes: false,
-            include_graph_sources: false,
         }
     }
 
@@ -408,7 +433,6 @@ impl PackRequest {
             want_index_root_id: Some(want_index_root_id),
             have_index_root_id,
             include_indexes: true,
-            include_graph_sources: false,
         }
     }
 }
@@ -422,11 +446,16 @@ impl PackHeader {
             server_max_frame_bytes: Some(DEFAULT_MAX_PAYLOAD),
             commit_count,
             index_artifact_count: None,
+            estimated_total_bytes: 0,
         }
     }
 
     /// Create a header that includes index artifacts.
-    pub fn with_indexes(commit_count: Option<u32>, index_artifact_count: Option<u32>) -> Self {
+    pub fn with_indexes(
+        commit_count: Option<u32>,
+        index_artifact_count: Option<u32>,
+        estimated_total_bytes: u64,
+    ) -> Self {
         Self {
             protocol: PACK_PROTOCOL.to_string(),
             capabilities: vec![
@@ -437,6 +466,7 @@ impl PackHeader {
             server_max_frame_bytes: Some(DEFAULT_MAX_PAYLOAD),
             commit_count,
             index_artifact_count,
+            estimated_total_bytes,
         }
     }
 }
@@ -506,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_header_with_indexes_roundtrip() {
-        let header = PackHeader::with_indexes(Some(3), Some(100));
+        let header = PackHeader::with_indexes(Some(3), Some(100), 0);
         let mut buf = Vec::new();
         encode_header_frame(&header, &mut buf);
 
@@ -659,7 +689,7 @@ mod tests {
         let mut buf = Vec::new();
 
         write_stream_preamble(&mut buf);
-        encode_header_frame(&PackHeader::with_indexes(Some(2), Some(1)), &mut buf);
+        encode_header_frame(&PackHeader::with_indexes(Some(2), Some(1), 0), &mut buf);
         encode_data_frame(
             &sample_cid(ContentKind::Commit, b"c1"),
             b"commit bytes",

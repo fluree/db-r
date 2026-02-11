@@ -5,7 +5,7 @@ Pull commits from upstream and apply them to the local ledger, similar to `git p
 ## Usage
 
 ```bash
-fluree pull [LEDGER]
+fluree pull [OPTIONS] [LEDGER]
 ```
 
 ## Arguments
@@ -13,6 +13,7 @@ fluree pull [LEDGER]
 | Argument | Description |
 |----------|-------------|
 | `[LEDGER]` | Ledger name (defaults to active ledger) |
+| `--no-indexes` | Skip pulling binary index data; only transfer new commits and txn blobs (local index may lag until you run `fluree reindex`) |
 
 ## Description
 
@@ -20,10 +21,15 @@ Downloads new commits from the configured upstream and applies them to the local
 
 1. Queries the remote for its current head (`t` and commit ContentId)
 2. Compares with the local head; exits early if already up to date
-3. Attempts bulk download of missing commits via the **pack protocol** (single streaming request)
+3. Attempts bulk download of missing commits (and by default **index artifacts**) via the **pack protocol** (single streaming request)
 4. Falls back to paginated JSON export if the server does not support pack
 5. Stores all commit and transaction blobs to local CAS
-6. Advances the local head to the remote head
+6. When index data is requested and transferred, advances the local index head to match the remote
+7. Advances the local commit head to the remote head
+
+### Index transfer
+
+As with [clone](clone.md#index-transfer), pull uses the pack protocol to request **index artifacts** by default when the remote has an index. Use **`--no-indexes`** to transfer only new commits and txn blobs. For large estimated transfers (~1 GiB or more), the CLI prompts for confirmation before streaming.
 
 ### Transport
 
@@ -47,15 +53,20 @@ fluree pull
 
 # Pull changes for specific ledger
 fluree pull mydb
+
+# Pull commits only (skip index transfer)
+fluree pull --no-indexes mydb
 ```
 
 ## Output
 
-Successful pull:
+Successful pull (with index data when remote has an index):
 ```
 Pulling 'mydb:main' from 'origin' (local t=10, remote t=42)...
-✓ 'mydb:main' pulled 32 commit(s) (new head t=42)
+✓ 'mydb:main' pulled 32 commit(s) via pack (new head t=42)
 ```
+
+With `--no-indexes`, only commits (and referenced txn blobs) are transferred; the message does not include index artifact counts.
 
 Already up to date:
 ```
@@ -78,6 +89,7 @@ error: no upstream configured for 'mydb:main'
 
 ## Limitations
 
+- **Index head vs commit head:** When you use `--no-indexes`, the local index head is not updated. Queries still work but may replay more novelty; run `fluree reindex` to bring the index up to the current commit head.
 - **Graph source indexes not replicated:** Graph source snapshots (BM25/vector/geo, etc.) are not replicated by `fluree pull` yet. Rebuild graph source indexes in the target environment as needed.
 
 ## See Also
