@@ -27,6 +27,7 @@ pub mod error;
 pub mod execute;
 pub mod exists;
 pub mod explain;
+pub mod expression;
 pub mod filter;
 pub mod geo_rewrite;
 pub mod geo_search;
@@ -71,7 +72,7 @@ pub use aggregate::{apply_aggregate, AggregateFn, AggregateOperator, AggregateSp
 pub use binary_range::BinaryRangeProvider;
 pub use binary_scan::{BinaryScanOperator, ScanOperator};
 pub use bind::BindOperator;
-pub use binding::{Batch, BatchError, BatchView, Binding, RowView};
+pub use binding::{Batch, BatchError, BatchView, Binding, RowAccess, RowView};
 pub use context::{ExecutionContext, WellKnownDatatypes};
 pub use dataset::{ActiveGraph, ActiveGraphs, DataSet, GraphRef};
 pub use distinct::DistinctOperator;
@@ -90,7 +91,7 @@ pub use explain::{
     explain_patterns, ExplainPlan, FallbackReason, OptimizationStatus, PatternDisplay,
     SelectivityInputs,
 };
-pub use filter::{evaluate as evaluate_filter, FilterOperator};
+pub use filter::FilterOperator;
 pub use geo_rewrite::rewrite_geo_patterns;
 pub use graph::GraphOperator;
 pub use graph_view::{AsOf, BaseView, GraphView, ResolvedGraphView, WithPolicy, WithReasoning};
@@ -98,7 +99,7 @@ pub use group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 pub use groupby::GroupByOperator;
 pub use having::HavingOperator;
 pub use ir::{
-    CompareOp, FilterExpr, FilterValue, FunctionName, PathModifier, Pattern, PropertyPathPattern,
+    CompareOp, Expression, FilterValue, Function, PathModifier, Pattern, PropertyPathPattern,
     Query, R2rmlPattern, ServiceEndpoint, ServicePattern, SubqueryPattern,
 };
 pub use join::{BindInstruction, NestedLoopJoinOperator, PatternPosition, UnifyInstruction};
@@ -158,7 +159,7 @@ pub async fn execute_pattern(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::new(db, vars);
-    let mut scan = ScanOperator::new(pattern, None);
+    let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 
@@ -217,7 +218,7 @@ pub async fn execute_pattern_at(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_time(db, vars, to_t, from_t);
-    let mut scan = ScanOperator::new(pattern, None);
+    let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 
@@ -250,7 +251,7 @@ pub async fn execute_pattern_with_overlay(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_overlay(db, vars, overlay);
-    let mut scan = ScanOperator::new(pattern, None);
+    let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 
@@ -277,7 +278,7 @@ pub async fn execute_pattern_with_overlay_at(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay);
-    let mut scan = ScanOperator::new(pattern, None);
+    let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 

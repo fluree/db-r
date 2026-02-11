@@ -15,7 +15,7 @@
 //! 5. Dedup across cells by subject_id
 //! 6. Emit bindings for matching subjects
 
-use crate::binding::{Batch, Binding};
+use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{S2QueryGeom, S2SearchPattern, S2SpatialOp};

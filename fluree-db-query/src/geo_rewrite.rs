@@ -6,9 +6,7 @@
 //! This optimization enables SPARQL queries using `geof:distance` to use the same
 //! accelerated GeoPoint index path as JSON-LD `idx:geo` queries.
 
-use crate::ir::{
-    CompareOp, FilterExpr, FilterValue, FunctionName, GeoSearchCenter, GeoSearchPattern, Pattern,
-};
+use crate::ir::{Expression, FilterValue, Function, GeoSearchCenter, GeoSearchPattern, Pattern};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::geo::try_extract_point;
@@ -171,10 +169,10 @@ where
 ///
 /// Matches: FunctionCall { name: GeofDistance, args: [Var(loc), Const(wkt)] }
 /// Returns: (loc_var, GeoSearchCenter::Const { lat, lng })
-fn extract_distance_call(expr: &FilterExpr) -> Option<(VarId, GeoSearchCenter)> {
-    if let FilterExpr::Function { name, args } = expr {
+fn extract_distance_call(expr: &Expression) -> Option<(VarId, GeoSearchCenter)> {
+    if let Expression::Call { func, args } = expr {
         // Match GeofDistance function
-        if !matches!(name, FunctionName::GeofDistance) {
+        if !matches!(func, Function::GeofDistance) {
             return None;
         }
 
@@ -185,13 +183,13 @@ fn extract_distance_call(expr: &FilterExpr) -> Option<(VarId, GeoSearchCenter)> 
 
         // First arg must be a variable (the location)
         let loc_var = match &args[0] {
-            FilterExpr::Var(v) => *v,
+            Expression::Var(v) => *v,
             _ => return None,
         };
 
         // Second arg must be a constant WKT string
         let wkt = match &args[1] {
-            FilterExpr::Const(FilterValue::String(s)) => s.as_str(),
+            Expression::Const(FilterValue::String(s)) => s.as_str(),
             _ => return None,
         };
 
@@ -211,19 +209,22 @@ fn extract_distance_call(expr: &FilterExpr) -> Option<(VarId, GeoSearchCenter)> 
 /// - Compare { op: Gt/Ge, left: Const(num), right: Var(target) }
 ///
 /// Returns: radius in meters (must be non-negative)
-fn extract_lt_comparison(expr: &FilterExpr, target_var: VarId) -> Option<f64> {
-    if let FilterExpr::Compare { op, left, right } = expr {
-        match op {
-            CompareOp::Lt | CompareOp::Le => {
+fn extract_lt_comparison(expr: &Expression, target_var: VarId) -> Option<f64> {
+    if let Expression::Call { func, args } = expr {
+        if args.len() != 2 {
+            return None;
+        }
+        match func {
+            Function::Lt | Function::Le => {
                 // ?dist < 5000 or ?dist <= 5000
-                if matches!(left.as_ref(), FilterExpr::Var(v) if *v == target_var) {
-                    return extract_numeric_const(right).filter(|&r| r >= 0.0);
+                if matches!(&args[0], Expression::Var(v) if *v == target_var) {
+                    return extract_numeric_const(&args[1]).filter(|&r| r >= 0.0);
                 }
             }
-            CompareOp::Gt | CompareOp::Ge => {
+            Function::Gt | Function::Ge => {
                 // 5000 > ?dist or 5000 >= ?dist
-                if matches!(right.as_ref(), FilterExpr::Var(v) if *v == target_var) {
-                    return extract_numeric_const(left).filter(|&r| r >= 0.0);
+                if matches!(&args[1], Expression::Var(v) if *v == target_var) {
+                    return extract_numeric_const(&args[0]).filter(|&r| r >= 0.0);
                 }
             }
             _ => {}
@@ -232,11 +233,11 @@ fn extract_lt_comparison(expr: &FilterExpr, target_var: VarId) -> Option<f64> {
     None
 }
 
-/// Extract numeric constant from a FilterExpr
-fn extract_numeric_const(expr: &FilterExpr) -> Option<f64> {
+/// Extract numeric constant from a Expression
+fn extract_numeric_const(expr: &Expression) -> Option<f64> {
     match expr {
-        FilterExpr::Const(FilterValue::Long(n)) => Some(*n as f64),
-        FilterExpr::Const(FilterValue::Double(n)) => Some(*n),
+        Expression::Const(FilterValue::Long(n)) => Some(*n as f64),
+        Expression::Const(FilterValue::Double(n)) => Some(*n),
         _ => None,
     }
 }
@@ -370,11 +371,11 @@ mod tests {
         let loc_var = vars.get_or_insert("?loc");
 
         // geof:distance(?loc, "POINT(2.35 48.86)")
-        let expr = FilterExpr::Function {
-            name: FunctionName::GeofDistance,
+        let expr = Expression::Call {
+            func: Function::GeofDistance,
             args: vec![
-                FilterExpr::Var(loc_var),
-                FilterExpr::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
+                Expression::Var(loc_var),
+                Expression::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
             ],
         };
 
@@ -398,36 +399,32 @@ mod tests {
         let other_var = vars.get_or_insert("?other");
 
         // ?dist < 1000
-        let expr = FilterExpr::Compare {
-            op: CompareOp::Lt,
-            left: Box::new(FilterExpr::Var(dist_var)),
-            right: Box::new(FilterExpr::Const(FilterValue::Long(1000))),
-        };
+        let expr = Expression::lt(
+            Expression::Var(dist_var),
+            Expression::Const(FilterValue::Long(1000)),
+        );
         assert_eq!(extract_lt_comparison(&expr, dist_var), Some(1000.0));
         assert_eq!(extract_lt_comparison(&expr, other_var), None);
 
         // ?dist <= 500.5
-        let expr2 = FilterExpr::Compare {
-            op: CompareOp::Le,
-            left: Box::new(FilterExpr::Var(dist_var)),
-            right: Box::new(FilterExpr::Const(FilterValue::Double(500.5))),
-        };
+        let expr2 = Expression::le(
+            Expression::Var(dist_var),
+            Expression::Const(FilterValue::Double(500.5)),
+        );
         assert_eq!(extract_lt_comparison(&expr2, dist_var), Some(500.5));
 
         // 2000 > ?dist
-        let expr3 = FilterExpr::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Const(FilterValue::Long(2000))),
-            right: Box::new(FilterExpr::Var(dist_var)),
-        };
+        let expr3 = Expression::gt(
+            Expression::Const(FilterValue::Long(2000)),
+            Expression::Var(dist_var),
+        );
         assert_eq!(extract_lt_comparison(&expr3, dist_var), Some(2000.0));
 
         // Negative radius should fail
-        let expr4 = FilterExpr::Compare {
-            op: CompareOp::Lt,
-            left: Box::new(FilterExpr::Var(dist_var)),
-            right: Box::new(FilterExpr::Const(FilterValue::Long(-100))),
-        };
+        let expr4 = Expression::lt(
+            Expression::Var(dist_var),
+            Expression::Const(FilterValue::Long(-100)),
+        );
         assert_eq!(extract_lt_comparison(&expr4, dist_var), None);
     }
 
@@ -449,19 +446,18 @@ mod tests {
             )),
             Pattern::Bind {
                 var: dist_var,
-                expr: FilterExpr::Function {
-                    name: FunctionName::GeofDistance,
+                expr: Expression::Call {
+                    func: Function::GeofDistance,
                     args: vec![
-                        FilterExpr::Var(loc_var),
-                        FilterExpr::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
+                        Expression::Var(loc_var),
+                        Expression::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
                     ],
                 },
             },
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(dist_var)),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1000))),
-            }),
+            Pattern::Filter(Expression::lt(
+                Expression::Var(dist_var),
+                Expression::Const(FilterValue::Long(1000)),
+            )),
         ];
 
         let result = rewrite_geo_patterns(patterns, &mock_encoder);
@@ -497,25 +493,23 @@ mod tests {
             )),
             Pattern::Bind {
                 var: dist_var,
-                expr: FilterExpr::Function {
-                    name: FunctionName::GeofDistance,
+                expr: Expression::Call {
+                    func: Function::GeofDistance,
                     args: vec![
-                        FilterExpr::Var(loc_var),
-                        FilterExpr::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
+                        Expression::Var(loc_var),
+                        Expression::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
                     ],
                 },
             },
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(dist_var)),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1000))),
-            }),
+            Pattern::Filter(Expression::lt(
+                Expression::Var(dist_var),
+                Expression::Const(FilterValue::Long(1000)),
+            )),
             // ?loc is used here too - Triple should be kept
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(FilterExpr::Var(loc_var)),
-                right: Box::new(FilterExpr::Const(FilterValue::String("test".to_string()))),
-            }),
+            Pattern::Filter(Expression::eq(
+                Expression::Var(loc_var),
+                Expression::Const(FilterValue::String("test".to_string())),
+            )),
         ];
 
         let result = rewrite_geo_patterns(patterns, &mock_encoder);
@@ -551,11 +545,11 @@ mod tests {
             )),
             Pattern::Bind {
                 var: dist_var,
-                expr: FilterExpr::Function {
-                    name: FunctionName::GeofDistance,
+                expr: Expression::Call {
+                    func: Function::GeofDistance,
                     args: vec![
-                        FilterExpr::Var(loc_var),
-                        FilterExpr::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
+                        Expression::Var(loc_var),
+                        Expression::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
                     ],
                 },
             },
@@ -586,19 +580,18 @@ mod tests {
             )),
             Pattern::Bind {
                 var: dist_var,
-                expr: FilterExpr::Function {
-                    name: FunctionName::GeofDistance,
+                expr: Expression::Call {
+                    func: Function::GeofDistance,
                     args: vec![
-                        FilterExpr::Var(loc_var),
-                        FilterExpr::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
+                        Expression::Var(loc_var),
+                        Expression::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
                     ],
                 },
             },
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(dist_var)),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1000))),
-            }),
+            Pattern::Filter(Expression::lt(
+                Expression::Var(dist_var),
+                Expression::Const(FilterValue::Long(1000)),
+            )),
         ];
 
         let result = rewrite_geo_patterns(patterns.clone(), &mock_encoder);
@@ -624,19 +617,18 @@ mod tests {
             )),
             Pattern::Bind {
                 var: dist_var,
-                expr: FilterExpr::Function {
-                    name: FunctionName::GeofDistance,
+                expr: Expression::Call {
+                    func: Function::GeofDistance,
                     args: vec![
-                        FilterExpr::Var(loc_var),
-                        FilterExpr::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
+                        Expression::Var(loc_var),
+                        Expression::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
                     ],
                 },
             },
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(dist_var)),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1000))),
-            }),
+            Pattern::Filter(Expression::lt(
+                Expression::Var(dist_var),
+                Expression::Const(FilterValue::Long(1000)),
+            )),
         ];
 
         let result = rewrite_geo_patterns(patterns, &mock_encoder);
@@ -662,19 +654,18 @@ mod tests {
             )),
             Pattern::Bind {
                 var: dist_var,
-                expr: FilterExpr::Function {
-                    name: FunctionName::GeofDistance,
+                expr: Expression::Call {
+                    func: Function::GeofDistance,
                     args: vec![
-                        FilterExpr::Var(loc_var),
-                        FilterExpr::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
+                        Expression::Var(loc_var),
+                        Expression::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
                     ],
                 },
             },
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(dist_var)),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1000))),
-            }),
+            Pattern::Filter(Expression::lt(
+                Expression::Var(dist_var),
+                Expression::Const(FilterValue::Long(1000)),
+            )),
         ];
 
         let result = rewrite_geo_patterns(patterns.clone(), &mock_encoder);
@@ -701,19 +692,18 @@ mod tests {
             )),
             Pattern::Bind {
                 var: dist_var,
-                expr: FilterExpr::Function {
-                    name: FunctionName::GeofDistance,
+                expr: Expression::Call {
+                    func: Function::GeofDistance,
                     args: vec![
-                        FilterExpr::Var(loc_var),
-                        FilterExpr::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
+                        Expression::Var(loc_var),
+                        Expression::Const(FilterValue::String("POINT(2.35 48.86)".to_string())),
                     ],
                 },
             },
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(dist_var)),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1000))),
-            }),
+            Pattern::Filter(Expression::lt(
+                Expression::Var(dist_var),
+                Expression::Const(FilterValue::Long(1000)),
+            )),
         ];
 
         let patterns = vec![Pattern::Optional(inner_patterns)];

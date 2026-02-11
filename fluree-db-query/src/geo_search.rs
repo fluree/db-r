@@ -12,7 +12,7 @@
 //! 4. Apply haversine post-filter to compute exact distance
 //! 5. Emit subject and distance bindings for points within radius
 
-use crate::binding::{Batch, Binding};
+use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
 use crate::ir::{GeoSearchCenter, GeoSearchPattern};

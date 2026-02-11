@@ -51,7 +51,7 @@ use crate::binary_scan::ScanOperator;
 const TEMP_OBJECT_VAR: VarId = VarId(u16::MAX - 1);
 
 fn make_property_join_scan(pattern: TriplePattern, bounds: Option<ObjectBounds>) -> BoxedOperator {
-    Box::new(ScanOperator::new(pattern, bounds))
+    Box::new(ScanOperator::new(pattern, bounds, Vec::new()))
 }
 
 /// Property-join operator for same-subject multi-predicate patterns

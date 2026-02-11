@@ -7,7 +7,7 @@
 
 use fluree_db_connection::{connect, ConnectionConfig, ConnectionHandle, StorageType};
 use fluree_db_core::{ContentId, ContentKind};
-use fluree_db_query::{execute_pattern, Term, TriplePattern, VarRegistry};
+use fluree_db_query::{execute_pattern, RowAccess, Term, TriplePattern, VarRegistry};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 

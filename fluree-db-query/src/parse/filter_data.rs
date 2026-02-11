@@ -20,7 +20,7 @@
 //! - **Membership**: `in`, `not-in`, `notin`
 //! - **Functions**: any other operator treated as function call
 
-use super::ast::{UnresolvedArithmeticOp, UnresolvedCompareOp, UnresolvedFilterExpr};
+use super::ast::{UnresolvedArithmeticOp, UnresolvedCompareOp, UnresolvedExpression};
 use super::error::{ParseError, Result};
 use super::filter_common;
 use serde_json::Value as JsonValue;
@@ -40,22 +40,22 @@ fn is_variable(s: &str) -> bool {
 /// - Logical: ["and", ...], ["or", ...], ["not", ...]
 /// - Arithmetic: ["+", "?x", 1], ["-", "?a", "?b"]
 /// - Functions: ["strlen", "?name"], ["contains", "?str", "foo"]
-pub fn parse_filter_expr(value: &JsonValue) -> Result<UnresolvedFilterExpr> {
+pub fn parse_filter_expr(value: &JsonValue) -> Result<UnresolvedExpression> {
     match value {
         // String: variable or string constant
         JsonValue::String(s) => {
             if is_variable(s) {
-                Ok(UnresolvedFilterExpr::var(s))
+                Ok(UnresolvedExpression::var(s))
             } else {
-                Ok(UnresolvedFilterExpr::string(s))
+                Ok(UnresolvedExpression::string(s))
             }
         }
         // Numbers
         JsonValue::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(UnresolvedFilterExpr::long(i))
+                Ok(UnresolvedExpression::long(i))
             } else if let Some(f) = n.as_f64() {
-                Ok(UnresolvedFilterExpr::double(f))
+                Ok(UnresolvedExpression::double(f))
             } else {
                 Err(ParseError::InvalidFilter(format!(
                     "unsupported number in filter: {}",
@@ -64,7 +64,7 @@ pub fn parse_filter_expr(value: &JsonValue) -> Result<UnresolvedFilterExpr> {
             }
         }
         // Booleans
-        JsonValue::Bool(b) => Ok(UnresolvedFilterExpr::boolean(*b)),
+        JsonValue::Bool(b) => Ok(UnresolvedExpression::boolean(*b)),
         // Arrays: operations
         JsonValue::Array(arr) => parse_filter_array(arr),
         // Null and objects are not supported
@@ -93,7 +93,7 @@ pub fn parse_filter_expr(value: &JsonValue) -> Result<UnresolvedFilterExpr> {
 /// ["in", "?status", ["active", "pending"]]
 /// ["strlen", "?name"]
 /// ```
-pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedFilterExpr> {
+pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
     if arr.is_empty() {
         return Err(ParseError::InvalidFilter(
             "empty array in filter expression".to_string(),
@@ -140,7 +140,7 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedFilterExpr> {
             } else {
                 args[1..].iter().map(parse_filter_expr).collect()
             };
-            Ok(UnresolvedFilterExpr::In {
+            Ok(UnresolvedExpression::In {
                 expr: Box::new(expr),
                 values: values?,
                 negated,
@@ -163,8 +163,8 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedFilterExpr> {
         // Everything else is a function call
         _ => {
             let fn_args: Result<Vec<_>> = args.iter().map(parse_filter_expr).collect();
-            Ok(UnresolvedFilterExpr::Function {
-                name: Arc::from(op_name),
+            Ok(UnresolvedExpression::Call {
+                func: Arc::from(op_name),
                 args: fn_args?,
             })
         }
@@ -175,7 +175,7 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedFilterExpr> {
 fn parse_binary_compare(
     args: &[JsonValue],
     op: UnresolvedCompareOp,
-) -> Result<UnresolvedFilterExpr> {
+) -> Result<UnresolvedExpression> {
     filter_common::build_binary_compare(args, op, parse_filter_expr, "comparison operator")
 }
 
@@ -183,7 +183,7 @@ fn parse_binary_compare(
 fn parse_binary_arithmetic(
     args: &[JsonValue],
     op: UnresolvedArithmeticOp,
-) -> Result<UnresolvedFilterExpr> {
+) -> Result<UnresolvedExpression> {
     filter_common::build_binary_arithmetic(args, op, parse_filter_expr, "arithmetic operator")
 }
 
@@ -197,7 +197,7 @@ mod tests {
         let json_val = json!("?age");
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::Var(name) => {
+            UnresolvedExpression::Var(name) => {
                 assert_eq!(name.as_ref(), "?age");
             }
             _ => panic!("Expected variable"),
@@ -209,7 +209,7 @@ mod tests {
         let json_val = json!("hello");
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::Const(_) => {}
+            UnresolvedExpression::Const(_) => {}
             _ => panic!("Expected constant"),
         }
     }
@@ -219,7 +219,7 @@ mod tests {
         let json_val = json!(42);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::Const(_) => {}
+            UnresolvedExpression::Const(_) => {}
             _ => panic!("Expected constant"),
         }
     }
@@ -229,7 +229,7 @@ mod tests {
         let json_val = json!(true);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::Const(_) => {}
+            UnresolvedExpression::Const(_) => {}
             _ => panic!("Expected constant"),
         }
     }
@@ -239,7 +239,7 @@ mod tests {
         let json_val = json!([">", "?age", 18]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::Compare { op, .. } => {
+            UnresolvedExpression::Compare { op, .. } => {
                 assert_eq!(op, UnresolvedCompareOp::Gt);
             }
             _ => panic!("Expected comparison"),
@@ -251,7 +251,7 @@ mod tests {
         let json_val = json!(["and", [">", "?x", 10], ["<", "?y", 20]]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::And(exprs) => {
+            UnresolvedExpression::And(exprs) => {
                 assert_eq!(exprs.len(), 2);
             }
             _ => panic!("Expected AND"),
@@ -263,7 +263,7 @@ mod tests {
         let json_val = json!(["in", "?status", ["active", "pending"]]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::In {
+            UnresolvedExpression::In {
                 negated, values, ..
             } => {
                 assert!(!negated);
@@ -278,7 +278,7 @@ mod tests {
         let json_val = json!(["not-in", "?status", ["inactive"]]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::In { negated, .. } => {
+            UnresolvedExpression::In { negated, .. } => {
                 assert!(negated);
             }
             _ => panic!("Expected IN with negated"),
@@ -290,7 +290,7 @@ mod tests {
         let json_val = json!(["+", "?x", 5]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::Arithmetic { op, .. } => {
+            UnresolvedExpression::Arithmetic { op, .. } => {
                 assert_eq!(op, UnresolvedArithmeticOp::Add);
             }
             _ => panic!("Expected arithmetic"),
@@ -302,7 +302,7 @@ mod tests {
         let json_val = json!(["-", "?x"]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::Negate(_) => {}
+            UnresolvedExpression::Negate(_) => {}
             _ => panic!("Expected negation"),
         }
     }
@@ -312,8 +312,8 @@ mod tests {
         let json_val = json!(["strlen", "?name"]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::Function { name, args } => {
-                assert_eq!(name.as_ref(), "strlen");
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "strlen");
                 assert_eq!(args.len(), 1);
             }
             _ => panic!("Expected function call"),
@@ -325,16 +325,16 @@ mod tests {
         let json_val = json!(["and", [">", "?age", 18], ["=", "?status", "active"]]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedFilterExpr::And(exprs) => {
+            UnresolvedExpression::And(exprs) => {
                 assert_eq!(exprs.len(), 2);
                 // Verify first is comparison
                 match &exprs[0] {
-                    UnresolvedFilterExpr::Compare { .. } => {}
+                    UnresolvedExpression::Compare { .. } => {}
                     _ => panic!("Expected first to be comparison"),
                 }
                 // Verify second is comparison
                 match &exprs[1] {
-                    UnresolvedFilterExpr::Compare { .. } => {}
+                    UnresolvedExpression::Compare { .. } => {}
                     _ => panic!("Expected second to be comparison"),
                 }
             }

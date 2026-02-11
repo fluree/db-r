@@ -14,7 +14,7 @@ use crate::bm25::Bm25SearchOperator;
 use crate::error::{QueryError, Result};
 use crate::exists::ExistsOperator;
 use crate::filter::FilterOperator;
-use crate::ir::{FilterExpr, Pattern};
+use crate::ir::{Expression, Pattern};
 use crate::join::NestedLoopJoinOperator;
 use crate::minus::MinusOperator;
 use crate::operator::BoxedOperator;
@@ -49,9 +49,9 @@ pub struct InnerJoinBlock {
     /// Triple patterns
     pub triples: Vec<TriplePattern>,
     /// BIND patterns (var and expression)
-    pub binds: Vec<(VarId, FilterExpr)>,
+    pub binds: Vec<(VarId, Expression)>,
     /// FILTER expressions
-    pub filters: Vec<FilterExpr>,
+    pub filters: Vec<Expression>,
 }
 
 // ============================================================================
@@ -99,7 +99,7 @@ struct PendingBind {
     /// The variable being bound by this expression
     target_var: VarId,
     /// The expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
 }
 
 /// Pending FILTER expression waiting to be applied once its required variables are bound.
@@ -113,7 +113,7 @@ struct PendingFilter {
     /// Variables that must be bound before this filter can execute
     required_vars: HashSet<VarId>,
     /// The filter expression to evaluate
-    expr: FilterExpr,
+    expr: Expression,
 }
 
 /// Apply pending BINDs and FILTERs that are ready (all required vars are bound).
@@ -207,25 +207,26 @@ pub fn build_where_operators(
 /// Collect an optimizable inner-join block consisting of:
 /// - `VALUES` (SPARQL VALUES)
 /// - `Triple`
-/// - `BIND` (when safe)
-/// - "safe" `FILTER`s (including multi-var)
+/// - `BIND` (when safe - all referenced variables already bound)
+/// - `FILTER`s (all filters, regardless of variable binding status)
 ///
-/// A FILTER is considered safe to include in the block if **all** referenced variables
-/// are already bound by the preceding patterns *in the original left-to-right order*.
-///
-/// This preserves SPARQL's left-to-right group evaluation semantics for cases like:
-/// `{ FILTER(?x = 1) . ?s :p ?x }` which must remain empty (FILTER before binding).
+/// FILTERs are collected unconditionally. Filters referencing variables not yet bound
+/// in left-to-right order will be tracked via `PendingFilter` and applied later when
+/// their required variables become bound. This allows users to write FILTER patterns
+/// anywhere in the WHERE clause - the system automatically moves each filter to execute
+/// immediately after all of its required variables are bound.
 ///
 /// A BIND is considered safe to include in the block if **all** variables referenced
-/// by its expression are already bound by preceding patterns (original order).
+/// by its expression are already bound by preceding patterns (original order). BINDs
+/// with unbound inputs cannot be deferred - they must fail at their original position.
 ///
 /// `VALUES` is always safe to include because it is an inner-join constraint/seed.
 pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoinBlock {
     let mut i = start;
     let mut values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)> = Vec::new();
     let mut triples: Vec<TriplePattern> = Vec::new();
-    let mut binds: Vec<(VarId, FilterExpr)> = Vec::new();
-    let mut filters: Vec<FilterExpr> = Vec::new();
+    let mut binds: Vec<(VarId, Expression)> = Vec::new();
+    let mut filters: Vec<Expression> = Vec::new();
     let mut bound_vars: HashSet<VarId> = HashSet::new();
 
     while i < patterns.len() {
@@ -255,14 +256,14 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
                 }
             }
             Pattern::Filter(expr) => {
-                let vars: HashSet<VarId> = expr.variables().into_iter().collect();
-                if vars.is_subset(&bound_vars) {
-                    filters.push(expr.clone());
-                    i += 1;
-                } else {
-                    // Unsafe to move this FILTER: it references vars not yet bound.
-                    break;
-                }
+                // Collect all filters unconditionally. Filters referencing variables
+                // not yet bound will be tracked via PendingFilter and applied later
+                // when their required variables become bound (after subsequent triples).
+                // This allows users to write FILTER patterns anywhere in the WHERE
+                // clause - the system automatically moves each filter to execute
+                // immediately after all of its required variables are bound.
+                filters.push(expr.clone());
+                i += 1;
             }
             _ => break,
         }
@@ -356,7 +357,12 @@ pub fn build_where_operators_seeded(
                             continue;
                         }
                         Pattern::Triple(tp) => {
-                            operator = Some(build_scan_or_join(operator, tp, &HashMap::new()));
+                            operator = Some(build_scan_or_join(
+                                operator,
+                                tp,
+                                &HashMap::new(),
+                                Vec::new(),
+                            ));
                             i = start + 1;
                             continue;
                         }
@@ -448,7 +454,7 @@ pub fn build_where_operators_seeded(
                 }
 
                 // Push down range-safe filters into object bounds (when possible)
-                let filters_for_pushdown: Vec<FilterExpr> =
+                let filters_for_pushdown: Vec<Expression> =
                     pending_filters.iter().map(|f| f.expr.clone()).collect();
                 let (object_bounds, filter_idxs_consumed) =
                     extract_bounds_from_filters(&reordered, &filters_for_pushdown);
@@ -506,8 +512,43 @@ pub fn build_where_operators_seeded(
                     }
 
                     for tp in &reordered {
+                        // For the first scan (operator is None), extract filters that will
+                        // be ready after this triple and inline them into the scan operator.
+                        // This avoids FilterOperator overhead for these filters.
+                        let inline_filters = if operator.is_none() {
+                            // Calculate vars that will be bound after this triple
+                            let mut vars_after: HashSet<VarId> = bound.clone();
+                            for v in tp.variables() {
+                                vars_after.insert(v);
+                            }
+
+                            // Extract filters that will be ready (not consumed by pushdown)
+                            let mut inlined = Vec::new();
+                            let mut remaining = Vec::new();
+                            for pf in pending_filters {
+                                if filter_idxs_consumed.contains(&pf.original_idx) {
+                                    // Skip consumed filters entirely
+                                    continue;
+                                }
+                                if pf.required_vars.is_subset(&vars_after) {
+                                    inlined.push(pf.expr);
+                                } else {
+                                    remaining.push(pf);
+                                }
+                            }
+                            pending_filters = remaining;
+                            inlined
+                        } else {
+                            Vec::new()
+                        };
+
                         // Build scan/join for this triple with bounds (if any)
-                        operator = Some(build_scan_or_join(operator, tp, &object_bounds));
+                        operator = Some(build_scan_or_join(
+                            operator,
+                            tp,
+                            &object_bounds,
+                            inline_filters,
+                        ));
 
                         // Update bound vars after this triple
                         for v in tp.variables() {
@@ -736,11 +777,13 @@ pub fn build_where_operators_seeded(
 fn make_first_scan(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
+    inline_filters: Vec<Expression>,
 ) -> BoxedOperator {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
     Box::new(crate::binary_scan::ScanOperator::new(
         tp.clone(),
         obj_bounds,
+        inline_filters,
     ))
 }
 
@@ -749,18 +792,23 @@ fn make_first_scan(
 /// This is the extracted helper that eliminates the duplication between
 /// `build_where_operators_seeded` (incremental path) and `build_triple_operators`.
 ///
-/// - If `left` is None, creates a `ScanOperator` for the first pattern
+/// - If `left` is None, creates a `ScanOperator` for the first pattern with inline filters
 /// - If `left` is Some, creates a NestedLoopJoinOperator joining to the existing operator
 /// - Applies object bounds from filters when available
+///
+/// The `inline_filters` parameter is only used when `left` is None (first scan).
+/// For joins, filters are applied via `FilterOperator` after the join.
 pub fn build_scan_or_join(
     left: Option<BoxedOperator>,
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
+    inline_filters: Vec<Expression>,
 ) -> BoxedOperator {
     match left {
-        None => make_first_scan(tp, object_bounds),
+        None => make_first_scan(tp, object_bounds, inline_filters),
         Some(left) => {
             // Subsequent patterns: use NestedLoopJoinOperator with optional bounds pushdown
+            // Note: inline_filters are ignored for joins; use FilterOperator after join
             let left_schema = Arc::from(left.schema().to_vec().into_boxed_slice());
 
             // Extract object bounds if available for this pattern's object variable
@@ -806,7 +854,12 @@ pub fn build_triple_operators(
 
     // Build chain of scan/join operators using the shared helper
     for pattern in triples {
-        operator = Some(build_scan_or_join(operator, pattern, object_bounds));
+        operator = Some(build_scan_or_join(
+            operator,
+            pattern,
+            object_bounds,
+            Vec::new(),
+        ));
     }
 
     Ok(operator.unwrap())
@@ -815,7 +868,7 @@ pub fn build_triple_operators(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CompareOp, FilterExpr, FilterValue, Pattern};
+    use crate::ir::{Expression, FilterValue, Pattern};
     use crate::pattern::Term;
     use fluree_db_core::{FlakeValue, PropertyStatData, Sid, StatsView};
 
@@ -842,11 +895,10 @@ mod tests {
     fn test_build_where_operators_with_filter() {
         let patterns = vec![
             Pattern::Triple(make_pattern(VarId(0), "age", VarId(1))),
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(18))),
-            }),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(18)),
+            )),
         ];
 
         let result = build_where_operators(&patterns, None);
@@ -878,13 +930,10 @@ mod tests {
             },
             Pattern::Triple(make_pattern(VarId(0), "date", VarId(1))),
             Pattern::Triple(make_pattern(VarId(0), "vec", VarId(2))),
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Ge,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::String(
-                    "2026-01-01".to_string(),
-                ))),
-            }),
+            Pattern::Filter(Expression::ge(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::String("2026-01-01".to_string())),
+            )),
         ];
 
         let op = build_where_operators(&patterns, None).unwrap();
@@ -920,11 +969,10 @@ mod tests {
 
         let patterns = vec![
             Pattern::Triple(make_pattern(score, "hasScore", score_v)),
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(score_v)),
-                right: Box::new(FilterExpr::Const(FilterValue::Double(0.4))),
-            }),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(score_v),
+                Expression::Const(FilterValue::Double(0.4)),
+            )),
             Pattern::Triple(TriplePattern::new(
                 Term::Var(score),
                 Term::Sid(Sid::new(100, "refersInstance")),
@@ -993,11 +1041,10 @@ mod tests {
                 vars: vec![VarId(0)],
                 rows: vec![vec![Binding::lit(FlakeValue::Long(1), Sid::new(2, "long"))]],
             },
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(FilterExpr::Var(VarId(0))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1))),
-            }),
+            Pattern::Filter(Expression::eq(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(1)),
+            )),
             Pattern::Triple(TriplePattern::new(
                 Term::Var(VarId(1)),
                 Term::Sid(Sid::new(100, "p")),
@@ -1026,17 +1073,15 @@ mod tests {
             Pattern::Triple(make_pattern(VarId(0), "age", VarId(1))),
             Pattern::Bind {
                 var: VarId(2),
-                expr: FilterExpr::Arithmetic {
-                    op: crate::ir::ArithmeticOp::Add,
-                    left: Box::new(FilterExpr::Var(VarId(1))),
-                    right: Box::new(FilterExpr::Const(FilterValue::Long(1))),
-                },
+                expr: Expression::add(
+                    Expression::Var(VarId(1)),
+                    Expression::Const(FilterValue::Long(1)),
+                ),
             },
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(2))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(0))),
-            }),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(2)),
+                Expression::Const(FilterValue::Long(0)),
+            )),
         ];
 
         let block = collect_inner_join_block(&patterns, 0);
@@ -1055,11 +1100,10 @@ mod tests {
     fn test_build_where_operators_filter_before_triple_allowed() {
         // FILTER at position 0 is now allowed with empty seed support
         let patterns = vec![
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(FilterExpr::Const(FilterValue::Long(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(1))),
-            }),
+            Pattern::Filter(Expression::eq(
+                Expression::Const(FilterValue::Long(1)),
+                Expression::Const(FilterValue::Long(1)),
+            )),
             Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
         ];
 
@@ -1094,7 +1138,7 @@ mod tests {
         // BIND at position 0 should work
         let patterns = vec![Pattern::Bind {
             var: VarId(0),
-            expr: FilterExpr::Const(FilterValue::Long(42)),
+            expr: Expression::Const(FilterValue::Long(42)),
         }];
         let result = build_where_operators(&patterns, None);
         assert!(result.is_ok());
@@ -1198,13 +1242,10 @@ mod tests {
         let patterns = vec![
             Pattern::Triple(make_pattern(VarId(0), "date", VarId(1))),
             Pattern::Triple(make_pattern(VarId(0), "vec", VarId(2))),
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Ge,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::String(
-                    "2026-01-01".to_string(),
-                ))),
-            }),
+            Pattern::Filter(Expression::ge(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::String("2026-01-01".to_string())),
+            )),
         ];
 
         let result = build_where_operators(&patterns, None);
@@ -1223,7 +1264,7 @@ mod tests {
         let tp = make_pattern(VarId(0), "name", VarId(1));
         let bounds = HashMap::new();
 
-        let op: BoxedOperator = build_scan_or_join(None, &tp, &bounds);
+        let op: BoxedOperator = build_scan_or_join(None, &tp, &bounds, Vec::new());
 
         assert_eq!(op.schema(), &[VarId(0), VarId(1)]);
     }
@@ -1234,13 +1275,141 @@ mod tests {
         let tp2 = make_pattern(VarId(0), "age", VarId(2));
         let bounds = HashMap::new();
 
-        let first: BoxedOperator = build_scan_or_join(None, &tp1, &bounds);
-        let second = build_scan_or_join(Some(first), &tp2, &bounds);
+        let first: BoxedOperator = build_scan_or_join(None, &tp1, &bounds, Vec::new());
+        let second = build_scan_or_join(Some(first), &tp2, &bounds, Vec::new());
 
         // Schema should include all vars from both patterns
         assert_eq!(second.schema().len(), 3);
         assert!(second.schema().contains(&VarId(0)));
         assert!(second.schema().contains(&VarId(1)));
         assert!(second.schema().contains(&VarId(2)));
+    }
+
+    // ========================================================================
+    // Filter optimization tests - Phase 1: dependency-based filter injection
+    // ========================================================================
+
+    #[test]
+    fn test_filter_before_triple_collected_in_block() {
+        // FILTER(?x > 0) . ?s :p ?x
+        // Filter references ?x which is bound by the subsequent triple.
+        // The filter should be collected and applied after ?x is bound.
+        let patterns = vec![
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(0)),
+            )),
+            Pattern::Triple(make_pattern(VarId(1), "value", VarId(0))),
+        ];
+
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(block.end_index, 2, "should consume both filter and triple");
+        assert_eq!(block.filters.len(), 1, "should include the filter");
+        assert_eq!(block.triples.len(), 1, "should include the triple");
+    }
+
+    #[test]
+    fn test_filter_referencing_later_pattern_vars() {
+        // ?s :age ?age . FILTER(?age > 18 AND ?name != "") . ?s :name ?name
+        // Filter references both ?age (already bound) and ?name (bound later).
+        // All patterns should be collected in the same block.
+        let age = VarId(0);
+        let name = VarId(1);
+        let s = VarId(2);
+
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "age", age)),
+            Pattern::Filter(Expression::and(vec![
+                Expression::gt(
+                    Expression::Var(age),
+                    Expression::Const(FilterValue::Long(18)),
+                ),
+                Expression::ne(
+                    Expression::Var(name),
+                    Expression::Const(FilterValue::String("".to_string())),
+                ),
+            ])),
+            Pattern::Triple(make_pattern(s, "name", name)),
+        ];
+
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(
+            block.end_index,
+            patterns.len(),
+            "should consume all patterns"
+        );
+        assert_eq!(block.triples.len(), 2, "should include both triples");
+        assert_eq!(block.filters.len(), 1, "should include the filter");
+    }
+
+    #[test]
+    fn test_filter_only_patterns_are_collected() {
+        // Multiple filters before any triple - all should be collected
+        let patterns = vec![
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(0)),
+            )),
+            Pattern::Filter(Expression::lt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(100)),
+            )),
+            Pattern::Triple(make_pattern(VarId(1), "value", VarId(0))),
+        ];
+
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(block.end_index, 3, "should consume all patterns");
+        assert_eq!(block.filters.len(), 2, "should include both filters");
+        assert_eq!(block.triples.len(), 1, "should include the triple");
+    }
+
+    #[test]
+    fn test_build_operators_filter_before_triple_is_valid() {
+        // FILTER(?x > 18) before the triple that binds ?x should now succeed
+        let patterns = vec![
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(18)),
+            )),
+            Pattern::Triple(make_pattern(VarId(1), "age", VarId(0))),
+        ];
+
+        let result = build_where_operators(&patterns, None);
+        assert!(
+            result.is_ok(),
+            "Filter before its bound variable should be allowed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_filter_with_multiple_unbound_vars_collected() {
+        // FILTER(?x > ?y) where both vars are bound by later triples
+        let x = VarId(0);
+        let y = VarId(1);
+        let s = VarId(2);
+
+        let patterns = vec![
+            Pattern::Filter(Expression::gt(Expression::Var(x), Expression::Var(y))),
+            Pattern::Triple(make_pattern(s, "valueX", x)),
+            Pattern::Triple(make_pattern(s, "valueY", y)),
+        ];
+
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(
+            block.end_index,
+            patterns.len(),
+            "should consume all patterns"
+        );
+        assert_eq!(block.filters.len(), 1);
+        assert_eq!(block.triples.len(), 2);
+
+        // Verify the operator tree builds successfully
+        let result = build_where_operators(&patterns, None);
+        assert!(
+            result.is_ok(),
+            "Should build successfully: {:?}",
+            result.err()
+        );
     }
 }

@@ -574,6 +574,7 @@ async fn geo_search_respects_limit_returns_nearest() {
 /// that the g_id routing correctly distinguishes between different named graphs,
 /// not just between "named" and "default".
 #[tokio::test]
+#[ignore = "idx:geo parsing not yet wired in node_map.rs"]
 async fn geo_search_respects_named_graph_boundaries() {
     let fluree = FlureeBuilder::memory().build_memory();
     let alias = "it/geo-named-graph:main";

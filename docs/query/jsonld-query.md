@@ -927,7 +927,7 @@ Note: `f:*` keys used for graph source queries should be defined in your `@conte
 1. **Always Provide @context**: Makes queries readable and maintainable
 2. **Use Specific Patterns**: More specific patterns are more efficient
 3. **Limit Result Sets**: Use `limit` for large result sets
-4. **Optimize Filters**: Place filters early in `where` clauses
+4. **Flexible Filter Placement**: Filters can be placed anywhere in `where` clauses - the query engine automatically applies each filter as soon as all its required variables are bound
 5. **Use Time Specifiers**: Use `@t:` when transaction numbers are known (fastest)
 6. **Graph Source Selection**: Choose appropriate graph sources for query patterns
 

@@ -7,7 +7,7 @@
 //! - IRI encoding via `IriEncoder` trait
 //! - Variable registration via `VarRegistry`
 //! - Graph pattern lowering to `Pattern`
-//! - Expression lowering to `FilterExpr`
+//! - Expression lowering to `Expression`
 //!
 //! ## Usage
 //!

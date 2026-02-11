@@ -5,7 +5,7 @@
 
 use super::ast::{
     LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedConstructTemplate,
-    UnresolvedFilterExpr, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions,
+    UnresolvedExpression, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions,
     UnresolvedPathExpr, UnresolvedPattern, UnresolvedQuery, UnresolvedRoot,
     UnresolvedSelectionSpec, UnresolvedSortDirection, UnresolvedSortSpec, UnresolvedTerm,
     UnresolvedTriplePattern, UnresolvedValue,
@@ -16,7 +16,7 @@ use crate::aggregate::{AggregateFn, AggregateSpec};
 use crate::binding::Binding;
 use crate::context::WellKnownDatatypes;
 use crate::ir::{
-    FilterExpr, FunctionName, IndexSearchPattern, IndexSearchTarget, PathModifier, Pattern,
+    Expression, Function, IndexSearchPattern, IndexSearchTarget, PathModifier, Pattern,
     PropertyPathPattern, SubqueryPattern, VectorSearchPattern, VectorSearchTarget,
 };
 use crate::vector::DistanceMetric;
@@ -1227,158 +1227,153 @@ fn lower_nested_select_spec<E: IriEncoder>(
     )))
 }
 
-/// Lower an unresolved filter expression to a resolved FilterExpr
+/// Lower an unresolved filter expression to a resolved Expression
 pub(crate) fn lower_filter_expr(
-    expr: &UnresolvedFilterExpr,
+    expr: &UnresolvedExpression,
     vars: &mut VarRegistry,
-) -> Result<FilterExpr> {
+) -> Result<Expression> {
     match expr {
-        UnresolvedFilterExpr::Var(name) => {
+        UnresolvedExpression::Var(name) => {
             let var_id = vars.get_or_insert(name);
-            Ok(FilterExpr::Var(var_id))
+            Ok(Expression::Var(var_id))
         }
-        UnresolvedFilterExpr::Const(val) => Ok(FilterExpr::Const(val.into())),
-        UnresolvedFilterExpr::Compare { op, left, right } => {
+        UnresolvedExpression::Const(val) => Ok(Expression::Const(val.into())),
+        UnresolvedExpression::Compare { op, left, right } => {
             let lowered_left = lower_filter_expr(left, vars)?;
             let lowered_right = lower_filter_expr(right, vars)?;
-            Ok(FilterExpr::Compare {
-                op: (*op).into(),
-                left: Box::new(lowered_left),
-                right: Box::new(lowered_right),
-            })
+            Ok(Expression::compare(*op, lowered_left, lowered_right))
         }
-        UnresolvedFilterExpr::Arithmetic { op, left, right } => {
+        UnresolvedExpression::Arithmetic { op, left, right } => {
             let lowered_left = lower_filter_expr(left, vars)?;
             let lowered_right = lower_filter_expr(right, vars)?;
-            Ok(FilterExpr::Arithmetic {
-                op: (*op).into(),
-                left: Box::new(lowered_left),
-                right: Box::new(lowered_right),
-            })
+            Ok(Expression::arithmetic(*op, lowered_left, lowered_right))
         }
-        UnresolvedFilterExpr::Negate(inner) => {
+        UnresolvedExpression::Negate(inner) => {
             let lowered = lower_filter_expr(inner, vars)?;
-            Ok(FilterExpr::Negate(Box::new(lowered)))
+            Ok(Expression::negate(lowered))
         }
-        UnresolvedFilterExpr::And(exprs) => {
-            let lowered: Result<Vec<FilterExpr>> =
+        UnresolvedExpression::And(exprs) => {
+            let lowered: Result<Vec<Expression>> =
                 exprs.iter().map(|e| lower_filter_expr(e, vars)).collect();
-            Ok(FilterExpr::And(lowered?))
+            Ok(Expression::and(lowered?))
         }
-        UnresolvedFilterExpr::Or(exprs) => {
-            let lowered: Result<Vec<FilterExpr>> =
+        UnresolvedExpression::Or(exprs) => {
+            let lowered: Result<Vec<Expression>> =
                 exprs.iter().map(|e| lower_filter_expr(e, vars)).collect();
-            Ok(FilterExpr::Or(lowered?))
+            Ok(Expression::or(lowered?))
         }
-        UnresolvedFilterExpr::Not(inner) => {
+        UnresolvedExpression::Not(inner) => {
             let lowered = lower_filter_expr(inner, vars)?;
-            Ok(FilterExpr::Not(Box::new(lowered)))
+            Ok(Expression::not(lowered))
         }
-        UnresolvedFilterExpr::In {
+        UnresolvedExpression::In {
             expr,
             values,
             negated,
         } => {
             let lowered_expr = lower_filter_expr(expr, vars)?;
-            let lowered_values: Result<Vec<FilterExpr>> =
+            let lowered_values: Result<Vec<Expression>> =
                 values.iter().map(|v| lower_filter_expr(v, vars)).collect();
-            Ok(FilterExpr::In {
-                expr: Box::new(lowered_expr),
-                values: lowered_values?,
-                negated: *negated,
-            })
+            if *negated {
+                Ok(Expression::not_in_list(lowered_expr, lowered_values?))
+            } else {
+                Ok(Expression::in_list(lowered_expr, lowered_values?))
+            }
         }
-        UnresolvedFilterExpr::Function { name, args } => {
-            let lowered_args: Result<Vec<FilterExpr>> =
+        UnresolvedExpression::Call { func, args } => {
+            let lowered_args: Result<Vec<Expression>> =
                 args.iter().map(|a| lower_filter_expr(a, vars)).collect();
-            let func_name = lower_function_name(name);
-            if let FunctionName::Custom(unknown) = &func_name {
+            let func_name = lower_function_name(func);
+            if let Function::Custom(unknown) = &func_name {
                 return Err(ParseError::InvalidFilter(format!(
                     "Unknown function: {}",
                     unknown
                 )));
             }
-            Ok(FilterExpr::Function {
-                name: func_name,
+            Ok(Expression::Call {
+                func: func_name,
                 args: lowered_args?,
             })
         }
     }
 }
 
-/// Lower a function name string to a FunctionName enum
-fn lower_function_name(name: &str) -> FunctionName {
+/// Lower a function name string to a Function enum
+fn lower_function_name(name: &str) -> Function {
     match name.to_lowercase().as_str() {
         // String functions
-        "strlen" => FunctionName::Strlen,
-        "substr" | "substring" => FunctionName::Substr,
-        "ucase" => FunctionName::Ucase,
-        "lcase" => FunctionName::Lcase,
-        "contains" => FunctionName::Contains,
-        "strstarts" => FunctionName::StrStarts,
-        "strends" => FunctionName::StrEnds,
-        "regex" => FunctionName::Regex,
-        "concat" => FunctionName::Concat,
-        "strbefore" => FunctionName::StrBefore,
-        "strafter" => FunctionName::StrAfter,
-        "replace" => FunctionName::Replace,
-        "str" => FunctionName::Str,
-        "strdt" | "str-dt" => FunctionName::StrDt,
-        "strlang" | "str-lang" => FunctionName::StrLang,
-        "encode_for_uri" | "encodeforuri" => FunctionName::EncodeForUri,
+        "strlen" => Function::Strlen,
+        "substr" | "substring" => Function::Substr,
+        "ucase" => Function::Ucase,
+        "lcase" => Function::Lcase,
+        "contains" => Function::Contains,
+        "strstarts" => Function::StrStarts,
+        "strends" => Function::StrEnds,
+        "regex" => Function::Regex,
+        "concat" => Function::Concat,
+        "strbefore" => Function::StrBefore,
+        "strafter" => Function::StrAfter,
+        "replace" => Function::Replace,
+        "str" => Function::Str,
+        "strdt" | "str-dt" => Function::StrDt,
+        "strlang" | "str-lang" => Function::StrLang,
+        "encode_for_uri" | "encodeforuri" => Function::EncodeForUri,
         // Numeric functions
-        "abs" => FunctionName::Abs,
-        "round" => FunctionName::Round,
-        "ceil" => FunctionName::Ceil,
-        "floor" => FunctionName::Floor,
-        "rand" => FunctionName::Rand,
-        "iri" => FunctionName::Iri,
-        "bnode" => FunctionName::Bnode,
+        "abs" => Function::Abs,
+        "round" => Function::Round,
+        "ceil" => Function::Ceil,
+        "floor" => Function::Floor,
+        "rand" => Function::Rand,
+        "iri" => Function::Iri,
+        "bnode" => Function::Bnode,
         // DateTime functions
-        "now" => FunctionName::Now,
-        "year" => FunctionName::Year,
-        "month" => FunctionName::Month,
-        "day" => FunctionName::Day,
-        "hours" => FunctionName::Hours,
-        "minutes" => FunctionName::Minutes,
-        "seconds" => FunctionName::Seconds,
-        "tz" | "timezone" => FunctionName::Tz,
+        "now" => Function::Now,
+        "year" => Function::Year,
+        "month" => Function::Month,
+        "day" => Function::Day,
+        "hours" => Function::Hours,
+        "minutes" => Function::Minutes,
+        "seconds" => Function::Seconds,
+        "tz" | "timezone" => Function::Tz,
         // Type functions
-        "isiri" | "isuri" | "is-iri" | "is-uri" => FunctionName::IsIri,
-        "isblank" | "is-blank" => FunctionName::IsBlank,
-        "isliteral" | "is-literal" => FunctionName::IsLiteral,
-        "isnumeric" | "is-numeric" => FunctionName::IsNumeric,
+        "isiri" | "isuri" | "is-iri" | "is-uri" => Function::IsIri,
+        "isblank" | "is-blank" => Function::IsBlank,
+        "isliteral" | "is-literal" => Function::IsLiteral,
+        "isnumeric" | "is-numeric" => Function::IsNumeric,
         // RDF term functions
-        "lang" => FunctionName::Lang,
-        "datatype" => FunctionName::Datatype,
-        "langmatches" => FunctionName::LangMatches,
-        "sameterm" => FunctionName::SameTerm,
+        "lang" => Function::Lang,
+        "datatype" => Function::Datatype,
+        "langmatches" => Function::LangMatches,
+        "sameterm" => Function::SameTerm,
         // Fluree-specific: transaction time
-        "t" => FunctionName::T,
-        "op" => FunctionName::Op,
+        "t" => Function::T,
+        "op" => Function::Op,
         // Hash functions
-        "md5" => FunctionName::Md5,
-        "sha1" => FunctionName::Sha1,
-        "sha256" => FunctionName::Sha256,
-        "sha384" => FunctionName::Sha384,
-        "sha512" => FunctionName::Sha512,
+        "md5" => Function::Md5,
+        "sha1" => Function::Sha1,
+        "sha256" => Function::Sha256,
+        "sha384" => Function::Sha384,
+        "sha512" => Function::Sha512,
         // UUID functions
-        "uuid" => FunctionName::Uuid,
-        "struuid" => FunctionName::StrUuid,
+        "uuid" => Function::Uuid,
+        "struuid" => Function::StrUuid,
         // Vector/embedding similarity functions
-        "dotproduct" | "dot_product" => FunctionName::DotProduct,
-        "cosinesimilarity" | "cosine_similarity" => FunctionName::CosineSimilarity,
+        "dotproduct" | "dot_product" => Function::DotProduct,
+        "cosinesimilarity" | "cosine_similarity" => Function::CosineSimilarity,
         "euclideandistance" | "euclidean_distance" | "euclidiandistance" => {
-            FunctionName::EuclideanDistance
+            Function::EuclideanDistance
         }
         // Geospatial functions (OGC GeoSPARQL)
         // Note: plain "distance" intentionally omitted to avoid collision with vector/edit distance
-        "geof:distance" | "geo_distance" | "geodistance" => FunctionName::GeofDistance,
+        "geof:distance"
+        | "geo_distance"
+        | "geodistance"
+        | "http://www.opengis.net/def/function/geosparql/distance" => Function::GeofDistance,
         // Other
-        "bound" => FunctionName::Bound,
-        "if" => FunctionName::If,
-        "coalesce" => FunctionName::Coalesce,
-        other => FunctionName::Custom(other.to_string()),
+        "bound" => Function::Bound,
+        "if" => Function::If,
+        "coalesce" => Function::Coalesce,
+        other => Function::Custom(other.to_string()),
     }
 }
 

@@ -4,7 +4,7 @@
 //! It lives in a neutral location to avoid circular dependencies.
 
 use crate::aggregate::AggregateSpec;
-use crate::ir::FilterExpr;
+use crate::ir::Expression;
 use crate::rewrite::ReasoningModes;
 use crate::sort::SortSpec;
 use crate::var_registry::VarId;
@@ -29,9 +29,9 @@ pub struct QueryOptions {
     /// Aggregate specifications (applied after GROUP BY)
     pub aggregates: Vec<AggregateSpec>,
     /// HAVING filter expression (applied after aggregates)
-    pub having: Option<FilterExpr>,
+    pub having: Option<Expression>,
     /// Post-aggregation BIND expressions (applied after HAVING)
-    pub post_binds: Vec<(VarId, FilterExpr)>,
+    pub post_binds: Vec<(VarId, Expression)>,
     /// Reasoning modes for RDFS/OWL reasoning
     ///
     /// Controls pattern expansion based on class/property hierarchies.
@@ -85,7 +85,7 @@ impl QueryOptions {
     }
 
     /// Set HAVING filter expression
-    pub fn with_having(mut self, expr: FilterExpr) -> Self {
+    pub fn with_having(mut self, expr: Expression) -> Self {
         self.having = Some(expr);
         self
     }
