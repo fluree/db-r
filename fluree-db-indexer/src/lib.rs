@@ -990,9 +990,24 @@ pub async fn upload_indexes_to_cas<S: Storage>(
     build_results: &[(run_index::RunSortOrder, run_index::IndexBuildResult)],
 ) -> Result<Vec<run_index::GraphRefs>> {
     use fluree_db_core::ContentKind;
+    use futures::StreamExt;
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
 
     let mut graph_map: BTreeMap<u32, BTreeMap<String, run_index::GraphOrderRefs>> = BTreeMap::new();
+
+    // Bounded parallelism for leaf uploads.
+    //
+    // This phase often becomes I/O bound on remote CAS writes; allowing a controlled
+    // number of concurrent uploads improves throughput without blowing up memory.
+    let leaf_upload_concurrency: usize = std::env::var("FLUREE_CAS_UPLOAD_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(16)
+        .clamp(1, 128);
+    let leaf_sem = Arc::new(Semaphore::new(leaf_upload_concurrency));
 
     let total_order_count = build_results.len();
     for (order_idx, (order, result)) in build_results.iter().enumerate() {
@@ -1013,7 +1028,7 @@ pub async fn upload_indexes_to_cas<S: Storage>(
 
             // Upload branch manifest
             let branch_path = graph_dir.join(format!("{}.fbr", graph_result.branch_hash));
-            let branch_bytes = std::fs::read(&branch_path).map_err(|e| {
+            let branch_bytes = tokio::fs::read(&branch_path).await.map_err(|e| {
                 IndexerError::StorageRead(format!("read branch {}: {}", branch_path.display(), e))
             })?;
             let branch_write = storage
@@ -1026,50 +1041,79 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // Parse branch manifest to discover leaf files
-            let branch_manifest =
-                run_index::branch::read_branch_manifest(&branch_path).map_err(|e| {
-                    IndexerError::StorageRead(format!(
-                        "read branch manifest {}: {}",
-                        branch_path.display(),
-                        e
-                    ))
-                })?;
+            // Parse branch manifest to discover leaf files (avoid a second disk read)
+            let branch_manifest = run_index::branch::read_branch_manifest_from_bytes(
+                &branch_bytes,
+                branch_path.parent(),
+            )
+            .map_err(|e| {
+                IndexerError::StorageRead(format!(
+                    "read branch manifest {}: {}",
+                    branch_path.display(),
+                    e
+                ))
+            })?;
 
-            // Upload each leaf file
+            // Upload each leaf file (bounded parallelism)
             let total_leaves = branch_manifest.leaves.len();
-            let mut leaf_cids = Vec::with_capacity(total_leaves);
-            for (leaf_idx, leaf_entry) in branch_manifest.leaves.iter().enumerate() {
-                let leaf_bytes = std::fs::read(&leaf_entry.path).map_err(|e| {
-                    IndexerError::StorageRead(format!(
-                        "read leaf {}: {}",
-                        leaf_entry.path.display(),
-                        e
-                    ))
-                })?;
-                let leaf_write = storage
-                    .content_write_bytes_with_hash(
-                        ContentKind::IndexLeaf,
-                        ledger_id,
-                        &leaf_entry.content_hash,
-                        &leaf_bytes,
-                    )
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                leaf_cids.push(cid_from_write(ContentKind::IndexLeaf, &leaf_write));
+            let mut leaf_cid_slots: Vec<Option<ContentId>> = vec![None; total_leaves];
+            let completed = Arc::new(AtomicUsize::new(0));
 
-                if total_leaves >= 100 && (leaf_idx + 1) % 500 == 0 {
-                    tracing::info!(
-                        order = %order_name,
-                        g_id,
-                        leaf = leaf_idx + 1,
-                        total_leaves,
-                        "leaf upload progress"
-                    );
-                }
+            let mut futs = futures::stream::FuturesUnordered::new();
+            for (leaf_idx, leaf_entry) in branch_manifest.leaves.iter().enumerate() {
+                let sem = Arc::clone(&leaf_sem);
+                let completed = Arc::clone(&completed);
+                let path = leaf_entry.path.clone();
+                let content_hash = leaf_entry.content_hash.clone();
+                let order_name = order_name.clone();
+
+                futs.push(async move {
+                    let _permit = sem.acquire_owned().await.map_err(|_| {
+                        IndexerError::StorageWrite("leaf upload semaphore closed".into())
+                    })?;
+
+                    let leaf_bytes = tokio::fs::read(&path).await.map_err(|e| {
+                        IndexerError::StorageRead(format!("read leaf {}: {}", path.display(), e))
+                    })?;
+                    let leaf_write = storage
+                        .content_write_bytes_with_hash(
+                            ContentKind::IndexLeaf,
+                            ledger_id,
+                            &content_hash,
+                            &leaf_bytes,
+                        )
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if total_leaves >= 100 && done.is_multiple_of(500) {
+                        tracing::info!(
+                            order = %order_name,
+                            g_id,
+                            leaf = done,
+                            total_leaves,
+                            "leaf upload progress"
+                        );
+                    }
+
+                    let cid = cid_from_write(ContentKind::IndexLeaf, &leaf_write);
+                    Ok::<(usize, ContentId), IndexerError>((leaf_idx, cid))
+                });
             }
 
+            while let Some(res) = futs.next().await {
+                let (idx, cid) = res?;
+                leaf_cid_slots[idx] = Some(cid);
+            }
+
+            let leaf_cids: Vec<ContentId> = leaf_cid_slots
+                .into_iter()
+                .enumerate()
+                .map(|(i, slot)| slot.unwrap_or_else(|| panic!("leaf {i} was not uploaded")))
+                .collect();
+
             let branch_cid = cid_from_write(ContentKind::IndexBranch, &branch_write);
+
             tracing::info!(
                 g_id,
                 order = %order_name,
@@ -1158,7 +1202,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         dict: DictKind,
     ) -> Result<(ContentId, ContentWriteResult)> {
         let kind = ContentKind::DictBlob { dict };
-        let bytes = std::fs::read(path)
+        let bytes = tokio::fs::read(path)
+            .await
             .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
         let result = storage
             .content_write_bytes(kind, ledger_id, &bytes)
@@ -1180,18 +1225,59 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         result: TreeBuildResult,
         dict: DictKind,
     ) -> Result<run_index::DictTreeRefs> {
-        let kind = ContentKind::DictBlob { dict };
-        let mut leaf_cids = Vec::with_capacity(result.leaves.len());
-        let mut hash_to_address = std::collections::HashMap::new();
+        use futures::StreamExt;
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
 
-        for leaf in &result.leaves {
-            let cas_result = storage
-                .content_write_bytes(kind, ledger_id, &leaf.bytes)
-                .await
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            leaf_cids.push(cid_from_write(kind, &cas_result));
-            hash_to_address.insert(leaf.hash.clone(), cas_result.address);
+        let kind = ContentKind::DictBlob { dict };
+
+        // Bounded parallelism for dict leaf uploads.
+        // Default is slightly lower than index leaves because dict leaf bytes are already in memory.
+        let leaf_upload_concurrency: usize = std::env::var("FLUREE_CAS_UPLOAD_CONCURRENCY")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(12)
+            .clamp(1, 128);
+        let sem = Arc::new(Semaphore::new(leaf_upload_concurrency));
+
+        let total_leaves = result.leaves.len();
+        let mut leaf_cid_slots: Vec<Option<ContentId>> = vec![None; total_leaves];
+        let mut hash_to_address = std::collections::HashMap::with_capacity(total_leaves);
+
+        let mut futs = futures::stream::FuturesUnordered::new();
+        for (idx, leaf) in result.leaves.iter().enumerate() {
+            let sem = Arc::clone(&sem);
+            let bytes = &leaf.bytes;
+            let hash = leaf.hash.clone();
+            futs.push(async move {
+                let _permit = sem.acquire_owned().await.map_err(|_| {
+                    IndexerError::StorageWrite("dict leaf upload semaphore closed".into())
+                })?;
+                let cas_result = storage
+                    .content_write_bytes(ContentKind::DictBlob { dict }, ledger_id, bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let cid = cid_from_write(ContentKind::DictBlob { dict }, &cas_result);
+                Ok::<(usize, ContentId, String, String), IndexerError>((
+                    idx,
+                    cid,
+                    hash,
+                    cas_result.address,
+                ))
+            });
         }
+
+        while let Some(res) = futs.next().await {
+            let (idx, cid, hash, addr) = res?;
+            leaf_cid_slots[idx] = Some(cid);
+            hash_to_address.insert(hash, addr);
+        }
+
+        let leaf_cids: Vec<ContentId> = leaf_cid_slots
+            .into_iter()
+            .enumerate()
+            .map(|(i, slot)| slot.unwrap_or_else(|| panic!("dict leaf {i} was not uploaded")))
+            .collect();
 
         let (_, branch_bytes, _) = builder::finalize_branch(result.branch, &hash_to_address)
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
@@ -1249,8 +1335,10 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             .map_err(|e| {
                 IndexerError::StorageRead(format!("read {}: {}", subj_idx_path.display(), e))
             })?;
-        let subj_fwd_data = std::fs::read(run_dir.join("subjects.fwd"))
-            .map_err(|e| IndexerError::StorageRead(format!("read subjects.fwd: {}", e)))?;
+        let subj_fwd_path = run_dir.join("subjects.fwd");
+        let subj_fwd_data = tokio::fs::read(&subj_fwd_path).await.map_err(|e| {
+            IndexerError::StorageRead(format!("read {}: {}", subj_fwd_path.display(), e))
+        })?;
         tracing::info!(
             subjects = sids.len(),
             fwd_bytes = subj_fwd_data.len(),
@@ -1335,8 +1423,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             .map_err(|e| {
                 IndexerError::StorageRead(format!("read {}: {}", str_idx_path.display(), e))
             })?;
-        let str_fwd_data = std::fs::read(&str_fwd_path)
-            .map_err(|e| IndexerError::StorageRead(format!("read strings.fwd: {}", e)))?;
+        let str_fwd_data = tokio::fs::read(&str_fwd_path).await.map_err(|e| {
+            IndexerError::StorageRead(format!("read {}: {}", str_fwd_path.display(), e))
+        })?;
         let count = str_offsets.len();
         tracing::info!(
             strings = count,
@@ -1448,7 +1537,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 if let Some(id_str) = rest.strip_suffix(".vam") {
                     if let Ok(p_id) = id_str.parse::<u32>() {
                         // Read manifest to find shard count
-                        let manifest_bytes = std::fs::read(entry.path()).map_err(|e| {
+                        let manifest_bytes = tokio::fs::read(entry.path()).await.map_err(|e| {
                             IndexerError::StorageRead(format!("read vector manifest: {}", e))
                         })?;
                         let manifest =

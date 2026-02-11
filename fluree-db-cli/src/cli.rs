@@ -22,6 +22,16 @@ pub struct Cli {
     /// Path to config file
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
+
+    /// Memory budget in MB for bulk import (0 = auto: 75% of system RAM).
+    /// Derives chunk size, concurrency limits, and run budget when not set explicitly.
+    #[arg(long, global = true, default_value_t = 0)]
+    pub memory_budget_mb: usize,
+
+    /// Number of parallel parse threads for bulk import.
+    /// 0 = auto (system cores, default cap 6). Explicit values are not capped.
+    #[arg(long, global = true, default_value_t = 0)]
+    pub parallelism: usize,
 }
 
 #[derive(Subcommand)]
@@ -41,6 +51,11 @@ pub enum Commands {
         /// Import data from a file or directory
         #[arg(long)]
         from: Option<PathBuf>,
+
+        /// Chunk size in MB for splitting large Turtle files (0 = derive from memory budget).
+        /// Only used when --from points to a .ttl file.
+        #[arg(long, default_value_t = 0)]
+        chunk_size_mb: usize,
     },
 
     /// Set the active ledger

@@ -47,6 +47,8 @@ mod value_convert;
 #[cfg(feature = "import")]
 pub mod import;
 pub mod import_sink;
+#[cfg(feature = "import")]
+pub mod turtle_splitter;
 
 // Re-exports
 pub use address::parse_commit_id;

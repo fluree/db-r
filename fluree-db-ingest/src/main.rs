@@ -202,12 +202,29 @@ struct Args {
     #[arg(long)]
     no_compress: bool,
 
+    /// Disable ID-based stats during import commit resolution (import mode only).
+    ///
+    /// By default, per-op stats collection (HLL NDV, datatype counts) runs while
+    /// resolving commit blobs to run records. This flag disables it for faster
+    /// throughput at the cost of less detailed `stats.json`.
+    #[arg(long)]
+    no_id_stats: bool,
+
     /// Directory for run files (default: {db_dir}/tmp_import).
     #[arg(long)]
     run_dir: Option<PathBuf>,
 
-    /// Run writer memory budget in MB (default: 256).
-    #[arg(long, default_value_t = 256)]
+    /// Overall memory budget in MB (0 = auto-detect 75% of system RAM).
+    /// Derives chunk-size-mb, run-budget-mb, and max-inflight if not set.
+    #[arg(long, default_value_t = 0)]
+    memory_budget_mb: usize,
+
+    /// Chunk size in MB for splitting a single large Turtle file (0 = derive from budget).
+    #[arg(long, default_value_t = 0)]
+    chunk_size_mb: usize,
+
+    /// Run writer memory budget in MB (0 = derive from memory budget).
+    #[arg(long, default_value_t = 0)]
     run_budget_mb: usize,
 
     /// Build multi-order indexes (SPOT, PSOT, POST, OPST).
@@ -237,9 +254,12 @@ struct Args {
     sparql: Option<String>,
 
     /// Number of parallel TTL parse threads (import mode only).
-    /// 0 = serial (default). Parsing is 90% of import time; parallel parsing
-    /// parses multiple chunks simultaneously while commits remain serial.
+    /// 0 = derive from system cores (default, capped at 6).
     #[arg(long, default_value_t = 0)]
+    parallelism: usize,
+
+    /// Hidden alias for --parallelism (backward compatibility).
+    #[arg(long, hide = true, default_value_t = 0)]
     parse_threads: usize,
 
     /// Enable background indexing in the standard staging pipeline.
@@ -647,12 +667,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let fluree = FlureeBuilder::file(args.db_dir.to_string_lossy()).build()?;
         let mut builder = fluree.create(&args.ledger).import(chunks_dir);
 
-        if args.parse_threads > 0 {
-            builder = builder.threads(args.parse_threads);
+        // --parallelism takes precedence over --parse-threads (hidden alias)
+        let parallelism = if args.parallelism > 0 {
+            args.parallelism
+        } else {
+            args.parse_threads
+        };
+        if parallelism > 0 {
+            builder = builder.parallelism(parallelism);
         }
+
+        if args.memory_budget_mb > 0 {
+            builder = builder.memory_budget_mb(args.memory_budget_mb);
+        }
+        if args.chunk_size_mb > 0 {
+            builder = builder.chunk_size_mb(args.chunk_size_mb);
+        }
+        if args.run_budget_mb > 0 {
+            builder = builder.run_budget_mb(args.run_budget_mb);
+        }
+
         builder = builder
-            .run_budget_mb(args.run_budget_mb)
             .compress(!args.no_compress)
+            .collect_id_stats(!args.no_id_stats)
             .publish_every(args.publish_every);
 
         let result = builder

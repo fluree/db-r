@@ -35,9 +35,19 @@ async fn run(cli: Cli) -> error::CliResult<()> {
     match cli.command {
         Commands::Init { global } => commands::init::run(global),
 
-        Commands::Create { ledger, from } => {
+        Commands::Create {
+            ledger,
+            from,
+            chunk_size_mb,
+        } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
-            commands::create::run(&ledger, from.as_deref(), &fluree_dir, cli.verbose).await
+            let import_opts = commands::create::ImportOpts {
+                memory_budget_mb: cli.memory_budget_mb,
+                parallelism: cli.parallelism,
+                chunk_size_mb,
+            };
+            commands::create::run(&ledger, from.as_deref(), &fluree_dir, cli.verbose, &import_opts)
+                .await
         }
 
         Commands::Use { ledger } => {

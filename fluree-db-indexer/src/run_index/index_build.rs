@@ -225,6 +225,16 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
     let mut retract_count: u64 = 0;
     let mut records_since_log: u64 = 0;
     let mut max_t: i64 = 0;
+    let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let mut perf_leaflets_encoded: u64 = 0;
+    let mut perf_leaflet_records: u64 = 0;
+    let mut perf_region3_time = Duration::ZERO;
+    let mut perf_leaflet_encode_time = Duration::ZERO;
+    let mut perf_leaves_flushed: u64 = 0;
+    let mut perf_leaf_bytes_written: u64 = 0;
+    let mut perf_leaf_flush_time = Duration::ZERO;
 
     // Current graph state
     let mut current_g_id: Option<u32> = None;
@@ -250,6 +260,17 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
         if current_g_id != Some(g_id) {
             // Finish previous graph (if any)
             if let Some(writer) = current_writer.take() {
+                if perf_enabled {
+                    if let Some(p) = writer.perf() {
+                        perf_leaflets_encoded += p.leaflets_encoded;
+                        perf_leaflet_records += p.leaflet_records;
+                        perf_region3_time += p.region3_build_time;
+                        perf_leaflet_encode_time += p.leaflet_encode_time;
+                        perf_leaves_flushed += p.leaves_flushed;
+                        perf_leaf_bytes_written += p.leaf_bytes_written;
+                        perf_leaf_flush_time += p.leaf_flush_time;
+                    }
+                }
                 let leaf_infos = writer.finish()?;
                 if let Some(prev_g_id) = current_g_id {
                     let result =
@@ -303,6 +324,17 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
 
     // Finish last graph
     if let Some(writer) = current_writer.take() {
+        if perf_enabled {
+            if let Some(p) = writer.perf() {
+                perf_leaflets_encoded += p.leaflets_encoded;
+                perf_leaflet_records += p.leaflet_records;
+                perf_region3_time += p.region3_build_time;
+                perf_leaflet_encode_time += p.leaflet_encode_time;
+                perf_leaves_flushed += p.leaves_flushed;
+                perf_leaf_bytes_written += p.leaf_bytes_written;
+                perf_leaf_flush_time += p.leaf_flush_time;
+            }
+        }
         let leaf_infos = writer.finish()?;
         if let Some(g_id) = current_g_id {
             let result = finish_graph(g_id, leaf_infos, &config.index_dir, order_name)?;
@@ -327,6 +359,20 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
     )?;
 
     let elapsed = start.elapsed();
+    if perf_enabled {
+        let mbytes = perf_leaf_bytes_written as f64 / (1024.0 * 1024.0);
+        tracing::info!(
+            order = order_name,
+            leaflets_encoded = perf_leaflets_encoded,
+            leaflet_records = perf_leaflet_records,
+            region3_s = perf_region3_time.as_secs_f64(),
+            leaflet_encode_s = perf_leaflet_encode_time.as_secs_f64(),
+            leaves_flushed = perf_leaves_flushed,
+            leaf_flush_s = perf_leaf_flush_time.as_secs_f64(),
+            leaf_mb_written = mbytes,
+            "index build perf (leaf/leaflet breakdown)"
+        );
+    }
     tracing::info!(
         graphs = graph_results.len(),
         total_rows,

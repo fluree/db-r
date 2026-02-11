@@ -8,7 +8,7 @@ repository.workspace = true
 
 [features]
 default = ["native"]
-native = ["fluree-db-nameservice/native", "fluree-db-core/native", "fluree-db-query/native"]
+native = ["fluree-db-nameservice/native", "fluree-db-core/native", "fluree-db-query/native", "dep:sysinfo"]
 # Enable AWS-backed storage support (S3, storage-backed nameservice).
 aws = ["fluree-db-connection/aws", "dep:fluree-db-storage-aws"]
 # Iceberg / R2RML graph source support (pulls in AWS SDK + native deps)
@@ -81,6 +81,9 @@ aws-sdk-dynamodb = { workspace = true, optional = true }
 
 # HTTP client for remote search service (feature-gated)
 reqwest = { workspace = true, optional = true }
+
+# System memory detection for import memory budget auto-sizing (native only)
+sysinfo = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
