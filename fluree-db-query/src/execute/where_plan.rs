@@ -353,7 +353,8 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
                             continue;
                         }
                         Pattern::Triple(tp) => {
-                            operator = Some(build_scan_or_join(operator, tp, &HashMap::new()));
+                            operator =
+                                Some(build_scan_or_join(operator, tp, &HashMap::new(), Vec::new()));
                             i = start + 1;
                             continue;
                         }
@@ -469,8 +470,43 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
                     }
                 } else {
                     for tp in &reordered {
+                        // For the first scan (operator is None), extract filters that will
+                        // be ready after this triple and inline them into the scan operator.
+                        // This avoids FilterOperator overhead for these filters.
+                        let inline_filters = if operator.is_none() {
+                            // Calculate vars that will be bound after this triple
+                            let mut vars_after: HashSet<VarId> = bound.clone();
+                            for v in tp.variables() {
+                                vars_after.insert(v);
+                            }
+
+                            // Extract filters that will be ready (not consumed by pushdown)
+                            let mut inlined = Vec::new();
+                            let mut remaining = Vec::new();
+                            for pf in pending_filters {
+                                if filter_idxs_consumed.contains(&pf.original_idx) {
+                                    // Skip consumed filters entirely
+                                    continue;
+                                }
+                                if pf.required_vars.is_subset(&vars_after) {
+                                    inlined.push(pf.expr);
+                                } else {
+                                    remaining.push(pf);
+                                }
+                            }
+                            pending_filters = remaining;
+                            inlined
+                        } else {
+                            Vec::new()
+                        };
+
                         // Build scan/join for this triple with bounds (if any)
-                        operator = Some(build_scan_or_join(operator, tp, &object_bounds));
+                        operator = Some(build_scan_or_join(
+                            operator,
+                            tp,
+                            &object_bounds,
+                            inline_filters,
+                        ));
 
                         // Update bound vars after this triple
                         for v in tp.variables() {
@@ -676,15 +712,19 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
 /// Creates a `ScanOperator` that selects between `BinaryScanOperator` (streaming
 /// cursor) and `RangeScanOperator` (range fallback) at `open()` time based on
 /// the `ExecutionContext`.
+///
+/// Inline filters are evaluated during batch production, avoiding separate
+/// `FilterOperator` overhead.
 fn make_first_scan<S: Storage + 'static>(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
+    inline_filters: Vec<Expression>,
 ) -> BoxedOperator<S> {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
     Box::new(crate::binary_scan::ScanOperator::<S>::new(
         tp.clone(),
         obj_bounds,
-        Vec::new(),
+        inline_filters,
     ))
 }
 
@@ -693,18 +733,23 @@ fn make_first_scan<S: Storage + 'static>(
 /// This is the extracted helper that eliminates the duplication between
 /// `build_where_operators_seeded` (incremental path) and `build_triple_operators`.
 ///
-/// - If `left` is None, creates a `ScanOperator` for the first pattern
+/// - If `left` is None, creates a `ScanOperator` for the first pattern with inline filters
 /// - If `left` is Some, creates a NestedLoopJoinOperator joining to the existing operator
 /// - Applies object bounds from filters when available
+///
+/// The `inline_filters` parameter is only used when `left` is None (first scan).
+/// For joins, filters are applied via `FilterOperator` after the join.
 pub fn build_scan_or_join<S: Storage + 'static>(
     left: Option<BoxedOperator<S>>,
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
+    inline_filters: Vec<Expression>,
 ) -> BoxedOperator<S> {
     match left {
-        None => make_first_scan(tp, object_bounds),
+        None => make_first_scan(tp, object_bounds, inline_filters),
         Some(left) => {
             // Subsequent patterns: use NestedLoopJoinOperator with optional bounds pushdown
+            // Note: inline_filters are ignored for joins; use FilterOperator after join
             let left_schema = Arc::from(left.schema().to_vec().into_boxed_slice());
 
             // Extract object bounds if available for this pattern's object variable
@@ -754,7 +799,7 @@ pub fn build_triple_operators<S: Storage + 'static>(
 
     // Build chain of scan/join operators using the shared helper
     for pattern in triples {
-        operator = Some(build_scan_or_join(operator, pattern, object_bounds));
+        operator = Some(build_scan_or_join(operator, pattern, object_bounds, Vec::new()));
     }
 
     Ok(operator.unwrap())
@@ -1049,7 +1094,7 @@ mod tests {
         let tp = make_pattern(VarId(0), "name", VarId(1));
         let bounds = HashMap::new();
 
-        let op: BoxedOperator<MemoryStorage> = build_scan_or_join(None, &tp, &bounds);
+        let op: BoxedOperator<MemoryStorage> = build_scan_or_join(None, &tp, &bounds, Vec::new());
 
         assert_eq!(op.schema(), &[VarId(0), VarId(1)]);
     }
@@ -1060,8 +1105,8 @@ mod tests {
         let tp2 = make_pattern(VarId(0), "age", VarId(2));
         let bounds = HashMap::new();
 
-        let first: BoxedOperator<MemoryStorage> = build_scan_or_join(None, &tp1, &bounds);
-        let second = build_scan_or_join(Some(first), &tp2, &bounds);
+        let first: BoxedOperator<MemoryStorage> = build_scan_or_join(None, &tp1, &bounds, Vec::new());
+        let second = build_scan_or_join(Some(first), &tp2, &bounds, Vec::new());
 
         // Schema should include all vars from both patterns
         assert_eq!(second.schema().len(), 3);
