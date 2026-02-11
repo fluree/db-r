@@ -1888,12 +1888,17 @@ impl FlureeBuilder {
 
         let nameservice = FileNameService::new(&path);
 
+        let index_config = self
+            .indexing_config
+            .map(|c| c.index_config)
+            .unwrap_or_default();
+
         // Note: Ledger caching not yet supported for encrypted storage
         Ok(Fluree {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            index_config: IndexConfig::default(),
+            index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         })
@@ -1918,11 +1923,16 @@ impl FlureeBuilder {
             .ledger_cache_config
             .map(|config| Arc::new(LedgerManager::new(storage, nameservice.clone(), config)));
 
+        let index_config = self
+            .indexing_config
+            .map(|c| c.index_config)
+            .unwrap_or_default();
+
         Fluree {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            index_config: IndexConfig::default(),
+            index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager,
         }
@@ -1947,12 +1957,17 @@ impl FlureeBuilder {
         let connection = Connection::new(self.config, storage);
         let nameservice = MemoryNameService::new();
 
+        let index_config = self
+            .indexing_config
+            .map(|c| c.index_config)
+            .unwrap_or_default();
+
         // Note: Ledger caching not yet supported for encrypted storage
         Fluree {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            index_config: IndexConfig::default(),
+            index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         }
@@ -2017,11 +2032,16 @@ impl FlureeBuilder {
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage, "");
 
+        let index_config = self
+            .indexing_config
+            .map(|c| c.index_config)
+            .unwrap_or_default();
+
         Ok(Fluree {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            index_config: IndexConfig::default(),
+            index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         })
@@ -2097,11 +2117,16 @@ impl FlureeBuilder {
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage, "");
 
+        let index_config = self
+            .indexing_config
+            .map(|c| c.index_config)
+            .unwrap_or_default();
+
         Ok(Fluree {
             connection,
             nameservice,
             indexing_mode: tx::IndexingMode::Disabled,
-            index_config: IndexConfig::default(),
+            index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
         })
@@ -2676,6 +2701,75 @@ mod tests {
     #[test]
     fn test_fluree_memory_convenience() {
         let _fluree = fluree_memory();
+    }
+
+    // ========================================================================
+    // IndexConfig propagation tests (commit e6d0044)
+    // ========================================================================
+
+    #[test]
+    fn test_default_index_config_returns_defaults_without_thresholds() {
+        let fluree = FlureeBuilder::memory().build_memory();
+        let cfg = fluree.default_index_config();
+        assert_eq!(
+            cfg.reindex_min_bytes,
+            IndexConfig::default().reindex_min_bytes
+        );
+        assert_eq!(
+            cfg.reindex_max_bytes,
+            IndexConfig::default().reindex_max_bytes
+        );
+    }
+
+    #[test]
+    fn test_with_indexing_thresholds_propagates_to_default_index_config() {
+        // This is the exact scenario that was broken before e6d0044:
+        // custom thresholds set via the builder were silently dropped.
+        let fluree = FlureeBuilder::memory()
+            .with_indexing_thresholds(500_000, 5_000_000)
+            .build_memory();
+
+        let cfg = fluree.default_index_config();
+        assert_eq!(cfg.reindex_min_bytes, 500_000);
+        assert_eq!(cfg.reindex_max_bytes, 5_000_000);
+    }
+
+    #[test]
+    fn test_derive_index_config_extracts_from_connection_config() {
+        use fluree_db_connection::config::{DefaultsConfig, IndexingDefaults};
+
+        let config = ConnectionConfig {
+            defaults: Some(DefaultsConfig {
+                identity: None,
+                indexing: Some(IndexingDefaults {
+                    reindex_min_bytes: Some(250_000),
+                    reindex_max_bytes: Some(2_500_000),
+                    max_old_indexes: None,
+                    indexing_enabled: None,
+                    track_class_stats: None,
+                    gc_min_time_mins: None,
+                }),
+            }),
+            ..Default::default()
+        };
+
+        let idx = derive_index_config(&config);
+        assert_eq!(idx.reindex_min_bytes, 250_000);
+        assert_eq!(idx.reindex_max_bytes, 2_500_000);
+    }
+
+    #[test]
+    fn test_derive_index_config_falls_back_to_defaults() {
+        let config = ConnectionConfig::default();
+        let idx = derive_index_config(&config);
+        assert_eq!(
+            idx.reindex_min_bytes,
+            IndexConfig::default().reindex_min_bytes
+        );
+        assert_eq!(
+            idx.reindex_max_bytes,
+            IndexConfig::default().reindex_max_bytes
+        );
     }
 
     // ========================================================================

@@ -790,6 +790,12 @@ fn parse_storage_access_mode(s: &str) -> Option<StorageAccessMode> {
 // Top-level entry point: load config file and merge into ServerConfig
 // ---------------------------------------------------------------------------
 
+/// Returns `true` if the user explicitly requested a config file or profile,
+/// meaning config-loading errors should be fatal rather than warnings.
+pub fn config_error_is_fatal(config: &ServerConfig) -> bool {
+    config.config_file.is_some() || config.profile.is_some()
+}
+
 /// Load the config file (if found) and merge its values into `config`,
 /// respecting the precedence: CLI > env > profile > file > defaults.
 pub fn load_and_merge_config(
@@ -1130,6 +1136,34 @@ auto_pull = true
         assert_eq!(sp.enabled, Some(true));
         // storage_proxy.debug_headers: preserved
         assert_eq!(sp.debug_headers, Some(false));
+    }
+
+    // ========================================================================
+    // config_error_is_fatal tests (commit 4faee38)
+    // ========================================================================
+
+    #[test]
+    fn test_config_error_is_fatal_with_explicit_config_file() {
+        let config = ServerConfig {
+            config_file: Some(PathBuf::from("/etc/fluree/config.toml")),
+            ..Default::default()
+        };
+        assert!(config_error_is_fatal(&config));
+    }
+
+    #[test]
+    fn test_config_error_is_fatal_with_explicit_profile() {
+        let config = ServerConfig {
+            profile: Some("production".to_string()),
+            ..Default::default()
+        };
+        assert!(config_error_is_fatal(&config));
+    }
+
+    #[test]
+    fn test_config_error_not_fatal_for_auto_discovered() {
+        let config = ServerConfig::default();
+        assert!(!config_error_is_fatal(&config));
     }
 
     /// Verify that every arg ID referenced by `apply_to_server_config` (via

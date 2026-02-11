@@ -4,7 +4,7 @@
 
 use clap::{CommandFactory, FromArgMatches};
 use fluree_db_server::{
-    config_file::load_and_merge_config,
+    config_file::{config_error_is_fatal, load_and_merge_config},
     telemetry::{init_logging, shutdown_tracer, TelemetryConfig},
     FlureeServer, ServerConfig,
 };
@@ -21,8 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // since ignoring those silently would cause hard-to-diagnose production issues.
     // For auto-discovered configs, errors are downgraded to warnings.
     if let Err(e) = load_and_merge_config(&mut config, &matches) {
-        let user_requested = config.config_file.is_some() || config.profile.is_some();
-        if user_requested {
+        if config_error_is_fatal(&config) {
             eprintln!("Error: {e}");
             std::process::exit(1);
         }

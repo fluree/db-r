@@ -450,4 +450,67 @@ mod tests {
         assert!(!is_plaintext_secret("@/etc/fluree/token.jwt"));
         assert!(!is_plaintext_secret(""));
     }
+
+    // ========================================================================
+    // detect_config_in_dir tests (commit 98f3899)
+    // ========================================================================
+
+    #[test]
+    fn detect_config_toml_only() {
+        let dir = std::env::temp_dir().join("fluree-test-detect-toml-only");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(CONFIG_FILE_TOML), "# toml").unwrap();
+        // Ensure jsonld does NOT exist
+        let _ = std::fs::remove_file(dir.join(CONFIG_FILE_JSONLD));
+
+        let result = detect_config_in_dir(&dir).unwrap();
+        assert_eq!(result.format, ConfigFormat::Toml);
+        assert!(!result.both_exist);
+        assert_eq!(result.path, dir.join(CONFIG_FILE_TOML));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn detect_config_jsonld_only() {
+        let dir = std::env::temp_dir().join("fluree-test-detect-jsonld-only");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(CONFIG_FILE_JSONLD), "{}").unwrap();
+        // Ensure toml does NOT exist
+        let _ = std::fs::remove_file(dir.join(CONFIG_FILE_TOML));
+
+        let result = detect_config_in_dir(&dir).unwrap();
+        assert_eq!(result.format, ConfigFormat::JsonLd);
+        assert!(!result.both_exist);
+        assert_eq!(result.path, dir.join(CONFIG_FILE_JSONLD));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn detect_config_both_exist_prefers_toml() {
+        let dir = std::env::temp_dir().join("fluree-test-detect-both");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(CONFIG_FILE_TOML), "# toml").unwrap();
+        std::fs::write(dir.join(CONFIG_FILE_JSONLD), "{}").unwrap();
+
+        let result = detect_config_in_dir(&dir).unwrap();
+        assert_eq!(result.format, ConfigFormat::Toml);
+        assert!(result.both_exist);
+        assert_eq!(result.path, dir.join(CONFIG_FILE_TOML));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn detect_config_neither_exists() {
+        let dir = std::env::temp_dir().join("fluree-test-detect-none");
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join(CONFIG_FILE_TOML));
+        let _ = std::fs::remove_file(dir.join(CONFIG_FILE_JSONLD));
+
+        assert!(detect_config_in_dir(&dir).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
