@@ -38,7 +38,7 @@ pub struct Cli {
 pub enum Commands {
     /// Initialize a new Fluree project directory
     Init {
-        /// Create global config at ~/.fluree/ instead of local .fluree/
+        /// Create global config instead of local .fluree/ (uses $FLUREE_HOME or platform data dir)
         #[arg(long)]
         global: bool,
 

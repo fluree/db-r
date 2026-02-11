@@ -6,7 +6,7 @@ Fluree server is configured via a configuration file, command-line flags, and en
 
 ### Configuration File (TOML, JSON, or JSON-LD)
 
-The server reads configuration from `.fluree/config.toml` (or `.fluree/config.jsonld`) — the same file used by the Fluree CLI. Server settings live under the `[server]` section (or `"server"` key in JSON/JSON-LD). The server walks up from the current working directory looking for `.fluree/config.toml` or `.fluree/config.jsonld`, falling back to `~/.fluree/config.{toml,jsonld}`.
+The server reads configuration from `.fluree/config.toml` (or `.fluree/config.jsonld`) — the same file used by the Fluree CLI. Server settings live under the `[server]` section (or `"server"` key in JSON/JSON-LD). The server walks up from the current working directory looking for `.fluree/config.toml` or `.fluree/config.jsonld`, falling back to the global Fluree directory (`$FLUREE_HOME`, or the platform data directory — e.g. `~/.local/share/fluree` on Linux, `~/Library/Application Support/fluree` on macOS).
 
 ```bash
 # Use default config file discovery
@@ -604,6 +604,7 @@ fluree-server \
 
 | Variable                                | Description                    | Default                                          |
 | --------------------------------------- | ------------------------------ | ------------------------------------------------ |
+| `FLUREE_HOME`                           | Global Fluree data directory   | Platform data dir (see below)                    |
 | `FLUREE_CONFIG`                         | Config file path               | `.fluree/config.{toml,jsonld}` (auto-discovered) |
 | `FLUREE_PROFILE`                        | Configuration profile name     | None                                             |
 | `FLUREE_LISTEN_ADDR`                    | Server address:port            | `0.0.0.0:8090`                                   |
@@ -665,9 +666,9 @@ storage_proxy_token = "@/etc/fluree/proxy-token.jwt"
 
 The following config file fields support `@filepath` resolution:
 
-| Config file key | Env var alternative |
-|---|---|
-| `peer.events_token` | `FLUREE_PEER_EVENTS_TOKEN` |
+| Config file key            | Env var alternative          |
+| -------------------------- | ---------------------------- |
+| `peer.events_token`        | `FLUREE_PEER_EVENTS_TOKEN`   |
 | `peer.storage_proxy_token` | `FLUREE_STORAGE_PROXY_TOKEN` |
 
 ### 2. Enable Admin Auth in Production

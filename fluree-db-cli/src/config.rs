@@ -48,12 +48,22 @@ pub fn find_fluree_dir() -> Option<PathBuf> {
     find_fluree_dir_from(&cwd)
 }
 
-/// Find `.fluree/` by walking up from cwd, falling back to `~/.fluree/`.
+/// Resolve the global `.fluree/` directory.
+///
+/// Priority: `$FLUREE_HOME` env var, then `dirs::data_local_dir()/fluree`.
+fn global_fluree_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("FLUREE_HOME") {
+        return Some(PathBuf::from(p));
+    }
+    dirs::data_local_dir().map(|d| d.join("fluree"))
+}
+
+/// Find `.fluree/` by walking up from cwd, falling back to global directory.
 pub fn find_or_global_fluree_dir() -> Option<PathBuf> {
     if let Some(d) = find_fluree_dir() {
         return Some(d);
     }
-    let global = dirs::home_dir()?.join(FLUREE_DIR);
+    let global = global_fluree_dir()?;
     if global.is_dir() {
         Some(global)
     } else {
@@ -132,13 +142,12 @@ pub fn init_fluree_dir(
     config_template: &str,
     config_filename: &str,
 ) -> CliResult<PathBuf> {
-    let base = if global {
-        dirs::home_dir()
-            .ok_or_else(|| CliError::Config("cannot determine home directory".into()))?
+    let fluree_dir = if global {
+        global_fluree_dir()
+            .ok_or_else(|| CliError::Config("cannot determine global data directory".into()))?
     } else {
-        std::env::current_dir()?
+        std::env::current_dir()?.join(FLUREE_DIR)
     };
-    let fluree_dir = base.join(FLUREE_DIR);
     let storage_dir = fluree_dir.join(STORAGE_DIR);
 
     fs::create_dir_all(&storage_dir).map_err(|e| {

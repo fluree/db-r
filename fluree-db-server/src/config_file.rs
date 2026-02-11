@@ -286,10 +286,9 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
         }
     }
 
-    // Global fallback: ~/.fluree/config.{toml,jsonld}
-    if let Some(home) = dirs_home() {
-        let fluree_subdir = home.join(FLUREE_DIR);
-        if let Some(found) = find_config_in_dir(&fluree_subdir) {
+    // Global fallback: $FLUREE_HOME or platform data dir
+    if let Some(global) = global_fluree_dir() {
+        if let Some(found) = find_config_in_dir(&global) {
             return Some(found);
         }
     }
@@ -297,8 +296,14 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     None
 }
 
-fn dirs_home() -> Option<PathBuf> {
-    dirs::home_dir()
+/// Resolve the global Fluree directory.
+///
+/// Priority: `$FLUREE_HOME` env var, then `dirs::data_local_dir()/fluree`.
+fn global_fluree_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("FLUREE_HOME") {
+        return Some(PathBuf::from(p));
+    }
+    dirs::data_local_dir().map(|d| d.join("fluree"))
 }
 
 // ---------------------------------------------------------------------------
