@@ -138,7 +138,7 @@ use runner::{
 ///
 /// Vector of result batches. Empty vector if no results.
 pub async fn execute(db: &Db, vars: &VarRegistry, query: &ExecutableQuery) -> Result<Vec<Batch>> {
-    let span = tracing::debug_span!(
+    let span = tracing::info_span!(
         "query_execute",
         db_t = db.t,
         pattern_count = query.query.patterns.len()

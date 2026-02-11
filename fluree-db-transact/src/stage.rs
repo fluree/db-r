@@ -152,12 +152,18 @@ pub async fn stage(
 
         // Execute WHERE patterns to get bindings
         // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
-        tracing::debug!(
-            where_pattern_count = txn.where_patterns.len(),
-            "executing WHERE patterns"
+        let where_span = tracing::debug_span!(
+            "where_exec",
+            pattern_count = txn.where_patterns.len(),
+            binding_rows = tracing::field::Empty,
         );
-        let bindings = execute_where(&ledger, &mut txn).await?;
-        tracing::debug!(binding_count = bindings.len(), "WHERE patterns executed");
+        let bindings = async {
+            let bindings = execute_where(&ledger, &mut txn).await?;
+            tracing::Span::current().record("binding_rows", bindings.len() as u64);
+            Ok::<_, TransactError>(bindings)
+        }
+        .instrument(where_span)
+        .await?;
 
         // Generate transaction ID for blank node skolemization
         let txn_id = generate_txn_id();
@@ -169,81 +175,93 @@ pub async fn stage(
             .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
             .collect();
 
+        let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id)
+            .with_graph_sids(graph_sids.clone());
+
         // Generate retractions from DELETE templates
-        let mut generator =
-            FlakeGenerator::new(new_t, &mut ns_registry, txn_id).with_graph_sids(graph_sids.clone());
-        tracing::debug!(
+        let delete_span = tracing::debug_span!(
+            "delete_gen",
             template_count = txn.delete_templates.len(),
-            "generating retractions from DELETE templates"
+            retraction_count = tracing::field::Empty,
         );
-        let mut retractions = generator.generate_retractions(&txn.delete_templates, &bindings)?;
-        tracing::debug!(
-            retraction_count = retractions.len(),
-            "retractions generated"
-        );
+        let retractions = async {
+            let mut retractions =
+                generator.generate_retractions(&txn.delete_templates, &bindings)?;
 
-        // Clojure parity: DELETE templates often omit list indices even when retracting `@list` values.
-        //
-        // In Rust, list items are stored as flakes with `FlakeMeta.i` (list index). A retraction flake
-        // with `m=None` may not match those list-item flakes. Hydrate retractions by copying the
-        // stored list-index meta from the currently asserted flake (if present).
-        hydrate_list_index_meta_for_retractions(&ledger, &mut retractions).await?;
+            // Clojure parity: DELETE templates often omit list indices even when
+            // retracting `@list` values. Hydrate retractions by copying the stored
+            // list-index meta from the currently asserted flake (if present).
+            hydrate_list_index_meta_for_retractions(&ledger, &mut retractions).await?;
 
-        // For Upsert: also generate deletions for existing values of (subject, predicate) pairs
-        if txn.txn_type == TxnType::Upsert {
-            tracing::debug!("generating upsert deletions");
-            let upsert_retractions =
-                generate_upsert_deletions(&ledger, &txn, new_t, &graph_sids).await?;
-            tracing::debug!(
-                upsert_retraction_count = upsert_retractions.len(),
-                "upsert deletions generated"
-            );
-            retractions.extend(upsert_retractions);
+            // For Upsert: also generate deletions for existing values
+            if txn.txn_type == TxnType::Upsert {
+                tracing::debug!("generating upsert deletions");
+                let upsert_retractions =
+                    generate_upsert_deletions(&ledger, &txn, new_t, &graph_sids).await?;
+                tracing::debug!(
+                    upsert_retraction_count = upsert_retractions.len(),
+                    "upsert deletions generated"
+                );
+                retractions.extend(upsert_retractions);
+            }
+
+            tracing::Span::current().record("retraction_count", retractions.len() as u64);
+            Ok::<_, TransactError>(retractions)
         }
+        .instrument(delete_span)
+        .await?;
 
         // Generate assertions from INSERT templates
-        tracing::debug!(
+        let insert_span = tracing::debug_span!(
+            "insert_gen",
             template_count = txn.insert_templates.len(),
-            "generating assertions from INSERT templates"
+            assertion_count = tracing::field::Empty,
         );
-        // Clojure parity: For UPDATE transactions, it's common to write:
-        //   WHERE { ... maybe matches ... }
-        //   DELETE { ... bound vars ... }
-        //   INSERT { ... constant assertions ... }
-        //
-        // When WHERE has **no solutions**, DELETE should be a no-op (handled by bindings.is_empty()),
-        // but constant INSERT templates should still be applied once. Achieve that by using a single
-        // empty solution (0 vars, 1 row) for assertion generation in the zero-solution case.
-        let assertions = if bindings.is_empty() && txn.txn_type == TxnType::Update {
-            let empty_solution = Batch::single_empty();
-            generator.generate_assertions(&txn.insert_templates, &empty_solution)?
-        } else {
-            generator.generate_assertions(&txn.insert_templates, &bindings)?
+        let assertions = {
+            let _guard = insert_span.enter();
+            // Clojure parity: For UPDATE transactions, it's common to write:
+            //   WHERE { ... maybe matches ... }
+            //   DELETE { ... bound vars ... }
+            //   INSERT { ... constant assertions ... }
+            //
+            // When WHERE has **no solutions**, DELETE should be a no-op
+            // (handled by bindings.is_empty()), but constant INSERT templates
+            // should still be applied once.
+            let assertions = if bindings.is_empty() && txn.txn_type == TxnType::Update {
+                let empty_solution = Batch::single_empty();
+                generator.generate_assertions(&txn.insert_templates, &empty_solution)?
+            } else {
+                generator.generate_assertions(&txn.insert_templates, &bindings)?
+            };
+            insert_span.record("assertion_count", assertions.len() as u64);
+            assertions
         };
-        tracing::debug!(assertion_count = assertions.len(), "assertions generated");
 
         // Apply cancellation (retraction cancels assertion and vice versa)
-        let mut all_flakes = retractions;
-        all_flakes.extend(assertions);
-        let total_before_cancel = all_flakes.len();
-        tracing::debug!(flake_count = total_before_cancel, "applying cancellation");
-        let flakes = apply_cancellation(all_flakes);
+        let flakes = {
+            let _cancel_span = tracing::debug_span!("cancellation").entered();
+            let mut all_flakes = retractions;
+            all_flakes.extend(assertions);
+            let total_before_cancel = all_flakes.len();
+            let flakes = apply_cancellation(all_flakes);
+            if flakes.len() != total_before_cancel {
+                tracing::debug!(
+                    before = total_before_cancel,
+                    after = flakes.len(),
+                    cancelled = total_before_cancel - flakes.len(),
+                    "cancellation applied"
+                );
+            }
+            flakes
+        };
 
-        if flakes.len() != total_before_cancel {
-            tracing::debug!(
-                before = total_before_cancel,
-                after = flakes.len(),
-                cancelled = total_before_cancel - flakes.len(),
-                "cancellation applied"
-            );
-        }
-
-        // 3. Enforce modify policies (if policy context provided and not root)
+        // Enforce modify policies (if policy context provided and not root)
         if let Some(policy) = options.policy_ctx {
             if !policy.wrapper().is_root() {
-                tracing::debug!("enforcing modify policies");
-                enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
-                tracing::debug!("modify policies enforced");
+                let policy_span = tracing::debug_span!("policy_enforce");
+                async { enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await }
+                    .instrument(policy_span)
+                    .await?;
             }
         }
 

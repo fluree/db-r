@@ -108,48 +108,61 @@ pub async fn prepare_execution(
     async move {
         tracing::debug!("preparing query execution");
 
-        // Step 1: Compute schema hierarchy from overlay
-        let hierarchy = schema_hierarchy_with_overlay(db, overlay, to_t);
+        // ---- reasoning_prep: schema hierarchy, reasoning modes, derived facts, ontology ----
+        let reasoning_span = tracing::debug_span!("reasoning_prep");
+        let (hierarchy, reasoning, derived_overlay, ontology) = async {
+            // Step 1: Compute schema hierarchy from overlay
+            let hierarchy = schema_hierarchy_with_overlay(db, overlay, to_t);
 
-        // Step 2: Determine effective reasoning modes
-        let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
+            // Step 2: Determine effective reasoning modes
+            let reasoning =
+                effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
 
-        if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl || reasoning.datalog {
-            tracing::debug!(
-                rdfs = reasoning.rdfs,
-                owl2ql = reasoning.owl2ql,
-                owl2rl = reasoning.owl2rl,
-                datalog = reasoning.datalog,
-                "reasoning enabled"
-            );
-        }
+            if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl || reasoning.datalog {
+                tracing::debug!(
+                    rdfs = reasoning.rdfs,
+                    owl2ql = reasoning.owl2ql,
+                    owl2rl = reasoning.owl2rl,
+                    datalog = reasoning.datalog,
+                    "reasoning enabled"
+                );
+            }
 
-        // Step 3: Compute derived facts from OWL2-RL and/or datalog rules
-        let derived_overlay = compute_derived_facts(db, overlay, to_t, &reasoning).await;
+            // Step 3: Compute derived facts from OWL2-RL and/or datalog rules
+            let derived_overlay = compute_derived_facts(db, overlay, to_t, &reasoning).await;
 
-        // Step 4: Build ontology for OWL2-QL mode (if enabled)
-        // Note: We need to use the effective overlay for ontology building
-        let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> = derived_overlay
-            .as_ref()
-            .map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
-
-        let effective_overlay_for_ontology: &dyn fluree_db_core::OverlayProvider =
-            reasoning_overlay_for_ontology
+            // Step 4: Build ontology for OWL2-QL mode (if enabled)
+            let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> = derived_overlay
                 .as_ref()
-                .map(|o| o as &dyn fluree_db_core::OverlayProvider)
-                .unwrap_or(overlay);
+                .map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
 
-        let ontology = if reasoning.owl2ql {
-            tracing::debug!("building OWL2-QL ontology");
-            Some(
-                Ontology::from_db_with_overlay(db, effective_overlay_for_ontology, to_t as u64, to_t)
+            let effective_overlay_for_ontology: &dyn fluree_db_core::OverlayProvider =
+                reasoning_overlay_for_ontology
+                    .as_ref()
+                    .map(|o| o as &dyn fluree_db_core::OverlayProvider)
+                    .unwrap_or(overlay);
+
+            let ontology = if reasoning.owl2ql {
+                tracing::debug!("building OWL2-QL ontology");
+                Some(
+                    Ontology::from_db_with_overlay(
+                        db,
+                        effective_overlay_for_ontology,
+                        to_t as u64,
+                        to_t,
+                    )
                     .await?,
-            )
-        } else {
-            None
-        };
+                )
+            } else {
+                None
+            };
 
-        // Step 5: Rewrite patterns for reasoning
+            Ok::<_, crate::error::QueryError>((hierarchy, reasoning, derived_overlay, ontology))
+        }
+        .instrument(reasoning_span)
+        .await?;
+
+        // ---- pattern_rewrite: encode IRIs and apply reasoning rewrites ----
         //
         // OWL2-QL rewriting (and current RDFS expansion) require SIDs for ontology/hierarchy lookup.
         // Lowering may produce `Term::Iri` to support cross-ledger joins; for single-ledger execution
@@ -184,8 +197,12 @@ pub async fn prepare_execution(
                             .map(|b| encode_patterns_for_reasoning(db, b))
                             .collect(),
                     ),
-                    Pattern::Minus(inner) => Pattern::Minus(encode_patterns_for_reasoning(db, inner)),
-                    Pattern::Exists(inner) => Pattern::Exists(encode_patterns_for_reasoning(db, inner)),
+                    Pattern::Minus(inner) => {
+                        Pattern::Minus(encode_patterns_for_reasoning(db, inner))
+                    }
+                    Pattern::Exists(inner) => {
+                        Pattern::Exists(encode_patterns_for_reasoning(db, inner))
+                    }
                     Pattern::NotExists(inner) => {
                         Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
                     }
@@ -198,44 +215,53 @@ pub async fn prepare_execution(
                 .collect()
         }
 
-        let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-            encode_patterns_for_reasoning(db, &query.query.patterns)
-        } else {
-            query.query.patterns.clone()
-        };
-        let (rewritten_patterns, _diag) = rewrite_query_patterns(
-            &patterns_for_rewrite,
-            hierarchy.clone(),
-            &reasoning,
-            ontology.as_ref(),
-        );
+        let rewritten_query = {
+            let _rewrite_span = tracing::debug_span!(
+                "pattern_rewrite",
+                patterns_before = query.query.patterns.len(),
+                patterns_after = tracing::field::Empty,
+            )
+            .entered();
 
-        if rewritten_patterns.len() != query.query.patterns.len() {
-            tracing::debug!(
-                original_count = query.query.patterns.len(),
-                rewritten_count = rewritten_patterns.len(),
-                "patterns rewritten for reasoning"
+            let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
+                encode_patterns_for_reasoning(db, &query.query.patterns)
+            } else {
+                query.query.patterns.clone()
+            };
+            let (rewritten_patterns, _diag) = rewrite_query_patterns(
+                &patterns_for_rewrite,
+                hierarchy.clone(),
+                &reasoning,
+                ontology.as_ref(),
             );
-        }
 
-        // Build query with rewritten patterns
-        let rewritten_query = query.query.with_patterns(rewritten_patterns);
+            tracing::Span::current().record("patterns_after", rewritten_patterns.len());
 
-        // Step 6: Build operator tree
-        //
-        // IMPORTANT (dataset queries):
-        // In multi-ledger dataset execution, the caller passes a "primary" default-graph db
-        // here. That db is used as the planning/optimization stats source for the whole query.
-        // The actual scan operators will still union across all default graphs via the attached
-        // `DataSet` in the `ExecutionContext`.
-        tracing::debug!("building operator tree");
-        let stats_view = db.stats.as_ref().map(|s| {
-            Arc::new(StatsView::from_db_stats_with_namespaces(
-                s,
-                &db.namespace_codes,
-            ))
-        });
-        let operator = build_operator_tree(&rewritten_query, &query.options, stats_view)?;
+            if rewritten_patterns.len() != query.query.patterns.len() {
+                tracing::debug!(
+                    original_count = query.query.patterns.len(),
+                    rewritten_count = rewritten_patterns.len(),
+                    "patterns rewritten for reasoning"
+                );
+            }
+
+            query.query.with_patterns(rewritten_patterns)
+        };
+
+        // ---- plan: build operator tree from rewritten query ----
+        let operator = {
+            let _plan_span =
+                tracing::debug_span!("plan", pattern_count = rewritten_query.patterns.len(),)
+                    .entered();
+
+            let stats_view = db.stats.as_ref().map(|s| {
+                Arc::new(StatsView::from_db_stats_with_namespaces(
+                    s,
+                    &db.namespace_codes,
+                ))
+            });
+            build_operator_tree(&rewritten_query, &query.options, stats_view)?
+        };
 
         Ok(PreparedExecution {
             operator,

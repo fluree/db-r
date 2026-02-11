@@ -302,23 +302,24 @@ where
                     .await
                     .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
 
+                let resolve_span = tracing::debug_span!("resolve_commit",
+                    commit_index = i + 1,
+                    commit_t = tracing::field::Empty,
+                    commit_ops = tracing::field::Empty,
+                );
+                let _resolve_guard = resolve_span.enter();
+
                 let resolved = resolver
                     .resolve_blob(&bytes, &cid.digest_hex(), &mut dicts, &mut writer)
                     .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
+
+                resolve_span.record("commit_t", resolved.t);
+                resolve_span.record("commit_ops", resolved.total_records as u64);
 
                 // Accumulate totals
                 total_commit_size += resolved.size;
                 total_asserts += resolved.asserts as u64;
                 total_retracts += resolved.retracts as u64;
-
-                tracing::debug!(
-                    commit = i + 1,
-                    t = resolved.t,
-                    ops = resolved.total_records,
-                    subjects = dicts.subjects.len(),
-                    predicates = dicts.predicates.len(),
-                    "commit resolved"
-                );
             }
 
             let id_stats_hook = resolver.take_stats_hook();
@@ -361,8 +362,11 @@ where
             // ---- Phase D: Upload artifacts to CAS and write v2 root ----
 
             // D.1: Load store for max_t / base_t / namespace_codes
-            let store = run_index::BinaryIndexStore::load(&run_dir, &index_dir)
-                .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
+            let store = {
+                let _load_span = tracing::info_span!("index_store_load").entered();
+                run_index::BinaryIndexStore::load(&run_dir, &index_dir)
+                    .map_err(|e| IndexerError::StorageRead(e.to_string()))?
+            };
 
             // Build predicate p_id -> (ns_code, suffix) mapping for the root (compact).
             let predicate_sids: Vec<(u16, String)> = (0..dicts.predicates.len())
