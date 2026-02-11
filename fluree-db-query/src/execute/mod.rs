@@ -47,7 +47,6 @@ pub use runner::QueryContextParams;
 pub use where_plan::build_where_operators_seeded;
 
 // Re-export operator tree builder and runner for custom execution pipelines
-// (e.g., binary index queries in fluree-db-ingest)
 pub use operator_tree::build_operator_tree;
 pub use runner::run_operator;
 

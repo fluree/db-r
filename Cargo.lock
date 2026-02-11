@@ -2443,27 +2443,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fluree-db-ingest"
-version = "0.1.0"
-dependencies = [
- "clap",
- "fluree-db-api",
- "fluree-db-core",
- "fluree-db-indexer",
- "fluree-db-query",
- "fluree-db-sparql",
- "fluree-db-transact",
- "mimalloc",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "fluree-db-ledger"
 version = "0.1.0"
 dependencies = [

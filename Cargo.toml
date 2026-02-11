@@ -32,7 +32,6 @@ members = [
     "fluree-search-protocol",
     "fluree-search-service",
     "fluree-search-httpd",
-    "fluree-db-ingest",
     "fluree-db-cli",
 ]
 
