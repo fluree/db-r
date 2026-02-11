@@ -33,6 +33,7 @@ fn make_right_scan(
     Box::new(crate::binary_scan::ScanOperator::new(
         pattern,
         object_bounds.clone(),
+        Vec::new(),
     ))
 }
 
@@ -805,8 +806,10 @@ impl NestedLoopJoinOperator {
             return Ok(Some(Batch::empty_schema_with_len(rows_added)));
         }
 
-        let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
-        Ok(Some(batch))
+        Ok(Some(Batch::new(
+            self.combined_schema.clone(),
+            output_columns,
+        )?))
     }
 
     /// Ensure the current left batch is stored in `stored_left_batches` and
@@ -1793,7 +1796,7 @@ mod tests {
     #[tokio::test]
     async fn test_join_right_scan_with_object_bounds_uses_binary_path() {
         use crate::execute::{build_operator_tree, run_operator, ExecutableQuery};
-        use crate::ir::{CompareOp, FilterExpr, FilterValue, Pattern};
+        use crate::ir::{Expression, FilterValue, Pattern};
         use crate::parse::ParsedQuery;
         use crate::pattern::Term;
         use crate::var_registry::VarRegistry;
@@ -2057,11 +2060,10 @@ mod tests {
             Term::Sid(Sid::new(0, p_has_score)),
             Term::Var(v_score_v),
         );
-        let filter = FilterExpr::Compare {
-            op: CompareOp::Gt,
-            left: Box::new(FilterExpr::Var(v_score_v)),
-            right: Box::new(FilterExpr::Const(FilterValue::Double(0.4))),
-        };
+        let filter = Expression::gt(
+            Expression::Var(v_score_v),
+            Expression::Const(FilterValue::Double(0.4)),
+        );
 
         let mut pq = ParsedQuery::new(ParsedContext::default());
         pq.patterns = vec![

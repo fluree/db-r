@@ -7,6 +7,14 @@
 //! - **Portable**: scalar fallback on all platforms.
 //! - **Safe call sites**: SIMD functions are `unsafe` + guarded by feature detection.
 
+/// Type alias for SIMD kernel function pointers (f64).
+#[cfg(target_arch = "x86_64")]
+type SimdKernelF64 = unsafe fn(&[f64], &[f64]) -> f64;
+
+/// Type alias for SIMD kernel function pointers (f32).
+#[cfg(target_arch = "x86_64")]
+type SimdKernelF32 = unsafe fn(&[f32], &[f32]) -> f32;
+
 /// Below this length, scalar tends to win (dispatch/reduction overhead dominates).
 ///
 /// This threshold is intentionally conservative; tune with real workloads.
@@ -25,7 +33,7 @@ pub fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
         use std::sync::OnceLock;
 
         // Cache dispatch once per process (no user flags).
-        static DOT_KERNEL: OnceLock<unsafe fn(&[f64], &[f64]) -> f64> = OnceLock::new();
+        static DOT_KERNEL: OnceLock<SimdKernelF64> = OnceLock::new();
         let f = *DOT_KERNEL.get_or_init(|| {
             // AVX (not AVX2) is sufficient for f64 mul/add.
             if std::arch::is_x86_feature_detected!("avx") {
@@ -37,7 +45,7 @@ pub fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
         });
         // SAFETY: DOT_KERNEL only stores functions whose target_feature
         // requirements were checked at init time.
-        return unsafe { f(a, b) };
+        unsafe { f(a, b) }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -62,7 +70,7 @@ pub fn l2_f64(a: &[f64], b: &[f64]) -> f64 {
     {
         use std::sync::OnceLock;
 
-        static L2_KERNEL: OnceLock<unsafe fn(&[f64], &[f64]) -> f64> = OnceLock::new();
+        static L2_KERNEL: OnceLock<SimdKernelF64> = OnceLock::new();
         let f = *L2_KERNEL.get_or_init(|| {
             if std::arch::is_x86_feature_detected!("avx") {
                 l2_f64_avx
@@ -70,7 +78,7 @@ pub fn l2_f64(a: &[f64], b: &[f64]) -> f64 {
                 l2_f64_sse2
             }
         });
-        return unsafe { f(a, b) };
+        unsafe { f(a, b) }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -330,7 +338,7 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
     {
         use std::sync::OnceLock;
 
-        static DOT_F32_KERNEL: OnceLock<unsafe fn(&[f32], &[f32]) -> f32> = OnceLock::new();
+        static DOT_F32_KERNEL: OnceLock<SimdKernelF32> = OnceLock::new();
         let f = *DOT_F32_KERNEL.get_or_init(|| {
             if std::arch::is_x86_feature_detected!("avx") {
                 dot_f32_avx
@@ -338,7 +346,7 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
                 dot_f32_sse
             }
         });
-        return unsafe { f(a, b) };
+        unsafe { f(a, b) }
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -362,7 +370,7 @@ pub fn l2_f32(a: &[f32], b: &[f32]) -> f32 {
     {
         use std::sync::OnceLock;
 
-        static L2_F32_KERNEL: OnceLock<unsafe fn(&[f32], &[f32]) -> f32> = OnceLock::new();
+        static L2_F32_KERNEL: OnceLock<SimdKernelF32> = OnceLock::new();
         let f = *L2_F32_KERNEL.get_or_init(|| {
             if std::arch::is_x86_feature_detected!("avx") {
                 l2_f32_avx
@@ -370,7 +378,7 @@ pub fn l2_f32(a: &[f32], b: &[f32]) -> f32 {
                 l2_f32_sse
             }
         });
-        return unsafe { f(a, b) };
+        unsafe { f(a, b) }
     }
 
     #[cfg(target_arch = "aarch64")]

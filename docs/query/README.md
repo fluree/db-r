@@ -184,6 +184,7 @@ WHERE {
 Fluree's query engine is optimized for:
 - **Index Selection**: Automatically chooses optimal indexes
 - **Join Optimization**: Efficient join algorithms
+- **Filter Optimization**: Filters are automatically applied as soon as their required variables are bound, regardless of where they appear in the query
 - **Streaming Execution**: Results stream as they're computed
 - **Parallel Processing**: Parallel execution where possible
 

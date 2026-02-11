@@ -904,7 +904,7 @@ curl -X POST http://localhost:8090/fluree/transact \
 
 1. **Use PREFIX Declarations**: Makes queries readable
 2. **Optimize Patterns**: Order patterns for efficient execution
-3. **Use FILTER Early**: Place filters as early as possible
+3. **Flexible FILTER Placement**: Filters can be placed anywhere in the WHERE clause - the query engine automatically applies each filter as soon as all its required variables are bound
 4. **Limit Results**: Use LIMIT for large result sets
 5. **Avoid Cartesian Products**: Structure queries to avoid large joins
 

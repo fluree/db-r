@@ -3,7 +3,7 @@
 //! Handles lowering of SELECT variables, DISTINCT, LIMIT, OFFSET, ORDER BY,
 //! GROUP BY, HAVING, and subquery patterns.
 
-use crate::ast::expr::Expression;
+use crate::ast::expr::Expression as AstExpression;
 use crate::ast::pattern::SubSelect;
 use crate::ast::query::{
     GroupCondition, OrderCondition, OrderDirection, OrderExpr, SelectClause, SelectModifier,
@@ -12,7 +12,7 @@ use crate::ast::query::{
 use crate::span::SourceSpan;
 
 use fluree_db_query::aggregate::AggregateSpec;
-use fluree_db_query::ir::{FilterExpr, FilterValue, Pattern, SubqueryPattern};
+use fluree_db_query::ir::{Expression, FilterValue, Pattern, SubqueryPattern};
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::sort::{SortDirection, SortSpec};
@@ -28,7 +28,7 @@ pub(super) struct SelectBinds {
     /// BIND patterns to apply before grouping/aggregation
     pub pre: Vec<Pattern>,
     /// Post-aggregation binds (var, expr) to apply after GROUP BY
-    pub post: Vec<(VarId, FilterExpr)>,
+    pub post: Vec<(VarId, Expression)>,
 }
 
 impl<'a, E: IriEncoder> LoweringContext<'a, E> {
@@ -64,7 +64,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         if let SelectVariables::Explicit(vars) = &clause.variables {
             for var in vars {
                 if let SelectVariable::Expr { expr, alias, .. } = var {
-                    if matches!(expr, Expression::Aggregate { .. }) {
+                    if matches!(expr, AstExpression::Aggregate { .. }) {
                         names.insert(alias.name.clone());
                     }
                 }
@@ -85,7 +85,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         if let SelectVariables::Explicit(vars) = &clause.variables {
             for var in vars {
                 if let SelectVariable::Expr { expr, alias, .. } = var {
-                    if matches!(expr, Expression::Aggregate { .. }) {
+                    if matches!(expr, AstExpression::Aggregate { .. }) {
                         continue;
                     }
                     let filter_expr = self.lower_expression(expr)?;
@@ -211,7 +211,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             // Handle ASC(?var) / DESC(?var) / ASC((?var)) which parses as Expr
             // Unwrap any bracketed expressions first
             OrderExpr::Expr(expr) => match expr.unwrap_bracketed() {
-                Expression::Var(var) => {
+                AstExpression::Var(var) => {
                     let var_id = self.register_var(var);
                     Ok(SortSpec {
                         var: var_id,
@@ -232,7 +232,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             GroupCondition::Var(var) => Ok(self.register_var(var)),
             // Handle GROUP BY (?var) or GROUP BY ((?var)) - bracketed variables
             GroupCondition::Expr { expr, span, .. } => match expr.unwrap_bracketed() {
-                Expression::Var(var) => Ok(self.register_var(var)),
+                AstExpression::Var(var) => Ok(self.register_var(var)),
                 _ => {
                     // Expression-based GROUP BY not yet supported
                     Err(LowerError::unsupported_group_by_expr(*span))
@@ -241,14 +241,14 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         }
     }
 
-    /// Lower HAVING conditions to a single FilterExpr (ANDed together)
-    fn lower_having_conditions(&mut self, conditions: &[Expression]) -> Result<FilterExpr> {
+    /// Lower HAVING conditions to a single Expression (ANDed together)
+    fn lower_having_conditions(&mut self, conditions: &[AstExpression]) -> Result<Expression> {
         if conditions.is_empty() {
             // Should not happen - HAVING requires at least one condition
-            return Ok(FilterExpr::Const(FilterValue::Bool(true)));
+            return Ok(Expression::Const(FilterValue::Bool(true)));
         }
 
-        let mut exprs: Vec<FilterExpr> = Vec::with_capacity(conditions.len());
+        let mut exprs: Vec<Expression> = Vec::with_capacity(conditions.len());
         for cond in conditions {
             exprs.push(self.lower_expression(cond)?);
         }
@@ -257,8 +257,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         if exprs.len() == 1 {
             Ok(exprs.pop().unwrap())
         } else {
-            // FilterExpr::And takes Vec<FilterExpr>
-            Ok(FilterExpr::And(exprs))
+            Ok(Expression::and(exprs))
         }
     }
 

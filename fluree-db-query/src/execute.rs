@@ -509,7 +509,7 @@ pub async fn execute_with_dataset_and_policy_and_providers<'a, 'b>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CompareOp, FilterExpr, FilterValue, Pattern};
+    use crate::ir::{Expression, FilterValue, Pattern};
     use crate::options::QueryOptions;
     use crate::parse::SelectMode;
     use crate::pattern::{Term, TriplePattern};
@@ -637,11 +637,10 @@ mod tests {
     fn test_build_where_operators_with_filter() {
         let patterns = vec![
             Pattern::Triple(make_pattern(VarId(0), "age", VarId(1))),
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(18))),
-            }),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(18)),
+            )),
         ];
 
         let result = where_plan::build_where_operators(&patterns, None);
@@ -656,11 +655,10 @@ mod tests {
 
         let patterns = vec![
             Pattern::Triple(make_pattern(score, "hasScore", score_v)),
-            Pattern::Filter(FilterExpr::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(score_v)),
-                right: Box::new(FilterExpr::Const(FilterValue::Double(0.4))),
-            }),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(score_v),
+                Expression::Const(FilterValue::Double(0.4)),
+            )),
             Pattern::Triple(TriplePattern::new(
                 Term::Var(score),
                 Term::Sid(Sid::new(100, "refersInstance")),
@@ -721,17 +719,15 @@ mod tests {
     #[test]
     fn test_extract_lookahead_bounds_simple_range() {
         let triples = vec![make_pattern(VarId(0), "age", VarId(1))];
-        let remaining = vec![Pattern::Filter(FilterExpr::And(vec![
-            FilterExpr::Compare {
-                op: CompareOp::Gt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(18))),
-            },
-            FilterExpr::Compare {
-                op: CompareOp::Lt,
-                left: Box::new(FilterExpr::Var(VarId(1))),
-                right: Box::new(FilterExpr::Const(FilterValue::Long(65))),
-            },
+        let remaining = vec![Pattern::Filter(Expression::and(vec![
+            Expression::gt(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(18)),
+            ),
+            Expression::lt(
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(65)),
+            ),
         ]))];
 
         let (bounds, _consumed) = extract_lookahead_bounds_with_consumption(&triples, &remaining);

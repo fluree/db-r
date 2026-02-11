@@ -33,7 +33,7 @@ pub mod where_clause;
 
 pub use ast::{
     LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedArithmeticOp,
-    UnresolvedCompareOp, UnresolvedConstructTemplate, UnresolvedFilterExpr, UnresolvedFilterValue,
+    UnresolvedCompareOp, UnresolvedConstructTemplate, UnresolvedExpression, UnresolvedFilterValue,
     UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions, UnresolvedPattern,
     UnresolvedQuery, UnresolvedRoot, UnresolvedSelectionSpec, UnresolvedSortDirection,
     UnresolvedSortSpec, UnresolvedTerm, UnresolvedTriplePattern, UnresolvedValue,
@@ -46,7 +46,7 @@ pub use lower::{
 };
 pub use where_clause::parse_where_with_counters;
 
-use crate::ir::FilterExpr;
+use crate::ir::Expression;
 use crate::var_registry::VarRegistry;
 use ast::UnresolvedPathExpr;
 use fluree_graph_json_ld::{details, parse_context, ParsedContext};
@@ -963,7 +963,7 @@ fn parse_selection_specs(arr: &[JsonValue], context: &ParsedContext) -> Result<S
 // parse_values_clause and parse_values_cell moved to values module
 
 /// Parse filter value - can be a string expression "(> ?age 45)" or data expression ["expr", [...]]
-fn parse_filter_value(value: &JsonValue) -> Result<UnresolvedFilterExpr> {
+fn parse_filter_value(value: &JsonValue) -> Result<UnresolvedExpression> {
     match value {
         // String expression like "(> ?age 45)" - parse as S-expression
         JsonValue::String(s) => filter_sexpr::parse_s_expression(s),
@@ -1040,10 +1040,10 @@ pub fn parse_query<E: IriEncoder>(
     lower_query(ast, encoder, vars, select_mode)
 }
 
-/// Parse a filter expression value and lower it to a FilterExpr.
+/// Parse a filter expression value and lower it to a Expression.
 ///
 /// This reuses the same expression language as FILTER/BIND in queries.
-pub fn parse_filter_expression(value: &JsonValue, vars: &mut VarRegistry) -> Result<FilterExpr> {
+pub fn parse_filter_expression(value: &JsonValue, vars: &mut VarRegistry) -> Result<Expression> {
     let unresolved = parse_filter_value(value)?;
     lower::lower_filter_expr(&unresolved, vars)
 }
@@ -2166,7 +2166,7 @@ mod tests {
     // ==================== FILTER SYNTAX TESTS ====================
 
     /// Helper to find the first filter pattern in the AST
-    fn find_filter(patterns: &[UnresolvedPattern]) -> Option<&UnresolvedFilterExpr> {
+    fn find_filter(patterns: &[UnresolvedPattern]) -> Option<&UnresolvedExpression> {
         patterns.iter().find_map(|p| {
             if let UnresolvedPattern::Filter(expr) = p {
                 Some(expr)
@@ -2211,14 +2211,14 @@ mod tests {
         // Find the filter
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Compare { op, left, right } => {
+            UnresolvedExpression::Compare { op, left, right } => {
                 assert!(matches!(op, UnresolvedCompareOp::Gt));
                 assert!(
-                    matches!(left.as_ref(), UnresolvedFilterExpr::Var(v) if v.as_ref() == "?age")
+                    matches!(left.as_ref(), UnresolvedExpression::Var(v) if v.as_ref() == "?age")
                 );
                 assert!(matches!(
                     right.as_ref(),
-                    UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(18))
+                    UnresolvedExpression::Const(UnresolvedFilterValue::Long(18))
                 ));
             }
             _ => panic!("Expected Compare expression"),
@@ -2244,14 +2244,14 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Compare { op, left, right } => {
+            UnresolvedExpression::Compare { op, left, right } => {
                 assert!(matches!(op, UnresolvedCompareOp::Gt));
                 assert!(
-                    matches!(left.as_ref(), UnresolvedFilterExpr::Var(v) if v.as_ref() == "?age")
+                    matches!(left.as_ref(), UnresolvedExpression::Var(v) if v.as_ref() == "?age")
                 );
                 assert!(matches!(
                     right.as_ref(),
-                    UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(18))
+                    UnresolvedExpression::Const(UnresolvedFilterValue::Long(18))
                 ));
             }
             _ => panic!("Expected Compare expression"),
@@ -2277,18 +2277,18 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::And(exprs) => {
+            UnresolvedExpression::And(exprs) => {
                 assert_eq!(exprs.len(), 2);
                 // First condition: ?age >= 18
                 match &exprs[0] {
-                    UnresolvedFilterExpr::Compare { op, .. } => {
+                    UnresolvedExpression::Compare { op, .. } => {
                         assert!(matches!(op, UnresolvedCompareOp::Ge));
                     }
                     _ => panic!("Expected Compare"),
                 }
                 // Second condition: ?age < 65
                 match &exprs[1] {
-                    UnresolvedFilterExpr::Compare { op, .. } => {
+                    UnresolvedExpression::Compare { op, .. } => {
                         assert!(matches!(op, UnresolvedCompareOp::Lt));
                     }
                     _ => panic!("Expected Compare"),
@@ -2314,7 +2314,7 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::And(exprs) => {
+            UnresolvedExpression::And(exprs) => {
                 assert_eq!(exprs.len(), 2);
             }
             _ => panic!("Expected And expression"),
@@ -2336,7 +2336,7 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Or(exprs) => {
+            UnresolvedExpression::Or(exprs) => {
                 assert_eq!(exprs.len(), 2);
             }
             _ => panic!("Expected Or expression"),
@@ -2358,10 +2358,10 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Not(inner) => {
+            UnresolvedExpression::Not(inner) => {
                 assert!(matches!(
                     inner.as_ref(),
-                    UnresolvedFilterExpr::Compare { .. }
+                    UnresolvedExpression::Compare { .. }
                 ));
             }
             _ => panic!("Expected Not expression"),
@@ -2387,8 +2387,8 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Compare { left, .. } => match left.as_ref() {
-                UnresolvedFilterExpr::Arithmetic { op, .. } => {
+            UnresolvedExpression::Compare { left, .. } => match left.as_ref() {
+                UnresolvedExpression::Arithmetic { op, .. } => {
                     assert!(matches!(op, UnresolvedArithmeticOp::Add));
                 }
                 _ => panic!("Expected Arithmetic expression on left"),
@@ -2412,12 +2412,12 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Function { name, args } => {
-                assert_eq!(name.as_ref(), "contains");
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "contains");
                 assert_eq!(args.len(), 2);
-                assert!(matches!(&args[0], UnresolvedFilterExpr::Var(v) if v.as_ref() == "?name"));
+                assert!(matches!(&args[0], UnresolvedExpression::Var(v) if v.as_ref() == "?name"));
                 assert!(
-                    matches!(&args[1], UnresolvedFilterExpr::Const(UnresolvedFilterValue::String(s)) if s.as_ref() == "Smith")
+                    matches!(&args[1], UnresolvedExpression::Const(UnresolvedFilterValue::String(s)) if s.as_ref() == "Smith")
                 );
             }
             _ => panic!("Expected Function"),
@@ -2439,13 +2439,13 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Compare { left, right, .. } => {
+            UnresolvedExpression::Compare { left, right, .. } => {
                 // Left should be Negate(-?val)
-                assert!(matches!(left.as_ref(), UnresolvedFilterExpr::Negate(_)));
+                assert!(matches!(left.as_ref(), UnresolvedExpression::Negate(_)));
                 // Right should be -10
                 assert!(matches!(
                     right.as_ref(),
-                    UnresolvedFilterExpr::Const(UnresolvedFilterValue::Long(-10))
+                    UnresolvedExpression::Const(UnresolvedFilterValue::Long(-10))
                 ));
             }
             _ => panic!("Expected Compare"),
@@ -2479,7 +2479,7 @@ mod tests {
 
             let filter = find_filter(&ast.patterns).expect("Should have a filter");
             match filter {
-                UnresolvedFilterExpr::Compare { op, .. } => {
+                UnresolvedExpression::Compare { op, .. } => {
                     assert_eq!(*op, expected_op, "Operator {} did not match", op_str);
                 }
                 _ => panic!("Expected Compare for operator {}", op_str),
@@ -2519,8 +2519,8 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedFilterExpr::Compare { right, .. } => match right.as_ref() {
-                UnresolvedFilterExpr::Const(UnresolvedFilterValue::Double(d)) => {
+            UnresolvedExpression::Compare { right, .. } => match right.as_ref() {
+                UnresolvedExpression::Const(UnresolvedFilterValue::Double(d)) => {
                     assert!((d - 99.99).abs() < f64::EPSILON);
                 }
                 _ => panic!("Expected Double constant"),
@@ -2833,7 +2833,7 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have filter");
         match filter {
-            UnresolvedFilterExpr::And(exprs) => {
+            UnresolvedExpression::And(exprs) => {
                 assert_eq!(exprs.len(), 3, "Should have 3 conditions in AND");
             }
             _ => panic!("Expected And expression"),

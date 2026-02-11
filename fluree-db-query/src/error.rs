@@ -1,6 +1,7 @@
 //! Error types for query execution
 
 use crate::binding::BatchError;
+use crate::expression::ArithmeticError;
 use thiserror::Error;
 
 /// Query execution errors
@@ -65,6 +66,10 @@ pub enum QueryError {
     /// Query mode not yet supported with binary indexes
     #[error("Unsupported mode: {0}")]
     UnsupportedMode(String),
+
+    /// Arithmetic error during expression evaluation
+    #[error("Arithmetic error: {0}")]
+    Arithmetic(#[from] ArithmeticError),
 }
 
 impl QueryError {
