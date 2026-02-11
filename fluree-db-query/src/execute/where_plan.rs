@@ -212,17 +212,18 @@ pub fn build_where_operators<S: Storage + 'static>(
 /// Collect an optimizable inner-join block consisting of:
 /// - `VALUES` (SPARQL VALUES)
 /// - `Triple`
-/// - `BIND` (when safe)
-/// - "safe" `FILTER`s (including multi-var)
+/// - `BIND` (when safe - all referenced variables already bound)
+/// - `FILTER`s (all filters, regardless of variable binding status)
 ///
-/// A FILTER is considered safe to include in the block if **all** referenced variables
-/// are already bound by the preceding patterns *in the original left-to-right order*.
-///
-/// This preserves SPARQL's left-to-right group evaluation semantics for cases like:
-/// `{ FILTER(?x = 1) . ?s :p ?x }` which must remain empty (FILTER before binding).
+/// FILTERs are collected unconditionally. Filters referencing variables not yet bound
+/// in left-to-right order will be tracked via `PendingFilter` and applied later when
+/// their required variables become bound. This allows users to write FILTER patterns
+/// anywhere in the WHERE clause - the system automatically moves each filter to execute
+/// immediately after all of its required variables are bound.
 ///
 /// A BIND is considered safe to include in the block if **all** variables referenced
-/// by its expression are already bound by preceding patterns (original order).
+/// by its expression are already bound by preceding patterns (original order). BINDs
+/// with unbound inputs cannot be deferred - they must fail at their original position.
 ///
 /// `VALUES` is always safe to include because it is an inner-join constraint/seed.
 pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoinBlock {
@@ -260,14 +261,14 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
                 }
             }
             Pattern::Filter(expr) => {
-                let vars: HashSet<VarId> = expr.variables().into_iter().collect();
-                if vars.is_subset(&bound_vars) {
-                    filters.push(expr.clone());
-                    i += 1;
-                } else {
-                    // Unsafe to move this FILTER: it references vars not yet bound.
-                    break;
-                }
+                // Collect all filters unconditionally. Filters referencing variables
+                // not yet bound will be tracked via PendingFilter and applied later
+                // when their required variables become bound (after subsequent triples).
+                // This allows users to write FILTER patterns anywhere in the WHERE
+                // clause - the system automatically moves each filter to execute
+                // immediately after all of its required variables are bound.
+                filters.push(expr.clone());
+                i += 1;
             }
             _ => break,
         }
@@ -683,6 +684,7 @@ fn make_first_scan<S: Storage + 'static>(
     Box::new(crate::binary_scan::ScanOperator::<S>::new(
         tp.clone(),
         obj_bounds,
+        Vec::new(),
     ))
 }
 
@@ -1066,5 +1068,133 @@ mod tests {
         assert!(second.schema().contains(&VarId(0)));
         assert!(second.schema().contains(&VarId(1)));
         assert!(second.schema().contains(&VarId(2)));
+    }
+
+    // ========================================================================
+    // Filter optimization tests - Phase 1: dependency-based filter injection
+    // ========================================================================
+
+    #[test]
+    fn test_filter_before_triple_collected_in_block() {
+        // FILTER(?x > 0) . ?s :p ?x
+        // Filter references ?x which is bound by the subsequent triple.
+        // The filter should be collected and applied after ?x is bound.
+        let patterns = vec![
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(0)),
+            )),
+            Pattern::Triple(make_pattern(VarId(1), "value", VarId(0))),
+        ];
+
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(block.end_index, 2, "should consume both filter and triple");
+        assert_eq!(block.filters.len(), 1, "should include the filter");
+        assert_eq!(block.triples.len(), 1, "should include the triple");
+    }
+
+    #[test]
+    fn test_filter_referencing_later_pattern_vars() {
+        // ?s :age ?age . FILTER(?age > 18 AND ?name != "") . ?s :name ?name
+        // Filter references both ?age (already bound) and ?name (bound later).
+        // All patterns should be collected in the same block.
+        let age = VarId(0);
+        let name = VarId(1);
+        let s = VarId(2);
+
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "age", age)),
+            Pattern::Filter(Expression::and(vec![
+                Expression::gt(
+                    Expression::Var(age),
+                    Expression::Const(FilterValue::Long(18)),
+                ),
+                Expression::ne(
+                    Expression::Var(name),
+                    Expression::Const(FilterValue::String("".to_string())),
+                ),
+            ])),
+            Pattern::Triple(make_pattern(s, "name", name)),
+        ];
+
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(
+            block.end_index,
+            patterns.len(),
+            "should consume all patterns"
+        );
+        assert_eq!(block.triples.len(), 2, "should include both triples");
+        assert_eq!(block.filters.len(), 1, "should include the filter");
+    }
+
+    #[test]
+    fn test_filter_only_patterns_are_collected() {
+        // Multiple filters before any triple - all should be collected
+        let patterns = vec![
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(0)),
+            )),
+            Pattern::Filter(Expression::lt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(100)),
+            )),
+            Pattern::Triple(make_pattern(VarId(1), "value", VarId(0))),
+        ];
+
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(block.end_index, 3, "should consume all patterns");
+        assert_eq!(block.filters.len(), 2, "should include both filters");
+        assert_eq!(block.triples.len(), 1, "should include the triple");
+    }
+
+    #[test]
+    fn test_build_operators_filter_before_triple_is_valid() {
+        // FILTER(?x > 18) before the triple that binds ?x should now succeed
+        let patterns = vec![
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(18)),
+            )),
+            Pattern::Triple(make_pattern(VarId(1), "age", VarId(0))),
+        ];
+
+        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        assert!(
+            result.is_ok(),
+            "Filter before its bound variable should be allowed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_filter_with_multiple_unbound_vars_collected() {
+        // FILTER(?x > ?y) where both vars are bound by later triples
+        let x = VarId(0);
+        let y = VarId(1);
+        let s = VarId(2);
+
+        let patterns = vec![
+            Pattern::Filter(Expression::gt(Expression::Var(x), Expression::Var(y))),
+            Pattern::Triple(make_pattern(s, "valueX", x)),
+            Pattern::Triple(make_pattern(s, "valueY", y)),
+        ];
+
+        let block = collect_inner_join_block(&patterns, 0);
+        assert_eq!(
+            block.end_index,
+            patterns.len(),
+            "should consume all patterns"
+        );
+        assert_eq!(block.filters.len(), 1);
+        assert_eq!(block.triples.len(), 2);
+
+        // Verify the operator tree builds successfully
+        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        assert!(
+            result.is_ok(),
+            "Should build successfully: {:?}",
+            result.err()
+        );
     }
 }

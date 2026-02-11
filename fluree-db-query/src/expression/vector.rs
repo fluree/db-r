@@ -2,7 +2,7 @@
 //!
 //! Implements vector/embedding functions: dotProduct, cosineSimilarity, euclideanDistance
 
-use crate::binding::RowView;
+use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
@@ -11,9 +11,9 @@ use fluree_db_core::Storage;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-pub fn eval_dot_product<S: Storage>(
+pub fn eval_dot_product<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_vector_fn(args, row, ctx, "dotProduct", |a, b| {
@@ -21,9 +21,9 @@ pub fn eval_dot_product<S: Storage>(
     })
 }
 
-pub fn eval_cosine_similarity<S: Storage>(
+pub fn eval_cosine_similarity<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_vector_fn(args, row, ctx, "cosineSimilarity", |a, b| {
@@ -38,9 +38,9 @@ pub fn eval_cosine_similarity<S: Storage>(
     })
 }
 
-pub fn eval_euclidean_distance<S: Storage>(
+pub fn eval_euclidean_distance<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_vector_fn(args, row, ctx, "euclideanDistance", |a, b| {
@@ -57,9 +57,9 @@ pub fn eval_euclidean_distance<S: Storage>(
 }
 
 /// Evaluate a binary vector function
-fn eval_binary_vector_fn<S: Storage, F>(
+fn eval_binary_vector_fn<S: Storage, R: RowAccess, F>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
     fn_name: &str,
     compute: F,

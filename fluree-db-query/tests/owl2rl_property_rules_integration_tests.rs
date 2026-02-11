@@ -13,7 +13,7 @@ use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{Db, MemoryStorage, Sid};
-use fluree_db_query::binding::Binding;
+use fluree_db_query::binding::{Binding, RowAccess};
 use fluree_db_query::execute::{execute_with_overlay, DataSource, ExecutableQuery};
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::{parse_query, MemoryEncoder};

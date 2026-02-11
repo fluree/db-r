@@ -3,7 +3,7 @@
 //! This module contains functions for comparing ComparableValues,
 //! including numeric, temporal, and string comparisons.
 
-use crate::binding::RowView;
+use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::ir::Expression;
@@ -14,9 +14,9 @@ use super::helpers::check_arity;
 use super::value::ComparableValue;
 
 /// Evaluate equality comparison
-pub fn eval_eq<S: Storage>(
+pub fn eval_eq<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Eq")?;
@@ -31,9 +31,9 @@ pub fn eval_eq<S: Storage>(
 }
 
 /// Evaluate inequality comparison
-pub fn eval_ne<S: Storage>(
+pub fn eval_ne<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Ne")?;
@@ -49,9 +49,9 @@ pub fn eval_ne<S: Storage>(
 }
 
 /// Evaluate less-than comparison
-pub fn eval_lt<S: Storage>(
+pub fn eval_lt<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Lt")?;
@@ -66,9 +66,9 @@ pub fn eval_lt<S: Storage>(
 }
 
 /// Evaluate less-than-or-equal comparison
-pub fn eval_le<S: Storage>(
+pub fn eval_le<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Le")?;
@@ -83,9 +83,9 @@ pub fn eval_le<S: Storage>(
 }
 
 /// Evaluate greater-than comparison
-pub fn eval_gt<S: Storage>(
+pub fn eval_gt<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Gt")?;
@@ -100,9 +100,9 @@ pub fn eval_gt<S: Storage>(
 }
 
 /// Evaluate greater-than-or-equal comparison
-pub fn eval_ge<S: Storage>(
+pub fn eval_ge<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "Ge")?;

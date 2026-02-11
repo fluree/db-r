@@ -2,7 +2,7 @@
 //!
 //! Implements SPARQL numeric functions: ABS, ROUND, CEIL, FLOOR, RAND
 
-use crate::binding::RowView;
+use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
@@ -12,9 +12,9 @@ use rand::random;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-pub fn eval_abs<S: Storage>(
+pub fn eval_abs<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "ABS")?;
@@ -28,9 +28,9 @@ pub fn eval_abs<S: Storage>(
     }
 }
 
-pub fn eval_round<S: Storage>(
+pub fn eval_round<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "ROUND")?;
@@ -44,9 +44,9 @@ pub fn eval_round<S: Storage>(
     }
 }
 
-pub fn eval_ceil<S: Storage>(
+pub fn eval_ceil<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "CEIL")?;
@@ -60,9 +60,9 @@ pub fn eval_ceil<S: Storage>(
     }
 }
 
-pub fn eval_floor<S: Storage>(
+pub fn eval_floor<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "FLOOR")?;

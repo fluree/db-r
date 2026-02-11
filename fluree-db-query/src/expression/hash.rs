@@ -2,7 +2,7 @@
 //!
 //! Implements SPARQL hash functions: MD5, SHA1, SHA256, SHA384, SHA512
 
-use crate::binding::RowView;
+use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
@@ -15,9 +15,9 @@ use std::sync::Arc;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-pub fn eval_md5<S: Storage>(
+pub fn eval_md5<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "MD5", |s| {
@@ -27,9 +27,9 @@ pub fn eval_md5<S: Storage>(
     })
 }
 
-pub fn eval_sha1<S: Storage>(
+pub fn eval_sha1<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "SHA1", |s| {
@@ -39,9 +39,9 @@ pub fn eval_sha1<S: Storage>(
     })
 }
 
-pub fn eval_sha256<S: Storage>(
+pub fn eval_sha256<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "SHA256", |s| {
@@ -51,9 +51,9 @@ pub fn eval_sha256<S: Storage>(
     })
 }
 
-pub fn eval_sha384<S: Storage>(
+pub fn eval_sha384<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "SHA384", |s| {
@@ -63,9 +63,9 @@ pub fn eval_sha384<S: Storage>(
     })
 }
 
-pub fn eval_sha512<S: Storage>(
+pub fn eval_sha512<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_hash(args, row, ctx, "SHA512", |s| {
@@ -76,9 +76,9 @@ pub fn eval_sha512<S: Storage>(
 }
 
 /// Evaluate a hash function with the given hasher
-fn eval_hash<S: Storage, F>(
+fn eval_hash<S: Storage, R: RowAccess, F>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
     fn_name: &str,
     hash_fn: F,

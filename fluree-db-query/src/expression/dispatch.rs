@@ -2,7 +2,7 @@
 //!
 //! This module provides the `Function::eval` method and `eval_function_to_bool` helper.
 
-use crate::binding::RowView;
+use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
@@ -19,10 +19,13 @@ impl Function {
     ///
     /// This is THE entry point for function evaluation. All functions go through here.
     /// For boolean context, use `eval_to_bool` which calls this and applies EBV.
-    pub fn eval<S: Storage>(
+    ///
+    /// Generic over `RowAccess` to support both `RowView` (batch rows) and
+    /// `BindingRow` (pre-batch filtering).
+    pub fn eval<S: Storage, R: RowAccess>(
         &self,
         args: &[Expression],
-        row: &RowView,
+        row: &R,
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<Option<ComparableValue>> {
         match self {
@@ -136,10 +139,13 @@ impl Function {
     /// Evaluate this function in boolean context using EBV.
     ///
     /// This calls `eval` and applies Effective Boolean Value (EBV) rules.
-    pub fn eval_to_bool<S: Storage>(
+    ///
+    /// Generic over `RowAccess` to support both `RowView` (batch rows) and
+    /// `BindingRow` (pre-batch filtering).
+    pub fn eval_to_bool<S: Storage, R: RowAccess>(
         &self,
         args: &[Expression],
-        row: &RowView,
+        row: &R,
         ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<bool> {
         let value = self.eval(args, row, ctx)?;

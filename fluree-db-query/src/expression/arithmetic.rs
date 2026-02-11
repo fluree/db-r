@@ -2,7 +2,7 @@
 //!
 //! Implements arithmetic operators: Add, Sub, Mul, Div, Negate
 
-use crate::binding::RowView;
+use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{ArithmeticOp, Expression};
@@ -12,45 +12,45 @@ use super::helpers::check_arity;
 use super::value::ComparableValue;
 
 /// Evaluate addition
-pub fn eval_add<S: Storage>(
+pub fn eval_add<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_arithmetic(args, row, ctx, ArithmeticOp::Add, "Add")
 }
 
 /// Evaluate subtraction
-pub fn eval_sub<S: Storage>(
+pub fn eval_sub<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_arithmetic(args, row, ctx, ArithmeticOp::Sub, "Sub")
 }
 
 /// Evaluate multiplication
-pub fn eval_mul<S: Storage>(
+pub fn eval_mul<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_arithmetic(args, row, ctx, ArithmeticOp::Mul, "Mul")
 }
 
 /// Evaluate division
-pub fn eval_div<S: Storage>(
+pub fn eval_div<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     eval_binary_arithmetic(args, row, ctx, ArithmeticOp::Div, "Div")
 }
 
 /// Evaluate unary negation
-pub fn eval_negate<S: Storage>(
+pub fn eval_negate<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "Negate")?;
@@ -68,9 +68,9 @@ pub fn eval_negate<S: Storage>(
 }
 
 /// Helper for binary arithmetic operations
-fn eval_binary_arithmetic<S: Storage>(
+fn eval_binary_arithmetic<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
     op: ArithmeticOp,
     name: &str,

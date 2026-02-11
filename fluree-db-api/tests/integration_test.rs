@@ -9,6 +9,7 @@ use fluree_db_core::{Flake, FlakeValue, Sid};
 use fluree_db_nameservice::memory::MemoryNameService;
 use fluree_db_nameservice::Publisher;
 use fluree_db_novelty::Commit;
+use fluree_db_query::binding::RowAccess;
 use fluree_db_transact::commit_v2::write_commit;
 
 fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
@@ -243,6 +244,7 @@ async fn test_ledger_not_found() {
 
 #[cfg(feature = "native")]
 mod file_tests {
+    use super::*;
     use fluree_db_api::fluree_file;
     use serde_json::json;
     use std::path::PathBuf;

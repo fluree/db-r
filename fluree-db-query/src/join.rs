@@ -33,6 +33,7 @@ fn make_right_scan<S: Storage + 'static>(
     Box::new(crate::binary_scan::ScanOperator::<S>::new(
         pattern,
         object_bounds.clone(),
+        Vec::new(),
     ))
 }
 
@@ -805,8 +806,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
             return Ok(Some(Batch::empty_schema_with_len(rows_added)));
         }
 
-        let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
-        Ok(Some(batch))
+        Ok(Some(Batch::new(self.combined_schema.clone(), output_columns)?))
     }
 
     /// Ensure the current left batch is stored in `stored_left_batches` and

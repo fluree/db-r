@@ -49,7 +49,7 @@ fn make_property_join_scan<S: Storage + 'static>(
     pattern: TriplePattern,
     bounds: Option<ObjectBounds>,
 ) -> BoxedOperator<S> {
-    Box::new(ScanOperator::<S>::new(pattern, bounds))
+    Box::new(ScanOperator::<S>::new(pattern, bounds, Vec::new()))
 }
 
 /// Property-join operator for same-subject multi-predicate patterns

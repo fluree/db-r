@@ -2,7 +2,7 @@
 //!
 //! Implements SPARQL conditional functions: IF, COALESCE
 
-use crate::binding::RowView;
+use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::ir::Expression;
@@ -11,9 +11,9 @@ use fluree_db_core::Storage;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-pub fn eval_if<S: Storage>(
+pub fn eval_if<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 3, "IF")?;
@@ -25,9 +25,9 @@ pub fn eval_if<S: Storage>(
     }
 }
 
-pub fn eval_coalesce<S: Storage>(
+pub fn eval_coalesce<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     for arg in args {

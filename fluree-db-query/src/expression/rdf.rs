@@ -2,7 +2,7 @@
 //!
 //! Implements SPARQL RDF term functions: DATATYPE, LANGMATCHES, SAMETERM, IRI, BNODE
 
-use crate::binding::{Binding, RowView};
+use crate::binding::{Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
@@ -13,7 +13,10 @@ use uuid::Uuid;
 use super::helpers::{check_arity, format_datatype_sid};
 use super::value::ComparableValue;
 
-pub fn eval_datatype(args: &[Expression], row: &RowView) -> Result<Option<ComparableValue>> {
+pub fn eval_datatype<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "DATATYPE")?;
     if let Expression::Var(var_id) = &args[0] {
         match row.get(*var_id) {
@@ -35,9 +38,9 @@ pub fn eval_datatype(args: &[Expression], row: &RowView) -> Result<Option<Compar
     }
 }
 
-pub fn eval_lang_matches<S: Storage>(
+pub fn eval_lang_matches<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "LANGMATCHES")?;
@@ -63,9 +66,9 @@ pub fn eval_lang_matches<S: Storage>(
     }
 }
 
-pub fn eval_same_term<S: Storage>(
+pub fn eval_same_term<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "SAMETERM")?;
@@ -75,9 +78,9 @@ pub fn eval_same_term<S: Storage>(
     Ok(Some(ComparableValue::Bool(same)))
 }
 
-pub fn eval_iri<S: Storage>(
+pub fn eval_iri<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "IRI")?;

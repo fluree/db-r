@@ -155,7 +155,7 @@ pub async fn execute_pattern<S: Storage + 'static>(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::new(db, vars);
-    let mut scan = ScanOperator::<S>::new(pattern, None);
+    let mut scan = ScanOperator::<S>::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 
@@ -214,7 +214,7 @@ pub async fn execute_pattern_at<S: Storage + 'static>(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_time(db, vars, to_t, from_t);
-    let mut scan = ScanOperator::<S>::new(pattern, None);
+    let mut scan = ScanOperator::<S>::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 
@@ -247,7 +247,7 @@ pub async fn execute_pattern_with_overlay<S: Storage + 'static>(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_overlay(db, vars, overlay);
-    let mut scan = ScanOperator::<S>::new(pattern, None);
+    let mut scan = ScanOperator::<S>::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 
@@ -274,7 +274,7 @@ pub async fn execute_pattern_with_overlay_at<S: Storage + 'static>(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay);
-    let mut scan = ScanOperator::<S>::new(pattern, None);
+    let mut scan = ScanOperator::<S>::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 

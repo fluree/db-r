@@ -4,7 +4,7 @@
 //! CONTAINS, STRSTARTS, STRENDS, REGEX, CONCAT, STRBEFORE, STRAFTER,
 //! REPLACE, SUBSTR, ENCODE_FOR_URI, STRDT, STRLANG
 
-use crate::binding::{Binding, RowView};
+use crate::binding::{Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
@@ -15,9 +15,9 @@ use std::sync::Arc;
 use super::helpers::{build_regex_with_flags, check_arity};
 use super::value::ComparableValue;
 
-pub fn eval_str<S: Storage>(
+pub fn eval_str<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "STR")?;
@@ -25,9 +25,9 @@ pub fn eval_str<S: Storage>(
     Ok(val.and_then(|v| v.into_string_value()))
 }
 
-pub fn eval_lang<S: Storage>(
+pub fn eval_lang<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "LANG")?;
@@ -53,9 +53,9 @@ pub fn eval_lang<S: Storage>(
     Ok(Some(ComparableValue::String(Arc::from(tag))))
 }
 
-pub fn eval_lcase<S: Storage>(
+pub fn eval_lcase<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "LCASE")?;
@@ -70,9 +70,9 @@ pub fn eval_lcase<S: Storage>(
     }
 }
 
-pub fn eval_ucase<S: Storage>(
+pub fn eval_ucase<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "UCASE")?;
@@ -87,9 +87,9 @@ pub fn eval_ucase<S: Storage>(
     }
 }
 
-pub fn eval_strlen<S: Storage>(
+pub fn eval_strlen<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "STRLEN")?;
@@ -104,9 +104,9 @@ pub fn eval_strlen<S: Storage>(
     }
 }
 
-pub fn eval_contains<S: Storage>(
+pub fn eval_contains<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "CONTAINS")?;
@@ -123,9 +123,9 @@ pub fn eval_contains<S: Storage>(
     }
 }
 
-pub fn eval_str_starts<S: Storage>(
+pub fn eval_str_starts<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRSTARTS")?;
@@ -142,9 +142,9 @@ pub fn eval_str_starts<S: Storage>(
     }
 }
 
-pub fn eval_str_ends<S: Storage>(
+pub fn eval_str_ends<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRENDS")?;
@@ -161,9 +161,9 @@ pub fn eval_str_ends<S: Storage>(
     }
 }
 
-pub fn eval_regex<S: Storage>(
+pub fn eval_regex<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     if args.len() < 2 {
@@ -196,9 +196,9 @@ pub fn eval_regex<S: Storage>(
     }
 }
 
-pub fn eval_concat<S: Storage>(
+pub fn eval_concat<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     let mut result = String::new();
@@ -212,9 +212,9 @@ pub fn eval_concat<S: Storage>(
     Ok(Some(ComparableValue::String(Arc::from(result))))
 }
 
-pub fn eval_str_before<S: Storage>(
+pub fn eval_str_before<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRBEFORE")?;
@@ -232,9 +232,9 @@ pub fn eval_str_before<S: Storage>(
     }
 }
 
-pub fn eval_str_after<S: Storage>(
+pub fn eval_str_after<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRAFTER")?;
@@ -255,9 +255,9 @@ pub fn eval_str_after<S: Storage>(
     }
 }
 
-pub fn eval_replace<S: Storage>(
+pub fn eval_replace<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     if args.len() < 3 {
@@ -297,9 +297,9 @@ pub fn eval_replace<S: Storage>(
     }
 }
 
-pub fn eval_substr<S: Storage>(
+pub fn eval_substr<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     if args.len() < 2 || args.len() > 3 {
@@ -361,9 +361,9 @@ pub fn eval_substr<S: Storage>(
     Ok(Some(ComparableValue::String(Arc::from(result))))
 }
 
-pub fn eval_encode_for_uri<S: Storage>(
+pub fn eval_encode_for_uri<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "ENCODE_FOR_URI")?;
@@ -380,9 +380,9 @@ pub fn eval_encode_for_uri<S: Storage>(
     }
 }
 
-pub fn eval_str_dt<S: Storage>(
+pub fn eval_str_dt<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRDT")?;
@@ -403,9 +403,9 @@ pub fn eval_str_dt<S: Storage>(
     }
 }
 
-pub fn eval_str_lang<S: Storage>(
+pub fn eval_str_lang<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "STRLANG")?;
@@ -448,7 +448,7 @@ mod tests {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
         let result =
-            eval_strlen::<fluree_db_core::MemoryStorage>(&[Expression::Var(VarId(0))], &row, None)
+            eval_strlen::<fluree_db_core::MemoryStorage, _>(&[Expression::Var(VarId(0))], &row, None)
                 .unwrap();
         assert_eq!(result, Some(ComparableValue::Long(11)));
     }
@@ -458,7 +458,7 @@ mod tests {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
         let result =
-            eval_ucase::<fluree_db_core::MemoryStorage>(&[Expression::Var(VarId(0))], &row, None)
+            eval_ucase::<fluree_db_core::MemoryStorage, _>(&[Expression::Var(VarId(0))], &row, None)
                 .unwrap();
         assert_eq!(
             result,
@@ -470,7 +470,7 @@ mod tests {
     fn test_contains() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_contains::<fluree_db_core::MemoryStorage>(
+        let result = eval_contains::<fluree_db_core::MemoryStorage, _>(
             &[
                 Expression::Var(VarId(0)),
                 Expression::Const(FilterValue::String("World".to_string())),

@@ -2,7 +2,7 @@
 //!
 //! Implements OGC GeoSPARQL functions: geof:distance
 
-use crate::binding::RowView;
+use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
@@ -11,9 +11,9 @@ use fluree_db_core::{geo, FlakeValue, Storage};
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-pub fn eval_geof_distance<S: Storage>(
+pub fn eval_geof_distance<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 2, "geof:distance")?;
@@ -85,7 +85,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = eval_geof_distance::<fluree_db_core::MemoryStorage>(
+        let result = eval_geof_distance::<fluree_db_core::MemoryStorage, _>(
             &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
             &row,
             None,
@@ -118,7 +118,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = eval_geof_distance::<fluree_db_core::MemoryStorage>(
+        let result = eval_geof_distance::<fluree_db_core::MemoryStorage, _>(
             &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
             &row,
             None,
@@ -151,7 +151,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = eval_geof_distance::<fluree_db_core::MemoryStorage>(
+        let result = eval_geof_distance::<fluree_db_core::MemoryStorage, _>(
             &[Expression::Var(VarId(0)), Expression::Var(VarId(1))],
             &row,
             None,

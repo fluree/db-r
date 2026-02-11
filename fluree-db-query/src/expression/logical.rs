@@ -2,7 +2,7 @@
 //!
 //! Implements logical operators: AND, OR, NOT
 
-use crate::binding::RowView;
+use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::ir::Expression;
@@ -14,9 +14,9 @@ use super::value::ComparableValue;
 ///
 /// Returns true if all arguments evaluate to true.
 /// Short-circuits on first false value.
-pub fn eval_and<S: Storage>(
+pub fn eval_and<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     for arg in args {
@@ -31,9 +31,9 @@ pub fn eval_and<S: Storage>(
 ///
 /// Returns true if any argument evaluates to true.
 /// Short-circuits on first true value.
-pub fn eval_or<S: Storage>(
+pub fn eval_or<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     for arg in args {
@@ -47,9 +47,9 @@ pub fn eval_or<S: Storage>(
 /// Evaluate logical NOT
 ///
 /// Returns the logical negation of the single argument.
-pub fn eval_not<S: Storage>(
+pub fn eval_not<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     if args.is_empty() {
@@ -63,9 +63,9 @@ pub fn eval_not<S: Storage>(
 ///
 /// First argument is the test value, remaining arguments are the set values.
 /// Returns true if test value equals any set value.
-pub fn eval_in<S: Storage>(
+pub fn eval_in<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     if args.is_empty() {
@@ -92,9 +92,9 @@ pub fn eval_in<S: Storage>(
 ///
 /// First argument is the test value, remaining arguments are the set values.
 /// Returns true if test value does not equal any set value.
-pub fn eval_not_in<S: Storage>(
+pub fn eval_not_in<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     if args.is_empty() {

@@ -2,7 +2,7 @@
 //!
 //! Implements SPARQL type-checking functions: BOUND, isIRI, isLiteral, isNumeric, isBlank
 
-use crate::binding::{Binding, RowView};
+use crate::binding::{Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
@@ -11,7 +11,7 @@ use fluree_db_core::Storage;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
-pub fn eval_bound(args: &[Expression], row: &RowView) -> Result<Option<ComparableValue>> {
+pub fn eval_bound<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "BOUND")?;
     match &args[0] {
         Expression::Var(var) => Ok(Some(ComparableValue::Bool(!matches!(
@@ -24,9 +24,9 @@ pub fn eval_bound(args: &[Expression], row: &RowView) -> Result<Option<Comparabl
     }
 }
 
-pub fn eval_is_iri<S: Storage>(
+pub fn eval_is_iri<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "isIRI")?;
@@ -36,9 +36,9 @@ pub fn eval_is_iri<S: Storage>(
     }))))
 }
 
-pub fn eval_is_literal<S: Storage>(
+pub fn eval_is_literal<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "isLiteral")?;
@@ -54,9 +54,9 @@ pub fn eval_is_literal<S: Storage>(
     }))))
 }
 
-pub fn eval_is_numeric<S: Storage>(
+pub fn eval_is_numeric<S: Storage, R: RowAccess>(
     args: &[Expression],
-    row: &RowView,
+    row: &R,
     ctx: Option<&ExecutionContext<'_, S>>,
 ) -> Result<Option<ComparableValue>> {
     check_arity(args, 1, "isNumeric")?;

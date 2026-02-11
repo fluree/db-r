@@ -2,7 +2,7 @@
 //!
 //! Contains arity checks, regex caching, datetime parsing, and other utilities.
 
-use crate::binding::{Binding, RowView};
+use crate::binding::{Binding, RowAccess};
 use crate::context::WellKnownDatatypes;
 use crate::error::{QueryError, Result};
 use crate::ir::Expression;
@@ -178,7 +178,7 @@ pub fn parse_datetime_from_binding(binding: &Binding) -> Option<DateTime<FixedOf
 // =============================================================================
 
 /// Check if any variables in the expression are unbound
-pub fn has_unbound_vars(expr: &Expression, row: &RowView) -> bool {
+pub fn has_unbound_vars<R: RowAccess>(expr: &Expression, row: &R) -> bool {
     expr.variables().into_iter().any(|var| {
         matches!(
             row.get(var),

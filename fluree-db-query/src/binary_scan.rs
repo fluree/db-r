@@ -24,7 +24,7 @@
 //! - **Overlay merge** — translates Flake overlay ops to integer-ID space
 //!   and merges with decoded leaflet columns at query time
 
-use crate::binding::{Batch, Binding};
+use crate::binding::{Batch, Binding, BindingRow};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
@@ -158,6 +158,9 @@ pub struct BinaryScanOperator {
     /// strings, and lang tags that are in novelty but not yet in the persisted
     /// binary index.
     dict_overlay: Option<crate::dict_overlay::DictOverlay>,
+    /// Filter expressions to evaluate during batch processing.
+    /// Applied per-row before adding to output columns.
+    filters: Vec<crate::ir::Expression>,
 }
 
 impl BinaryScanOperator {
@@ -165,11 +168,13 @@ impl BinaryScanOperator {
     ///
     /// The `store` must be loaded with indexes for the relevant sort orders.
     /// The `g_id` selects which graph to scan (typically 0 for default graph).
+    /// Filters are evaluated per-row before adding bindings to output columns.
     pub fn new(
         pattern: TriplePattern,
         store: Arc<BinaryIndexStore>,
         g_id: u32,
         object_bounds: Option<ObjectBounds>,
+        filters: Vec<crate::ir::Expression>,
     ) -> Self {
         let mut index = IndexType::for_query(
             pattern.s_bound(),
@@ -224,6 +229,7 @@ impl BinaryScanOperator {
             overlay_ops: Vec::new(),
             overlay_epoch: 0,
             dict_overlay: None,
+            filters,
         }
     }
 
@@ -233,8 +239,9 @@ impl BinaryScanOperator {
         store: Arc<BinaryIndexStore>,
         g_id: u32,
         index: IndexType,
+        filters: Vec<crate::ir::Expression>,
     ) -> Self {
-        let mut op = Self::new(pattern, store, g_id, None);
+        let mut op = Self::new(pattern, store, g_id, None, filters);
         op.index = index;
         op
     }
@@ -601,36 +608,56 @@ impl BinaryScanOperator {
     /// Processes all rows in the batch, converting integer IDs to Binding values.
     /// Only produces columns for variable positions in the schema.
     /// Filters out internal predicates when predicate is a variable.
-    fn batch_to_bindings(
+    ///
+    /// When inline filters are present, each row's bindings are evaluated
+    /// against filters and only added to columns if all pass.
+    fn batch_to_bindings<S: Storage>(
         &mut self,
         decoded: &DecodedBatch,
         columns: &mut [Vec<Binding>],
+        ctx: Option<&ExecutionContext<'_, S>>,
     ) -> Result<usize> {
         let mut produced = 0;
+        let has_filters = !self.filters.is_empty();
 
         for row in 0..decoded.row_count {
             if self.should_skip_row(decoded, row)? {
                 continue;
             }
 
-            let mut col_idx = 0;
+            // Build bindings into stack array (at most 3: s, p, o)
+            let mut bindings: [Binding; 3] = [Binding::Unbound, Binding::Unbound, Binding::Unbound];
+            let mut count = 0;
 
-            // Subject binding
-            if let Some(binding) = self.build_subject_binding(decoded.s_ids[row])? {
-                columns[col_idx].push(binding);
-                col_idx += 1;
+            if let Some(b) = self.build_subject_binding(decoded.s_ids[row])? {
+                bindings[count] = b;
+                count += 1;
+            }
+            if let Some(b) = self.build_predicate_binding(decoded.p_ids[row]) {
+                bindings[count] = b;
+                count += 1;
+            }
+            if let Some(b) = self.build_object_binding(decoded, row)? {
+                bindings[count] = b;
+                count += 1;
             }
 
-            // Predicate binding
-            if let Some(binding) = self.build_predicate_binding(decoded.p_ids[row]) {
-                columns[col_idx].push(binding);
-                col_idx += 1;
+            // Evaluate filters if present
+            if has_filters {
+                let binding_row = BindingRow::new(&self.schema, &bindings[..count]);
+                let passes = self
+                    .filters
+                    .iter()
+                    .all(|expr| expr.eval_to_bool::<S, _>(&binding_row, ctx).unwrap_or(false));
+
+                if !passes {
+                    continue;
+                }
             }
 
-            // Object binding
-            if let Some(binding) = self.build_object_binding(decoded, row)? {
-                columns[col_idx].push(binding);
-                // col_idx += 1; // last column, not needed
+            // Push to columns
+            for i in 0..count {
+                columns[i].push(std::mem::replace(&mut bindings[i], Binding::Unbound));
             }
 
             produced += 1;
@@ -1110,7 +1137,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
             match cursor.next_leaf() {
                 Ok(Some(decoded)) => {
                     leaves_scanned += 1;
-                    let n = self.batch_to_bindings(&decoded, &mut columns)?;
+                    let n = self.batch_to_bindings(&decoded, &mut columns, Some(ctx))?;
                     for _ in 0..n {
                         ctx.tracker.consume_fuel_one()?;
                     }
@@ -1305,13 +1332,23 @@ pub struct ScanOperator<S: Storage + 'static> {
     schema: Arc<[VarId]>,
     inner: Option<BoxedOperator<S>>,
     state: OperatorState,
+    /// Inline filter expressions to evaluate during batch processing.
+    /// Applied after building bindings, before returning the batch.
+    /// This reduces operator overhead by avoiding separate FilterOperator nodes.
+    filters: Vec<crate::ir::Expression>,
 }
 
 impl<S: Storage + 'static> ScanOperator<S> {
     /// Create a new scan operator for a triple pattern.
     ///
-    /// Schema is computed from the pattern variables.
-    pub fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
+    /// Schema is computed from the pattern variables. Filters are evaluated
+    /// inline during batch processing, which is more efficient than wrapping
+    /// with a separate FilterOperator.
+    pub fn new(
+        pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+        filters: Vec<crate::ir::Expression>,
+    ) -> Self {
         let mut schema_vec = Vec::with_capacity(3);
         if let Term::Var(v) = &pattern.s {
             schema_vec.push(*v);
@@ -1329,6 +1366,7 @@ impl<S: Storage + 'static> ScanOperator<S> {
             schema: Arc::from(schema_vec.into_boxed_slice()),
             inner: None,
             state: OperatorState::Created,
+            filters,
         }
     }
 }
@@ -1417,6 +1455,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
                 store,
                 ctx.binary_g_id,
                 self.object_bounds.clone(),
+                std::mem::take(&mut self.filters),
             );
             if let Some((ops, epoch)) = overlay_data {
                 op.set_overlay(ops, epoch);
@@ -1431,6 +1470,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
             Box::new(RangeScanOperator::<S>::new(
                 self.pattern.clone(),
                 self.object_bounds.clone(),
+                std::mem::take(&mut self.filters),
             ))
         };
 
@@ -1489,11 +1529,17 @@ struct RangeScanOperator<S: Storage + 'static> {
     p_is_var: bool,
     state: OperatorState,
     batches: VecDeque<Batch>,
+    /// Inline filter expressions to evaluate during batch building.
+    filters: Vec<crate::ir::Expression>,
     _marker: std::marker::PhantomData<S>,
 }
 
 impl<S: Storage + 'static> RangeScanOperator<S> {
-    fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
+    fn new(
+        pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+        filters: Vec<crate::ir::Expression>,
+    ) -> Self {
         let p_is_var = matches!(pattern.p, Term::Var(_));
         let mut schema_vec = Vec::with_capacity(3);
         let mut s_var_pos = None;
@@ -1523,6 +1569,7 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
             p_is_var,
             state: OperatorState::Created,
             batches: VecDeque::new(),
+            filters,
             _marker: std::marker::PhantomData,
         }
     }
@@ -1917,6 +1964,8 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                 (0..ncols).map(|_| Vec::with_capacity(batch_size)).collect();
             let mut row_count = 0;
 
+            let has_filters = !self.filters.is_empty();
+
             for f in &flakes {
                 if !is_multi_graph && !self.flake_matches(f, ctx.db) {
                     continue;
@@ -1927,8 +1976,21 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
                     continue;
                 }
 
-                ctx.tracker.consume_fuel_one()?;
                 let row = self.flake_to_row(f, ctx.history_mode);
+
+                // Apply inline filters before adding to batch
+                if has_filters {
+                    let binding_row = BindingRow::new(&self.schema, &row);
+                    let passes = self
+                        .filters
+                        .iter()
+                        .all(|expr| expr.eval_to_bool::<S, _>(&binding_row, Some(ctx)).unwrap_or(false));
+                    if !passes {
+                        continue;
+                    }
+                }
+
+                ctx.tracker.consume_fuel_one()?;
                 for (col_idx, binding) in row.into_iter().enumerate() {
                     columns[col_idx].push(binding);
                 }

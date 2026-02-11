@@ -12,7 +12,7 @@
 //!
 //! For example, `BIND(?x + 10 AS ?y)` evaluates the expression for each input row and binds the result to `?y`.
 
-use crate::binding::{Batch, Binding};
+use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::ir::Expression;
