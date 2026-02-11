@@ -170,7 +170,7 @@ where
     /// For `Named` graphs, the IRI must be an exact match in the binary index.
     /// No prefix expansion or guessing is performed - use the structured
     /// `graph` field in dataset specs for cleaner IRI handling.
-    fn resolve_graph_ref(view: &FlureeView<S>, graph_ref: GraphRef) -> Result<u32> {
+    fn resolve_graph_ref(view: &FlureeView, graph_ref: GraphRef) -> Result<u32> {
         match graph_ref {
             GraphRef::Default => Ok(0),
             GraphRef::TxnMeta => Ok(1),
@@ -195,7 +195,7 @@ where
     /// Resolves the `GraphRef` to a concrete g_id, then re-scopes the view's
     /// `Db.range_provider` and sets `view.graph_id` so both range queries
     /// and binary scans use the same graph.
-    fn select_graph(mut view: FlureeView<S>, graph_ref: GraphRef) -> Result<FlureeView<S>> {
+    fn select_graph(mut view: FlureeView, graph_ref: GraphRef) -> Result<FlureeView> {
         match graph_ref {
             GraphRef::Default => Ok(view),
             GraphRef::TxnMeta => {
@@ -260,7 +260,7 @@ where
     ///
     /// This is the internal loading method. For the public API, use
     /// [`graph()`](Self::graph) which returns a lazy [`Graph`](crate::Graph) handle.
-    pub(crate) async fn load_view(&self, ledger_id: &str) -> Result<FlureeView<S>> {
+    pub(crate) async fn load_view(&self, ledger_id: &str) -> Result<FlureeView> {
         let handle = self.ledger_cached(ledger_id).await?;
         let mut snapshot = handle.snapshot().await;
 
@@ -318,7 +318,7 @@ where
         &self,
         ledger_id: &str,
         target_t: i64,
-    ) -> Result<FlureeView<S>> {
+    ) -> Result<FlureeView> {
         let historical = self.ledger_view_at(ledger_id, target_t).await?;
         let mut view = FlureeView::from_historical(&historical);
 
@@ -375,11 +375,7 @@ where
     /// Load a view at a flexible time specification.
     ///
     /// Resolves `@t:`, `@iso:`, `@commit:`, or `latest` time specifications.
-    pub(crate) async fn load_view_at(
-        &self,
-        ledger_id: &str,
-        spec: TimeSpec,
-    ) -> Result<FlureeView<S>> {
+    pub(crate) async fn load_view_at(&self, ledger_id: &str, spec: TimeSpec) -> Result<FlureeView> {
         match spec {
             TimeSpec::Latest => self.load_view(ledger_id).await,
             TimeSpec::AtT(t) => self.load_view_at_t(ledger_id, t).await,
@@ -433,21 +429,21 @@ where
     ///
     /// Returns a [`FlureeView`] — an immutable, point-in-time snapshot.
     /// For the lazy API, use [`graph()`](Self::graph) instead.
-    pub async fn view(&self, ledger_id: &str) -> Result<FlureeView<S>> {
+    pub async fn view(&self, ledger_id: &str) -> Result<FlureeView> {
         let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
         let view = self.load_view(ledger_id).await?;
         Self::select_graph(view, graph_ref)
     }
 
     /// Load a historical snapshot at a specific transaction time.
-    pub async fn view_at_t(&self, ledger_id: &str, target_t: i64) -> Result<FlureeView<S>> {
+    pub async fn view_at_t(&self, ledger_id: &str, target_t: i64) -> Result<FlureeView> {
         let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
         let view = self.load_view_at_t(ledger_id, target_t).await?;
         Self::select_graph(view, graph_ref)
     }
 
     /// Load a snapshot at a flexible time specification.
-    pub async fn view_at(&self, ledger_id: &str, spec: TimeSpec) -> Result<FlureeView<S>> {
+    pub async fn view_at(&self, ledger_id: &str, spec: TimeSpec) -> Result<FlureeView> {
         let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
         let view = self.load_view_at(ledger_id, spec).await?;
         Self::select_graph(view, graph_ref)
@@ -461,9 +457,9 @@ where
     /// This is called by `load_view_from_source` when a `GraphSource` has
     /// an explicit `graph_selector` set.
     pub(crate) fn apply_graph_selector(
-        view: FlureeView<S>,
+        view: FlureeView,
         selector: &crate::dataset::GraphSelector,
-    ) -> Result<FlureeView<S>> {
+    ) -> Result<FlureeView> {
         let graph_ref = match selector {
             crate::dataset::GraphSelector::Default => GraphRef::Default,
             crate::dataset::GraphSelector::TxnMeta => GraphRef::TxnMeta,
@@ -502,9 +498,9 @@ where
     /// ```
     pub async fn wrap_policy(
         &self,
-        view: FlureeView<S>,
+        view: FlureeView,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S>> {
+    ) -> Result<FlureeView> {
         let policy_ctx = crate::policy_builder::build_policy_context_from_opts(
             &view.db,
             view.overlay.as_ref(),
@@ -523,7 +519,7 @@ where
         &self,
         ledger_id: &str,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S>> {
+    ) -> Result<FlureeView> {
         let view = self.view(ledger_id).await?;
         self.wrap_policy(view, opts).await
     }
@@ -534,7 +530,7 @@ where
         ledger_id: &str,
         target_t: i64,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView<S>> {
+    ) -> Result<FlureeView> {
         let view = self.view_at_t(ledger_id, target_t).await?;
         self.wrap_policy(view, opts).await
     }
@@ -553,17 +549,17 @@ where
     ///
     /// This is a pure function (no async) since it just attaches metadata.
     /// Uses `DefaultUnlessQueryOverrides` precedence.
-    pub fn wrap_reasoning(&self, view: FlureeView<S>, modes: ReasoningModes) -> FlureeView<S> {
+    pub fn wrap_reasoning(&self, view: FlureeView, modes: ReasoningModes) -> FlureeView {
         view.with_reasoning(modes)
     }
 
     /// Wrap a view with reasoning modes and explicit precedence.
     pub fn wrap_reasoning_with_precedence(
         &self,
-        view: FlureeView<S>,
+        view: FlureeView,
         modes: ReasoningModes,
         precedence: ReasoningModePrecedence,
-    ) -> FlureeView<S> {
+    ) -> FlureeView {
         view.with_reasoning_precedence(modes, precedence)
     }
 }

@@ -9,7 +9,6 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -24,9 +23,9 @@ type RowSignature = Vec<Binding>;
 /// unique rows seen.
 ///
 /// Wraps a child operator and emits each unique row combination exactly once.
-pub struct DistinctOperator<S: Storage + 'static> {
+pub struct DistinctOperator {
     /// Child operator
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Set of seen row signatures
     seen: HashSet<RowSignature>,
     /// Output schema (same as child)
@@ -35,13 +34,13 @@ pub struct DistinctOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> DistinctOperator<S> {
+impl DistinctOperator {
     /// Create a new distinct operator
     ///
     /// # Arguments
     ///
     /// * `child` - The child operator to deduplicate
-    pub fn new(child: BoxedOperator<S>) -> Self {
+    pub fn new(child: BoxedOperator) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -65,12 +64,12 @@ impl<S: Storage + 'static> DistinctOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for DistinctOperator<S> {
+impl Operator for DistinctOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(crate::error::QueryError::OperatorClosed);
@@ -84,7 +83,7 @@ impl<S: Storage + 'static> Operator<S> for DistinctOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(crate::error::QueryError::OperatorNotOpened);
@@ -151,7 +150,7 @@ mod tests {
     use super::*;
     use crate::error::QueryError;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{Db, FlakeValue, Sid};
 
     /// Mock operator that emits predefined batches
     struct MockOperator {
@@ -177,18 +176,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static> Operator<S> for MockOperator {
+    impl Operator for MockOperator {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
             self.idx = 0;
             self.state = OperatorState::Open;
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
             if self.state != OperatorState::Open {
                 return Ok(None);
             }
@@ -235,7 +234,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_all_unique() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -258,7 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_all_duplicates() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -277,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_mixed() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -314,7 +313,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_across_batches() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -347,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_batch_all_dupes_skipped() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -375,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_multi_column() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -395,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_with_unbound() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -420,7 +419,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_with_poisoned() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -445,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_preserves_schema() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -476,7 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_state_transitions() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 

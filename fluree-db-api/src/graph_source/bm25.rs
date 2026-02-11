@@ -213,7 +213,7 @@ where
     /// Each result object will have an `@id` field identifying the document.
     pub(crate) async fn execute_bm25_indexing_query(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
@@ -260,7 +260,7 @@ where
     /// This is used for building BM25 indexes at historical points in time.
     pub(crate) async fn execute_bm25_indexing_query_historical(
         &self,
-        view: &crate::HistoricalLedgerView<S>,
+        view: &crate::HistoricalLedgerView,
         query_json: &JsonValue,
     ) -> Result<Vec<JsonValue>> {
         // Parse the query

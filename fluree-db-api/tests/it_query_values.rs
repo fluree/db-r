@@ -13,8 +13,8 @@ use fluree_db_api::FlureeBuilder;
 use serde_json::json;
 use support::{context_ex_schema, genesis_ledger, normalize_rows, MemoryFluree, MemoryLedger};
 
-async fn seed_values_dataset(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_values_dataset(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     // Local explicit context: mirror the values-test usage (flur.ee + default context + ex).
     // For Rust, we keep it explicit and minimal for what these tests need.

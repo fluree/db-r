@@ -5,7 +5,7 @@
 //! namespace codes, while WASM/offline implementations can use stubs or
 //! context-only encoders.
 
-use fluree_db_core::{Db, Sid, Storage};
+use fluree_db_core::{Db, Sid};
 use fluree_vocab::{rdf, xsd};
 
 /// Trait for encoding IRIs to SIDs
@@ -20,7 +20,7 @@ pub trait IriEncoder {
 }
 
 // Native: Db implements IriEncoder
-impl<S: Storage + 'static> IriEncoder for Db<S> {
+impl IriEncoder for Db {
     fn encode_iri(&self, iri: &str) -> Option<Sid> {
         // Delegates to the existing Db::encode_iri method
         Db::encode_iri(self, iri)

@@ -1,7 +1,7 @@
 //! Database struct
 //!
 //! The `Db` struct represents a database value at a specific point in time.
-//! It is generic over storage and cache implementations.
+//! It is a pure value type — no storage backend reference.
 
 use crate::content_id::ContentId;
 use crate::content_kind::ContentKind;
@@ -15,7 +15,7 @@ use crate::serde::json::{
     raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
 };
 use crate::sid::Sid;
-use crate::storage::Storage;
+use crate::storage::StorageRead;
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,7 +25,7 @@ use std::sync::Arc;
 /// Bundles all the metadata fields extracted from a v2 BinaryIndexRoot
 /// for constructing a metadata-only `Db`.
 pub struct DbMetadata {
-    /// Ledger ID (e.g., "mydb/main")
+    /// Ledger ID (e.g., "mydb:main")
     pub ledger_id: String,
     /// Current transaction time
     pub t: i64,
@@ -41,12 +41,12 @@ pub struct DbMetadata {
     pub string_watermark: u32,
 }
 
-/// Database value at a specific point in time
+/// Database value at a specific point in time.
 ///
-/// Generic over:
-/// - `S`: Storage backend
-pub struct Db<S> {
-    /// Ledger ID (e.g., "mydb/main")
+/// A pure value type — no storage backend reference. All I/O (loading,
+/// writing) happens at the call site, not inside `Db`.
+pub struct Db {
+    /// Ledger ID (e.g., "mydb:main")
     pub ledger_id: String,
     /// Current transaction time
     pub t: i64,
@@ -80,12 +80,9 @@ pub struct Db<S> {
     /// All existing range callers (reasoner, API, policy, SHACL) use this
     /// automatically.
     pub range_provider: Option<Arc<dyn RangeProvider>>,
-
-    /// Storage backend
-    pub storage: S,
 }
 
-impl<S: Clone> Clone for Db<S> {
+impl Clone for Db {
     fn clone(&self) -> Self {
         Self {
             ledger_id: self.ledger_id.clone(),
@@ -98,12 +95,11 @@ impl<S: Clone> Clone for Db<S> {
             subject_watermarks: self.subject_watermarks.clone(),
             string_watermark: self.string_watermark,
             range_provider: self.range_provider.clone(),
-            storage: self.storage.clone(),
         }
     }
 }
 
-impl<S: std::fmt::Debug> std::fmt::Debug for Db<S> {
+impl std::fmt::Debug for Db {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Db")
             .field("ledger_id", &self.ledger_id)
@@ -117,13 +113,13 @@ impl<S: std::fmt::Debug> std::fmt::Debug for Db<S> {
     }
 }
 
-impl<S: Storage> Db<S> {
+impl Db {
     /// Create a genesis (empty) database for a new ledger.
     ///
     /// Used when a nameservice has a commit but no index yet.
     /// The database starts at t=0 with no base data.  Queries against
     /// a genesis Db return overlay (novelty) flakes only.
-    pub fn genesis(storage: S, ledger_id: &str) -> Self {
+    pub fn genesis(ledger_id: &str) -> Self {
         Self {
             ledger_id: ledger_id.to_string(),
             t: 0,
@@ -136,7 +132,6 @@ impl<S: Storage> Db<S> {
             subject_watermarks: Vec::new(),
             string_watermark: 0,
             range_provider: None,
-            storage,
         }
     }
 
@@ -146,7 +141,7 @@ impl<S: Storage> Db<S> {
     /// The Db carries namespace codes, stats, and schema for callers
     /// that need ledger metadata, while all actual range queries go
     /// through `BinaryIndexStore` / `BinaryScanOperator`.
-    pub fn new_meta(meta: DbMetadata, storage: S) -> Self {
+    pub fn new_meta(meta: DbMetadata) -> Self {
         Self {
             ledger_id: meta.ledger_id,
             t: meta.t,
@@ -158,48 +153,11 @@ impl<S: Storage> Db<S> {
             subject_watermarks: meta.subject_watermarks,
             string_watermark: meta.string_watermark,
             range_provider: None,
-            storage,
-        }
-    }
-
-    /// Load a database from a v2 index root content ID.
-    ///
-    /// Only v2 (BinaryIndexRoot) roots are supported. The `"version"` field
-    /// in the JSON root must be `2`; any other value is rejected.
-    ///
-    /// The returned Db is metadata-only (`range_provider = None`). The caller
-    /// (typically the API layer) must load a `BinaryIndexStore` and attach a
-    /// `BinaryRangeProvider` before serving range queries.
-    ///
-    /// The storage address is derived internally from the `ContentId` and
-    /// `ledger_id` using the storage backend's method identifier.
-    pub async fn load(storage: S, root_id: &ContentId, ledger_id: &str) -> Result<Self> {
-        let root_address = crate::content_address(
-            storage.storage_method(),
-            ContentKind::IndexRoot,
-            ledger_id,
-            &root_id.digest_hex(),
-        );
-        let bytes = storage.read_bytes(&root_address).await?;
-        let root_json: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|e| Error::invalid_index(format!("invalid root JSON: {}", e)))?;
-
-        let version = root_json
-            .get("version")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-
-        match version {
-            2 | 3 => Self::from_v2_json(storage, &root_json),
-            v => Err(Error::invalid_index(format!(
-                "unsupported index root version: {} (only v2/v3 supported)",
-                v
-            ))),
         }
     }
 
     /// Extract metadata from a v2 BinaryIndexRoot JSON blob.
-    pub fn from_v2_json(storage: S, root: &serde_json::Value) -> Result<Self> {
+    pub fn from_v2_json(root: &serde_json::Value) -> Result<Self> {
         let ledger_id = root["ledger_id"]
             .as_str()
             .ok_or_else(|| Error::invalid_index("v2 root missing ledger_id"))?
@@ -246,7 +204,7 @@ impl<S: Storage> Db<S> {
             subject_watermarks,
             string_watermark,
         };
-        Ok(Self::new_meta(meta, storage))
+        Ok(Self::new_meta(meta))
     }
 
     /// Attach a range provider for binary index queries.
@@ -302,6 +260,46 @@ impl<S: Storage> Db<S> {
     }
 }
 
+/// Load a database from a v2 index root content ID.
+///
+/// Only v2/v3 (BinaryIndexRoot) roots are supported. The `"version"` field
+/// in the JSON root must be `2` or `3`; any other value is rejected.
+///
+/// The returned Db is metadata-only (`range_provider = None`). The caller
+/// (typically the API layer) must load a `BinaryIndexStore` and attach a
+/// `BinaryRangeProvider` before serving range queries.
+///
+/// The storage address is derived internally from the `ContentId` and
+/// `ledger_id` using the storage backend's method identifier.
+pub async fn load_db(
+    storage: &(impl StorageRead + crate::storage::StorageMethod),
+    root_id: &ContentId,
+    ledger_id: &str,
+) -> Result<Db> {
+    let root_address = crate::content_address(
+        storage.storage_method(),
+        ContentKind::IndexRoot,
+        ledger_id,
+        &root_id.digest_hex(),
+    );
+    let bytes = storage.read_bytes(&root_address).await?;
+    let root_json: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| Error::invalid_index(format!("invalid root JSON: {}", e)))?;
+
+    let version = root_json
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
+    match version {
+        2 | 3 => Db::from_v2_json(&root_json),
+        v => Err(Error::invalid_index(format!(
+            "unsupported index root version: {} (only v2/v3 supported)",
+            v
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,7 +328,7 @@ mod tests {
     async fn test_db_load_v2() {
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_id": "test/main",
+            "ledger_id": "test:main",
             "index_t": 42,
             "base_t": 0,
             "namespace_codes": {
@@ -348,10 +346,10 @@ mod tests {
         });
 
         let storage = MemoryStorage::new();
-        let root_id = store_root(&storage, "test/main", &root_json);
+        let root_id = store_root(&storage, "test:main", &root_json);
 
-        let db = Db::load(storage, &root_id, "test/main").await.unwrap();
-        assert_eq!(db.ledger_id, "test/main");
+        let db = load_db(&storage, &root_id, "test:main").await.unwrap();
+        assert_eq!(db.ledger_id, "test:main");
         assert_eq!(db.t, 42);
         assert_eq!(db.version, 2);
         assert!(db.range_provider.is_none());
@@ -365,9 +363,9 @@ mod tests {
         });
 
         let storage = MemoryStorage::new();
-        let root_id = store_root(&storage, "test/main", &root_json);
+        let root_id = store_root(&storage, "test:main", &root_json);
 
-        let err = Db::load(storage, &root_id, "test/main").await.unwrap_err();
+        let err = load_db(&storage, &root_id, "test:main").await.unwrap_err();
         assert!(err.to_string().contains("unsupported"));
     }
 
@@ -375,7 +373,7 @@ mod tests {
     async fn test_db_encode_decode_sid() {
         let root_json = serde_json::json!({
             "version": 2,
-            "ledger_id": "test/main",
+            "ledger_id": "test:main",
             "index_t": 1,
             "base_t": 0,
             "namespace_codes": {
@@ -387,8 +385,8 @@ mod tests {
         });
 
         let storage = MemoryStorage::new();
-        let root_id = store_root(&storage, "test/main", &root_json);
-        let db = Db::load(storage, &root_id, "test/main").await.unwrap();
+        let root_id = store_root(&storage, "test:main", &root_json);
+        let db = load_db(&storage, &root_id, "test:main").await.unwrap();
 
         let sid = db.encode_iri("http://example.org/Alice").unwrap();
         assert_eq!(sid.namespace_code, 100);
@@ -400,10 +398,9 @@ mod tests {
 
     #[test]
     fn test_genesis_db() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test/main");
+        let db = Db::genesis("test:main");
         assert_eq!(db.t, 0);
-        assert_eq!(db.ledger_id, "test/main");
+        assert_eq!(db.ledger_id, "test:main");
         assert!(db.range_provider.is_none());
     }
 }

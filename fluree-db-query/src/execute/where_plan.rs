@@ -28,7 +28,7 @@ use crate::subquery::SubqueryOperator;
 use crate::union::UnionOperator;
 use crate::values::ValuesOperator;
 use crate::var_registry::VarId;
-use fluree_db_core::{ObjectBounds, StatsView, Storage};
+use fluree_db_core::{ObjectBounds, StatsView};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -67,10 +67,7 @@ pub struct InnerJoinBlock {
 /// })?;
 /// ```
 #[inline]
-fn require_child<S: Storage + 'static>(
-    operator: Option<BoxedOperator<S>>,
-    pattern_name: &str,
-) -> Result<BoxedOperator<S>> {
+fn require_child(operator: Option<BoxedOperator>, pattern_name: &str) -> Result<BoxedOperator> {
     operator
         .ok_or_else(|| QueryError::InvalidQuery(format!("{} has no input operator", pattern_name)))
 }
@@ -79,15 +76,13 @@ fn require_child<S: Storage + 'static>(
 ///
 /// Used for patterns that can appear at position 0 and need an initial solution.
 #[inline]
-fn get_or_empty_seed<S: Storage + 'static>(operator: Option<BoxedOperator<S>>) -> BoxedOperator<S> {
+fn get_or_empty_seed(operator: Option<BoxedOperator>) -> BoxedOperator {
     operator.unwrap_or_else(|| Box::new(EmptyOperator::new()))
 }
 
 /// Get bound variables from an operator's schema.
 #[inline]
-fn bound_vars_from_operator<S: Storage + 'static>(
-    operator: &Option<BoxedOperator<S>>,
-) -> HashSet<VarId> {
+fn bound_vars_from_operator(operator: &Option<BoxedOperator>) -> HashSet<VarId> {
     operator
         .as_ref()
         .map(|op| op.schema().iter().copied().collect())
@@ -124,13 +119,13 @@ struct PendingFilter {
 /// Apply pending BINDs and FILTERs that are ready (all required vars are bound).
 ///
 /// Returns the updated operator and the remaining pending items.
-fn apply_ready_binds_and_filters<S: Storage + 'static>(
-    mut child: BoxedOperator<S>,
+fn apply_ready_binds_and_filters(
+    mut child: BoxedOperator,
     bound: &mut HashSet<VarId>,
     pending_binds: Vec<PendingBind>,
     pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
-) -> (BoxedOperator<S>, Vec<PendingBind>, Vec<PendingFilter>) {
+) -> (BoxedOperator, Vec<PendingBind>, Vec<PendingFilter>) {
     let mut remaining_binds = Vec::new();
     let mut remaining_filters = Vec::new();
 
@@ -160,12 +155,12 @@ fn apply_ready_binds_and_filters<S: Storage + 'static>(
 }
 
 /// Apply all remaining BINDs and FILTERs (assumes all vars are now bound).
-fn apply_all_remaining<S: Storage + 'static>(
-    mut child: BoxedOperator<S>,
+fn apply_all_remaining(
+    mut child: BoxedOperator,
     pending_binds: Vec<PendingBind>,
     pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
-) -> BoxedOperator<S> {
+) -> BoxedOperator {
     for pending in pending_binds {
         child = Box::new(BindOperator::new(child, pending.target_var, pending.expr));
     }
@@ -202,11 +197,11 @@ fn apply_all_remaining<S: Storage + 'static>(
 ///
 /// This keeps semantics stable while still allowing aggressive optimization inside
 /// the regions where it is safe.
-pub fn build_where_operators<S: Storage + 'static>(
+pub fn build_where_operators(
     patterns: &[Pattern],
     stats: Option<Arc<StatsView>>,
-) -> Result<BoxedOperator<S>> {
-    build_where_operators_seeded::<S>(None, patterns, stats)
+) -> Result<BoxedOperator> {
+    build_where_operators_seeded(None, patterns, stats)
 }
 
 /// Collect an optimizable inner-join block consisting of:
@@ -288,11 +283,11 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
 /// - If `seed` is `None` and the first pattern is non-triple, an `EmptyOperator` is used.
 /// - `stats` provides property/class statistics for selectivity-based pattern reordering.
 ///   Using `Arc` avoids expensive HashMap cloning when threading stats to nested operators.
-pub fn build_where_operators_seeded<S: Storage + 'static>(
-    seed: Option<BoxedOperator<S>>,
+pub fn build_where_operators_seeded(
+    seed: Option<BoxedOperator>,
     patterns: &[Pattern],
     stats: Option<Arc<StatsView>>,
-) -> Result<BoxedOperator<S>> {
+) -> Result<BoxedOperator> {
     if patterns.is_empty() {
         // Empty patterns = one row with empty schema
         return Ok(seed.unwrap_or_else(|| Box::new(EmptyOperator::new())));
@@ -311,7 +306,7 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
         );
 
     // Start with provided seed, else start with empty operator if needed
-    let mut operator: Option<BoxedOperator<S>> = if let Some(seed) = seed {
+    let mut operator: Option<BoxedOperator> = if let Some(seed) = seed {
         Some(seed)
     } else if needs_empty_seed {
         Some(Box::new(EmptyOperator::new()))
@@ -718,12 +713,12 @@ pub fn build_where_operators_seeded<S: Storage + 'static>(
 /// Creates a `ScanOperator` that selects between `BinaryScanOperator` (streaming
 /// cursor) and `RangeScanOperator` (range fallback) at `open()` time based on
 /// the `ExecutionContext`.
-fn make_first_scan<S: Storage + 'static>(
+fn make_first_scan(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
-) -> BoxedOperator<S> {
+) -> BoxedOperator {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
-    Box::new(crate::binary_scan::ScanOperator::<S>::new(
+    Box::new(crate::binary_scan::ScanOperator::new(
         tp.clone(),
         obj_bounds,
     ))
@@ -737,11 +732,11 @@ fn make_first_scan<S: Storage + 'static>(
 /// - If `left` is None, creates a `ScanOperator` for the first pattern
 /// - If `left` is Some, creates a NestedLoopJoinOperator joining to the existing operator
 /// - Applies object bounds from filters when available
-pub fn build_scan_or_join<S: Storage + 'static>(
-    left: Option<BoxedOperator<S>>,
+pub fn build_scan_or_join(
+    left: Option<BoxedOperator>,
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
-) -> BoxedOperator<S> {
+) -> BoxedOperator {
     match left {
         None => make_first_scan(tp, object_bounds),
         Some(left) => {
@@ -766,11 +761,11 @@ pub fn build_scan_or_join<S: Storage + 'static>(
 /// Uses property join optimization when applicable.
 /// When `object_bounds` is provided, range constraints are pushed down to ScanOperator
 /// for the first pattern, enabling index-level filtering.
-pub fn build_triple_operators<S: Storage + 'static>(
-    existing: Option<BoxedOperator<S>>,
+pub fn build_triple_operators(
+    existing: Option<BoxedOperator>,
     triples: &[TriplePattern],
     object_bounds: &HashMap<VarId, ObjectBounds>,
-) -> Result<BoxedOperator<S>> {
+) -> Result<BoxedOperator> {
     if triples.is_empty() {
         return existing
             .ok_or_else(|| QueryError::InvalidQuery("No triple patterns to process".to_string()));
@@ -802,7 +797,7 @@ mod tests {
     use super::*;
     use crate::ir::{CompareOp, FilterExpr, FilterValue, Pattern};
     use crate::pattern::Term;
-    use fluree_db_core::{FlakeValue, MemoryStorage, PropertyStatData, Sid, StatsView};
+    use fluree_db_core::{FlakeValue, PropertyStatData, Sid, StatsView};
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
         TriplePattern::new(
@@ -816,7 +811,7 @@ mod tests {
     fn test_build_where_operators_single_triple() {
         let patterns = vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))];
 
-        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = build_where_operators(&patterns, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -834,7 +829,7 @@ mod tests {
             }),
         ];
 
-        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = build_where_operators(&patterns, None);
         assert!(result.is_ok());
     }
 
@@ -872,7 +867,7 @@ mod tests {
             }),
         ];
 
-        let op = build_where_operators::<MemoryStorage>(&patterns, None).unwrap();
+        let op = build_where_operators(&patterns, None).unwrap();
         let schema = op.schema();
         assert!(
             !schema.is_empty(),
@@ -1048,7 +1043,7 @@ mod tests {
             Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
         ];
 
-        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = build_where_operators(&patterns, None);
         // Now succeeds - empty seed provides initial solution
         assert!(result.is_ok());
     }
@@ -1066,7 +1061,7 @@ mod tests {
                 Sid::new(2, "long"),
             )]],
         }];
-        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = build_where_operators(&patterns, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -1081,7 +1076,7 @@ mod tests {
             var: VarId(0),
             expr: FilterExpr::Const(FilterValue::Long(42)),
         }];
-        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = build_where_operators(&patterns, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -1096,7 +1091,7 @@ mod tests {
             vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))],
             vec![Pattern::Triple(make_pattern(VarId(0), "email", VarId(2)))],
         ])];
-        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = build_where_operators(&patterns, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -1120,7 +1115,7 @@ mod tests {
             },
             Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
         ];
-        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = build_where_operators(&patterns, None);
         assert!(result.is_ok());
 
         let op = result.unwrap();
@@ -1161,7 +1156,7 @@ mod tests {
             },
         );
 
-        let op = build_triple_operators::<MemoryStorage>(None, &triples, &bounds).unwrap();
+        let op = build_triple_operators(None, &triples, &bounds).unwrap();
 
         // PropertyJoinOperator schema is [subject, obj1, obj2] in declaration order.
         // If NestedLoopJoin were used instead, all three vars would still appear but
@@ -1192,7 +1187,7 @@ mod tests {
             }),
         ];
 
-        let result = build_where_operators::<MemoryStorage>(&patterns, None);
+        let result = build_where_operators(&patterns, None);
         assert!(result.is_ok(), "should build successfully");
 
         let op = result.unwrap();
@@ -1208,7 +1203,7 @@ mod tests {
         let tp = make_pattern(VarId(0), "name", VarId(1));
         let bounds = HashMap::new();
 
-        let op: BoxedOperator<MemoryStorage> = build_scan_or_join(None, &tp, &bounds);
+        let op: BoxedOperator = build_scan_or_join(None, &tp, &bounds);
 
         assert_eq!(op.schema(), &[VarId(0), VarId(1)]);
     }
@@ -1219,7 +1214,7 @@ mod tests {
         let tp2 = make_pattern(VarId(0), "age", VarId(2));
         let bounds = HashMap::new();
 
-        let first: BoxedOperator<MemoryStorage> = build_scan_or_join(None, &tp1, &bounds);
+        let first: BoxedOperator = build_scan_or_join(None, &tp1, &bounds);
         let second = build_scan_or_join(Some(first), &tp2, &bounds);
 
         // Schema should include all vars from both patterns

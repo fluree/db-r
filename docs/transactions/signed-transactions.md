@@ -130,35 +130,12 @@ curl -X POST "http://localhost:8090/transact?ledger=mydb:main" \
   -d @credential.json
 ```
 
-## Supported Algorithms
+## Supported Algorithm
 
-### Asymmetric (Recommended)
-
-**EdDSA (Ed25519):** (Recommended)
+**EdDSA (Ed25519):**
 - Fast, secure, deterministic
 - 64-byte signatures
-- Best choice for most use cases
-
-**ES256 (ECDSA P-256):**
-- NIST standard curve
-- Wider tool support
-- Slightly larger signatures
-
-**ES384, ES512:**
-- Higher security levels
-- Larger signatures
-
-**RS256 (RSA):**
-- Legacy compatibility
-- Large signatures
-- Not recommended for new implementations
-
-### Symmetric (Not Recommended)
-
-**HS256, HS384, HS512:**
-- HMAC-based
-- Requires shared secret
-- Not suitable for authentication
+- 128-bit security level
 
 ## Identity Management
 

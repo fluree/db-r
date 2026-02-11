@@ -176,9 +176,9 @@ pub enum EnforcementMode {
 ///
 /// Groups the database snapshot, time horizon, and binary index store to avoid
 /// parameter drift. Constructed from a `LedgerSnapshot` at the call site.
-pub struct LedgerBlockContext<'a, S> {
+pub struct LedgerBlockContext<'a> {
     /// Database snapshot.
-    pub db: &'a Db<S>,
+    pub db: &'a Db,
     /// Time horizon for policy filtering (not always `db.t`).
     pub to_t: i64,
     /// Binary index store for leaf decoding (None if not indexed / v1).
@@ -343,8 +343,8 @@ fn detect_leaf_sort_order(
 /// Returns `(filtered_flakes, policy_was_applied)`.
 /// If neither `identity` nor `policy_class` is provided, returns all flakes
 /// unfiltered (equivalent to root policy).
-pub async fn apply_policy_filter<S: Storage + Clone + 'static>(
-    db: &Db<S>,
+pub async fn apply_policy_filter(
+    db: &Db,
     to_t: i64,
     flakes: Vec<Flake>,
     identity: Option<&str>,
@@ -409,7 +409,7 @@ pub async fn fetch_and_decode_block<S: Storage + Clone + 'static>(
     storage: &S,
     ledger_id: &str,
     cid: &ContentId,
-    ledger_ctx: Option<&LedgerBlockContext<'_, S>>,
+    ledger_ctx: Option<&LedgerBlockContext<'_>>,
     mode: &EnforcementMode,
 ) -> Result<FetchedBlock, BlockFetchError> {
     // 1. Check content kind from CID codec

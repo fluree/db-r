@@ -56,8 +56,8 @@ pub struct CommitInfo {
 /// Transaction response - matches Clojure server format
 #[derive(Serialize)]
 pub struct TransactResponse {
-    /// Ledger alias
-    pub ledger: String,
+    /// Ledger identifier
+    pub ledger_id: String,
     /// Transaction time (t value)
     pub t: i64,
     /// Transaction ID (SHA-256 hash of transaction data)
@@ -115,7 +115,7 @@ fn extract_query_params(request: &Request) -> TransactQueryParams {
         .unwrap_or_default()
 }
 
-/// Helper to extract ledger alias from request
+/// Helper to extract ledger ID from request
 ///
 /// Priority: path > query param > header > body.ledger > body.from
 fn get_ledger_id(
@@ -249,7 +249,7 @@ async fn transact_local(
         "transact",
         request_id.as_deref(),
         trace_id.as_deref(),
-        None, // ledger alias determined later
+        None, // ledger ID determined later
         None, // tenant_id not yet supported
     );
     let _guard = span.enter();
@@ -303,7 +303,7 @@ async fn transact_local(
             }
             None => {
                 set_span_error_code(&span, "error:BadRequest");
-                tracing::warn!("missing ledger alias for Turtle/TriG transact");
+                tracing::warn!("missing ledger ID for Turtle/TriG transact");
                 return Err(ServerError::MissingLedger);
             }
         };
@@ -342,7 +342,7 @@ async fn transact_local(
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias");
+            tracing::warn!(error = %e, "missing ledger ID");
             return Err(e);
         }
     };
@@ -497,7 +497,7 @@ async fn transact_ledger_local(
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "ledger alias mismatch");
+            tracing::warn!(error = %e, "ledger ID mismatch");
             return Err(e);
         }
     };
@@ -593,7 +593,7 @@ async fn insert_local(
             }
             None => {
                 set_span_error_code(&span, "error:BadRequest");
-                tracing::warn!("missing ledger alias for Turtle/TriG insert");
+                tracing::warn!("missing ledger ID for Turtle/TriG insert");
                 return Err(ServerError::MissingLedger);
             }
         };
@@ -629,7 +629,7 @@ async fn insert_local(
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias");
+            tracing::warn!(error = %e, "missing ledger ID");
             return Err(e);
         }
     };
@@ -725,7 +725,7 @@ async fn upsert_local(
             }
             None => {
                 set_span_error_code(&span, "error:BadRequest");
-                tracing::warn!("missing ledger alias for Turtle/TriG upsert");
+                tracing::warn!("missing ledger ID for Turtle/TriG upsert");
                 return Err(ServerError::MissingLedger);
             }
         };
@@ -761,7 +761,7 @@ async fn upsert_local(
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias");
+            tracing::warn!(error = %e, "missing ledger ID");
             return Err(e);
         }
     };
@@ -894,7 +894,7 @@ async fn insert_ledger_local(
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "ledger alias mismatch");
+            tracing::warn!(error = %e, "ledger ID mismatch");
             return Err(e);
         }
     };
@@ -1027,7 +1027,7 @@ async fn upsert_ledger_local(
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "ledger alias mismatch");
+            tracing::warn!(error = %e, "ledger ID mismatch");
             return Err(e);
         }
     };
@@ -1125,7 +1125,7 @@ async fn execute_transaction(
     };
 
     Ok(Json(TransactResponse {
-        ledger: ledger_id.to_string(),
+        ledger_id: ledger_id.to_string(),
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {
@@ -1255,7 +1255,7 @@ async fn execute_turtle_transaction(
     };
 
     Ok(Json(TransactResponse {
-        ledger: ledger_id.to_string(),
+        ledger_id: ledger_id.to_string(),
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {
@@ -1302,7 +1302,7 @@ async fn execute_sparql_update_request(
             Some(ledger) => ledger.clone(),
             None => {
                 set_span_error_code(parent_span, "error:BadRequest");
-                tracing::warn!("missing ledger alias for SPARQL UPDATE");
+                tracing::warn!("missing ledger ID for SPARQL UPDATE");
                 return Err(ServerError::MissingLedger);
             }
         },
@@ -1426,7 +1426,7 @@ async fn execute_sparql_update_request(
     };
 
     Ok(Json(TransactResponse {
-        ledger: ledger_id,
+        ledger_id,
         t: result.receipt.t,
         tx_id,
         commit: CommitInfo {

@@ -8,7 +8,6 @@ use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 
 /// Query execution operator
 ///
@@ -25,7 +24,7 @@ use fluree_db_core::Storage;
 ///
 /// Call `open`, then loop on `next_batch` until `None`, then `close`.
 #[async_trait]
-pub trait Operator<S: Storage + 'static>: Send + Sync {
+pub trait Operator: Send + Sync {
     /// Output schema - which variables this operator produces
     ///
     /// Fixed at construction time (does not change across batches).
@@ -36,13 +35,13 @@ pub trait Operator<S: Storage + 'static>: Send + Sync {
     ///
     /// Called once before `next_batch()`. Allocates buffers, opens
     /// child operators, etc.
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()>;
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()>;
 
     /// Pull next batch of results
     ///
     /// Returns `Ok(Some(batch))` with results, or `Ok(None)` when exhausted.
     /// Batch columns are ordered according to `schema()`.
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>>;
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>>;
 
     /// Release resources
     ///
@@ -60,7 +59,7 @@ pub trait Operator<S: Storage + 'static>: Send + Sync {
 }
 
 /// Boxed operator for dynamic dispatch
-pub type BoxedOperator<S> = Box<dyn Operator<S> + Send + Sync>;
+pub type BoxedOperator = Box<dyn Operator + Send + Sync>;
 
 /// Operator state for lifecycle tracking
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

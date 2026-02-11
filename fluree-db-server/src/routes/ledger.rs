@@ -30,8 +30,8 @@ pub struct CommitInfo {
 /// Create ledger response - matches Clojure server format
 #[derive(Serialize)]
 pub struct CreateResponse {
-    /// Ledger alias
-    pub ledger: String,
+    /// Ledger identifier
+    pub ledger_id: String,
     /// Transaction time (t=0 for new empty ledger)
     pub t: i64,
     /// Transaction ID (SHA-256 hash of create request)
@@ -133,7 +133,7 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
     let ledger_id = ledger.ledger_id().to_string();
 
     let response = CreateResponse {
-        ledger: ledger_id.clone(),
+        ledger_id: ledger_id.clone(),
         t: 0,
         tx_id,
         commit: CommitInfo {
@@ -159,8 +159,8 @@ pub struct DropRequest {
 /// Drop ledger response
 #[derive(Serialize)]
 pub struct DropResponse {
-    /// Ledger alias
-    pub ledger: String,
+    /// Ledger identifier
+    pub ledger_id: String,
     /// Drop status
     pub status: String,
     /// Files deleted (hard mode only)
@@ -186,7 +186,7 @@ impl From<DropReport> for DropResponse {
         };
 
         DropResponse {
-            ledger: report.ledger_id,
+            ledger_id: report.ledger_id,
             status: status.to_string(),
             files_deleted,
             warnings: report.warnings,
@@ -268,8 +268,8 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
 /// Ledger info response (simplified, used in proxy storage mode fallback)
 #[derive(Serialize)]
 pub struct LedgerInfoResponse {
-    /// Ledger alias
-    pub ledger: String,
+    /// Ledger identifier
+    pub ledger_id: String,
     /// Current transaction time
     pub t: i64,
     /// Head commit ContentId (storage-agnostic identity), if known.
@@ -351,7 +351,6 @@ pub async fn info(
     // Non-proxy mode: load ledger and return comprehensive info
     let ledger_state = super::query::load_ledger_for_query(&state, alias, &span).await?;
 
-    // Get t value for backwards compatibility
     let t = ledger_state.db.t;
 
     // Build comprehensive ledger info (at parity with Clojure)
@@ -364,19 +363,35 @@ pub async fn info(
         include_property_datatypes: query.include_property_datatypes.unwrap_or(false)
             || realtime_details,
     };
-    let mut info =
-        fluree_db_api::ledger_info::build_ledger_info_with_options(&ledger_state, None, opts)
+    let mut info = match &state.fluree {
+        crate::state::FlureeInstance::File(f) => {
+            fluree_db_api::ledger_info::build_ledger_info_with_options(
+                &ledger_state,
+                f.storage(),
+                None,
+                opts,
+            )
             .await
-            .map_err(|e| {
-                set_span_error_code(&span, "error:InternalError");
-                tracing::error!(error = %e, "failed to build ledger info");
-                ServerError::internal(format!("Failed to build ledger info: {}", e))
-            })?;
+        }
+        crate::state::FlureeInstance::Proxy(p) => {
+            fluree_db_api::ledger_info::build_ledger_info_with_options(
+                &ledger_state,
+                p.storage(),
+                None,
+                opts,
+            )
+            .await
+        }
+    }
+    .map_err(|e| {
+        set_span_error_code(&span, "error:InternalError");
+        tracing::error!(error = %e, "failed to build ledger info");
+        ServerError::internal(format!("Failed to build ledger info: {}", e))
+    })?;
 
-    // Add top-level ledger alias and t for backwards compatibility
     if let Some(obj) = info.as_object_mut() {
         obj.insert(
-            "ledger".to_string(),
+            "ledger_id".to_string(),
             serde_json::Value::String(alias.to_string()),
         );
         obj.insert("t".to_string(), serde_json::Value::Number(t.into()));
@@ -426,7 +441,7 @@ async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) ->
         "ledger info retrieved (simplified)"
     );
     Ok(Json(LedgerInfoResponse {
-        ledger: record.ledger_id.clone(),
+        ledger_id: record.ledger_id.clone(),
         t: record.commit_t,
         commit_head_id: record.commit_head_id.clone(),
         index_head_id: record.index_head_id.clone(),
@@ -447,8 +462,8 @@ pub struct LedgerInfoQuery {
 /// Ledger exists response
 #[derive(Serialize)]
 pub struct ExistsResponse {
-    /// Ledger alias (echoed back)
-    pub ledger: String,
+    /// Ledger identifier (echoed back)
+    pub ledger_id: String,
     /// Whether the ledger exists
     pub exists: bool,
 }
@@ -529,7 +544,7 @@ pub async fn exists(
         "ledger exists check completed"
     );
     Ok(Json(ExistsResponse {
-        ledger: alias,
+        ledger_id: alias,
         exists,
     }))
 }

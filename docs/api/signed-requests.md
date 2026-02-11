@@ -45,23 +45,9 @@ eyJhbGciOiJFZDI1NTE5In0.eyJmcm9tIjoibXlkYjptYWluIn0.c2lnbmF0dXJl
 }
 ```
 
-### Supported Algorithms
+### Supported Algorithm
 
-Fluree supports these JWS algorithms:
-
-**Asymmetric (Public Key) Algorithms:**
-- `EdDSA` (Ed25519) - Recommended
-- `ES256` (ECDSA with P-256 and SHA-256)
-- `ES384` (ECDSA with P-384 and SHA-384)
-- `ES512` (ECDSA with P-521 and SHA-512)
-- `RS256` (RSASSA-PKCS1-v1_5 with SHA-256)
-
-**Symmetric Algorithms:**
-- `HS256` (HMAC with SHA-256) - Not recommended for authentication
-- `HS384` (HMAC with SHA-384)
-- `HS512` (HMAC with SHA-512)
-
-**Recommendation:** Use `EdDSA` (Ed25519) for best security and performance.
+Fluree uses **EdDSA (Ed25519)** for JWS verification. All signed requests must use `"alg": "EdDSA"` in the protected header.
 
 ## Creating Signed Requests
 
@@ -318,16 +304,6 @@ import { generateKeyPair } from '@stablelib/ed25519';
 const keyPair = generateKeyPair();
 // keyPair.publicKey - 32 bytes
 // keyPair.secretKey - 64 bytes
-```
-
-**ECDSA P-256 (ES256):**
-
-```javascript
-import { generateKeyPairSync } from 'crypto';
-
-const { publicKey, privateKey } = generateKeyPairSync('ec', {
-  namedCurve: 'prime256v1'
-});
 ```
 
 ### Storing Keys

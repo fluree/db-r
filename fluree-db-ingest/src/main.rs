@@ -24,9 +24,11 @@ fn default_run_dir(args: &Args) -> PathBuf {
 }
 
 fn default_index_dir(args: &Args) -> PathBuf {
-    args.index_dir
-        .clone()
-        .unwrap_or_else(|| args.db_dir.join(ledger_id_prefix(&args.ledger)).join("index"))
+    args.index_dir.clone().unwrap_or_else(|| {
+        args.db_dir
+            .join(ledger_id_prefix(&args.ledger))
+            .join("index")
+    })
 }
 
 fn init_logging() {
@@ -178,7 +180,7 @@ struct Args {
     #[arg(long)]
     db_dir: PathBuf,
 
-    /// Ledger alias (default: "dblp:main")
+    /// Ledger ID (default: "dblp:main")
     #[arg(long, default_value = "dblp:main")]
     ledger: String,
 
@@ -537,9 +539,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Nameservice ledger record"
         );
 
-        let alias_prefix = fluree_db_core::address_path::ledger_id_to_path_prefix(&args.ledger)
+        let ledger_prefix = fluree_db_core::address_path::ledger_id_to_path_prefix(&args.ledger)
             .unwrap_or_else(|_| args.ledger.replace(':', "/"));
-        let manifest_addr = format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
+        let manifest_addr = format!("fluree:file://{}/stats/pre-index-stats.json", ledger_prefix);
         match storage.read_bytes(&manifest_addr).await {
             Ok(bytes) => {
                 info!(

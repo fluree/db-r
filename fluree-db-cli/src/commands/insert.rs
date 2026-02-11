@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 /// Resolve positional args for insert/query commands.
 ///
 /// - 0 args: active ledger + stdin/-e
-/// - 1 arg: if file exists → active ledger + that file; else → ledger alias + stdin/-e
-/// - 2 args: first = ledger alias, second = file path
+/// - 1 arg: if file exists → active ledger + that file; else → ledger name + stdin/-e
+/// - 2 args: first = ledger name, second = file path
 pub fn resolve_positional_args(args: &[String]) -> (Option<&str>, Option<PathBuf>) {
     match args.len() {
         0 => (None, None),

@@ -12,8 +12,8 @@ use serde_json::json;
 use support::{genesis_ledger, normalize_rows, MemoryFluree, MemoryLedger};
 use tempfile::TempDir;
 
-async fn seed_schema_creative_work(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_schema_creative_work(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     // Seed a Movie + Book instance, plus schema class hierarchy:
     // Book subClassOf CreativeWork
@@ -165,8 +165,8 @@ async fn subclass_creative_work_returns_book_and_movie_instances() {
     );
 }
 
-async fn seed_humanoid(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_humanoid(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let ctx = json!({
         "id":"@id",
         "type":"@type",

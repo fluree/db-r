@@ -33,7 +33,7 @@ use crate::seed::EmptyOperator;
 use crate::values::ValuesOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{ObjectBounds, Sid, Storage};
+use fluree_db_core::{ObjectBounds, Sid};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -50,11 +50,8 @@ use crate::binary_scan::ScanOperator;
 /// 3. This var never escapes to external schemas or user code
 const TEMP_OBJECT_VAR: VarId = VarId(u16::MAX - 1);
 
-fn make_property_join_scan<S: Storage + 'static>(
-    pattern: TriplePattern,
-    bounds: Option<ObjectBounds>,
-) -> BoxedOperator<S> {
-    Box::new(ScanOperator::<S>::new(pattern, bounds))
+fn make_property_join_scan(pattern: TriplePattern, bounds: Option<ObjectBounds>) -> BoxedOperator {
+    Box::new(ScanOperator::new(pattern, bounds))
 }
 
 /// Property-join operator for same-subject multi-predicate patterns
@@ -234,10 +231,7 @@ impl PropertyJoinOperator {
         }
     }
 
-    fn subject_key_multi<S: Storage + 'static>(
-        ctx: &ExecutionContext<'_, S>,
-        subject: &Binding,
-    ) -> Option<SubjectKey> {
+    fn subject_key_multi(ctx: &ExecutionContext<'_>, subject: &Binding) -> Option<SubjectKey> {
         match subject {
             Binding::IriMatch { iri, .. } => Some(SubjectKey::Iri(iri.clone())),
             Binding::Iri(iri) => Some(SubjectKey::Iri(iri.clone())),
@@ -261,10 +255,7 @@ impl PropertyJoinOperator {
         }
     }
 
-    fn subject_key<S: Storage + 'static>(
-        ctx: &ExecutionContext<'_, S>,
-        subject: &Binding,
-    ) -> Option<SubjectKey> {
+    fn subject_key(ctx: &ExecutionContext<'_>, subject: &Binding) -> Option<SubjectKey> {
         if ctx.is_multi_ledger() {
             Self::subject_key_multi(ctx, subject)
         } else {
@@ -329,12 +320,12 @@ impl PropertyJoinOperator {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
+impl Operator for PropertyJoinOperator {
     fn schema(&self) -> &[VarId] {
         &self.output_schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         let span = tracing::info_span!(
             "property_join_open",
             predicates = self.predicates.len(),
@@ -498,7 +489,7 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
             // `ScanOperator` selects between binary cursor and range fallback
             // at open() time based on the execution context.
             let bounds = self.object_bounds.get(obj_var).cloned();
-            let mut scan: BoxedOperator<S> = make_property_join_scan::<S>(pattern, bounds);
+            let mut scan: BoxedOperator = make_property_join_scan(pattern, bounds);
             scan.open(ctx).await?;
 
             while let Some(batch) = scan.next_batch(ctx).await? {
@@ -570,7 +561,7 @@ impl<S: Storage + 'static> Operator<S> for PropertyJoinOperator {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }

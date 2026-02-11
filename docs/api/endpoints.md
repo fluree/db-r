@@ -46,7 +46,7 @@ Submit a transaction to write data to a ledger. Supports both JSON-LD and SPARQL
 
 **URL:**
 ```
-POST /transact?ledger={ledger-alias}&mode={mode}
+POST /transact?ledger={ledger-id}&mode={mode}
 POST /:ledger/transact
 ```
 
@@ -225,7 +225,7 @@ Insert new data into a ledger. Data must not conflict with existing data.
 
 **URL:**
 ```
-POST /insert?ledger={ledger-alias}
+POST /insert?ledger={ledger-id}
 POST /:ledger/insert
 POST /fluree/insert
 ```
@@ -260,7 +260,7 @@ Upsert data into a ledger. For each (subject, predicate) pair, existing values a
 
 **URL:**
 ```
-POST /upsert?ledger={ledger-alias}
+POST /upsert?ledger={ledger-id}
 POST /:ledger/upsert
 POST /fluree/upsert
 ```
@@ -478,14 +478,14 @@ curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
 
 These endpoints are intended for peer mode and `fluree clone`/`pull` workflows. They require the storage proxy to be enabled on the server and use replication-grade Bearer tokens (`fluree.storage.*` claims).
 
-### GET /storage/ns/:alias
+### GET /storage/ns/:ledger-id
 
 Fetch the nameservice record for a ledger.
 
 **URL:**
 
 ```
-GET /storage/ns/{ledger-alias}
+GET /storage/ns/{ledger-id}
 ```
 
 **Request Headers:**
@@ -568,7 +568,7 @@ This is a **replication-grade** endpoint for `fluree clone`/`pull` workflows. Th
 **URL:**
 
 ```
-GET /storage/objects/{cid}?ledger={ledger-alias}
+GET /storage/objects/{cid}?ledger={ledger-id}
 ```
 
 **Path Parameters:**
@@ -577,7 +577,7 @@ GET /storage/objects/{cid}?ledger={ledger-alias}
 
 **Query Parameters:**
 
-- `ledger` (required): Ledger alias (e.g., `"mydb:main"`). Required because storage paths are ledger-scoped.
+- `ledger` (required): Ledger ID (e.g., `"mydb:main"`). Required because storage paths are ledger-scoped.
 
 **Request Headers:**
 
@@ -1227,7 +1227,7 @@ Check if a ledger exists in the nameservice.
 
 **URL:**
 ```
-GET /fluree/exists?ledger={ledger-alias}
+GET /fluree/exists?ledger={ledger-id}
 ```
 
 **Query Parameters:**
@@ -1388,7 +1388,7 @@ Create or update a BM25 full-text search index.
 
 **URL:**
 ```
-POST /index/bm25?ledger={ledger-alias}
+POST /index/bm25?ledger={ledger-id}
 ```
 
 **Request Body:**
@@ -1421,7 +1421,7 @@ Create or configure a vector search index. Requires the `vector` feature flag.
 
 **URL:**
 ```
-POST /index/vector?ledger={ledger-alias}
+POST /index/vector?ledger={ledger-id}
 ```
 
 **Request Body:**
@@ -1444,7 +1444,7 @@ Trigger manual indexing for a ledger.
 
 **URL:**
 ```
-POST /admin/index?ledger={ledger-alias}
+POST /admin/index?ledger={ledger-id}
 ```
 
 **Response:**
@@ -1463,7 +1463,7 @@ Trigger compaction for a ledger (cleanup old indexes).
 
 **URL:**
 ```
-POST /admin/compact?ledger={ledger-alias}
+POST /admin/compact?ledger={ledger-id}
 ```
 
 ### GET /admin/stats

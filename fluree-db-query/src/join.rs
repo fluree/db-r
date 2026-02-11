@@ -14,7 +14,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::{ObjectBounds, Sid, Storage, BATCHED_JOIN_SIZE};
+use fluree_db_core::{ObjectBounds, Sid, BATCHED_JOIN_SIZE};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -25,12 +25,12 @@ use std::time::Instant;
 /// Uses `ScanOperator` which selects between `BinaryScanOperator` (streaming
 /// cursor) and `RangeScanOperator` (range fallback) at `open()` time based
 /// on the execution context.
-fn make_right_scan<S: Storage + 'static>(
+fn make_right_scan(
     pattern: TriplePattern,
     object_bounds: &Option<ObjectBounds>,
-    _ctx: &ExecutionContext<'_, S>,
-) -> Box<dyn Operator<S>> {
-    Box::new(crate::binary_scan::ScanOperator::<S>::new(
+    _ctx: &ExecutionContext<'_>,
+) -> Box<dyn Operator> {
+    Box::new(crate::binary_scan::ScanOperator::new(
         pattern,
         object_bounds.clone(),
     ))
@@ -124,9 +124,9 @@ fn is_batched_eligible(
 /// We assume shared vars are never `Unbound` from the left side (except via
 /// OPTIONAL which uses `Poisoned`). This is simpler than supporting "unbound
 /// shared-vars" semantics.
-pub struct NestedLoopJoinOperator<S: Storage + 'static> {
+pub struct NestedLoopJoinOperator {
     /// Left (driving) operator
-    left: Box<dyn Operator<S>>,
+    left: Box<dyn Operator>,
     /// Right pattern template (will be instantiated per left row)
     right_pattern: TriplePattern,
     /// Schema from left operator
@@ -170,7 +170,7 @@ pub struct NestedLoopJoinOperator<S: Storage + 'static> {
     current_left_batch_stored_idx: Option<usize>,
 }
 
-impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
+impl NestedLoopJoinOperator {
     /// Create a new bind-join operator
     ///
     /// # Arguments
@@ -180,7 +180,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     /// * `right_pattern` - Pattern to execute for each left row
     /// * `object_bounds` - Optional range bounds for object variable (filter pushdown)
     pub fn new(
-        left: Box<dyn Operator<S>>,
+        left: Box<dyn Operator>,
         left_schema: Arc<[VarId]>,
         right_pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
@@ -544,12 +544,12 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
+impl Operator for NestedLoopJoinOperator {
     fn schema(&self) -> &[VarId] {
         &self.combined_schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -570,7 +570,7 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);
@@ -738,7 +738,7 @@ impl<S: Storage + 'static> Operator<S> for NestedLoopJoinOperator<S> {
     }
 }
 
-impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
+impl NestedLoopJoinOperator {
     /// Resolve the left batch for a given `BatchRef`.
     fn resolve_left_batch<'a>(&'a self, batch_ref: &BatchRef) -> Option<&'a Batch> {
         match batch_ref {
@@ -748,7 +748,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     }
 
     /// Build output batch from pending results
-    async fn build_output_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn build_output_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         let batch_size = ctx.batch_size;
         let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
             .map(|_| Vec::with_capacity(batch_size))
@@ -830,7 +830,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     /// - Dataset mode with exactly one graph: uses that graph's db/overlay/to_t
     async fn flush_batched_accumulator_for_ctx(
         &mut self,
-        ctx: &ExecutionContext<'_, S>,
+        ctx: &ExecutionContext<'_>,
     ) -> Result<()> {
         if ctx.binary_store.is_none() {
             return Err(crate::error::QueryError::execution(
@@ -929,7 +929,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     #[allow(clippy::too_many_arguments)]
     fn scan_leaves_into_scatter(
         &self,
-        ctx: &ExecutionContext<'_, S>,
+        ctx: &ExecutionContext<'_>,
         store: &BinaryIndexStore,
         branch: &fluree_db_indexer::run_index::branch::BranchManifest,
         leaf_range: std::ops::Range<usize>,
@@ -1357,10 +1357,7 @@ impl<S: Storage + 'static> NestedLoopJoinOperator<S> {
     ///
     /// This avoids opening/decompressing leaflets once per subject, which can be
     /// catastrophically slow for large left batches.
-    async fn flush_batched_accumulator_binary(
-        &mut self,
-        ctx: &ExecutionContext<'_, S>,
-    ) -> Result<()> {
+    async fn flush_batched_accumulator_binary(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         use fluree_db_indexer::run_index::run_record::RunSortOrder;
 
         if self.batched_accumulator.is_empty() {
@@ -1531,7 +1528,7 @@ mod tests {
 
     #[test]
     fn test_has_poisoned_binding() {
-        use fluree_db_core::{FlakeValue, MemoryStorage};
+        use fluree_db_core::FlakeValue;
 
         // Create a simple operator setup
         let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
@@ -1544,20 +1541,20 @@ mod tests {
         // Create a mock operator
         struct MockOp;
         #[async_trait]
-        impl<S: fluree_db_core::Storage + 'static> Operator<S> for MockOp {
+        impl Operator for MockOp {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
-        let join = NestedLoopJoinOperator::<MemoryStorage>::new(
+        let join = NestedLoopJoinOperator::new(
             Box::new(MockOp),
             left_schema.clone(),
             right_pattern,
@@ -1613,10 +1610,10 @@ mod tests {
     async fn test_join_substituted_var_no_unification() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::{Db, FlakeValue, MemoryStorage};
+        use fluree_db_core::{Db, FlakeValue};
 
         // Minimal context (db is unused here; only batch_size matters).
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let mut vars = VarRegistry::new();
         let x = vars.get_or_insert("?x"); // VarId(0)
         let v = vars.get_or_insert("?v"); // VarId(1)
@@ -1631,20 +1628,20 @@ mod tests {
         // Mock left operator (unused; we inject batches directly into join state).
         struct MockOp;
         #[async_trait]
-        impl<S: fluree_db_core::Storage + 'static> Operator<S> for MockOp {
+        impl Operator for MockOp {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
-        let mut join = NestedLoopJoinOperator::<MemoryStorage>::new(
+        let mut join = NestedLoopJoinOperator::new(
             Box::new(MockOp),
             left_schema.clone(),
             right_pattern,
@@ -1714,9 +1711,9 @@ mod tests {
     async fn test_join_multiple_new_vars() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::{Db, FlakeValue, MemoryStorage};
+        use fluree_db_core::{Db, FlakeValue};
 
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let mut vars = VarRegistry::new();
         let s = vars.get_or_insert("?s"); // VarId(0)
         let x = vars.get_or_insert("?x"); // VarId(1)
@@ -1732,20 +1729,20 @@ mod tests {
 
         struct MockOp;
         #[async_trait]
-        impl<S: fluree_db_core::Storage + 'static> Operator<S> for MockOp {
+        impl Operator for MockOp {
             fn schema(&self) -> &[VarId] {
                 &[]
             }
-            async fn open(&mut self, _: &ExecutionContext<'_, S>) -> Result<()> {
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
                 Ok(())
             }
-            async fn next_batch(&mut self, _: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
                 Ok(None)
             }
             fn close(&mut self) {}
         }
 
-        let mut join = NestedLoopJoinOperator::<MemoryStorage>::new(
+        let mut join = NestedLoopJoinOperator::new(
             Box::new(MockOp),
             left_schema.clone(),
             right_pattern,
@@ -1802,7 +1799,7 @@ mod tests {
         use crate::var_registry::VarRegistry;
         use fluree_db_core::value_id::{ObjKey, ObjKind};
         use fluree_db_core::DatatypeDictId;
-        use fluree_db_core::{Db, MemoryStorage};
+        use fluree_db_core::Db;
         use fluree_db_indexer::run_index::dict_io::{
             write_language_dict, write_predicate_dict, write_subject_index,
         };
@@ -2074,9 +2071,9 @@ mod tests {
         ];
 
         let exec = ExecutableQuery::simple(pq.clone());
-        let operator = build_operator_tree::<MemoryStorage>(&pq, &exec.options, None).unwrap();
+        let operator = build_operator_tree(&pq, &exec.options, None).unwrap();
 
-        let db = Db::genesis(MemoryStorage::new(), "test:main");
+        let db = Db::genesis("test:main");
         let mut ctx = crate::context::ExecutionContext::new(&db, &vars).with_binary_store(store, 0);
         ctx.to_t = 1;
 

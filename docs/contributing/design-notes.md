@@ -206,7 +206,7 @@ This repo reserves `_id` for **content identifiers** (e.g. `commit_id`, `index_i
   - Examples: `commit_id`, `index_id`, `default_context_id`.
 - **`name`**: a base name without branch (e.g., `people`).
 - **`branch`**: the branch name (e.g., `main`).
-- **`alias`**: a human-friendly label, and only that.
+- **`alias`**: a human-friendly label, and only that. For ledger identifiers, prefer `ledger_id`.
 
 Practical guidelines:
 - If a string is used to load/cache/lookup a ledger, call it **`ledger_id`** (not `ledger_alias`, not `ledger_address`).

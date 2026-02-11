@@ -18,7 +18,7 @@ where
     ///
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
-    pub async fn ledger(&self, ledger_id: &str) -> Result<LedgerState<S>> {
+    pub async fn ledger(&self, ledger_id: &str) -> Result<LedgerState> {
         let mut state = LedgerState::load(
             &self.nameservice,
             ledger_id,
@@ -30,7 +30,7 @@ where
         // readable and loadable. This ensures `fluree.ledger()` always returns a
         // queryable, indexed Db after (re)indexing.
         //
-        // Note: we may already have a `Db.range_provider` (e.g. created during Db::load),
+        // Note: we may already have a `Db.range_provider` (e.g. attached after `load_db`),
         // but we still want `binary_store` so query execution can use `BinaryScanOperator`.
         if let Some(index_cid) = state
             .ns_record
@@ -96,7 +96,7 @@ where
         &self,
         ledger_id: &str,
         target_t: i64,
-    ) -> Result<HistoricalLedgerView<S>> {
+    ) -> Result<HistoricalLedgerView> {
         let view = HistoricalLedgerView::load_at(
             &self.nameservice,
             ledger_id,
@@ -142,7 +142,7 @@ where
     /// let ledger = fluree.create_ledger("mydb").await?;
     /// // Now you can transact: fluree.insert(ledger, &data).await?
     /// ```
-    pub async fn create_ledger(&self, ledger_id: &str) -> Result<LedgerState<S>> {
+    pub async fn create_ledger(&self, ledger_id: &str) -> Result<LedgerState> {
         use fluree_db_core::ledger_id::normalize_ledger_id;
         use fluree_db_novelty::Novelty;
         use tracing::info;
@@ -163,7 +163,7 @@ where
         }
 
         // 3. Create genesis Db with empty state at t=0
-        let db = fluree_db_core::Db::genesis(self.connection.storage().clone(), &ledger_id);
+        let db = fluree_db_core::Db::genesis(&ledger_id);
 
         // 4. Create LedgerState with empty Novelty (t=0)
         let ledger = LedgerState::new(db, Novelty::new(0));

@@ -9,15 +9,14 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 use std::sync::Arc;
 
 /// Limit operator - stops after emitting N rows
 ///
 /// Wraps a child operator and emits at most N rows total, even if the child produces more.
-pub struct LimitOperator<S: Storage + 'static> {
+pub struct LimitOperator {
     /// Child operator
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Maximum rows to emit
     limit: usize,
     /// Rows emitted so far
@@ -28,14 +27,14 @@ pub struct LimitOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> LimitOperator<S> {
+impl LimitOperator {
     /// Create a new limit operator
     ///
     /// # Arguments
     ///
     /// * `child` - The child operator to limit
     /// * `limit` - Maximum number of rows to emit
-    pub fn new(child: BoxedOperator<S>, limit: usize) -> Self {
+    pub fn new(child: BoxedOperator, limit: usize) -> Self {
         let schema = Arc::from(child.schema().to_vec().into_boxed_slice());
         Self {
             child,
@@ -58,12 +57,12 @@ impl<S: Storage + 'static> LimitOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for LimitOperator<S> {
+impl Operator for LimitOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(crate::error::QueryError::OperatorClosed);
@@ -77,7 +76,7 @@ impl<S: Storage + 'static> Operator<S> for LimitOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(crate::error::QueryError::OperatorNotOpened);
@@ -143,7 +142,7 @@ mod tests {
     use super::*;
     use crate::error::QueryError;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{Db, FlakeValue, Sid};
 
     /// Mock operator that emits predefined batches
     struct MockOperator {
@@ -169,18 +168,18 @@ mod tests {
     }
 
     #[async_trait]
-    impl<S: Storage + 'static> Operator<S> for MockOperator {
+    impl Operator for MockOperator {
         fn schema(&self) -> &[VarId] {
             &self.schema
         }
 
-        async fn open(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<()> {
+        async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
             self.idx = 0;
             self.state = OperatorState::Open;
             Ok(())
         }
 
-        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+        async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
             if self.state != OperatorState::Open {
                 return Ok(None);
             }
@@ -223,7 +222,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_exact_batch_size() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -245,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_smaller_than_batch() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -267,7 +266,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_larger_than_input() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -289,7 +288,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_zero() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -307,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_spans_batches() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -338,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_preserves_schema() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -363,20 +362,20 @@ mod tests {
         let mock = MockOperator::new(vec![batch]);
 
         // Limit less than estimated
-        let limit_op = LimitOperator::<MemoryStorage>::new(Box::new(mock), 10);
+        let limit_op = LimitOperator::new(Box::new(mock), 10);
         assert_eq!(limit_op.estimated_rows(), Some(10));
 
         // Limit more than estimated
         let schema2: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch2 = make_test_batch(schema2.clone(), 5);
         let mock2 = MockOperator::new(vec![batch2]);
-        let limit_op2 = LimitOperator::<MemoryStorage>::new(Box::new(mock2), 100);
+        let limit_op2 = LimitOperator::new(Box::new(mock2), 100);
         assert_eq!(limit_op2.estimated_rows(), Some(5));
     }
 
     #[tokio::test]
     async fn test_limit_state_transitions() {
-        let db = Db::genesis(MemoryStorage::new(), "test/main");
+        let db = Db::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 

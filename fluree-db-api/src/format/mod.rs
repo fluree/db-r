@@ -38,7 +38,7 @@ pub use config::{FormatterConfig, JsonLdRowShape, OutputFormat, SelectMode};
 pub use iri::IriCompactor;
 
 use crate::QueryResult;
-use fluree_db_core::{Db, Storage};
+use fluree_db_core::Db;
 use fluree_db_core::{FuelExceededError, Tracker};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::Value as JsonValue;
@@ -81,10 +81,10 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 /// # Returns
 ///
 /// A `serde_json::Value` containing the formatted results
-pub fn format_results<S: Storage>(
+pub fn format_results(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db<S>,
+    db: &Db,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
     let compactor = IriCompactor::new(db.namespaces(), context);
@@ -130,10 +130,10 @@ pub fn format_results<S: Storage>(
 /// Respects `config.pretty` for formatting.
 ///
 /// Note: For graph crawl queries, use `format_results_string_async()` instead.
-pub fn format_results_string<S: Storage>(
+pub fn format_results_string(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db<S>,
+    db: &Db,
     config: &FormatterConfig,
 ) -> Result<String> {
     let value = format_results(result, context, db, config)?;
@@ -172,10 +172,10 @@ pub fn format_results_string<S: Storage>(
 ///
 /// When `policy` is `Some`, graph crawl queries filter flakes according to view policies.
 /// When `policy` is `None`, no filtering is applied (zero overhead for the common case).
-pub async fn format_results_async<S: Storage>(
+pub async fn format_results_async(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db<S>,
+    db: &Db,
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
     tracker: Option<&Tracker>,
@@ -235,10 +235,10 @@ pub async fn format_results_async<S: Storage>(
 ///
 /// When `policy` is `Some`, graph crawl queries filter flakes according to view policies.
 /// When `policy` is `None`, no filtering is applied (zero overhead).
-pub async fn format_results_string_async<S: Storage>(
+pub async fn format_results_string_async(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db<S>,
+    db: &Db,
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
 ) -> Result<String> {

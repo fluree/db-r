@@ -17,7 +17,6 @@
 
 use fluree_db_core::Flake;
 use fluree_db_core::Sid;
-use fluree_db_core::Storage;
 use fluree_vocab::namespaces::RDF;
 use std::collections::HashSet;
 
@@ -1848,13 +1847,10 @@ pub struct ClassPropertyStatsResult {
 /// asserted in prior transactions (not in current novelty).
 ///
 /// Returns {subject_sid -> HashSet<class_sid>} mapping.
-pub async fn batch_lookup_subject_classes<S>(
-    db: &Db<S>,
+pub async fn batch_lookup_subject_classes(
+    db: &Db,
     subjects: &HashSet<Sid>,
-) -> crate::error::Result<std::collections::HashMap<Sid, HashSet<Sid>>>
-where
-    S: Storage,
-{
+) -> crate::error::Result<std::collections::HashMap<Sid, HashSet<Sid>>> {
     if subjects.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
@@ -1929,14 +1925,11 @@ where
 /// 4. Processes all novelty flakes to build class-property stats
 ///
 /// Returns class statistics ready for inclusion in db-root.
-pub async fn compute_class_property_stats_parallel<S>(
-    db: &Db<S>,
+pub async fn compute_class_property_stats_parallel(
+    db: &Db,
     prior_stats: Option<&fluree_db_core::IndexStats>,
     novelty_flakes: &[Flake],
-) -> crate::error::Result<ClassPropertyStatsResult>
-where
-    S: Storage,
-{
+) -> crate::error::Result<ClassPropertyStatsResult> {
     if novelty_flakes.is_empty() {
         // No novelty - preserve prior classes
         return Ok(ClassPropertyStatsResult {

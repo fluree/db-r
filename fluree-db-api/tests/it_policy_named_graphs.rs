@@ -17,7 +17,7 @@ async fn policy_applies_to_named_graph_queries() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "policy/named-graphs:main";
+    let ledger_id = "policy/named-graphs:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -28,7 +28,7 @@ async fn policy_applies_to_named_graph_queries() {
     local
         .run_until(async move {
             // Seed a named graph via TriG
-            let ledger0 = support::genesis_ledger(&fluree, alias);
+            let ledger0 = support::genesis_ledger(&fluree, ledger_id);
             let trig = r#"
                 @prefix ex: <http://example.org/ns/> .
                 @prefix schema: <http://schema.org/> .
@@ -49,13 +49,13 @@ async fn policy_applies_to_named_graph_queries() {
                 .await
                 .expect("seed trig");
 
-            let completion = handle.trigger(alias, out1.receipt.t).await;
+            let completion = handle.trigger(ledger_id, out1.receipt.t).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 other => panic!("indexing failed: {:?}", other),
             }
 
-            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Policy: deny schema:ssn but allow everything else.
             //
@@ -80,7 +80,7 @@ async fn policy_applies_to_named_graph_queries() {
             // Sanity: each named graph should be queryable without policy.
             let q_private_ssn_no_policy = json!({
                 "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/"},
-                "from": {"@id": alias, "graph": "http://example.org/graphs/private"},
+                "from": {"@id": ledger_id, "graph": "http://example.org/graphs/private"},
                 "select": ["?ssn"],
                 "where": {"@id":"ex:alice", "schema:ssn":"?ssn"}
             });
@@ -93,7 +93,7 @@ async fn policy_applies_to_named_graph_queries() {
 
             let q_public_name_no_policy = json!({
                 "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/"},
-                "from": {"@id": alias, "graph": "http://example.org/graphs/public"},
+                "from": {"@id": ledger_id, "graph": "http://example.org/graphs/public"},
                 "select": ["?name"],
                 "where": {"@id":"ex:alice", "schema:name":"?name"}
             });
@@ -107,7 +107,7 @@ async fn policy_applies_to_named_graph_queries() {
             // 1) Structured from: named graph + denied property
             let q_private_ssn = json!({
                 "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/", "f":"https://ns.flur.ee/db#"},
-                "from": {"@id": alias, "graph": "http://example.org/graphs/private"},
+                "from": {"@id": ledger_id, "graph": "http://example.org/graphs/private"},
                 "opts": {"policy": policy.clone(), "default-allow": true},
                 "select": ["?ssn"],
                 "where": {"@id":"ex:alice", "schema:ssn":"?ssn"}
@@ -127,7 +127,7 @@ async fn policy_applies_to_named_graph_queries() {
             // 2) Fragment from: public graph, allowed property
             let q_public_name = json!({
                 "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/", "f":"https://ns.flur.ee/db#"},
-                "from": format!("{alias}#http://example.org/graphs/public"),
+                "from": format!("{ledger_id}#http://example.org/graphs/public"),
                 "opts": {"policy": policy.clone(), "default-allow": true},
                 "select": ["?name"],
                 "where": {"@id":"ex:alice", "schema:name":"?name"}
@@ -143,7 +143,7 @@ async fn policy_applies_to_named_graph_queries() {
             // 3) Structured from: public graph still returns name with policy (sanity)
             let q_public_name_structured = json!({
                 "@context": {"ex": "http://example.org/ns/", "schema":"http://schema.org/", "f":"https://ns.flur.ee/db#"},
-                "from": {"@id": alias, "graph": "http://example.org/graphs/public"},
+                "from": {"@id": ledger_id, "graph": "http://example.org/graphs/public"},
                 "opts": {"policy": policy.clone(), "default-allow": true},
                 "select": ["?name"],
                 "where": {"@id":"ex:alice", "schema:name":"?name"}

@@ -47,8 +47,8 @@ fn ctx_schema_value() -> serde_json::Value {
     ])
 }
 
-async fn seed_authors_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_authors_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": ["https://schema.org", ctx_schema()],
         "@graph": [
@@ -63,8 +63,8 @@ async fn seed_authors_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger
         .ledger
 }
 
-async fn seed_books_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_books_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": ["https://schema.org", ctx_schema()],
         "@graph": [
@@ -79,8 +79,8 @@ async fn seed_books_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
         .ledger
 }
 
-async fn seed_movies_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_movies_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let insert = json!({
         "@context": ["https://schema.org", ctx_schema()],
         "@graph": [
@@ -96,8 +96,8 @@ async fn seed_movies_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger 
 }
 
 /// Seed a "people" ledger with person data
-async fn seed_people_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     let insert = json!({
         "@context": {
@@ -128,8 +128,8 @@ async fn seed_people_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger 
 }
 
 /// Seed an "organizations" ledger with organization data
-async fn seed_orgs_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_orgs_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     let insert = json!({
         "@context": {
@@ -158,8 +158,8 @@ async fn seed_orgs_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
 }
 
 /// Seed a second "people" ledger with different person data (for union tests)
-async fn seed_people2_ledger(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people2_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     let insert = json!({
         "@context": {

@@ -76,8 +76,8 @@ pub enum Commands {
     Insert {
         /// Positional args: [<ledger>] [<file>]
         /// With 0 args: active ledger + stdin/-e
-        /// With 1 arg: if file exists, active ledger + file; else ledger alias + stdin/-e
-        /// With 2 args: ledger alias + file
+        /// With 1 arg: if file exists, active ledger + file; else ledger name + stdin/-e
+        /// With 2 args: ledger name + file
         #[arg(num_args = 0..=2)]
         args: Vec<String>,
 

@@ -295,7 +295,7 @@ See [DynamoDB Nameservice Guide](dynamodb-guide.md) for:
 **Quick Reference:**
 ```text
 Table: fluree-nameservice
-Primary Key: pk (String, alias) + sk (String, concern)
+Primary Key: pk (String, ledger-id) + sk (String, concern)
 Sort Key Values: meta, head, index, config, status
 GSI1 (gsi1-kind): kind (HASH) + pk (RANGE)
 Items per ledger: 5 (meta, head, index, config, status)

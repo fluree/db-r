@@ -127,7 +127,7 @@ pub fn init_fluree_dir(global: bool) -> CliResult<PathBuf> {
     Ok(fluree_dir)
 }
 
-/// Read the currently active ledger alias from `.fluree/active`.
+/// Read the currently active ledger name from `.fluree/active`.
 pub fn read_active_ledger(fluree_dir: &Path) -> Option<String> {
     let path = fluree_dir.join(ACTIVE_FILE);
     fs::read_to_string(&path)
@@ -136,7 +136,7 @@ pub fn read_active_ledger(fluree_dir: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Write the active ledger alias to `.fluree/active`.
+/// Write the active ledger name to `.fluree/active`.
 pub fn write_active_ledger(fluree_dir: &Path, alias: &str) -> CliResult<()> {
     let path = fluree_dir.join(ACTIVE_FILE);
     fs::write(&path, alias).map_err(|e| {
@@ -550,7 +550,7 @@ impl TomlSyncConfigStore {
         self.read_sync_config().tracked_ledgers
     }
 
-    /// Get a tracked ledger by local alias.
+    /// Get a tracked ledger by local name.
     pub fn get_tracked(&self, local_alias: &str) -> Option<TrackedLedgerConfig> {
         self.read_sync_config()
             .tracked_ledgers
@@ -558,7 +558,7 @@ impl TomlSyncConfigStore {
             .find(|t| t.local_alias == local_alias)
     }
 
-    /// Add a tracked ledger. Replaces if the alias already exists.
+    /// Add a tracked ledger. Replaces if the name already exists.
     pub fn add_tracked(&self, tracked: TrackedLedgerConfig) -> CliResult<()> {
         let mut config = self.read_sync_config();
 
@@ -575,7 +575,7 @@ impl TomlSyncConfigStore {
         self.write_sync_config(&config)
     }
 
-    /// Remove a tracked ledger by local alias. Returns true if it existed.
+    /// Remove a tracked ledger by local name. Returns true if it existed.
     pub fn remove_tracked(&self, local_alias: &str) -> CliResult<bool> {
         let mut config = self.read_sync_config();
         let before = config.tracked_ledgers.len();

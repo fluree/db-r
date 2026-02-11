@@ -36,7 +36,7 @@
 //! };
 //!
 //! let conn = connect_aws(config).await?;
-//! let db = conn.load_db("mydb:main").await?; // does NS lookup, then Db::load
+//! let db = conn.load_db("mydb:main").await?; // does NS lookup, then `load_db`
 //! ```
 //!
 //! # Example with S3 storage-backed nameservice
@@ -542,7 +542,7 @@ impl AwsConnectionHandle {
     ///
     /// A `Db` instance backed by S3 storage, or an error if the ledger
     /// is not found or has no index.
-    pub async fn load_db(&self, ledger_id: &str) -> Result<Db<S3Storage>> {
+    pub async fn load_db(&self, ledger_id: &str) -> Result<Db> {
         let record = self
             .nameservice
             .lookup(ledger_id)
@@ -564,7 +564,7 @@ impl AwsConnectionHandle {
         })?;
 
         let storage = self.index_storage.clone();
-        Ok(Db::load(storage, &index_id, ledger_id).await?)
+        Ok(fluree_db_core::load_db(&storage, &index_id, ledger_id).await?)
     }
 
     /// Look up a ledger record by ledger ID
@@ -633,7 +633,7 @@ impl AwsConnectionHandle {
 /// };
 ///
 /// let conn = connect_aws(config).await?;
-/// let db = conn.load_db("mydb").await?; // does NS lookup, then Db::load
+/// let db = conn.load_db("mydb").await?; // does NS lookup, then `load_db`
 /// ```
 ///
 /// # Example with S3 storage-backed nameservice

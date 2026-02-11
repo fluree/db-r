@@ -152,7 +152,7 @@ Optional commit message (if provided):
 
 ### Ledger
 
-Ledger alias:
+Ledger ID:
 
 ```json
 {

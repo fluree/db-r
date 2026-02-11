@@ -26,22 +26,22 @@ If you do not implement discovery, users must configure the CLI remote URL to al
 ### `fluree fetch` (nameservice refs only)
 
 - `GET {api_base_url}/nameservice/snapshot`
-- `POST {api_base_url}/nameservice/refs/:alias/commit`
-- `POST {api_base_url}/nameservice/refs/:alias/index`
-- `POST {api_base_url}/nameservice/refs/:alias/init`
+- `POST {api_base_url}/nameservice/refs/:ledger-id/commit`
+- `POST {api_base_url}/nameservice/refs/:ledger-id/index`
+- `POST {api_base_url}/nameservice/refs/:ledger-id/init`
 
 ### `fluree clone`, `fluree pull` (pack-first replication)
 
 Required:
 
 - `GET {api_base_url}/info/*ledger` (existence + remote `t` preflight; see `/info` minimum fields below)
-- `GET {api_base_url}/storage/ns/:alias` (remote NsRecord, includes `commit_head_id` and optional `config_id`)
+- `GET {api_base_url}/storage/ns/:ledger-id` (remote NsRecord, includes `commit_head_id` and optional `config_id`)
 - `POST {api_base_url}/pack/*ledger` (binary `fluree-pack-v1` stream)
 
 Fallbacks (strongly recommended):
 
 - `GET {api_base_url}/commits/*ledger` (paginated export of commit + txn blobs)
-- `GET {api_base_url}/storage/objects/:cid?ledger=:alias` (per-object fetch by CID)
+- `GET {api_base_url}/storage/objects/:cid?ledger=:ledger-id` (per-object fetch by CID)
 
 ### `fluree push` (commit ingestion)
 
@@ -88,9 +88,9 @@ Clients verify integrity:
 
 These endpoints exist so a client can fetch bytes by CID without knowing storage layout:
 
-- `GET {api_base_url}/storage/ns/:alias` returns `NsRecord` JSON with CID identity fields:
+- `GET {api_base_url}/storage/ns/:ledger-id` returns `NsRecord` JSON with CID identity fields:
   - `commit_head_id`, `commit_t`, `index_head_id`, `index_t`, optional `config_id`
-- `GET {api_base_url}/storage/objects/:cid?ledger=:alias` returns raw bytes for the CID after verifying integrity.
+- `GET {api_base_url}/storage/objects/:cid?ledger=:ledger-id` returns raw bytes for the CID after verifying integrity.
 
 `/storage/block` is only required for query peers that need server-mediated index-leaf access.
 
@@ -107,7 +107,7 @@ Other fields are optional and may be used only for display.
 
 The CLI can do origin-based `clone --origin` and `pull` fallback without a named remote by fetching objects via:
 
-- `GET {api_base_url}/storage/objects/:cid?ledger=:alias`
+- `GET {api_base_url}/storage/objects/:cid?ledger=:ledger-id`
 
 If your nameservice advertises `config_id` on the NsRecord, the CLI will attempt to fetch that `LedgerConfig` blob (by CID) and then use it to try additional origins.
 

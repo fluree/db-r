@@ -142,13 +142,13 @@ impl CommitOpts {
 ///
 /// A tuple of (CommitReceipt, new LedgerState)
 pub async fn commit<S, N>(
-    view: LedgerView<S>,
+    view: LedgerView,
     mut ns_registry: NamespaceRegistry,
     storage: &S,
     nameservice: &N,
     index_config: &IndexConfig,
     opts: CommitOpts,
-) -> Result<(CommitReceipt, LedgerState<S>)>
+) -> Result<(CommitReceipt, LedgerState)>
 where
     S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher,
@@ -422,13 +422,10 @@ fn populate_dict_novelty(dict_novelty: &mut DictNovelty, flakes: &[Flake]) {
 }
 
 /// Verify that this commit follows the expected sequence
-fn verify_sequencing<S>(
-    base: &LedgerState<S>,
+fn verify_sequencing(
+    base: &LedgerState,
     current: Option<&fluree_db_nameservice::NsRecord>,
-) -> Result<()>
-where
-    S: Storage + Clone + 'static,
-{
+) -> Result<()> {
     match current {
         None => {
             // Genesis case: no record exists yet
@@ -501,7 +498,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_simple_insert() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -543,7 +540,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_empty_transaction() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -574,7 +571,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_sequence() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -640,7 +637,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_predictive_sizing() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 

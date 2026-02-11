@@ -23,10 +23,10 @@ async fn file_storage_jsonld_insert_then_query_roundtrip() {
 
     support::assert_index_defaults();
 
-    let alias = "rust-port/jsonld-insert-query:main";
+    let ledger_id = "rust-port/jsonld-insert-query:main";
 
     // Create a brand-new ledger state (genesis).
-    let db = Db::genesis(fluree.storage().clone(), alias);
+    let db = Db::genesis(ledger_id);
     let ledger0 = LedgerState::new(db, Novelty::new(0));
 
     // Insert JSON-LD data.
@@ -77,7 +77,7 @@ async fn file_storage_jsonld_insert_then_query_roundtrip() {
         .expect("format to jsonld");
 
     // Reload ledger from file-backed nameservice+storage and re-run query
-    let loaded = fluree.ledger(alias).await.expect("reload ledger");
+    let loaded = fluree.ledger(ledger_id).await.expect("reload ledger");
     assert_eq!(loaded.t(), 1);
 
     let result1 = fluree

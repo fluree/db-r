@@ -103,7 +103,7 @@ Unauthorized requests return **404** (no existence leak).
 
 ### Endpoints
 
-#### `GET /fluree/storage/ns/{alias}`
+#### `GET /fluree/storage/ns/{ledger-id}`
 
 Fetch a nameservice record for a ledger ID. Requires storage proxy authorization for that ledger.
 

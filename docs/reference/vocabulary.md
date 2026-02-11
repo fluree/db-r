@@ -27,7 +27,7 @@ These predicates appear on commit subjects in the txn-meta graph. Each commit pr
 | Predicate | Full IRI | Datatype | Description |
 |-----------|----------|----------|-------------|
 | `f:address` | `https://ns.flur.ee/db#address` | `xsd:string` | Commit ContentId (CID string) |
-| `f:alias` | `https://ns.flur.ee/db#alias` | `xsd:string` | Ledger alias (e.g. `mydb:main`) |
+| `f:alias` | `https://ns.flur.ee/db#alias` | `xsd:string` | Ledger ID (e.g. `mydb:main`) |
 | `f:v` | `https://ns.flur.ee/db#v` | `xsd:int` | Commit format version |
 | `f:time` | `https://ns.flur.ee/db#time` | `xsd:long` | Commit timestamp (epoch milliseconds) |
 | `f:t` | `https://ns.flur.ee/db#t` | `xsd:int` | Transaction number (watermark) |

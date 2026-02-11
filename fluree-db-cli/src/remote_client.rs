@@ -113,25 +113,15 @@ impl RemoteLedgerClient {
     ///
     /// `base_url` is the Fluree API base (e.g., `http://localhost:8090/fluree`
     /// or `https://example.com/v1/fluree`). Trailing slashes are stripped.
-    ///
-    /// For backwards compatibility with older configs that stored the server
-    /// root, this method appends `/fluree` if it is missing.
     pub fn new(base_url: &str, auth_token: Option<String>) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .expect("Failed to build HTTP client");
 
-        let trimmed = base_url.trim_end_matches('/');
-        let normalized = if trimmed.ends_with("/fluree") {
-            trimmed.to_string()
-        } else {
-            format!("{}/fluree", trimmed)
-        };
-
         Self {
             client,
-            base_url: normalized,
+            base_url: base_url.trim_end_matches('/').to_string(),
             token: Arc::new(Mutex::new(auth_token)),
             refresh_config: None,
             refreshed: Arc::new(Mutex::new(None)),
@@ -827,7 +817,7 @@ mod tests {
 
     #[test]
     fn test_client_strips_trailing_slash() {
-        let client = RemoteLedgerClient::new("http://localhost:8090/", None);
+        let client = RemoteLedgerClient::new("http://localhost:8090/fluree/", None);
         assert_eq!(client.base_url, "http://localhost:8090/fluree");
     }
 

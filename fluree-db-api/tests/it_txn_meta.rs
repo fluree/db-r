@@ -24,7 +24,7 @@ async fn test_jsonld_txn_meta_basic() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/txn-meta-basic:main";
+    let ledger_id = "it/txn-meta-basic:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -34,7 +34,7 @@ async fn test_jsonld_txn_meta_basic() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Envelope-form with top-level metadata
             let tx = json!({
@@ -54,11 +54,11 @@ async fn test_jsonld_txn_meta_basic() {
             assert_eq!(result.receipt.t, 1);
 
             // Trigger indexing and wait
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query the txn-meta graph using query_connection which properly handles #txn-meta
             let query = json!({
-                "from": format!("{}#txn-meta", alias),
+                "from": format!("{}#txn-meta", ledger_id),
                 "select": ["?p", "?o"],
                 "where": {
                     "@id": "?s",
@@ -70,7 +70,7 @@ async fn test_jsonld_txn_meta_basic() {
             let results = fluree.query_connection(&query).await.expect("query");
 
             // Get ledger for to_jsonld
-            let ledger = fluree.ledger(alias).await.expect("load indexed ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load indexed ledger");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
 
             // Should have results including our txn metadata
@@ -108,7 +108,7 @@ async fn test_jsonld_single_object_no_meta() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/txn-meta-single-obj:main";
+    let ledger_id = "it/txn-meta-single-obj:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -118,7 +118,7 @@ async fn test_jsonld_single_object_no_meta() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Single-object form - all properties are DATA, not metadata
             let tx = json!({
@@ -132,13 +132,13 @@ async fn test_jsonld_single_object_no_meta() {
             assert_eq!(result.receipt.t, 1);
 
             // Trigger indexing
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query the default graph - should have the data
             // Include @context to properly expand the prefixes
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
-                "from": alias,
+                "from": ledger_id,
                 "select": ["?name", "?machine"],
                 "where": {
                     "@id": "ex:alice",
@@ -148,7 +148,7 @@ async fn test_jsonld_single_object_no_meta() {
             });
 
             let results = fluree.query_connection(&query).await.expect("query");
-            let ledger = fluree.ledger(alias).await.expect("load");
+            let ledger = fluree.ledger(ledger_id).await.expect("load");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find data in default graph");
@@ -156,7 +156,7 @@ async fn test_jsonld_single_object_no_meta() {
             // txn-meta graph should NOT have user's "machine" property
             // (only built-in commit metadata)
             let meta_query = json!({
-                "from": format!("{}#txn-meta", alias),
+                "from": format!("{}#txn-meta", ledger_id),
                 "select": ["?o"],
                 "where": {
                     "@id": "?s",
@@ -184,7 +184,7 @@ async fn test_jsonld_txn_meta_all_value_types() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/txn-meta-types:main";
+    let ledger_id = "it/txn-meta-types:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -194,7 +194,7 @@ async fn test_jsonld_txn_meta_all_value_types() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             let tx = json!({
                 "@context": {
@@ -221,17 +221,17 @@ async fn test_jsonld_txn_meta_all_value_types() {
             let result = fluree.insert(ledger, &tx).await.expect("insert");
 
             // Trigger indexing
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query txn-meta for each value type
             let query = json!({
-                "from": format!("{}#txn-meta", alias),
+                "from": format!("{}#txn-meta", ledger_id),
                 "select": ["?p", "?o"],
                 "where": {"@id": "?s", "?p": "?o"}
             });
 
             let results = fluree.query_connection(&query).await.expect("query");
-            let ledger = fluree.ledger(alias).await.expect("load");
+            let ledger = fluree.ledger(ledger_id).await.expect("load");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
@@ -308,9 +308,9 @@ async fn test_jsonld_txn_meta_reject_nested_object() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/txn-meta-nested:main";
+    let ledger_id = "it/txn-meta-nested:main";
 
-    let ledger = genesis_ledger(&fluree, alias);
+    let ledger = genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": {"ex": "http://example.org/"},
@@ -337,9 +337,9 @@ async fn test_jsonld_txn_meta_reject_null() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/txn-meta-null:main";
+    let ledger_id = "it/txn-meta-null:main";
 
-    let ledger = genesis_ledger(&fluree, alias);
+    let ledger = genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": {"ex": "http://example.org/"},
@@ -367,7 +367,7 @@ async fn test_txn_meta_queryable_after_indexing() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/txn-meta-builtin:main";
+    let ledger_id = "it/txn-meta-builtin:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -377,7 +377,7 @@ async fn test_txn_meta_queryable_after_indexing() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Use same pattern as working test
             let tx = json!({
@@ -395,17 +395,17 @@ async fn test_txn_meta_queryable_after_indexing() {
             let result = fluree.insert(ledger, &tx).await.expect("insert");
             assert_eq!(result.receipt.t, 1);
 
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query for all properties in txn-meta (same pattern as working test)
             let query = json!({
-                "from": format!("{}#txn-meta", alias),
+                "from": format!("{}#txn-meta", ledger_id),
                 "select": ["?p", "?o"],
                 "where": {"@id": "?s", "?p": "?o"}
             });
 
             let results = fluree.query_connection(&query).await.expect("query");
-            let ledger = fluree.ledger(alias).await.expect("load");
+            let ledger = fluree.ledger(ledger_id).await.expect("load");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
@@ -443,7 +443,7 @@ async fn test_trig_txn_meta_basic() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/trig-txn-meta-basic:main";
+    let ledger_id = "it/trig-txn-meta-basic:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -453,7 +453,7 @@ async fn test_trig_txn_meta_basic() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // TriG format with GRAPH block for txn-meta
             // Note: We use upsert_turtle via the builder because insert_turtle has
@@ -482,11 +482,11 @@ async fn test_trig_txn_meta_basic() {
             assert_eq!(result.receipt.t, 1);
 
             // Trigger indexing and wait
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query the txn-meta graph
             let query = json!({
-                "from": format!("{}#txn-meta", alias),
+                "from": format!("{}#txn-meta", ledger_id),
                 "select": ["?p", "?o"],
                 "where": {
                     "@id": "?s",
@@ -495,7 +495,7 @@ async fn test_trig_txn_meta_basic() {
             });
 
             let results = fluree.query_connection(&query).await.expect("query");
-            let ledger = fluree.ledger(alias).await.expect("load indexed ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load indexed ledger");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("results should be array");
 
@@ -531,7 +531,7 @@ async fn test_trig_no_graph_passthrough() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/trig-no-graph:main";
+    let ledger_id = "it/trig-no-graph:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -541,7 +541,7 @@ async fn test_trig_no_graph_passthrough() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Plain Turtle without GRAPH block
             let turtle = r#"
@@ -557,12 +557,12 @@ async fn test_trig_no_graph_passthrough() {
             assert_eq!(result.receipt.t, 1);
 
             // Trigger indexing
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query default graph - should have data
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
-                "from": alias,
+                "from": ledger_id,
                 "select": ["?name"],
                 "where": {
                     "@id": "ex:bob",
@@ -571,7 +571,7 @@ async fn test_trig_no_graph_passthrough() {
             });
 
             let results = fluree.query_connection(&query).await.expect("query");
-            let ledger = fluree.ledger(alias).await.expect("load");
+            let ledger = fluree.ledger(ledger_id).await.expect("load");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find data in default graph");
@@ -590,7 +590,7 @@ async fn test_txn_meta_multiple_commits() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/txn-meta-multi-commit:main";
+    let ledger_id = "it/txn-meta-multi-commit:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -600,7 +600,7 @@ async fn test_txn_meta_multiple_commits() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // First commit: metadata with "batch-1"
             let tx1 = json!({
@@ -618,10 +618,13 @@ async fn test_txn_meta_multiple_commits() {
             assert_eq!(result1.receipt.t, 1);
 
             // Index first commit
-            trigger_index_and_wait(&handle, alias, result1.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result1.receipt.t).await;
 
             // Second commit: metadata with "batch-2"
-            let ledger2 = fluree.ledger(alias).await.expect("load ledger after t=1");
+            let ledger2 = fluree
+                .ledger(ledger_id)
+                .await
+                .expect("load ledger after t=1");
             let tx2 = json!({
                 "@context": {
                     "ex": "http://example.org/",
@@ -637,11 +640,11 @@ async fn test_txn_meta_multiple_commits() {
             assert_eq!(result2.receipt.t, 2);
 
             // Index second commit
-            trigger_index_and_wait(&handle, alias, result2.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result2.receipt.t).await;
 
             // Query latest txn-meta: should have both batch-1 and batch-2
             let query = json!({
-                "from": format!("{}#txn-meta", alias),
+                "from": format!("{}#txn-meta", ledger_id),
                 "select": ["?o"],
                 "where": {
                     "@id": "?s",
@@ -650,7 +653,7 @@ async fn test_txn_meta_multiple_commits() {
             });
 
             let results = fluree.query_connection(&query).await.expect("query");
-            let ledger = fluree.ledger(alias).await.expect("load");
+            let ledger = fluree.ledger(ledger_id).await.expect("load");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
@@ -690,7 +693,7 @@ async fn test_txn_meta_time_travel_syntax() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/txn-meta-time-travel:main";
+    let ledger_id = "it/txn-meta-time-travel:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -700,7 +703,7 @@ async fn test_txn_meta_time_travel_syntax() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Commit with metadata
             let tx = json!({
@@ -718,12 +721,12 @@ async fn test_txn_meta_time_travel_syntax() {
             assert_eq!(result.receipt.t, 1);
 
             // Index the commit
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query using @t:1#txn-meta syntax - this should NOT error
             // (Previously failed with "Named graph queries require binary index store")
             let query = json!({
-                "from": format!("{}@t:1#txn-meta", alias),
+                "from": format!("{}@t:1#txn-meta", ledger_id),
                 "select": ["?o"],
                 "where": {
                     "@id": "?s",
@@ -735,7 +738,7 @@ async fn test_txn_meta_time_travel_syntax() {
                 .query_connection(&query)
                 .await
                 .expect("query at t=1 should not error");
-            let ledger = fluree.ledger(alias).await.expect("load");
+            let ledger = fluree.ledger(ledger_id).await.expect("load");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
@@ -768,7 +771,7 @@ async fn test_sparql_graph_pattern_txn_meta() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/sparql-graph-txn-meta:main";
+    let ledger_id = "it/sparql-graph-txn-meta:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -778,7 +781,7 @@ async fn test_sparql_graph_pattern_txn_meta() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Commit with metadata
             let tx = json!({
@@ -797,12 +800,12 @@ async fn test_sparql_graph_pattern_txn_meta() {
             assert_eq!(result.receipt.t, 1);
 
             // Index the commit
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Build dataset spec with txn-meta as a named graph
-            let txn_meta_graph = format!("{}#txn-meta", alias);
+            let txn_meta_graph = format!("{}#txn-meta", ledger_id);
             let spec = DatasetSpec::new()
-                .with_default(GraphSource::new(alias))
+                .with_default(GraphSource::new(ledger_id))
                 .with_named(GraphSource::new(&txn_meta_graph));
 
             let dataset = fluree
@@ -859,7 +862,7 @@ async fn test_txn_meta_time_travel_filtering() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/txn-meta-time-travel-filtering:main";
+    let ledger_id = "it/txn-meta-time-travel-filtering:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -869,7 +872,7 @@ async fn test_txn_meta_time_travel_filtering() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // First commit with batch-1
             let tx1 = json!({
@@ -887,10 +890,13 @@ async fn test_txn_meta_time_travel_filtering() {
             assert_eq!(result1.receipt.t, 1);
 
             // Index first commit
-            trigger_index_and_wait(&handle, alias, result1.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result1.receipt.t).await;
 
             // Second commit with batch-2
-            let ledger2 = fluree.ledger(alias).await.expect("load ledger after t=1");
+            let ledger2 = fluree
+                .ledger(ledger_id)
+                .await
+                .expect("load ledger after t=1");
             let tx2 = json!({
                 "@context": {
                     "ex": "http://example.org/",
@@ -906,11 +912,11 @@ async fn test_txn_meta_time_travel_filtering() {
             assert_eq!(result2.receipt.t, 2);
 
             // Index second commit
-            trigger_index_and_wait(&handle, alias, result2.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result2.receipt.t).await;
 
             // Query at t=1: should only see batch-1
             let view_t1 = fluree
-                .view_at_t(&format!("{}#txn-meta", alias), 1)
+                .view_at_t(&format!("{}#txn-meta", ledger_id), 1)
                 .await
                 .expect("view at t=1");
 
@@ -951,7 +957,7 @@ async fn test_txn_meta_time_travel_filtering() {
 
             // Query at t=2: should see both batch-1 and batch-2
             let view_t2 = fluree
-                .view_at_t(&format!("{}#txn-meta", alias), 2)
+                .view_at_t(&format!("{}#txn-meta", ledger_id), 2)
                 .await
                 .expect("view at t=2");
             let query_t2 = json!({

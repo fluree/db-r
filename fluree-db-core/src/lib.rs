@@ -20,7 +20,7 @@
 //! use fluree_db_core::{Db, range, IndexType, RangeTest};
 //!
 //! // Apps provide their own Storage implementation
-//! let db = Db::load(storage, &root_id, "ledger/main").await?;
+//! let db = load_db(&storage, &root_id, "ledger/main").await?;
 //! let flakes = range(&db, IndexType::Spot, RangeTest::Eq, match_val, opts).await?;
 //! ```
 
@@ -75,7 +75,7 @@ pub use content_kind::{
     CODEC_FLUREE_TXN,
 };
 pub use datatypes::dt_compatible;
-pub use db::{Db, DbMetadata};
+pub use db::{load_db, Db, DbMetadata};
 pub use dict_novelty::DictNovelty;
 pub use error::{Error, Result};
 pub use flake::{Flake, FlakeMeta};

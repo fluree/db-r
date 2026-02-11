@@ -714,9 +714,9 @@ async fn insert_data_then_query_names() {
     use fluree_db_core::Db;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/transact-insert:basic";
+    let ledger_id = "it/transact-insert:basic";
 
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
+    let db0 = Db::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let inserted = fluree
@@ -753,9 +753,9 @@ async fn insert_invalid_type_literal_errors() {
     use fluree_db_core::Db;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/transact-insert:invalid-type";
+    let ledger_id = "it/transact-insert:invalid-type";
 
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
+    let db0 = Db::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let txn = json!({
@@ -799,9 +799,9 @@ async fn retract_property_removes_only_that_property() {
     use fluree_db_core::Db;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/transact-retraction:prop";
+    let ledger_id = "it/transact-retraction:prop";
 
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
+    let db0 = Db::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let seeded = fluree
@@ -861,9 +861,9 @@ async fn retracting_ordered_lists_removes_list_values() {
     use fluree_db_core::Db;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/transact-retraction:list";
+    let ledger_id = "it/transact-retraction:list";
 
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
+    let db0 = Db::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let ctx = json!({

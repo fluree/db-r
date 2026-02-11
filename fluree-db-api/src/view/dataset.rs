@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::view::FlureeView;
-use crate::{OverlayProvider, Storage};
+use crate::OverlayProvider;
 
 /// A dataset view composed of multiple `FlureeView`s.
 ///
@@ -30,11 +30,11 @@ use crate::{OverlayProvider, Storage};
 /// let result = fluree.query_dataset_view(&dataset, sparql_query).await?;
 /// ```
 #[derive(Clone)]
-pub struct FlureeDataSetView<S: Storage + 'static> {
+pub struct FlureeDataSetView {
     /// Default graph views (merged for queries without GRAPH clause)
-    pub default: Vec<FlureeView<S>>,
+    pub default: Vec<FlureeView>,
     /// Named graph views (accessed via GRAPH clause)
-    pub named: HashMap<Arc<str>, FlureeView<S>>,
+    pub named: HashMap<Arc<str>, FlureeView>,
     /// Deterministic named graph insertion order (for primary selection).
     ///
     /// We keep this because `HashMap` does not preserve insertion order, but
@@ -48,7 +48,7 @@ pub struct FlureeDataSetView<S: Storage + 'static> {
     pub history_range: Option<(i64, i64)>,
 }
 
-impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
+impl FlureeDataSetView {
     /// Create an empty dataset view.
     pub fn new() -> Self {
         Self {
@@ -60,7 +60,7 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
     }
 
     /// Create a dataset view with a single default graph.
-    pub fn single(view: FlureeView<S>) -> Self {
+    pub fn single(view: FlureeView) -> Self {
         Self {
             default: vec![view],
             named: HashMap::new(),
@@ -70,13 +70,13 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
     }
 
     /// Add a view to the default graph.
-    pub fn with_default(mut self, view: FlureeView<S>) -> Self {
+    pub fn with_default(mut self, view: FlureeView) -> Self {
         self.default.push(view);
         self
     }
 
     /// Add a view as a named graph.
-    pub fn with_named(mut self, name: impl Into<Arc<str>>, view: FlureeView<S>) -> Self {
+    pub fn with_named(mut self, name: impl Into<Arc<str>>, view: FlureeView) -> Self {
         let key: Arc<str> = name.into();
         if !self.named.contains_key(&key) {
             self.named_order.push(Arc::clone(&key));
@@ -102,7 +102,7 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
     }
 
     /// Add multiple views to the default graph.
-    pub fn with_defaults(mut self, views: impl IntoIterator<Item = FlureeView<S>>) -> Self {
+    pub fn with_defaults(mut self, views: impl IntoIterator<Item = FlureeView>) -> Self {
         self.default.extend(views);
         self
     }
@@ -114,11 +114,11 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
 
     /// Get a "primary" graph view for parsing/formatting.
     ///
-    /// Mirrors the legacy `LoadedDataset` primary selection behavior:
+    /// Primary selection behavior:
     /// - first default if present
     /// - else first named (in insertion order)
     /// - else None
-    pub fn primary(&self) -> Option<&FlureeView<S>> {
+    pub fn primary(&self) -> Option<&FlureeView> {
         if let Some(v) = self.default.first() {
             return Some(v);
         }
@@ -127,7 +127,7 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
     }
 
     /// Get the "primary" graph view, mutably.
-    pub fn primary_mut(&mut self) -> Option<&mut FlureeView<S>> {
+    pub fn primary_mut(&mut self) -> Option<&mut FlureeView> {
         if let Some(v) = self.default.first_mut() {
             return Some(v);
         }
@@ -136,7 +136,7 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
     }
 
     /// Get a named graph by IRI.
-    pub fn get_named(&self, name: &str) -> Option<&FlureeView<S>> {
+    pub fn get_named(&self, name: &str) -> Option<&FlureeView> {
         self.named.get(name)
     }
 
@@ -153,7 +153,7 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
     ///
     /// This is the internal bridge to the query engine. Each graph keeps its own
     /// `to_t` (per-view), and policy enforcement is carried via `GraphRef::policy_enforcer`.
-    pub(crate) fn as_runtime_dataset<'a>(&'a self) -> fluree_db_query::DataSet<'a, S> {
+    pub(crate) fn as_runtime_dataset<'a>(&'a self) -> fluree_db_query::DataSet<'a> {
         let mut ds = fluree_db_query::DataSet::new();
 
         for view in &self.default {
@@ -221,7 +221,7 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
     /// Unwrap a single-ledger dataset into its view.
     ///
     /// Returns `None` if this is a multi-ledger dataset.
-    pub fn into_single(mut self) -> Option<FlureeView<S>> {
+    pub fn into_single(mut self) -> Option<FlureeView> {
         if self.is_single_ledger() {
             self.default.pop()
         } else {
@@ -230,13 +230,13 @@ impl<S: Storage + Clone + 'static> FlureeDataSetView<S> {
     }
 }
 
-impl<S: Storage + Clone + 'static> Default for FlureeDataSetView<S> {
+impl Default for FlureeDataSetView {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: Storage + Clone + 'static> std::fmt::Debug for FlureeDataSetView<S> {
+impl std::fmt::Debug for FlureeDataSetView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeDataSetView")
             .field("default_count", &self.default.len())

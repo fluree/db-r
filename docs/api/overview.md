@@ -102,14 +102,14 @@ Response format determined by `Accept` header:
 - Parameters: None
 - Returns: Array of ledger metadata
 
-**GET /ledgers/:alias**
+**GET /ledgers/:ledger-id**
 - Get specific ledger metadata
-- Parameters: `alias` (ledger:branch)
+- Parameters: `ledger-id` (ledger:branch)
 - Returns: Ledger details (commit_t, index_t, etc.)
 
 **POST /ledgers**
 - Create a new ledger explicitly
-- Parameters: `alias`, `config`
+- Parameters: `ledger-id`, `config`
 - Returns: Ledger metadata
 - Note: The HTTP server also supports implicit creation on first transaction; the Rust library API requires explicit `create_ledger` before transacting
 

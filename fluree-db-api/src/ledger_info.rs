@@ -104,25 +104,21 @@ pub type Result<T> = std::result::Result<T, LedgerInfoError>;
 ///
 /// The nameservice section uses standard JSON-LD keywords.
 /// The stats section has IRIs optionally compacted via the provided context.
-pub async fn build_ledger_info<S>(
-    ledger: &LedgerState<S>,
+pub async fn build_ledger_info<S: Storage + Clone>(
+    ledger: &LedgerState,
+    storage: &S,
     context: Option<&JsonValue>,
-) -> Result<JsonValue>
-where
-    S: Storage + Clone + 'static,
-{
-    build_ledger_info_with_options(ledger, context, LedgerInfoOptions::default()).await
+) -> Result<JsonValue> {
+    build_ledger_info_with_options(ledger, storage, context, LedgerInfoOptions::default()).await
 }
 
 /// Build comprehensive ledger metadata, with optional extra/real-time stats.
-pub async fn build_ledger_info_with_options<S>(
-    ledger: &LedgerState<S>,
+pub async fn build_ledger_info_with_options<S: Storage + Clone>(
+    ledger: &LedgerState,
+    storage: &S,
     context: Option<&JsonValue>,
     options: LedgerInfoOptions,
-) -> Result<JsonValue>
-where
-    S: Storage + Clone + 'static,
-{
+) -> Result<JsonValue> {
     // Build the IRI compactor for stats decoding
     let parsed_context = context
         .map(|c| ParsedContext::parse(None, c).unwrap_or_default())
@@ -165,7 +161,7 @@ where
             .unwrap_or_else(|_| ledger.db.ledger_id.replace(':', "/"));
         let manifest_addr_primary =
             format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
-        if let Ok(bytes) = ledger.db.storage.read_bytes(&manifest_addr_primary).await {
+        if let Ok(bytes) = storage.read_bytes(&manifest_addr_primary).await {
             match parse_pre_index_manifest(&bytes) {
                 Ok(graphs) => {
                     tracing::debug!(graphs = graphs.len(), "loaded pre-index stats manifest");
@@ -183,7 +179,7 @@ where
 
     // 1. Commit section (ALWAYS include, even if None - for Clojure parity)
     if let Some(head_cid) = &ledger.head_commit_id {
-        match build_commit_jsonld(&ledger.db.storage, head_cid, &ledger.db.ledger_id).await {
+        match build_commit_jsonld(storage, head_cid, &ledger.db.ledger_id).await {
             Ok(commit_json) => {
                 result.insert("commit".to_string(), commit_json);
             }
@@ -311,8 +307,8 @@ fn merge_property_datatypes_from_novelty(stats: &mut IndexStats, novelty: &Novel
 /// - This is intentionally *on-demand*; it can be more expensive than the base payload.
 /// - This currently accounts for **ref assertions/retractions in novelty**. It does not
 ///   attempt to reattribute *indexed* ref edges when only rdf:type changes in novelty.
-async fn merge_class_ref_edges_from_novelty<S: Storage>(
-    db: &Db<S>,
+async fn merge_class_ref_edges_from_novelty(
+    db: &Db,
     novelty: &Novelty,
     to_t: i64,
     stats: &mut IndexStats,
@@ -624,16 +620,13 @@ pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
 }
 
 /// Build stats section with decoded IRIs and hierarchy fields.
-fn build_stats<S>(
-    ledger: &LedgerState<S>,
+fn build_stats(
+    ledger: &LedgerState,
     stats: &IndexStats,
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
     options: LedgerInfoOptions,
-) -> Result<JsonValue>
-where
-    S: Storage + Clone + 'static,
-{
+) -> Result<JsonValue> {
     // CANONICAL RULE for indexed_t:
     // 1. Use ns_record.index_t if ns_record exists (even if 0 when no index yet)
     // 2. Fall back to db.t if no ns_record
@@ -1070,7 +1063,7 @@ where
         let ledger = self.fluree.ledger(&self.ledger_id).await?;
 
         // Build and return the ledger info
-        build_ledger_info_with_options(&ledger, self.context, self.options)
+        build_ledger_info_with_options(&ledger, self.fluree.storage(), self.context, self.options)
             .await
             .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))
     }

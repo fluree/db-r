@@ -10,7 +10,7 @@ use fluree_db_core::{Db, MemoryStorage, Storage};
 /// A Fluree database connection
 ///
 /// Holds the configuration and storage backend for loading databases.
-/// Generic over the storage type, following the same pattern as `Db`.
+/// Generic over the storage type.
 #[derive(Debug)]
 pub struct Connection<S> {
     config: ConnectionConfig,
@@ -39,8 +39,8 @@ impl<S: Storage + Clone> Connection<S> {
     ///
     /// The `root_id` identifies the index root by its content hash.
     /// The `ledger_id` is needed to derive the storage address.
-    pub async fn load_db(&self, root_id: &ContentId, ledger_id: &str) -> Result<Db<S>> {
-        Ok(Db::load(self.storage.clone(), root_id, ledger_id).await?)
+    pub async fn load_db(&self, root_id: &ContentId, ledger_id: &str) -> Result<Db> {
+        Ok(fluree_db_core::load_db(&self.storage, root_id, ledger_id).await?)
     }
 }
 
@@ -57,13 +57,9 @@ impl FileConnection {
     ///
     /// Creates a new storage instance for the returned Db. For shared storage,
     /// use `load_db` instead.
-    pub async fn load_db_fresh_cache(
-        &self,
-        root_id: &ContentId,
-        ledger_id: &str,
-    ) -> Result<Db<FileStorage>> {
+    pub async fn load_db_fresh_cache(&self, root_id: &ContentId, ledger_id: &str) -> Result<Db> {
         let storage = FileStorage::new(self.storage.base_path());
-        Ok(Db::load(storage, root_id, ledger_id).await?)
+        Ok(fluree_db_core::load_db(&storage, root_id, ledger_id).await?)
     }
 }
 
@@ -71,7 +67,7 @@ impl FileConnection {
 // cannot be meaningfully cloned (it contains data). Users of MemoryConnection should
 // either:
 // 1. Use Arc<MemoryStorage> with a custom Connection type
-// 2. Pass the same storage instance to Db::load directly
+// 2. Call `fluree_db_core::load_db(&storage, root_id, ledger_id)` directly
 // 3. Use a shared storage abstraction (future work)
 
 #[cfg(test)]

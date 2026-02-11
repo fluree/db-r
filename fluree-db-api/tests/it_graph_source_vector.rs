@@ -23,8 +23,8 @@ async fn vector_create_index_indexes_docs_and_is_loadable() {
 
     // Seed a small ledger with embeddings (3-dimensional for simplicity)
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication of array elements
-    let alias = "vector/docs:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/docs:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
@@ -55,7 +55,7 @@ async fn vector_create_index_indexes_docs_and_is_loadable() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("vector-search", alias, query, "ex:embedding", 3);
+    let cfg = VectorCreateConfig::new("vector-search", ledger_id, query, "ex:embedding", 3);
     let created = fluree.create_vector_index(cfg).await.unwrap();
     assert!(
         created.vector_count > 0,
@@ -81,8 +81,8 @@ async fn vector_search_returns_scored_results() {
     // doc1 and doc2 are similar (both have high first component)
     // doc3 is different (high third component)
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
-    let alias = "vector/search:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/search:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
@@ -118,7 +118,7 @@ async fn vector_search_returns_scored_results() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("search-test", alias, query, "ex:embedding", 3)
+    let cfg = VectorCreateConfig::new("search-test", ledger_id, query, "ex:embedding", 3)
         .with_metric(DistanceMetric::Cosine);
     let created = fluree.create_vector_index(cfg).await.unwrap();
     assert_eq!(created.vector_count, 3);
@@ -160,8 +160,8 @@ async fn vector_sync_indexes_new_documents() {
 
     // Create initial ledger with one doc
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
-    let alias = "vector/sync:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/sync:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx1 = json!({
         "@context": {
             "ex":"http://example.org/",
@@ -185,7 +185,7 @@ async fn vector_sync_indexes_new_documents() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("sync-test", alias, query, "ex:embedding", 3);
+    let cfg = VectorCreateConfig::new("sync-test", ledger_id, query, "ex:embedding", 3);
     let created = fluree.create_vector_index(cfg).await.unwrap();
     assert_eq!(created.vector_count, 1, "expected 1 vector initially");
 
@@ -248,8 +248,8 @@ async fn vector_sync_updates_head_snapshot() {
 
     // Create ledger with initial doc
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
-    let alias = "vector/headonly:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/headonly:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx1 = json!({
         "@context": {
             "ex":"http://example.org/",
@@ -273,7 +273,7 @@ async fn vector_sync_updates_head_snapshot() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("headonly-test", alias, query, "ex:embedding", 3);
+    let cfg = VectorCreateConfig::new("headonly-test", ledger_id, query, "ex:embedding", 3);
     let created = fluree.create_vector_index(cfg).await.unwrap();
     assert_eq!(created.vector_count, 1);
     assert_eq!(created.index_t, t1);
@@ -324,8 +324,8 @@ async fn vector_drop_index_marks_as_retracted() {
 
     // Create a minimal index
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
-    let alias = "vector/drop:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/drop:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
@@ -347,7 +347,7 @@ async fn vector_drop_index_marks_as_retracted() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("drop-test", alias, query, "ex:embedding", 3);
+    let cfg = VectorCreateConfig::new("drop-test", ledger_id, query, "ex:embedding", 3);
     let created = fluree.create_vector_index(cfg).await.unwrap();
 
     // Drop the index
@@ -376,8 +376,8 @@ async fn vector_skips_documents_without_embeddings() {
 
     // Create ledger with some docs having embeddings and some without
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
-    let alias = "vector/skip:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/skip:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
@@ -413,7 +413,7 @@ async fn vector_skips_documents_without_embeddings() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("skip-test", alias, query, "ex:embedding", 3);
+    let cfg = VectorCreateConfig::new("skip-test", ledger_id, query, "ex:embedding", 3);
     let created = fluree.create_vector_index(cfg).await.unwrap();
 
     // Should have 2 vectors (doc1 and doc3), skipped 1 (doc2)
@@ -427,8 +427,8 @@ async fn vector_supports_different_metrics() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
-    let alias = "vector/metrics:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/metrics:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
@@ -456,7 +456,7 @@ async fn vector_supports_different_metrics() {
     });
 
     // Test with Dot product metric
-    let cfg = VectorCreateConfig::new("metrics-dot", alias, query.clone(), "ex:embedding", 3)
+    let cfg = VectorCreateConfig::new("metrics-dot", ledger_id, query.clone(), "ex:embedding", 3)
         .with_metric(DistanceMetric::Dot);
     let created = fluree.create_vector_index(cfg).await.unwrap();
     assert_eq!(created.vector_count, 2);
@@ -468,9 +468,14 @@ async fn vector_supports_different_metrics() {
     assert_eq!(idx.metadata.metric, DistanceMetric::Dot);
 
     // Test with Euclidean metric
-    let cfg2 =
-        VectorCreateConfig::new("metrics-euclidean", alias, query.clone(), "ex:embedding", 3)
-            .with_metric(DistanceMetric::Euclidean);
+    let cfg2 = VectorCreateConfig::new(
+        "metrics-euclidean",
+        ledger_id,
+        query.clone(),
+        "ex:embedding",
+        3,
+    )
+    .with_metric(DistanceMetric::Euclidean);
     let created2 = fluree.create_vector_index(cfg2).await.unwrap();
     assert_eq!(created2.vector_count, 2);
 
@@ -490,8 +495,8 @@ async fn vector_provider_integration() {
 
     // Create ledger with vectors
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
-    let alias = "vector/provider:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/provider:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
@@ -519,7 +524,7 @@ async fn vector_provider_integration() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("provider-test", alias, query, "ex:embedding", 3);
+    let cfg = VectorCreateConfig::new("provider-test", ledger_id, query, "ex:embedding", 3);
     let created = fluree.create_vector_index(cfg).await.unwrap();
 
     // Use FlureeIndexProvider to search
@@ -552,8 +557,8 @@ async fn vector_collection_exists() {
 
     // Create a ledger and index
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
-    let alias = "vector/exists:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/exists:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": {
             "ex":"http://example.org/",
@@ -575,7 +580,7 @@ async fn vector_collection_exists() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("exists-test", alias, query, "ex:embedding", 3);
+    let cfg = VectorCreateConfig::new("exists-test", ledger_id, query, "ex:embedding", 3);
     let created = fluree.create_vector_index(cfg).await.unwrap();
 
     let provider = FlureeIndexProvider::new(&fluree);
@@ -618,8 +623,8 @@ async fn vector_idx_query_syntax_e2e() {
 
     // Create ledger with vector embeddings
     // NOTE: Embeddings must use @type: @vector to avoid RDF deduplication
-    let alias = "vector/query-e2e:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "vector/query-e2e:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": {
             "ex": "http://example.org/",
@@ -655,7 +660,13 @@ async fn vector_idx_query_syntax_e2e() {
         "select": { "?x": ["@id", "ex:embedding"] }
     });
 
-    let cfg = VectorCreateConfig::new("query-e2e-idx", alias, indexing_query, "ex:embedding", 3);
+    let cfg = VectorCreateConfig::new(
+        "query-e2e-idx",
+        ledger_id,
+        indexing_query,
+        "ex:embedding",
+        3,
+    );
     let created = fluree.create_vector_index(cfg).await.unwrap();
     assert_eq!(created.vector_count, 3, "expected 3 vectors indexed");
 
@@ -663,7 +674,7 @@ async fn vector_idx_query_syntax_e2e() {
     // Query for vectors similar to [0.85, 0.1, 0.05] - should match doc1 and doc3 best
     let search_query = json!({
         "@context": { "ex": "http://example.org/", "f": "https://ns.flur.ee/db#" },
-        "from": alias,
+        "from": ledger_id,
         "where": [
             {
                 "f:graphSource": created.graph_source_id,

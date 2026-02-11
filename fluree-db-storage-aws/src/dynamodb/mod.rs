@@ -518,7 +518,10 @@ impl NameService for DynamoDbNameService {
 
 #[async_trait]
 impl Publisher for DynamoDbNameService {
-    async fn publish_ledger_init(&self, ledger_id: &str) -> std::result::Result<(), NameServiceError> {
+    async fn publish_ledger_init(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<(), NameServiceError> {
         let pk = Self::normalize(ledger_id);
         let (ledger_name, branch) = split_ledger_id(ledger_id)
             .unwrap_or_else(|_| (ledger_id.to_string(), DEFAULT_BRANCH.to_string()));
@@ -974,7 +977,8 @@ impl RefPublisher for DynamoDbNameService {
                 return Ok(CasResult::Conflict { actual: current });
             }
             // Ledger ID is truly unknown — create via init with the ref pre-set.
-            self.create_ledger_with_ref(&pk, ledger_id, kind, new).await?;
+            self.create_ledger_with_ref(&pk, ledger_id, kind, new)
+                .await?;
             return Ok(CasResult::Updated);
         };
 
@@ -1480,20 +1484,20 @@ impl StatusPublisher for DynamoDbNameService {
 
     async fn push_status(
         &self,
-        alias: &str,
+        ledger_id: &str,
         expected: Option<&StatusValue>,
         new: &StatusValue,
     ) -> std::result::Result<StatusCasResult, NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(ledger_id);
         let now = Self::now_epoch_ms().to_string();
 
         let Some(exp) = expected else {
-            let current = self.get_status(alias).await?;
+            let current = self.get_status(ledger_id).await?;
             return Ok(StatusCasResult::Conflict { actual: current });
         };
 
         if new.v <= exp.v {
-            let current = self.get_status(alias).await?;
+            let current = self.get_status(ledger_id).await?;
             return Ok(StatusCasResult::Conflict { actual: current });
         }
 
@@ -1536,7 +1540,7 @@ impl StatusPublisher for DynamoDbNameService {
         match result {
             Ok(_) => Ok(StatusCasResult::Updated),
             Err(e) if Self::is_conditional_check_failed(&e) => {
-                let current = self.get_status(alias).await?;
+                let current = self.get_status(ledger_id).await?;
                 Ok(StatusCasResult::Conflict { actual: current })
             }
             Err(e) => Err(NameServiceError::storage(format!(
@@ -1550,16 +1554,16 @@ impl StatusPublisher for DynamoDbNameService {
 //
 // ConfigPublisher handles ledger configs (ConfigPayload with default_context +
 // extra). Graph-source config lives under GraphSourcePublisher as raw
-// config_json. Calling get_config/push_config on a graph-source alias returns
+// config_json. Calling get_config/push_config on a graph-source ledger_id returns
 // None / Conflict to prevent cross-contamination of the config_v watermark.
 
 #[async_trait]
 impl ConfigPublisher for DynamoDbNameService {
     async fn get_config(
         &self,
-        alias: &str,
+        ledger_id: &str,
     ) -> std::result::Result<Option<ConfigValue>, NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(ledger_id);
 
         // Gate: only ledger configs — graph sources use GraphSourcePublisher.
         match self.meta_kind(&pk).await? {
@@ -1617,11 +1621,11 @@ impl ConfigPublisher for DynamoDbNameService {
 
     async fn push_config(
         &self,
-        alias: &str,
+        ledger_id: &str,
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> std::result::Result<ConfigCasResult, NameServiceError> {
-        let pk = Self::normalize(alias);
+        let pk = Self::normalize(ledger_id);
         let now = Self::now_epoch_ms().to_string();
 
         // Gate: only ledger configs.
@@ -1634,12 +1638,12 @@ impl ConfigPublisher for DynamoDbNameService {
         }
 
         let Some(exp) = expected else {
-            let current = self.get_config(alias).await?;
+            let current = self.get_config(ledger_id).await?;
             return Ok(ConfigCasResult::Conflict { actual: current });
         };
 
         if new.v <= exp.v {
-            let current = self.get_config(alias).await?;
+            let current = self.get_config(ledger_id).await?;
             return Ok(ConfigCasResult::Conflict { actual: current });
         }
 
@@ -1714,7 +1718,7 @@ impl ConfigPublisher for DynamoDbNameService {
         match result {
             Ok(_) => Ok(ConfigCasResult::Updated),
             Err(e) if Self::is_conditional_check_failed(&e) => {
-                let current = self.get_config(alias).await?;
+                let current = self.get_config(ledger_id).await?;
                 Ok(ConfigCasResult::Conflict { actual: current })
             }
             Err(e) => Err(NameServiceError::storage(format!(

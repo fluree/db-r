@@ -241,7 +241,7 @@ where
     /// Each result object will have an `@id` field identifying the document.
     pub(crate) async fn execute_vector_indexing_query(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> Result<Vec<JsonValue>> {
         // Parse the query

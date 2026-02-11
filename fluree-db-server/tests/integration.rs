@@ -131,7 +131,7 @@ async fn create_ledger_then_ledger_info() {
         "Create should return 201 Created"
     );
     assert_eq!(
-        json.get("ledger").and_then(|v| v.as_str()),
+        json.get("ledger_id").and_then(|v| v.as_str()),
         Some("test:main")
     );
     // Empty ledger has t=0
@@ -160,7 +160,7 @@ async fn create_ledger_then_ledger_info() {
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        json.get("ledger").and_then(|v| v.as_str()),
+        json.get("ledger_id").and_then(|v| v.as_str()),
         Some("test:main")
     );
     // New ledger has no commits yet
@@ -211,7 +211,7 @@ async fn insert_then_query_finds_value() {
     assert_eq!(status, StatusCode::OK);
     // Verify Clojure-compatible response format
     assert_eq!(
-        json.get("ledger").and_then(|v| v.as_str()),
+        json.get("ledger_id").and_then(|v| v.as_str()),
         Some("test:main")
     );
     assert!(json.get("t").and_then(|v| v.as_i64()).unwrap_or(0) >= 1);
@@ -619,7 +619,7 @@ async fn transact_endpoint_accepts_jsonld_transactions() {
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        json.get("ledger").and_then(|v| v.as_str()),
+        json.get("ledger_id").and_then(|v| v.as_str()),
         Some("test:update")
     );
     assert!(json.get("t").and_then(|v| v.as_i64()).unwrap_or(0) >= 1);
@@ -689,7 +689,7 @@ async fn ledger_scoped_insert_upsert_history() {
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        json.get("ledger").and_then(|v| v.as_str()),
+        json.get("ledger_id").and_then(|v| v.as_str()),
         Some("scoped:test")
     );
     assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(1));

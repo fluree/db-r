@@ -15,9 +15,9 @@ use serde_json::json;
 #[tokio::test]
 async fn commit_id_has_valid_sha256_format() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/hash-format:main";
+    let ledger_id = "it/hash-format:main";
 
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": {
@@ -66,9 +66,9 @@ async fn commit_id_has_valid_sha256_format() {
 #[tokio::test]
 async fn sequential_commits_produce_unique_hashes() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/unique-hashes:main";
+    let ledger_id = "it/unique-hashes:main";
 
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
 
     let tx1 = json!({
         "@context": {"ex": "http://example.org/ns/"},
@@ -114,9 +114,9 @@ async fn sequential_commits_produce_unique_hashes() {
 #[tokio::test]
 async fn commit_id_consistent_within_session() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/consistent-id:main";
+    let ledger_id = "it/consistent-id:main";
 
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": {"ex": "http://example.org/ns/"},
@@ -127,7 +127,7 @@ async fn commit_id_consistent_within_session() {
     let commit_id = result.receipt.commit_id.clone();
 
     // Reload the ledger from the same Fluree instance
-    let reloaded = fluree.ledger(alias).await.expect("reload ledger");
+    let reloaded = fluree.ledger(ledger_id).await.expect("reload ledger");
 
     // The head commit CID should match what we got from the transaction
     assert_eq!(

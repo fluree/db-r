@@ -315,7 +315,7 @@ ConditionExpression: config_v = :expected_v
 - `CommitHead` uses strict monotonic guard: `new.t > current.t`
 - `IndexHead` allows same-watermark overwrite: `new.t >= current.t` (reindex at same `t`)
 
-When a caller attempts `compare_and_set_ref(expected=None)` on an unknown alias, the DynamoDB backend bootstraps the ledger by creating all 5 ledger concern items via `TransactWriteItems` and pre-setting the target ref to the requested value.
+When a caller attempts `compare_and_set_ref(expected=None)` on an unknown ledger ID, the DynamoDB backend bootstraps the ledger by creating all 5 ledger concern items via `TransactWriteItems` and pre-setting the target ref to the requested value.
 
 **Retract:**
 ```
@@ -337,7 +337,7 @@ The DynamoDB nameservice implements all seven nameservice traits:
 
 | Trait | Description |
 |-------|-------------|
-| `NameService` | Lookup, alias resolution, list all records |
+| `NameService` | Lookup, ledger ID resolution, list all records |
 | `Publisher` | Initialize ledgers, publish commits/indexes, retract |
 | `AdminPublisher` | Admin index publishing (allows equal-t overwrites) |
 | `RefPublisher` | Compare-and-set on commit/index refs |
@@ -659,7 +659,7 @@ aws dynamodb create-backup \
 
 **Symptoms**: Publish operations fail with "not found" or storage errors
 
-**Cause**: Attempting to `publish_commit` or `publish_index` on an alias that was never initialized with `publish_ledger_init`.
+**Cause**: Attempting to `publish_commit` or `publish_index` on a ledger ID that was never initialized with `publish_ledger_init`.
 
 **Solution**: Ensure ledger initialization happens before any publish operations. This is normally handled automatically by the Fluree transaction pipeline.
 

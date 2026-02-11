@@ -17,7 +17,7 @@ fluree info [LEDGER]
 ## Description
 
 Displays detailed information about a ledger including:
-- Ledger alias and ID
+- Ledger ID and details
 - Current transaction number (t)
 - Branch information
 - Commit details

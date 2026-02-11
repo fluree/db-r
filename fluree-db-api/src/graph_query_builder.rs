@@ -170,7 +170,7 @@ where
             .fluree
             .load_view_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await
-            .map_err(|e| TrackedErrorResponse::from_error(404, e.to_string(), None))?;
+            .map_err(|e| TrackedErrorResponse::new(404, e.to_string(), None))?;
         let input = self.core.input.unwrap();
         self.graph.fluree.query_view_tracked(&view, input).await
     }
@@ -192,7 +192,7 @@ where
 /// ```
 pub struct GraphSnapshotQueryBuilder<'a, 'v, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    view: &'v FlureeView<S>,
+    view: &'v FlureeView,
     core: QueryCore<'v>,
 }
 
@@ -202,7 +202,7 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder from a fluree reference and a view.
-    pub(crate) fn new_from_parts(fluree: &'a Fluree<S, N>, view: &'v FlureeView<S>) -> Self {
+    pub(crate) fn new_from_parts(fluree: &'a Fluree<S, N>, view: &'v FlureeView) -> Self {
         Self {
             fluree,
             view,

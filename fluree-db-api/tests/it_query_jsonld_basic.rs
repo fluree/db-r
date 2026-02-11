@@ -23,9 +23,9 @@ fn ctx() -> JsonValue {
 
 async fn seed_movie_graph() -> (MemoryFluree, MemoryLedger) {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/jsonld-basic:movie";
+    let ledger_id = "it/jsonld-basic:movie";
 
-    let ledger0 = genesis_ledger(&fluree, alias);
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
 
     // Minimal “movie -> book -> author” shape to exercise graph crawl + depth.
     let tx = json!({
@@ -102,8 +102,8 @@ fn normalize_object_arrays(value: &mut JsonValue) {
 
 async fn seed_simple_subject_crawl() -> (MemoryFluree, MemoryLedger) {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/jsonld-basic:ssc";
-    let ledger0 = genesis_ledger(&fluree, alias);
+    let ledger_id = "it/jsonld-basic:ssc";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": ctx(),
@@ -350,9 +350,9 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
     // Mirrors `query-with-faux-compact-iri`:
     // subjects can have ids that look compact ("foaf:bar") without being real IRIs.
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/jsonld-basic:faux-compact";
+    let ledger_id = "it/jsonld-basic:faux-compact";
 
-    let ledger0 = genesis_ledger(&fluree, alias);
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": ctx(),
@@ -363,7 +363,7 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
     });
 
     let _committed = fluree.insert(ledger0, &tx).await.expect("insert faux ids");
-    let loaded = fluree.ledger(alias).await.expect("reload ledger");
+    let loaded = fluree.ledger(ledger_id).await.expect("reload ledger");
 
     // Analytical SELECT (order not guaranteed; normalize)
     let q1 = json!({
@@ -474,8 +474,8 @@ async fn jsonld_rdf_type_query_analytical() {
 #[tokio::test]
 async fn jsonld_list_order_preservation_context_container() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/jsonld-basic:list-container";
-    let ledger0 = genesis_ledger(&fluree, alias);
+    let ledger_id = "it/jsonld-basic:list-container";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": {
@@ -518,8 +518,8 @@ async fn jsonld_list_order_preservation_context_container() {
 #[tokio::test]
 async fn jsonld_list_order_preservation_explicit_list() {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/jsonld-basic:list-explicit";
-    let ledger0 = genesis_ledger(&fluree, alias);
+    let ledger_id = "it/jsonld-basic:list-explicit";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
 
     let tx = json!({
         "@context": {

@@ -158,8 +158,11 @@ async fn s3_testcontainers_basic_test() {
     let fluree = build_fluree(storage.clone(), nameservice.clone());
 
     // Create ledger + insert data + query
-    let alias = "testcontainers-test:main";
-    let ledger0 = fluree.create_ledger(alias).await.expect("create ledger");
+    let ledger_id = "testcontainers-test:main";
+    let ledger0 = fluree
+        .create_ledger(ledger_id)
+        .await
+        .expect("create ledger");
 
     let tx = json!({
         "@context": [support::default_context(), {"ex": "http://example.org/ns/"}],
@@ -188,7 +191,7 @@ async fn s3_testcontainers_basic_test() {
 
     // Reload from a "fresh connection" (new cache) and re-query
     let fluree2 = build_fluree(storage.clone(), nameservice.clone());
-    let reloaded = fluree2.ledger(alias).await.expect("ledger reload");
+    let reloaded = fluree2.ledger(ledger_id).await.expect("ledger reload");
     let reload_results = fluree2
         .query(&reloaded, &q)
         .await
@@ -275,8 +278,11 @@ async fn s3_testcontainers_indexing_test() {
 
     local
         .run_until(async move {
-            let alias = "indexing-test:main";
-            let ledger0 = fluree.create_ledger(alias).await.expect("create ledger");
+            let ledger_id = "indexing-test:main";
+            let ledger0 = fluree
+                .create_ledger(ledger_id)
+                .await
+                .expect("create ledger");
 
             // Insert enough data to justify indexing and force indexing_needed=true.
             let tx = json!({

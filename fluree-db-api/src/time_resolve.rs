@@ -15,7 +15,6 @@ use std::collections::HashSet;
 
 use chrono::{TimeZone, Utc};
 use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::storage::Storage;
 use fluree_db_core::{
     range_bounded_with_overlay, range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds,
     RangeMatch, RangeOptions, RangeTest, Sid,
@@ -58,14 +57,13 @@ fn epoch_ms_to_iso(epoch_ms: i64) -> String {
 /// # Errors
 ///
 /// Returns an error if the target timestamp is before the earliest commit.
-pub async fn datetime_to_t<S, O>(
-    db: &Db<S>,
+pub async fn datetime_to_t<O>(
+    db: &Db,
     overlay: Option<&O>,
     target_epoch_ms: i64,
     current_t: i64,
 ) -> Result<i64>
 where
-    S: Storage,
     O: OverlayProvider + ?Sized,
 {
     tracing::debug!(
@@ -206,14 +204,13 @@ where
 /// - If prefix is too short (< 6 chars) or too long (> 64 chars)
 /// - If no commit matches the prefix
 /// - If multiple commits match (ambiguous prefix)
-pub async fn commit_to_t<S, O>(
-    db: &Db<S>,
+pub async fn commit_to_t<O>(
+    db: &Db,
     overlay: Option<&O>,
     commit_prefix: &str,
     current_t: i64,
 ) -> Result<i64>
 where
-    S: Storage,
     O: OverlayProvider + ?Sized,
 {
     // Step 1: Normalize the commit prefix

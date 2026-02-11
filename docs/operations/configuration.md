@@ -188,7 +188,7 @@ Protect query/write endpoints (including `/:ledger/query`, `/:ledger/insert`, `/
 | `--data-auth-default-policy-class` | `FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS` | None |
 
 Modes:
-- `none`: No authentication (default / backwards compatible)
+- `none`: No authentication (default)
 - `optional`: Accept tokens but don't require them (development only)
 - `required`: Require either a valid Bearer token **or** a signed request (JWS/VC)
 
@@ -310,8 +310,8 @@ Configure what the peer subscribes to:
 | Flag | Description |
 |------|-------------|
 | `--peer-subscribe-all` | Subscribe to all ledgers and graph sources |
-| `--peer-ledger <alias>` | Subscribe to specific ledger (repeatable) |
-| `--peer-graph-source <alias>` | Subscribe to specific graph source (repeatable) |
+| `--peer-ledger <ledger-id>` | Subscribe to specific ledger (repeatable) |
+| `--peer-graph-source <ledger-id>` | Subscribe to specific graph source (repeatable) |
 
 ```bash
 fluree-server \

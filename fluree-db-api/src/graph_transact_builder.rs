@@ -264,8 +264,8 @@ where
 /// ```
 pub struct StagedGraph<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    staged: Staged<S>,
-    staged_view: FlureeView<S>,
+    staged: Staged,
+    staged_view: FlureeView,
 }
 
 impl<'a, S, N> StagedGraph<'a, S, N>
@@ -285,7 +285,7 @@ where
     }
 
     /// Access the underlying [`Staged`] transaction.
-    pub fn staged(&self) -> &Staged<S> {
+    pub fn staged(&self) -> &Staged {
         &self.staged
     }
 

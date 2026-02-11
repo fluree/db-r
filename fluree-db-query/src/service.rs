@@ -29,7 +29,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{format_ledger_id, split_ledger_id, FlakeValue, Storage};
+use fluree_db_core::{format_ledger_id, split_ledger_id, FlakeValue};
 use std::sync::Arc;
 
 /// Fluree ledger SERVICE endpoint prefix
@@ -39,9 +39,9 @@ const FLUREE_LEDGER_PREFIX: &str = "fluree:ledger:";
 ///
 /// This is a correlated operator: for each input row, it executes the inner
 /// patterns against the appropriate ledger (determined by the endpoint).
-pub struct ServiceOperator<S: Storage + 'static> {
+pub struct ServiceOperator {
     /// Child operator providing input solutions
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// SERVICE pattern (silent, endpoint, inner patterns)
     service: ServicePattern,
     /// Well-known datatypes for binding endpoint variable as xsd:string
@@ -56,14 +56,14 @@ pub struct ServiceOperator<S: Storage + 'static> {
     buffer_pos: usize,
 }
 
-impl<S: Storage + 'static> ServiceOperator<S> {
+impl ServiceOperator {
     /// Create a new SERVICE pattern operator
     ///
     /// # Arguments
     ///
     /// * `child` - Input solutions operator
     /// * `service` - The SERVICE pattern (silent, endpoint, patterns)
-    pub fn new(child: BoxedOperator<S>, service: ServicePattern) -> Self {
+    pub fn new(child: BoxedOperator, service: ServicePattern) -> Self {
         // Compute output schema: parent schema + new vars from inner patterns
         let parent_schema: std::collections::HashSet<VarId> =
             child.schema().iter().copied().collect();
@@ -141,7 +141,7 @@ impl<S: Storage + 'static> ServiceOperator<S> {
     /// that matches how datasets store ledger_id (e.g., "orders:main").
     async fn execute_against_ledger(
         &mut self,
-        ctx: &ExecutionContext<'_, S>,
+        ctx: &ExecutionContext<'_>,
         parent_batch: &Batch,
         row_idx: usize,
         full_ledger_ref: &str,
@@ -170,12 +170,12 @@ impl<S: Storage + 'static> ServiceOperator<S> {
         // Build seed operator from parent row (like EXISTS/Subquery)
         let seed = SeedOperator::from_batch_row(parent_batch, row_idx);
         let mut inner =
-            build_where_operators_seeded::<S>(Some(Box::new(seed)), &self.service.patterns, None)?;
+            build_where_operators_seeded(Some(Box::new(seed)), &self.service.patterns, None)?;
 
         // Create execution context for the target ledger
         // If graph_ref is Some, create a new context; otherwise use the current context (self-reference)
         let target_ctx;
-        let ctx_to_use: &ExecutionContext<'_, S> = if let Some(gref) = graph_ref {
+        let ctx_to_use: &ExecutionContext<'_> = if let Some(gref) = graph_ref {
             target_ctx = ctx.with_graph_ref(gref);
             &target_ctx
         } else {
@@ -286,12 +286,12 @@ impl<S: Storage + 'static> ServiceOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for ServiceOperator<S> {
+impl Operator for ServiceOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
         self.state = OperatorState::Open;
         self.result_buffer.clear();
@@ -299,7 +299,7 @@ impl<S: Storage + 'static> Operator<S> for ServiceOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -499,90 +499,64 @@ mod tests {
     fn test_parse_fluree_ledger_ref() {
         // Valid: alias only (defaults to main)
         assert_eq!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
-                "fluree:ledger:mydb"
-            ),
+            ServiceOperator::parse_fluree_ledger_ref("fluree:ledger:mydb"),
             Some("mydb:main".to_string())
         );
 
         // Valid: alias and branch
         assert_eq!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
-                "fluree:ledger:orders:main"
-            ),
+            ServiceOperator::parse_fluree_ledger_ref("fluree:ledger:orders:main"),
             Some("orders:main".to_string())
         );
 
         // Valid: alias and custom branch
         assert_eq!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
-                "fluree:ledger:orders:dev"
-            ),
+            ServiceOperator::parse_fluree_ledger_ref("fluree:ledger:orders:dev"),
             Some("orders:dev".to_string())
         );
 
         // Valid: alias containing slash (e.g., org/ledger-name)
         assert_eq!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
-                "fluree:ledger:acme/people:main"
-            ),
+            ServiceOperator::parse_fluree_ledger_ref("fluree:ledger:acme/people:main"),
             Some("acme/people:main".to_string())
         );
 
         // Valid: alias with slash, default branch
         assert_eq!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
-                "fluree:ledger:acme/people"
-            ),
+            ServiceOperator::parse_fluree_ledger_ref("fluree:ledger:acme/people"),
             Some("acme/people:main".to_string())
         );
 
         // Invalid: just prefix
         assert_eq!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
-                "fluree:ledger:"
-            ),
+            ServiceOperator::parse_fluree_ledger_ref("fluree:ledger:"),
             None
         );
 
         // Invalid: not a fluree:ledger endpoint
         assert_eq!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
-                "http://example.org/sparql"
-            ),
+            ServiceOperator::parse_fluree_ledger_ref("http://example.org/sparql"),
             None
         );
 
         // Invalid: empty alias
         assert_eq!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::parse_fluree_ledger_ref(
-                "fluree:ledger::main"
-            ),
+            ServiceOperator::parse_fluree_ledger_ref("fluree:ledger::main"),
             None
         );
     }
 
     #[test]
     fn test_is_fluree_ledger_endpoint() {
-        assert!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
-                "fluree:ledger:mydb"
-            )
-        );
-        assert!(
-            ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
-                "fluree:ledger:orders:main"
-            )
-        );
-        assert!(
-            !ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
-                "http://example.org/sparql"
-            )
-        );
-        assert!(
-            !ServiceOperator::<fluree_db_core::MemoryStorage>::is_fluree_ledger_endpoint(
-                "fluree:other"
-            )
-        );
+        assert!(ServiceOperator::is_fluree_ledger_endpoint(
+            "fluree:ledger:mydb"
+        ));
+        assert!(ServiceOperator::is_fluree_ledger_endpoint(
+            "fluree:ledger:orders:main"
+        ));
+        assert!(!ServiceOperator::is_fluree_ledger_endpoint(
+            "http://example.org/sparql"
+        ));
+        assert!(!ServiceOperator::is_fluree_ledger_endpoint("fluree:other"));
     }
 }

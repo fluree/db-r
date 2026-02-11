@@ -852,7 +852,9 @@ impl QueryConnectionOptions {
 /// - `ledger:main@commit:abc123` → identifier="ledger:main", TimeSpec::AtCommit(...)
 ///
 /// Returns (identifier, Option<TimeSpec>).
-fn parse_ledger_id_time_travel(ledger_id: &str) -> Result<(String, Option<TimeSpec>), DatasetParseError> {
+fn parse_ledger_id_time_travel(
+    ledger_id: &str,
+) -> Result<(String, Option<TimeSpec>), DatasetParseError> {
     // Support optional named-graph fragment selector after time spec:
     //   ledger:main@t:42#txn-meta
     // We parse time-travel on the portion before '#', then re-attach the fragment
@@ -1302,10 +1304,10 @@ mod tests {
         ));
     }
 
-    // Ledger alias time-travel syntax tests (@t:, @iso:, @commit:)
+    // Ledger ID time-travel syntax tests (@t:, @iso:, @commit:)
 
     #[test]
-    fn test_parse_alias_at_t() {
+    fn test_parse_ledger_id_at_t() {
         let query = json!({
             "from": "ledger:main@t:42",
             "select": ["?s"],
@@ -1322,7 +1324,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_t_with_named_graph_fragment() {
+    fn test_parse_ledger_id_at_t_with_named_graph_fragment() {
         let query = json!({
             "from": "ledger:main@t:42#txn-meta",
             "select": ["?s"],
@@ -1339,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_iso() {
+    fn test_parse_ledger_id_at_iso() {
         let query = json!({
             "from": "ledger:main@iso:2025-01-20T00:00:00Z",
             "select": ["?s"],
@@ -1356,7 +1358,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_commit() {
+    fn test_parse_ledger_id_at_commit() {
         let query = json!({
             "from": "ledger:main@commit:abc123def456",
             "select": ["?s"],
@@ -1373,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_at_commit_too_short() {
+    fn test_parse_ledger_id_at_commit_too_short() {
         let query = json!({
             "from": "ledger:main@commit:abc",
             "select": ["?s"],
@@ -1385,7 +1387,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_array_mixed_time_specs() {
+    fn test_parse_ledger_id_array_mixed_time_specs() {
         let query = json!({
             "from": ["ledger1:main@t:10", "ledger2:main", "ledger3:main@iso:2025-01-01T00:00:00Z"],
             "select": ["?s"],
@@ -1412,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_alias_invalid_time_format() {
+    fn test_parse_ledger_id_invalid_time_format() {
         let query = json!({
             "from": "ledger:main@invalid:123",
             "select": ["?s"],
@@ -2296,50 +2298,50 @@ mod tests {
     #[test]
     fn test_sparql_dataset_ledger_ids_single_from() {
         let sparql = "SELECT ?s FROM <ledger:main> WHERE { ?s ?p ?o }";
-        let aliases = sparql_dataset_ledger_ids(sparql).unwrap();
-        assert_eq!(aliases, vec!["ledger:main"]);
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main"]);
     }
 
     #[test]
     fn test_sparql_dataset_ledger_ids_multiple_from() {
         let sparql = "SELECT ?s FROM <ledger:one> FROM <ledger:two> WHERE { ?s ?p ?o }";
-        let aliases = sparql_dataset_ledger_ids(sparql).unwrap();
-        assert_eq!(aliases, vec!["ledger:one", "ledger:two"]);
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:one", "ledger:two"]);
     }
 
     #[test]
     fn test_sparql_dataset_ledger_ids_from_named() {
         let sparql = "SELECT ?s FROM <ledger:main> FROM NAMED <ledger:named1> WHERE { ?s ?p ?o }";
-        let aliases = sparql_dataset_ledger_ids(sparql).unwrap();
-        assert_eq!(aliases, vec!["ledger:main", "ledger:named1"]);
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main", "ledger:named1"]);
     }
 
     #[test]
     fn test_sparql_dataset_ledger_ids_deduplicates() {
         let sparql = "SELECT ?s FROM <ledger:main> FROM NAMED <ledger:main> WHERE { ?s ?p ?o }";
-        let aliases = sparql_dataset_ledger_ids(sparql).unwrap();
-        assert_eq!(aliases, vec!["ledger:main"]);
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main"]);
     }
 
     #[test]
     fn test_sparql_dataset_ledger_ids_strips_time_travel() {
         let sparql = "SELECT ?s FROM <ledger:main@t:42> WHERE { ?s ?p ?o }";
-        let aliases = sparql_dataset_ledger_ids(sparql).unwrap();
-        assert_eq!(aliases, vec!["ledger:main"]);
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main"]);
     }
 
     #[test]
     fn test_sparql_dataset_ledger_ids_strips_fragment() {
         let sparql = "SELECT ?s FROM <ledger:main#txn-meta> WHERE { ?s ?p ?o }";
-        let aliases = sparql_dataset_ledger_ids(sparql).unwrap();
-        assert_eq!(aliases, vec!["ledger:main"]);
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert_eq!(ledger_ids, vec!["ledger:main"]);
     }
 
     #[test]
     fn test_sparql_dataset_ledger_ids_no_from() {
         let sparql = "SELECT ?s WHERE { ?s ?p ?o }";
-        let aliases = sparql_dataset_ledger_ids(sparql).unwrap();
-        assert!(aliases.is_empty());
+        let ledger_ids = sparql_dataset_ledger_ids(sparql).unwrap();
+        assert!(ledger_ids.is_empty());
     }
 
     #[test]

@@ -37,7 +37,6 @@ use crate::ir::R2rmlPattern;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
 use fluree_db_r2rml::mapping::{CompiledR2rmlMapping, ObjectMap, TriplesMap};
 use fluree_db_r2rml::materialize::{
     get_join_key_from_batch, materialize_object_from_batch, materialize_subject_from_batch, RdfTerm,
@@ -56,9 +55,9 @@ pub type ParentLookup = HashMap<Vec<String>, RdfTerm>;
 /// R2RML scan operator for `Pattern::R2rml`.
 ///
 /// Scans an Iceberg table through an R2RML mapping and produces RDF term bindings.
-pub struct R2rmlScanOperator<S: Storage + 'static> {
+pub struct R2rmlScanOperator {
     /// Child operator providing input solutions (may be EmptyOperator seed)
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// R2RML pattern from the query IR
     pattern: R2rmlPattern,
     /// Output schema (child schema + new vars from R2RML scan)
@@ -73,9 +72,9 @@ pub struct R2rmlScanOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> R2rmlScanOperator<S> {
+impl R2rmlScanOperator {
     /// Create a new R2RML scan operator.
-    pub fn new(child: BoxedOperator<S>, pattern: R2rmlPattern) -> Self {
+    pub fn new(child: BoxedOperator, pattern: R2rmlPattern) -> Self {
         let child_schema = child.schema();
 
         // Build output schema: start with child vars, then add R2RML pattern vars
@@ -129,7 +128,7 @@ impl<S: Storage + 'static> R2rmlScanOperator<S> {
     /// 3. Encoding would silently drop rows for IRIs not in namespace table
     ///
     /// This matches the Clojure implementation which uses `match-iri` for graph source results.
-    fn term_to_binding(&self, term: &RdfTerm, ctx: &ExecutionContext<'_, S>) -> Result<Binding> {
+    fn term_to_binding(&self, term: &RdfTerm, ctx: &ExecutionContext<'_>) -> Result<Binding> {
         match term {
             RdfTerm::Iri(iri) => {
                 // Keep IRI as raw string - don't try to encode to SID
@@ -245,12 +244,12 @@ fn build_parent_lookup(
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
+impl Operator for R2rmlScanOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         // Open child first
         self.child.open(ctx).await?;
 
@@ -277,7 +276,7 @@ impl<S: Storage + 'static> Operator<S> for R2rmlScanOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state == OperatorState::Exhausted {
             return Ok(None);
         }

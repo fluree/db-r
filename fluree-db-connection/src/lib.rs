@@ -181,7 +181,7 @@ impl ConnectionHandle {
             #[cfg(feature = "aws")]
             ConnectionHandle::Aws(c) => {
                 let storage = c.index_storage().clone();
-                let db = fluree_db_core::Db::load(storage, root_id, ledger_id).await?;
+                let db = fluree_db_core::load_db(&storage, root_id, ledger_id).await?;
                 Ok(DynDb::Aws(db))
             }
         }
@@ -193,12 +193,12 @@ impl ConnectionHandle {
 pub enum DynDb {
     /// File-backed database
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-    File(Db<FileStorage>),
+    File(Db),
     /// Memory-backed database
-    Memory(Db<MemoryStorage>),
+    Memory(Db),
     /// AWS-backed database (S3 storage)
     #[cfg(feature = "aws")]
-    Aws(Db<fluree_db_storage_aws::S3Storage>),
+    Aws(Db),
 }
 
 /// Create connection from JSON config (auto-detects format)

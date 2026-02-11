@@ -28,7 +28,7 @@ async fn test_trig_named_graph_basic() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/named-graph-basic:main";
+    let ledger_id = "it/named-graph-basic:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -38,7 +38,7 @@ async fn test_trig_named_graph_basic() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // TriG with a named graph block - use upsert_turtle which processes GRAPH blocks
             let trig = r#"
@@ -64,12 +64,12 @@ async fn test_trig_named_graph_basic() {
             assert_eq!(result.receipt.t, 1);
 
             // Trigger indexing and wait
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query the default graph - should see Alice
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
-                "from": alias,
+                "from": ledger_id,
                 "select": ["?name"],
                 "where": {"@id": "ex:alice", "schema:name": "?name"}
             });
@@ -78,14 +78,14 @@ async fn test_trig_named_graph_basic() {
                 .query_connection(&query)
                 .await
                 .expect("query default");
-            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
             let results = results.to_jsonld(&ledger.db).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             assert!(!arr.is_empty(), "should find Alice in default graph");
             assert_eq!(arr[0], "Alice");
 
             // Query the named graph via fragment - should see the event
-            let named_graph_alias = format!("{}#http://example.org/graphs/audit", alias);
+            let named_graph_alias = format!("{}#http://example.org/graphs/audit", ledger_id);
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &named_graph_alias,
@@ -112,7 +112,7 @@ async fn test_trig_multiple_named_graphs() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/named-graph-multi:main";
+    let ledger_id = "it/named-graph-multi:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -122,7 +122,7 @@ async fn test_trig_multiple_named_graphs() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // TriG with multiple named graphs
             let trig = r#"
@@ -148,12 +148,12 @@ async fn test_trig_multiple_named_graphs() {
                 .expect("import");
 
             // Trigger indexing
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
-            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query users graph
-            let users_alias = format!("{}#http://example.org/graphs/users", alias);
+            let users_alias = format!("{}#http://example.org/graphs/users", ledger_id);
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &users_alias,
@@ -168,7 +168,7 @@ async fn test_trig_multiple_named_graphs() {
             assert_eq!(arr.len(), 2, "should find 2 users: {:?}", arr);
 
             // Query products graph
-            let products_alias = format!("{}#http://example.org/graphs/products", alias);
+            let products_alias = format!("{}#http://example.org/graphs/products", ledger_id);
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &products_alias,
@@ -194,7 +194,7 @@ async fn test_unknown_named_graph_error() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/named-graph-unknown:main";
+    let ledger_id = "it/named-graph-unknown:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -204,7 +204,7 @@ async fn test_unknown_named_graph_error() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Just insert some data
             let tx = json!({
@@ -214,10 +214,10 @@ async fn test_unknown_named_graph_error() {
             let result = fluree.update(ledger, &tx).await.expect("update");
 
             // Trigger indexing
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query a non-existent named graph - should error
-            let unknown_alias = format!("{}#http://example.org/nonexistent", alias);
+            let unknown_alias = format!("{}#http://example.org/nonexistent", ledger_id);
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &unknown_alias,
@@ -243,7 +243,7 @@ async fn test_default_graph_isolation() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/named-graph-isolation:main";
+    let ledger_id = "it/named-graph-isolation:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -253,7 +253,7 @@ async fn test_default_graph_isolation() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // TriG with data only in a named graph
             let trig = r#"
@@ -273,14 +273,14 @@ async fn test_default_graph_isolation() {
                 .expect("import");
 
             // Trigger indexing
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
-            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query default graph - should NOT find the secret
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
-                "from": alias,
+                "from": ledger_id,
                 "select": ["?val"],
                 "where": {"@id": "ex:secret", "schema:value": "?val"}
             });
@@ -298,7 +298,7 @@ async fn test_default_graph_isolation() {
             );
 
             // Query named graph - should find the secret
-            let private_alias = format!("{}#http://example.org/graphs/private", alias);
+            let private_alias = format!("{}#http://example.org/graphs/private", ledger_id);
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &private_alias,
@@ -324,7 +324,7 @@ async fn test_txn_meta_and_named_graph_coexist() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/named-graph-coexist:main";
+    let ledger_id = "it/named-graph-coexist:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -334,7 +334,7 @@ async fn test_txn_meta_and_named_graph_coexist() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // TriG with txn-meta and a user named graph
             let trig = r#"
@@ -363,14 +363,14 @@ async fn test_txn_meta_and_named_graph_coexist() {
                 .expect("import");
 
             // Trigger indexing
-            trigger_index_and_wait(&handle, alias, result.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
-            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query default graph
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
-                "from": alias,
+                "from": ledger_id,
                 "select": ["?name"],
                 "where": {"@id": "ex:alice", "schema:name": "?name"}
             });
@@ -385,7 +385,7 @@ async fn test_txn_meta_and_named_graph_coexist() {
             assert_eq!(arr[0], "Alice");
 
             // Query txn-meta graph
-            let meta_alias = format!("{}#txn-meta", alias);
+            let meta_alias = format!("{}#txn-meta", ledger_id);
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &meta_alias,
@@ -403,7 +403,7 @@ async fn test_txn_meta_and_named_graph_coexist() {
             assert_eq!(arr[0], "batch-123");
 
             // Query audit graph
-            let audit_alias = format!("{}#http://example.org/graphs/audit", alias);
+            let audit_alias = format!("{}#http://example.org/graphs/audit", ledger_id);
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &audit_alias,
@@ -433,7 +433,7 @@ async fn test_named_graph_update_and_query_current() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/named-graph-update:main";
+    let ledger_id = "it/named-graph-update:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -443,7 +443,7 @@ async fn test_named_graph_update_and_query_current() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Transaction 1: Initial data in named graph
             let trig1 = r#"
@@ -465,7 +465,7 @@ async fn test_named_graph_update_and_query_current() {
             assert_eq!(result1.receipt.t, 1);
 
             // Index transaction 1
-            trigger_index_and_wait(&handle, alias, result1.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result1.receipt.t).await;
 
             // Transaction 2: Update stock levels using graph().transact() API
             let trig2 = r#"
@@ -479,7 +479,7 @@ async fn test_named_graph_update_and_query_current() {
             "#;
 
             let result2 = fluree
-                .graph(alias)
+                .graph(ledger_id)
                 .transact()
                 .upsert_turtle(trig2)
                 .commit()
@@ -488,11 +488,11 @@ async fn test_named_graph_update_and_query_current() {
             assert_eq!(result2.receipt.t, 2);
 
             // Index transaction 2
-            trigger_index_and_wait(&handle, alias, result2.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result2.receipt.t).await;
 
             // Query current state (t=2) - should see updated values
-            let inv_alias = format!("{}#http://example.org/graphs/inventory", alias);
-            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let inv_alias = format!("{}#http://example.org/graphs/inventory", ledger_id);
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
@@ -553,7 +553,7 @@ async fn test_named_graph_time_travel() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/named-graph-time-travel:main";
+    let ledger_id = "it/named-graph-time-travel:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -563,7 +563,7 @@ async fn test_named_graph_time_travel() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Transaction 1: Initial prices
             let trig1 = r#"
@@ -583,7 +583,7 @@ async fn test_named_graph_time_travel() {
                 .expect("tx1");
             assert_eq!(result1.receipt.t, 1);
 
-            trigger_index_and_wait(&handle, alias, result1.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result1.receipt.t).await;
 
             // Transaction 2: Price updates using graph().transact() API
             let trig2 = r#"
@@ -596,7 +596,7 @@ async fn test_named_graph_time_travel() {
             "#;
 
             let result2 = fluree
-                .graph(alias)
+                .graph(ledger_id)
                 .transact()
                 .upsert_turtle(trig2)
                 .commit()
@@ -605,14 +605,14 @@ async fn test_named_graph_time_travel() {
             assert_eq!(result2.receipt.t, 2);
             eprintln!("DEBUG tx2 flake_count: {}", result2.receipt.flake_count);
 
-            trigger_index_and_wait(&handle, alias, result2.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result2.receipt.t).await;
 
-            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Debug: Query current state via graph fragment syntax
             let query_debug = json!({
                 "@context": {"ex": "http://example.org/"},
-                "from": format!("{}#http://example.org/graphs/pricing", alias),
+                "from": format!("{}#http://example.org/graphs/pricing", ledger_id),
                 "select": ["?product", "?price"],
                 "where": {"@id": "?product", "ex:price": "?price"},
                 "orderBy": "?product"
@@ -632,7 +632,7 @@ async fn test_named_graph_time_travel() {
             // Debug: Query current state via structured from (no t)
             let query_debug2 = json!({
                 "@context": {"ex": "http://example.org/"},
-                "from": {"@id": alias, "graph": "http://example.org/graphs/pricing"},
+                "from": {"@id": ledger_id, "graph": "http://example.org/graphs/pricing"},
                 "select": ["?product", "?price"],
                 "where": {"@id": "?product", "ex:price": "?price"},
                 "orderBy": "?product"
@@ -653,7 +653,7 @@ async fn test_named_graph_time_travel() {
             let query_t1 = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": {
-                    "@id": alias,
+                    "@id": ledger_id,
                     "t": 1,
                     "graph": "http://example.org/graphs/pricing"
                 },
@@ -688,7 +688,7 @@ async fn test_named_graph_time_travel() {
             let query_t2 = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": {
-                    "@id": alias,
+                    "@id": ledger_id,
                     "t": 2,
                     "graph": "http://example.org/graphs/pricing"
                 },
@@ -724,7 +724,7 @@ async fn test_named_graph_time_travel() {
             let query_current = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": {
-                    "@id": alias,
+                    "@id": ledger_id,
                     "graph": "http://example.org/graphs/pricing"
                 },
                 "select": ["?product", "?price"],
@@ -766,7 +766,7 @@ async fn test_named_graph_retraction() {
     let fluree = FlureeBuilder::memory()
         .with_ledger_cache_config(LedgerManagerConfig::default())
         .build_memory();
-    let alias = "it/named-graph-retract:main";
+    let ledger_id = "it/named-graph-retract:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -776,7 +776,7 @@ async fn test_named_graph_retraction() {
 
     local
         .run_until(async move {
-            let ledger = genesis_ledger(&fluree, alias);
+            let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Transaction 1: Add data to named graph
             let trig1 = r#"
@@ -796,7 +796,7 @@ async fn test_named_graph_retraction() {
                 .await
                 .expect("tx1");
 
-            trigger_index_and_wait(&handle, alias, result1.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result1.receipt.t).await;
 
             // Transaction 2: Delete bob from the named graph
             // Use JSON-LD delete with graph selector
@@ -809,16 +809,16 @@ async fn test_named_graph_retraction() {
                 }]
             });
 
-            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
             let result2 = fluree.update(ledger, &delete_tx).await.expect("tx2");
             assert_eq!(result2.receipt.t, 2);
 
-            trigger_index_and_wait(&handle, alias, result2.receipt.t).await;
+            trigger_index_and_wait(&handle, ledger_id, result2.receipt.t).await;
 
-            let ledger = fluree.ledger(alias).await.expect("load ledger");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query current - should have alice and carol, but NOT bob
-            let users_alias = format!("{}#http://example.org/graphs/users", alias);
+            let users_alias = format!("{}#http://example.org/graphs/users", ledger_id);
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &users_alias,
@@ -862,7 +862,7 @@ async fn test_named_graph_retraction() {
             let query_t1 = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": {
-                    "@id": alias,
+                    "@id": ledger_id,
                     "t": 1,
                     "graph": "http://example.org/graphs/users"
                 },

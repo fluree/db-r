@@ -36,7 +36,7 @@ use crate::ir::{VectorSearchPattern, VectorSearchTarget};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, Storage};
+use fluree_db_core::FlakeValue;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -95,9 +95,9 @@ pub trait VectorIndexProvider: std::fmt::Debug + Send + Sync {
 }
 
 /// Vector search operator for `Pattern::VectorSearch`.
-pub struct VectorSearchOperator<S: Storage + 'static> {
+pub struct VectorSearchOperator {
     /// Child operator providing input solutions (may be EmptyOperator seed)
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Search pattern
     pattern: VectorSearchPattern,
     /// Output schema (child schema + any new vars from the search result)
@@ -110,8 +110,8 @@ pub struct VectorSearchOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> VectorSearchOperator<S> {
-    pub fn new(child: BoxedOperator<S>, pattern: VectorSearchPattern) -> Self {
+impl VectorSearchOperator {
+    pub fn new(child: BoxedOperator, pattern: VectorSearchPattern) -> Self {
         let child_schema = child.schema();
 
         // Build output schema: start with child vars, then add id/score/ledger vars if missing.
@@ -154,7 +154,7 @@ impl<S: Storage + 'static> VectorSearchOperator<S> {
     /// Resolve the query vector from the pattern (constant or variable)
     fn resolve_vector_from_row(
         &self,
-        _ctx: &ExecutionContext<'_, S>,
+        _ctx: &ExecutionContext<'_>,
         row: &crate::binding::RowView<'_>,
     ) -> Result<Option<Vec<f32>>> {
         match &self.pattern.target {
@@ -191,12 +191,12 @@ impl<S: Storage + 'static> VectorSearchOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
+impl Operator for VectorSearchOperator {
     fn schema(&self) -> &[VarId] {
         self.schema()
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
 
         let _provider = ctx.vector_provider.ok_or_else(|| {
@@ -220,7 +220,7 @@ impl<S: Storage + 'static> Operator<S> for VectorSearchOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -388,7 +388,7 @@ mod tests {
     use crate::seed::EmptyOperator;
     use crate::var_registry::VarRegistry;
     use crate::vector::DistanceMetric;
-    use fluree_db_core::{Db, MemoryStorage};
+    use fluree_db_core::Db;
     use std::sync::Mutex;
 
     #[derive(Debug)]
@@ -446,8 +446,8 @@ mod tests {
         }
     }
 
-    fn make_test_db() -> Db<MemoryStorage> {
-        let mut db = Db::genesis(MemoryStorage::new(), "test/main");
+    fn make_test_db() -> Db {
+        let mut db = Db::genesis("test/main");
         // Ensure example IRIs used by tests are encodable to SIDs.
         db.namespace_codes
             .insert(100, "http://example.org/".to_string());
@@ -494,9 +494,9 @@ mod tests {
 
         // Build operator with explicit seed
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.vector_provider = Some(&provider);
@@ -539,9 +539,9 @@ mod tests {
         let patterns = vec![Pattern::VectorSearch(vsp)];
 
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.vector_provider = Some(&provider);
@@ -579,9 +579,9 @@ mod tests {
         let patterns = vec![Pattern::VectorSearch(vsp)];
 
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.vector_provider = Some(&provider);
@@ -608,9 +608,9 @@ mod tests {
         let patterns = vec![Pattern::VectorSearch(vsp)];
 
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         // No vector_provider set
         let ctx = ExecutionContext::new(&db, &vars);
@@ -639,9 +639,9 @@ mod tests {
         let patterns = vec![Pattern::VectorSearch(vsp)];
 
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.vector_provider = Some(&provider);

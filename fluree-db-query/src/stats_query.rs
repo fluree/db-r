@@ -9,23 +9,22 @@ use crate::error::{QueryError, Result};
 use crate::operator::{Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, StatsView, Storage};
+use fluree_db_core::{FlakeValue, StatsView};
 use std::sync::Arc;
 
 /// Emit per-predicate counts using `StatsView` (no triple scan).
 ///
 /// Intended to fast-path queries like:
 /// `SELECT ?p (COUNT(?s) AS ?count) WHERE { ?s ?p ?o } GROUP BY ?p ORDER BY DESC(?count)`
-pub struct StatsCountByPredicateOperator<S: Storage + 'static> {
+pub struct StatsCountByPredicateOperator {
     stats: Arc<StatsView>,
     schema: Arc<[VarId]>,
     state: OperatorState,
     rows: Vec<(Binding, Binding)>,
     pos: usize,
-    _phantom: std::marker::PhantomData<S>,
 }
 
-impl<S: Storage + 'static> StatsCountByPredicateOperator<S> {
+impl StatsCountByPredicateOperator {
     pub fn new(stats: Arc<StatsView>, pred_var: VarId, count_var: VarId) -> Self {
         let schema: Arc<[VarId]> = Arc::from(vec![pred_var, count_var].into_boxed_slice());
         Self {
@@ -34,11 +33,10 @@ impl<S: Storage + 'static> StatsCountByPredicateOperator<S> {
             state: OperatorState::Created,
             rows: Vec::new(),
             pos: 0,
-            _phantom: std::marker::PhantomData,
         }
     }
 
-    fn build_rows(&self, ctx: &ExecutionContext<'_, S>) -> Result<Vec<(Binding, Binding)>> {
+    fn build_rows(&self, ctx: &ExecutionContext<'_>) -> Result<Vec<(Binding, Binding)>> {
         let dt = WellKnownDatatypes::new().xsd_long;
 
         // Prefer graph-scoped stats if present (and we can resolve p_id → Sid).
@@ -77,12 +75,12 @@ impl<S: Storage + 'static> StatsCountByPredicateOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for StatsCountByPredicateOperator<S> {
+impl Operator for StatsCountByPredicateOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             return Err(QueryError::OperatorAlreadyOpened);
         }
@@ -92,7 +90,7 @@ impl<S: Storage + 'static> Operator<S> for StatsCountByPredicateOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }

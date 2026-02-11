@@ -41,7 +41,7 @@ use crate::rewrite::{Diagnostics, PlanContext, RewriteResult};
 use crate::var_registry::VarId;
 use fluree_db_core::{
     is_owl_equivalent_property, is_rdf_type, range, Db, FlakeValue, IndexType, OverlayProvider,
-    RangeMatch, RangeOptions, RangeTest, SchemaHierarchy, Sid, Storage,
+    RangeMatch, RangeOptions, RangeTest, SchemaHierarchy, Sid,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -233,10 +233,7 @@ impl Ontology {
     /// * `db` - The database to query
     /// * `epoch` - Schema epoch for cache validation (typically db.t or schema.t)
     ///
-    pub async fn from_db<S: Storage + 'static>(
-        db: &Db<S>,
-        epoch: u64,
-    ) -> crate::error::Result<Self> {
+    pub async fn from_db(db: &Db, epoch: u64) -> crate::error::Result<Self> {
         use fluree_vocab::namespaces::{OWL, RDFS};
 
         let mut inverse_of: HashMap<Sid, Vec<Sid>> = HashMap::new();
@@ -340,8 +337,8 @@ impl Ontology {
     /// In memory-backed tests, schema/ontology assertions often exist only in novelty (overlay)
     /// until background indexing runs. This helper merges `owl:equivalentProperty` assertions
     /// from the overlay into the persisted ontology snapshot.
-    pub async fn from_db_with_overlay<S: Storage + 'static>(
-        db: &Db<S>,
+    pub async fn from_db_with_overlay(
+        db: &Db,
         overlay: &dyn OverlayProvider,
         epoch: u64,
         to_t: i64,

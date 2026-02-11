@@ -50,7 +50,7 @@ pub enum EventsAuthMode {
 /// Authentication mode for the data API endpoints (query/transact/info/exists).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
 pub enum DataAuthMode {
-    /// No authentication required (default; backwards compatible)
+    /// No authentication required (default)
     #[default]
     None,
     /// Accept tokens but don't require them (DEV ONLY - not a security boundary)

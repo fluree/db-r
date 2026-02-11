@@ -202,14 +202,14 @@ impl<'a> TransactCore<'a> {
 /// // Commit if satisfied
 /// let result = fluree.commit_staged(staged, CommitOpts::default()).await?;
 /// ```
-pub struct Staged<S: Storage + 'static> {
+pub struct Staged {
     /// The queryable staged view (base + overlay with staged flakes).
-    pub view: LedgerView<S>,
+    pub view: LedgerView,
     /// Namespace registry needed for commit.
     pub ns_registry: NamespaceRegistry,
 }
 
-impl<S: Storage + 'static> std::fmt::Debug for Staged<S> {
+impl std::fmt::Debug for Staged {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Staged")
             .field("has_staged", &self.view.has_staged())
@@ -240,7 +240,7 @@ impl<S: Storage + 'static> std::fmt::Debug for Staged<S> {
 /// ```
 pub struct OwnedTransactBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    ledger: LedgerState<S>,
+    ledger: LedgerState,
     core: TransactCore<'a>,
 }
 
@@ -250,7 +250,7 @@ where
     N: NameService + Publisher,
 {
     /// Create a new builder (called by `Fluree::stage_owned()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger: LedgerState<S>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger: LedgerState) -> Self {
         Self {
             fluree,
             ledger,
@@ -343,7 +343,7 @@ where
     }
 
     /// Stage + commit the transaction, returning the updated ledger state.
-    pub async fn execute(self) -> Result<TransactResult<S>> {
+    pub async fn execute(self) -> Result<TransactResult> {
         self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap(); // safe: validate checks
@@ -411,7 +411,7 @@ where
     /// Stage the transaction without committing.
     ///
     /// Returns a [`Staged`] that can be queried and later committed.
-    pub async fn stage(self) -> Result<Staged<S>> {
+    pub async fn stage(self) -> Result<Staged> {
         self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap();
@@ -506,7 +506,7 @@ where
 /// ```
 pub struct RefTransactBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    handle: &'a LedgerHandle<S>,
+    handle: &'a LedgerHandle,
     core: TransactCore<'a>,
 }
 
@@ -516,7 +516,7 @@ where
     N: NameService + Publisher + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::stage()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, handle: &'a LedgerHandle<S>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, handle: &'a LedgerHandle) -> Self {
         Self {
             fluree,
             handle,
@@ -622,7 +622,7 @@ where
 /// `GraphTransactBuilder::commit()`.
 pub(crate) async fn commit_with_handle<S, N>(
     fluree: &Fluree<S, N>,
-    handle: &LedgerHandle<S>,
+    handle: &LedgerHandle,
     core: TransactCore<'_>,
 ) -> Result<TransactResultRef>
 where

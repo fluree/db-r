@@ -94,8 +94,8 @@ The reindex operation returns:
 
 ```rust
 pub struct ReindexResult {
-    /// Ledger alias
-    pub alias: String,
+    /// Ledger ID
+    pub ledger_id: String,
     /// Transaction time the index was built to
     pub index_t: i64,
     /// ContentId of the new index root
@@ -152,7 +152,7 @@ After reindex, verify the results:
 
 ```rust
 // Get ledger info to check state
-let info = fluree.ledger_info(alias).execute().await?;
+let info = fluree.ledger_info(ledger_id).execute().await?;
 println!("Index rebuilt to t={}", info["index"]["t"]);
 
 // Run a sample query to verify correctness

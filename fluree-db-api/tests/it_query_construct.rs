@@ -41,12 +41,12 @@ async fn seed_people() -> (
         fluree_db_core::MemoryStorage,
         fluree_db_nameservice::memory::MemoryNameService,
     >,
-    LedgerState<fluree_db_core::MemoryStorage>,
+    LedgerState,
 ) {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/construct:people";
+    let ledger_id = "it/construct:people";
 
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
+    let db0 = Db::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({

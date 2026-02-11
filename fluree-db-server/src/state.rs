@@ -376,14 +376,14 @@ impl FlureeInstance {
             FlureeInstance::File(f) => {
                 let handle = f.ledger_cached(ledger_id).await?;
                 let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, None)
+                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, f.storage(), None)
                     .await
                     .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
             }
             FlureeInstance::Proxy(p) => {
                 let handle = p.ledger_cached(ledger_id).await?;
                 let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, None)
+                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, p.storage(), None)
                     .await
                     .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
             }

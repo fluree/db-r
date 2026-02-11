@@ -13,7 +13,7 @@ use crate::error::{QueryError, Result};
 use crate::ir::{FilterExpr, FunctionName};
 use chrono::{DateTime, Datelike, FixedOffset, SecondsFormat, Timelike, Utc};
 use fluree_db_core::temporal::DateTime as FlureeDateTime;
-use fluree_db_core::{geo, FlakeValue, Storage};
+use fluree_db_core::{geo, FlakeValue};
 use md5::{Digest as Md5Digest, Md5};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rand::random;
@@ -37,11 +37,11 @@ use super::vector_math;
 ///
 /// This is THE entry point for function evaluation. All functions go through here.
 /// For boolean context, use `eval_function_to_bool` which calls this and applies EBV.
-pub fn eval_function<S: Storage>(
+pub fn eval_function(
     name: &FunctionName,
     args: &[FilterExpr],
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
     match name {
         // =================================================================
@@ -685,11 +685,11 @@ pub fn eval_function<S: Storage>(
 /// Evaluate a function in boolean context using EBV
 ///
 /// This calls `eval_function` and applies Effective Boolean Value (EBV) rules.
-pub fn eval_function_to_bool<S: Storage>(
+pub fn eval_function_to_bool(
     name: &FunctionName,
     args: &[FilterExpr],
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<bool> {
     let value = eval_function(name, args, row, ctx)?;
 
@@ -730,10 +730,10 @@ where
 }
 
 /// Evaluate a hash function
-fn eval_hash_function<S: Storage, F>(
+fn eval_hash_function<F>(
     args: &[FilterExpr],
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
     fn_name: &str,
     hash_fn: F,
 ) -> Result<Option<ComparableValue>>
@@ -756,10 +756,10 @@ enum VectorMetric {
 }
 
 /// Evaluate a binary vector function
-fn eval_binary_vector_fn<S: Storage, F>(
+fn eval_binary_vector_fn<F>(
     args: &[FilterExpr],
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
     fn_name: &str,
     compute: F,
 ) -> Result<Option<ComparableValue>>
@@ -825,9 +825,9 @@ where
 ///
 /// Returns `Some(ComparableValue::Double(score))` if both vectors could be
 /// resolved via the arena fast path; `None` if the fast path doesn't apply.
-fn try_arena_f32_scoring<S: Storage>(
+fn try_arena_f32_scoring(
     row: &RowView,
-    ctx: Option<&ExecutionContext<'_, S>>,
+    ctx: Option<&ExecutionContext<'_>>,
     v1: crate::var_registry::VarId,
     v2: crate::var_registry::VarId,
     metric: VectorMetric,
@@ -976,7 +976,7 @@ mod tests {
     fn test_strlen() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::Strlen,
             &[FilterExpr::Var(VarId(0))],
             &row,
@@ -990,7 +990,7 @@ mod tests {
     fn test_ucase() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::Ucase,
             &[FilterExpr::Var(VarId(0))],
             &row,
@@ -1007,7 +1007,7 @@ mod tests {
     fn test_contains() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::Contains,
             &[
                 FilterExpr::Var(VarId(0)),
@@ -1024,7 +1024,7 @@ mod tests {
     fn test_bound() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::Bound,
             &[FilterExpr::Var(VarId(0))],
             &row,
@@ -1044,13 +1044,9 @@ mod tests {
         let row = batch.row_view(0).unwrap();
 
         // STRLEN returns 0 for empty string, which should be falsy
-        let result = eval_function_to_bool::<fluree_db_core::MemoryStorage>(
-            &FunctionName::Abs,
-            &[FilterExpr::Var(VarId(0))],
-            &row,
-            None,
-        )
-        .unwrap();
+        let result =
+            eval_function_to_bool(&FunctionName::Abs, &[FilterExpr::Var(VarId(0))], &row, None)
+                .unwrap();
         assert!(!result); // 0 is falsy
     }
 
@@ -1077,7 +1073,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::GeofDistance,
             &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
             &row,
@@ -1113,7 +1109,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::GeofDistance,
             &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
             &row,
@@ -1148,7 +1144,7 @@ mod tests {
         let batch = Batch::new(schema, vec![col0, col1]).unwrap();
         let row = batch.row_view(0).unwrap();
 
-        let result = eval_function::<fluree_db_core::MemoryStorage>(
+        let result = eval_function(
             &FunctionName::GeofDistance,
             &[FilterExpr::Var(VarId(0)), FilterExpr::Var(VarId(1))],
             &row,

@@ -305,7 +305,7 @@ Match graph source to use case:
 - Keyword search → BM25
 - Semantic search → Vector
 - Analytics → Iceberg
-- Legacy integration → R2RML
+- Relational database integration → R2RML
 
 ### 2. Filter Early
 

@@ -26,7 +26,7 @@
 
 use crate::ir::{Pattern, R2rmlPattern};
 use crate::pattern::{Term, TriplePattern};
-use fluree_db_core::{Db, Storage};
+use fluree_db_core::Db;
 
 /// Result of rewriting patterns for R2RML.
 #[derive(Debug)]
@@ -54,10 +54,10 @@ pub struct R2rmlRewriteResult {
 /// # Returns
 ///
 /// A result containing the rewritten patterns and conversion statistics.
-pub fn rewrite_patterns_for_r2rml<S: Storage>(
+pub fn rewrite_patterns_for_r2rml(
     patterns: &[Pattern],
     graph_source_id: &str,
-    db: &Db<S>,
+    db: &Db,
 ) -> R2rmlRewriteResult {
     let mut result_patterns = Vec::with_capacity(patterns.len());
     let mut converted = 0;
@@ -144,10 +144,10 @@ pub fn rewrite_patterns_for_r2rml<S: Storage>(
 /// Convert a triple pattern to an R2RML pattern.
 ///
 /// Returns `None` if the pattern cannot be converted (e.g., subject is a literal).
-fn convert_triple_to_r2rml<S: Storage>(
+fn convert_triple_to_r2rml(
     tp: &TriplePattern,
     graph_source_id: &str,
-    db: &Db<S>,
+    db: &Db,
 ) -> Option<R2rmlPattern> {
     // Extract subject variable (must be a variable for basic R2RML support)
     let subject_var = match &tp.s {

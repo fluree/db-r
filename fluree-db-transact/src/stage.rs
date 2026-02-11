@@ -16,7 +16,7 @@ use crate::ir::{TemplateTerm, Txn, TxnType};
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::OverlayProvider;
 use fluree_db_core::Tracker;
-use fluree_db_core::{Flake, FlakeValue, Sid, Storage};
+use fluree_db_core::{Flake, FlakeValue, Sid};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_policy::{
@@ -123,12 +123,12 @@ impl<'a> StageOptions<'a> {
 /// // Query the view to see staged changes
 /// // Or commit the view to persist changes
 /// ```
-pub async fn stage<S: Storage + Clone + 'static>(
-    ledger: LedgerState<S>,
+pub async fn stage(
+    ledger: LedgerState,
     mut txn: Txn,
     mut ns_registry: NamespaceRegistry,
     options: StageOptions<'_>,
-) -> Result<(LedgerView<S>, NamespaceRegistry)> {
+) -> Result<(LedgerView, NamespaceRegistry)> {
     let span = tracing::info_span!("txn_stage",
         current_t = ledger.t(),
         txn_type = ?txn.txn_type,
@@ -271,11 +271,11 @@ pub async fn stage<S: Storage + Clone + 'static>(
 /// * `ledger` - The ledger state (consumed)
 /// * `flakes` - Pre-built assertion flakes
 /// * `options` - Optional backpressure / policy / tracking configuration
-pub async fn stage_flakes<S: Storage + Clone + 'static>(
-    ledger: LedgerState<S>,
+pub async fn stage_flakes(
+    ledger: LedgerState,
     flakes: Vec<Flake>,
     options: StageOptions<'_>,
-) -> Result<LedgerView<S>> {
+) -> Result<LedgerView> {
     let span = tracing::info_span!("stage_flakes", flake_count = flakes.len());
     let _guard = span.enter();
 
@@ -299,8 +299,8 @@ pub async fn stage_flakes<S: Storage + Clone + 'static>(
     Ok(LedgerView::stage(ledger, flakes))
 }
 
-async fn hydrate_list_index_meta_for_retractions<S: Storage + Clone + 'static>(
-    ledger: &LedgerState<S>,
+async fn hydrate_list_index_meta_for_retractions(
+    ledger: &LedgerState,
     retractions: &mut [Flake],
 ) -> Result<()> {
     for flake in retractions.iter_mut() {
@@ -348,10 +348,10 @@ async fn hydrate_list_index_meta_for_retractions<S: Storage + Clone + 'static>(
 ///
 /// Returns `Ok(())` if all flakes pass policy, or an error if any flake is denied
 /// or if the class cache population fails.
-async fn enforce_modify_policies<S: Storage + Clone + 'static>(
+async fn enforce_modify_policies(
     flakes: &[Flake],
     policy: &PolicyContext,
-    ledger: &LedgerState<S>,
+    ledger: &LedgerState,
     tracker: Option<&Tracker>,
 ) -> Result<()> {
     // Pre-populate class cache for f:onClass policy support
@@ -392,10 +392,10 @@ async fn enforce_modify_policies<S: Storage + Clone + 'static>(
 ///
 /// This function supports f:query policies by executing them against
 /// the pre-transaction ledger view (db + novelty at current t).
-async fn enforce_modify_policy_per_flake<S: Storage + Clone + 'static>(
+async fn enforce_modify_policy_per_flake(
     flakes: &[Flake],
     policy: &PolicyContext,
-    ledger: &LedgerState<S>,
+    ledger: &LedgerState,
     tracker: Option<&Tracker>,
 ) -> Result<()> {
     // Build a QueryPolicyExecutor that runs f:query against the pre-txn ledger view.
@@ -459,10 +459,7 @@ async fn enforce_modify_policy_per_flake<S: Storage + Clone + 'static>(
 ///
 /// This function lowers the `UnresolvedPattern` patterns (which use string IRIs)
 /// to `Pattern` (with encoded Sids), then executes them against the ledger.
-async fn execute_where<S: Storage + Clone + 'static>(
-    ledger: &LedgerState<S>,
-    txn: &mut Txn,
-) -> Result<Batch> {
+async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     // Lower UnresolvedPattern to Pattern using the ledger's Db as the IRI encoder.
     // This also assigns VarIds to any variables referenced in WHERE patterns.
     let mut query_patterns = lower_where_patterns(&txn.where_patterns, &ledger.db, &mut txn.vars)?;
@@ -501,9 +498,9 @@ async fn execute_where<S: Storage + Clone + 'static>(
 ///
 /// This converts string IRIs to encoded Sids using the database, and assigns
 /// VarIds to variables using the provided VarRegistry (shared with INSERT/DELETE).
-fn lower_where_patterns<S: Storage + 'static>(
+fn lower_where_patterns(
     patterns: &[UnresolvedPattern],
-    db: &fluree_db_core::Db<S>,
+    db: &fluree_db_core::Db,
     vars: &mut VarRegistry,
 ) -> Result<Vec<Pattern>> {
     let mut pp_counter: u32 = 0;
@@ -627,8 +624,8 @@ fn inline_values_to_pattern(values: &InlineValues) -> Result<Pattern> {
 ///
 /// Named graph support: retractions are created in the same graph as the insert templates
 /// to ensure proper cancellation with assertions.
-async fn generate_upsert_deletions<S: Storage + Clone + 'static>(
-    ledger: &LedgerState<S>,
+async fn generate_upsert_deletions(
+    ledger: &LedgerState,
     txn: &Txn,
     new_t: i64,
     graph_sids: &std::collections::HashMap<u32, Sid>,
@@ -736,10 +733,7 @@ async fn generate_upsert_deletions<S: Storage + Clone + 'static>(
 ///
 /// Returns None if no binary store is attached (genesis / not yet indexed) or if
 /// the attached store isn't a `BinaryIndexStore`.
-fn db_with_graph_range_provider<S: Storage + Clone + 'static>(
-    ledger: &LedgerState<S>,
-    g_id: u32,
-) -> Option<fluree_db_core::Db<S>> {
+fn db_with_graph_range_provider(ledger: &LedgerState, g_id: u32) -> Option<fluree_db_core::Db> {
     let store: Arc<BinaryIndexStore> = ledger
         .binary_store
         .as_ref()
@@ -754,8 +748,8 @@ fn db_with_graph_range_provider<S: Storage + Clone + 'static>(
 /// This function scans the novelty overlay for flakes matching the given
 /// subject, predicate, and graph context. It's used for named graph upserts
 /// because the db.range_provider is scoped to the default graph (g_id=0).
-fn query_novelty_for_graph<S: Storage + Clone + 'static>(
-    ledger: &LedgerState<S>,
+fn query_novelty_for_graph(
+    ledger: &LedgerState,
     subject: &Sid,
     predicate: &Sid,
     target_g_id: u32,
@@ -825,13 +819,13 @@ fn query_novelty_for_graph<S: Storage + Clone + 'static>(
 /// Returns `(LedgerView, NamespaceRegistry)` if staging and validation succeed.
 /// Returns `TransactError::ShaclViolation` if SHACL validation fails.
 #[cfg(feature = "shacl")]
-pub async fn stage_with_shacl<S: Storage + Clone + 'static>(
-    ledger: LedgerState<S>,
+pub async fn stage_with_shacl(
+    ledger: LedgerState,
     txn: Txn,
     ns_registry: NamespaceRegistry,
     options: StageOptions<'_>,
     shacl_cache: &ShaclCache,
-) -> Result<(LedgerView<S>, NamespaceRegistry)> {
+) -> Result<(LedgerView, NamespaceRegistry)> {
     // First, perform regular staging
     let (view, ns_registry) = stage(ledger, txn, ns_registry, options).await?;
 
@@ -863,10 +857,7 @@ pub async fn stage_with_shacl<S: Storage + Clone + 'static>(
 /// Returns `Ok(())` when conforming, or `TransactError::ShaclViolation` when any
 /// violations are present.
 #[cfg(feature = "shacl")]
-pub async fn validate_view_with_shacl<S: Storage + Clone + 'static>(
-    view: &LedgerView<S>,
-    shacl_cache: &ShaclCache,
-) -> Result<()> {
+pub async fn validate_view_with_shacl(view: &LedgerView, shacl_cache: &ShaclCache) -> Result<()> {
     // Fast path: if there are no SHACL shapes, elide validation entirely.
     if shacl_cache.is_empty() {
         return Ok(());
@@ -882,8 +873,8 @@ pub async fn validate_view_with_shacl<S: Storage + Clone + 'static>(
 
 /// Validate staged nodes against SHACL shapes
 #[cfg(feature = "shacl")]
-async fn validate_staged_nodes<S: Storage + Clone + 'static>(
-    view: &LedgerView<S>,
+async fn validate_staged_nodes(
+    view: &LedgerView,
     engine: &ShaclEngine,
 ) -> Result<ValidationReport> {
     use fluree_vocab::namespaces::RDF;
@@ -1007,8 +998,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_simple_insert() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1029,8 +1019,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_insert_multiple_triples() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1057,8 +1046,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_with_blank_nodes() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1083,8 +1071,7 @@ mod tests {
     async fn test_stage_backpressure_at_max() {
         use fluree_db_core::Flake;
 
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
 
         // Create novelty that's at max size
         let mut novelty = Novelty::new(0);
@@ -1127,8 +1114,7 @@ mod tests {
     async fn test_insert_with_blank_node_always_succeeds() {
         // Blank nodes are always new, so insert should succeed even if
         // the blank node was used before (it gets a new skolemized ID)
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1150,7 +1136,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1216,8 +1202,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_on_nonexistent_subject() {
         // Upsert on a subject that doesn't exist should just insert
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1246,7 +1231,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1348,7 +1333,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1493,8 +1478,7 @@ mod tests {
         // Which should create two triples with different subjects and names.
         use crate::ir::InlineValues;
 
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1564,7 +1548,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis(storage.clone(), "test:main");
+        let db = Db::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 

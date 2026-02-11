@@ -96,7 +96,7 @@ fn has_tracking_opts(query_json: &JsonValue) -> bool {
     false
 }
 
-/// Helper to extract ledger alias from request (for FQL queries)
+/// Helper to extract ledger ID from request (for FQL queries)
 fn get_ledger_id(
     path_ledger: Option<&str>,
     headers: &FlureeHeaders,
@@ -156,7 +156,7 @@ pub async fn query(
         "query",
         request_id.as_deref(),
         trace_id.as_deref(),
-        None, // ledger alias determined later
+        None, // ledger ID determined later
         None, // tenant_id not yet supported
     );
     let _guard = span.enter();
@@ -245,7 +245,7 @@ pub async fn query(
             }
             Err(e) => {
                 set_span_error_code(&span, "error:BadRequest");
-                tracing::warn!(error = %e, "missing ledger alias");
+                tracing::warn!(error = %e, "missing ledger ID");
                 return Err(e);
             }
         };
@@ -359,7 +359,7 @@ pub async fn query_ledger(
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "ledger alias mismatch");
+            tracing::warn!(error = %e, "ledger ID mismatch");
             return Err(e);
         }
     };
@@ -432,32 +432,32 @@ fn requires_dataset_features(query: &JsonValue) -> bool {
 
 async fn execute_query(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     query_json: &JsonValue,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create execution span
-    let span = tracing::info_span!("query_execute", ledger_id = alias, query_kind = "fql");
+    let span = tracing::info_span!("query_execute", ledger_id = ledger_id, query_kind = "fql");
     let _guard = span.enter();
 
     // Check for history query: explicit "to" key indicates history mode
     // History queries must go through the dataset/connection path for correct index selection
     if query_json.get("to").is_some() {
-        return execute_history_query(state, alias, query_json, &span).await;
+        return execute_history_query(state, ledger_id, query_json, &span).await;
     }
 
     // Check for dataset features (from-named, from array, from object with graph/alias/time)
     // These require the connection execution path for proper dataset handling
     if requires_dataset_features(query_json) {
-        return execute_dataset_query(state, alias, query_json, &span).await;
+        return execute_dataset_query(state, ledger_id, query_json, &span).await;
     }
 
     // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
     if state.config.is_proxy_storage_mode() {
-        return execute_query_proxy(state, alias, query_json, &span).await;
+        return execute_query_proxy(state, ledger_id, query_json, &span).await;
     }
 
     // Shared storage mode: use load_ledger_for_query with freshness checking
-    let ledger = load_ledger_for_query(state, alias, &span).await?;
+    let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
     let graph = FlureeView::from_ledger_state(&ledger);
     let fluree = state.fluree.as_file();
 
@@ -533,14 +533,18 @@ async fn execute_query(
 /// Execute an FQL query in proxy mode (uses FlureeInstance wrapper methods)
 async fn execute_query_proxy(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Check if tracking is requested
     if has_tracking_opts(query_json) {
         // Execute tracked query via FlureeInstance wrapper
-        let response = match state.fluree.query_ledger_tracked(alias, query_json).await {
+        let response = match state
+            .fluree
+            .query_ledger_tracked(ledger_id, query_json)
+            .await
+        {
             Ok(response) => response,
             Err(e) => {
                 let server_error =
@@ -576,7 +580,11 @@ async fn execute_query_proxy(
     }
 
     // Execute query via FlureeInstance wrapper
-    let result = match state.fluree.query_ledger_jsonld(alias, query_json).await {
+    let result = match state
+        .fluree
+        .query_ledger_jsonld(ledger_id, query_json)
+        .await
+    {
         Ok(result) => {
             tracing::info!(
                 status = "success",
@@ -598,12 +606,12 @@ async fn execute_query_proxy(
 /// Execute a SPARQL query against a specific ledger and return JSON result
 async fn execute_sparql_ledger(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     sparql: &str,
     identity: Option<&str>,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create span for peer mode loading
-    let span = tracing::info_span!("sparql_execute", ledger_id = alias);
+    let span = tracing::info_span!("sparql_execute", ledger_id = ledger_id);
     let _guard = span.enter();
 
     // In proxy mode, use the unified FlureeInstance method
@@ -612,13 +620,13 @@ async fn execute_sparql_ledger(
             Some(id) => {
                 state
                     .fluree
-                    .query_ledger_sparql_with_identity(alias, sparql, Some(id))
+                    .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
                     .await?
             }
             None => {
                 state
                     .fluree
-                    .query_ledger_sparql_jsonld(alias, sparql)
+                    .query_ledger_sparql_jsonld(ledger_id, sparql)
                     .await?
             }
         };
@@ -626,7 +634,7 @@ async fn execute_sparql_ledger(
     }
 
     // Shared storage mode: use load_ledger_for_query with freshness checking
-    let ledger = load_ledger_for_query(state, alias, &span).await?;
+    let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
     let graph = FlureeView::from_ledger_state(&ledger);
     let fluree = state.fluree.as_file();
 
@@ -636,7 +644,7 @@ async fn execute_sparql_ledger(
         Some(id) => {
             state
                 .fluree
-                .query_ledger_sparql_with_identity(alias, sparql, Some(id))
+                .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
                 .await?
         }
         None => {
@@ -671,7 +679,7 @@ pub async fn explain(
         "explain",
         request_id.as_deref(),
         trace_id.as_deref(),
-        None, // ledger alias determined later
+        None, // ledger ID determined later
         None, // tenant_id not yet supported
     );
     let _guard = span.enter();
@@ -714,7 +722,7 @@ pub async fn explain(
         }
         Err(e) => {
             set_span_error_code(&span, "error:BadRequest");
-            tracing::warn!(error = %e, "missing ledger alias");
+            tracing::warn!(error = %e, "missing ledger ID");
             return Err(e);
         }
     };
@@ -783,13 +791,13 @@ pub async fn explain(
 /// and reloads if needed using LedgerManager::reload() for coalesced reloading.
 pub(crate) async fn load_ledger_for_query(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     span: &tracing::Span,
-) -> Result<LedgerState<fluree_db_api::FileStorage>> {
+) -> Result<LedgerState> {
     let fluree = state.fluree.as_file();
 
     // Get cached handle (loads if not cached)
-    let handle = fluree.ledger_cached(alias).await.map_err(|e| {
+    let handle = fluree.ledger_cached(ledger_id).await.map_err(|e| {
         set_span_error_code(span, "error:NotFound");
         tracing::error!(error = %e, "ledger not found");
         ServerError::Api(e)
@@ -808,19 +816,19 @@ pub(crate) async fn load_ledger_for_query(
 
     // Check freshness using FreshnessSource trait
     // If no watermark available (SSE hasn't seen ledger), treat as current (lenient policy)
-    if let Some(watermark) = peer_state.watermark(alias) {
+    if let Some(watermark) = peer_state.watermark(ledger_id) {
         match handle.check_freshness(&watermark).await {
             FreshnessCheck::Stale => {
                 // Remote is ahead - reload ledger from shared storage
                 // Uses LedgerManager::reload() which handles coalescing
                 tracing::info!(
-                    alias = alias,
+                    ledger_id = ledger_id,
                     remote_index_t = watermark.index_t,
                     "Refreshing ledger for peer query"
                 );
 
                 if let Some(mgr) = fluree.ledger_manager() {
-                    mgr.reload(alias).await.map_err(ServerError::Api)?;
+                    mgr.reload(ledger_id).await.map_err(ServerError::Api)?;
                     state.refresh_counter.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -831,12 +839,11 @@ pub(crate) async fn load_ledger_for_query(
     } else {
         // No watermark = lenient policy: proceed with cached state
         tracing::debug!(
-            alias = alias,
+            ledger_id = ledger_id,
             "Ledger not yet seen in SSE, using cached state"
         );
     }
 
-    // Return snapshot as LedgerState for backward compatibility
     Ok(handle.snapshot().await.to_ledger_state())
 }
 
@@ -850,21 +857,21 @@ pub(crate) async fn load_ledger_for_query(
 /// - Correct index selection for history mode (includes retracted data)
 /// - `@op` binding population (true = assert, false = retract)
 ///
-/// If the query doesn't have a `from` key, the ledger alias from the URL path is injected.
+/// If the query doesn't have a `from` key, the ledger ID from the URL path is injected.
 async fn execute_history_query(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Clone the query so we can potentially inject the `from` key
     let mut query = query_json.clone();
 
-    // If query doesn't have a `from` key, inject the ledger alias from the URL path
+    // If query doesn't have a `from` key, inject the ledger ID from the URL path
     // This allows users to POST to /:ledger/query with just `{ "to": "...", ... }`
     if query.get("from").is_none() {
         if let Some(obj) = query.as_object_mut() {
-            obj.insert("from".to_string(), JsonValue::String(alias.to_string()));
+            obj.insert("from".to_string(), JsonValue::String(ledger_id.to_string()));
         }
     }
 
@@ -944,21 +951,21 @@ async fn execute_history_query(
 /// - Graph selectors (from object with graph field)
 /// - Dataset-local aliases for GRAPH patterns
 ///
-/// If the query doesn't have a `from` key, the ledger alias from the URL path is injected.
+/// If the query doesn't have a `from` key, the ledger ID from the URL path is injected.
 async fn execute_dataset_query(
     state: &AppState,
-    alias: &str,
+    ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Clone the query so we can potentially inject the `from` key
     let mut query = query_json.clone();
 
-    // If query doesn't have a `from` key, inject the ledger alias from the URL path
+    // If query doesn't have a `from` key, inject the ledger ID from the URL path
     // This allows users to POST to /:ledger/query with just `{ "from-named": [...], ... }`
     if query.get("from").is_none() {
         if let Some(obj) = query.as_object_mut() {
-            obj.insert("from".to_string(), JsonValue::String(alias.to_string()));
+            obj.insert("from".to_string(), JsonValue::String(ledger_id.to_string()));
         }
     }
 

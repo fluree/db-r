@@ -475,7 +475,7 @@ async fn vector_search_post_indexing() {
     use support::start_background_indexer_local;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/vector-post-index:main";
+    let ledger_id = "it/vector-post-index:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -485,7 +485,7 @@ async fn vector_search_post_indexing() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let ctx = json!([
@@ -526,7 +526,7 @@ async fn vector_search_post_indexing() {
                 .expect("insert_with_opts");
 
             // Trigger indexing and wait for completion
-            let completion = handle.trigger(alias, result.receipt.t).await;
+            let completion = handle.trigger(ledger_id, result.receipt.t).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { index_t, .. } => {
                     assert!(index_t >= result.receipt.t);
@@ -538,7 +538,7 @@ async fn vector_search_post_indexing() {
             // Verify nameservice has index address
             let record = fluree
                 .nameservice()
-                .lookup(alias)
+                .lookup(ledger_id)
                 .await
                 .expect("ns lookup")
                 .expect("ns record");
@@ -548,7 +548,7 @@ async fn vector_search_post_indexing() {
             );
 
             // Load indexed ledger and query
-            let loaded = fluree.ledger(alias).await.expect("load indexed ledger");
+            let loaded = fluree.ledger(ledger_id).await.expect("load indexed ledger");
 
             let query = json!({
                 "@context": ctx,
@@ -596,7 +596,7 @@ async fn vector_search_novelty_plus_indexed() {
     use support::start_background_indexer_local;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/vector-novelty-plus-index:main";
+    let ledger_id = "it/vector-novelty-plus-index:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -606,7 +606,7 @@ async fn vector_search_novelty_plus_indexed() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let ctx = json!([
@@ -641,7 +641,7 @@ async fn vector_search_novelty_plus_indexed() {
                 .expect("batch1");
 
             // Index batch 1
-            let completion = handle.trigger(alias, r1.receipt.t).await;
+            let completion = handle.trigger(ledger_id, r1.receipt.t).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -659,7 +659,7 @@ async fn vector_search_novelty_plus_indexed() {
             });
 
             // Load the indexed ledger, then insert batch2 on top
-            let indexed_ledger = fluree.ledger(alias).await.expect("load indexed");
+            let indexed_ledger = fluree.ledger(ledger_id).await.expect("load indexed");
             let r2 = fluree
                 .insert_with_opts(
                     indexed_ledger,
@@ -781,7 +781,7 @@ async fn vector_cosine_normalized_optimization() {
     use support::start_background_indexer_local;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/vector-cosine-norm:main";
+    let ledger_id = "it/vector-cosine-norm:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -791,7 +791,7 @@ async fn vector_cosine_normalized_optimization() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let ctx = json!([
@@ -832,14 +832,14 @@ async fn vector_cosine_normalized_optimization() {
                 .expect("insert");
 
             // Index
-            let completion = handle.trigger(alias, r.receipt.t).await;
+            let completion = handle.trigger(ledger_id, r.receipt.t).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             }
 
-            let loaded = fluree.ledger(alias).await.expect("load");
+            let loaded = fluree.ledger(ledger_id).await.expect("load");
 
             // Query with cosine similarity
             let cosine_query = json!({

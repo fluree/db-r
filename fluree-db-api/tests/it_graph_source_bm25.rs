@@ -12,8 +12,8 @@ async fn bm25_create_full_text_index_indexes_docs_and_is_loadable() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Seed a small ledger
-    let alias = "bm25/docs:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "bm25/docs:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -30,7 +30,7 @@ async fn bm25_create_full_text_index_indexes_docs_and_is_loadable() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("bm25-search", alias, query);
+    let cfg = Bm25CreateConfig::new("bm25-search", ledger_id, query);
     let created = fluree.create_full_text_index(cfg).await.unwrap();
     assert!(created.doc_count > 0, "expected index to include documents");
     assert!(created.index_id.is_some(), "expected persisted index id");
@@ -49,8 +49,8 @@ async fn bm25_search_returns_scored_results() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Seed ledger with documents
-    let alias = "bm25/search:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "bm25/search:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -68,7 +68,7 @@ async fn bm25_search_returns_scored_results() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("search-test", alias, query);
+    let cfg = Bm25CreateConfig::new("search-test", ledger_id, query);
     let created = fluree.create_full_text_index(cfg).await.unwrap();
 
     // Load and search using Bm25Scorer
@@ -122,8 +122,8 @@ async fn bm25_sync_indexes_new_documents() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create initial ledger with one doc
-    let alias = "bm25/sync:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "bm25/sync:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx1 = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -139,7 +139,7 @@ async fn bm25_sync_indexes_new_documents() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("sync-test", alias, query);
+    let cfg = Bm25CreateConfig::new("sync-test", ledger_id, query);
     let created = fluree.create_full_text_index(cfg).await.unwrap();
     assert_eq!(created.doc_count, 1, "expected 1 doc initially");
 
@@ -175,8 +175,8 @@ async fn bm25_snapshot_history_tracks_versions() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with doc
-    let alias = "bm25/history:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "bm25/history:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx1 = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -193,7 +193,7 @@ async fn bm25_snapshot_history_tracks_versions() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("history-test", alias, query);
+    let cfg = Bm25CreateConfig::new("history-test", ledger_id, query);
     let created = fluree.create_full_text_index(cfg).await.unwrap();
 
     // Add another doc and sync (snapshot at t2)
@@ -235,8 +235,8 @@ async fn bm25_drop_full_text_index_cleans_up() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with doc
-    let alias = "bm25/drop:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "bm25/drop:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -252,7 +252,7 @@ async fn bm25_drop_full_text_index_cleans_up() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("drop-test", alias, query);
+    let cfg = Bm25CreateConfig::new("drop-test", ledger_id, query);
     let created = fluree.create_full_text_index(cfg).await.unwrap();
     assert!(created.doc_count > 0);
 
@@ -316,8 +316,8 @@ async fn bm25_recreate_after_drop() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with docs
-    let alias = "bm25/recreate:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "bm25/recreate:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -334,7 +334,7 @@ async fn bm25_recreate_after_drop() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("recreate-test", alias, query.clone());
+    let cfg = Bm25CreateConfig::new("recreate-test", ledger_id, query.clone());
     let created = fluree.create_full_text_index(cfg).await.unwrap();
     assert_eq!(created.doc_count, 2, "initial index should have 2 docs");
 
@@ -367,7 +367,7 @@ async fn bm25_recreate_after_drop() {
     let _ledger2 = fluree.insert(ledger1, &tx2).await.unwrap().ledger;
 
     // Recreate index with SAME name
-    let cfg2 = Bm25CreateConfig::new("recreate-test", alias, query);
+    let cfg2 = Bm25CreateConfig::new("recreate-test", ledger_id, query);
     let created2 = fluree.create_full_text_index(cfg2).await.unwrap();
 
     // New index should see all 3 documents
@@ -417,8 +417,8 @@ async fn bm25_federated_query_via_provider() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with documents
-    let alias = "bm25/federated:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "bm25/federated:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -436,7 +436,7 @@ async fn bm25_federated_query_via_provider() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("fed-search", alias, query);
+    let cfg = Bm25CreateConfig::new("fed-search", ledger_id, query);
     let created = fluree.create_full_text_index(cfg).await.unwrap();
     assert_eq!(created.doc_count, 3);
 
@@ -525,8 +525,11 @@ async fn bm25_file_backed_storage() {
         .expect("build file fluree");
 
     // Create ledger with documents
-    let alias = "bm25/file:main";
-    let ledger = fluree.create_ledger(alias).await.expect("create ledger");
+    let ledger_id = "bm25/file:main";
+    let ledger = fluree
+        .create_ledger(ledger_id)
+        .await
+        .expect("create ledger");
     let tx = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -544,7 +547,7 @@ async fn bm25_file_backed_storage() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("article-search", alias, query);
+    let cfg = Bm25CreateConfig::new("article-search", ledger_id, query);
     let created = fluree
         .create_full_text_index(cfg)
         .await
@@ -614,8 +617,8 @@ async fn bm25_query_connection_with_idx_pattern() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with documents
-    let alias = "bm25/qc:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "bm25/qc:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -633,7 +636,7 @@ async fn bm25_query_connection_with_idx_pattern() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("qc-search", alias, index_query);
+    let cfg = Bm25CreateConfig::new("qc-search", ledger_id, index_query);
     let created = fluree
         .create_full_text_index(cfg)
         .await
@@ -643,7 +646,7 @@ async fn bm25_query_connection_with_idx_pattern() {
     // Test 1: Regular query via query_connection_with_bm25
     let regular_query = json!({
         "@context": { "ex":"http://example.org/" },
-        "from": alias,
+        "from": ledger_id,
         "where": [{"@id": "?doc", "@type": "ex:Doc", "ex:author": "?author"}],
         "select": ["?doc", "?author"]
     });
@@ -663,7 +666,7 @@ async fn bm25_query_connection_with_idx_pattern() {
     // - Join with ledger data to get author
     let idx_query = json!({
         "@context": { "ex":"http://example.org/", "f": "https://ns.flur.ee/db#" },
-        "from": alias,
+        "from": ledger_id,
         "where": [
             // Search the BM25 index for "rust" FIRST - produces initial bindings
             {
@@ -728,8 +731,8 @@ async fn bm25_federated_query_with_aggregation() {
     let fluree = FlureeBuilder::memory().build_memory();
 
     // Create ledger with books having year and category metadata
-    let alias = "bm25/agg:main";
-    let ledger0 = support::genesis_ledger(&fluree, alias);
+    let ledger_id = "bm25/agg:main";
+    let ledger0 = support::genesis_ledger(&fluree, ledger_id);
     let tx = json!({
         "@context": { "ex":"http://example.org/" },
         "@graph": [
@@ -749,7 +752,7 @@ async fn bm25_federated_query_with_aggregation() {
         "select": { "?x": ["@id", "ex:title"] }
     });
 
-    let cfg = Bm25CreateConfig::new("book-search", alias, query);
+    let cfg = Bm25CreateConfig::new("book-search", ledger_id, query);
     let created = fluree.create_full_text_index(cfg).await.unwrap();
     assert_eq!(created.doc_count, 5, "expected 5 indexed books");
 

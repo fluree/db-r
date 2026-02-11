@@ -31,7 +31,7 @@ use crate::ir::{IndexSearchPattern, IndexSearchTarget};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
-use fluree_db_core::{FlakeValue, Storage};
+use fluree_db_core::FlakeValue;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -150,9 +150,9 @@ pub trait Bm25SearchProvider: std::fmt::Debug + Send + Sync {
 ///
 /// The operator checks for `bm25_search_provider` first; if not available, it falls back
 /// to `bm25_provider` for backward compatibility.
-pub struct Bm25SearchOperator<S: Storage + 'static> {
+pub struct Bm25SearchOperator {
     /// Child operator providing input solutions (may be EmptyOperator seed)
-    child: BoxedOperator<S>,
+    child: BoxedOperator,
     /// Search pattern
     pattern: IndexSearchPattern,
     /// Output schema (child schema + any new vars from the search result)
@@ -173,8 +173,8 @@ pub struct Bm25SearchOperator<S: Storage + 'static> {
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> Bm25SearchOperator<S> {
-    pub fn new(child: BoxedOperator<S>, pattern: IndexSearchPattern) -> Self {
+impl Bm25SearchOperator {
+    pub fn new(child: BoxedOperator, pattern: IndexSearchPattern) -> Self {
         let child_schema = child.schema();
 
         // Build output schema: start with child vars, then add id/score/ledger vars if missing.
@@ -220,7 +220,7 @@ impl<S: Storage + 'static> Bm25SearchOperator<S> {
 
     fn resolve_target_from_row(
         &self,
-        ctx: &ExecutionContext<'_, S>,
+        ctx: &ExecutionContext<'_>,
         row: &crate::binding::RowView<'_>,
     ) -> Result<Option<String>> {
         match &self.pattern.target {
@@ -302,12 +302,12 @@ impl<S: Storage + 'static> Bm25SearchOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
+impl Operator for Bm25SearchOperator {
     fn schema(&self) -> &[VarId] {
         self.schema()
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         self.child.open(ctx).await?;
 
         // BM25 search works in both single-ledger and multi-ledger (dataset) contexts.
@@ -385,7 +385,7 @@ impl<S: Storage + 'static> Operator<S> for Bm25SearchOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if self.state != OperatorState::Open {
             return Ok(None);
         }
@@ -622,7 +622,7 @@ mod tests {
     use crate::ir::{IndexSearchTarget, Pattern};
     use crate::seed::EmptyOperator;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::{Db, MemoryStorage};
+    use fluree_db_core::Db;
 
     #[derive(Debug, Default)]
     struct TestProvider {
@@ -647,8 +647,8 @@ mod tests {
         }
     }
 
-    fn make_test_db() -> Db<MemoryStorage> {
-        let mut db = Db::genesis(MemoryStorage::new(), "test/main");
+    fn make_test_db() -> Db {
+        let mut db = Db::genesis("test/main");
         // Ensure example IRIs used by BM25 tests are encodable to SIDs.
         db.namespace_codes
             .insert(100, "http://example.org/".to_string());
@@ -688,9 +688,9 @@ mod tests {
 
         // Build operator with explicit seed (EmptyOperator) to mimic runner behavior.
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.bm25_provider = Some(&provider);
@@ -729,9 +729,9 @@ mod tests {
         let patterns = vec![Pattern::IndexSearch(isp)];
 
         let empty = EmptyOperator::new();
-        let seed: BoxedOperator<MemoryStorage> = Box::new(empty);
-        let mut op = build_where_operators_seeded::<MemoryStorage>(Some(seed), &patterns, None)
-            .expect("build operators");
+        let seed: BoxedOperator = Box::new(empty);
+        let mut op =
+            build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         let mut ctx = ExecutionContext::new(&db, &vars);
         ctx.bm25_provider = Some(&provider);

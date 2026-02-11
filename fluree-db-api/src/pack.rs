@@ -204,7 +204,7 @@ pub fn validate_pack_request(request: &PackRequest) -> std::result::Result<(), S
 /// This function is meant to be `tokio::spawn`ed by the HTTP handler.
 pub async fn stream_pack<S, N>(
     fluree: &crate::Fluree<S, N>,
-    handle: &LedgerHandle<S>,
+    handle: &LedgerHandle,
     request: &PackRequest,
     frame_tx: mpsc::Sender<PackChunk>,
 ) -> PackStreamResult
@@ -240,7 +240,7 @@ where
 
 async fn stream_pack_inner<S, N>(
     fluree: &crate::Fluree<S, N>,
-    handle: &LedgerHandle<S>,
+    handle: &LedgerHandle,
     request: &PackRequest,
     frame_tx: &mpsc::Sender<PackChunk>,
 ) -> std::result::Result<PackStreamResult, String>

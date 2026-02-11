@@ -27,7 +27,6 @@ use crate::error::Result;
 use crate::flake::Flake;
 use crate::overlay::{NoOverlay, OverlayProvider};
 use crate::sid::Sid;
-use crate::storage::Storage;
 use crate::value::FlakeValue;
 
 /// Batch size constant for batched subject joins.
@@ -47,16 +46,13 @@ pub const BATCHED_JOIN_SIZE: usize = 100_000;
 /// * `test` - Comparison operator (=, <, <=, >, >=)
 /// * `match_val` - Components to match
 /// * `opts` - Query options (limits, offset)
-pub async fn range<S>(
-    db: &Db<S>,
+pub async fn range(
+    db: &Db,
     index: IndexType,
     test: RangeTest,
     match_val: RangeMatch,
     opts: RangeOptions,
-) -> Result<Vec<Flake>>
-where
-    S: Storage,
-{
+) -> Result<Vec<Flake>> {
     range_with_overlay(db, &NoOverlay, index, test, match_val, opts).await
 }
 
@@ -64,8 +60,8 @@ where
 ///
 /// Delegates to the `RangeProvider` attached to the `Db`.  For genesis
 /// databases (t=0, no provider), returns overlay-only flakes.
-pub async fn range_with_overlay<S, O>(
-    db: &Db<S>,
+pub async fn range_with_overlay<O>(
+    db: &Db,
     overlay: &O,
     index: IndexType,
     test: RangeTest,
@@ -73,7 +69,6 @@ pub async fn range_with_overlay<S, O>(
     opts: RangeOptions,
 ) -> Result<Vec<Flake>>
 where
-    S: Storage,
     O: OverlayProvider + ?Sized,
 {
     match db.range_provider.as_ref() {
@@ -111,8 +106,8 @@ where
 /// that need to scan between two different subjects.
 ///
 /// Delegates to `RangeProvider::range_bounded`.
-pub async fn range_bounded_with_overlay<S, O>(
-    db: &Db<S>,
+pub async fn range_bounded_with_overlay<O>(
+    db: &Db,
     overlay: &O,
     index: IndexType,
     start_bound: Flake,
@@ -120,7 +115,6 @@ pub async fn range_bounded_with_overlay<S, O>(
     opts: RangeOptions,
 ) -> Result<Vec<Flake>>
 where
-    S: Storage,
     O: OverlayProvider + ?Sized,
 {
     match db.range_provider.as_ref() {

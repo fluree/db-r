@@ -77,7 +77,7 @@ type BenchFluree = fluree_db_api::Fluree<
     fluree_db_core::MemoryStorage,
     fluree_db_nameservice::memory::MemoryNameService,
 >;
-type BenchLedger = fluree_db_api::LedgerState<fluree_db_core::MemoryStorage>;
+type BenchLedger = fluree_db_api::LedgerState;
 
 // ---------------------------------------------------------------------------
 // Data generation
@@ -211,7 +211,7 @@ async fn setup_dataset_indexed(
     n_articles: usize,
 ) -> (
     BenchFluree,
-    fluree_db_api::view::FlureeView<fluree_db_core::MemoryStorage>,
+    fluree_db_api::view::FlureeView,
     JsonValue,
     JsonValue,
     usize,

@@ -13,10 +13,10 @@ use support::{assert_index_defaults, genesis_ledger};
 async fn policy_applies_to_time_travel_queries() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "policy/time-travel:main";
+    let ledger_id = "policy/time-travel:main";
 
     // t=1
-    let ledger0 = genesis_ledger(&fluree, alias);
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
     let tx1 = json!({
         "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/"},
         "@graph": [{
@@ -29,7 +29,7 @@ async fn policy_applies_to_time_travel_queries() {
     let _ = fluree.insert(ledger0, &tx1).await.expect("tx1");
 
     // t=2 (any second commit so time-travel path is exercised)
-    let ledger1 = fluree.ledger(alias).await.expect("ledger at t=1");
+    let ledger1 = fluree.ledger(ledger_id).await.expect("ledger at t=1");
     let tx2 = json!({
         "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/"},
         "@graph": [{
@@ -44,7 +44,7 @@ async fn policy_applies_to_time_travel_queries() {
     // Baseline (no policy): time-travel at t=1 should see Alice's SSN.
     let q_ssn_t1 = json!({
         "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/"},
-        "from": {"@id": alias, "t": 1},
+        "from": {"@id": ledger_id, "t": 1},
         "select": ["?ssn"],
         "where": {"@id":"ex:alice", "schema:ssn":"?ssn"}
     });
@@ -52,7 +52,7 @@ async fn policy_applies_to_time_travel_queries() {
         .query_connection(&q_ssn_t1)
         .await
         .expect("query ssn t=1 baseline");
-    let ledger = fluree.ledger(alias).await.expect("ledger");
+    let ledger = fluree.ledger(ledger_id).await.expect("ledger");
     let jsonld = out.to_jsonld(&ledger.db).expect("to_jsonld baseline");
     assert_eq!(jsonld, json!(["111-11-1111"]));
 
@@ -76,7 +76,7 @@ async fn policy_applies_to_time_travel_queries() {
     // With policy: requiring ssn should yield 0 rows at t=1.
     let q_ssn_t1_policy = json!({
         "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/","f":"https://ns.flur.ee/db#"},
-        "from": {"@id": alias, "t": 1},
+        "from": {"@id": ledger_id, "t": 1},
         "opts": {"policy": policy.clone(), "default-allow": true},
         "select": ["?ssn"],
         "where": {"@id":"ex:alice", "schema:ssn":"?ssn"}
@@ -91,7 +91,7 @@ async fn policy_applies_to_time_travel_queries() {
     // With policy: non-ssn fields still visible at t=1.
     let q_name_t1_policy = json!({
         "@context": {"ex":"http://example.org/ns/","schema":"http://schema.org/","f":"https://ns.flur.ee/db#"},
-        "from": {"@id": alias, "t": 1},
+        "from": {"@id": ledger_id, "t": 1},
         "opts": {"policy": policy.clone(), "default-allow": true},
         "select": ["?name"],
         "where": {"@id":"ex:alice", "schema:name":"?name"}

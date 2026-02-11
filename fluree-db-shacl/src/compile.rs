@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::predicates;
 use fluree_db_core::{
     range_with_overlay, Db, Flake, FlakeValue, IndexType, OverlayProvider, RangeMatch,
-    RangeOptions, RangeTest, Sid, Storage,
+    RangeOptions, RangeTest, Sid,
 };
 use fluree_vocab::namespaces::{RDF, SHACL};
 use fluree_vocab::rdf_names;
@@ -165,8 +165,8 @@ impl ShapeCompiler {
     /// This function queries both the indexed database and any uncommitted
     /// novelty flakes to find SHACL shapes. This is important because shapes
     /// may be defined in the same transaction as the data they validate.
-    pub async fn compile_from_db<S: Storage, O: OverlayProvider>(
-        db: &Db<S>,
+    pub async fn compile_from_db<O: OverlayProvider>(
+        db: &Db,
         overlay: &O,
     ) -> Result<Vec<CompiledShape>> {
         let mut compiler = Self::new();
@@ -253,11 +253,7 @@ impl ShapeCompiler {
     }
 
     /// Expand RDF lists that were referenced by sh:in, sh:and, sh:or, sh:xone
-    async fn expand_rdf_lists<S: Storage, O: OverlayProvider>(
-        &mut self,
-        db: &Db<S>,
-        overlay: &O,
-    ) -> Result<()> {
+    async fn expand_rdf_lists<O: OverlayProvider>(&mut self, db: &Db, overlay: &O) -> Result<()> {
         let rdf_first = Sid::new(RDF, rdf_names::FIRST);
         let rdf_rest = Sid::new(RDF, rdf_names::REST);
         let rdf_nil = Sid::new(RDF, rdf_names::NIL);
@@ -793,8 +789,8 @@ impl ShapeCompiler {
 }
 
 /// Traverse an RDF list and collect all values
-async fn traverse_rdf_list<S: Storage, O: OverlayProvider>(
-    db: &Db<S>,
+async fn traverse_rdf_list<O: OverlayProvider>(
+    db: &Db,
     overlay: &O,
     list_head: &Sid,
     rdf_first: &Sid,

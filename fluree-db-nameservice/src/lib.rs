@@ -220,18 +220,6 @@ impl GraphSourceType {
             ns_types::GEO_INDEX => GraphSourceType::Geo,
             ns_types::R2RML_MAPPING => GraphSourceType::R2rml,
             ns_types::ICEBERG_MAPPING => GraphSourceType::Iceberg,
-            // Fuzzy matching fallback for legacy or abbreviated type strings
-            _ if s.contains("BM25") || s.contains("bm25") || s.contains("Bm25") => {
-                GraphSourceType::Bm25
-            }
-            _ if s.contains("Vector") || s.contains("vector") || s.contains("Hnsw") => {
-                GraphSourceType::Vector
-            }
-            _ if s.contains("Geo") || s.contains("geo") => GraphSourceType::Geo,
-            _ if s.contains("R2RML") || s.contains("r2rml") || s.contains("R2rml") => {
-                GraphSourceType::R2rml
-            }
-            _ if s.contains("Iceberg") || s.contains("iceberg") => GraphSourceType::Iceberg,
             _ => GraphSourceType::Unknown(s.to_string()),
         }
     }
@@ -1068,24 +1056,7 @@ mod tests {
             GraphSourceType::from_type_string(ns_types::ICEBERG_MAPPING),
             GraphSourceType::Iceberg
         );
-        // Fuzzy matching fallback (legacy)
-        assert_eq!(
-            GraphSourceType::from_type_string("fidx:BM25"),
-            GraphSourceType::Bm25
-        );
-        assert_eq!(
-            GraphSourceType::from_type_string("fidx:Vector"),
-            GraphSourceType::Vector
-        );
-        assert_eq!(
-            GraphSourceType::from_type_string("https://ns.flur.ee/index#BM25"),
-            GraphSourceType::Bm25
-        );
-        assert_eq!(
-            GraphSourceType::from_type_string("https://ns.flur.ee/index#Vector"),
-            GraphSourceType::Vector
-        );
-        // Unknown type
+        // Unknown types
         assert_eq!(
             GraphSourceType::from_type_string("https://example.com/Custom"),
             GraphSourceType::Unknown("https://example.com/Custom".to_string())

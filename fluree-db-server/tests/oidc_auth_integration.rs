@@ -14,6 +14,7 @@ use tower::ServiceExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use fluree_db_core::{ContentId, ContentKind};
 use fluree_db_server::config::{AdminAuthMode, DataAuthMode, EventsAuthMode};
 use fluree_db_server::routes::build_router;
 use fluree_db_server::{AppState, ServerConfig, TelemetryConfig};
@@ -1017,7 +1018,13 @@ async fn oidc_rs256_storage_proxy_block_fetch() {
     });
     let token = create_rs256_jwt(&claims, kid);
 
-    // POST /v1/fluree/storage/block with a bogus address — auth should pass, but 404 on content
+    // POST /v1/fluree/storage/block with a bogus CID — auth should pass, but 404 on content
+    let fake_cid = ContentId::new(ContentKind::Commit, b"nonexistent").to_string();
+    let body = serde_json::to_string(&json!({
+        "cid": fake_cid,
+        "ledger": "test-ledger"
+    }))
+    .unwrap();
     let resp = app
         .oneshot(
             Request::builder()
@@ -1025,7 +1032,7 @@ async fn oidc_rs256_storage_proxy_block_fetch() {
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token))
-                .body(Body::from(r#"{"address":"nonexistent-address"}"#))
+                .body(Body::from(body))
                 .unwrap(),
         )
         .await

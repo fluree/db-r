@@ -114,7 +114,7 @@ where
 {
     pub async fn push_commits_with_handle(
         &self,
-        handle: &LedgerHandle<S>,
+        handle: &LedgerHandle,
         request: PushCommitsRequest,
         opts: &QueryConnectionOptions,
         index_config: &IndexConfig,
@@ -432,8 +432,8 @@ fn validate_required_blobs(
     Ok(())
 }
 
-async fn build_policy_ctx_for_push<S: Storage + Clone + 'static>(
-    base: &LedgerState<S>,
+async fn build_policy_ctx_for_push(
+    base: &LedgerState,
     evolving: &Novelty,
     current_t: i64,
     opts: &QueryConnectionOptions,
@@ -442,12 +442,12 @@ async fn build_policy_ctx_for_push<S: Storage + Clone + 'static>(
     build_policy_context_from_opts(&base.db, evolving, Some(evolving), current_t, opts).await
 }
 
-async fn stage_commit_flakes<S: Storage + Clone + Send + Sync + 'static>(
-    ledger: LedgerState<S>,
+async fn stage_commit_flakes(
+    ledger: LedgerState,
     flakes: &[Flake],
     index_config: &IndexConfig,
     policy_ctx: &PolicyContext,
-) -> std::result::Result<fluree_db_ledger::LedgerView<S>, PushError> {
+) -> std::result::Result<fluree_db_ledger::LedgerView, PushError> {
     let mut options = fluree_db_transact::StageOptions::new().with_index_config(index_config);
     if !policy_ctx.wrapper().is_root() {
         options = options.with_policy(policy_ctx);
@@ -462,8 +462,8 @@ async fn stage_commit_flakes<S: Storage + Clone + Send + Sync + 'static>(
         })
 }
 
-async fn assert_retractions_exist<S: Storage + Clone + 'static>(
-    db: &fluree_db_core::Db<S>,
+async fn assert_retractions_exist(
+    db: &fluree_db_core::Db,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     flakes: &[Flake],
@@ -483,8 +483,8 @@ async fn assert_retractions_exist<S: Storage + Clone + 'static>(
     Ok(())
 }
 
-async fn is_currently_asserted<S: Storage + Clone + 'static>(
-    db: &fluree_db_core::Db<S>,
+async fn is_currently_asserted(
+    db: &fluree_db_core::Db,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     target: &Flake,
@@ -615,11 +615,11 @@ async fn write_commit_blobs<S: Storage + ContentAddressedWrite + Clone + Send + 
     Ok(stored)
 }
 
-fn apply_pushed_commits_to_state<S: Storage + Clone + 'static>(
-    mut base: LedgerState<S>,
+fn apply_pushed_commits_to_state(
+    mut base: LedgerState,
     accepted_all_flakes: &[(i64, Vec<Flake>)],
     stored_commits: &[StoredCommit],
-) -> LedgerState<S> {
+) -> LedgerState {
     // Apply namespace deltas from commits to in-memory Db (Clojure parity).
     //
     // NOTE: We only have access to the full commit structs during validation; the
@@ -737,11 +737,11 @@ pub(crate) fn commit_hash_hex_from_bytes(bytes: &[u8]) -> std::result::Result<St
     Ok(recomputed_hex)
 }
 
-trait LedgerStateCloneExt<S> {
+trait LedgerStateCloneExt {
     fn clone_with_novelty(&self, novelty: Arc<Novelty>) -> Self;
 }
 
-impl<S: Storage + Clone + 'static> LedgerStateCloneExt<S> for LedgerState<S> {
+impl LedgerStateCloneExt for LedgerState {
     fn clone_with_novelty(&self, novelty: Arc<Novelty>) -> Self {
         let mut s = self.clone();
         s.novelty = novelty;
@@ -822,7 +822,7 @@ where
 {
     pub async fn export_commit_range(
         &self,
-        handle: &LedgerHandle<S>,
+        handle: &LedgerHandle,
         request: &ExportCommitsRequest,
     ) -> Result<ExportCommitsResponse> {
         use fluree_db_core::storage::content_store_for;
@@ -986,7 +986,7 @@ where
     /// Call [`set_commit_head`] after all pages are imported.
     pub async fn import_commits_bulk(
         &self,
-        handle: &LedgerHandle<S>,
+        handle: &LedgerHandle,
         response: &ExportCommitsResponse,
     ) -> Result<BulkImportResult> {
         let ledger_id = handle.ledger_id();
@@ -1054,7 +1054,7 @@ where
     /// bulk clone have been imported to make the ledger loadable.
     pub async fn set_commit_head(
         &self,
-        handle: &LedgerHandle<S>,
+        handle: &LedgerHandle,
         head_commit_id: &ContentId,
         head_t: i64,
     ) -> Result<()> {
@@ -1099,7 +1099,7 @@ where
     /// `commits` must be ordered oldest → newest.
     pub async fn import_commits_incremental(
         &self,
-        handle: &LedgerHandle<S>,
+        handle: &LedgerHandle,
         commits: Vec<Base64Bytes>,
         blobs: HashMap<String, Base64Bytes>,
     ) -> Result<CommitImportResult> {

@@ -64,9 +64,9 @@ fn monotonic_secs() -> u64 {
 ///
 /// Safe to pass around and use for queries without blocking other operations.
 /// This is a cheap clone of the underlying state (Db clone is cheap via Arc fields).
-pub struct LedgerSnapshot<S> {
+pub struct LedgerSnapshot {
     /// The indexed database (cheap clone - Arc fields)
-    pub db: Db<S>,
+    pub db: Db,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
     /// Dictionary novelty layer (subjects and strings since last index build)
@@ -86,12 +86,12 @@ pub struct LedgerSnapshot<S> {
     pub binary_store: Option<Arc<BinaryIndexStore>>,
 }
 
-impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
+impl LedgerSnapshot {
     /// Create a snapshot from ledger state
     ///
     /// Note: `binary_store` is set to `None` here — callers that have a
     /// binary store must set it after construction (see `LedgerHandle::snapshot()`).
-    fn from_state(state: &LedgerState<S>) -> Self {
+    fn from_state(state: &LedgerState) -> Self {
         Self {
             db: state.db.clone(), // Cheap: Arc fields
             novelty: Arc::clone(&state.novelty),
@@ -131,7 +131,7 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
     ///
     /// This creates a LedgerState with the same data as the snapshot.
     /// Use this when you need to pass the state to APIs that expect LedgerState.
-    pub fn to_ledger_state(self) -> LedgerState<S> {
+    pub fn to_ledger_state(self) -> LedgerState {
         let dict_novelty = self.dict_novelty;
         LedgerState {
             db: self.db,
@@ -153,26 +153,23 @@ impl<S: Storage + Clone + 'static> LedgerSnapshot<S> {
 ///
 /// Transactions hold this guard across stage+commit to serialize writes
 /// to the same ledger.
-pub struct LedgerWriteGuard<'a, S> {
-    guard: tokio::sync::MutexGuard<'a, LedgerState<S>>,
+pub struct LedgerWriteGuard<'a> {
+    guard: tokio::sync::MutexGuard<'a, LedgerState>,
 }
 
-impl<S: Clone> LedgerWriteGuard<'_, S> {
+impl LedgerWriteGuard<'_> {
     /// Get reference to current state
-    pub fn state(&self) -> &LedgerState<S> {
+    pub fn state(&self) -> &LedgerState {
         &self.guard
     }
 
     /// Clone current state for passing to stage (which consumes by value)
-    pub fn clone_state(&self) -> LedgerState<S>
-    where
-        LedgerState<S>: Clone,
-    {
+    pub fn clone_state(&self) -> LedgerState {
         self.guard.clone()
     }
 
     /// Replace state with new state after successful commit
-    pub fn replace(&mut self, new_state: LedgerState<S>) {
+    pub fn replace(&mut self, new_state: LedgerState) {
         *self.guard = new_state;
     }
 }
@@ -185,13 +182,13 @@ impl<S: Clone> LedgerWriteGuard<'_, S> {
 ///
 /// Provides access to cached ledger state for queries and transactions.
 /// Multiple handles can reference the same cached state (via Arc).
-pub struct LedgerHandle<S> {
-    inner: Arc<LedgerHandleInner<S>>,
+pub struct LedgerHandle {
+    inner: Arc<LedgerHandleInner>,
 }
 
 // Manual Clone impl to avoid requiring S: Clone, C: Clone bounds
 // (Arc<T> is Clone regardless of T)
-impl<S> Clone for LedgerHandle<S> {
+impl Clone for LedgerHandle {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
@@ -202,9 +199,9 @@ impl<S> Clone for LedgerHandle<S> {
 /// Lock ordering invariant: always acquire `state` before `binary_store`.
 /// All paths that touch both locks (snapshot, apply_index_v2, reload)
 /// follow this order to prevent deadlock and ensure coherence.
-struct LedgerHandleInner<S> {
+struct LedgerHandleInner {
     /// Single mutex for all access (queries clone snapshot, txns hold for duration)
-    state: Mutex<LedgerState<S>>,
+    state: Mutex<LedgerState>,
     /// Ledger ID (e.g., "mydb:main")
     ledger_id: String,
     /// Last access time (monotonic secs since process start)
@@ -216,11 +213,11 @@ struct LedgerHandleInner<S> {
     binary_store: Mutex<Option<Arc<BinaryIndexStore>>>,
 }
 
-impl<S: Storage + Clone + 'static> LedgerHandle<S> {
+impl LedgerHandle {
     /// Create a new handle wrapping ledger state
     pub fn new(
         ledger_id: String,
-        state: LedgerState<S>,
+        state: LedgerState,
         binary_store: Option<Arc<BinaryIndexStore>>,
     ) -> Self {
         Self {
@@ -237,7 +234,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     ///
     /// This is functionally identical to `new()`, but the naming clarifies
     /// that this handle is NOT cached and each call creates a fresh load.
-    pub fn ephemeral(ledger_id: String, state: LedgerState<S>) -> Self {
+    pub fn ephemeral(ledger_id: String, state: LedgerState) -> Self {
         Self::new(ledger_id, state, None)
     }
 
@@ -245,7 +242,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     ///
     /// IMPORTANT: Queries must NOT execute while holding the internal lock.
     /// The snapshot is a cheap clone; the lock is released immediately after.
-    pub async fn snapshot(&self) -> LedgerSnapshot<S> {
+    pub async fn snapshot(&self) -> LedgerSnapshot {
         self.touch();
         let state = self.inner.state.lock().await;
         let binary_store = self.inner.binary_store.lock().await.clone();
@@ -260,7 +257,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     }
 
     /// Acquire exclusive access for transaction (hold lock for stage+commit)
-    pub async fn lock_for_write(&self) -> LedgerWriteGuard<'_, S> {
+    pub async fn lock_for_write(&self) -> LedgerWriteGuard<'_> {
         self.touch();
         LedgerWriteGuard {
             guard: self.inner.state.lock().await,
@@ -339,7 +336,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
     /// The state lock is held for the brief atomic swap of both `state` and
     /// `binary_store`, ensuring coherence between `db.range_provider` and
     /// `binary_store` (lock ordering: state → binary_store).
-    pub async fn apply_index_v2(
+    pub async fn apply_index_v2<S: Storage + Clone>(
         &self,
         index_id: &ContentId,
         storage: &S,
@@ -394,7 +391,7 @@ impl<S: Storage + Clone + 'static> LedgerHandle<S> {
             subject_watermarks: root.subject_watermarks,
             string_watermark: root.string_watermark,
         };
-        let mut db = Db::new_meta(meta, storage.clone());
+        let mut db = Db::new_meta(meta);
         db.range_provider = Some(Arc::new(provider));
 
         // Brief lock: swap state + binary_store atomically.
@@ -456,14 +453,14 @@ pub enum FreshnessCheck {
 ///
 /// Note: Loading sends `Result<LedgerHandle>` to waiters (they need the handle).
 ///       Reloading sends `Result<()>` to waiters (handle already obtained).
-enum LoadState<S> {
+enum LoadState {
     /// Initial load in progress - waiters receive handle on success
-    Loading(Vec<oneshot::Sender<std::result::Result<LedgerHandle<S>, Arc<ApiError>>>>),
+    Loading(Vec<oneshot::Sender<std::result::Result<LedgerHandle, Arc<ApiError>>>>),
     /// Loaded and cached
-    Ready(LedgerHandle<S>),
+    Ready(LedgerHandle),
     /// Reload in progress - handle stays valid, waiters receive () on success
     Reloading {
-        handle: LedgerHandle<S>,
+        handle: LedgerHandle,
         waiters: Vec<oneshot::Sender<std::result::Result<(), Arc<ApiError>>>>,
     },
 }
@@ -525,7 +522,7 @@ use fluree_db_query::BinaryRangeProvider;
 /// Returns `Ok(None)` if no index_head_id is present or the root is not v2.
 async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     storage: &S,
-    state: &mut LedgerState<S>,
+    state: &mut LedgerState,
     cache_dir: &std::path::Path,
     leaflet_cache: Option<Arc<LeafletCache>>,
 ) -> std::result::Result<Option<Arc<BinaryIndexStore>>, ApiError> {
@@ -581,7 +578,7 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
 /// and idle eviction.
 pub struct LedgerManager<S, N> {
     /// Cached ledger handles + loading state
-    entries: RwLock<HashMap<String, LoadState<S>>>,
+    entries: RwLock<HashMap<String, LoadState>>,
     /// Storage for ledger loading
     storage: S,
     /// Shared cache for index nodes
@@ -621,7 +618,7 @@ where
     ///
     /// The ledger_id is normalized to canonical form (e.g., "mydb" -> "mydb:main")
     /// before caching to ensure consistent cache keys regardless of input form.
-    pub async fn get_or_load(&self, ledger_id: &str) -> Result<LedgerHandle<S>> {
+    pub async fn get_or_load(&self, ledger_id: &str) -> Result<LedgerHandle> {
         // Normalize ledger_id to canonical form for consistent cache keys
         // This ensures "mydb" and "mydb:main" use the same cache entry
         let canonical_alias =
@@ -800,12 +797,10 @@ where
         let canonical_alias =
             normalize_ledger_id(ledger_id).unwrap_or_else(|_| ledger_id.to_string());
 
-        enum ReloadAction<S> {
-            BecomeLeader(LedgerHandle<S>),
+        enum ReloadAction {
+            BecomeLeader(LedgerHandle),
             WaitForReload(oneshot::Receiver<std::result::Result<(), Arc<ApiError>>>),
-            WaitForInitialLoad(
-                oneshot::Receiver<std::result::Result<LedgerHandle<S>, Arc<ApiError>>>,
-            ),
+            WaitForInitialLoad(oneshot::Receiver<std::result::Result<LedgerHandle, Arc<ApiError>>>),
             NotLoaded,
         }
 

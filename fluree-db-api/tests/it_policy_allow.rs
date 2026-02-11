@@ -10,8 +10,8 @@ use serde_json::json;
 use support::{assert_index_defaults, genesis_ledger, normalize_rows};
 
 /// Helper to seed test data with users having sensitive SSN property.
-async fn seed_user_data(fluree: &support::MemoryFluree, alias: &str) {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_user_data(fluree: &support::MemoryFluree, ledger_id: &str) {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
 
     let txn = json!({
         "@context": {
@@ -698,8 +698,8 @@ async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
 
     local
         .run_until(async move {
-            let alias = "policy/onclass-novelty-prop:main";
-            let ledger0 = support::genesis_ledger_for_fluree(&fluree, alias);
+            let ledger_id ="policy/onclass-novelty-prop:main";
+            let ledger0 = support::genesis_ledger_for_fluree(&fluree, ledger_id);
 
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 0,
@@ -740,7 +740,7 @@ async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
 
             // Reload via `fluree.ledger()` so the returned state has a queryable
             // binary range provider + binary store attached when an index exists.
-            let ledger1 = fluree.ledger(alias).await.expect("fluree.ledger after indexing");
+            let ledger1 = fluree.ledger(ledger_id).await.expect("fluree.ledger after indexing");
             let _ = root_id; // keep for debugging parity
 
             // txn2: update existing user, add SSN WITHOUT restating @type

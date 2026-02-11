@@ -275,16 +275,6 @@ impl PolicySet {
 
         candidates
     }
-
-    /// Get candidate restriction indices for a flake (legacy API).
-    ///
-    /// Prefer `policy_entries_for_flake` when you need per-property class_check_needed info.
-    pub fn restriction_indices_for_flake(&self, subject: &Sid, property: &Sid) -> Vec<usize> {
-        self.policy_entries_for_flake(subject, property)
-            .into_iter()
-            .map(|e| e.idx)
-            .collect()
-    }
 }
 
 /// Inner data for PolicyWrapper (Arc-wrapped for cheap cloning)

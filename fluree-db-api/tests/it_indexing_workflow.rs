@@ -20,9 +20,9 @@ use support::{assert_index_defaults, normalize_rows, start_background_indexer_lo
 async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
     // Clojure: `manual-indexing-test` (transaction metadata)
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/indexing-disabled-metadata:main";
+    let ledger_id = "it/indexing-disabled-metadata:main";
 
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
+    let db0 = Db::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({
@@ -61,7 +61,7 @@ async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
     );
     local
         .run_until(async move {
-            let completion = handle.trigger(alias, result.receipt.t).await;
+            let completion = handle.trigger(ledger_id, result.receipt.t).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -75,7 +75,7 @@ async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
 async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_loads_indexed_ledger() {
     // Clojure: `manual-indexing-blocking-test` + `manual-indexing-updates-branch-state-test`
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/indexing-manual-trigger:main";
+    let ledger_id = "it/indexing-manual-trigger:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -85,7 +85,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -119,7 +119,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
 
             let record = fluree
                 .nameservice()
-                .lookup(alias)
+                .lookup(ledger_id)
                 .await
                 .expect("nameservice lookup")
                 .expect("ns record");
@@ -129,7 +129,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
             );
             assert_eq!(record.commit_t, 10);
 
-            let completion = handle.trigger(alias, record.commit_t).await;
+            let completion = handle.trigger(ledger_id, record.commit_t).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -138,7 +138,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
 
             let record2 = fluree
                 .nameservice()
-                .lookup(alias)
+                .lookup(ledger_id)
                 .await
                 .expect("nameservice lookup")
                 .expect("ns record");
@@ -151,7 +151,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
                 "index_t should catch up"
             );
 
-            let loaded = fluree.ledger(alias).await.expect("load ledger");
+            let loaded = fluree.ledger(ledger_id).await.expect("load ledger");
             assert_eq!(loaded.db.t, 10, "loaded db should be at latest t");
 
             let query = json!({
@@ -184,8 +184,8 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
 
     local
         .run_until(async move {
-            let alias = "it/indexing-workflow:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let ledger_id = "it/indexing-workflow:main";
+            let db0 = Db::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -233,8 +233,8 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
             let t2 = r2.receipt.t;
             assert!(t2 >= t1, "expected monotonic t");
 
-            let c1 = handle.trigger(alias, t1).await;
-            let c2 = handle.trigger(alias, t2).await;
+            let c1 = handle.trigger(ledger_id, t1).await;
+            let c2 = handle.trigger(ledger_id, t2).await;
 
             let (index_t2, _root_id2) = match c2.wait().await {
                 fluree_db_api::IndexOutcome::Completed { index_t, root_id } => (index_t, root_id),
@@ -252,7 +252,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
             };
 
             // Load via fluree.ledger() which attaches BinaryRangeProvider
-            let ledger_loaded = fluree.ledger(alias).await.expect("ledger load");
+            let ledger_loaded = fluree.ledger(ledger_id).await.expect("ledger load");
             assert!(
                 ledger_loaded.t() >= index_t2,
                 "loaded db.t should be >= indexed t"
@@ -293,8 +293,8 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
 
     local
         .run_until(async move {
-            let alias = "it/indexing-file-load:main";
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let ledger_id = "it/indexing-file-load:main";
+            let db0 = Db::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -323,7 +323,7 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
                 ledger = r.ledger;
             }
 
-            let completion = handle.trigger(alias, ledger.t()).await;
+            let completion = handle.trigger(ledger_id, ledger.t()).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -333,7 +333,7 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
             let fluree2 = FlureeBuilder::file(path)
                 .build()
                 .expect("build file fluree2");
-            let loaded = fluree2.ledger(alias).await.expect("load ledger");
+            let loaded = fluree2.ledger(ledger_id).await.expect("load ledger");
             assert_eq!(loaded.db.t, 20);
 
             let query = json!({
@@ -352,9 +352,9 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
 async fn automatic_indexing_disabled_mode_allows_novelty_to_accumulate_without_indexing() {
     // Clojure: `automatic-indexing-disabled-test`
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/indexing-disabled-accumulate:main";
+    let ledger_id = "it/indexing-disabled-accumulate:main";
 
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
+    let db0 = Db::genesis(ledger_id);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     // Insert multiple transactions to build up novelty
@@ -400,10 +400,10 @@ async fn seed_some_commits(
         fluree_db_core::MemoryStorage,
         fluree_db_nameservice::memory::MemoryNameService,
     >,
-    alias: &str,
+    ledger_id: &str,
     n: usize,
-) -> LedgerState<fluree_db_core::MemoryStorage> {
-    let db0 = Db::genesis(fluree.storage().clone(), alias);
+) -> LedgerState {
+    let db0 = Db::genesis(ledger_id);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -606,7 +606,7 @@ async fn reindex_populates_statistics() {
     let a = admin_alias("reindex-stats");
 
     // Create some structured data with types
-    let db0 = Db::genesis(fluree.storage().clone(), &a);
+    let db0 = Db::genesis(&a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -802,7 +802,7 @@ async fn reindex_preserves_filter_queries() {
     let a = admin_alias("reindex-filters");
 
     // Create ledger with salary data
-    let db0 = Db::genesis(fluree.storage().clone(), &a);
+    let db0 = Db::genesis(&a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -889,7 +889,7 @@ async fn reindex_uses_provided_indexer_config() {
     let fluree = FlureeBuilder::memory().build_memory();
     let a = admin_alias("reindex-config");
 
-    let db0 = Db::genesis(fluree.storage().clone(), &a);
+    let db0 = Db::genesis(&a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -961,7 +961,7 @@ async fn reindex_default_from_t_includes_all_data() {
     let fluree = FlureeBuilder::memory().build_memory();
     let a = admin_alias("reindex-from-t");
 
-    let db0 = Db::genesis(fluree.storage().clone(), &a);
+    let db0 = Db::genesis(&a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -1023,7 +1023,7 @@ async fn reindex_default_from_t_includes_all_data() {
 async fn graph_crawl_select_works_after_indexing() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/graph-crawl-indexed:main";
+    let ledger_id = "it/graph-crawl-indexed:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -1033,7 +1033,7 @@ async fn graph_crawl_select_works_after_indexing() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -1067,11 +1067,11 @@ async fn graph_crawl_select_works_after_indexing() {
             // Trigger indexing
             let record = fluree
                 .nameservice()
-                .lookup(alias)
+                .lookup(ledger_id)
                 .await
                 .expect("ns lookup")
                 .expect("ns record");
-            let completion = handle.trigger(alias, record.commit_t).await;
+            let completion = handle.trigger(ledger_id, record.commit_t).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
@@ -1079,7 +1079,7 @@ async fn graph_crawl_select_works_after_indexing() {
             }
 
             // Load indexed ledger
-            let loaded = fluree.ledger(alias).await.expect("load ledger");
+            let loaded = fluree.ledger(ledger_id).await.expect("load ledger");
             assert!(
                 loaded.binary_store.is_some(),
                 "loaded ledger should have binary index store"
@@ -1141,7 +1141,7 @@ async fn graph_crawl_select_works_after_indexing() {
 async fn construct_works_after_indexing() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = "it/construct-indexed:main";
+    let ledger_id = "it/construct-indexed:main";
 
     let (local, handle) = start_background_indexer_local(
         fluree.storage().clone(),
@@ -1151,7 +1151,7 @@ async fn construct_works_after_indexing() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(fluree.storage().clone(), alias);
+            let db0 = Db::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -1181,18 +1181,18 @@ async fn construct_works_after_indexing() {
 
             let record = fluree
                 .nameservice()
-                .lookup(alias)
+                .lookup(ledger_id)
                 .await
                 .expect("ns lookup")
                 .expect("ns record");
-            let completion = handle.trigger(alias, record.commit_t).await;
+            let completion = handle.trigger(ledger_id, record.commit_t).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
             }
 
-            let loaded = fluree.ledger(alias).await.expect("load ledger");
+            let loaded = fluree.ledger(ledger_id).await.expect("load ledger");
             assert!(
                 loaded.binary_store.is_some(),
                 "loaded ledger should have binary index store"

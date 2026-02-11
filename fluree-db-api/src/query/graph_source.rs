@@ -70,7 +70,7 @@ where
     /// Execute a JSON-LD query with R2RML graph source support.
     pub async fn query_graph_source(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db)?;
@@ -102,7 +102,7 @@ where
     /// Execute a SPARQL query with R2RML graph source support.
     pub async fn sparql_graph_source(
         &self,
-        ledger: &LedgerState<S>,
+        ledger: &LedgerState,
         sparql: &str,
     ) -> Result<QueryResult> {
         let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;

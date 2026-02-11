@@ -161,7 +161,7 @@ impl<'a> QueryCore<'a> {
 /// ```
 pub struct ViewQueryBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    view: &'a FlureeView<S>,
+    view: &'a FlureeView,
     core: QueryCore<'a>,
 }
 
@@ -171,7 +171,7 @@ where
     N: NameService,
 {
     /// Create a new builder (called by `FlureeView::query()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: &'a FlureeView<S>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: &'a FlureeView) -> Self {
         Self {
             fluree,
             view,
@@ -316,7 +316,7 @@ where
 /// ```
 pub struct DatasetQueryBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    dataset: &'a FlureeDataSetView<S>,
+    dataset: &'a FlureeDataSetView,
     core: QueryCore<'a>,
 }
 
@@ -326,7 +326,7 @@ where
     N: NameService,
 {
     /// Create a new builder (called by `FlureeDataSetView::query()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, dataset: &'a FlureeDataSetView<S>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, dataset: &'a FlureeDataSetView) -> Self {
         Self {
             fluree,
             dataset,

@@ -31,6 +31,7 @@ use fluree_db_core::{
     OverlayProvider, Sid, Storage,
 };
 use fluree_db_nameservice::NameService;
+
 use fluree_db_novelty::{generate_commit_flakes, trace_commits_by_id, Novelty};
 use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB, JSON_LD, RDF, XSD};
 use fluree_vocab::{rdf_names, xsd_names};
@@ -52,16 +53,16 @@ const TXN_META_GRAPH_LOCAL_NAME: &str = "txn-meta";
 ///
 /// Unlike `LedgerState`, this is immutable and cannot be updated.
 #[derive(Debug)]
-pub struct HistoricalLedgerView<S> {
+pub struct HistoricalLedgerView {
     /// The indexed database (head index or genesis)
-    pub db: Db<S>,
+    pub db: Db,
     /// Optional novelty overlay (commits between index_t and to_t)
     overlay: Option<Arc<Novelty>>,
     /// Time bound for all queries
     to_t: i64,
 }
 
-impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
+impl HistoricalLedgerView {
     /// Load a historical view of a ledger at a specific time
     ///
     /// # Algorithm
@@ -81,7 +82,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
     ///
     /// - `NotFound` if the ledger doesn't exist
     /// - `FutureTime` if `target_t` is beyond the current head
-    pub async fn load_at<N: NameService>(
+    pub async fn load_at<S: Storage + Clone + 'static, N: NameService>(
         ns: &N,
         alias: &str,
         storage: S,
@@ -116,10 +117,10 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
                 serde_json::from_slice(&root_bytes).map_err(|e| {
                     fluree_db_core::Error::invalid_index(format!("invalid root JSON: {}", e))
                 })?;
-            let loaded = Db::from_v2_json(storage.clone(), &root_json)?;
+            let loaded = Db::from_v2_json(&root_json)?;
             (loaded, record.index_t)
         } else {
-            (Db::genesis(storage.clone(), &record.ledger_id), 0)
+            (Db::genesis(&record.ledger_id), 0)
         };
 
         // Build novelty from commits between index_t and target_t.
@@ -312,7 +313,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
     /// Create a historical view directly from components
     ///
     /// This is useful for testing or when you've already loaded the components.
-    pub fn new(db: Db<S>, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
+    pub fn new(db: Db, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
         Self { db, overlay, to_t }
     }
 
@@ -351,7 +352,7 @@ impl<S: Storage + Clone + 'static> HistoricalLedgerView<S> {
 ///
 /// This allows the view to be used directly as an overlay provider in queries.
 /// The `to_t` filtering is handled automatically.
-impl<S: Storage> OverlayProvider for HistoricalLedgerView<S> {
+impl OverlayProvider for HistoricalLedgerView {
     fn epoch(&self) -> u64 {
         self.overlay.as_ref().map(|n| n.epoch).unwrap_or(0)
     }
@@ -396,8 +397,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_new() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
 
         let view = HistoricalLedgerView::new(db, None, 10);
 
@@ -409,8 +409,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_with_overlay() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
@@ -426,8 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_overlay_provider() {
-        let storage = MemoryStorage::new();
-        let db = Db::genesis(storage, "test:main");
+        let db = Db::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty

@@ -25,8 +25,8 @@ fn ctx_datatype() -> JsonValue {
     })
 }
 
-async fn seed_people_for_datatype(fluree: &MemoryFluree, alias: &str) -> MemoryLedger {
-    let ledger0 = genesis_ledger(fluree, alias);
+async fn seed_people_for_datatype(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
+    let ledger0 = genesis_ledger(fluree, ledger_id);
     let ctx = ctx_datatype();
 
     let insert = json!({

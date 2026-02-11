@@ -289,7 +289,7 @@ impl BinaryIndexRoot {
     ///
     /// `stats` and `schema` are optional JSON blobs matching the
     /// `RawDbRootStats`/`RawDbRootSchema` format from `fluree-db-core`.
-    /// When present, `Db::load()` will parse them into `IndexStats`/`IndexSchema`
+    /// When present, `load_db()` will parse them into `IndexStats`/`IndexSchema`
     /// for the query planner.
     pub fn from_cas_artifacts(cfg: CasArtifactsConfig<'_>) -> Self {
         let ns_codes: BTreeMap<u16, String> = cfg

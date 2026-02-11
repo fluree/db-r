@@ -25,7 +25,7 @@ where
     /// in queries against graph sources.
     pub async fn query_dataset_with_bm25(
         &self,
-        dataset: &FlureeDataSetView<S>,
+        dataset: &FlureeDataSetView,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
         // Get the primary graph for parsing/encoding
@@ -111,8 +111,8 @@ where
     /// Execute a connection query with index provider support (BM25 + Vector).
     ///
     /// This method enables both `idx:search` (BM25 full-text search) and `idx:vector`
-    /// (similarity search) patterns in queries. Despite the name (kept for backwards
-    /// compatibility), it supports all graph source index types.
+    /// (similarity search) patterns in queries. Despite the name, it supports all
+    /// graph source index types.
     ///
     /// For queries that don't use graph source patterns, prefer `query_connection()`
     /// as it may take faster code paths for simple single-ledger queries.

@@ -2196,7 +2196,7 @@ where
     ///     .insert(&data)
     ///     .execute().await?;
     /// ```
-    pub fn stage<'a>(&'a self, handle: &'a LedgerHandle<S>) -> RefTransactBuilder<'a, S, N>
+    pub fn stage<'a>(&'a self, handle: &'a LedgerHandle) -> RefTransactBuilder<'a, S, N>
     where
         S: ContentAddressedWrite,
         N: Publisher,
@@ -2221,7 +2221,7 @@ where
     ///     .execute().await?;
     /// let ledger = result.ledger;
     /// ```
-    pub fn stage_owned(&self, ledger: LedgerState<S>) -> OwnedTransactBuilder<'_, S, N>
+    pub fn stage_owned(&self, ledger: LedgerState) -> OwnedTransactBuilder<'_, S, N>
     where
         S: ContentAddressedWrite,
         N: Publisher,
@@ -2317,7 +2317,7 @@ where
     /// If caching is disabled (no `with_ledger_caching()` on builder),
     /// returns an ephemeral handle that wraps a fresh load.
     /// Server code should assert caching is enabled if it expects reuse.
-    pub async fn ledger_cached(&self, ledger_id: &str) -> Result<LedgerHandle<S>> {
+    pub async fn ledger_cached(&self, ledger_id: &str) -> Result<LedgerHandle> {
         match &self.ledger_manager {
             Some(mgr) => mgr.get_or_load(ledger_id).await,
             None => {

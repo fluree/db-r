@@ -36,7 +36,7 @@ use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::ListIndex;
 use fluree_db_core::{
     dt_compatible, range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds,
-    OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid, Storage,
+    OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
 };
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
@@ -548,8 +548,8 @@ impl BinaryScanOperator {
 ///
 /// Uses graph-scoped property datatype counts from `IndexStats.graphs`.
 /// Returns `None` when stats are unavailable or the predicate is not present.
-fn numeric_shape_from_db_stats<S: Storage + 'static>(
-    ctx: &ExecutionContext<'_, S>,
+fn numeric_shape_from_db_stats(
+    ctx: &ExecutionContext<'_>,
     _pred_iri: &str,
     pred_sid_binary: &Sid,
 ) -> Option<NumericShape> {
@@ -597,12 +597,12 @@ fn numeric_shape_from_db_stats<S: Storage + 'static>(
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
+impl Operator for BinaryScanOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -956,7 +956,7 @@ impl<S: Storage + 'static> Operator<S> for BinaryScanOperator {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         if !self.state.can_next() {
             if self.state == OperatorState::Created {
                 return Err(QueryError::OperatorNotOpened);
@@ -1173,15 +1173,15 @@ fn translate_one_flake(
 ///
 /// Overlay flakes are always translatable via `DictOverlay` (ephemeral IDs
 /// are allocated for entities not yet in the persisted dictionaries).
-pub struct ScanOperator<S: Storage + 'static> {
+pub struct ScanOperator {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
     schema: Arc<[VarId]>,
-    inner: Option<BoxedOperator<S>>,
+    inner: Option<BoxedOperator>,
     state: OperatorState,
 }
 
-impl<S: Storage + 'static> ScanOperator<S> {
+impl ScanOperator {
     /// Create a new scan operator for a triple pattern.
     ///
     /// Schema is computed from the pattern variables.
@@ -1199,7 +1199,7 @@ impl<S: Storage + 'static> ScanOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
+impl Operator for ScanOperator {
     fn schema(&self) -> &[VarId] {
         match &self.inner {
             Some(op) => op.schema(),
@@ -1207,7 +1207,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         }
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -1282,7 +1282,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
             (None, None)
         };
 
-        let mut inner: BoxedOperator<S> = if use_binary {
+        let mut inner: BoxedOperator = if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
             let mut op = BinaryScanOperator::new(
                 self.pattern.clone(),
@@ -1300,7 +1300,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         } else {
             // Fallback: range_with_overlay() for pre-index, history, or
             // time-travel-before-base_t queries.
-            Box::new(RangeScanOperator::<S>::new(
+            Box::new(RangeScanOperator::new(
                 self.pattern.clone(),
                 self.object_bounds.clone(),
             ))
@@ -1312,7 +1312,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         match &mut self.inner {
             Some(op) => op.next_batch(ctx).await,
             None => Err(QueryError::OperatorNotOpened),
@@ -1346,7 +1346,7 @@ impl<S: Storage + 'static> Operator<S> for ScanOperator<S> {
 ///
 /// For genesis databases (t=0, no index, no provider), returns overlay-only
 /// flakes.
-struct RangeScanOperator<S: Storage + 'static> {
+struct RangeScanOperator {
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
     schema: Arc<[VarId]>,
@@ -1361,10 +1361,9 @@ struct RangeScanOperator<S: Storage + 'static> {
     p_is_var: bool,
     state: OperatorState,
     batches: VecDeque<Batch>,
-    _marker: std::marker::PhantomData<S>,
 }
 
-impl<S: Storage + 'static> RangeScanOperator<S> {
+impl RangeScanOperator {
     fn new(pattern: TriplePattern, object_bounds: Option<ObjectBounds>) -> Self {
         let p_is_var = matches!(pattern.p, Term::Var(_));
         let (schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
@@ -1379,12 +1378,11 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
             p_is_var,
             state: OperatorState::Created,
             batches: VecDeque::new(),
-            _marker: std::marker::PhantomData,
         }
     }
 
     /// Build a `RangeMatch` from the pattern's bound terms.
-    fn build_range_match(&self, db: &Db<S>) -> RangeMatch {
+    fn build_range_match(&self, db: &Db) -> RangeMatch {
         let mut rm = RangeMatch::new();
 
         match &self.pattern.s {
@@ -1426,7 +1424,7 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
     }
 
     /// Build `RangeOptions` from execution context and this operator's bounds.
-    fn build_range_opts(&self, to_t: i64, ctx: &ExecutionContext<'_, S>) -> RangeOptions {
+    fn build_range_opts(&self, to_t: i64, ctx: &ExecutionContext<'_>) -> RangeOptions {
         let mut opts = RangeOptions::new().with_to_t(to_t);
         if let Some(from_t) = ctx.from_t {
             opts = opts.with_from_t(from_t);
@@ -1445,11 +1443,11 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
     /// Shared by the default-graphs, named-graphs, and single-db paths in `open()`.
     async fn scan_one_graph(
         &self,
-        db: &Db<S>,
+        db: &Db,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         index: IndexType,
-        ctx: &ExecutionContext<'_, S>,
+        ctx: &ExecutionContext<'_>,
         policy_enforcer: Option<&Arc<QueryPolicyEnforcer>>,
     ) -> Result<Vec<Flake>> {
         let range_match = self.build_range_match(db);
@@ -1488,7 +1486,7 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
     ///
     /// `range_with_overlay` may return a superset (especially in the
     /// overlay-only genesis path), so we post-filter here.
-    fn flake_matches(&self, f: &Flake, db: &Db<S>) -> bool {
+    fn flake_matches(&self, f: &Flake, db: &Db) -> bool {
         match &self.pattern.s {
             Term::Sid(sid) if &f.s != sid => return false,
             Term::Iri(iri) => match db.encode_iri(iri) {
@@ -1573,12 +1571,12 @@ impl<S: Storage + 'static> RangeScanOperator<S> {
 }
 
 #[async_trait]
-impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
+impl Operator for RangeScanOperator {
     fn schema(&self) -> &[VarId] {
         &self.schema
     }
 
-    async fn open(&mut self, ctx: &ExecutionContext<'_, S>) -> Result<()> {
+    async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         if !self.state.can_open() {
             if self.state.is_closed() {
                 return Err(QueryError::OperatorClosed);
@@ -1712,7 +1710,7 @@ impl<S: Storage + 'static> Operator<S> for RangeScanOperator<S> {
         Ok(())
     }
 
-    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_, S>) -> Result<Option<Batch>> {
+    async fn next_batch(&mut self, _ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {
         Ok(self.batches.pop_front())
     }
 
