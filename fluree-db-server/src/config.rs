@@ -373,6 +373,14 @@ impl AdminAuthConfig {
 #[command(name = "fluree-server")]
 #[command(about = "Fluree DB HTTP REST API Server")]
 pub struct ServerConfig {
+    /// Path to configuration file (default: walks up from cwd looking for .fluree/config.toml)
+    #[arg(long, env = "FLUREE_CONFIG")]
+    pub config_file: Option<PathBuf>,
+
+    /// Configuration profile to activate (merges [profiles.<name>.server] onto [server])
+    #[arg(long, env = "FLUREE_PROFILE")]
+    pub profile: Option<String>,
+
     /// Address to listen on
     #[arg(long, env = "FLUREE_LISTEN_ADDR", default_value = "0.0.0.0:8090")]
     pub listen_addr: SocketAddr,
@@ -388,6 +396,14 @@ pub struct ServerConfig {
     /// Enable background indexing
     #[arg(long, env = "FLUREE_INDEXING_ENABLED", default_value = "false")]
     pub indexing_enabled: bool,
+
+    /// Novelty size (bytes) that triggers background reindexing (soft threshold)
+    #[arg(long, env = "FLUREE_REINDEX_MIN_BYTES", default_value = "100000")]
+    pub reindex_min_bytes: usize,
+
+    /// Novelty size (bytes) that blocks new commits until reindexing completes (hard threshold)
+    #[arg(long, env = "FLUREE_REINDEX_MAX_BYTES", default_value = "1000000")]
+    pub reindex_max_bytes: usize,
 
     /// Maximum cache entries per ledger
     #[arg(long, env = "FLUREE_CACHE_MAX_ENTRIES", default_value = "10000")]
@@ -610,10 +626,14 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            config_file: None,
+            profile: None,
             listen_addr: "0.0.0.0:8090".parse().unwrap(),
             storage_path: None,
             cors_enabled: true,
             indexing_enabled: false,
+            reindex_min_bytes: 100_000,
+            reindex_max_bytes: 1_000_000,
             cache_max_entries: 10000,
             body_limit: 50 * 1024 * 1024, // 50MB
             log_level: "info".to_string(),

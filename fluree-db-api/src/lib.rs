@@ -1346,6 +1346,18 @@ pub struct FlureeBuilder {
     encryption_key: Option<[u8; 32]>,
     /// Optional ledger cache configuration (enables LedgerManager)
     ledger_cache_config: Option<LedgerManagerConfig>,
+    /// Optional background indexing configuration.
+    /// When set, `build()` will spawn a `BackgroundIndexerWorker`.
+    indexing_config: Option<IndexingBuilderConfig>,
+}
+
+/// Configuration for background indexing in `FlureeBuilder`.
+#[derive(Debug, Clone)]
+pub struct IndexingBuilderConfig {
+    /// Controls index building parameters (leaf sizes, GC, memory budget).
+    pub indexer_config: IndexerConfig,
+    /// Controls novelty backpressure thresholds.
+    pub index_config: IndexConfig,
 }
 
 impl FlureeBuilder {
@@ -1365,6 +1377,7 @@ impl FlureeBuilder {
             storage_path: Some(path),
             encryption_key: None,
             ledger_cache_config: None,
+            indexing_config: None,
         }
     }
 
@@ -1376,6 +1389,7 @@ impl FlureeBuilder {
             storage_path: None,
             encryption_key: None,
             ledger_cache_config: None,
+            indexing_config: None,
         }
     }
 
@@ -1438,6 +1452,7 @@ impl FlureeBuilder {
             storage_path: None,
             encryption_key: None,
             ledger_cache_config: None,
+            indexing_config: None,
         }
     }
 
@@ -1596,6 +1611,7 @@ impl FlureeBuilder {
             storage_path,
             encryption_key,
             ledger_cache_config: None,
+            indexing_config: None,
         })
     }
 
@@ -1666,11 +1682,46 @@ impl FlureeBuilder {
         self
     }
 
+    /// Enable background indexing with default settings.
+    ///
+    /// When enabled, `build()` will spawn a `BackgroundIndexerWorker` that
+    /// automatically indexes ledgers when novelty exceeds the soft threshold.
+    /// Must be called within a tokio runtime context.
+    pub fn with_indexing(mut self) -> Self {
+        self.indexing_config = Some(IndexingBuilderConfig {
+            indexer_config: IndexerConfig::default(),
+            index_config: IndexConfig::default(),
+        });
+        self
+    }
+
+    /// Enable background indexing with custom novelty thresholds.
+    ///
+    /// - `min_bytes`: soft threshold — triggers background indexing
+    /// - `max_bytes`: hard threshold — blocks commits until indexed
+    pub fn with_indexing_thresholds(mut self, min_bytes: usize, max_bytes: usize) -> Self {
+        let index_config = IndexConfig {
+            reindex_min_bytes: min_bytes,
+            reindex_max_bytes: max_bytes,
+        };
+        self.indexing_config = Some(IndexingBuilderConfig {
+            indexer_config: self
+                .indexing_config
+                .map(|c| c.indexer_config)
+                .unwrap_or_default(),
+            index_config,
+        });
+        self
+    }
+
     /// Build a file-backed Fluree instance
     ///
     /// Returns an error if storage_path is not set.
-    /// Indexing is disabled by default; use `set_indexing_mode` after building
-    /// to enable background indexing.
+    /// Indexing is disabled by default; call `with_indexing()` before `build()`
+    /// to enable background indexing, or use `set_indexing_mode` after building.
+    ///
+    /// When indexing is enabled via `with_indexing()`, a `BackgroundIndexerWorker`
+    /// is spawned on the tokio runtime. This must be called within a tokio context.
     #[cfg(feature = "native")]
     pub fn build(self) -> Result<Fluree<FileStorage, FileNameService>> {
         let path = self
@@ -1683,14 +1734,31 @@ impl FlureeBuilder {
         let nameservice = FileNameService::new(&path);
 
         // Create LedgerManager if caching is enabled
-        let ledger_manager = self
-            .ledger_cache_config
-            .map(|config| Arc::new(LedgerManager::new(storage, nameservice.clone(), config)));
+        let ledger_manager = self.ledger_cache_config.map(|config| {
+            Arc::new(LedgerManager::new(
+                storage.clone(),
+                nameservice.clone(),
+                config,
+            ))
+        });
+
+        // Start background indexing if configured
+        let indexing_mode = if let Some(idx_config) = self.indexing_config {
+            let (worker, handle) = BackgroundIndexerWorker::new(
+                storage,
+                Arc::new(nameservice.clone()),
+                idx_config.indexer_config,
+            );
+            tokio::spawn(worker.run());
+            tx::IndexingMode::Background(handle)
+        } else {
+            tx::IndexingMode::Disabled
+        };
 
         Ok(Fluree {
             connection,
             nameservice,
-            indexing_mode: tx::IndexingMode::Disabled,
+            indexing_mode,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager,
         })

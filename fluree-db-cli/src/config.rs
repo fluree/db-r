@@ -102,8 +102,11 @@ pub fn require_fluree_dir_or_global(config_override: Option<&Path>) -> CliResult
     find_or_global_fluree_dir().ok_or(CliError::NoFlureeDir)
 }
 
-/// Create `.fluree/` directory with empty config and storage subdirectory.
-pub fn init_fluree_dir(global: bool) -> CliResult<PathBuf> {
+/// Create `.fluree/` directory with config template and storage subdirectory.
+///
+/// The `config_template` is written to `config.toml` if the file does not already exist.
+/// Pass an empty string to create an empty config file.
+pub fn init_fluree_dir(global: bool, config_template: &str) -> CliResult<PathBuf> {
     let base = if global {
         dirs::home_dir()
             .ok_or_else(|| CliError::Config("cannot determine home directory".into()))?
@@ -119,7 +122,7 @@ pub fn init_fluree_dir(global: bool) -> CliResult<PathBuf> {
 
     let config_path = fluree_dir.join(CONFIG_FILE);
     if !config_path.exists() {
-        fs::write(&config_path, "").map_err(|e| {
+        fs::write(&config_path, config_template).map_err(|e| {
             CliError::Config(format!("failed to create {}: {e}", config_path.display()))
         })?;
     }

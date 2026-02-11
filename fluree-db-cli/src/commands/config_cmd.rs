@@ -54,6 +54,13 @@ pub fn run(action: ConfigAction, fluree_dir: &Path) -> CliResult<()> {
                 CliError::Config(format!("failed to parse config: {e}"))
             })?;
 
+            // A file with only comments parses as an empty table — treat it
+            // the same as an empty file.
+            if doc.as_table().is_some_and(|t| t.is_empty()) {
+                println!("(no configuration set)");
+                return Ok(());
+            }
+
             print_toml_flat("", &doc);
             Ok(())
         }
