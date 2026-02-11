@@ -287,7 +287,11 @@ impl OptionalBuilder for PatternOptionalBuilder {
 
         // Substitute bindings into pattern and create scan operator
         let bound_pattern = self.substitute_pattern(required_batch, row);
-        Ok(Some(Box::new(ScanOperator::new(bound_pattern, None, Vec::new()))))
+        Ok(Some(Box::new(ScanOperator::new(
+            bound_pattern,
+            None,
+            Vec::new(),
+        ))))
     }
 
     fn schema(&self) -> &[VarId] {

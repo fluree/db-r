@@ -1846,10 +1846,10 @@ impl Operator for RangeScanOperator {
                 // Apply inline filters before adding to batch
                 if has_filters {
                     let binding_row = BindingRow::new(&self.schema, &row);
-                    let passes = self
-                        .filters
-                        .iter()
-                        .all(|expr| expr.eval_to_bool::<_>(&binding_row, Some(ctx)).unwrap_or(false));
+                    let passes = self.filters.iter().all(|expr| {
+                        expr.eval_to_bool::<_>(&binding_row, Some(ctx))
+                            .unwrap_or(false)
+                    });
                     if !passes {
                         continue;
                     }

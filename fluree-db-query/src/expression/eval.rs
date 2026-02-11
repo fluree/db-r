@@ -123,11 +123,7 @@ impl Expression {
     ///
     /// The `ctx` parameter provides access to the execution context for resolving
     /// `Binding::EncodedLit` values (late materialization).
-    pub fn eval_to_binding(
-        &self,
-        row: &RowView,
-        ctx: Option<&ExecutionContext<'_>>,
-    ) -> Binding {
+    pub fn eval_to_binding(&self, row: &RowView, ctx: Option<&ExecutionContext<'_>>) -> Binding {
         match self.try_eval_to_binding(row, ctx) {
             Ok(binding) => binding,
             Err(_) => Binding::Unbound,

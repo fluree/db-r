@@ -50,10 +50,7 @@ use crate::binary_scan::ScanOperator;
 /// 3. This var never escapes to external schemas or user code
 const TEMP_OBJECT_VAR: VarId = VarId(u16::MAX - 1);
 
-fn make_property_join_scan(
-    pattern: TriplePattern,
-    bounds: Option<ObjectBounds>,
-) -> BoxedOperator {
+fn make_property_join_scan(pattern: TriplePattern, bounds: Option<ObjectBounds>) -> BoxedOperator {
     Box::new(ScanOperator::new(pattern, bounds, Vec::new()))
 }
 

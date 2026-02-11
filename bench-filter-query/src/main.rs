@@ -20,8 +20,10 @@ use serde_json::{json, Value as JsonValue};
 // Type aliases
 // ============================================================================
 
-type MemoryFluree =
-    fluree_db_api::Fluree<fluree_db_core::MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>;
+type MemoryFluree = fluree_db_api::Fluree<
+    fluree_db_core::MemoryStorage,
+    fluree_db_nameservice::memory::MemoryNameService,
+>;
 
 // ============================================================================
 // Configuration
@@ -86,14 +88,14 @@ struct BenchResult {
 fn median(values: &mut [f64]) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mid = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         (values[mid - 1] + values[mid]) / 2.0
     } else {
         values[mid]
     }
 }
 
-async fn run_query_bench<F, Fut>(
+async fn run_query_bench<F>(
     name: &'static str,
     description: &'static str,
     fluree: &MemoryFluree,
@@ -102,7 +104,6 @@ async fn run_query_bench<F, Fut>(
 ) -> BenchResult
 where
     F: Fn() -> JsonValue,
-    Fut: std::future::Future<Output = ()>,
 {
     let mut times: Vec<f64> = Vec::with_capacity(ITERATIONS);
     let mut last_result_count = 0;
@@ -391,7 +392,7 @@ async fn main() {
 
     // Baseline
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "no_filter",
             "Baseline: scan all entities",
             &fluree,
@@ -403,7 +404,7 @@ async fn main() {
 
     // Range filters (can use ObjectBounds pushdown)
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "range_gt",
             "Range filter: age > 50 (ObjectBounds pushdown)",
             &fluree,
@@ -414,7 +415,7 @@ async fn main() {
     );
 
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "range_between",
             "Range filter: 30 <= age <= 60 (ObjectBounds pushdown)",
             &fluree,
@@ -426,7 +427,7 @@ async fn main() {
 
     // Complex filters (inline evaluation)
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "complex_multi_var",
             "Complex: age > 25 AND score < 500 (inline eval)",
             &fluree,
@@ -438,7 +439,7 @@ async fn main() {
 
     // Filter placement tests
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "filter_before_triple",
             "Filter before triple (dependency injection)",
             &fluree,
@@ -449,7 +450,7 @@ async fn main() {
     );
 
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "filter_multi_pattern",
             "Filter between patterns (deferred application)",
             &fluree,
@@ -461,7 +462,7 @@ async fn main() {
 
     // Type-specific filters
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "string_equality",
             "String filter: category = 'A'",
             &fluree,
@@ -472,7 +473,7 @@ async fn main() {
     );
 
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "boolean_filter",
             "Boolean filter: active = true",
             &fluree,
@@ -484,7 +485,7 @@ async fn main() {
 
     // OPTIONAL interactions
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "optional_with_filter",
             "Filter + OPTIONAL pattern",
             &fluree,
@@ -495,7 +496,7 @@ async fn main() {
     );
 
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "filter_after_optional",
             "Filter on optional variable (BOUND check)",
             &fluree,
@@ -507,7 +508,7 @@ async fn main() {
 
     // Expression complexity
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "arithmetic_filter",
             "Arithmetic: age + score > 100",
             &fluree,
@@ -518,7 +519,7 @@ async fn main() {
     );
 
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "multiple_filters",
             "Multiple separate FILTER clauses",
             &fluree,
@@ -530,7 +531,7 @@ async fn main() {
 
     // Selectivity tests
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "highly_selective",
             "Highly selective: age=42 AND score>900",
             &fluree,
@@ -541,7 +542,7 @@ async fn main() {
     );
 
     results.push(
-        run_query_bench::<_, std::future::Ready<()>>(
+        run_query_bench(
             "non_selective",
             "Non-selective: age > 0 (matches all)",
             &fluree,

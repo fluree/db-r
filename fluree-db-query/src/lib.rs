@@ -69,7 +69,7 @@ pub use aggregate::{apply_aggregate, AggregateFn, AggregateOperator, AggregateSp
 pub use binary_range::BinaryRangeProvider;
 pub use binary_scan::{BinaryScanOperator, ScanOperator};
 pub use bind::BindOperator;
-pub use binding::{Batch, BatchError, BatchView, Binding, RowView};
+pub use binding::{Batch, BatchError, BatchView, Binding, RowAccess, RowView};
 pub use context::{ExecutionContext, WellKnownDatatypes};
 pub use dataset::{ActiveGraph, ActiveGraphs, DataSet, GraphRef};
 pub use distinct::DistinctOperator;

@@ -2,12 +2,12 @@
 //!
 //! Implements SPARQL conditional functions: IF, COALESCE
 
+use super::helpers::check_arity;
+use super::value::ComparableValue;
 use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::ir::Expression;
-use super::helpers::check_arity;
-use super::value::ComparableValue;
 
 pub fn eval_if<R: RowAccess>(
     args: &[Expression],

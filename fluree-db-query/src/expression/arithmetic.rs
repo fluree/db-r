@@ -2,12 +2,12 @@
 //!
 //! Implements arithmetic operators: Add, Sub, Mul, Div, Negate
 
+use super::helpers::check_arity;
+use super::value::ComparableValue;
 use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{ArithmeticOp, Expression};
-use super::helpers::check_arity;
-use super::value::ComparableValue;
 
 /// Evaluate addition
 pub fn eval_add<R: RowAccess>(

@@ -806,7 +806,10 @@ impl NestedLoopJoinOperator {
             return Ok(Some(Batch::empty_schema_with_len(rows_added)));
         }
 
-        Ok(Some(Batch::new(self.combined_schema.clone(), output_columns)?))
+        Ok(Some(Batch::new(
+            self.combined_schema.clone(),
+            output_columns,
+        )?))
     }
 
     /// Ensure the current left batch is stored in `stored_left_batches` and

@@ -447,9 +447,7 @@ mod tests {
     fn test_strlen() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result =
-            eval_strlen::<_>(&[Expression::Var(VarId(0))], &row, None)
-                .unwrap();
+        let result = eval_strlen::<_>(&[Expression::Var(VarId(0))], &row, None).unwrap();
         assert_eq!(result, Some(ComparableValue::Long(11)));
     }
 
@@ -457,9 +455,7 @@ mod tests {
     fn test_ucase() {
         let batch = make_string_batch();
         let row = batch.row_view(0).unwrap();
-        let result =
-            eval_ucase::<_>(&[Expression::Var(VarId(0))], &row, None)
-                .unwrap();
+        let result = eval_ucase::<_>(&[Expression::Var(VarId(0))], &row, None).unwrap();
         assert_eq!(
             result,
             Some(ComparableValue::String(Arc::from("HELLO WORLD")))

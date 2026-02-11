@@ -32,6 +32,7 @@ mod types;
 mod uuid;
 mod value;
 mod vector;
+pub mod vector_math;
 
 // Re-export public API
 pub use value::{ArithmeticError, ComparableValue, NullValueError};

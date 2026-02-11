@@ -2,11 +2,11 @@
 //!
 //! Implements logical operators: AND, OR, NOT
 
+use super::value::ComparableValue;
 use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
 use crate::error::Result;
 use crate::ir::Expression;
-use super::value::ComparableValue;
 
 /// Evaluate logical AND
 ///

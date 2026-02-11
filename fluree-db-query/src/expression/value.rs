@@ -291,10 +291,7 @@ impl ComparableValue {
     ///
     /// The `ctx` parameter is required for `Iri` and `TypedLiteral` variants
     /// which need database access to resolve IRIs to Sids.
-    pub fn to_binding(
-        self,
-        ctx: Option<&ExecutionContext<'_>>,
-    ) -> crate::error::Result<Binding> {
+    pub fn to_binding(self, ctx: Option<&ExecutionContext<'_>>) -> crate::error::Result<Binding> {
         let datatypes = &*WELL_KNOWN_DATATYPES;
         match self {
             ComparableValue::Long(n) => Ok(Binding::lit(
