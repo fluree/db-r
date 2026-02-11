@@ -141,6 +141,12 @@ Configuration precedence (highest to lowest):
 4. Config file (`[server]`)
 5. Built-in defaults
 
+### Error Handling
+
+If `--config` or `--profile` is specified and the configuration cannot be loaded (file not found, parse error, missing profile), the server **exits with an error**. This prevents silent misconfiguration in production.
+
+If the config file is auto-discovered (no explicit `--config`) and cannot be parsed, the server logs a warning and continues with CLI/env/default values only.
+
 ## Server Configuration
 
 ### Listen Address

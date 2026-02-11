@@ -16,7 +16,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = ServerConfig::from_arg_matches(&matches)?;
 
     // 2. Load config file and merge (file values apply only where CLI/env didn't set a value)
+    //
+    // Errors are fatal when the user explicitly specified --config or --profile,
+    // since ignoring those silently would cause hard-to-diagnose production issues.
+    // For auto-discovered configs, errors are downgraded to warnings.
     if let Err(e) = load_and_merge_config(&mut config, &matches) {
+        let user_requested = config.config_file.is_some() || config.profile.is_some();
+        if user_requested {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
         eprintln!("Warning: {e}");
     }
 
