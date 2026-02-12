@@ -2,16 +2,16 @@ use crate::config;
 use crate::context;
 use crate::error::{CliError, CliResult};
 use fluree_db_api::admin::DropStatus;
-use std::path::Path;
+use fluree_db_api::server_defaults::FlureeDir;
 
-pub async fn run(name: &str, force: bool, fluree_dir: &Path) -> CliResult<()> {
+pub async fn run(name: &str, force: bool, dirs: &FlureeDir) -> CliResult<()> {
     if !force {
         return Err(CliError::Usage(format!(
             "use --force to confirm deletion of ledger '{name}'"
         )));
     }
 
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
     let report = fluree
         .drop_ledger(name, fluree_db_api::DropMode::Soft)
         .await?;
@@ -19,9 +19,9 @@ pub async fn run(name: &str, force: bool, fluree_dir: &Path) -> CliResult<()> {
     match report.status {
         DropStatus::Dropped => {
             // If dropped ledger was active, clear it
-            let active = config::read_active_ledger(fluree_dir);
+            let active = config::read_active_ledger(dirs.data_dir());
             if active.as_deref() == Some(name) {
-                config::clear_active_ledger(fluree_dir)?;
+                config::clear_active_ledger(dirs.data_dir())?;
             }
             println!("Dropped ledger '{name}'");
         }

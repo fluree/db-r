@@ -1,18 +1,18 @@
 use crate::context;
 use crate::error::{CliError, CliResult};
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_nameservice::NameService;
 use futures::StreamExt;
-use std::path::Path;
 
 pub async fn run(
     ledger: Option<&str>,
     oneline: bool,
     count: Option<usize>,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<()> {
     // Check for tracked ledger — log requires local commit chain access
-    let store = crate::config::TomlSyncConfigStore::new(fluree_dir.to_path_buf());
-    let alias = context::resolve_ledger(ledger, fluree_dir)?;
+    let store = crate::config::TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
+    let alias = context::resolve_ledger(ledger, dirs)?;
     if store.get_tracked(&alias).is_some()
         || store.get_tracked(&context::to_ledger_id(&alias)).is_some()
     {
@@ -23,7 +23,7 @@ pub async fn run(
         ));
     }
 
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
     let ledger_id = context::to_ledger_id(&alias);
 
     // Look up ledger record from nameservice

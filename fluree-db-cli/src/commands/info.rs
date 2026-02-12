@@ -1,19 +1,19 @@
 use crate::context::{self, LedgerMode};
 use crate::error::{CliError, CliResult};
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_nameservice::NameService;
-use std::path::Path;
 
 pub async fn run(
     ledger: Option<&str>,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
     remote_flag: Option<&str>,
 ) -> CliResult<()> {
     // Resolve ledger mode: --remote flag, local, or tracked
     let mode = if let Some(remote_name) = remote_flag {
-        let alias = context::resolve_ledger(ledger, fluree_dir)?;
-        context::build_remote_mode(remote_name, &alias, fluree_dir).await?
+        let alias = context::resolve_ledger(ledger, dirs)?;
+        context::build_remote_mode(remote_name, &alias, dirs).await?
     } else {
-        context::resolve_ledger_mode(ledger, fluree_dir).await?
+        context::resolve_ledger_mode(ledger, dirs).await?
     };
 
     match mode {
@@ -25,7 +25,7 @@ pub async fn run(
         } => {
             let info = client.ledger_info(&remote_alias).await?;
 
-            context::persist_refreshed_tokens(&client, &remote_name, fluree_dir).await;
+            context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
             println!(
                 "Ledger:         {} (tracked)",

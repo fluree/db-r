@@ -6,12 +6,12 @@ use crate::context;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use comfy_table::{Cell, Table};
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{SyncConfigStore, UpstreamConfig};
-use std::path::Path;
 
-pub async fn run(action: UpstreamAction, fluree_dir: &Path) -> CliResult<()> {
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+pub async fn run(action: UpstreamAction, dirs: &FlureeDir) -> CliResult<()> {
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
 
     match action {
         UpstreamAction::Set {

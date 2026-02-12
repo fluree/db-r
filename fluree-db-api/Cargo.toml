@@ -82,6 +82,9 @@ aws-sdk-dynamodb = { workspace = true, optional = true }
 # HTTP client for remote search service (feature-gated)
 reqwest = { workspace = true, optional = true }
 
+# Platform directory resolution (XDG on Linux, Application Support on macOS)
+dirs = "5"
+
 # System memory detection for import memory budget auto-sizing (native only)
 sysinfo = { workspace = true, optional = true }
 

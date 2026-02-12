@@ -1,12 +1,32 @@
 use crate::error::{CliError, CliResult};
+use fluree_db_api::server_defaults::{self, ConfigFormat, FlureeDir, CONFIG_FILE_TOML, FLUREE_DIR};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FLUREE_DIR: &str = ".fluree";
 const ACTIVE_FILE: &str = "active";
 const STORAGE_DIR: &str = "storage";
-const CONFIG_FILE: &str = "config.toml";
 const PREFIXES_FILE: &str = "prefixes.json";
+
+/// Re-export ConfigFormat as ConfigFileFormat for backward compatibility
+/// within the CLI codebase.
+pub type ConfigFileFormat = ConfigFormat;
+
+/// Detect which config file exists in a `.fluree/` directory.
+///
+/// Checks for `config.toml` first, then `config.jsonld`. If both exist,
+/// TOML wins and a warning is printed to stderr.
+///
+/// Returns `None` if neither file exists.
+pub fn detect_config_file(fluree_dir: &Path) -> Option<(PathBuf, ConfigFileFormat)> {
+    let detection = server_defaults::detect_config_in_dir(fluree_dir)?;
+    if detection.both_exist {
+        eprintln!(
+            "warning: both config.toml and config.jsonld exist in {}; using config.toml",
+            fluree_dir.display(),
+        );
+    }
+    Some((detection.path, detection.format))
+}
 
 /// Walk up from `start` looking for a `.fluree/` directory.
 fn find_fluree_dir_from(start: &Path) -> Option<PathBuf> {
@@ -22,19 +42,21 @@ fn find_fluree_dir_from(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Find `.fluree/` by walking up from cwd. Returns `None` if not found.
-pub fn find_fluree_dir() -> Option<PathBuf> {
+/// Find `.fluree/` by walking up from cwd. Returns a unified `FlureeDir`
+/// (local project mode) or `None` if not found.
+pub fn find_fluree_dir() -> Option<FlureeDir> {
     let cwd = std::env::current_dir().ok()?;
-    find_fluree_dir_from(&cwd)
+    find_fluree_dir_from(&cwd).map(FlureeDir::unified)
 }
 
-/// Find `.fluree/` by walking up from cwd, falling back to `~/.fluree/`.
-pub fn find_or_global_fluree_dir() -> Option<PathBuf> {
+/// Find `.fluree/` by walking up from cwd, falling back to global directories.
+pub fn find_or_global_fluree_dir() -> Option<FlureeDir> {
     if let Some(d) = find_fluree_dir() {
         return Some(d);
     }
-    let global = dirs::home_dir()?.join(FLUREE_DIR);
-    if global.is_dir() {
+    let global = FlureeDir::global()?;
+    // Accept if either config or data dir already exists
+    if global.config_dir().is_dir() || global.data_dir().is_dir() {
         Some(global)
     } else {
         None
@@ -87,44 +109,78 @@ fn resolve_config_override(p: &Path) -> CliResult<PathBuf> {
 }
 
 /// Require a local `.fluree/` directory (for mutating commands).
-pub fn require_fluree_dir(config_override: Option<&Path>) -> CliResult<PathBuf> {
+pub fn require_fluree_dir(config_override: Option<&Path>) -> CliResult<FlureeDir> {
     if let Some(p) = config_override {
-        return resolve_config_override(p);
+        // An explicit --config path means the user chose a single directory;
+        // config and data are co-located there, so we use unified mode.
+        return resolve_config_override(p).map(FlureeDir::unified);
     }
     find_fluree_dir().ok_or(CliError::NoFlureeDir)
 }
 
 /// Require a `.fluree/` directory, allowing global fallback (for read-only commands).
-pub fn require_fluree_dir_or_global(config_override: Option<&Path>) -> CliResult<PathBuf> {
+pub fn require_fluree_dir_or_global(config_override: Option<&Path>) -> CliResult<FlureeDir> {
     if let Some(p) = config_override {
-        return resolve_config_override(p);
+        // An explicit --config path means the user chose a single directory;
+        // config and data are co-located there, so we use unified mode.
+        return resolve_config_override(p).map(FlureeDir::unified);
     }
     find_or_global_fluree_dir().ok_or(CliError::NoFlureeDir)
 }
 
-/// Create `.fluree/` directory with empty config and storage subdirectory.
-pub fn init_fluree_dir(global: bool) -> CliResult<PathBuf> {
-    let base = if global {
-        dirs::home_dir()
-            .ok_or_else(|| CliError::Config("cannot determine home directory".into()))?
+/// Resolve the directories for `fluree init` without creating anything.
+///
+/// In local mode (`global = false`), returns a unified `.fluree/` under cwd.
+/// In global mode (`global = true`), delegates to `FlureeDir::global()` which
+/// may split config and data across platform directories.
+///
+/// Returns the `FlureeDir` that `init_fluree_dir` will use, so callers can
+/// inspect it (e.g. to customise the config template) before writing.
+pub fn resolve_init_dirs(global: bool) -> CliResult<FlureeDir> {
+    if global {
+        FlureeDir::global()
+            .ok_or_else(|| CliError::Config("cannot determine global directories".into()))
     } else {
-        std::env::current_dir()?
-    };
-    let fluree_dir = base.join(FLUREE_DIR);
-    let storage_dir = fluree_dir.join(STORAGE_DIR);
+        Ok(FlureeDir::unified(
+            std::env::current_dir()?.join(FLUREE_DIR),
+        ))
+    }
+}
 
+/// Create Fluree directories with config template and storage subdirectory.
+///
+/// Creates `storage/` in `dirs.data_dir()` and writes `config_template`
+/// to `dirs.config_dir()` under `config_filename` (e.g. `"config.toml"`)
+/// if no config file already exists. In global mode, config and data may
+/// reside in different directories.
+pub fn init_fluree_dir(
+    dirs: &FlureeDir,
+    config_template: &str,
+    config_filename: &str,
+) -> CliResult<()> {
+    // Create storage directory in data_dir
+    let storage_dir = dirs.data_dir().join(STORAGE_DIR);
     fs::create_dir_all(&storage_dir).map_err(|e| {
         CliError::Config(format!("failed to create {}: {e}", storage_dir.display()))
     })?;
 
-    let config_path = fluree_dir.join(CONFIG_FILE);
+    // Create config directory (may differ from data_dir in global mode)
+    fs::create_dir_all(dirs.config_dir()).map_err(|e| {
+        CliError::Config(format!(
+            "failed to create {}: {e}",
+            dirs.config_dir().display()
+        ))
+    })?;
+
+    // Write config template if config file doesn't already exist
+    let config_path = dirs.config_dir().join(config_filename);
     if !config_path.exists() {
-        fs::write(&config_path, "").map_err(|e| {
+        fs::write(&config_path, config_template).map_err(|e| {
             CliError::Config(format!("failed to create {}: {e}", config_path.display()))
         })?;
     }
 
-    Ok(fluree_dir)
+    Ok(())
 }
 
 /// Read the currently active ledger name from `.fluree/active`.
@@ -158,8 +214,43 @@ pub fn clear_active_ledger(fluree_dir: &Path) -> CliResult<()> {
 }
 
 /// Resolve the storage path for the Fluree instance.
-pub fn storage_path(fluree_dir: &Path) -> PathBuf {
-    fluree_dir.join(STORAGE_DIR)
+///
+/// Checks the config file (`config.toml` / `config.jsonld`) in
+/// `dirs.config_dir()` for an explicit `[server].storage_path` value.
+/// If found, that path is used (absolute as-is, relative resolved from
+/// cwd). Otherwise falls back to `dirs.data_dir()/storage`.
+pub fn resolve_storage_path(dirs: &FlureeDir) -> PathBuf {
+    if let Some(configured) = read_configured_storage_path(dirs.config_dir()) {
+        PathBuf::from(configured)
+    } else {
+        dirs.data_dir().join(STORAGE_DIR)
+    }
+}
+
+/// Read `[server].storage_path` from the config file, if present.
+///
+/// Uses a minimal serde struct so the CLI doesn't depend on the server's
+/// full config types. Returns `None` if no config file exists or the
+/// field is absent/commented-out.
+fn read_configured_storage_path(config_dir: &Path) -> Option<String> {
+    let (path, format) = detect_config_file(config_dir)?;
+    let content = fs::read_to_string(&path).ok()?;
+    match format {
+        ConfigFileFormat::Toml => {
+            let doc: toml::Value = toml::from_str(&content).ok()?;
+            doc.get("server")?
+                .get("storage_path")?
+                .as_str()
+                .map(String::from)
+        }
+        ConfigFileFormat::JsonLd => {
+            let doc: serde_json::Value = serde_json::from_str(&content).ok()?;
+            doc.get("server")?
+                .get("storage_path")?
+                .as_str()
+                .map(String::from)
+        }
+    }
 }
 
 /// Prefix map type: prefix -> IRI namespace
@@ -291,7 +382,11 @@ impl From<RemoteConfigToml> for RemoteConfig {
     }
 }
 
-/// File-backed sync config store using `.fluree/config.toml`
+/// File-backed sync config store using `.fluree/config.toml` or `.fluree/config.jsonld`.
+///
+/// Detects which config file exists and adapts read/write accordingly.
+/// For TOML, uses `toml_edit` to preserve comments and non-sync sections.
+/// For JSON-LD, uses `serde_json::Value` to preserve `@context` and non-sync sections.
 #[derive(Debug)]
 pub struct TomlSyncConfigStore {
     fluree_dir: PathBuf,
@@ -302,26 +397,93 @@ impl TomlSyncConfigStore {
         Self { fluree_dir }
     }
 
-    fn config_path(&self) -> PathBuf {
-        self.fluree_dir.join(CONFIG_FILE)
+    /// Returns `(path, format)` for the active config file.
+    /// Defaults to TOML path if neither file exists.
+    fn config_file(&self) -> (PathBuf, ConfigFileFormat) {
+        detect_config_file(&self.fluree_dir).unwrap_or_else(|| {
+            (
+                self.fluree_dir.join(CONFIG_FILE_TOML),
+                ConfigFileFormat::Toml,
+            )
+        })
     }
 
     fn read_sync_config(&self) -> SyncToml {
-        let path = self.config_path();
-        fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        let (path, format) = self.config_file();
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return SyncToml::default(),
+        };
+        match format {
+            ConfigFileFormat::Toml => toml::from_str(&content).unwrap_or_default(),
+            ConfigFileFormat::JsonLd => serde_json::from_str(&content).unwrap_or_default(),
+        }
     }
 
-    /// Write sync config using toml_edit to preserve other keys in config.toml
+    /// Write sync config, dispatching to format-specific writer.
     fn write_sync_config(&self, config: &SyncToml) -> CliResult<()> {
+        let (path, format) = self.config_file();
+        match format {
+            ConfigFileFormat::Toml => self.write_sync_config_toml(&path, config),
+            ConfigFileFormat::JsonLd => self.write_sync_config_jsonld(&path, config),
+        }
+    }
+
+    /// Write sync config to a JSON-LD file, preserving `@context`, `server`, etc.
+    fn write_sync_config_jsonld(&self, path: &Path, config: &SyncToml) -> CliResult<()> {
+        // Read existing file as generic JSON Value to preserve non-sync keys
+        let mut doc: serde_json::Value = fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        let obj = doc
+            .as_object_mut()
+            .ok_or_else(|| CliError::Config("config.jsonld root is not a JSON object".into()))?;
+
+        // Update only sync sections; serde_json handles internally-tagged enums correctly
+        if config.remotes.is_empty() {
+            obj.remove("remotes");
+        } else {
+            obj.insert(
+                "remotes".into(),
+                serde_json::to_value(&config.remotes)
+                    .map_err(|e| CliError::Config(e.to_string()))?,
+            );
+        }
+
+        if config.upstreams.is_empty() {
+            obj.remove("upstreams");
+        } else {
+            obj.insert(
+                "upstreams".into(),
+                serde_json::to_value(&config.upstreams)
+                    .map_err(|e| CliError::Config(e.to_string()))?,
+            );
+        }
+
+        if config.tracked_ledgers.is_empty() {
+            obj.remove("tracked_ledgers");
+        } else {
+            obj.insert(
+                "tracked_ledgers".into(),
+                serde_json::to_value(&config.tracked_ledgers)
+                    .map_err(|e| CliError::Config(e.to_string()))?,
+            );
+        }
+
+        let pretty =
+            serde_json::to_string_pretty(&doc).map_err(|e| CliError::Config(e.to_string()))?;
+        fs::write(path, pretty)
+            .map_err(|e| CliError::Config(format!("failed to write config: {e}")))
+    }
+
+    /// Write sync config to a TOML file using toml_edit to preserve other keys.
+    fn write_sync_config_toml(&self, path: &Path, config: &SyncToml) -> CliResult<()> {
         use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
-        let path = self.config_path();
-
         // Parse existing file or start fresh
-        let mut doc: DocumentMut = fs::read_to_string(&path)
+        let mut doc: DocumentMut = fs::read_to_string(path)
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or_default();
@@ -456,7 +618,7 @@ impl TomlSyncConfigStore {
             doc["tracked_ledgers"] = Item::ArrayOfTables(tracked_aot);
         }
 
-        fs::write(&path, doc.to_string())
+        fs::write(path, doc.to_string())
             .map_err(|e| CliError::Config(format!("failed to write config: {e}")))
     }
 }
@@ -596,5 +758,136 @@ impl TomlSyncConfigStore {
             self.write_sync_config(&config)?;
         }
         Ok(removed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Env-var tests must run serially because they mutate process-wide state.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Safety: these tests hold ENV_LOCK so no concurrent env mutation.
+    /// set_var/remove_var are safe in edition 2021 but wrap in unsafe for
+    /// forward-compatibility with edition 2024.
+    unsafe fn set_env(key: &str, val: &std::ffi::OsStr) {
+        std::env::set_var(key, val);
+    }
+    unsafe fn unset_env(key: &str) {
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn resolve_init_dirs_local_returns_unified() {
+        let dirs = resolve_init_dirs(false).unwrap();
+        assert!(dirs.is_unified(), "local mode should be unified");
+        assert!(
+            dirs.data_dir().ends_with(FLUREE_DIR),
+            "data dir should end with .fluree"
+        );
+    }
+
+    #[test]
+    fn resolve_init_dirs_global_returns_some() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: holding ENV_LOCK, no concurrent env mutation.
+        unsafe { set_env("FLUREE_HOME", tmp.path().as_os_str()) };
+        let result = resolve_init_dirs(true);
+        unsafe { unset_env("FLUREE_HOME") };
+        let dirs = result.unwrap();
+        assert!(
+            dirs.is_unified(),
+            "FLUREE_HOME should produce a unified dir"
+        );
+        assert_eq!(dirs.data_dir(), tmp.path());
+    }
+
+    #[test]
+    fn fluree_dir_global_respects_fluree_home() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: holding ENV_LOCK.
+        unsafe { set_env("FLUREE_HOME", tmp.path().as_os_str()) };
+        let dirs = FlureeDir::global().unwrap();
+        unsafe { unset_env("FLUREE_HOME") };
+        assert!(dirs.is_unified());
+        assert_eq!(dirs.config_dir(), tmp.path());
+        assert_eq!(dirs.data_dir(), tmp.path());
+    }
+
+    #[test]
+    fn fluree_dir_global_without_fluree_home() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: holding ENV_LOCK.
+        unsafe { unset_env("FLUREE_HOME") };
+        // Without FLUREE_HOME, global() should still return Some on all
+        // platforms (dirs::config_local_dir() is always available).
+        let dirs = FlureeDir::global();
+        assert!(dirs.is_some(), "global() should resolve on this platform");
+    }
+
+    #[test]
+    fn find_or_global_accepts_existing_config_dir_only() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        // Create only config dir
+        std::fs::create_dir_all(&config_dir).unwrap();
+        // SAFETY: holding ENV_LOCK.
+        unsafe { set_env("FLUREE_HOME", config_dir.as_os_str()) };
+        let result = find_or_global_fluree_dir();
+        unsafe { unset_env("FLUREE_HOME") };
+        assert!(result.is_some(), "should find existing config dir");
+        // data_dir should not exist but that's fine — we only require one
+        assert!(!data_dir.exists());
+    }
+
+    #[test]
+    fn resolve_storage_path_uses_config_when_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fluree_dir = tmp.path().join(".fluree");
+        std::fs::create_dir_all(fluree_dir.join("storage")).unwrap();
+        std::fs::write(
+            fluree_dir.join("config.toml"),
+            "[server]\nstorage_path = \"/custom/storage\"\n",
+        )
+        .unwrap();
+
+        let dirs = FlureeDir::unified(fluree_dir);
+        let result = resolve_storage_path(&dirs);
+        assert_eq!(result, PathBuf::from("/custom/storage"));
+    }
+
+    #[test]
+    fn resolve_storage_path_falls_back_to_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fluree_dir = tmp.path().join(".fluree");
+        std::fs::create_dir_all(fluree_dir.join("storage")).unwrap();
+        // Config exists but storage_path is commented out
+        std::fs::write(
+            fluree_dir.join("config.toml"),
+            "# [server]\n# storage_path = \".fluree/storage\"\n",
+        )
+        .unwrap();
+
+        let dirs = FlureeDir::unified(fluree_dir.clone());
+        let result = resolve_storage_path(&dirs);
+        assert_eq!(result, fluree_dir.join("storage"));
+    }
+
+    #[test]
+    fn resolve_storage_path_no_config_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fluree_dir = tmp.path().join(".fluree");
+        std::fs::create_dir_all(&fluree_dir).unwrap();
+        // No config file at all
+
+        let dirs = FlureeDir::unified(fluree_dir.clone());
+        let result = resolve_storage_path(&dirs);
+        assert_eq!(result, fluree_dir.join("storage"));
     }
 }
