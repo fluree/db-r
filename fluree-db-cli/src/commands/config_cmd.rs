@@ -1,67 +1,94 @@
 use crate::cli::ConfigAction;
+use crate::config::{detect_config_file, ConfigFileFormat};
 use crate::context;
 use crate::error::{CliError, CliResult};
 use std::path::Path;
 
-const CONFIG_FILE: &str = "config.toml";
-
 pub fn run(action: ConfigAction, fluree_dir: &Path) -> CliResult<()> {
-    let config_path = fluree_dir.join(CONFIG_FILE);
+    let (config_path, format) = detect_config_file(fluree_dir).unwrap_or_else(|| {
+        // Default to TOML when no config file exists yet
+        (fluree_dir.join("config.toml"), ConfigFileFormat::Toml)
+    });
 
     match action {
         // SetOrigins is handled in main.rs (async dispatch) before calling run().
         ConfigAction::SetOrigins { .. } => unreachable!("handled in main.rs"),
 
-        ConfigAction::Get { key } => {
-            let content = std::fs::read_to_string(&config_path).unwrap_or_default();
-            let doc: toml::Value = content.parse().map_err(|e: toml::de::Error| {
-                CliError::Config(format!("failed to parse config: {e}"))
-            })?;
+        ConfigAction::Get { key } => match format {
+            ConfigFileFormat::Toml => get_toml(&config_path, &key),
+            ConfigFileFormat::JsonLd => get_json(&config_path, &key),
+        },
 
-            match lookup_key(&doc, &key) {
-                Some(val) => {
-                    println!("{}", format_toml_value(val));
-                    Ok(())
-                }
-                None => Err(CliError::NotFound(format!("config key '{key}' not set"))),
-            }
-        }
+        ConfigAction::Set { key, value } => match format {
+            ConfigFileFormat::Toml => set_toml(&config_path, &key, &value),
+            ConfigFileFormat::JsonLd => set_json(&config_path, &key, &value),
+        },
 
-        ConfigAction::Set { key, value } => {
-            let content = std::fs::read_to_string(&config_path).unwrap_or_default();
-            let mut doc: toml_edit::DocumentMut =
-                content.parse().map_err(|e: toml_edit::TomlError| {
-                    CliError::Config(format!("failed to parse config: {e}"))
-                })?;
-
-            set_key(&mut doc, &key, &value)?;
-
-            std::fs::write(&config_path, doc.to_string())
-                .map_err(|e| CliError::Config(format!("failed to write config: {e}")))?;
-
-            println!("Set '{key}' = '{value}'");
-            Ok(())
-        }
-
-        ConfigAction::List => {
-            let content = std::fs::read_to_string(&config_path).unwrap_or_default();
-            if content.trim().is_empty() {
-                println!("(no configuration set)");
-                return Ok(());
-            }
-
-            let doc: toml::Value = content.parse().map_err(|e: toml::de::Error| {
-                CliError::Config(format!("failed to parse config: {e}"))
-            })?;
-
-            print_toml_flat("", &doc);
-            Ok(())
-        }
+        ConfigAction::List => match format {
+            ConfigFileFormat::Toml => list_toml(&config_path),
+            ConfigFileFormat::JsonLd => list_json(&config_path),
+        },
     }
 }
 
+// ---------------------------------------------------------------------------
+// TOML operations (existing logic)
+// ---------------------------------------------------------------------------
+
+fn get_toml(config_path: &Path, key: &str) -> CliResult<()> {
+    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+    let doc: toml::Value = content
+        .parse()
+        .map_err(|e: toml::de::Error| CliError::Config(format!("failed to parse config: {e}")))?;
+
+    match lookup_toml_key(&doc, key) {
+        Some(val) => {
+            println!("{}", format_toml_value(val));
+            Ok(())
+        }
+        None => Err(CliError::NotFound(format!("config key '{key}' not set"))),
+    }
+}
+
+fn set_toml(config_path: &Path, key: &str, value: &str) -> CliResult<()> {
+    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = content.parse().map_err(|e: toml_edit::TomlError| {
+        CliError::Config(format!("failed to parse config: {e}"))
+    })?;
+
+    set_toml_key(&mut doc, key, value)?;
+
+    std::fs::write(config_path, doc.to_string())
+        .map_err(|e| CliError::Config(format!("failed to write config: {e}")))?;
+
+    println!("Set '{key}' = '{value}'");
+    Ok(())
+}
+
+fn list_toml(config_path: &Path) -> CliResult<()> {
+    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+    if content.trim().is_empty() {
+        println!("(no configuration set)");
+        return Ok(());
+    }
+
+    let doc: toml::Value = content
+        .parse()
+        .map_err(|e: toml::de::Error| CliError::Config(format!("failed to parse config: {e}")))?;
+
+    // A file with only comments parses as an empty table — treat it
+    // the same as an empty file.
+    if doc.as_table().is_some_and(|t| t.is_empty()) {
+        println!("(no configuration set)");
+        return Ok(());
+    }
+
+    print_toml_flat("", &doc);
+    Ok(())
+}
+
 /// Look up a dotted key path in a TOML value.
-fn lookup_key<'a>(val: &'a toml::Value, key: &str) -> Option<&'a toml::Value> {
+fn lookup_toml_key<'a>(val: &'a toml::Value, key: &str) -> Option<&'a toml::Value> {
     let parts: Vec<&str> = key.split('.').collect();
     let mut current = val;
     for part in &parts {
@@ -71,7 +98,7 @@ fn lookup_key<'a>(val: &'a toml::Value, key: &str) -> Option<&'a toml::Value> {
 }
 
 /// Set a dotted key path in a toml_edit document.
-fn set_key(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> CliResult<()> {
+fn set_toml_key(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> CliResult<()> {
     let parts: Vec<&str> = key.split('.').collect();
 
     if parts.is_empty() {
@@ -127,6 +154,193 @@ fn print_toml_flat(prefix: &str, val: &toml::Value) {
         }
     }
 }
+
+/// Format a TOML value for display.
+fn format_toml_value(val: &toml::Value) -> String {
+    match val {
+        toml::Value::String(s) => s.clone(),
+        toml::Value::Integer(n) => n.to_string(),
+        toml::Value::Float(f) => f.to_string(),
+        toml::Value::Boolean(b) => b.to_string(),
+        toml::Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(format_toml_value).collect();
+            format!("[{}]", items.join(", "))
+        }
+        toml::Value::Table(_) => {
+            // For tables, show as TOML inline
+            val.to_string()
+        }
+        toml::Value::Datetime(dt) => dt.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON-LD operations
+// ---------------------------------------------------------------------------
+
+fn get_json(config_path: &Path, key: &str) -> CliResult<()> {
+    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+    let doc: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| CliError::Config(format!("failed to parse config: {e}")))?;
+
+    match lookup_json_key(&doc, key) {
+        Some(val) => {
+            println!("{}", format_json_value(val));
+            Ok(())
+        }
+        None => Err(CliError::NotFound(format!("config key '{key}' not set"))),
+    }
+}
+
+fn set_json(config_path: &Path, key: &str, value: &str) -> CliResult<()> {
+    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+    let mut doc: serde_json::Value = if content.trim().is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_str(&content)
+            .map_err(|e| CliError::Config(format!("failed to parse config: {e}")))?
+    };
+
+    set_json_key(&mut doc, key, value)?;
+
+    let pretty = serde_json::to_string_pretty(&doc)
+        .map_err(|e| CliError::Config(format!("failed to serialize config: {e}")))?;
+    std::fs::write(config_path, pretty)
+        .map_err(|e| CliError::Config(format!("failed to write config: {e}")))?;
+
+    println!("Set '{key}' = '{value}'");
+    Ok(())
+}
+
+fn list_json(config_path: &Path) -> CliResult<()> {
+    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+    if content.trim().is_empty() {
+        println!("(no configuration set)");
+        return Ok(());
+    }
+
+    let doc: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| CliError::Config(format!("failed to parse config: {e}")))?;
+
+    let obj = match doc.as_object() {
+        Some(o) if o.is_empty() => {
+            println!("(no configuration set)");
+            return Ok(());
+        }
+        Some(o) => o,
+        None => {
+            println!("(no configuration set)");
+            return Ok(());
+        }
+    };
+
+    // Skip @context and _comment keys in listing — they're metadata, not config
+    let has_config_keys = obj
+        .keys()
+        .any(|k| !k.starts_with('@') && !k.starts_with('_'));
+    if !has_config_keys {
+        println!("(no configuration set)");
+        return Ok(());
+    }
+
+    print_json_flat("", &doc);
+    Ok(())
+}
+
+/// Look up a dotted key path in a JSON value.
+fn lookup_json_key<'a>(val: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+    let parts: Vec<&str> = key.split('.').collect();
+    let mut current = val;
+    for part in &parts {
+        current = current.get(part)?;
+    }
+    Some(current)
+}
+
+/// Set a dotted key path in a JSON value.
+fn set_json_key(doc: &mut serde_json::Value, key: &str, value: &str) -> CliResult<()> {
+    let parts: Vec<&str> = key.split('.').collect();
+
+    if parts.is_empty() {
+        return Err(CliError::Usage("empty config key".into()));
+    }
+
+    // Navigate to the parent object, creating intermediate objects as needed
+    let mut current = doc;
+    for part in &parts[..parts.len() - 1] {
+        if !current.get(part).is_some_and(|v| v.is_object()) {
+            current[part] = serde_json::json!({});
+        }
+        current = current.get_mut(part).unwrap();
+    }
+
+    let leaf = parts.last().unwrap();
+
+    // Auto-detect value type (same heuristic as TOML)
+    let json_value = if value == "true" {
+        serde_json::Value::Bool(true)
+    } else if value == "false" {
+        serde_json::Value::Bool(false)
+    } else if let Ok(n) = value.parse::<i64>() {
+        serde_json::Value::Number(n.into())
+    } else if let Ok(f) = value.parse::<f64>() {
+        serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or_else(|| serde_json::Value::String(value.to_string()))
+    } else {
+        serde_json::Value::String(value.to_string())
+    };
+
+    current[leaf] = json_value;
+    Ok(())
+}
+
+/// Print a JSON value in flat key=value format.
+/// Skips `@context` and `_comment` metadata keys.
+fn print_json_flat(prefix: &str, val: &serde_json::Value) {
+    match val {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                // Skip JSON-LD metadata keys
+                if k.starts_with('@') || k.starts_with('_') {
+                    continue;
+                }
+                let full_key = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
+                print_json_flat(&full_key, v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(format_json_value).collect();
+            println!("{prefix} = [{}]", items.join(", "));
+        }
+        _ => {
+            println!("{prefix} = {}", format_json_value(val));
+        }
+    }
+}
+
+/// Format a JSON value for display.
+fn format_json_value(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<String> = arr.iter().map(format_json_value).collect();
+            format!("[{}]", items.join(", "))
+        }
+        serde_json::Value::Object(_) => val.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Set-origins (async, unchanged)
+// ---------------------------------------------------------------------------
 
 /// Set origin configuration for a ledger (stores LedgerConfig blob in CAS
 /// and updates the config_id on the NsRecord).
@@ -189,23 +403,4 @@ pub async fn run_set_origins(ledger: &str, file: &Path, fluree_dir: &Path) -> Cl
 
     println!("Config set for '{}' (CID: {})", ledger_id, cid);
     Ok(())
-}
-
-/// Format a TOML value for display.
-fn format_toml_value(val: &toml::Value) -> String {
-    match val {
-        toml::Value::String(s) => s.clone(),
-        toml::Value::Integer(n) => n.to_string(),
-        toml::Value::Float(f) => f.to_string(),
-        toml::Value::Boolean(b) => b.to_string(),
-        toml::Value::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(format_toml_value).collect();
-            format!("[{}]", items.join(", "))
-        }
-        toml::Value::Table(_) => {
-            // For tables, show as TOML inline
-            val.to_string()
-        }
-        toml::Value::Datetime(dt) => dt.to_string(),
-    }
 }

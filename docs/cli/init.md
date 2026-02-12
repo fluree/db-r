@@ -10,13 +10,13 @@ fluree init [OPTIONS]
 
 ## Options
 
-| Option | Description |
-|--------|-------------|
-| `--global` | Create global config at `~/.fluree/` instead of local `.fluree/` |
+| Option     | Description                                                                     |
+| ---------- | ------------------------------------------------------------------------------- |
+| `--global` | Create global config in the platform data directory instead of local `.fluree/` |
 
 ## Description
 
-Creates a `.fluree/` directory in the current working directory (or `~/.fluree/` with `--global`). This directory stores:
+Creates a `.fluree/` directory in the current working directory (or a global directory with `--global`). This directory stores:
 
 - `active` - The currently active ledger name
 - `config.toml` - Configuration settings
@@ -34,6 +34,16 @@ fluree init
 # Initialize global config
 fluree init --global
 ```
+
+## Global Directory
+
+With `--global`, the directory is determined by:
+
+1. `$FLUREE_HOME` environment variable (if set)
+2. Platform data directory:
+   - **Linux**: `$XDG_DATA_HOME/fluree` (default: `~/.local/share/fluree`)
+   - **macOS**: `~/Library/Application Support/fluree`
+   - **Windows**: `C:\Users\<user>\AppData\Local\fluree`
 
 ## See Also
 

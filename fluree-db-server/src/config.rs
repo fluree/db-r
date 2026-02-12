@@ -1,6 +1,7 @@
 //! Server configuration
 
 use clap::{Parser, ValueEnum};
+use fluree_db_api::server_defaults;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -373,8 +374,16 @@ impl AdminAuthConfig {
 #[command(name = "fluree-server")]
 #[command(about = "Fluree DB HTTP REST API Server")]
 pub struct ServerConfig {
+    /// Path to configuration file (default: walks up from cwd looking for .fluree/config.toml)
+    #[arg(long, env = "FLUREE_CONFIG")]
+    pub config_file: Option<PathBuf>,
+
+    /// Configuration profile to activate (merges [profiles.<name>.server] onto [server])
+    #[arg(long, env = "FLUREE_PROFILE")]
+    pub profile: Option<String>,
+
     /// Address to listen on
-    #[arg(long, env = "FLUREE_LISTEN_ADDR", default_value = "0.0.0.0:8090")]
+    #[arg(long, env = "FLUREE_LISTEN_ADDR", default_value = server_defaults::DEFAULT_LISTEN_ADDR)]
     pub listen_addr: SocketAddr,
 
     /// Storage path for file-based storage (enables file storage mode)
@@ -382,23 +391,31 @@ pub struct ServerConfig {
     pub storage_path: Option<PathBuf>,
 
     /// Enable CORS (Cross-Origin Resource Sharing)
-    #[arg(long, env = "FLUREE_CORS_ENABLED", default_value = "true")]
+    #[arg(long, env = "FLUREE_CORS_ENABLED", default_value_t = server_defaults::DEFAULT_CORS_ENABLED)]
     pub cors_enabled: bool,
 
     /// Enable background indexing
-    #[arg(long, env = "FLUREE_INDEXING_ENABLED", default_value = "false")]
+    #[arg(long, env = "FLUREE_INDEXING_ENABLED", default_value_t = server_defaults::DEFAULT_INDEXING_ENABLED)]
     pub indexing_enabled: bool,
 
+    /// Novelty size (bytes) that triggers background reindexing (soft threshold)
+    #[arg(long, env = "FLUREE_REINDEX_MIN_BYTES", default_value_t = server_defaults::DEFAULT_REINDEX_MIN_BYTES)]
+    pub reindex_min_bytes: usize,
+
+    /// Novelty size (bytes) that blocks new commits until reindexing completes (hard threshold)
+    #[arg(long, env = "FLUREE_REINDEX_MAX_BYTES", default_value_t = server_defaults::DEFAULT_REINDEX_MAX_BYTES)]
+    pub reindex_max_bytes: usize,
+
     /// Maximum cache entries per ledger
-    #[arg(long, env = "FLUREE_CACHE_MAX_ENTRIES", default_value = "10000")]
+    #[arg(long, env = "FLUREE_CACHE_MAX_ENTRIES", default_value_t = server_defaults::DEFAULT_CACHE_MAX_ENTRIES)]
     pub cache_max_entries: usize,
 
     /// Request body size limit in bytes (default 50MB)
-    #[arg(long, env = "FLUREE_BODY_LIMIT", default_value = "52428800")]
+    #[arg(long, env = "FLUREE_BODY_LIMIT", default_value_t = server_defaults::DEFAULT_BODY_LIMIT)]
     pub body_limit: usize,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(long, env = "FLUREE_LOG_LEVEL", default_value = "info")]
+    #[arg(long, env = "FLUREE_LOG_LEVEL", default_value = server_defaults::DEFAULT_LOG_LEVEL)]
     pub log_level: String,
 
     // Events authentication options
@@ -469,7 +486,7 @@ pub struct ServerConfig {
 
     /// JWKS cache TTL in seconds (default 300 = 5 minutes)
     #[cfg(feature = "oidc")]
-    #[arg(long, env = "FLUREE_JWKS_CACHE_TTL", default_value = "300")]
+    #[arg(long, env = "FLUREE_JWKS_CACHE_TTL", default_value_t = server_defaults::DEFAULT_JWKS_CACHE_TTL)]
     pub jwks_cache_ttl: u64,
 
     // === Server role (peer mode) ===
@@ -508,15 +525,15 @@ pub struct ServerConfig {
     pub peer_graph_sources: Vec<String>,
 
     /// Initial reconnect delay in ms for peer SSE subscription
-    #[arg(long, default_value = "1000")]
+    #[arg(long, default_value_t = server_defaults::DEFAULT_PEER_RECONNECT_INITIAL_MS)]
     pub peer_reconnect_initial_ms: u64,
 
     /// Maximum reconnect delay in ms for peer SSE subscription
-    #[arg(long, default_value = "30000")]
+    #[arg(long, default_value_t = server_defaults::DEFAULT_PEER_RECONNECT_MAX_MS)]
     pub peer_reconnect_max_ms: u64,
 
     /// Reconnect backoff multiplier for peer SSE subscription
-    #[arg(long, default_value = "2.0")]
+    #[arg(long, default_value_t = server_defaults::DEFAULT_PEER_RECONNECT_MULTIPLIER)]
     pub peer_reconnect_multiplier: f64,
 
     // === Storage proxy options (transaction server) ===
@@ -610,13 +627,17 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            listen_addr: "0.0.0.0:8090".parse().unwrap(),
+            config_file: None,
+            profile: None,
+            listen_addr: server_defaults::DEFAULT_LISTEN_ADDR.parse().unwrap(),
             storage_path: None,
-            cors_enabled: true,
-            indexing_enabled: false,
-            cache_max_entries: 10000,
-            body_limit: 50 * 1024 * 1024, // 50MB
-            log_level: "info".to_string(),
+            cors_enabled: server_defaults::DEFAULT_CORS_ENABLED,
+            indexing_enabled: server_defaults::DEFAULT_INDEXING_ENABLED,
+            reindex_min_bytes: server_defaults::DEFAULT_REINDEX_MIN_BYTES,
+            reindex_max_bytes: server_defaults::DEFAULT_REINDEX_MAX_BYTES,
+            cache_max_entries: server_defaults::DEFAULT_CACHE_MAX_ENTRIES,
+            body_limit: server_defaults::DEFAULT_BODY_LIMIT,
+            log_level: server_defaults::DEFAULT_LOG_LEVEL.to_string(),
             events_auth_mode: EventsAuthMode::None,
             events_auth_audience: None,
             events_auth_trusted_issuers: Vec::new(),
@@ -631,7 +652,7 @@ impl Default for ServerConfig {
             #[cfg(feature = "oidc")]
             jwks_issuers: Vec::new(),
             #[cfg(feature = "oidc")]
-            jwks_cache_ttl: 300,
+            jwks_cache_ttl: server_defaults::DEFAULT_JWKS_CACHE_TTL,
             // Peer mode defaults
             server_role: ServerRole::Transaction,
             tx_server_url: None,
@@ -640,9 +661,9 @@ impl Default for ServerConfig {
             peer_subscribe_all: false,
             peer_ledgers: Vec::new(),
             peer_graph_sources: Vec::new(),
-            peer_reconnect_initial_ms: 1000,
-            peer_reconnect_max_ms: 30000,
-            peer_reconnect_multiplier: 2.0,
+            peer_reconnect_initial_ms: server_defaults::DEFAULT_PEER_RECONNECT_INITIAL_MS,
+            peer_reconnect_max_ms: server_defaults::DEFAULT_PEER_RECONNECT_MAX_MS,
+            peer_reconnect_multiplier: server_defaults::DEFAULT_PEER_RECONNECT_MULTIPLIER,
             // Storage proxy defaults
             storage_proxy_enabled: false,
             storage_proxy_trusted_issuers: Vec::new(),

@@ -29,7 +29,12 @@ oidc = ["fluree-db-credential/oidc", "dep:jsonwebtoken"]
 # Enable Swagger UI endpoint (requires network during build to download assets)
 swagger-ui = ["dep:utoipa-swagger-ui"]
 # Enable OpenTelemetry tracing (optional)
-otel = ["dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
+otel = [
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry_sdk",
+]
 
 [dependencies]
 # Fluree DB crates
@@ -70,8 +75,14 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { version = "0.32.1", optional = true }
 opentelemetry = { version = "0.31.0", optional = true }
-opentelemetry-otlp = { version = "0.31.0", optional = true, features = ["grpc-tonic", "http-proto"] }
-opentelemetry_sdk = { version = "0.31.0", optional = true, features = ["rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
+opentelemetry-otlp = { version = "0.31.0", optional = true, features = [
+    "grpc-tonic",
+    "http-proto",
+] }
+opentelemetry_sdk = { version = "0.31.0", optional = true, features = [
+    "rt-tokio",
+    "experimental_trace_batch_span_processor_with_async_runtime",
+] }
 
 # Concurrent data structures
 dashmap = { workspace = true }
@@ -79,6 +90,10 @@ parking_lot = "0.12"
 
 # CLI
 clap = { workspace = true }
+
+# Config file support
+toml = "0.8"
+dirs = "5"
 
 # API documentation
 utoipa = { workspace = true }
@@ -100,7 +115,7 @@ bs58 = "0.5"
 # Encoding
 base64 = "0.22"
 ahash = "0.8.12"
-ciborium = "0.2"  # CBOR encoding for policy-filtered flakes transport
+ciborium = "0.2" # CBOR encoding for policy-filtered flakes transport
 
 # JWT verification (OIDC/JWKS path)
 jsonwebtoken = { workspace = true, optional = true }
