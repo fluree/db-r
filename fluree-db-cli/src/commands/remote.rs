@@ -5,15 +5,15 @@ use crate::config::TomlSyncConfigStore;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use comfy_table::{Cell, Table};
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{
     RemoteAuth, RemoteAuthType, RemoteConfig, RemoteEndpoint, SyncConfigStore,
 };
 use std::fs;
-use std::path::Path;
 
-pub async fn run(action: RemoteAction, fluree_dir: &Path) -> CliResult<()> {
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+pub async fn run(action: RemoteAction, dirs: &FlureeDir) -> CliResult<()> {
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
 
     match action {
         RemoteAction::Add { name, url, token } => run_add(&store, &name, &url, token).await,

@@ -10,12 +10,12 @@ use crate::error::{CliError, CliResult};
 use crate::remote_client::RemoteLedgerClient;
 use colored::Colorize;
 use comfy_table::{Cell, Table};
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{RemoteEndpoint, SyncConfigStore};
-use std::path::Path;
 
-pub async fn run(action: TrackAction, fluree_dir: &Path) -> CliResult<()> {
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+pub async fn run(action: TrackAction, dirs: &FlureeDir) -> CliResult<()> {
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
 
     match action {
         TrackAction::Add {
@@ -28,7 +28,7 @@ pub async fn run(action: TrackAction, fluree_dir: &Path) -> CliResult<()> {
                 &ledger,
                 remote.as_deref(),
                 remote_alias.as_deref(),
-                fluree_dir,
+                dirs,
             )
             .await
         }
@@ -49,7 +49,7 @@ async fn run_add(
     ledger: &str,
     remote_name: Option<&str>,
     remote_alias: Option<&str>,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<()> {
     // Resolve remote: explicit arg, or default if exactly one remote configured
     let remotes = store
@@ -93,7 +93,7 @@ async fn run_add(
     let effective_remote_alias = crate::context::to_ledger_id(remote_alias.unwrap_or(ledger));
 
     // Check mutual exclusion: refuse if local ledger exists
-    let fluree = crate::context::build_fluree(fluree_dir)?;
+    let fluree = crate::context::build_fluree(dirs)?;
     let local_ledger_id = &local_alias;
     if fluree.ledger_exists(local_ledger_id).await.unwrap_or(false) {
         return Err(CliError::Config(format!(

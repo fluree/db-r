@@ -1,5 +1,5 @@
 use crate::error::{CliError, CliResult};
-use fluree_db_api::server_defaults::{self, ConfigFormat, CONFIG_FILE_TOML, FLUREE_DIR};
+use fluree_db_api::server_defaults::{self, ConfigFormat, FlureeDir, CONFIG_FILE_TOML, FLUREE_DIR};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -42,29 +42,35 @@ fn find_fluree_dir_from(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Find `.fluree/` by walking up from cwd. Returns `None` if not found.
-pub fn find_fluree_dir() -> Option<PathBuf> {
+/// Find `.fluree/` by walking up from cwd. Returns a unified `FlureeDir`
+/// (local project mode) or `None` if not found.
+pub fn find_fluree_dir() -> Option<FlureeDir> {
     let cwd = std::env::current_dir().ok()?;
-    find_fluree_dir_from(&cwd)
+    find_fluree_dir_from(&cwd).map(FlureeDir::unified)
 }
 
-/// Resolve the global `.fluree/` directory.
+/// Resolve global Fluree directories.
 ///
-/// Priority: `$FLUREE_HOME` env var, then `dirs::data_local_dir()/fluree`.
-fn global_fluree_dir() -> Option<PathBuf> {
+/// When `$FLUREE_HOME` is set, both config and data share that single path
+/// (unified mode). Otherwise, config goes to `dirs::config_local_dir()/fluree`
+/// and data goes to `dirs::data_local_dir()/fluree` (XDG-split on Linux).
+fn global_fluree_dirs() -> Option<FlureeDir> {
     if let Ok(p) = std::env::var("FLUREE_HOME") {
-        return Some(PathBuf::from(p));
+        return Some(FlureeDir::unified(PathBuf::from(p)));
     }
-    dirs::data_local_dir().map(|d| d.join("fluree"))
+    let config = dirs::config_local_dir().map(|d| d.join("fluree"))?;
+    let data = dirs::data_local_dir().map(|d| d.join("fluree"))?;
+    Some(FlureeDir::split(config, data))
 }
 
-/// Find `.fluree/` by walking up from cwd, falling back to global directory.
-pub fn find_or_global_fluree_dir() -> Option<PathBuf> {
+/// Find `.fluree/` by walking up from cwd, falling back to global directories.
+pub fn find_or_global_fluree_dir() -> Option<FlureeDir> {
     if let Some(d) = find_fluree_dir() {
         return Some(d);
     }
-    let global = global_fluree_dir()?;
-    if global.is_dir() {
+    let global = global_fluree_dirs()?;
+    // Accept if either config or data dir already exists
+    if global.config_dir().is_dir() || global.data_dir().is_dir() {
         Some(global)
     } else {
         None
@@ -117,51 +123,74 @@ fn resolve_config_override(p: &Path) -> CliResult<PathBuf> {
 }
 
 /// Require a local `.fluree/` directory (for mutating commands).
-pub fn require_fluree_dir(config_override: Option<&Path>) -> CliResult<PathBuf> {
+pub fn require_fluree_dir(config_override: Option<&Path>) -> CliResult<FlureeDir> {
     if let Some(p) = config_override {
-        return resolve_config_override(p);
+        return resolve_config_override(p).map(FlureeDir::unified);
     }
     find_fluree_dir().ok_or(CliError::NoFlureeDir)
 }
 
 /// Require a `.fluree/` directory, allowing global fallback (for read-only commands).
-pub fn require_fluree_dir_or_global(config_override: Option<&Path>) -> CliResult<PathBuf> {
+pub fn require_fluree_dir_or_global(config_override: Option<&Path>) -> CliResult<FlureeDir> {
     if let Some(p) = config_override {
-        return resolve_config_override(p);
+        return resolve_config_override(p).map(FlureeDir::unified);
     }
     find_or_global_fluree_dir().ok_or(CliError::NoFlureeDir)
 }
 
-/// Create `.fluree/` directory with config template and storage subdirectory.
+/// Create Fluree directories with config template and storage subdirectory.
 ///
-/// The `config_template` is written to the file named by `config_filename`
-/// (e.g. `"config.toml"` or `"config.jsonld"`) if no config file already exists.
-/// Pass an empty string for `config_template` to create an empty config file.
+/// In local mode, creates `.fluree/` in the current directory with both
+/// config and storage inside. In global mode, config and data may be split
+/// across `config_local_dir` and `data_local_dir` (or unified under
+/// `$FLUREE_HOME`).
+///
+/// The `config_template` is written to the config directory under the name
+/// given by `config_filename` (e.g. `"config.toml"`) if no config file
+/// already exists.
+/// Resolve the directories for `fluree init` without creating anything.
+///
+/// Returns the `FlureeDir` that `init_fluree_dir` will use, so callers can
+/// inspect it (e.g. to customise the config template) before writing.
+pub fn resolve_init_dirs(global: bool) -> CliResult<FlureeDir> {
+    if global {
+        global_fluree_dirs()
+            .ok_or_else(|| CliError::Config("cannot determine global directories".into()))
+    } else {
+        Ok(FlureeDir::unified(
+            std::env::current_dir()?.join(FLUREE_DIR),
+        ))
+    }
+}
+
 pub fn init_fluree_dir(
-    global: bool,
+    dirs: &FlureeDir,
     config_template: &str,
     config_filename: &str,
-) -> CliResult<PathBuf> {
-    let fluree_dir = if global {
-        global_fluree_dir()
-            .ok_or_else(|| CliError::Config("cannot determine global data directory".into()))?
-    } else {
-        std::env::current_dir()?.join(FLUREE_DIR)
-    };
-    let storage_dir = fluree_dir.join(STORAGE_DIR);
-
+) -> CliResult<()> {
+    // Create storage directory in data_dir
+    let storage_dir = dirs.data_dir().join(STORAGE_DIR);
     fs::create_dir_all(&storage_dir).map_err(|e| {
         CliError::Config(format!("failed to create {}: {e}", storage_dir.display()))
     })?;
 
-    let config_path = fluree_dir.join(config_filename);
+    // Create config directory (may differ from data_dir in global mode)
+    fs::create_dir_all(dirs.config_dir()).map_err(|e| {
+        CliError::Config(format!(
+            "failed to create {}: {e}",
+            dirs.config_dir().display()
+        ))
+    })?;
+
+    // Write config template if config file doesn't already exist
+    let config_path = dirs.config_dir().join(config_filename);
     if !config_path.exists() {
         fs::write(&config_path, config_template).map_err(|e| {
             CliError::Config(format!("failed to create {}: {e}", config_path.display()))
         })?;
     }
 
-    Ok(fluree_dir)
+    Ok(())
 }
 
 /// Read the currently active ledger name from `.fluree/active`.

@@ -3,22 +3,22 @@ use crate::context;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use comfy_table::{ContentArrangement, Table};
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_nameservice::NameService;
-use std::path::Path;
 
-pub async fn run(fluree_dir: &Path, remote_flag: Option<&str>) -> CliResult<()> {
+pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>) -> CliResult<()> {
     if let Some(remote_name) = remote_flag {
-        return run_remote(remote_name, fluree_dir).await;
+        return run_remote(remote_name, dirs).await;
     }
 
-    let fluree = context::build_fluree(fluree_dir)?;
-    let active = config::read_active_ledger(fluree_dir);
+    let fluree = context::build_fluree(dirs)?;
+    let active = config::read_active_ledger(dirs.data_dir());
     let records = fluree.nameservice().all_records().await?;
 
     // Filter out retracted records
     let active_records: Vec<_> = records.iter().filter(|r| !r.retracted).collect();
 
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let tracked = store.tracked_ledgers();
 
     if active_records.is_empty() && tracked.is_empty() {
@@ -80,8 +80,8 @@ pub async fn run(fluree_dir: &Path, remote_flag: Option<&str>) -> CliResult<()> 
 }
 
 /// List ledgers on a remote server.
-async fn run_remote(remote_name: &str, fluree_dir: &Path) -> CliResult<()> {
-    let client = context::build_remote_client(remote_name, fluree_dir).await?;
+async fn run_remote(remote_name: &str, dirs: &FlureeDir) -> CliResult<()> {
+    let client = context::build_remote_client(remote_name, dirs).await?;
 
     let result = client.list_ledgers().await.map_err(|e| {
         CliError::Remote(format!(
@@ -90,7 +90,7 @@ async fn run_remote(remote_name: &str, fluree_dir: &Path) -> CliResult<()> {
         ))
     })?;
 
-    context::persist_refreshed_tokens(&client, remote_name, fluree_dir).await;
+    context::persist_refreshed_tokens(&client, remote_name, dirs).await;
 
     // Response should be a JSON array of ledger objects
     let ledgers = match result.as_array() {

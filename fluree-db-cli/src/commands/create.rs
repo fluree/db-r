@@ -2,6 +2,7 @@ use crate::config;
 use crate::context;
 use crate::detect;
 use crate::error::{CliError, CliResult};
+use fluree_db_api::server_defaults::FlureeDir;
 use std::path::Path;
 
 /// Import tuning options passed from global + create-specific CLI flags.
@@ -14,12 +15,12 @@ pub struct ImportOpts {
 pub async fn run(
     ledger: &str,
     from: Option<&Path>,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
     verbose: bool,
     import_opts: &ImportOpts,
 ) -> CliResult<()> {
     // Refuse if this alias is already tracked (mutual exclusion)
-    let store = config::TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let store = config::TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     if store.get_tracked(ledger).is_some() {
         return Err(CliError::Usage(format!(
             "alias '{}' is already used by a tracked ledger.\n  \
@@ -28,7 +29,7 @@ pub async fn run(
         )));
     }
 
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
 
     match from {
         Some(path) if is_import_path(path)? => {
@@ -63,7 +64,7 @@ pub async fn run(
             );
             let result = builder.execute().await?;
 
-            config::write_active_ledger(fluree_dir, ledger)?;
+            config::write_active_ledger(dirs.data_dir(), ledger)?;
             println!(
                 "Created ledger '{}' (imported {} flakes, t={})",
                 ledger, result.flake_count, result.t
@@ -100,7 +101,7 @@ pub async fn run(
                 }
             };
 
-            config::write_active_ledger(fluree_dir, ledger)?;
+            config::write_active_ledger(dirs.data_dir(), ledger)?;
             println!(
                 "Created ledger '{}' ({} flakes, t={})",
                 ledger, result.receipt.flake_count, result.receipt.t
@@ -109,7 +110,7 @@ pub async fn run(
         None => {
             // Create empty ledger
             fluree.create_ledger(ledger).await?;
-            config::write_active_ledger(fluree_dir, ledger)?;
+            config::write_active_ledger(dirs.data_dir(), ledger)?;
             println!("Created ledger '{}'", ledger);
         }
     }

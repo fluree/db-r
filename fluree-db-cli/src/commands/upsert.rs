@@ -3,15 +3,15 @@ use crate::context::{self, LedgerMode};
 use crate::detect;
 use crate::error::CliResult;
 use crate::input;
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::CommitOpts;
-use std::path::Path;
 
 pub async fn run(
     args: &[String],
     expr: Option<&str>,
     message: Option<&str>,
     format_flag: Option<&str>,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
     remote_flag: Option<&str>,
 ) -> CliResult<()> {
     let (explicit_ledger, file_path) = resolve_positional_args(args);
@@ -25,10 +25,10 @@ pub async fn run(
 
     // Resolve ledger mode: --remote flag, local, or tracked
     let mode = if let Some(remote_name) = remote_flag {
-        let alias = context::resolve_ledger(explicit_ledger, fluree_dir)?;
-        context::build_remote_mode(remote_name, &alias, fluree_dir).await?
+        let alias = context::resolve_ledger(explicit_ledger, dirs)?;
+        context::build_remote_mode(remote_name, &alias, dirs).await?
     } else {
-        context::resolve_ledger_mode(explicit_ledger, fluree_dir).await?
+        context::resolve_ledger_mode(explicit_ledger, dirs).await?
     };
 
     match mode {
@@ -46,7 +46,7 @@ pub async fn run(
                 }
             };
 
-            context::persist_refreshed_tokens(&client, &remote_name, fluree_dir).await;
+            context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
             print_txn_result(&result);
         }

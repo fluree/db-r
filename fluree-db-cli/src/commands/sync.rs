@@ -4,6 +4,7 @@ use crate::config::{storage_path, TomlSyncConfigStore};
 use crate::context;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_core::pack::{PackRequest, LARGE_TRANSFER_THRESHOLD};
 use fluree_db_core::storage::ContentAddressedWrite;
 use fluree_db_core::ContentKind;
@@ -18,7 +19,6 @@ use fluree_db_nameservice_sync::{
 };
 use fluree_db_novelty::commit_v2::{read_commit_envelope, verify_commit_v2_blob};
 use futures::StreamExt;
-use std::path::Path;
 use std::sync::Arc;
 
 fn token_has_storage_permissions(token: &str) -> Option<bool> {
@@ -106,16 +106,16 @@ fn map_sync_auth_error(remote: &str, err: &str) -> Option<CliError> {
 }
 
 /// Build a SyncDriver with all configured remotes
-async fn build_sync_driver(fluree_dir: &Path) -> CliResult<(SyncDriver, Arc<TomlSyncConfigStore>)> {
-    let fluree = context::build_fluree(fluree_dir)?;
-    let config_store = Arc::new(TomlSyncConfigStore::new(fluree_dir.to_path_buf()));
+async fn build_sync_driver(dirs: &FlureeDir) -> CliResult<(SyncDriver, Arc<TomlSyncConfigStore>)> {
+    let fluree = context::build_fluree(dirs)?;
+    let config_store = Arc::new(TomlSyncConfigStore::new(dirs.config_dir().to_path_buf()));
 
     // Get the nameservice as RefPublisher
     let ns = fluree.nameservice();
     let local: Arc<dyn RefPublisher> = Arc::new(ns.clone());
 
     // Create a FileTrackingStore using the same storage path
-    let storage = storage_path(fluree_dir);
+    let storage = storage_path(dirs.data_dir());
     let tracking: Arc<dyn RemoteTrackingStore> = Arc::new(FileTrackingStore::new(&storage));
 
     let mut driver = SyncDriver::new(
@@ -154,9 +154,9 @@ async fn build_sync_driver(fluree_dir: &Path) -> CliResult<(SyncDriver, Arc<Toml
 }
 
 /// Fetch refs from a remote (like git fetch)
-pub async fn run_fetch(remote: &str, fluree_dir: &Path) -> CliResult<()> {
+pub async fn run_fetch(remote: &str, dirs: &FlureeDir) -> CliResult<()> {
     // Proactively fail with a clear message for query-only tokens.
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let remote_cfg = store
         .get_remote(&RemoteName::new(remote))
         .await
@@ -168,7 +168,7 @@ pub async fn run_fetch(remote: &str, fluree_dir: &Path) -> CliResult<()> {
         }
     }
 
-    let (driver, _config) = build_sync_driver(fluree_dir).await?;
+    let (driver, _config) = build_sync_driver(dirs).await?;
     let remote_name = RemoteName::new(remote);
 
     println!("Fetching from '{}'...", remote.cyan());
@@ -213,11 +213,11 @@ fn print_fetch_result(result: &FetchResult) {
 ///
 /// Falls back to origin-based pull (CID chain walk via LedgerConfig) when
 /// no upstream remote is configured.
-pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, fluree_dir: &Path) -> CliResult<()> {
-    let ledger_id = context::resolve_ledger(ledger, fluree_dir)?;
+pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) -> CliResult<()> {
+    let ledger_id = context::resolve_ledger(ledger, dirs)?;
     let ledger_id = context::to_ledger_id(&ledger_id);
 
-    let config_store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let config_store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let upstream = config_store
         .get_upstream(&ledger_id)
         .await
@@ -225,7 +225,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, fluree_dir: &Path)
 
     let Some(upstream) = upstream else {
         // No named upstream — try origin-based pull via LedgerConfig.
-        return run_pull_via_origins(&ledger_id, no_indexes, fluree_dir).await;
+        return run_pull_via_origins(&ledger_id, no_indexes, dirs).await;
     };
 
     // Resolve remote config → build client.
@@ -269,7 +269,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, fluree_dir: &Path)
         .ok_or_else(|| CliError::Config("remote ledger-info response missing 't'".into()))?;
 
     // Resolve local head.
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
     let local_ref = fluree
         .nameservice()
         .get_ref(&ledger_id, RefKind::CommitHead)
@@ -279,7 +279,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, fluree_dir: &Path)
 
     if remote_t <= local_ref.t {
         println!("{} '{}' is already up to date", "✓".green(), ledger_id);
-        context::persist_refreshed_tokens(&client, upstream.remote.as_str(), fluree_dir).await;
+        context::persist_refreshed_tokens(&client, upstream.remote.as_str(), dirs).await;
         return Ok(());
     }
 
@@ -460,7 +460,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, fluree_dir: &Path)
                                         context::persist_refreshed_tokens(
                                             &client,
                                             upstream.remote.as_str(),
-                                            fluree_dir,
+                                            dirs,
                                         )
                                         .await;
                                         return Ok(());
@@ -553,7 +553,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, fluree_dir: &Path)
 
     if to_import.is_empty() {
         println!("{} '{}' is already up to date", "✓".green(), ledger_id);
-        context::persist_refreshed_tokens(&client, upstream.remote.as_str(), fluree_dir).await;
+        context::persist_refreshed_tokens(&client, upstream.remote.as_str(), dirs).await;
         return Ok(());
     }
 
@@ -579,16 +579,16 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, fluree_dir: &Path)
     );
 
     // Persist refreshed token if auto-refresh happened.
-    context::persist_refreshed_tokens(&client, upstream.remote.as_str(), fluree_dir).await;
+    context::persist_refreshed_tokens(&client, upstream.remote.as_str(), dirs).await;
     Ok(())
 }
 
 /// Push a ledger to its upstream remote
-pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> {
-    let ledger_id = context::resolve_ledger(ledger, fluree_dir)?;
+pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
+    let ledger_id = context::resolve_ledger(ledger, dirs)?;
     let ledger_id = context::to_ledger_id(&ledger_id);
 
-    let config_store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let config_store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let upstream = config_store
         .get_upstream(&ledger_id)
         .await
@@ -646,7 +646,7 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
         .and_then(|s| s.parse().ok());
 
     // Resolve local head.
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
     let local_ref = fluree
         .nameservice()
         .get_ref(&ledger_id, RefKind::CommitHead)
@@ -723,7 +723,7 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
 
     if to_push_cids.is_empty() {
         println!("{} '{}' is already up to date", "✓".green(), ledger_id);
-        context::persist_refreshed_tokens(&client, upstream.remote.as_str(), fluree_dir).await;
+        context::persist_refreshed_tokens(&client, upstream.remote.as_str(), dirs).await;
         return Ok(());
     }
 
@@ -773,7 +773,7 @@ pub async fn run_push(ledger: Option<&str>, fluree_dir: &Path) -> CliResult<()> 
     );
 
     // Persist refreshed token if auto-refresh happened.
-    context::persist_refreshed_tokens(&client, upstream.remote.as_str(), fluree_dir).await;
+    context::persist_refreshed_tokens(&client, upstream.remote.as_str(), dirs).await;
     Ok(())
 }
 
@@ -788,7 +788,7 @@ pub async fn run_clone(
     ledger: &str,
     alias: Option<&str>,
     no_indexes: bool,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<()> {
     let ledger_id = context::to_ledger_id(ledger);
     let local_id = alias.map_or_else(|| ledger_id.clone(), context::to_ledger_id);
@@ -797,7 +797,7 @@ pub async fn run_clone(
     // storage addresses), so the local ledger ID can differ from the remote.
 
     // Resolve remote config.
-    let config_store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let config_store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let remote_cfg = config_store
         .get_remote(&RemoteName::new(remote_name))
         .await
@@ -853,7 +853,7 @@ pub async fn run_clone(
     }
 
     // Create the local ledger.
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
     fluree
         .create_ledger(&local_id)
         .await
@@ -1094,7 +1094,7 @@ pub async fn run_clone(
     );
 
     // Persist refreshed token if auto-refresh happened.
-    context::persist_refreshed_tokens(&client, remote_name, fluree_dir).await;
+    context::persist_refreshed_tokens(&client, remote_name, dirs).await;
     Ok(())
 }
 
@@ -1110,7 +1110,7 @@ pub async fn run_clone_origin(
     ledger: &str,
     alias: Option<&str>,
     no_indexes: bool,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<()> {
     let ledger_id = context::to_ledger_id(ledger);
     let local_id = alias.map_or_else(|| ledger_id.clone(), context::to_ledger_id);
@@ -1153,7 +1153,7 @@ pub async fn run_clone_origin(
     }
 
     // 4. Create the local ledger.
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
     fluree
         .create_ledger(&local_id)
         .await
@@ -1455,9 +1455,9 @@ pub async fn run_clone_origin(
 async fn run_pull_via_origins(
     ledger_id: &str,
     no_indexes: bool,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<()> {
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
 
     let ns_record = fluree
         .nameservice()

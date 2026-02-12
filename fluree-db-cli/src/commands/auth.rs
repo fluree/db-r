@@ -18,13 +18,13 @@ use crate::cli::AuthAction;
 use crate::config::TomlSyncConfigStore;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{RemoteAuthType, RemoteEndpoint, SyncConfigStore};
 use std::io::{self, Read};
-use std::path::Path;
 
-pub async fn run(action: AuthAction, fluree_dir: &Path) -> CliResult<()> {
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+pub async fn run(action: AuthAction, dirs: &FlureeDir) -> CliResult<()> {
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
 
     match action {
         AuthAction::Status { remote } => run_status(&store, remote.as_deref()).await,

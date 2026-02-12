@@ -6,7 +6,7 @@ Fluree server is configured via a configuration file, command-line flags, and en
 
 ### Configuration File (TOML, JSON, or JSON-LD)
 
-The server reads configuration from `.fluree/config.toml` (or `.fluree/config.jsonld`) — the same file used by the Fluree CLI. Server settings live under the `[server]` section (or `"server"` key in JSON/JSON-LD). The server walks up from the current working directory looking for `.fluree/config.toml` or `.fluree/config.jsonld`, falling back to the global Fluree directory (`$FLUREE_HOME`, or the platform data directory — e.g. `~/.local/share/fluree` on Linux, `~/Library/Application Support/fluree` on macOS).
+The server reads configuration from `.fluree/config.toml` (or `.fluree/config.jsonld`) — the same file used by the Fluree CLI. Server settings live under the `[server]` section (or `"server"` key in JSON/JSON-LD). The server walks up from the current working directory looking for `.fluree/config.toml` or `.fluree/config.jsonld`, falling back to the global Fluree config directory (`$FLUREE_HOME`, or the platform config directory — e.g. `~/.config/fluree` on Linux, `~/Library/Application Support/fluree` on macOS).
 
 ```bash
 # Use default config file discovery
@@ -604,7 +604,7 @@ fluree-server \
 
 | Variable                                | Description                    | Default                                          |
 | --------------------------------------- | ------------------------------ | ------------------------------------------------ |
-| `FLUREE_HOME`                           | Global Fluree data directory   | Platform data dir (see below)                    |
+| `FLUREE_HOME`                           | Global Fluree directory (unified config + data) | Platform dirs (see below)                |
 | `FLUREE_CONFIG`                         | Config file path               | `.fluree/config.{toml,jsonld}` (auto-discovered) |
 | `FLUREE_PROFILE`                        | Configuration profile name     | None                                             |
 | `FLUREE_LISTEN_ADDR`                    | Server address:port            | `0.0.0.0:8090`                                   |

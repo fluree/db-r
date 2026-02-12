@@ -1,17 +1,17 @@
 use crate::context;
 use crate::error::{CliError, CliResult};
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_vocab::xsd;
-use std::path::Path;
 
 pub async fn run(
     explicit_ledger: Option<&str>,
     format_str: &str,
     at: Option<&str>,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<()> {
     // Check for tracked ledger — export requires local data
-    let store = crate::config::TomlSyncConfigStore::new(fluree_dir.to_path_buf());
-    let alias = context::resolve_ledger(explicit_ledger, fluree_dir)?;
+    let store = crate::config::TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
+    let alias = context::resolve_ledger(explicit_ledger, dirs)?;
     if store.get_tracked(&alias).is_some()
         || store.get_tracked(&context::to_ledger_id(&alias)).is_some()
     {
@@ -20,7 +20,7 @@ pub async fn run(
         ));
     }
 
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
 
     let graph = match at {
         Some(at_str) => {
