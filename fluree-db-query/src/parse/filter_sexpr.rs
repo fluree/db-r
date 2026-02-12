@@ -23,7 +23,7 @@
 //! - Quoted strings cannot contain whitespace, parentheses, or escape sequences
 //! - For complex string comparisons, use data expression format instead
 
-use super::ast::{UnresolvedArithmeticOp, UnresolvedCompareOp, UnresolvedExpression};
+use super::ast::UnresolvedExpression;
 use super::error::{ParseError, Result};
 use super::filter_common;
 use super::sexpr_tokenize;
@@ -74,38 +74,31 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedExpression> {
 
     // Convert to filter expression based on operator
     match op_lower.as_str() {
-        // Comparison operators - use common utilities
-        "=" | "eq" => filter_common::build_compare(&args, UnresolvedCompareOp::Eq, clone_expr, op),
-        "!=" | "<>" | "ne" => {
-            filter_common::build_compare(&args, UnresolvedCompareOp::Ne, clone_expr, op)
+        // Comparison operators
+        op @ ("=" | "eq" | "!=" | "<>" | "ne" | "<" | "lt" | "<=" | "le" | ">" | "gt" | ">="
+        | "ge") => {
+            let canonical = filter_common::normalize_op(op);
+            filter_common::build_call(&args, canonical, clone_expr, 1, "comparison operator")
         }
-        "<" | "lt" => filter_common::build_compare(&args, UnresolvedCompareOp::Lt, clone_expr, op),
-        "<=" | "le" => filter_common::build_compare(&args, UnresolvedCompareOp::Le, clone_expr, op),
-        ">" | "gt" => filter_common::build_compare(&args, UnresolvedCompareOp::Gt, clone_expr, op),
-        ">=" | "ge" => filter_common::build_compare(&args, UnresolvedCompareOp::Ge, clone_expr, op),
 
-        // Logical operators - use common utilities
+        // Logical operators
         "and" => filter_common::build_and(&args, clone_expr),
         "or" => filter_common::build_or(&args, clone_expr),
         "not" => filter_common::build_not(&args, clone_expr),
 
-        // Arithmetic operators - use common utilities
-        "+" | "add" => {
-            filter_common::build_arithmetic(&args, UnresolvedArithmeticOp::Add, clone_expr, op)
+        // Arithmetic operators
+        op @ ("+" | "add" | "*" | "mul" | "/" | "div") => {
+            let canonical = filter_common::normalize_op(op);
+            filter_common::build_call(&args, canonical, clone_expr, 1, "arithmetic operator")
         }
         "-" | "sub" => {
             if args.len() == 1 {
-                filter_common::build_negate(&args, clone_expr)
+                filter_common::build_call(&args, "negate", clone_expr, 1, "unary negation")
             } else {
-                filter_common::build_arithmetic(&args, UnresolvedArithmeticOp::Sub, clone_expr, op)
+                filter_common::build_call(&args, "-", clone_expr, 1, "arithmetic operator")
             }
         }
-        "*" | "mul" => {
-            filter_common::build_arithmetic(&args, UnresolvedArithmeticOp::Mul, clone_expr, op)
-        }
-        "/" | "div" => {
-            filter_common::build_arithmetic(&args, UnresolvedArithmeticOp::Div, clone_expr, op)
-        }
+
         // Function call
         _ => Ok(UnresolvedExpression::Call {
             func: Arc::from(op),
@@ -258,10 +251,11 @@ mod tests {
     fn test_parse_simple_comparison() {
         let expr = parse_s_expression("(> ?age 18)").unwrap();
         match expr {
-            UnresolvedExpression::Compare { op, .. } => {
-                assert_eq!(op, UnresolvedCompareOp::Gt);
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), ">");
+                assert_eq!(args.len(), 2);
             }
-            _ => panic!("Expected comparison"),
+            _ => panic!("Expected Call"),
         }
     }
 
@@ -335,10 +329,11 @@ mod tests {
     fn test_parse_arithmetic() {
         let expr = parse_s_expression("(+ ?x 5)").unwrap();
         match expr {
-            UnresolvedExpression::Arithmetic { op, .. } => {
-                assert_eq!(op, UnresolvedArithmeticOp::Add);
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "+");
+                assert_eq!(args.len(), 2);
             }
-            _ => panic!("Expected arithmetic"),
+            _ => panic!("Expected Call"),
         }
     }
 
@@ -346,8 +341,11 @@ mod tests {
     fn test_parse_unary_negation() {
         let expr = parse_s_expression("(- ?x)").unwrap();
         match expr {
-            UnresolvedExpression::Negate(_) => {}
-            _ => panic!("Expected negation"),
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "negate");
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("Expected Call with negate"),
         }
     }
 
@@ -355,11 +353,11 @@ mod tests {
     fn test_parse_variadic_comparison() {
         let expr = parse_s_expression("(< ?a ?b ?c)").unwrap();
         match expr {
-            UnresolvedExpression::Compare { op, args } => {
-                assert_eq!(op, UnresolvedCompareOp::Lt);
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "<");
                 assert_eq!(args.len(), 3);
             }
-            _ => panic!("Expected Compare"),
+            _ => panic!("Expected Call"),
         }
     }
 
@@ -367,11 +365,11 @@ mod tests {
     fn test_parse_variadic_arithmetic() {
         let expr = parse_s_expression("(+ ?x 5 10)").unwrap();
         match expr {
-            UnresolvedExpression::Arithmetic { op, args } => {
-                assert_eq!(op, UnresolvedArithmeticOp::Add);
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "+");
                 assert_eq!(args.len(), 3);
             }
-            _ => panic!("Expected Arithmetic"),
+            _ => panic!("Expected Call"),
         }
     }
 
@@ -379,11 +377,11 @@ mod tests {
     fn test_parse_single_arg_arithmetic() {
         let expr = parse_s_expression("(+ ?x)").unwrap();
         match expr {
-            UnresolvedExpression::Arithmetic { op, args } => {
-                assert_eq!(op, UnresolvedArithmeticOp::Add);
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "+");
                 assert_eq!(args.len(), 1);
             }
-            _ => panic!("Expected Arithmetic"),
+            _ => panic!("Expected Call"),
         }
     }
 }

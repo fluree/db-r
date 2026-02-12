@@ -32,11 +32,11 @@ pub mod values;
 pub mod where_clause;
 
 pub use ast::{
-    LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedArithmeticOp,
-    UnresolvedCompareOp, UnresolvedConstructTemplate, UnresolvedExpression, UnresolvedFilterValue,
-    UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions, UnresolvedPattern,
-    UnresolvedQuery, UnresolvedRoot, UnresolvedSelectionSpec, UnresolvedSortDirection,
-    UnresolvedSortSpec, UnresolvedTerm, UnresolvedTriplePattern, UnresolvedValue,
+    LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedConstructTemplate,
+    UnresolvedExpression, UnresolvedFilterValue, UnresolvedGraphSelectSpec,
+    UnresolvedNestedSelectSpec, UnresolvedOptions, UnresolvedPattern, UnresolvedQuery,
+    UnresolvedRoot, UnresolvedSelectionSpec, UnresolvedSortDirection, UnresolvedSortSpec,
+    UnresolvedTerm, UnresolvedTriplePattern, UnresolvedValue,
 };
 pub use encode::{IriEncoder, MemoryEncoder, NoEncoder};
 pub use error::{ParseError, Result};
@@ -2211,15 +2211,15 @@ mod tests {
         // Find the filter
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { op, args } => {
-                assert!(matches!(op, UnresolvedCompareOp::Gt));
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), ">");
                 assert!(matches!(&args[0], UnresolvedExpression::Var(v) if v.as_ref() == "?age"));
                 assert!(matches!(
                     &args[1],
                     UnresolvedExpression::Const(UnresolvedFilterValue::Long(18))
                 ));
             }
-            _ => panic!("Expected Compare expression"),
+            _ => panic!("Expected Call expression"),
         }
     }
 
@@ -2242,15 +2242,15 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { op, args } => {
-                assert!(matches!(op, UnresolvedCompareOp::Gt));
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), ">");
                 assert!(matches!(&args[0], UnresolvedExpression::Var(v) if v.as_ref() == "?age"));
                 assert!(matches!(
                     &args[1],
                     UnresolvedExpression::Const(UnresolvedFilterValue::Long(18))
                 ));
             }
-            _ => panic!("Expected Compare expression"),
+            _ => panic!("Expected Call expression"),
         }
     }
 
@@ -2277,17 +2277,17 @@ mod tests {
                 assert_eq!(exprs.len(), 2);
                 // First condition: ?age >= 18
                 match &exprs[0] {
-                    UnresolvedExpression::Compare { op, .. } => {
-                        assert!(matches!(op, UnresolvedCompareOp::Ge));
+                    UnresolvedExpression::Call { func, .. } => {
+                        assert_eq!(func.as_ref(), ">=");
                     }
-                    _ => panic!("Expected Compare"),
+                    _ => panic!("Expected Call"),
                 }
                 // Second condition: ?age < 65
                 match &exprs[1] {
-                    UnresolvedExpression::Compare { op, .. } => {
-                        assert!(matches!(op, UnresolvedCompareOp::Lt));
+                    UnresolvedExpression::Call { func, .. } => {
+                        assert_eq!(func.as_ref(), "<");
                     }
-                    _ => panic!("Expected Compare"),
+                    _ => panic!("Expected Call"),
                 }
             }
             _ => panic!("Expected And expression"),
@@ -2355,10 +2355,7 @@ mod tests {
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
             UnresolvedExpression::Not(inner) => {
-                assert!(matches!(
-                    inner.as_ref(),
-                    UnresolvedExpression::Compare { .. }
-                ));
+                assert!(matches!(inner.as_ref(), UnresolvedExpression::Call { .. }));
             }
             _ => panic!("Expected Not expression"),
         }
@@ -2383,13 +2380,18 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { args, .. } => match &args[0] {
-                UnresolvedExpression::Arithmetic { op, .. } => {
-                    assert!(matches!(op, UnresolvedArithmeticOp::Add));
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), ">");
+                match &args[0] {
+                    UnresolvedExpression::Call {
+                        func: inner_func, ..
+                    } => {
+                        assert_eq!(inner_func.as_ref(), "+");
+                    }
+                    _ => panic!("Expected Call expression on left"),
                 }
-                _ => panic!("Expected Arithmetic expression on left"),
-            },
-            _ => panic!("Expected Compare"),
+            }
+            _ => panic!("Expected Call"),
         }
     }
 
@@ -2435,16 +2437,24 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { args, .. } => {
-                // First arg should be Negate(-?val)
-                assert!(matches!(&args[0], UnresolvedExpression::Negate(_)));
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), ">");
+                // First arg should be negate(?val)
+                match &args[0] {
+                    UnresolvedExpression::Call {
+                        func: inner_func, ..
+                    } => {
+                        assert_eq!(inner_func.as_ref(), "negate");
+                    }
+                    _ => panic!("Expected Call with negate"),
+                }
                 // Second arg should be -10
                 assert!(matches!(
                     &args[1],
                     UnresolvedExpression::Const(UnresolvedFilterValue::Long(-10))
                 ));
             }
-            _ => panic!("Expected Compare"),
+            _ => panic!("Expected Call"),
         }
     }
 
@@ -2452,16 +2462,16 @@ mod tests {
     fn test_filter_all_comparison_operators() {
         // Test all comparison operators using array syntax
         let operators = vec![
-            ("=", UnresolvedCompareOp::Eq),
-            ("!=", UnresolvedCompareOp::Ne),
-            ("<>", UnresolvedCompareOp::Ne),
-            ("<", UnresolvedCompareOp::Lt),
-            ("<=", UnresolvedCompareOp::Le),
-            (">", UnresolvedCompareOp::Gt),
-            (">=", UnresolvedCompareOp::Ge),
+            ("=", "="),
+            ("!=", "!="),
+            ("<>", "!="),
+            ("<", "<"),
+            ("<=", "<="),
+            (">", ">"),
+            (">=", ">="),
         ];
 
-        for (op_str, expected_op) in operators {
+        for (op_str, expected_func) in operators {
             let json = json!({
                 "@context": { "ex": "http://example.org/" },
                 "select": ["?x"],
@@ -2475,10 +2485,15 @@ mod tests {
 
             let filter = find_filter(&ast.patterns).expect("Should have a filter");
             match filter {
-                UnresolvedExpression::Compare { op, .. } => {
-                    assert_eq!(*op, expected_op, "Operator {} did not match", op_str);
+                UnresolvedExpression::Call { func, .. } => {
+                    assert_eq!(
+                        func.as_ref(),
+                        expected_func,
+                        "Operator {} did not match",
+                        op_str
+                    );
                 }
-                _ => panic!("Expected Compare for operator {}", op_str),
+                _ => panic!("Expected Call for operator {}", op_str),
             }
         }
     }
@@ -2515,13 +2530,13 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { args, .. } => match &args[1] {
+            UnresolvedExpression::Call { args, .. } => match &args[1] {
                 UnresolvedExpression::Const(UnresolvedFilterValue::Double(d)) => {
                     assert!((d - 99.99).abs() < f64::EPSILON);
                 }
                 _ => panic!("Expected Double constant"),
             },
-            _ => panic!("Expected Compare"),
+            _ => panic!("Expected Call"),
         }
     }
 

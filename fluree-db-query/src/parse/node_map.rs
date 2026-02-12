@@ -153,7 +153,7 @@ fn add_metadata_filter_pattern(
     pattern_added: &mut bool,
     error_context: &str,
 ) -> Result<()> {
-    use crate::parse::ast::{UnresolvedCompareOp, UnresolvedExpression};
+    use crate::parse::ast::UnresolvedExpression;
 
     if !object.is_var() {
         return Err(ParseError::InvalidWhere(format!(
@@ -166,8 +166,8 @@ fn add_metadata_filter_pattern(
         func: Arc::from(func_name),
         args: vec![UnresolvedExpression::var(object.as_var().unwrap())],
     };
-    let filter_expr = UnresolvedExpression::Compare {
-        op: UnresolvedCompareOp::Eq,
+    let filter_expr = UnresolvedExpression::Call {
+        func: Arc::from("="),
         args: vec![func_expr, UnresolvedExpression::string(constant_value)],
     };
     let filter_pattern = UnresolvedPattern::Filter(filter_expr);

@@ -1236,24 +1236,6 @@ pub(crate) fn lower_filter_expr(
             Ok(Expression::Var(var_id))
         }
         UnresolvedExpression::Const(val) => Ok(Expression::Const(val.into())),
-        UnresolvedExpression::Compare { op, args } => {
-            let lowered: Result<Vec<_>> = args.iter().map(|a| lower_filter_expr(a, vars)).collect();
-            Ok(Expression::Call {
-                func: (*op).into(),
-                args: lowered?,
-            })
-        }
-        UnresolvedExpression::Arithmetic { op, args } => {
-            let lowered: Result<Vec<_>> = args.iter().map(|a| lower_filter_expr(a, vars)).collect();
-            Ok(Expression::Call {
-                func: (*op).into(),
-                args: lowered?,
-            })
-        }
-        UnresolvedExpression::Negate(inner) => {
-            let lowered = lower_filter_expr(inner, vars)?;
-            Ok(Expression::negate(lowered))
-        }
         UnresolvedExpression::And(exprs) => {
             let lowered: Result<Vec<Expression>> =
                 exprs.iter().map(|e| lower_filter_expr(e, vars)).collect();
@@ -1303,6 +1285,19 @@ pub(crate) fn lower_filter_expr(
 /// Lower a function name string to a Function enum
 fn lower_function_name(name: &str) -> Function {
     match name.to_lowercase().as_str() {
+        // Comparison operators
+        "=" => Function::Eq,
+        "!=" => Function::Ne,
+        "<" => Function::Lt,
+        "<=" => Function::Le,
+        ">" => Function::Gt,
+        ">=" => Function::Ge,
+        // Arithmetic operators
+        "+" => Function::Add,
+        "-" => Function::Sub,
+        "*" => Function::Mul,
+        "/" => Function::Div,
+        "negate" => Function::Negate,
         // String functions
         "strlen" => Function::Strlen,
         "substr" | "substring" => Function::Substr,

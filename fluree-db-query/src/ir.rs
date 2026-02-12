@@ -1392,32 +1392,6 @@ pub enum FilterValue {
 // From implementations for lowering unresolved AST types
 // =============================================================================
 
-impl From<crate::parse::ast::UnresolvedCompareOp> for CompareOp {
-    fn from(op: crate::parse::ast::UnresolvedCompareOp) -> Self {
-        use crate::parse::ast::UnresolvedCompareOp;
-        match op {
-            UnresolvedCompareOp::Eq => CompareOp::Eq,
-            UnresolvedCompareOp::Ne => CompareOp::Ne,
-            UnresolvedCompareOp::Lt => CompareOp::Lt,
-            UnresolvedCompareOp::Le => CompareOp::Le,
-            UnresolvedCompareOp::Gt => CompareOp::Gt,
-            UnresolvedCompareOp::Ge => CompareOp::Ge,
-        }
-    }
-}
-
-impl From<crate::parse::ast::UnresolvedArithmeticOp> for ArithmeticOp {
-    fn from(op: crate::parse::ast::UnresolvedArithmeticOp) -> Self {
-        use crate::parse::ast::UnresolvedArithmeticOp;
-        match op {
-            UnresolvedArithmeticOp::Add => ArithmeticOp::Add,
-            UnresolvedArithmeticOp::Sub => ArithmeticOp::Sub,
-            UnresolvedArithmeticOp::Mul => ArithmeticOp::Mul,
-            UnresolvedArithmeticOp::Div => ArithmeticOp::Div,
-        }
-    }
-}
-
 impl From<CompareOp> for Function {
     fn from(op: CompareOp) -> Self {
         match op {
@@ -1439,18 +1413,6 @@ impl From<ArithmeticOp> for Function {
             ArithmeticOp::Mul => Function::Mul,
             ArithmeticOp::Div => Function::Div,
         }
-    }
-}
-
-impl From<crate::parse::ast::UnresolvedCompareOp> for Function {
-    fn from(op: crate::parse::ast::UnresolvedCompareOp) -> Self {
-        CompareOp::from(op).into()
-    }
-}
-
-impl From<crate::parse::ast::UnresolvedArithmeticOp> for Function {
-    fn from(op: crate::parse::ast::UnresolvedArithmeticOp) -> Self {
-        ArithmeticOp::from(op).into()
     }
 }
 

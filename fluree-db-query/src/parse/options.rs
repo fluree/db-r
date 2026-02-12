@@ -355,26 +355,6 @@ fn rewrite_having_aggregates(
     match expr {
         E::Var(_) | E::Const(_) => Ok(expr),
 
-        E::Compare { op, args } => Ok(E::Compare {
-            op,
-            args: args
-                .into_iter()
-                .map(|e| rewrite_child(e, aggregates, counter))
-                .collect::<Result<Vec<_>>>()?,
-        }),
-
-        E::Arithmetic { op, args } => Ok(E::Arithmetic {
-            op,
-            args: args
-                .into_iter()
-                .map(|e| rewrite_child(e, aggregates, counter))
-                .collect::<Result<Vec<_>>>()?,
-        }),
-
-        E::Negate(inner) => Ok(E::Negate(Box::new(rewrite_child(
-            *inner, aggregates, counter,
-        )?))),
-
         E::And(exprs) => Ok(E::And(
             exprs
                 .into_iter()
