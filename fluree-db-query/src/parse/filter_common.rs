@@ -46,14 +46,14 @@ pub fn validate_min_arg_count<T>(args: &[T], min: usize, context: &str) -> Resul
     Ok(())
 }
 
-/// Build a binary comparison expression from left and right operands
+/// Build a variadic comparison expression
 ///
 /// Generic over the input type `T` so it works with both:
 /// - `&UnresolvedExpression` (already parsed, for S-expressions)
 /// - `&JsonValue` (needs parsing, for data expressions)
 ///
 /// The `parser` function converts `T` to `UnresolvedExpression`.
-pub fn build_binary_compare<T, F>(
+pub fn build_compare<T, F>(
     args: &[T],
     op: UnresolvedCompareOp,
     parser: F,
@@ -62,26 +62,21 @@ pub fn build_binary_compare<T, F>(
 where
     F: Fn(&T) -> Result<UnresolvedExpression>,
 {
-    validate_arg_count(args, 2, context)?;
+    validate_min_arg_count(args, 1, context)?;
 
-    let left = parser(&args[0])?;
-    let right = parser(&args[1])?;
+    let parsed: Result<Vec<_>> = args.iter().map(parser).collect();
 
-    Ok(UnresolvedExpression::Compare {
-        op,
-        left: Box::new(left),
-        right: Box::new(right),
-    })
+    Ok(UnresolvedExpression::Compare { op, args: parsed? })
 }
 
-/// Build a binary arithmetic expression from left and right operands
+/// Build a variadic arithmetic expression
 ///
 /// Generic over the input type `T` so it works with both:
 /// - `&UnresolvedExpression` (already parsed, for S-expressions)
 /// - `&JsonValue` (needs parsing, for data expressions)
 ///
 /// The `parser` function converts `T` to `UnresolvedExpression`.
-pub fn build_binary_arithmetic<T, F>(
+pub fn build_arithmetic<T, F>(
     args: &[T],
     op: UnresolvedArithmeticOp,
     parser: F,
@@ -90,16 +85,11 @@ pub fn build_binary_arithmetic<T, F>(
 where
     F: Fn(&T) -> Result<UnresolvedExpression>,
 {
-    validate_arg_count(args, 2, context)?;
+    validate_min_arg_count(args, 1, context)?;
 
-    let left = parser(&args[0])?;
-    let right = parser(&args[1])?;
+    let parsed: Result<Vec<_>> = args.iter().map(parser).collect();
 
-    Ok(UnresolvedExpression::Arithmetic {
-        op,
-        left: Box::new(left),
-        right: Box::new(right),
-    })
+    Ok(UnresolvedExpression::Arithmetic { op, args: parsed? })
 }
 
 /// Build a logical AND expression from a list of sub-expressions
@@ -263,20 +253,57 @@ mod tests {
     }
 
     #[test]
-    fn test_build_binary_compare() {
+    fn test_build_compare() {
         // Test with a simple identity parser
         let args = vec![1, 2];
         let parser =
             |x: &i32| -> Result<UnresolvedExpression> { Ok(UnresolvedExpression::long(*x as i64)) };
 
-        let expr = build_binary_compare(&args, UnresolvedCompareOp::Eq, parser, "test comparison")
-            .unwrap();
+        let expr =
+            build_compare(&args, UnresolvedCompareOp::Eq, parser, "test comparison").unwrap();
 
         match expr {
-            UnresolvedExpression::Compare { op, left, right } => {
+            UnresolvedExpression::Compare { op, args } => {
                 assert_eq!(op, UnresolvedCompareOp::Eq);
-                assert!(matches!(*left, UnresolvedExpression::Const(_)));
-                assert!(matches!(*right, UnresolvedExpression::Const(_)));
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], UnresolvedExpression::Const(_)));
+                assert!(matches!(args[1], UnresolvedExpression::Const(_)));
+            }
+            _ => panic!("Expected Compare expression"),
+        }
+    }
+
+    #[test]
+    fn test_build_compare_variadic() {
+        let args = vec![1, 2, 3];
+        let parser =
+            |x: &i32| -> Result<UnresolvedExpression> { Ok(UnresolvedExpression::long(*x as i64)) };
+
+        let expr =
+            build_compare(&args, UnresolvedCompareOp::Lt, parser, "test comparison").unwrap();
+
+        match expr {
+            UnresolvedExpression::Compare { op, args } => {
+                assert_eq!(op, UnresolvedCompareOp::Lt);
+                assert_eq!(args.len(), 3);
+            }
+            _ => panic!("Expected Compare expression"),
+        }
+    }
+
+    #[test]
+    fn test_build_compare_single_arg() {
+        let args = vec![1];
+        let parser =
+            |x: &i32| -> Result<UnresolvedExpression> { Ok(UnresolvedExpression::long(*x as i64)) };
+
+        let expr =
+            build_compare(&args, UnresolvedCompareOp::Eq, parser, "test comparison").unwrap();
+
+        match expr {
+            UnresolvedExpression::Compare { op, args } => {
+                assert_eq!(op, UnresolvedCompareOp::Eq);
+                assert_eq!(args.len(), 1);
             }
             _ => panic!("Expected Compare expression"),
         }

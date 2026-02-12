@@ -1236,15 +1236,19 @@ pub(crate) fn lower_filter_expr(
             Ok(Expression::Var(var_id))
         }
         UnresolvedExpression::Const(val) => Ok(Expression::Const(val.into())),
-        UnresolvedExpression::Compare { op, left, right } => {
-            let lowered_left = lower_filter_expr(left, vars)?;
-            let lowered_right = lower_filter_expr(right, vars)?;
-            Ok(Expression::compare(*op, lowered_left, lowered_right))
+        UnresolvedExpression::Compare { op, args } => {
+            let lowered: Result<Vec<_>> = args.iter().map(|a| lower_filter_expr(a, vars)).collect();
+            Ok(Expression::Call {
+                func: (*op).into(),
+                args: lowered?,
+            })
         }
-        UnresolvedExpression::Arithmetic { op, left, right } => {
-            let lowered_left = lower_filter_expr(left, vars)?;
-            let lowered_right = lower_filter_expr(right, vars)?;
-            Ok(Expression::arithmetic(*op, lowered_left, lowered_right))
+        UnresolvedExpression::Arithmetic { op, args } => {
+            let lowered: Result<Vec<_>> = args.iter().map(|a| lower_filter_expr(a, vars)).collect();
+            Ok(Expression::Call {
+                func: (*op).into(),
+                args: lowered?,
+            })
         }
         UnresolvedExpression::Negate(inner) => {
             let lowered = lower_filter_expr(inner, vars)?;

@@ -2211,13 +2211,11 @@ mod tests {
         // Find the filter
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { op, left, right } => {
+            UnresolvedExpression::Compare { op, args } => {
                 assert!(matches!(op, UnresolvedCompareOp::Gt));
-                assert!(
-                    matches!(left.as_ref(), UnresolvedExpression::Var(v) if v.as_ref() == "?age")
-                );
+                assert!(matches!(&args[0], UnresolvedExpression::Var(v) if v.as_ref() == "?age"));
                 assert!(matches!(
-                    right.as_ref(),
+                    &args[1],
                     UnresolvedExpression::Const(UnresolvedFilterValue::Long(18))
                 ));
             }
@@ -2244,13 +2242,11 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { op, left, right } => {
+            UnresolvedExpression::Compare { op, args } => {
                 assert!(matches!(op, UnresolvedCompareOp::Gt));
-                assert!(
-                    matches!(left.as_ref(), UnresolvedExpression::Var(v) if v.as_ref() == "?age")
-                );
+                assert!(matches!(&args[0], UnresolvedExpression::Var(v) if v.as_ref() == "?age"));
                 assert!(matches!(
-                    right.as_ref(),
+                    &args[1],
                     UnresolvedExpression::Const(UnresolvedFilterValue::Long(18))
                 ));
             }
@@ -2387,7 +2383,7 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { left, .. } => match left.as_ref() {
+            UnresolvedExpression::Compare { args, .. } => match &args[0] {
                 UnresolvedExpression::Arithmetic { op, .. } => {
                     assert!(matches!(op, UnresolvedArithmeticOp::Add));
                 }
@@ -2439,12 +2435,12 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { left, right, .. } => {
-                // Left should be Negate(-?val)
-                assert!(matches!(left.as_ref(), UnresolvedExpression::Negate(_)));
-                // Right should be -10
+            UnresolvedExpression::Compare { args, .. } => {
+                // First arg should be Negate(-?val)
+                assert!(matches!(&args[0], UnresolvedExpression::Negate(_)));
+                // Second arg should be -10
                 assert!(matches!(
-                    right.as_ref(),
+                    &args[1],
                     UnresolvedExpression::Const(UnresolvedFilterValue::Long(-10))
                 ));
             }
@@ -2519,7 +2515,7 @@ mod tests {
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
-            UnresolvedExpression::Compare { right, .. } => match right.as_ref() {
+            UnresolvedExpression::Compare { args, .. } => match &args[1] {
                 UnresolvedExpression::Const(UnresolvedFilterValue::Double(d)) => {
                     assert!((d - 99.99).abs() < f64::EPSILON);
                 }
@@ -2547,13 +2543,30 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_error_wrong_arity() {
+    fn test_filter_single_arg_comparison_parses() {
+        // Single-arg comparison is valid with variadic ops (vacuously true)
         let json = json!({
             "@context": { "ex": "http://example.org/" },
             "select": ["?x"],
             "where": [
                 { "ex:val": "?x" },
-                ["filter", [">", "?x"]]  // Missing second argument
+                ["filter", [">", "?x"]]
+            ]
+        });
+
+        let result = parse_query_ast(&json);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_filter_error_zero_args() {
+        // Zero-arg comparison should still fail
+        let json = json!({
+            "@context": { "ex": "http://example.org/" },
+            "select": ["?x"],
+            "where": [
+                { "ex:val": "?x" },
+                ["filter", [">"]]
             ]
         });
 

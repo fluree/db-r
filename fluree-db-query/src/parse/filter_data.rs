@@ -111,12 +111,12 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
     // Handle based on operator type
     match op_lower.as_str() {
         // Comparison operators
-        "=" | "eq" => parse_binary_compare(args, UnresolvedCompareOp::Eq),
-        "!=" | "<>" | "ne" => parse_binary_compare(args, UnresolvedCompareOp::Ne),
-        "<" | "lt" => parse_binary_compare(args, UnresolvedCompareOp::Lt),
-        "<=" | "le" => parse_binary_compare(args, UnresolvedCompareOp::Le),
-        ">" | "gt" => parse_binary_compare(args, UnresolvedCompareOp::Gt),
-        ">=" | "ge" => parse_binary_compare(args, UnresolvedCompareOp::Ge),
+        "=" | "eq" => parse_compare(args, UnresolvedCompareOp::Eq),
+        "!=" | "<>" | "ne" => parse_compare(args, UnresolvedCompareOp::Ne),
+        "<" | "lt" => parse_compare(args, UnresolvedCompareOp::Lt),
+        "<=" | "le" => parse_compare(args, UnresolvedCompareOp::Le),
+        ">" | "gt" => parse_compare(args, UnresolvedCompareOp::Gt),
+        ">=" | "ge" => parse_compare(args, UnresolvedCompareOp::Ge),
 
         // Logical operators
         "and" => filter_common::build_and(args, parse_filter_expr),
@@ -148,17 +148,17 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
         }
 
         // Arithmetic operators
-        "+" | "add" => parse_binary_arithmetic(args, UnresolvedArithmeticOp::Add),
+        "+" | "add" => parse_arithmetic(args, UnresolvedArithmeticOp::Add),
         "-" | "sub" => {
             if args.len() == 1 {
                 // Unary negation
                 filter_common::build_negate(args, parse_filter_expr)
             } else {
-                parse_binary_arithmetic(args, UnresolvedArithmeticOp::Sub)
+                parse_arithmetic(args, UnresolvedArithmeticOp::Sub)
             }
         }
-        "*" | "mul" => parse_binary_arithmetic(args, UnresolvedArithmeticOp::Mul),
-        "/" | "div" => parse_binary_arithmetic(args, UnresolvedArithmeticOp::Div),
+        "*" | "mul" => parse_arithmetic(args, UnresolvedArithmeticOp::Mul),
+        "/" | "div" => parse_arithmetic(args, UnresolvedArithmeticOp::Div),
 
         // Everything else is a function call
         _ => {
@@ -171,20 +171,17 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
     }
 }
 
-/// Parse a binary comparison operation
-fn parse_binary_compare(
-    args: &[JsonValue],
-    op: UnresolvedCompareOp,
-) -> Result<UnresolvedExpression> {
-    filter_common::build_binary_compare(args, op, parse_filter_expr, "comparison operator")
+/// Parse a variadic comparison operation
+fn parse_compare(args: &[JsonValue], op: UnresolvedCompareOp) -> Result<UnresolvedExpression> {
+    filter_common::build_compare(args, op, parse_filter_expr, "comparison operator")
 }
 
-/// Parse a binary arithmetic operation
-fn parse_binary_arithmetic(
+/// Parse a variadic arithmetic operation
+fn parse_arithmetic(
     args: &[JsonValue],
     op: UnresolvedArithmeticOp,
 ) -> Result<UnresolvedExpression> {
-    filter_common::build_binary_arithmetic(args, op, parse_filter_expr, "arithmetic operator")
+    filter_common::build_arithmetic(args, op, parse_filter_expr, "arithmetic operator")
 }
 
 #[cfg(test)]
@@ -352,5 +349,57 @@ mod tests {
     fn test_null_not_supported() {
         let json_val = json!(null);
         assert!(parse_filter_expr(&json_val).is_err());
+    }
+
+    #[test]
+    fn test_parse_variadic_comparison() {
+        let json_val = json!(["<", "?a", "?b", "?c"]);
+        let expr = parse_filter_expr(&json_val).unwrap();
+        match expr {
+            UnresolvedExpression::Compare { op, args } => {
+                assert_eq!(op, UnresolvedCompareOp::Lt);
+                assert_eq!(args.len(), 3);
+            }
+            _ => panic!("Expected Compare"),
+        }
+    }
+
+    #[test]
+    fn test_parse_variadic_arithmetic() {
+        let json_val = json!(["+", "?x", 5, 10]);
+        let expr = parse_filter_expr(&json_val).unwrap();
+        match expr {
+            UnresolvedExpression::Arithmetic { op, args } => {
+                assert_eq!(op, UnresolvedArithmeticOp::Add);
+                assert_eq!(args.len(), 3);
+            }
+            _ => panic!("Expected Arithmetic"),
+        }
+    }
+
+    #[test]
+    fn test_parse_single_arg_arithmetic() {
+        let json_val = json!(["+", "?x"]);
+        let expr = parse_filter_expr(&json_val).unwrap();
+        match expr {
+            UnresolvedExpression::Arithmetic { op, args } => {
+                assert_eq!(op, UnresolvedArithmeticOp::Add);
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("Expected Arithmetic"),
+        }
+    }
+
+    #[test]
+    fn test_parse_single_arg_comparison() {
+        let json_val = json!(["=", "?x"]);
+        let expr = parse_filter_expr(&json_val).unwrap();
+        match expr {
+            UnresolvedExpression::Compare { op, args } => {
+                assert_eq!(op, UnresolvedCompareOp::Eq);
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("Expected Compare"),
+        }
     }
 }

@@ -2,6 +2,11 @@
 //!
 //! This module contains functions for comparing ComparableValues,
 //! including numeric, temporal, and string comparisons.
+//!
+//! Comparison operations are variadic (chained pairwise):
+//! - 1 arg → vacuously true
+//! - 2+ args → every consecutive pair must satisfy the relation:
+//!   `(< a b c)` means `a < b AND b < c`
 
 use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
@@ -10,7 +15,7 @@ use crate::ir::Expression;
 use fluree_db_core::FlakeValue;
 use std::cmp::Ordering;
 
-use super::helpers::check_arity;
+use super::helpers::check_min_arity;
 use super::value::ComparableValue;
 
 /// Evaluate equality comparison
@@ -19,15 +24,7 @@ pub fn eval_eq<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    check_arity(args, 2, "Eq")?;
-    let result = match (
-        args[0].eval_to_comparable(row, ctx)?,
-        args[1].eval_to_comparable(row, ctx)?,
-    ) {
-        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o == Ordering::Equal),
-        _ => false,
-    };
-    Ok(Some(ComparableValue::Bool(result)))
+    eval_chained_comparison(args, row, ctx, "Eq", |ord| ord == Ordering::Equal)
 }
 
 /// Evaluate inequality comparison
@@ -36,16 +33,7 @@ pub fn eval_ne<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    check_arity(args, 2, "Ne")?;
-    let result = match (
-        args[0].eval_to_comparable(row, ctx)?,
-        args[1].eval_to_comparable(row, ctx)?,
-    ) {
-        // Type mismatch (None) means not equal, so true for Ne
-        (Some(l), Some(r)) => cmp_values(&l, &r) != Some(Ordering::Equal),
-        _ => false,
-    };
-    Ok(Some(ComparableValue::Bool(result)))
+    eval_chained_comparison(args, row, ctx, "Ne", |ord| ord != Ordering::Equal)
 }
 
 /// Evaluate less-than comparison
@@ -54,15 +42,7 @@ pub fn eval_lt<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    check_arity(args, 2, "Lt")?;
-    let result = match (
-        args[0].eval_to_comparable(row, ctx)?,
-        args[1].eval_to_comparable(row, ctx)?,
-    ) {
-        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o == Ordering::Less),
-        _ => false,
-    };
-    Ok(Some(ComparableValue::Bool(result)))
+    eval_chained_comparison(args, row, ctx, "Lt", |ord| ord == Ordering::Less)
 }
 
 /// Evaluate less-than-or-equal comparison
@@ -71,15 +51,7 @@ pub fn eval_le<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    check_arity(args, 2, "Le")?;
-    let result = match (
-        args[0].eval_to_comparable(row, ctx)?,
-        args[1].eval_to_comparable(row, ctx)?,
-    ) {
-        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o != Ordering::Greater),
-        _ => false,
-    };
-    Ok(Some(ComparableValue::Bool(result)))
+    eval_chained_comparison(args, row, ctx, "Le", |ord| ord != Ordering::Greater)
 }
 
 /// Evaluate greater-than comparison
@@ -88,15 +60,7 @@ pub fn eval_gt<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    check_arity(args, 2, "Gt")?;
-    let result = match (
-        args[0].eval_to_comparable(row, ctx)?,
-        args[1].eval_to_comparable(row, ctx)?,
-    ) {
-        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o == Ordering::Greater),
-        _ => false,
-    };
-    Ok(Some(ComparableValue::Bool(result)))
+    eval_chained_comparison(args, row, ctx, "Gt", |ord| ord == Ordering::Greater)
 }
 
 /// Evaluate greater-than-or-equal comparison
@@ -105,15 +69,52 @@ pub fn eval_ge<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    check_arity(args, 2, "Ge")?;
-    let result = match (
-        args[0].eval_to_comparable(row, ctx)?,
-        args[1].eval_to_comparable(row, ctx)?,
-    ) {
-        (Some(l), Some(r)) => cmp_values(&l, &r).is_some_and(|o| o != Ordering::Less),
-        _ => false,
+    eval_chained_comparison(args, row, ctx, "Ge", |ord| ord != Ordering::Less)
+}
+
+/// Chained pairwise comparison over variadic arguments
+///
+/// - 1 arg → vacuously true
+/// - 2+ args → checks every consecutive pair with the given predicate,
+///   short-circuiting on the first failure
+fn eval_chained_comparison<R: RowAccess>(
+    args: &[Expression],
+    row: &R,
+    ctx: Option<&ExecutionContext<'_>>,
+    name: &str,
+    predicate: fn(Ordering) -> bool,
+) -> Result<Option<ComparableValue>> {
+    check_min_arity(args, 1, name)?;
+
+    // 1 arg → vacuously true
+    if args.len() == 1 {
+        // Still evaluate the arg (may have side effects / unbound check)
+        return match args[0].eval_to_comparable(row, ctx)? {
+            Some(_) => Ok(Some(ComparableValue::Bool(true))),
+            None => Ok(Some(ComparableValue::Bool(false))),
+        };
+    }
+
+    let mut prev = match args[0].eval_to_comparable(row, ctx)? {
+        Some(v) => v,
+        None => return Ok(Some(ComparableValue::Bool(false))),
     };
-    Ok(Some(ComparableValue::Bool(result)))
+
+    for arg in &args[1..] {
+        let curr = match arg.eval_to_comparable(row, ctx)? {
+            Some(v) => v,
+            None => return Ok(Some(ComparableValue::Bool(false))),
+        };
+
+        let satisfied = cmp_values(&prev, &curr).is_some_and(predicate);
+        if !satisfied {
+            return Ok(Some(ComparableValue::Bool(false)));
+        }
+
+        prev = curr;
+    }
+
+    Ok(Some(ComparableValue::Bool(true)))
 }
 
 /// Compare two values and return their ordering.
@@ -244,5 +245,89 @@ mod tests {
         let string = ComparableValue::String(Arc::from("10"));
         // Type mismatch returns None
         assert_eq!(cmp_values(&long, &string), None);
+    }
+
+    // =========================================================================
+    // Variadic eval tests
+    // =========================================================================
+
+    use crate::binding::BindingRow;
+    use crate::ir::FilterValue;
+
+    fn long(v: i64) -> Expression {
+        Expression::Const(FilterValue::Long(v))
+    }
+
+    fn empty_row() -> BindingRow<'static> {
+        BindingRow::new(&[], &[])
+    }
+
+    #[test]
+    fn test_chained_lt_holds() {
+        let row = empty_row();
+        // 1 < 2 < 3 → true
+        let args = vec![long(1), long(2), long(3)];
+        let result = eval_lt(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_chained_lt_breaks() {
+        let row = empty_row();
+        // 1 < 3 < 2 → false (3 < 2 fails)
+        let args = vec![long(1), long(3), long(2)];
+        let result = eval_lt(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(false)));
+    }
+
+    #[test]
+    fn test_chained_eq_all_same() {
+        let row = empty_row();
+        // 5 = 5 = 5 → true
+        let args = vec![long(5), long(5), long(5)];
+        let result = eval_eq(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_chained_eq_not_all_same() {
+        let row = empty_row();
+        // 5 = 5 = 6 → false
+        let args = vec![long(5), long(5), long(6)];
+        let result = eval_eq(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(false)));
+    }
+
+    #[test]
+    fn test_single_arg_vacuously_true() {
+        let row = empty_row();
+        let args = vec![long(42)];
+        let result = eval_lt(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_zero_args_error() {
+        let row = empty_row();
+        let args: Vec<Expression> = vec![];
+        assert!(eval_lt(&args, &row, None).is_err());
+    }
+
+    #[test]
+    fn test_chained_ge_holds() {
+        let row = empty_row();
+        // 5 >= 3 >= 3 → true
+        let args = vec![long(5), long(3), long(3)];
+        let result = eval_ge(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_chained_ne() {
+        let row = empty_row();
+        // 1 != 2 != 3 → true (all consecutive pairs differ)
+        let args = vec![long(1), long(2), long(3)];
+        let result = eval_ne(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(true)));
     }
 }

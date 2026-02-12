@@ -168,8 +168,7 @@ fn add_metadata_filter_pattern(
     };
     let filter_expr = UnresolvedExpression::Compare {
         op: UnresolvedCompareOp::Eq,
-        left: Box::new(func_expr),
-        right: Box::new(UnresolvedExpression::string(constant_value)),
+        args: vec![func_expr, UnresolvedExpression::string(constant_value)],
     };
     let filter_pattern = UnresolvedPattern::Filter(filter_expr);
 

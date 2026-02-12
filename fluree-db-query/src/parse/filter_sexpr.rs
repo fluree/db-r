@@ -75,24 +75,14 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedExpression> {
     // Convert to filter expression based on operator
     match op_lower.as_str() {
         // Comparison operators - use common utilities
-        "=" | "eq" => {
-            filter_common::build_binary_compare(&args, UnresolvedCompareOp::Eq, clone_expr, op)
-        }
+        "=" | "eq" => filter_common::build_compare(&args, UnresolvedCompareOp::Eq, clone_expr, op),
         "!=" | "<>" | "ne" => {
-            filter_common::build_binary_compare(&args, UnresolvedCompareOp::Ne, clone_expr, op)
+            filter_common::build_compare(&args, UnresolvedCompareOp::Ne, clone_expr, op)
         }
-        "<" | "lt" => {
-            filter_common::build_binary_compare(&args, UnresolvedCompareOp::Lt, clone_expr, op)
-        }
-        "<=" | "le" => {
-            filter_common::build_binary_compare(&args, UnresolvedCompareOp::Le, clone_expr, op)
-        }
-        ">" | "gt" => {
-            filter_common::build_binary_compare(&args, UnresolvedCompareOp::Gt, clone_expr, op)
-        }
-        ">=" | "ge" => {
-            filter_common::build_binary_compare(&args, UnresolvedCompareOp::Ge, clone_expr, op)
-        }
+        "<" | "lt" => filter_common::build_compare(&args, UnresolvedCompareOp::Lt, clone_expr, op),
+        "<=" | "le" => filter_common::build_compare(&args, UnresolvedCompareOp::Le, clone_expr, op),
+        ">" | "gt" => filter_common::build_compare(&args, UnresolvedCompareOp::Gt, clone_expr, op),
+        ">=" | "ge" => filter_common::build_compare(&args, UnresolvedCompareOp::Ge, clone_expr, op),
 
         // Logical operators - use common utilities
         "and" => filter_common::build_and(&args, clone_expr),
@@ -100,36 +90,22 @@ pub fn parse_s_expression(s: &str) -> Result<UnresolvedExpression> {
         "not" => filter_common::build_not(&args, clone_expr),
 
         // Arithmetic operators - use common utilities
-        "+" | "add" => filter_common::build_binary_arithmetic(
-            &args,
-            UnresolvedArithmeticOp::Add,
-            clone_expr,
-            op,
-        ),
+        "+" | "add" => {
+            filter_common::build_arithmetic(&args, UnresolvedArithmeticOp::Add, clone_expr, op)
+        }
         "-" | "sub" => {
             if args.len() == 1 {
                 filter_common::build_negate(&args, clone_expr)
             } else {
-                filter_common::build_binary_arithmetic(
-                    &args,
-                    UnresolvedArithmeticOp::Sub,
-                    clone_expr,
-                    op,
-                )
+                filter_common::build_arithmetic(&args, UnresolvedArithmeticOp::Sub, clone_expr, op)
             }
         }
-        "*" | "mul" => filter_common::build_binary_arithmetic(
-            &args,
-            UnresolvedArithmeticOp::Mul,
-            clone_expr,
-            op,
-        ),
-        "/" | "div" => filter_common::build_binary_arithmetic(
-            &args,
-            UnresolvedArithmeticOp::Div,
-            clone_expr,
-            op,
-        ),
+        "*" | "mul" => {
+            filter_common::build_arithmetic(&args, UnresolvedArithmeticOp::Mul, clone_expr, op)
+        }
+        "/" | "div" => {
+            filter_common::build_arithmetic(&args, UnresolvedArithmeticOp::Div, clone_expr, op)
+        }
         // Function call
         _ => Ok(UnresolvedExpression::Call {
             func: Arc::from(op),
@@ -372,6 +348,42 @@ mod tests {
         match expr {
             UnresolvedExpression::Negate(_) => {}
             _ => panic!("Expected negation"),
+        }
+    }
+
+    #[test]
+    fn test_parse_variadic_comparison() {
+        let expr = parse_s_expression("(< ?a ?b ?c)").unwrap();
+        match expr {
+            UnresolvedExpression::Compare { op, args } => {
+                assert_eq!(op, UnresolvedCompareOp::Lt);
+                assert_eq!(args.len(), 3);
+            }
+            _ => panic!("Expected Compare"),
+        }
+    }
+
+    #[test]
+    fn test_parse_variadic_arithmetic() {
+        let expr = parse_s_expression("(+ ?x 5 10)").unwrap();
+        match expr {
+            UnresolvedExpression::Arithmetic { op, args } => {
+                assert_eq!(op, UnresolvedArithmeticOp::Add);
+                assert_eq!(args.len(), 3);
+            }
+            _ => panic!("Expected Arithmetic"),
+        }
+    }
+
+    #[test]
+    fn test_parse_single_arg_arithmetic() {
+        let expr = parse_s_expression("(+ ?x)").unwrap();
+        match expr {
+            UnresolvedExpression::Arithmetic { op, args } => {
+                assert_eq!(op, UnresolvedArithmeticOp::Add);
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("Expected Arithmetic"),
         }
     }
 }

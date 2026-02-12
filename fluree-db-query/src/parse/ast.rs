@@ -472,17 +472,15 @@ pub enum UnresolvedExpression {
     Var(Arc<str>),
     /// Constant value
     Const(UnresolvedFilterValue),
-    /// Comparison operation
+    /// Comparison operation (variadic: chained pairwise)
     Compare {
         op: UnresolvedCompareOp,
-        left: Box<UnresolvedExpression>,
-        right: Box<UnresolvedExpression>,
+        args: Vec<UnresolvedExpression>,
     },
-    /// Arithmetic operation
+    /// Arithmetic operation (variadic: left-fold)
     Arithmetic {
         op: UnresolvedArithmeticOp,
-        left: Box<UnresolvedExpression>,
-        right: Box<UnresolvedExpression>,
+        args: Vec<UnresolvedExpression>,
     },
     /// Unary negation
     Negate(Box<UnresolvedExpression>),
