@@ -2,12 +2,16 @@ use crate::cli::ConfigAction;
 use crate::config::{detect_config_file, ConfigFileFormat};
 use crate::context;
 use crate::error::{CliError, CliResult};
+use fluree_db_api::server_defaults::FlureeDir;
 use std::path::Path;
 
-pub fn run(action: ConfigAction, fluree_dir: &Path) -> CliResult<()> {
-    let (config_path, format) = detect_config_file(fluree_dir).unwrap_or_else(|| {
+pub fn run(action: ConfigAction, dirs: &FlureeDir) -> CliResult<()> {
+    let (config_path, format) = detect_config_file(dirs.config_dir()).unwrap_or_else(|| {
         // Default to TOML when no config file exists yet
-        (fluree_dir.join("config.toml"), ConfigFileFormat::Toml)
+        (
+            dirs.config_dir().join("config.toml"),
+            ConfigFileFormat::Toml,
+        )
     });
 
     match action {
@@ -344,7 +348,7 @@ fn format_json_value(val: &serde_json::Value) -> String {
 
 /// Set origin configuration for a ledger (stores LedgerConfig blob in CAS
 /// and updates the config_id on the NsRecord).
-pub async fn run_set_origins(ledger: &str, file: &Path, fluree_dir: &Path) -> CliResult<()> {
+pub async fn run_set_origins(ledger: &str, file: &Path, dirs: &FlureeDir) -> CliResult<()> {
     use fluree_db_core::ContentKind;
     use fluree_db_core::ContentStore;
     use fluree_db_nameservice::{
@@ -357,7 +361,7 @@ pub async fn run_set_origins(ledger: &str, file: &Path, fluree_dir: &Path) -> Cl
         .map_err(|e| CliError::Config(format!("invalid origins config: {e}")))?;
 
     let ledger_id = context::to_ledger_id(ledger);
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
 
     // Serialize to canonical bytes and store in CAS.
     let canonical_bytes = config.to_bytes();

@@ -42,6 +42,82 @@ pub const DEFAULT_PEER_RECONNECT_MULTIPLIER: f64 = 2.0;
 
 pub const DEFAULT_STORAGE_PROXY_ENABLED: bool = false;
 
+// ── Global directory resolution ──────────────────────────────────────
+
+/// Resolved Fluree directory paths, separating config from data.
+///
+/// In local mode (`.fluree/` in a project), both config and data point
+/// to the same directory. In global mode (`fluree init --global`), config
+/// may differ from data per XDG conventions on Linux.
+///
+/// **Config dir** holds: `config.toml` / `config.jsonld` (including
+/// remotes, upstreams, tracked_ledgers sections).
+///
+/// **Data dir** holds: `storage/`, `active`, `prefixes.json`.
+#[derive(Debug, Clone)]
+pub struct FlureeDir {
+    config_dir: PathBuf,
+    data_dir: PathBuf,
+}
+
+impl FlureeDir {
+    /// Create a unified `FlureeDir` where config and data share a path.
+    ///
+    /// Used for local mode (`.fluree/` in a project) and when `$FLUREE_HOME`
+    /// provides a single override directory.
+    pub fn unified(path: PathBuf) -> Self {
+        Self {
+            config_dir: path.clone(),
+            data_dir: path,
+        }
+    }
+
+    /// Create a split `FlureeDir` with separate config and data paths.
+    ///
+    /// Used for global mode when `$FLUREE_HOME` is not set, so platform
+    /// directories determine the locations (e.g. `~/.config/fluree` for
+    /// config and `~/.local/share/fluree` for data on Linux).
+    pub fn split(config_dir: PathBuf, data_dir: PathBuf) -> Self {
+        Self {
+            config_dir,
+            data_dir,
+        }
+    }
+
+    /// Directory for configuration files (`config.toml`, `config.jsonld`,
+    /// remotes, upstreams, tracked_ledgers).
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
+    /// Directory for data and state files (`storage/`, `active`,
+    /// `prefixes.json`).
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// Whether config and data dirs are the same path (unified mode).
+    pub fn is_unified(&self) -> bool {
+        self.config_dir == self.data_dir
+    }
+
+    /// Resolve global Fluree directories.
+    ///
+    /// When `$FLUREE_HOME` is set, both config and data share that single
+    /// path (unified mode). Otherwise, config goes to
+    /// `dirs::config_local_dir()/fluree` and data goes to
+    /// `dirs::data_local_dir()/fluree` (XDG-split on Linux; unified on
+    /// macOS and Windows where both resolve to the same directory).
+    pub fn global() -> Option<Self> {
+        if let Ok(p) = std::env::var("FLUREE_HOME") {
+            return Some(Self::unified(PathBuf::from(p)));
+        }
+        let config = dirs::config_local_dir().map(|d| d.join("fluree"))?;
+        let data = dirs::data_local_dir().map(|d| d.join("fluree"))?;
+        Some(Self::split(config, data))
+    }
+}
+
 // ── Config file discovery ────────────────────────────────────────────
 
 /// The `.fluree` directory name.
@@ -148,7 +224,17 @@ pub fn is_plaintext_secret(value: &str) -> bool {
 
 /// Generate a commented-out TOML config template using the canonical
 /// default values above.  Written by `fluree init`.
-pub fn generate_config_template() -> String {
+///
+/// `storage_path_override` — when `Some`, the template uses that path
+/// instead of the default relative `".fluree/storage"`.  Pass the
+/// absolute global data dir + "/storage" for `fluree init --global`.
+pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
+    let storage_path = storage_path_override.unwrap_or(DEFAULT_STORAGE_PATH);
+    let storage_comment = if storage_path_override.is_some() {
+        "# absolute path to global data directory"
+    } else {
+        "# relative to working directory"
+    };
     format!(
         r#"# Fluree Configuration
 #
@@ -170,7 +256,7 @@ pub fn generate_config_template() -> String {
 
 # [server]
 # listen_addr = "{listen_addr}"
-# storage_path = "{storage_path}"   # relative to working directory
+# storage_path = "{storage_path}"   {storage_comment}
 # log_level = "{log_level}"                 # trace, debug, info, warn, error
 # cors_enabled = {cors_enabled}
 # body_limit = {body_limit}              # 50 MB
@@ -241,7 +327,7 @@ pub fn generate_config_template() -> String {
 # mode = "required"
 "#,
         listen_addr = DEFAULT_LISTEN_ADDR,
-        storage_path = DEFAULT_STORAGE_PATH,
+        storage_comment = storage_comment,
         log_level = DEFAULT_LOG_LEVEL,
         cors_enabled = DEFAULT_CORS_ENABLED,
         body_limit = DEFAULT_BODY_LIMIT,
@@ -268,7 +354,10 @@ pub fn generate_config_template() -> String {
 /// the file valid JSON-LD that can be processed by standard JSON-LD tooling.
 /// Serde ignores `@context` during deserialization, so the same serde types
 /// work for both JSON and JSON-LD config files.
-pub fn generate_jsonld_config_template() -> String {
+///
+/// See [`generate_config_template`] for `storage_path_override` semantics.
+pub fn generate_jsonld_config_template(storage_path_override: Option<&str>) -> String {
+    let storage_path = storage_path_override.unwrap_or(DEFAULT_STORAGE_PATH);
     let template = json!({
         "@context": {
             "@vocab": CONFIG_VOCAB
@@ -276,7 +365,7 @@ pub fn generate_jsonld_config_template() -> String {
         "_comment": "Fluree Configuration — JSON-LD format. Precedence: CLI > env > profile > file > defaults. Remove keys to use built-in defaults.",
         "server": {
             "listen_addr": DEFAULT_LISTEN_ADDR,
-            "storage_path": DEFAULT_STORAGE_PATH,
+            "storage_path": storage_path,
             "log_level": DEFAULT_LOG_LEVEL,
             "cors_enabled": DEFAULT_CORS_ENABLED,
             "body_limit": DEFAULT_BODY_LIMIT,
@@ -308,10 +397,15 @@ pub fn generate_jsonld_config_template() -> String {
 }
 
 /// Generate a config template in the given format.
-pub fn generate_config_template_for(format: ConfigFormat) -> String {
+///
+/// See [`generate_config_template`] for `storage_path_override` semantics.
+pub fn generate_config_template_for(
+    format: ConfigFormat,
+    storage_path_override: Option<&str>,
+) -> String {
     match format {
-        ConfigFormat::Toml => generate_config_template(),
-        ConfigFormat::JsonLd => generate_jsonld_config_template(),
+        ConfigFormat::Toml => generate_config_template(storage_path_override),
+        ConfigFormat::JsonLd => generate_jsonld_config_template(storage_path_override),
     }
 }
 
@@ -345,7 +439,7 @@ mod tests {
 
     #[test]
     fn template_contains_default_values() {
-        let t = generate_config_template();
+        let t = generate_config_template(None);
         // Spot-check a few interpolated values
         assert!(t.contains(&format!("# listen_addr = \"{}\"", DEFAULT_LISTEN_ADDR)));
         assert!(t.contains(&format!(
@@ -362,7 +456,7 @@ mod tests {
 
     #[test]
     fn jsonld_template_is_valid_json_with_context() {
-        let t = generate_jsonld_config_template();
+        let t = generate_jsonld_config_template(None);
         let v: serde_json::Value = serde_json::from_str(&t).unwrap();
 
         // Has @context with correct @vocab
@@ -412,10 +506,10 @@ mod tests {
 
     #[test]
     fn generate_template_for_dispatches() {
-        let toml = generate_config_template_for(ConfigFormat::Toml);
+        let toml = generate_config_template_for(ConfigFormat::Toml, None);
         assert!(toml.starts_with("# Fluree Configuration"));
 
-        let jsonld = generate_config_template_for(ConfigFormat::JsonLd);
+        let jsonld = generate_config_template_for(ConfigFormat::JsonLd, None);
         let v: serde_json::Value = serde_json::from_str(&jsonld).unwrap();
         assert!(v.get("@context").is_some());
     }
@@ -512,5 +606,73 @@ mod tests {
         assert!(detect_config_in_dir(&dir).is_none());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ========================================================================
+    // FlureeDir tests
+    // ========================================================================
+
+    #[test]
+    fn fluree_dir_unified_returns_same_paths() {
+        let dir = FlureeDir::unified(PathBuf::from("/tmp/fluree"));
+        assert_eq!(dir.config_dir(), Path::new("/tmp/fluree"));
+        assert_eq!(dir.data_dir(), Path::new("/tmp/fluree"));
+        assert!(dir.is_unified());
+    }
+
+    #[test]
+    fn fluree_dir_split_returns_different_paths() {
+        let dir = FlureeDir::split(
+            PathBuf::from("/home/user/.config/fluree"),
+            PathBuf::from("/home/user/.local/share/fluree"),
+        );
+        assert_eq!(dir.config_dir(), Path::new("/home/user/.config/fluree"));
+        assert_eq!(dir.data_dir(), Path::new("/home/user/.local/share/fluree"));
+        assert!(!dir.is_unified());
+    }
+
+    #[test]
+    fn fluree_dir_split_same_path_is_unified() {
+        let dir = FlureeDir::split(PathBuf::from("/same/path"), PathBuf::from("/same/path"));
+        assert!(dir.is_unified());
+    }
+
+    #[test]
+    fn toml_template_uses_storage_path_override() {
+        let t = generate_config_template(Some("/global/data/storage"));
+        assert!(
+            t.contains(r#"# storage_path = "/global/data/storage""#),
+            "template should contain the override path"
+        );
+        assert!(
+            !t.contains(DEFAULT_STORAGE_PATH),
+            "template should NOT contain the default storage path"
+        );
+        assert!(
+            t.contains("# absolute path to global data directory"),
+            "template should use the absolute-path comment"
+        );
+        assert!(
+            !t.contains("# relative to working directory"),
+            "template should NOT contain the relative-path comment"
+        );
+    }
+
+    #[test]
+    fn toml_template_default_uses_relative_comment() {
+        let t = generate_config_template(None);
+        assert!(t.contains(DEFAULT_STORAGE_PATH));
+        assert!(t.contains("# relative to working directory"));
+        assert!(!t.contains("# absolute path to global data directory"));
+    }
+
+    #[test]
+    fn jsonld_template_uses_storage_path_override() {
+        let t = generate_jsonld_config_template(Some("/global/data/storage"));
+        let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+        assert_eq!(
+            v["server"]["storage_path"].as_str().unwrap(),
+            "/global/data/storage"
+        );
     }
 }

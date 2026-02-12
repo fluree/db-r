@@ -1,13 +1,13 @@
 use crate::config::{self, TomlSyncConfigStore, TrackedLedgerConfig};
 use crate::error::{CliError, CliResult};
 use crate::remote_client::{RefreshConfig, RemoteLedgerClient};
+use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::{FileStorage, Fluree, FlureeBuilder};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{
     RemoteAuth, RemoteAuthType, RemoteConfig, RemoteEndpoint, SyncConfigStore,
 };
-use std::path::Path;
 
 /// Resolved ledger mode: either local or tracked (remote-only).
 pub enum LedgerMode {
@@ -38,16 +38,16 @@ pub enum LedgerMode {
 /// 5. Error
 pub async fn resolve_ledger_mode(
     explicit: Option<&str>,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<LedgerMode> {
-    let alias = resolve_ledger(explicit, fluree_dir)?;
+    let alias = resolve_ledger(explicit, dirs)?;
 
     // Try compound remote/ledger syntax (e.g., "origin/mydb")
-    if let Some(mode) = try_compound_remote_syntax(&alias, fluree_dir).await? {
+    if let Some(mode) = try_compound_remote_syntax(&alias, dirs).await? {
         return Ok(mode);
     }
 
-    let fluree = build_fluree(fluree_dir)?;
+    let fluree = build_fluree(dirs)?;
 
     // Check if local ledger exists (local wins)
     let ledger_id = to_ledger_id(&alias);
@@ -59,7 +59,7 @@ pub async fn resolve_ledger_mode(
     }
 
     // Check tracked config
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     if let Some(tracked) = store.get_tracked(&alias) {
         return build_tracked_mode(&store, &tracked, &alias).await;
     }
@@ -100,7 +100,7 @@ pub async fn resolve_ledger_mode(
 /// so the first `/` is always an unambiguous delimiter.
 async fn try_compound_remote_syntax(
     alias: &str,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<Option<LedgerMode>> {
     let slash_pos = match alias.find('/') {
         Some(pos) if pos > 0 => pos,
@@ -115,7 +115,7 @@ async fn try_compound_remote_syntax(
     }
 
     // Check if a remote with this name exists
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let remote_key = RemoteName::new(remote_name);
     let remote = match store.get_remote(&remote_key).await {
         Ok(Some(r)) => r,
@@ -183,9 +183,9 @@ async fn build_tracked_mode(
 pub async fn build_remote_mode(
     remote_name_str: &str,
     ledger_alias: &str,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<LedgerMode> {
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let remote_name = RemoteName::new(remote_name_str);
     let remote = store
         .get_remote(&remote_name)
@@ -218,9 +218,9 @@ pub async fn build_remote_mode(
 /// remote itself rather than a specific ledger (e.g., `list --remote`).
 pub async fn build_remote_client(
     remote_name_str: &str,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<RemoteLedgerClient> {
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let remote_name = RemoteName::new(remote_name_str);
     let remote = store
         .get_remote(&remote_name)
@@ -262,16 +262,19 @@ pub fn build_client_from_auth(base_url: &str, auth: &RemoteAuth) -> RemoteLedger
 /// Resolve which ledger to operate on.
 ///
 /// Priority: explicit argument > active ledger > error.
-pub fn resolve_ledger(explicit: Option<&str>, fluree_dir: &Path) -> CliResult<String> {
+pub fn resolve_ledger(explicit: Option<&str>, dirs: &FlureeDir) -> CliResult<String> {
     if let Some(alias) = explicit {
         return Ok(alias.to_string());
     }
-    config::read_active_ledger(fluree_dir).ok_or(CliError::NoActiveLedger)
+    config::read_active_ledger(dirs.data_dir()).ok_or(CliError::NoActiveLedger)
 }
 
-/// Build a Fluree instance backed by the `.fluree/storage/` directory.
-pub fn build_fluree(fluree_dir: &Path) -> CliResult<Fluree<FileStorage, FileNameService>> {
-    let storage = config::storage_path(fluree_dir);
+/// Build a Fluree instance using the resolved storage path.
+///
+/// Honors `[server].storage_path` from the config file if set,
+/// otherwise falls back to `dirs.data_dir()/storage`.
+pub fn build_fluree(dirs: &FlureeDir) -> CliResult<Fluree<FileStorage, FileNameService>> {
+    let storage = config::resolve_storage_path(dirs);
     let storage_str = storage.to_string_lossy().to_string();
     FlureeBuilder::file(storage_str)
         .build()
@@ -295,14 +298,14 @@ pub fn to_ledger_id(ledger_id: &str) -> String {
 pub async fn persist_refreshed_tokens(
     client: &RemoteLedgerClient,
     remote_name: &str,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) {
     let refreshed = match client.take_refreshed_tokens() {
         Some(t) => t,
         None => return,
     };
 
-    let store = TomlSyncConfigStore::new(fluree_dir.to_path_buf());
+    let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     let name = RemoteName::new(remote_name);
 
     let remote = match store.get_remote(&name).await {

@@ -286,8 +286,8 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
         }
     }
 
-    // Global fallback: $FLUREE_HOME or platform data dir
-    if let Some(global) = global_fluree_dir() {
+    // Global fallback: $FLUREE_HOME or platform config dir
+    if let Some(global) = global_config_dir() {
         if let Some(found) = find_config_in_dir(&global) {
             return Some(found);
         }
@@ -296,14 +296,12 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     None
 }
 
-/// Resolve the global Fluree directory.
+/// Resolve the global Fluree config directory.
 ///
-/// Priority: `$FLUREE_HOME` env var, then `dirs::data_local_dir()/fluree`.
-fn global_fluree_dir() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("FLUREE_HOME") {
-        return Some(PathBuf::from(p));
-    }
-    dirs::data_local_dir().map(|d| d.join("fluree"))
+/// Delegates to [`FlureeDir::global()`] for `$FLUREE_HOME` / platform dir
+/// resolution, then returns the config directory component.
+fn global_config_dir() -> Option<PathBuf> {
+    server_defaults::FlureeDir::global().map(|d| d.config_dir().to_path_buf())
 }
 
 // ---------------------------------------------------------------------------
