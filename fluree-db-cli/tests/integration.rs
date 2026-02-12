@@ -1197,6 +1197,92 @@ fn init_global_is_idempotent() {
 }
 
 #[test]
+fn cli_respects_custom_storage_path_in_config() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    // Point storage_path to a custom location outside .fluree/
+    let custom_storage = tmp.path().join("my_custom_storage");
+    let config_path = tmp.path().join(".fluree/config.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    // Replace the commented-out storage_path line with an active one
+    let config = config.replace(
+        &format!("# storage_path = \".fluree/storage\""),
+        &format!("storage_path = \"{}\"", custom_storage.to_str().unwrap()),
+    );
+    // Uncomment [server] so the key is under the right section
+    let config = config.replace("# [server]", "[server]");
+    std::fs::write(&config_path, &config).unwrap();
+
+    // Create a ledger — it should write to the custom storage path
+    fluree_cmd(&tmp)
+        .args(["create", "testdb"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created ledger 'testdb'"));
+
+    // Verify data landed in the custom storage location
+    assert!(
+        custom_storage.is_dir(),
+        "custom storage directory should have been created"
+    );
+    assert!(
+        custom_storage.join("ns@v2").is_dir(),
+        "nameservice data should exist in custom storage"
+    );
+
+    // The default storage should NOT have the ledger data
+    let default_ns = tmp.path().join(".fluree/storage/ns@v2");
+    assert!(
+        !default_ns.exists(),
+        "default .fluree/storage should NOT contain ledger data when custom path is set"
+    );
+
+    // Verify the ledger is queryable from the custom location
+    fluree_cmd(&tmp)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("testdb"));
+}
+
+#[test]
+fn cli_respects_custom_storage_path_via_config_flag() {
+    // Simulates a user with a non-standard config location who passes
+    // --config explicitly (mutating commands require --config for non-local dirs).
+    let tmp = TempDir::new().unwrap();
+    let config_dir = tmp.path().join("my-config");
+    let custom_storage = tmp.path().join("custom_data");
+
+    // Set up a config dir with a config.toml pointing to custom storage
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[server]\nstorage_path = \"{}\"\n",
+            custom_storage.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    // Create via --config pointing to the config dir
+    fluree_cmd(&tmp)
+        .args(["--config", config_dir.to_str().unwrap(), "create", "testdb"])
+        .assert()
+        .success();
+
+    // Data should be in the custom location, not in config_dir/storage
+    assert!(
+        custom_storage.join("ns@v2").is_dir(),
+        "ledger data should be in custom storage path"
+    );
+    assert!(
+        !config_dir.join("storage/ns@v2").exists(),
+        "config dir should NOT contain ledger data"
+    );
+}
+
+#[test]
 fn auth_login_discovery_fallback_unreachable_server() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();

@@ -269,9 +269,12 @@ pub fn resolve_ledger(explicit: Option<&str>, dirs: &FlureeDir) -> CliResult<Str
     config::read_active_ledger(dirs.data_dir()).ok_or(CliError::NoActiveLedger)
 }
 
-/// Build a Fluree instance backed by the data directory's `storage/` subdirectory.
+/// Build a Fluree instance using the resolved storage path.
+///
+/// Honors `[server].storage_path` from the config file if set,
+/// otherwise falls back to `dirs.data_dir()/storage`.
 pub fn build_fluree(dirs: &FlureeDir) -> CliResult<Fluree<FileStorage, FileNameService>> {
-    let storage = config::storage_path(dirs.data_dir());
+    let storage = config::resolve_storage_path(dirs);
     let storage_str = storage.to_string_lossy().to_string();
     FlureeBuilder::file(storage_str)
         .build()

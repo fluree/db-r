@@ -214,8 +214,43 @@ pub fn clear_active_ledger(fluree_dir: &Path) -> CliResult<()> {
 }
 
 /// Resolve the storage path for the Fluree instance.
-pub fn storage_path(fluree_dir: &Path) -> PathBuf {
-    fluree_dir.join(STORAGE_DIR)
+///
+/// Checks the config file (`config.toml` / `config.jsonld`) in
+/// `dirs.config_dir()` for an explicit `[server].storage_path` value.
+/// If found, that path is used (absolute as-is, relative resolved from
+/// cwd). Otherwise falls back to `dirs.data_dir()/storage`.
+pub fn resolve_storage_path(dirs: &FlureeDir) -> PathBuf {
+    if let Some(configured) = read_configured_storage_path(dirs.config_dir()) {
+        PathBuf::from(configured)
+    } else {
+        dirs.data_dir().join(STORAGE_DIR)
+    }
+}
+
+/// Read `[server].storage_path` from the config file, if present.
+///
+/// Uses a minimal serde struct so the CLI doesn't depend on the server's
+/// full config types. Returns `None` if no config file exists or the
+/// field is absent/commented-out.
+fn read_configured_storage_path(config_dir: &Path) -> Option<String> {
+    let (path, format) = detect_config_file(config_dir)?;
+    let content = fs::read_to_string(&path).ok()?;
+    match format {
+        ConfigFileFormat::Toml => {
+            let doc: toml::Value = toml::from_str(&content).ok()?;
+            doc.get("server")?
+                .get("storage_path")?
+                .as_str()
+                .map(String::from)
+        }
+        ConfigFileFormat::JsonLd => {
+            let doc: serde_json::Value = serde_json::from_str(&content).ok()?;
+            doc.get("server")?
+                .get("storage_path")?
+                .as_str()
+                .map(String::from)
+        }
+    }
 }
 
 /// Prefix map type: prefix -> IRI namespace
@@ -809,5 +844,50 @@ mod tests {
         assert!(result.is_some(), "should find existing config dir");
         // data_dir should not exist but that's fine — we only require one
         assert!(!data_dir.exists());
+    }
+
+    #[test]
+    fn resolve_storage_path_uses_config_when_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fluree_dir = tmp.path().join(".fluree");
+        std::fs::create_dir_all(fluree_dir.join("storage")).unwrap();
+        std::fs::write(
+            fluree_dir.join("config.toml"),
+            "[server]\nstorage_path = \"/custom/storage\"\n",
+        )
+        .unwrap();
+
+        let dirs = FlureeDir::unified(fluree_dir);
+        let result = resolve_storage_path(&dirs);
+        assert_eq!(result, PathBuf::from("/custom/storage"));
+    }
+
+    #[test]
+    fn resolve_storage_path_falls_back_to_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fluree_dir = tmp.path().join(".fluree");
+        std::fs::create_dir_all(fluree_dir.join("storage")).unwrap();
+        // Config exists but storage_path is commented out
+        std::fs::write(
+            fluree_dir.join("config.toml"),
+            "# [server]\n# storage_path = \".fluree/storage\"\n",
+        )
+        .unwrap();
+
+        let dirs = FlureeDir::unified(fluree_dir.clone());
+        let result = resolve_storage_path(&dirs);
+        assert_eq!(result, fluree_dir.join("storage"));
+    }
+
+    #[test]
+    fn resolve_storage_path_no_config_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fluree_dir = tmp.path().join(".fluree");
+        std::fs::create_dir_all(&fluree_dir).unwrap();
+        // No config file at all
+
+        let dirs = FlureeDir::unified(fluree_dir.clone());
+        let result = resolve_storage_path(&dirs);
+        assert_eq!(result, fluree_dir.join("storage"));
     }
 }

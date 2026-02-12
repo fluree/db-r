@@ -1,6 +1,6 @@
 //! Sync commands: fetch, pull, push, clone (named-remote and origin-based)
 
-use crate::config::{storage_path, TomlSyncConfigStore};
+use crate::config::{resolve_storage_path, TomlSyncConfigStore};
 use crate::context;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
@@ -115,7 +115,7 @@ async fn build_sync_driver(dirs: &FlureeDir) -> CliResult<(SyncDriver, Arc<TomlS
     let local: Arc<dyn RefPublisher> = Arc::new(ns.clone());
 
     // Create a FileTrackingStore using the same storage path
-    let storage = storage_path(dirs.data_dir());
+    let storage = resolve_storage_path(dirs);
     let tracking: Arc<dyn RemoteTrackingStore> = Arc::new(FileTrackingStore::new(&storage));
 
     let mut driver = SyncDriver::new(
