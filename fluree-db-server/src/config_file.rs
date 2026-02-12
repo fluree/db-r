@@ -298,13 +298,10 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
 
 /// Resolve the global Fluree config directory.
 ///
-/// Priority: `$FLUREE_HOME` env var, then `dirs::config_local_dir()/fluree`.
-/// On Linux this yields `~/.config/fluree`; on macOS `~/Library/Application Support/fluree`.
+/// Delegates to [`FlureeDir::global()`] for `$FLUREE_HOME` / platform dir
+/// resolution, then returns the config directory component.
 fn global_config_dir() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("FLUREE_HOME") {
-        return Some(PathBuf::from(p));
-    }
-    dirs::config_local_dir().map(|d| d.join("fluree"))
+    server_defaults::FlureeDir::global().map(|d| d.config_dir().to_path_buf())
 }
 
 // ---------------------------------------------------------------------------

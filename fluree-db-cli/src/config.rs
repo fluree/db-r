@@ -49,26 +49,12 @@ pub fn find_fluree_dir() -> Option<FlureeDir> {
     find_fluree_dir_from(&cwd).map(FlureeDir::unified)
 }
 
-/// Resolve global Fluree directories.
-///
-/// When `$FLUREE_HOME` is set, both config and data share that single path
-/// (unified mode). Otherwise, config goes to `dirs::config_local_dir()/fluree`
-/// and data goes to `dirs::data_local_dir()/fluree` (XDG-split on Linux).
-fn global_fluree_dirs() -> Option<FlureeDir> {
-    if let Ok(p) = std::env::var("FLUREE_HOME") {
-        return Some(FlureeDir::unified(PathBuf::from(p)));
-    }
-    let config = dirs::config_local_dir().map(|d| d.join("fluree"))?;
-    let data = dirs::data_local_dir().map(|d| d.join("fluree"))?;
-    Some(FlureeDir::split(config, data))
-}
-
 /// Find `.fluree/` by walking up from cwd, falling back to global directories.
 pub fn find_or_global_fluree_dir() -> Option<FlureeDir> {
     if let Some(d) = find_fluree_dir() {
         return Some(d);
     }
-    let global = global_fluree_dirs()?;
+    let global = FlureeDir::global()?;
     // Accept if either config or data dir already exists
     if global.config_dir().is_dir() || global.data_dir().is_dir() {
         Some(global)
@@ -125,6 +111,8 @@ fn resolve_config_override(p: &Path) -> CliResult<PathBuf> {
 /// Require a local `.fluree/` directory (for mutating commands).
 pub fn require_fluree_dir(config_override: Option<&Path>) -> CliResult<FlureeDir> {
     if let Some(p) = config_override {
+        // An explicit --config path means the user chose a single directory;
+        // config and data are co-located there, so we use unified mode.
         return resolve_config_override(p).map(FlureeDir::unified);
     }
     find_fluree_dir().ok_or(CliError::NoFlureeDir)
@@ -133,28 +121,24 @@ pub fn require_fluree_dir(config_override: Option<&Path>) -> CliResult<FlureeDir
 /// Require a `.fluree/` directory, allowing global fallback (for read-only commands).
 pub fn require_fluree_dir_or_global(config_override: Option<&Path>) -> CliResult<FlureeDir> {
     if let Some(p) = config_override {
+        // An explicit --config path means the user chose a single directory;
+        // config and data are co-located there, so we use unified mode.
         return resolve_config_override(p).map(FlureeDir::unified);
     }
     find_or_global_fluree_dir().ok_or(CliError::NoFlureeDir)
 }
 
-/// Create Fluree directories with config template and storage subdirectory.
-///
-/// In local mode, creates `.fluree/` in the current directory with both
-/// config and storage inside. In global mode, config and data may be split
-/// across `config_local_dir` and `data_local_dir` (or unified under
-/// `$FLUREE_HOME`).
-///
-/// The `config_template` is written to the config directory under the name
-/// given by `config_filename` (e.g. `"config.toml"`) if no config file
-/// already exists.
 /// Resolve the directories for `fluree init` without creating anything.
+///
+/// In local mode (`global = false`), returns a unified `.fluree/` under cwd.
+/// In global mode (`global = true`), delegates to `FlureeDir::global()` which
+/// may split config and data across platform directories.
 ///
 /// Returns the `FlureeDir` that `init_fluree_dir` will use, so callers can
 /// inspect it (e.g. to customise the config template) before writing.
 pub fn resolve_init_dirs(global: bool) -> CliResult<FlureeDir> {
     if global {
-        global_fluree_dirs()
+        FlureeDir::global()
             .ok_or_else(|| CliError::Config("cannot determine global directories".into()))
     } else {
         Ok(FlureeDir::unified(
@@ -163,6 +147,12 @@ pub fn resolve_init_dirs(global: bool) -> CliResult<FlureeDir> {
     }
 }
 
+/// Create Fluree directories with config template and storage subdirectory.
+///
+/// Creates `storage/` in `dirs.data_dir()` and writes `config_template`
+/// to `dirs.config_dir()` under `config_filename` (e.g. `"config.toml"`)
+/// if no config file already exists. In global mode, config and data may
+/// reside in different directories.
 pub fn init_fluree_dir(
     dirs: &FlureeDir,
     config_template: &str,
@@ -733,5 +723,91 @@ impl TomlSyncConfigStore {
             self.write_sync_config(&config)?;
         }
         Ok(removed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Env-var tests must run serially because they mutate process-wide state.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Safety: these tests hold ENV_LOCK so no concurrent env mutation.
+    /// set_var/remove_var are safe in edition 2021 but wrap in unsafe for
+    /// forward-compatibility with edition 2024.
+    unsafe fn set_env(key: &str, val: &std::ffi::OsStr) {
+        std::env::set_var(key, val);
+    }
+    unsafe fn unset_env(key: &str) {
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn resolve_init_dirs_local_returns_unified() {
+        let dirs = resolve_init_dirs(false).unwrap();
+        assert!(dirs.is_unified(), "local mode should be unified");
+        assert!(
+            dirs.data_dir().ends_with(FLUREE_DIR),
+            "data dir should end with .fluree"
+        );
+    }
+
+    #[test]
+    fn resolve_init_dirs_global_returns_some() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: holding ENV_LOCK, no concurrent env mutation.
+        unsafe { set_env("FLUREE_HOME", tmp.path().as_os_str()) };
+        let result = resolve_init_dirs(true);
+        unsafe { unset_env("FLUREE_HOME") };
+        let dirs = result.unwrap();
+        assert!(
+            dirs.is_unified(),
+            "FLUREE_HOME should produce a unified dir"
+        );
+        assert_eq!(dirs.data_dir(), tmp.path());
+    }
+
+    #[test]
+    fn fluree_dir_global_respects_fluree_home() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: holding ENV_LOCK.
+        unsafe { set_env("FLUREE_HOME", tmp.path().as_os_str()) };
+        let dirs = FlureeDir::global().unwrap();
+        unsafe { unset_env("FLUREE_HOME") };
+        assert!(dirs.is_unified());
+        assert_eq!(dirs.config_dir(), tmp.path());
+        assert_eq!(dirs.data_dir(), tmp.path());
+    }
+
+    #[test]
+    fn fluree_dir_global_without_fluree_home() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: holding ENV_LOCK.
+        unsafe { unset_env("FLUREE_HOME") };
+        // Without FLUREE_HOME, global() should still return Some on all
+        // platforms (dirs::config_local_dir() is always available).
+        let dirs = FlureeDir::global();
+        assert!(dirs.is_some(), "global() should resolve on this platform");
+    }
+
+    #[test]
+    fn find_or_global_accepts_existing_config_dir_only() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        // Create only config dir
+        std::fs::create_dir_all(&config_dir).unwrap();
+        // SAFETY: holding ENV_LOCK.
+        unsafe { set_env("FLUREE_HOME", config_dir.as_os_str()) };
+        let result = find_or_global_fluree_dir();
+        unsafe { unset_env("FLUREE_HOME") };
+        assert!(result.is_some(), "should find existing config dir");
+        // data_dir should not exist but that's fine — we only require one
+        assert!(!data_dir.exists());
     }
 }

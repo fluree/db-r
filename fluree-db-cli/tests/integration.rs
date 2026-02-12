@@ -1139,6 +1139,64 @@ fn auth_login_no_remote_fails_when_none_configured() {
 }
 
 #[test]
+fn init_global_with_fluree_home() {
+    let tmp = TempDir::new().unwrap();
+    let fluree_home = tmp.path().join("fluree-global");
+
+    fluree_cmd(&tmp)
+        .env("FLUREE_HOME", &fluree_home)
+        .args(["init", "--global"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized Fluree in"));
+
+    // Config and storage should be in the FLUREE_HOME directory (unified)
+    assert!(
+        fluree_home.join("config.toml").exists(),
+        "config.toml should exist in FLUREE_HOME"
+    );
+    assert!(
+        fluree_home.join("storage").is_dir(),
+        "storage/ should exist in FLUREE_HOME"
+    );
+
+    // Since FLUREE_HOME is unified, storage_path in config should be
+    // the default relative path (not an absolute override)
+    let config = std::fs::read_to_string(fluree_home.join("config.toml")).unwrap();
+    assert!(
+        config.contains(".fluree/storage"),
+        "unified mode should use the default relative storage_path"
+    );
+}
+
+#[test]
+fn init_global_is_idempotent() {
+    let tmp = TempDir::new().unwrap();
+    let fluree_home = tmp.path().join("fluree-global");
+
+    // First init
+    fluree_cmd(&tmp)
+        .env("FLUREE_HOME", &fluree_home)
+        .args(["init", "--global"])
+        .assert()
+        .success();
+
+    // Write something to config.toml to verify it's not overwritten
+    let config_path = fluree_home.join("config.toml");
+    let original = std::fs::read_to_string(&config_path).unwrap();
+
+    // Second init should succeed without overwriting
+    fluree_cmd(&tmp)
+        .env("FLUREE_HOME", &fluree_home)
+        .args(["init", "--global"])
+        .assert()
+        .success();
+
+    let after = std::fs::read_to_string(&config_path).unwrap();
+    assert_eq!(original, after, "config.toml should not be overwritten");
+}
+
+#[test]
 fn auth_login_discovery_fallback_unreachable_server() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();

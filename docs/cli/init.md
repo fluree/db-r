@@ -42,12 +42,12 @@ With `--global`, the directories are determined by:
 1. `$FLUREE_HOME` environment variable (if set) — both config and data go in this single directory.
 2. Platform directories (when `$FLUREE_HOME` is not set):
 
-| Content | Linux | macOS |
-|---|---|---|
-| Config (`config.toml`) | `$XDG_CONFIG_HOME/fluree` (default: `~/.config/fluree`) | `~/Library/Application Support/fluree` |
-| Data (`storage/`, `active`, `prefixes.json`) | `$XDG_DATA_HOME/fluree` (default: `~/.local/share/fluree`) | `~/Library/Application Support/fluree` |
+| Content | Linux | macOS | Windows |
+|---|---|---|---|
+| Config (`config.toml`) | `$XDG_CONFIG_HOME/fluree` (default: `~/.config/fluree`) | `~/Library/Application Support/fluree` | `%LOCALAPPDATA%\fluree` |
+| Data (`storage/`, `active`, `prefixes.json`) | `$XDG_DATA_HOME/fluree` (default: `~/.local/share/fluree`) | `~/Library/Application Support/fluree` | `%LOCALAPPDATA%\fluree` |
 
-On macOS both resolve to the same directory; on Linux config and data are separated per XDG conventions.
+On macOS and Windows both resolve to the same directory (unified); on Linux config and data are separated per XDG conventions.
 
 The generated `config.toml` will contain an absolute `storage_path` pointing to the data directory when the directories are split.
 

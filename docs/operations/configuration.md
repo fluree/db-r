@@ -6,7 +6,18 @@ Fluree server is configured via a configuration file, command-line flags, and en
 
 ### Configuration File (TOML, JSON, or JSON-LD)
 
-The server reads configuration from `.fluree/config.toml` (or `.fluree/config.jsonld`) — the same file used by the Fluree CLI. Server settings live under the `[server]` section (or `"server"` key in JSON/JSON-LD). The server walks up from the current working directory looking for `.fluree/config.toml` or `.fluree/config.jsonld`, falling back to the global Fluree config directory (`$FLUREE_HOME`, or the platform config directory — e.g. `~/.config/fluree` on Linux, `~/Library/Application Support/fluree` on macOS).
+The server reads configuration from `.fluree/config.toml` (or `.fluree/config.jsonld`) — the same file used by the Fluree CLI. Server settings live under the `[server]` section (or `"server"` key in JSON/JSON-LD). The server walks up from the current working directory looking for `.fluree/config.toml` or `.fluree/config.jsonld`, falling back to the global Fluree **config** directory (`$FLUREE_HOME`, or the platform config directory — see table below).
+
+#### Global Directory Layout
+
+When `$FLUREE_HOME` is set, both config and data share that single directory. When it is not set, the platform's config and data directories are used:
+
+| Content | Linux | macOS | Windows |
+|---|---|---|---|
+| Config (`config.toml`) | `~/.config/fluree` | `~/Library/Application Support/fluree` | `%LOCALAPPDATA%\fluree` |
+| Data (`storage/`, `active`) | `~/.local/share/fluree` | `~/Library/Application Support/fluree` | `%LOCALAPPDATA%\fluree` |
+
+On Linux, config and data directories are separated per the XDG Base Directory specification. On macOS and Windows both resolve to the same directory. When directories are split, `fluree init --global` writes an absolute `storage_path` into `config.toml` so the server can locate the data directory regardless of working directory.
 
 ```bash
 # Use default config file discovery
@@ -604,7 +615,7 @@ fluree-server \
 
 | Variable                                | Description                    | Default                                          |
 | --------------------------------------- | ------------------------------ | ------------------------------------------------ |
-| `FLUREE_HOME`                           | Global Fluree directory (unified config + data) | Platform dirs (see below)                |
+| `FLUREE_HOME`                           | Global Fluree directory (unified config + data) | Platform dirs (see [Global Directory Layout](#global-directory-layout)) |
 | `FLUREE_CONFIG`                         | Config file path               | `.fluree/config.{toml,jsonld}` (auto-discovered) |
 | `FLUREE_PROFILE`                        | Configuration profile name     | None                                             |
 | `FLUREE_LISTEN_ADDR`                    | Server address:port            | `0.0.0.0:8090`                                   |
