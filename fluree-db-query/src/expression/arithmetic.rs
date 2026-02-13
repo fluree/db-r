@@ -19,7 +19,7 @@ pub fn eval_add<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    eval_variadic_arithmetic(args, row, ctx, ArithmeticOp::Add, "Add")
+    eval_variadic_arithmetic(ArithmeticOp::Add, ctx, row, args)
 }
 
 /// Evaluate subtraction
@@ -28,7 +28,7 @@ pub fn eval_sub<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    eval_variadic_arithmetic(args, row, ctx, ArithmeticOp::Sub, "Sub")
+    eval_variadic_arithmetic(ArithmeticOp::Sub, ctx, row, args)
 }
 
 /// Evaluate multiplication
@@ -37,7 +37,7 @@ pub fn eval_mul<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    eval_variadic_arithmetic(args, row, ctx, ArithmeticOp::Mul, "Mul")
+    eval_variadic_arithmetic(ArithmeticOp::Mul, ctx, row, args)
 }
 
 /// Evaluate division
@@ -46,7 +46,7 @@ pub fn eval_div<R: RowAccess>(
     row: &R,
     ctx: Option<&ExecutionContext<'_>>,
 ) -> Result<Option<ComparableValue>> {
-    eval_variadic_arithmetic(args, row, ctx, ArithmeticOp::Div, "Div")
+    eval_variadic_arithmetic(ArithmeticOp::Div, ctx, row, args)
 }
 
 /// Evaluate unary negation
@@ -74,13 +74,12 @@ pub fn eval_negate<R: RowAccess>(
 /// - 1 arg → identity (return the evaluated value)
 /// - 2+ args → fold: `op(op(a, b), c)` etc.
 fn eval_variadic_arithmetic<R: RowAccess>(
-    args: &[Expression],
-    row: &R,
-    ctx: Option<&ExecutionContext<'_>>,
     op: ArithmeticOp,
-    name: &str,
+    ctx: Option<&ExecutionContext<'_>>,
+    row: &R,
+    args: &[Expression],
 ) -> Result<Option<ComparableValue>> {
-    check_min_arity(args, 1, name)?;
+    check_min_arity(args, 1, &op.to_string())?;
 
     let first = match args[0].eval_to_comparable(row, ctx)? {
         Some(v) => v,

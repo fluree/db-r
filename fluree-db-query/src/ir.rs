@@ -1377,6 +1377,17 @@ pub enum ArithmeticOp {
     Div,
 }
 
+impl std::fmt::Display for ArithmeticOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArithmeticOp::Add => write!(f, "+"),
+            ArithmeticOp::Sub => write!(f, "-"),
+            ArithmeticOp::Mul => write!(f, "*"),
+            ArithmeticOp::Div => write!(f, "/"),
+        }
+    }
+}
+
 /// Constant value in filter expressions
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterValue {
