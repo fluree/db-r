@@ -8,8 +8,10 @@
 //! - 2+ args → every consecutive pair must satisfy the relation:
 //!   `(< a b c)` means `a < b AND b < c`
 //!
-//! Type mismatches (incomparable types) yield `false` for all operators
-//! except `!=`, which yields `true` — values of different types are not equal.
+//! Type mismatches (incomparable types):
+//! - `=` yields `false` (different types are not equal)
+//! - `!=` yields `true` (different types are not equal)
+//! - `<`, `<=`, `>`, `>=` yield a `ComparisonError::TypeMismatch` error
 
 use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
@@ -19,7 +21,7 @@ use fluree_db_core::FlakeValue;
 use std::cmp::Ordering;
 
 use super::helpers::check_min_arity;
-use super::value::ComparableValue;
+use super::value::{ComparableValue, ComparisonError};
 
 impl CompareOp {
     /// Whether the given ordering satisfies this comparison operator.
@@ -68,7 +70,18 @@ impl CompareOp {
 
             let satisfied = match cmp_values(&prev, &curr) {
                 Some(ord) => self.satisfies(ord),
-                None => matches!(self, CompareOp::Ne),
+                None => match self {
+                    CompareOp::Eq => false,
+                    CompareOp::Ne => true,
+                    _ => {
+                        return Err(ComparisonError::TypeMismatch {
+                            operator: self.symbol(),
+                            left_type: prev.type_name(),
+                            right_type: curr.type_name(),
+                        }
+                        .into())
+                    }
+                },
             };
             if !satisfied {
                 return Ok(Some(ComparableValue::Bool(false)));
@@ -318,11 +331,31 @@ mod tests {
     }
 
     #[test]
-    fn test_lt_type_mismatch_is_false() {
+    fn test_lt_type_mismatch_is_err() {
         let row = empty_row();
-        // 1 < "hello" → false (incomparable types have no ordering)
+        // 1 < "hello" → error (incomparable types cannot be ordered)
         let args = vec![long(1), string("hello")];
-        let result = CompareOp::Lt.eval(&args, &row, None).unwrap();
-        assert_eq!(result, Some(ComparableValue::Bool(false)));
+        assert!(CompareOp::Lt.eval(&args, &row, None).is_err());
+    }
+
+    #[test]
+    fn test_le_type_mismatch_is_err() {
+        let row = empty_row();
+        let args = vec![long(1), string("hello")];
+        assert!(CompareOp::Le.eval(&args, &row, None).is_err());
+    }
+
+    #[test]
+    fn test_gt_type_mismatch_is_err() {
+        let row = empty_row();
+        let args = vec![long(1), string("hello")];
+        assert!(CompareOp::Gt.eval(&args, &row, None).is_err());
+    }
+
+    #[test]
+    fn test_ge_type_mismatch_is_err() {
+        let row = empty_row();
+        let args = vec![long(1), string("hello")];
+        assert!(CompareOp::Ge.eval(&args, &row, None).is_err());
     }
 }

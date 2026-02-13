@@ -35,4 +35,4 @@ mod vector;
 pub mod vector_math;
 
 // Re-export public API
-pub use value::{ArithmeticError, ComparableValue, NullValueError};
+pub use value::{ArithmeticError, ComparableValue, ComparisonError, NullValueError};

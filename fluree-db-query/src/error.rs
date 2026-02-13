@@ -1,7 +1,7 @@
 //! Error types for query execution
 
 use crate::binding::BatchError;
-use crate::expression::ArithmeticError;
+use crate::expression::{ArithmeticError, ComparisonError};
 use thiserror::Error;
 
 /// Query execution errors
@@ -70,6 +70,10 @@ pub enum QueryError {
     /// Arithmetic error during expression evaluation
     #[error("Arithmetic error: {0}")]
     Arithmetic(#[from] ArithmeticError),
+
+    /// Comparison error during expression evaluation
+    #[error("Comparison error: {0}")]
+    Comparison(#[from] ComparisonError),
 }
 
 impl QueryError {

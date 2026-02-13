@@ -35,6 +35,18 @@ pub enum ArithmeticError {
     TypeMismatch,
 }
 
+/// Errors that can occur during comparison operations
+#[derive(Error, Debug, Clone, PartialEq)]
+pub enum ComparisonError {
+    /// Ordering comparison between incompatible types
+    #[error("type mismatch: cannot compare {left_type} with {right_type} using '{operator}'")]
+    TypeMismatch {
+        operator: &'static str,
+        left_type: &'static str,
+        right_type: &'static str,
+    },
+}
+
 /// Error when converting a FlakeValue that has no ComparableValue equivalent
 #[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 #[error("cannot convert null value")]
