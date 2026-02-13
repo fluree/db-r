@@ -23,12 +23,12 @@ fluree query [LEDGER] [FILE] [OPTIONS]
 | `-e, --expr <EXPR>` | Inline query expression |
 | `--format <FORMAT>` | Output format: `json`, `table`, or `csv` (default: `json`) |
 | `--sparql` | Force SPARQL query format |
-| `--fql` | Force FQL (JSON-LD) query format |
+| `--jsonld` | Force JSON-LD query format |
 | `--at <TIME>` | Query at a specific point in time |
 
 ## Description
 
-Executes a query against a ledger. Supports both SPARQL and FQL (Fluree Query Language / JSON-LD queries).
+Executes a query against a ledger. Supports both SPARQL and JSON-LD query formats.
 
 ## Query Formats
 
@@ -38,15 +38,15 @@ Executes a query against a ledger. Supports both SPARQL and FQL (Fluree Query La
 fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?name }'
 ```
 
-### FQL (JSON-LD Query)
+### JSON-LD Query
 
 ```bash
-fluree query --fql -e '{"select": ["?name"], "where": {"http://example.org/name": "?name"}}'
+fluree query --jsonld -e '{"select": ["?name"], "where": {"http://example.org/name": "?name"}}'
 ```
 
 Format is auto-detected if not specified:
 - Contains `SELECT`, `CONSTRUCT`, `ASK`, or `DESCRIBE` → SPARQL
-- Otherwise → FQL
+- Otherwise → JSON-LD
 
 ## Output Formats
 
@@ -108,7 +108,7 @@ fluree query --at 2024-01-15T10:30:00Z --sparql -e 'SELECT * WHERE { ?s ?p ?o }'
 # SPARQL query from file
 fluree query --sparql query.rq
 
-# FQL query inline
+# JSON-LD query inline
 fluree query -e '{"select": {"?s": ["*"]}, "where": {"@id": "?s"}}'
 
 # Query specific ledger with CSV output

@@ -1,6 +1,6 @@
 //! S-expression filter parsing
 //!
-//! Parses Clojure-style S-expression filter syntax used in FQL queries.
+//! Parses Clojure-style S-expression filter syntax used in JSON-LD queries.
 //!
 //! # Syntax
 //!
@@ -190,6 +190,19 @@ fn parse_s_expression_args(s: &str) -> Result<Vec<UnresolvedExpression>> {
             let expr_str = &remaining[..=end];
             args.push(parse_s_expression_list(expr_str)?);
             remaining = remaining[end + 1..].trim();
+        } else if remaining.starts_with('"') {
+            // Handle quoted string as a single token (may contain whitespace/parens)
+            let after_open = &remaining[1..];
+            if let Some(close_pos) = after_open.find('"') {
+                let end = close_pos + 2; // include both quotes
+                let atom = &remaining[..end];
+                args.push(parse_s_expression_atom(atom)?);
+                remaining = remaining[end..].trim();
+            } else {
+                return Err(ParseError::InvalidFilter(
+                    "unclosed string literal".to_string(),
+                ));
+            }
         } else {
             // Parse as atom until whitespace or paren
             let end = remaining

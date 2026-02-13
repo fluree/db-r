@@ -67,6 +67,10 @@ pub enum QueryError {
     #[error("Unsupported mode: {0}")]
     UnsupportedMode(String),
 
+    /// Requested time range not covered by binary index
+    #[error("Time range not covered: requested t={requested_t} but base_t={base_t}")]
+    TimeRangeNotCovered { requested_t: i64, base_t: i64 },
+
     /// Arithmetic error during expression evaluation
     #[error("Arithmetic error: {0}")]
     Arithmetic(#[from] ArithmeticError),

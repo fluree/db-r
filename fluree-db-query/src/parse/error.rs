@@ -1,4 +1,4 @@
-//! Parse error types for JSON FQL query parsing
+//! Parse error types for JSON-LD query parsing
 
 use thiserror::Error;
 

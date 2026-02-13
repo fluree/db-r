@@ -29,6 +29,8 @@ pub mod exists;
 pub mod explain;
 pub mod expression;
 pub mod filter;
+pub mod geo_rewrite;
+pub mod geo_search;
 pub mod graph;
 pub mod graph_view;
 pub mod group_aggregate;
@@ -55,6 +57,7 @@ pub mod r2rml;
 pub mod reasoning;
 pub mod rewrite;
 pub mod rewrite_owl_ql;
+pub mod s2_search;
 pub mod seed;
 pub mod service;
 pub mod sort;
@@ -90,6 +93,7 @@ pub use explain::{
     SelectivityInputs,
 };
 pub use filter::FilterOperator;
+pub use geo_rewrite::rewrite_geo_patterns;
 pub use graph::GraphOperator;
 pub use graph_view::{AsOf, BaseView, GraphView, ResolvedGraphView, WithPolicy, WithReasoning};
 pub use group_aggregate::{GroupAggregateOperator, StreamingAggSpec};

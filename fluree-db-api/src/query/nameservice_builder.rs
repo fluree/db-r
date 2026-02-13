@@ -50,7 +50,7 @@ use serde_json::json;
 /// Created via [`Fluree::nameservice_query()`].
 ///
 /// Queries all ledger and graph source records stored in the nameservice.
-/// Uses standard FQL/SPARQL syntax against an ephemeral in-memory database
+/// Uses standard JSON-LD/SPARQL syntax against an ephemeral in-memory database
 /// populated with nameservice records.
 ///
 /// # Example
@@ -107,7 +107,7 @@ where
 
     // --- Shared setters (delegated to QueryCore) ---
 
-    /// Set the query input as JSON-LD/FQL.
+    /// Set the query input as JSON-LD.
     ///
     /// # Example
     ///

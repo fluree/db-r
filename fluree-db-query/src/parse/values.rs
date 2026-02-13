@@ -1,6 +1,6 @@
 //! VALUES clause parsing
 //!
-//! Parses FQL VALUES clauses which provide inline data in queries.
+//! Parses JSON-LD VALUES clauses which provide inline data in queries.
 //!
 //! # Syntax
 //!
@@ -46,7 +46,7 @@ fn validate_var_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parse a FQL VALUES clause.
+/// Parse a JSON-LD VALUES clause.
 ///
 /// Accepts the same structure as Clojure's `util.parse/normalize-values`:
 /// - `[vars, vals]` where vars is a string or array of strings

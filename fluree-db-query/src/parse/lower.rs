@@ -157,6 +157,8 @@ impl ParsedQuery {
                     | Pattern::PropertyPath(_)
                     | Pattern::Subquery(_)
                     | Pattern::IndexSearch(_)
+                    | Pattern::GeoSearch(_)
+                    | Pattern::S2Search(_)
                     | Pattern::VectorSearch(_)
                     | Pattern::R2rml(_) => {}
                 }
@@ -1363,7 +1365,10 @@ fn lower_function_name(name: &str) -> Function {
         }
         // Geospatial functions (OGC GeoSPARQL)
         // Note: plain "distance" intentionally omitted to avoid collision with vector/edit distance
-        "geof:distance" | "geo_distance" | "geodistance" => Function::GeofDistance,
+        "geof:distance"
+        | "geo_distance"
+        | "geodistance"
+        | "http://www.opengis.net/def/function/geosparql/distance" => Function::GeofDistance,
         // Other
         "bound" => Function::Bound,
         "if" => Function::If,

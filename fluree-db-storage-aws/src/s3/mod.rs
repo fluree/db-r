@@ -318,7 +318,7 @@ impl StorageWrite for S3Storage {
 
 impl fluree_db_core::StorageMethod for S3Storage {
     fn storage_method(&self) -> &str {
-        "s3"
+        fluree_db_core::STORAGE_METHOD_S3
     }
 }
 
@@ -331,7 +331,12 @@ impl ContentAddressedWrite for S3Storage {
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> std::result::Result<ContentWriteResult, CoreError> {
-        let address = content_address("s3", kind, ledger_id, content_hash_hex);
+        let address = content_address(
+            fluree_db_core::STORAGE_METHOD_S3,
+            kind,
+            ledger_id,
+            content_hash_hex,
+        );
         self.write_bytes(&address, bytes).await?;
         Ok(ContentWriteResult {
             address,

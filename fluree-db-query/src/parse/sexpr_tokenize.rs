@@ -224,8 +224,16 @@ pub fn split_first_token(s: &str) -> Result<(&str, &str)> {
 /// ```
 pub fn find_matching_paren(s: &str) -> Result<usize> {
     let mut depth = 0;
+    let mut in_quote = false;
     for (i, c) in s.chars().enumerate() {
+        if in_quote {
+            if c == '"' {
+                in_quote = false;
+            }
+            continue;
+        }
         match c {
+            '"' => in_quote = true,
             '(' => depth += 1,
             ')' => {
                 depth -= 1;

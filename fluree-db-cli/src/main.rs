@@ -159,7 +159,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             format,
             bench,
             sparql,
-            fql,
+            jsonld,
             at,
             remote,
         } => {
@@ -170,7 +170,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 &format,
                 bench,
                 sparql,
-                fql,
+                jsonld,
                 at.as_deref(),
                 &fluree_dir,
                 remote.as_deref(),

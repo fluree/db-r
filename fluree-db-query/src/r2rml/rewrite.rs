@@ -128,6 +128,8 @@ pub fn rewrite_patterns_for_r2rml(
             | Pattern::IndexSearch(_)
             | Pattern::VectorSearch(_)
             | Pattern::R2rml(_)
+            | Pattern::GeoSearch(_)
+            | Pattern::S2Search(_)
             | Pattern::Graph { .. } => {
                 result_patterns.push(pattern.clone());
             }

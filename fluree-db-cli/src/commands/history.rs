@@ -67,7 +67,7 @@ pub async fn run(
     Ok(())
 }
 
-/// Build a FQL history query for an entity.
+/// Build a JSON-LD history query for an entity.
 fn build_history_query(
     alias: &str,
     entity_iri: &str,

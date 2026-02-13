@@ -219,9 +219,9 @@ pub async fn run(
             let timer = Instant::now();
             let result = match query_format {
                 detect::QueryFormat::Sparql => client.query_sparql(&remote_alias, &content).await?,
-                detect::QueryFormat::Fql => {
+                detect::QueryFormat::JsonLd => {
                     let json_query: serde_json::Value = serde_json::from_str(&content)?;
-                    client.query_fql(&remote_alias, &json_query).await?
+                    client.query_jsonld(&remote_alias, &json_query).await?
                 }
             };
             let elapsed = timer.elapsed();

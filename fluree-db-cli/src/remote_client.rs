@@ -39,7 +39,7 @@ pub struct RefreshedTokens {
 
 /// HTTP client for ledger data operations against a remote Fluree server.
 ///
-/// Supports query (FQL/SPARQL), insert, upsert, transact, ledger-info, and
+/// Supports query (JSON-LD/SPARQL), insert, upsert, transact, ledger-info, and
 /// existence checks via the server's REST API. Optionally performs automatic
 /// token refresh on 401 when a `RefreshConfig` is provided.
 #[derive(Clone)]
@@ -416,8 +416,8 @@ impl RemoteLedgerClient {
     // Query
     // =========================================================================
 
-    /// Execute an FQL (JSON-LD) query against a ledger.
-    pub async fn query_fql(
+    /// Execute a JSON-LD query against a ledger.
+    pub async fn query_jsonld(
         &self,
         ledger: &str,
         body: &serde_json::Value,

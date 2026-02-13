@@ -83,10 +83,17 @@ Non-ledger graph sources are registered in nameservice:
 **Query:**
 ```json
 {
-  "from": "products-search:main",
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" }
-  ]
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    }
+  ],
+  "select": ["?product", "?score"]
 }
 ```
 
@@ -232,10 +239,16 @@ Query one graph source:
 
 ```json
 {
-  "from": "products-search:main",
-  "select": ["?product"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
+  "select": ["?product", "?score"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" }
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    }
   ]
 }
 ```
@@ -246,15 +259,20 @@ Combine multiple graph sources:
 
 ```json
 {
-  "from": ["products-search:main", "products-vector:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "select": ["?product", "?textScore", "?vecScore"],
   "values": [
     ["?queryVec"],
     [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
   ],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" },
-    { "@id": "?product", "bm25:score": "?textScore" },
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 100,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?textScore" }
+    },
     {
       "f:graphSource": "products-vector:main",
       "f:queryVector": "?queryVec",
@@ -271,11 +289,16 @@ Combine graph sources and regular ledgers:
 
 ```json
 {
-  "from": ["products:main", "products-search:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "select": ["?product", "?name", "?price", "?score"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" },
-    { "@id": "?product", "bm25:score": "?score" },
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    },
     { "@id": "?product", "schema:name": "?name" },
     { "@id": "?product", "schema:price": "?price" }
   ]
@@ -346,9 +369,15 @@ Query planner handles graph sources:
 Query:
 ```json
 {
-  "from": ["products:main", "products-search:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "where": [
-    { "@id": "?p", "bm25:matches": "laptop" },
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 50,
+      "f:searchResult": { "f:resultId": "?p" }
+    },
     { "@id": "?p", "schema:price": "?price" }
   ],
   "filter": "?price < 1000"
@@ -357,9 +386,9 @@ Query:
 
 Execution Plan:
 ```text
-1. Execute on products-search:main:
-   SELECT ?p WHERE { ?p bm25:matches "laptop" }
-   → Result: [ex:p1, ex:p2, ex:p3, ...]
+1. Execute BM25 search on products-search:main:
+   f:searchText "laptop", f:searchLimit 50
+   → Result: ?p = [ex:p1, ex:p2, ex:p3, ...]
 
 2. Execute on products:main:
    SELECT ?p ?price WHERE {
@@ -430,24 +459,36 @@ setInterval(async () => {
 
 Push filters to graph sources when possible:
 
-Good:
+Good (graph source pattern first narrows results before graph traversal):
 ```json
 {
-  "from": ["products:main", "products-search:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "where": [
-    { "@id": "?p", "bm25:matches": "laptop" },  // Filters early
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?p" }
+    },
     { "@id": "?p", "schema:name": "?name" }
   ]
 }
 ```
 
-Bad:
+Bad (graph traversal before graph source means scanning all products first):
 ```json
 {
-  "from": ["products:main", "products-search:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "where": [
     { "@id": "?p", "schema:name": "?name" },
-    { "@id": "?p", "bm25:matches": "laptop" }  // Too late
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?p" }
+    }
   ]
 }
 ```

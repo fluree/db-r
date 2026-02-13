@@ -310,7 +310,7 @@ fn sparql_fql_conflict() {
         .args([
             "query",
             "--sparql",
-            "--fql",
+            "--jsonld",
             "-e",
             "SELECT * WHERE { ?s ?p ?o }",
         ])

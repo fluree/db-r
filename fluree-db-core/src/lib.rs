@@ -126,6 +126,9 @@ pub use storage::{
     StorageMethod,
     StorageRead,
     StorageWrite,
+    STORAGE_METHOD_FILE,
+    STORAGE_METHOD_MEMORY,
+    STORAGE_METHOD_S3,
 };
 pub use subject_id::{SubjectId, SubjectIdColumn, SubjectIdEncoding};
 pub use temporal::{Date, DateTime, Time};

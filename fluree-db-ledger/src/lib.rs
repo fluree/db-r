@@ -113,6 +113,11 @@ pub struct LedgerState {
     /// with built-in namespace prefixes. Applied to queries that don't supply
     /// their own @context. Loaded from CAS via `NsRecord.default_context`.
     pub default_context: Option<serde_json::Value>,
+    /// Type-erased spatial index providers, keyed by predicate IRI.
+    ///
+    /// Each entry is `Arc<dyn SpatialIndexProvider>`. Set by `Fluree::ledger()`
+    /// when spatial indexes are available in the binary index root.
+    pub spatial_indexes: Option<TypeErasedStore>,
 }
 
 impl LedgerState {
@@ -171,6 +176,7 @@ impl LedgerState {
                     ns_record: Some(record),
                     binary_store: None,
                     default_context: None,
+                    spatial_indexes: None,
                 });
             }
             _ => record.commit_head_id.clone(),
@@ -187,6 +193,7 @@ impl LedgerState {
             ns_record: Some(record),
             binary_store: None,
             default_context: None,
+            spatial_indexes: None,
         })
     }
 
@@ -258,6 +265,7 @@ impl LedgerState {
             ns_record: None,
             binary_store: None,
             default_context: None,
+            spatial_indexes: None,
         }
     }
 
