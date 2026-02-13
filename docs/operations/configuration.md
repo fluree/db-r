@@ -1,8 +1,125 @@
 # Configuration
 
-Fluree server is configured via command-line flags and environment variables.
+Fluree server is configured via a configuration file, command-line flags, and environment variables.
 
 ## Configuration Methods
+
+### Configuration File (TOML, JSON, or JSON-LD)
+
+The server reads configuration from `.fluree/config.toml` (or `.fluree/config.jsonld`) — the same file used by the Fluree CLI. Server settings live under the `[server]` section (or `"server"` key in JSON/JSON-LD). The server walks up from the current working directory looking for `.fluree/config.toml` or `.fluree/config.jsonld`, falling back to the global Fluree **config** directory (`$FLUREE_HOME`, or the platform config directory — see table below).
+
+#### Global Directory Layout
+
+When `$FLUREE_HOME` is set, both config and data share that single directory. When it is not set, the platform's config and data directories are used:
+
+| Content                     | Linux                   | macOS                                  | Windows                 |
+| --------------------------- | ----------------------- | -------------------------------------- | ----------------------- |
+| Config (`config.toml`)      | `~/.config/fluree`      | `~/Library/Application Support/fluree` | `%LOCALAPPDATA%\fluree` |
+| Data (`storage/`, `active`) | `~/.local/share/fluree` | `~/Library/Application Support/fluree` | `%LOCALAPPDATA%\fluree` |
+
+On Linux, config and data directories are separated per the XDG Base Directory specification. On macOS and Windows both resolve to the same directory. When directories are split, `fluree init --global` writes an absolute `storage_path` into `config.toml` so the server can locate the data directory regardless of working directory.
+
+```bash
+# Use default config file discovery
+fluree-server
+
+# Override config file path
+fluree-server --config /etc/fluree/config.toml
+
+# Activate a profile
+fluree-server --profile prod
+```
+
+Example `config.toml`:
+
+```toml
+[server]
+listen_addr = "0.0.0.0:8090"
+storage_path = "/var/lib/fluree"
+log_level = "info"
+cache_max_entries = 10000
+
+[server.indexing]
+enabled = true
+reindex_min_bytes = 100000
+reindex_max_bytes = 1000000
+
+[server.auth.data]
+mode = "required"
+trusted_issuers = ["did:key:z6Mk..."]
+```
+
+JSON is also supported (detected by `.json` file extension):
+
+```json
+{
+  "server": {
+    "listen_addr": "0.0.0.0:8090",
+    "storage_path": "/var/lib/fluree",
+    "indexing": { "enabled": true }
+  }
+}
+```
+
+#### JSON-LD Format
+
+JSON-LD config files (`.jsonld` extension) add a `@context` that maps config keys to the Fluree config vocabulary (`https://ns.flur.ee/config#`), making the file valid JSON-LD. Generate one with:
+
+```bash
+fluree init --format jsonld
+```
+
+Example `.fluree/config.jsonld`:
+
+```json
+{
+  "@context": {
+    "@vocab": "https://ns.flur.ee/config#"
+  },
+  "_comment": "Fluree Configuration — JSON-LD format.",
+  "server": {
+    "listen_addr": "0.0.0.0:8090",
+    "storage_path": ".fluree/storage",
+    "log_level": "info",
+    "indexing": {
+      "enabled": false,
+      "reindex_min_bytes": 100000,
+      "reindex_max_bytes": 1000000
+    }
+  },
+  "profiles": {
+    "prod": {
+      "server": {
+        "log_level": "warn",
+        "indexing": { "enabled": true }
+      }
+    }
+  }
+}
+```
+
+The `@context` is validated at load time (using the JSON-LD parser) but does not affect config value resolution — `serde` ignores unknown keys like `@context` and `_comment`. If both `config.toml` and `config.jsonld` exist in the same directory, TOML takes precedence and a warning is logged.
+
+### Profiles
+
+Profiles allow environment-specific overrides. Define them in `[profiles.<name>.server]` and activate with `--profile <name>`:
+
+```toml
+[server]
+log_level = "info"
+
+[profiles.dev.server]
+log_level = "debug"
+
+[profiles.prod.server]
+log_level = "warn"
+[profiles.prod.server.indexing]
+enabled = true
+[profiles.prod.server.auth.data]
+mode = "required"
+```
+
+Profile values are deep-merged onto `[server]` — only the fields present in the profile are overridden.
 
 ### Command-Line Flags
 
@@ -28,9 +145,18 @@ fluree-server
 ### Precedence
 
 Configuration precedence (highest to lowest):
+
 1. Command-line flags
 2. Environment variables
-3. Default values
+3. Profile overrides (`[profiles.<name>.server]`)
+4. Config file (`[server]`)
+5. Built-in defaults
+
+### Error Handling
+
+If `--config` or `--profile` is specified and the configuration cannot be loaded (file not found, parse error, missing profile), the server **exits with an error**. This prevents silent misconfiguration in production.
+
+If the config file is auto-discovered (no explicit `--config`) and cannot be parsed, the server logs a warning and continues with CLI/env/default values only.
 
 ## Server Configuration
 
@@ -38,8 +164,8 @@ Configuration precedence (highest to lowest):
 
 Address and port to bind to:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
+| Flag            | Env Var              | Default        |
+| --------------- | -------------------- | -------------- |
 | `--listen-addr` | `FLUREE_LISTEN_ADDR` | `0.0.0.0:8090` |
 
 ```bash
@@ -48,17 +174,17 @@ fluree-server --listen-addr 0.0.0.0:9090
 
 ### Storage Path
 
-Path for file-based storage. If not specified, uses in-memory storage:
+Path for file-based storage. If not specified, defaults to `.fluree/storage` relative to the working directory (the same location used by `fluree init`):
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--storage-path` | `FLUREE_STORAGE_PATH` | None (memory) |
+| Flag             | Env Var               | Default           |
+| ---------------- | --------------------- | ----------------- |
+| `--storage-path` | `FLUREE_STORAGE_PATH` | `.fluree/storage` |
 
 ```bash
-# File storage
+# Explicit storage path (e.g. production)
 fluree-server --storage-path /var/lib/fluree
 
-# Memory storage (default - omit --storage-path)
+# Default: uses .fluree/storage in the working directory
 fluree-server
 ```
 
@@ -66,9 +192,9 @@ fluree-server
 
 Enable Cross-Origin Resource Sharing:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--cors-enabled` | `FLUREE_CORS_ENABLED` | `true` |
+| Flag             | Env Var               | Default |
+| ---------------- | --------------------- | ------- |
+| `--cors-enabled` | `FLUREE_CORS_ENABLED` | `true`  |
 
 When enabled, allows requests from any origin.
 
@@ -76,17 +202,17 @@ When enabled, allows requests from any origin.
 
 Maximum request body size in bytes:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
+| Flag           | Env Var             | Default           |
+| -------------- | ------------------- | ----------------- |
 | `--body-limit` | `FLUREE_BODY_LIMIT` | `52428800` (50MB) |
 
 ### Log Level
 
 Logging verbosity:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--log-level` | `FLUREE_LOG_LEVEL` | `info` |
+| Flag          | Env Var            | Default |
+| ------------- | ------------------ | ------- |
+| `--log-level` | `FLUREE_LOG_LEVEL` | `info`  |
 
 Options: `trace`, `debug`, `info`, `warn`, `error`
 
@@ -94,17 +220,28 @@ Options: `trace`, `debug`, `info`, `warn`, `error`
 
 Maximum cache entries per ledger:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
+| Flag                  | Env Var                    | Default |
+| --------------------- | -------------------------- | ------- |
 | `--cache-max-entries` | `FLUREE_CACHE_MAX_ENTRIES` | `10000` |
 
 ### Background Indexing
 
-Enable background indexing:
+Enable background indexing and configure novelty backpressure thresholds:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--indexing-enabled` | `FLUREE_INDEXING_ENABLED` | `false` |
+| Flag                  | Env Var                    | Default   | Description                                     |
+| --------------------- | -------------------------- | --------- | ----------------------------------------------- |
+| `--indexing-enabled`  | `FLUREE_INDEXING_ENABLED`  | `false`   | Enable background indexing                      |
+| `--reindex-min-bytes` | `FLUREE_REINDEX_MIN_BYTES` | `100000`  | Soft threshold (triggers background reindex)    |
+| `--reindex-max-bytes` | `FLUREE_REINDEX_MAX_BYTES` | `1000000` | Hard threshold (blocks commits until reindexed) |
+
+Config file equivalent:
+
+```toml
+[server.indexing]
+enabled = true
+reindex_min_bytes = 100000   # 100 KB
+reindex_max_bytes = 1000000  # 1 MB
+```
 
 ## Server Role Configuration
 
@@ -112,11 +249,12 @@ Enable background indexing:
 
 Operating mode: transaction server or query peer:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
+| Flag            | Env Var              | Default       |
+| --------------- | -------------------- | ------------- |
 | `--server-role` | `FLUREE_SERVER_ROLE` | `transaction` |
 
 Options:
+
 - `transaction`: Write-enabled, produces events stream
 - `peer`: Read-only, subscribes to transaction server
 
@@ -124,8 +262,8 @@ Options:
 
 Base URL of the transaction server (required in peer mode):
 
-| Flag | Env Var |
-|------|---------|
+| Flag              | Env Var                |
+| ----------------- | ---------------------- |
 | `--tx-server-url` | `FLUREE_TX_SERVER_URL` |
 
 ```bash
@@ -149,13 +287,14 @@ A user holding only query-scoped tokens **cannot** clone or pull a ledger. They 
 
 Protect the `/v1/fluree/events` SSE endpoint:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--events-auth-mode` | `FLUREE_EVENTS_AUTH_MODE` | `none` |
-| `--events-auth-audience` | `FLUREE_EVENTS_AUTH_AUDIENCE` | None |
-| `--events-auth-trusted-issuer` | `FLUREE_EVENTS_AUTH_TRUSTED_ISSUERS` | None |
+| Flag                           | Env Var                              | Default |
+| ------------------------------ | ------------------------------------ | ------- |
+| `--events-auth-mode`           | `FLUREE_EVENTS_AUTH_MODE`            | `none`  |
+| `--events-auth-audience`       | `FLUREE_EVENTS_AUTH_AUDIENCE`        | None    |
+| `--events-auth-trusted-issuer` | `FLUREE_EVENTS_AUTH_TRUSTED_ISSUERS` | None    |
 
 Modes:
+
 - `none`: No authentication
 - `optional`: Accept tokens but don't require them
 - `required`: Require valid Bearer token
@@ -180,19 +319,21 @@ fluree-server \
 Protect query/write endpoints (including `/:ledger/query`, `/:ledger/insert`, `/:ledger/upsert`,
 `/:ledger/transact`, `/fluree/ledger-info`, and `/fluree/exists`):
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--data-auth-mode` | `FLUREE_DATA_AUTH_MODE` | `none` |
-| `--data-auth-audience` | `FLUREE_DATA_AUTH_AUDIENCE` | None |
-| `--data-auth-trusted-issuer` | `FLUREE_DATA_AUTH_TRUSTED_ISSUERS` | None |
-| `--data-auth-default-policy-class` | `FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS` | None |
+| Flag                               | Env Var                                 | Default |
+| ---------------------------------- | --------------------------------------- | ------- |
+| `--data-auth-mode`                 | `FLUREE_DATA_AUTH_MODE`                 | `none`  |
+| `--data-auth-audience`             | `FLUREE_DATA_AUTH_AUDIENCE`             | None    |
+| `--data-auth-trusted-issuer`       | `FLUREE_DATA_AUTH_TRUSTED_ISSUERS`      | None    |
+| `--data-auth-default-policy-class` | `FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS` | None    |
 
 Modes:
+
 - `none`: No authentication (default)
 - `optional`: Accept tokens but don't require them (development only)
 - `required`: Require either a valid Bearer token **or** a signed request (JWS/VC)
 
 Bearer token scopes:
+
 - **Read**: `fluree.ledger.read.all=true` or `fluree.ledger.read.ledgers=[...]`
 - **Write**: `fluree.ledger.write.all=true` or `fluree.ledger.write.ledgers=[...]`
 
@@ -211,15 +352,16 @@ providers (e.g., Fluree Cloud Service) using JWKS (JSON Web Key Set) endpoints. 
 existing embedded-JWK (Ed25519 `did:key`) verification path.
 
 **Dual-path dispatch**: The server inspects each Bearer token's header:
+
 - **Embedded JWK** (Ed25519): Uses the existing `verify_jws()` path — no JWKS needed.
 - **kid header** (RS256): Uses OIDC/JWKS path — fetches the signing key from the issuer's JWKS endpoint.
 
 Both paths coexist; no configuration change is needed for existing Ed25519 tokens.
 
-| Flag | Env Var | Default | Description |
-|------|---------|---------|-------------|
-| `--jwks-issuer` | `FLUREE_JWKS_ISSUERS` | None | OIDC issuer to trust (repeatable) |
-| `--jwks-cache-ttl` | `FLUREE_JWKS_CACHE_TTL` | `300` | JWKS cache TTL in seconds |
+| Flag               | Env Var                 | Default | Description                       |
+| ------------------ | ----------------------- | ------- | --------------------------------- |
+| `--jwks-issuer`    | `FLUREE_JWKS_ISSUERS`   | None    | OIDC issuer to trust (repeatable) |
+| `--jwks-cache-ttl` | `FLUREE_JWKS_CACHE_TTL` | `300`   | JWKS cache TTL in seconds         |
 
 The `--jwks-issuer` flag takes the format `<issuer_url>=<jwks_url>`:
 
@@ -242,6 +384,7 @@ export FLUREE_JWKS_ISSUERS="https://issuer1.example.com=https://issuer1.example.
 ```
 
 **Behavior details:**
+
 - JWKS endpoints are fetched at startup (`warm()`) but the server starts even if they're unreachable.
 - Keys are cached and refreshed when a `kid` miss occurs (rate-limited to one refresh per issuer every 10 seconds).
 - The token's `iss` claim must exactly match a configured issuer URL — unconfigured issuers are rejected immediately with a clear error.
@@ -261,12 +404,13 @@ When a Bearer token is present for connection-scoped SPARQL queries (`/v1/fluree
 
 Protect `/v1/fluree/create` and `/v1/fluree/drop` endpoints:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--admin-auth-mode` | `FLUREE_ADMIN_AUTH_MODE` | `none` |
-| `--admin-auth-trusted-issuer` | `FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS` | None |
+| Flag                          | Env Var                             | Default |
+| ----------------------------- | ----------------------------------- | ------- |
+| `--admin-auth-mode`           | `FLUREE_ADMIN_AUTH_MODE`            | `none`  |
+| `--admin-auth-trusted-issuer` | `FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS` | None    |
 
 Modes:
+
 - `none`: No authentication (development)
 - `required`: Require valid Bearer token (production)
 
@@ -290,10 +434,10 @@ If no admin-specific issuers are configured, falls back to `--events-auth-truste
 
 Protect the `/mcp` Model Context Protocol endpoint:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--mcp-enabled` | `FLUREE_MCP_ENABLED` | `false` |
-| `--mcp-auth-trusted-issuer` | `FLUREE_MCP_AUTH_TRUSTED_ISSUERS` | None |
+| Flag                        | Env Var                           | Default |
+| --------------------------- | --------------------------------- | ------- |
+| `--mcp-enabled`             | `FLUREE_MCP_ENABLED`              | `false` |
+| `--mcp-auth-trusted-issuer` | `FLUREE_MCP_AUTH_TRUSTED_ISSUERS` | None    |
 
 ```bash
 fluree-server \
@@ -307,10 +451,10 @@ fluree-server \
 
 Configure what the peer subscribes to:
 
-| Flag | Description |
-|------|-------------|
-| `--peer-subscribe-all` | Subscribe to all ledgers and graph sources |
-| `--peer-ledger <ledger-id>` | Subscribe to specific ledger (repeatable) |
+| Flag                              | Description                                     |
+| --------------------------------- | ----------------------------------------------- |
+| `--peer-subscribe-all`            | Subscribe to all ledgers and graph sources      |
+| `--peer-ledger <ledger-id>`       | Subscribe to specific ledger (repeatable)       |
 | `--peer-graph-source <ledger-id>` | Subscribe to specific graph source (repeatable) |
 
 ```bash
@@ -332,34 +476,35 @@ fluree-server \
 
 ### Peer Events Configuration
 
-| Flag | Env Var | Description |
-|------|---------|-------------|
-| `--peer-events-url` | `FLUREE_PEER_EVENTS_URL` | Custom events URL (default: `{tx_server_url}/v1/fluree/events`) |
-| `--peer-events-token` | `FLUREE_PEER_EVENTS_TOKEN` | Bearer token for events (supports `@filepath`) |
+| Flag                  | Env Var                    | Description                                                     |
+| --------------------- | -------------------------- | --------------------------------------------------------------- |
+| `--peer-events-url`   | `FLUREE_PEER_EVENTS_URL`   | Custom events URL (default: `{tx_server_url}/v1/fluree/events`) |
+| `--peer-events-token` | `FLUREE_PEER_EVENTS_TOKEN` | Bearer token for events (supports `@filepath`)                  |
 
 ### Peer Reconnection
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--peer-reconnect-initial-ms` | `1000` | Initial reconnect delay |
-| `--peer-reconnect-max-ms` | `30000` | Maximum reconnect delay |
-| `--peer-reconnect-multiplier` | `2.0` | Backoff multiplier |
+| Flag                          | Default | Description             |
+| ----------------------------- | ------- | ----------------------- |
+| `--peer-reconnect-initial-ms` | `1000`  | Initial reconnect delay |
+| `--peer-reconnect-max-ms`     | `30000` | Maximum reconnect delay |
+| `--peer-reconnect-multiplier` | `2.0`   | Backoff multiplier      |
 
 ### Peer Storage Access
 
-| Flag | Env Var | Default |
-|------|---------|---------|
+| Flag                    | Env Var                      | Default  |
+| ----------------------- | ---------------------------- | -------- |
 | `--storage-access-mode` | `FLUREE_STORAGE_ACCESS_MODE` | `shared` |
 
 Options:
+
 - `shared`: Direct storage access (requires `--storage-path`)
 - `proxy`: Proxy reads through transaction server
 
 For proxy mode:
 
-| Flag | Env Var |
-|------|---------|
-| `--storage-proxy-token` | `FLUREE_STORAGE_PROXY_TOKEN` |
+| Flag                         | Env Var                           |
+| ---------------------------- | --------------------------------- |
+| `--storage-proxy-token`      | `FLUREE_STORAGE_PROXY_TOKEN`      |
 | `--storage-proxy-token-file` | `FLUREE_STORAGE_PROXY_TOKEN_FILE` |
 
 ## Storage Proxy Configuration (Transaction Server)
@@ -368,13 +513,13 @@ Storage proxy provides **replication-scoped** access to raw storage for peer ser
 
 Enable storage proxy endpoints for peers without direct storage access:
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--storage-proxy-enabled` | `FLUREE_STORAGE_PROXY_ENABLED` | `false` |
-| `--storage-proxy-trusted-issuer` | `FLUREE_STORAGE_PROXY_TRUSTED_ISSUERS` | None |
-| `--storage-proxy-default-identity` | `FLUREE_STORAGE_PROXY_DEFAULT_IDENTITY` | None |
-| `--storage-proxy-default-policy-class` | `FLUREE_STORAGE_PROXY_DEFAULT_POLICY_CLASS` | None |
-| `--storage-proxy-debug-headers` | `FLUREE_STORAGE_PROXY_DEBUG_HEADERS` | `false` |
+| Flag                                   | Env Var                                     | Default |
+| -------------------------------------- | ------------------------------------------- | ------- |
+| `--storage-proxy-enabled`              | `FLUREE_STORAGE_PROXY_ENABLED`              | `false` |
+| `--storage-proxy-trusted-issuer`       | `FLUREE_STORAGE_PROXY_TRUSTED_ISSUERS`      | None    |
+| `--storage-proxy-default-identity`     | `FLUREE_STORAGE_PROXY_DEFAULT_IDENTITY`     | None    |
+| `--storage-proxy-default-policy-class` | `FLUREE_STORAGE_PROXY_DEFAULT_POLICY_CLASS` | None    |
+| `--storage-proxy-debug-headers`        | `FLUREE_STORAGE_PROXY_DEBUG_HEADERS`        | `false` |
 
 ```bash
 # Ed25519 trust (did:key):
@@ -468,29 +613,34 @@ fluree-server \
 
 ## Environment Variables Reference
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `FLUREE_LISTEN_ADDR` | Server address:port | `0.0.0.0:8090` |
-| `FLUREE_STORAGE_PATH` | File storage path | None (memory) |
-| `FLUREE_CORS_ENABLED` | Enable CORS | `true` |
-| `FLUREE_INDEXING_ENABLED` | Enable background indexing | `false` |
-| `FLUREE_CACHE_MAX_ENTRIES` | Cache size per ledger | `10000` |
-| `FLUREE_BODY_LIMIT` | Max request body bytes | `52428800` |
-| `FLUREE_LOG_LEVEL` | Log level | `info` |
-| `FLUREE_SERVER_ROLE` | Server role | `transaction` |
-| `FLUREE_TX_SERVER_URL` | Transaction server URL | None |
-| `FLUREE_EVENTS_AUTH_MODE` | Events auth mode | `none` |
-| `FLUREE_EVENTS_AUTH_TRUSTED_ISSUERS` | Events trusted issuers | None |
-| `FLUREE_DATA_AUTH_MODE` | Data API auth mode | `none` |
-| `FLUREE_DATA_AUTH_AUDIENCE` | Data API expected audience | None |
-| `FLUREE_DATA_AUTH_TRUSTED_ISSUERS` | Data API trusted issuers | None |
-| `FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS` | Data API default policy class | None |
-| `FLUREE_ADMIN_AUTH_MODE` | Admin auth mode | `none` |
-| `FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS` | Admin trusted issuers | None |
-| `FLUREE_MCP_ENABLED` | Enable MCP endpoint | `false` |
-| `FLUREE_MCP_AUTH_TRUSTED_ISSUERS` | MCP trusted issuers | None |
-| `FLUREE_STORAGE_ACCESS_MODE` | Peer storage mode | `shared` |
-| `FLUREE_STORAGE_PROXY_ENABLED` | Enable storage proxy | `false` |
+| Variable                                | Description                                     | Default                                                                 |
+| --------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------- |
+| `FLUREE_HOME`                           | Global Fluree directory (unified config + data) | Platform dirs (see [Global Directory Layout](#global-directory-layout)) |
+| `FLUREE_CONFIG`                         | Config file path                                | `.fluree/config.{toml,jsonld}` (auto-discovered)                        |
+| `FLUREE_PROFILE`                        | Configuration profile name                      | None                                                                    |
+| `FLUREE_LISTEN_ADDR`                    | Server address:port                             | `0.0.0.0:8090`                                                          |
+| `FLUREE_STORAGE_PATH`                   | File storage path                               | `.fluree/storage`                                                       |
+| `FLUREE_CORS_ENABLED`                   | Enable CORS                                     | `true`                                                                  |
+| `FLUREE_INDEXING_ENABLED`               | Enable background indexing                      | `false`                                                                 |
+| `FLUREE_REINDEX_MIN_BYTES`              | Soft reindex threshold (bytes)                  | `100000`                                                                |
+| `FLUREE_REINDEX_MAX_BYTES`              | Hard reindex threshold (bytes)                  | `1000000`                                                               |
+| `FLUREE_CACHE_MAX_ENTRIES`              | Cache size per ledger                           | `10000`                                                                 |
+| `FLUREE_BODY_LIMIT`                     | Max request body bytes                          | `52428800`                                                              |
+| `FLUREE_LOG_LEVEL`                      | Log level                                       | `info`                                                                  |
+| `FLUREE_SERVER_ROLE`                    | Server role                                     | `transaction`                                                           |
+| `FLUREE_TX_SERVER_URL`                  | Transaction server URL                          | None                                                                    |
+| `FLUREE_EVENTS_AUTH_MODE`               | Events auth mode                                | `none`                                                                  |
+| `FLUREE_EVENTS_AUTH_TRUSTED_ISSUERS`    | Events trusted issuers                          | None                                                                    |
+| `FLUREE_DATA_AUTH_MODE`                 | Data API auth mode                              | `none`                                                                  |
+| `FLUREE_DATA_AUTH_AUDIENCE`             | Data API expected audience                      | None                                                                    |
+| `FLUREE_DATA_AUTH_TRUSTED_ISSUERS`      | Data API trusted issuers                        | None                                                                    |
+| `FLUREE_DATA_AUTH_DEFAULT_POLICY_CLASS` | Data API default policy class                   | None                                                                    |
+| `FLUREE_ADMIN_AUTH_MODE`                | Admin auth mode                                 | `none`                                                                  |
+| `FLUREE_ADMIN_AUTH_TRUSTED_ISSUERS`     | Admin trusted issuers                           | None                                                                    |
+| `FLUREE_MCP_ENABLED`                    | Enable MCP endpoint                             | `false`                                                                 |
+| `FLUREE_MCP_AUTH_TRUSTED_ISSUERS`       | MCP trusted issuers                             | None                                                                    |
+| `FLUREE_STORAGE_ACCESS_MODE`            | Peer storage mode                               | `shared`                                                                |
+| `FLUREE_STORAGE_PROXY_ENABLED`          | Enable storage proxy                            | `false`                                                                 |
 
 ## Command-Line Reference
 
@@ -500,17 +650,37 @@ fluree-server --help
 
 ## Best Practices
 
-### 1. Use Environment Variables for Secrets
+### 1. Keep Secrets Out of Config Files
 
-Don't pass tokens on the command line:
+Tokens and credentials should not be stored as plaintext in config files (which may be committed to version control or readable by other processes). Three options, in order of preference:
+
+**Environment variables** (recommended for production):
 
 ```bash
-# Good - use @filepath syntax
---peer-events-token @/etc/fluree/token.jwt
-
-# Good - use environment variable
 export FLUREE_PEER_EVENTS_TOKEN=$(cat /etc/fluree/token.jwt)
+export FLUREE_STORAGE_PROXY_TOKEN=$(cat /etc/fluree/proxy-token.jwt)
 ```
+
+**`@filepath` references** in config files or CLI flags (reads the file at startup):
+
+```toml
+[server.peer]
+events_token = "@/etc/fluree/peer-token.jwt"
+storage_proxy_token = "@/etc/fluree/proxy-token.jwt"
+```
+
+```bash
+--peer-events-token @/etc/fluree/token.jwt
+```
+
+**Direct values** (development only): If a secret-bearing field contains a literal token in the config file, the server logs a warning at startup recommending `@filepath` or env vars.
+
+The following config file fields support `@filepath` resolution:
+
+| Config file key            | Env var alternative          |
+| -------------------------- | ---------------------------- |
+| `peer.events_token`        | `FLUREE_PEER_EVENTS_TOKEN`   |
+| `peer.storage_proxy_token` | `FLUREE_STORAGE_PROXY_TOKEN` |
 
 ### 2. Enable Admin Auth in Production
 

@@ -38,9 +38,13 @@ pub struct Cli {
 pub enum Commands {
     /// Initialize a new Fluree project directory
     Init {
-        /// Create global config at ~/.fluree/ instead of local .fluree/
+        /// Create global config instead of local .fluree/ (uses $FLUREE_HOME or platform data dir)
         #[arg(long)]
         global: bool,
+
+        /// Config file format
+        #[arg(long, value_enum, default_value_t = InitFormat::Toml)]
+        format: InitFormat,
     },
 
     /// Create a new ledger
@@ -539,6 +543,15 @@ pub enum TokenAction {
         #[arg(long, default_value = "pretty", value_enum)]
         output: InspectOutputFormat,
     },
+}
+
+/// Config file format for `fluree init`.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum InitFormat {
+    /// TOML format (default)
+    Toml,
+    /// JSON-LD format with @context
+    Jsonld,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

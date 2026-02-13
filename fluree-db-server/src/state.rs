@@ -21,6 +21,7 @@ use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
 use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, QueryConnectionOptions};
 use fluree_db_connection::{Connection, ConnectionConfig};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -490,12 +491,19 @@ impl AppState {
             }
         };
 
+        // Build IndexConfig from server config (always set, even if indexing is disabled,
+        // so that novelty backpressure thresholds are respected for external indexers).
+        let index_config = Some(IndexConfig {
+            reindex_min_bytes: config.reindex_min_bytes,
+            reindex_max_bytes: config.reindex_max_bytes,
+        });
+
         Ok(Self {
             fluree,
             config,
             telemetry_config,
             start_time: Instant::now(),
-            index_config: None,
+            index_config,
             registry,
             #[cfg(feature = "oidc")]
             jwks_cache,
@@ -512,14 +520,20 @@ impl AppState {
         let path = config
             .storage_path
             .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("fluree-server-data"));
+            .unwrap_or_else(|| PathBuf::from(".fluree/storage"));
 
         // Convert PathBuf to String for FlureeBuilder
         let path_str = path.to_string_lossy().to_string();
 
-        let builder = FlureeBuilder::file(&path_str)
+        let mut builder = FlureeBuilder::file(&path_str)
             .cache_max_entries(config.cache_max_entries)
             .with_ledger_caching(); // Enable connection-level ledger caching
+
+        // Wire background indexing if enabled
+        if config.indexing_enabled {
+            builder = builder
+                .with_indexing_thresholds(config.reindex_min_bytes, config.reindex_max_bytes);
+        }
 
         let fluree = builder.build()?;
         Ok(FlureeInstance::File(Arc::new(fluree)))

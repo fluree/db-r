@@ -26,6 +26,7 @@
 //! ```
 
 pub mod config;
+pub mod config_file;
 pub mod error;
 pub mod extract;
 #[cfg(feature = "oidc")]

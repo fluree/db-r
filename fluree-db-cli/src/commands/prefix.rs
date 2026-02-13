@@ -1,9 +1,9 @@
 use crate::cli::PrefixAction;
 use crate::config;
 use crate::error::{CliError, CliResult};
-use std::path::Path;
+use fluree_db_api::server_defaults::FlureeDir;
 
-pub fn run(action: PrefixAction, fluree_dir: &Path) -> CliResult<()> {
+pub fn run(action: PrefixAction, dirs: &FlureeDir) -> CliResult<()> {
     match action {
         PrefixAction::Add { prefix, iri } => {
             // Validate prefix (no colons, not empty)
@@ -22,13 +22,13 @@ pub fn run(action: PrefixAction, fluree_dir: &Path) -> CliResult<()> {
                 );
             }
 
-            config::add_prefix(fluree_dir, &prefix, &iri)?;
+            config::add_prefix(dirs.data_dir(), &prefix, &iri)?;
             println!("Added prefix: {} = <{}>", prefix, iri);
             Ok(())
         }
 
         PrefixAction::Remove { prefix } => {
-            let removed = config::remove_prefix(fluree_dir, &prefix)?;
+            let removed = config::remove_prefix(dirs.data_dir(), &prefix)?;
             if removed {
                 println!("Removed prefix: {}", prefix);
             } else {
@@ -38,7 +38,7 @@ pub fn run(action: PrefixAction, fluree_dir: &Path) -> CliResult<()> {
         }
 
         PrefixAction::List => {
-            let prefixes = config::read_prefixes(fluree_dir);
+            let prefixes = config::read_prefixes(dirs.data_dir());
             if prefixes.is_empty() {
                 println!("(no prefixes defined)");
                 println!();

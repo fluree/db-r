@@ -2,6 +2,7 @@ use crate::config;
 use crate::context;
 use crate::error::{CliError, CliResult};
 use crate::output::OutputFormatKind;
+use fluree_db_api::server_defaults::FlureeDir;
 use std::path::Path;
 
 pub async fn run(
@@ -11,11 +12,11 @@ pub async fn run(
     to: &str,
     predicate: Option<&str>,
     format_str: &str,
-    fluree_dir: &Path,
+    dirs: &FlureeDir,
 ) -> CliResult<()> {
     // Check for tracked ledger — history requires local query execution
-    let store = crate::config::TomlSyncConfigStore::new(fluree_dir.to_path_buf());
-    let alias = context::resolve_ledger(ledger, fluree_dir)?;
+    let store = crate::config::TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
+    let alias = context::resolve_ledger(ledger, dirs)?;
     if store.get_tracked(&alias).is_some()
         || store.get_tracked(&context::to_ledger_id(&alias)).is_some()
     {
@@ -26,11 +27,11 @@ pub async fn run(
         ));
     }
 
-    let fluree = context::build_fluree(fluree_dir)?;
+    let fluree = context::build_fluree(dirs)?;
 
     // Expand compact IRIs using stored prefixes
-    let entity_iri = config::expand_iri(fluree_dir, entity);
-    let predicate_iri = predicate.map(|p| config::expand_iri(fluree_dir, p));
+    let entity_iri = config::expand_iri(dirs.data_dir(), entity);
+    let predicate_iri = predicate.map(|p| config::expand_iri(dirs.data_dir(), p));
 
     // Build the history query
     let query = build_history_query(
@@ -39,7 +40,7 @@ pub async fn run(
         from,
         to,
         predicate_iri.as_deref(),
-        fluree_dir,
+        dirs.data_dir(),
     );
 
     // Parse output format
@@ -73,14 +74,14 @@ fn build_history_query(
     from: &str,
     to: &str,
     predicate: Option<&str>,
-    fluree_dir: &Path,
+    data_dir: &Path,
 ) -> serde_json::Value {
     // Build time specs
     let from_spec = format_time_spec(alias, from);
     let to_spec = format_time_spec(alias, to);
 
     // Build context from stored prefixes
-    let context = config::prefixes_to_context(fluree_dir);
+    let context = config::prefixes_to_context(data_dir);
 
     // Build where clause as an array (required format for history queries)
     let where_clause = if let Some(pred) = predicate {
