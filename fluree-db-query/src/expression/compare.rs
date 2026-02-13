@@ -7,6 +7,9 @@
 //! - 1 arg → vacuously true
 //! - 2+ args → every consecutive pair must satisfy the relation:
 //!   `(< a b c)` means `a < b AND b < c`
+//!
+//! Type mismatches (incomparable types) yield `false` for all operators
+//! except `!=`, which yields `true` — values of different types are not equal.
 
 use crate::binding::RowAccess;
 use crate::context::ExecutionContext;
