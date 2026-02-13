@@ -539,7 +539,11 @@ Comparison operators accept two or more arguments. With multiple arguments, they
 - `(< ?x ?y ...)` - Less than
 - `(<= ?x ?y ...)` - Less than or equal
 
-Type mismatches between incomparable types (e.g., a number and a string) yield `false` for all comparison operators except `!=`, which yields `true` — values of different types are not equal.
+When comparing incomparable types (e.g., a number and a string):
+
+- `=` yields `false` — values of different types are not equal
+- `!=` yields `true` — values of different types are not equal
+- `<`, `<=`, `>`, `>=` raise an error — ordering between incompatible types is undefined
 
 ### Logical Functions
 
