@@ -1368,16 +1368,23 @@ pub enum CompareOp {
     Ge,
 }
 
+impl CompareOp {
+    /// Return the operator symbol as a static string.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            CompareOp::Eq => "=",
+            CompareOp::Ne => "!=",
+            CompareOp::Lt => "<",
+            CompareOp::Le => "<=",
+            CompareOp::Gt => ">",
+            CompareOp::Ge => ">=",
+        }
+    }
+}
+
 impl std::fmt::Display for CompareOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompareOp::Eq => write!(f, "="),
-            CompareOp::Ne => write!(f, "!="),
-            CompareOp::Lt => write!(f, "<"),
-            CompareOp::Le => write!(f, "<="),
-            CompareOp::Gt => write!(f, ">"),
-            CompareOp::Ge => write!(f, ">="),
-        }
+        f.write_str(self.symbol())
     }
 }
 
