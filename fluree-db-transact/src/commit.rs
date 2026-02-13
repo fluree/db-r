@@ -374,6 +374,7 @@ where
         head_index_id: base.head_index_id,
         ns_record: base.ns_record,
         binary_store: base.binary_store,
+        spatial_indexes: base.spatial_indexes,
     };
 
     let receipt = CommitReceipt {

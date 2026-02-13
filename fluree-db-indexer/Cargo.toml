@@ -17,6 +17,7 @@ fluree-db-novelty = { path = "../fluree-db-novelty" }
 fluree-vocab = { path = "../fluree-vocab" }
 fluree-db-nameservice = { path = "../fluree-db-nameservice" }
 fluree-db-ledger = { path = "../fluree-db-ledger", optional = true }
+fluree-db-spatial = { path = "../fluree-db-spatial" }
 
 # Core dependencies
 futures.workspace = true

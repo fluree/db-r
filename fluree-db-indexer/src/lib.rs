@@ -23,6 +23,7 @@ pub mod gc;
 pub mod hll;
 pub mod orchestrator;
 pub mod run_index;
+pub mod spatial_hook;
 pub mod stats;
 
 // Re-export main types

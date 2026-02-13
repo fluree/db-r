@@ -254,6 +254,20 @@ fn extend_schema_from_patterns(
                     }
                 }
             }
+            Pattern::GeoSearch(gsp) => {
+                for v in gsp.variables() {
+                    if seen.insert(v) {
+                        schema.push(v);
+                    }
+                }
+            }
+            Pattern::S2Search(s2p) => {
+                for v in s2p.variables() {
+                    if seen.insert(v) {
+                        schema.push(v);
+                    }
+                }
+            }
             Pattern::Graph {
                 name,
                 patterns: inner,

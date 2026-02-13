@@ -107,6 +107,11 @@ pub struct LedgerState {
     /// Set by `Fluree::ledger()` when a binary index is available. Used by
     /// the query engine to enable `BinaryScanOperator` for IRI resolution.
     pub binary_store: Option<TypeErasedStore>,
+    /// Type-erased spatial index providers, keyed by predicate IRI.
+    ///
+    /// Each entry is `Arc<dyn SpatialIndexProvider>`. Set by `Fluree::ledger()`
+    /// when spatial indexes are available in the binary index root.
+    pub spatial_indexes: Option<TypeErasedStore>,
 }
 
 impl LedgerState {
@@ -164,6 +169,7 @@ impl LedgerState {
                     head_index_id,
                     ns_record: Some(record),
                     binary_store: None,
+                    spatial_indexes: None,
                 });
             }
             _ => record.commit_head_id.clone(),
@@ -179,6 +185,7 @@ impl LedgerState {
             head_index_id,
             ns_record: Some(record),
             binary_store: None,
+            spatial_indexes: None,
         })
     }
 
@@ -249,6 +256,7 @@ impl LedgerState {
             head_index_id: None,
             ns_record: None,
             binary_store: None,
+            spatial_indexes: None,
         }
     }
 

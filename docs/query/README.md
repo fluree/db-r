@@ -121,10 +121,18 @@ Query graph sources (BM25, Vector, Iceberg, R2RML) using the same syntax as regu
 
 ```json
 {
-  "from": "products-search:main@t:1000",
+  "@context": {
+    "f": "https://ns.flur.ee/db#"
+  },
+  "from": "products:main",
   "select": ["?product"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" }
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product" }
+    }
   ]
 }
 ```

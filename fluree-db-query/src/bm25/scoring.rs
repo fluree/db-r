@@ -5,12 +5,249 @@
 //! - Score: Σ IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc_len / avg_doc_len)))
 //!
 //! Default parameters: k1=1.2, b=0.75
+//!
+//! Scoring iterates posting lists (term → docs) rather than scanning all documents,
+//! making query time proportional to the number of matching postings rather than O(N).
 
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap};
 
-use super::index::{Bm25Config, Bm25Index, DocKey, SparseVector};
+use super::index::{Bm25Config, Bm25Index, DocKey, Posting, PostingList};
+
+// ============================================================================
+// Top-K Heap (min-heap for WAND)
+// ============================================================================
+
+/// Entry in the top-k min-heap.
+///
+/// Ordering: score ascending, then DocKey descending (reversed).
+/// With `Reverse<HeapEntry>`, the heap root is the "worst" entry
+/// (lowest score, highest DocKey) — exactly what to evict first.
+struct HeapEntry {
+    score: f64,
+    doc_key: DocKey,
+}
+
+impl Eq for HeapEntry {}
+
+impl PartialEq for HeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Ord for HeapEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.score
+            .total_cmp(&other.score)
+            .then_with(|| other.doc_key.cmp(&self.doc_key))
+    }
+}
+
+impl PartialOrd for HeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Min-heap of top-k results. The root is the worst entry (lowest score,
+/// highest DocKey), enabling O(log k) eviction of the least-qualified result.
+struct TopKHeap {
+    k: usize,
+    heap: BinaryHeap<Reverse<HeapEntry>>,
+}
+
+impl TopKHeap {
+    fn new(k: usize) -> Self {
+        Self {
+            k,
+            heap: BinaryHeap::with_capacity(k + 1),
+        }
+    }
+
+    /// Current score threshold for pivot selection.
+    /// Returns 0.0 if the heap is not yet full — any positive-scoring doc qualifies.
+    fn threshold(&self) -> f64 {
+        if self.heap.len() < self.k {
+            0.0
+        } else {
+            self.heap.peek().map(|r| r.0.score).unwrap_or(0.0)
+        }
+    }
+
+    /// Push a candidate into the heap. Admits when the heap isn't full,
+    /// or when the candidate is better than the current worst (using full
+    /// HeapEntry Ord — not score alone — to handle tie-replacement correctly).
+    fn push(&mut self, score: f64, doc_key: DocKey) {
+        let entry = HeapEntry { score, doc_key };
+        if self.heap.len() < self.k {
+            self.heap.push(Reverse(entry));
+        } else if let Some(root) = self.heap.peek() {
+            // entry > root means entry is better (higher score, or same score with smaller DocKey)
+            if entry > root.0 {
+                self.heap.pop();
+                self.heap.push(Reverse(entry));
+            }
+        }
+    }
+
+    /// Drain the heap into a Vec sorted by score descending, then DocKey ascending.
+    fn into_sorted_vec(self) -> Vec<(DocKey, f64)> {
+        let mut results: Vec<(DocKey, f64)> = self
+            .heap
+            .into_vec()
+            .into_iter()
+            .map(|r| (r.0.doc_key, r.0.score))
+            .collect();
+        results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        results
+    }
+}
+
+// ============================================================================
+// Term Cursor (for WAND traversal)
+// ============================================================================
+
+/// Cursor over a single term's posting list, with precomputed per-block
+/// BM25 score upper bounds for WAND pivot selection.
+struct TermCursor<'a> {
+    posting_list: &'a PostingList,
+    idf: f64,
+    /// Suffix-max of per-block BM25 upper bounds.
+    /// `suffix_upper_bounds[i] = max(block_ub[i..])`.
+    /// Used for safe pivot selection — valid for any doc_id >= current position.
+    suffix_upper_bounds: Vec<f64>,
+    /// Current block index (advances forward only).
+    current_block: usize,
+    /// Current position in the flat postings vec (advances forward only).
+    current_pos: usize,
+}
+
+impl<'a> TermCursor<'a> {
+    /// Create a new cursor with precomputed upper bounds.
+    ///
+    /// `min_doc_len` is the global minimum document length across all live documents.
+    /// BM25 score is monotonically decreasing in doc_len (for k1 > 0, 0 <= b <= 1),
+    /// so `min_doc_len` maximizes the score, giving a safe upper bound.
+    fn new(
+        posting_list: &'a PostingList,
+        idf: f64,
+        min_doc_len: f64,
+        avg_doc_len: f64,
+        config: &Bm25Config,
+    ) -> Self {
+        let len = posting_list.block_meta.len();
+
+        // Per-block upper bounds: use block's max_tf with global min_doc_len
+        let block_upper_bounds: Vec<f64> = posting_list
+            .block_meta
+            .iter()
+            .map(|bm| compute_term_score(bm.max_tf as f64, idf, min_doc_len, avg_doc_len, config))
+            .collect();
+
+        // Suffix max (right to left)
+        let mut suffix_upper_bounds = block_upper_bounds;
+        for i in (0..len.saturating_sub(1)).rev() {
+            let next = suffix_upper_bounds[i + 1];
+            if next > suffix_upper_bounds[i] {
+                suffix_upper_bounds[i] = next;
+            }
+        }
+
+        Self {
+            posting_list,
+            idf,
+            suffix_upper_bounds,
+            current_block: 0,
+            current_pos: 0,
+        }
+    }
+
+    /// Current doc_id, or None if exhausted.
+    fn current_doc_id(&self) -> Option<u32> {
+        self.posting_list
+            .postings
+            .get(self.current_pos)
+            .map(|p| p.doc_id)
+    }
+
+    /// Current posting, or None if exhausted.
+    fn current_posting(&self) -> Option<&Posting> {
+        self.posting_list.postings.get(self.current_pos)
+    }
+
+    /// Score upper bound for any posting at or after current position.
+    /// Returns 0.0 if exhausted.
+    fn upper_bound(&self) -> f64 {
+        self.suffix_upper_bounds
+            .get(self.current_block)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// Advance cursor to the first posting with doc_id >= target.
+    /// Skips entire blocks where max_doc_id < target, then linear scans
+    /// within the target block (≤128 entries, L1-friendly).
+    fn advance_to(&mut self, target: u32) {
+        let block_meta = &self.posting_list.block_meta;
+
+        // Skip blocks where max_doc_id < target
+        while self.current_block < block_meta.len()
+            && block_meta[self.current_block].max_doc_id < target
+        {
+            self.current_pos = block_meta[self.current_block].end_offset as usize;
+            self.current_block += 1;
+        }
+
+        // Linear scan within the current block to find doc_id >= target
+        let postings = &self.posting_list.postings;
+        while self.current_pos < postings.len() && postings[self.current_pos].doc_id < target {
+            self.current_pos += 1;
+        }
+
+        // Update current_block if we've passed its end
+        while self.current_block < block_meta.len()
+            && self.current_pos >= block_meta[self.current_block].end_offset as usize
+        {
+            self.current_block += 1;
+        }
+    }
+
+    /// Advance cursor past target: to the first posting with doc_id > target.
+    fn advance_past(&mut self, target: u32) {
+        let block_meta = &self.posting_list.block_meta;
+
+        // Skip blocks where max_doc_id <= target (all postings in block are <= target)
+        while self.current_block < block_meta.len()
+            && block_meta[self.current_block].max_doc_id <= target
+        {
+            self.current_pos = block_meta[self.current_block].end_offset as usize;
+            self.current_block += 1;
+        }
+
+        // Linear scan within the current block to find doc_id > target
+        let postings = &self.posting_list.postings;
+        while self.current_pos < postings.len() && postings[self.current_pos].doc_id <= target {
+            self.current_pos += 1;
+        }
+
+        // Update current_block if we've passed its end
+        while self.current_block < block_meta.len()
+            && self.current_pos >= block_meta[self.current_block].end_offset as usize
+        {
+            self.current_block += 1;
+        }
+    }
+}
+
+// ============================================================================
+// BM25 Scorer
+// ============================================================================
 
 /// BM25 scorer for computing document relevance scores.
+///
+/// Iterates posting lists for query terms, accumulating scores in a dense Vec.
+/// Tombstoned documents (lazy-deleted) are skipped during scoring.
 pub struct Bm25Scorer<'a> {
     index: &'a Bm25Index,
     /// Precomputed IDF values for query terms (term_idx -> idf)
@@ -45,26 +282,49 @@ impl<'a> Bm25Scorer<'a> {
     /// Score a single document against the query.
     ///
     /// Returns the BM25 score, or 0.0 if the document has no matching terms.
+    ///
+    /// When block metadata is populated (after `rebuild_lookups()`), uses
+    /// block-aware search: `partition_point` on block `max_doc_id` to narrow
+    /// to one block, then binary search within. Falls back to flat binary
+    /// search when block metadata is empty (during index building).
     pub fn score(&self, doc_key: &DocKey) -> f64 {
-        let Some(doc_vec) = self.index.get_doc_vector(doc_key) else {
+        let Some(doc_id) = self.index.doc_id_for(doc_key) else {
             return 0.0;
         };
 
-        self.score_vector(doc_vec)
-    }
+        let Some(Some(meta)) = self.index.doc_meta.get(doc_id as usize) else {
+            return 0.0; // Tombstoned
+        };
 
-    /// Score a document vector against the query.
-    pub fn score_vector(&self, doc_vec: &SparseVector) -> f64 {
         let config = &self.index.config;
         let avg_dl = self.index.stats.avg_doc_len();
-        let doc_len = doc_vec.doc_length() as f64;
+        let doc_len = meta.doc_len as f64;
 
         let mut score = 0.0;
 
         for &(term_idx, idf) in &self.query_idfs {
-            let tf = doc_vec.get(term_idx) as f64;
-            if tf > 0.0 {
-                score += compute_term_score(tf, idf, doc_len, avg_dl, config);
+            if let Some(posting_list) = self.index.get_posting_list(term_idx) {
+                let tf = if posting_list.block_meta.is_empty() {
+                    // Fallback: no block metadata (during building)
+                    posting_list
+                        .postings
+                        .binary_search_by_key(&doc_id, |p| p.doc_id)
+                        .ok()
+                        .map(|pos| posting_list.postings[pos].term_freq as f64)
+                } else {
+                    // Block-aware: partition_point to find block, binary search within
+                    posting_list.block_containing(doc_id).and_then(|bi| {
+                        let block = posting_list.block_postings(bi);
+                        block
+                            .binary_search_by_key(&doc_id, |p| p.doc_id)
+                            .ok()
+                            .map(|pos| block[pos].term_freq as f64)
+                    })
+                };
+
+                if let Some(tf) = tf {
+                    score += compute_term_score(tf, idf, doc_len, avg_dl, config);
+                }
             }
         }
 
@@ -73,44 +333,209 @@ impl<'a> Bm25Scorer<'a> {
 
     /// Score all documents in the index, returning results sorted by score (descending).
     ///
-    /// Only returns documents with score > 0.
+    /// Only returns documents with score > 0. Uses a dense Vec accumulator
+    /// indexed by doc_id for efficient scoring. Tombstoned docs are skipped.
+    /// Ties are broken by DocKey ascending for deterministic output.
     pub fn score_all(&self) -> Vec<(DocKey, f64)> {
         let config = &self.index.config;
         let avg_dl = self.index.stats.avg_doc_len();
+        let next_doc_id = self.index.next_doc_id() as usize;
 
-        let mut results: Vec<(DocKey, f64)> = self
-            .index
-            .iter_docs()
-            .filter_map(|(doc_key, doc_vec)| {
-                let doc_len = doc_vec.doc_length() as f64;
-                let mut score = 0.0;
+        // Dense score accumulator — O(1) per posting
+        let mut scores = vec![0.0f64; next_doc_id];
 
-                for &(term_idx, idf) in &self.query_idfs {
-                    let tf = doc_vec.get(term_idx) as f64;
-                    if tf > 0.0 {
-                        score += compute_term_score(tf, idf, doc_len, avg_dl, config);
+        for &(term_idx, idf) in &self.query_idfs {
+            if let Some(posting_list) = self.index.get_posting_list(term_idx) {
+                for posting in &posting_list.postings {
+                    let doc_id = posting.doc_id as usize;
+                    if doc_id >= next_doc_id {
+                        continue;
+                    }
+                    // Check if doc is live (not tombstoned)
+                    if let Some(Some(meta)) = self.index.doc_meta.get(doc_id) {
+                        let tf = posting.term_freq as f64;
+                        let doc_len = meta.doc_len as f64;
+                        scores[doc_id] += compute_term_score(tf, idf, doc_len, avg_dl, config);
                     }
                 }
+            }
+        }
 
-                if score > 0.0 {
-                    Some((doc_key.clone(), score))
-                } else {
-                    None
-                }
+        // Collect non-zero scores with DocKeys
+        let mut results: Vec<(DocKey, f64)> = scores
+            .iter()
+            .enumerate()
+            .filter(|(_, &score)| score > 0.0)
+            .filter_map(|(doc_id, &score)| {
+                self.index
+                    .doc_meta
+                    .get(doc_id)
+                    .and_then(|opt| opt.as_ref())
+                    .map(|meta| (meta.doc_key.clone(), score))
             })
             .collect();
 
-        // Sort by score descending
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort by score descending, then DocKey ascending for deterministic tie-breaking
+        results.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
         results
     }
 
     /// Score all documents and return top-k results.
+    ///
+    /// Uses Block-Max WAND when block metadata is available and k < corpus size,
+    /// providing early termination that skips posting list segments whose upper-bound
+    /// score cannot enter the current top-k. Falls back to `score_all() + truncate`
+    /// when block metadata is absent (during index building) or when k >= corpus size.
+    ///
+    /// **Invariant**: returns identical results to `score_all().truncate(k)` — same
+    /// documents, same scores (bit-exact), same ordering (score DESC, DocKey ASC).
     pub fn top_k(&self, k: usize) -> Vec<(DocKey, f64)> {
-        let mut results = self.score_all();
-        results.truncate(k);
-        results
+        if k == 0 || self.query_idfs.is_empty() {
+            return Vec::new();
+        }
+        if self.index.stats.num_docs == 0 {
+            return Vec::new();
+        }
+        // If k >= corpus size, score_all is optimal (no early termination benefit)
+        if k as u64 >= self.index.stats.num_docs {
+            let mut results = self.score_all();
+            results.truncate(k);
+            return results;
+        }
+        // WAND requires block metadata on all non-empty posting lists
+        let has_blocks = self.query_idfs.iter().all(|&(term_idx, _)| {
+            self.index
+                .get_posting_list(term_idx)
+                .map(|pl| pl.postings.is_empty() || !pl.block_meta.is_empty())
+                .unwrap_or(true)
+        });
+        if has_blocks {
+            self.top_k_wand(k)
+        } else {
+            let mut results = self.score_all();
+            results.truncate(k);
+            results
+        }
+    }
+
+    /// Compute the minimum document length across all live documents.
+    /// BM25 score is monotonically decreasing in doc_len (for k1 > 0, 0 <= b <= 1),
+    /// so min_doc_len maximizes the per-term score upper bound.
+    fn compute_min_doc_len(&self) -> u32 {
+        self.index
+            .doc_meta
+            .iter()
+            .filter_map(|opt| opt.as_ref())
+            .map(|meta| meta.doc_len)
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// Block-Max WAND top-k scoring.
+    ///
+    /// Uses per-block score upper bounds (from `BlockMeta::max_tf` + global `min_doc_len`)
+    /// to skip posting list segments that cannot contribute to the current top-k.
+    /// Suffix-max upper bounds ensure safe pivot selection even when cursors advance
+    /// across multiple blocks.
+    ///
+    /// Accumulation order matches `score_all()` (iterates `query_idfs` order) for
+    /// bit-exact floating-point results.
+    fn top_k_wand(&self, k: usize) -> Vec<(DocKey, f64)> {
+        debug_assert!(self.index.config.k1 > 0.0);
+        debug_assert!((0.0..=1.0).contains(&self.index.config.b));
+
+        let config = &self.index.config;
+        let avg_dl = self.index.stats.avg_doc_len();
+        let min_doc_len = self.compute_min_doc_len();
+
+        // Build cursors in query_idfs order (never reordered — accumulation order matters)
+        let mut cursors: Vec<TermCursor> = self
+            .query_idfs
+            .iter()
+            .filter_map(|&(term_idx, idf)| {
+                let pl = self.index.get_posting_list(term_idx)?;
+                if pl.postings.is_empty() || pl.block_meta.is_empty() {
+                    return None;
+                }
+                Some(TermCursor::new(pl, idf, min_doc_len as f64, avg_dl, config))
+            })
+            .collect();
+
+        if cursors.is_empty() {
+            return Vec::new();
+        }
+
+        // Index array for doc_id-sorted traversal (cursors stay in term order)
+        let mut sorted_indices: Vec<usize> = (0..cursors.len()).collect();
+        let mut heap = TopKHeap::new(k);
+
+        loop {
+            // Sort index array by current_doc_id (exhausted cursors sort to end)
+            sorted_indices.sort_by(|&a, &b| {
+                match (cursors[a].current_doc_id(), cursors[b].current_doc_id()) {
+                    (None, None) => std::cmp::Ordering::Equal,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (Some(da), Some(db)) => da.cmp(&db),
+                }
+            });
+
+            // Count active cursors
+            let active = sorted_indices
+                .iter()
+                .take_while(|&&i| cursors[i].current_doc_id().is_some())
+                .count();
+            if active == 0 {
+                break;
+            }
+
+            // Find pivot: cumulative suffix upper bounds >= threshold
+            let threshold = heap.threshold();
+            let mut cumulative = 0.0;
+            let mut pivot_pos = None;
+            for pos in 0..active {
+                cumulative += cursors[sorted_indices[pos]].upper_bound();
+                if cumulative >= threshold {
+                    pivot_pos = Some(pos);
+                    break;
+                }
+            }
+            let Some(p) = pivot_pos else { break };
+
+            let pivot_doc_id = cursors[sorted_indices[p]].current_doc_id().unwrap();
+
+            // Check if the lowest cursor is already at pivot_doc_id
+            if cursors[sorted_indices[0]].current_doc_id().unwrap() == pivot_doc_id {
+                // Lowest cursor at pivot — evaluate candidate (full score)
+                if let Some(Some(meta)) = self.index.doc_meta.get(pivot_doc_id as usize) {
+                    let doc_len = meta.doc_len as f64;
+                    let mut score = 0.0;
+                    // Iterate in query_idfs order for bit-exact accumulation
+                    for cursor in &cursors {
+                        if cursor.current_doc_id() == Some(pivot_doc_id) {
+                            let tf = cursor.current_posting().unwrap().term_freq as f64;
+                            score += compute_term_score(tf, cursor.idf, doc_len, avg_dl, config);
+                        }
+                    }
+                    if score > 0.0 {
+                        heap.push(score, meta.doc_key.clone());
+                    }
+                }
+                // Advance all cursors at pivot_doc_id past it
+                for cursor in &mut cursors {
+                    if cursor.current_doc_id() == Some(pivot_doc_id) {
+                        cursor.advance_past(pivot_doc_id);
+                    }
+                }
+            } else {
+                // Advance the furthest-behind cursor toward pivot
+                let lagging = sorted_indices[0];
+                cursors[lagging].advance_to(pivot_doc_id);
+            }
+        }
+
+        heap.into_sorted_vec()
     }
 }
 
@@ -155,29 +580,6 @@ pub fn compute_term_score(
     let denominator = tf + k1 * (1.0 - b + b * len_norm);
 
     idf * numerator / denominator
-}
-
-/// Compute the full BM25 score for a document given query term frequencies.
-///
-/// This is a standalone function that doesn't require building a scorer,
-/// useful for one-off calculations.
-pub fn bm25_score(
-    doc_vec: &SparseVector,
-    query_term_idfs: &[(u32, f64)],
-    avg_doc_len: f64,
-    config: &Bm25Config,
-) -> f64 {
-    let doc_len = doc_vec.doc_length() as f64;
-    let mut score = 0.0;
-
-    for &(term_idx, idf) in query_term_idfs {
-        let tf = doc_vec.get(term_idx) as f64;
-        if tf > 0.0 {
-            score += compute_term_score(tf, idf, doc_len, avg_doc_len, config);
-        }
-    }
-
-    score
 }
 
 #[cfg(test)]
@@ -351,5 +753,282 @@ mod tests {
 
         // With different k1/b, score should still be positive
         assert!(score > 0.0);
+    }
+
+    #[test]
+    fn test_scorer_skips_tombstoned_docs() {
+        let mut index = Bm25Index::new();
+
+        let doc1 = DocKey::new("test:main", "http://example.org/doc1");
+        let mut tf1 = HashMap::new();
+        tf1.insert("hello", 1);
+        index.add_document(doc1.clone(), tf1);
+
+        let doc2 = DocKey::new("test:main", "http://example.org/doc2");
+        let mut tf2 = HashMap::new();
+        tf2.insert("hello", 2);
+        index.add_document(doc2.clone(), tf2);
+
+        // Remove doc1 (lazy — posting stays)
+        index.remove_document(&doc1);
+
+        let scorer = Bm25Scorer::new(&index, &["hello"]);
+        let results = scorer.score_all();
+
+        // Only doc2 should appear
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, doc2);
+    }
+
+    // ========================================================================
+    // WAND tests
+    // ========================================================================
+
+    /// Helper: build an index with N documents and call rebuild_lookups() so
+    /// block metadata is populated and WAND engages.
+    ///
+    /// Documents contain a mix of terms with varying frequencies to exercise
+    /// multi-term scoring. Terms: "alpha", "beta", "gamma", "delta", "common".
+    fn build_wand_test_index(n: usize) -> Bm25Index {
+        let mut index = Bm25Index::new();
+
+        // Pre-generate unique terms so we can borrow &str without leaking
+        let unique_terms: Vec<String> = (0..n).map(|i| format!("unique{i}")).collect();
+
+        for (i, unique_term) in unique_terms.iter().enumerate() {
+            let doc_key = DocKey::new("test:main", format!("http://example.org/doc{i}"));
+            let mut tf = HashMap::new();
+
+            // "common" appears in every doc
+            tf.insert("common", 1);
+
+            // Distribute terms based on doc index for variety
+            if i % 2 == 0 {
+                tf.insert("alpha", ((i % 5) + 1) as u32);
+            }
+            if i % 3 == 0 {
+                tf.insert("beta", ((i % 7) + 1) as u32);
+            }
+            if i % 5 == 0 {
+                tf.insert("gamma", ((i % 3) + 1) as u32);
+            }
+            if i % 7 == 0 {
+                tf.insert("delta", ((i % 4) + 1) as u32);
+            }
+
+            // Add a unique term per doc to vary doc_len
+            tf.insert(unique_term.as_str(), 1);
+
+            index.add_document(doc_key, tf);
+        }
+
+        // Populate block metadata so WAND engages
+        index.rebuild_lookups();
+        index
+    }
+
+    /// Compare WAND top_k results against score_all + truncate with bit-exact f64 equality.
+    fn assert_wand_matches_score_all(index: &Bm25Index, query_terms: &[&str], k: usize) {
+        let scorer = Bm25Scorer::new(index, query_terms);
+
+        // Reference: score_all + truncate
+        let mut expected = scorer.score_all();
+        expected.truncate(k);
+
+        // WAND path (top_k dispatches to WAND when blocks are available)
+        let actual = scorer.top_k(k);
+
+        assert_eq!(
+            expected.len(),
+            actual.len(),
+            "Length mismatch for k={k}, query={query_terms:?}: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        );
+
+        for (i, ((exp_key, exp_score), (act_key, act_score))) in
+            expected.iter().zip(actual.iter()).enumerate()
+        {
+            assert_eq!(
+                exp_key, act_key,
+                "DocKey mismatch at position {i} for k={k}, query={query_terms:?}: \
+                 expected {:?}, got {:?}",
+                exp_key, act_key
+            );
+            assert_eq!(
+                exp_score.to_bits(),
+                act_score.to_bits(),
+                "Score mismatch at position {i} for k={k}, query={query_terms:?}: \
+                 expected {exp_score} (bits={}), got {act_score} (bits={})",
+                exp_score.to_bits(),
+                act_score.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn test_wand_matches_score_all() {
+        let index = build_wand_test_index(500);
+
+        // Single-term queries
+        for k in [1, 2, 5, 10, 50, 100, 200, 499] {
+            assert_wand_matches_score_all(&index, &["alpha"], k);
+            assert_wand_matches_score_all(&index, &["common"], k);
+        }
+
+        // Multi-term queries
+        for k in [1, 2, 5, 10, 50, 100, 200, 499] {
+            assert_wand_matches_score_all(&index, &["alpha", "beta"], k);
+            assert_wand_matches_score_all(&index, &["alpha", "beta", "gamma"], k);
+            assert_wand_matches_score_all(&index, &["alpha", "beta", "gamma", "delta"], k);
+        }
+    }
+
+    #[test]
+    fn test_wand_accumulation_order() {
+        // Multi-term query with overlapping postings — bit-exact equality catches
+        // accumulation order bugs (different f64 addition order → different rounding).
+        let index = build_wand_test_index(300);
+
+        for k in [1, 5, 10, 50] {
+            assert_wand_matches_score_all(
+                &index,
+                &["alpha", "beta", "gamma", "delta", "common"],
+                k,
+            );
+        }
+    }
+
+    #[test]
+    fn test_wand_tie_breaking() {
+        // Many docs with identical scores (single common term, same tf=1, same doc_len).
+        // DocKey ordering decides which docs make the cut.
+        let mut index = Bm25Index::new();
+        for i in 0..200 {
+            let doc_key = DocKey::new("test:main", format!("http://example.org/tie{i:04}"));
+            let mut tf = HashMap::new();
+            tf.insert("shared", 1);
+            index.add_document(doc_key, tf);
+        }
+        index.rebuild_lookups();
+
+        // k cuts in the middle of the tie group
+        for k in [1, 10, 50, 100, 199] {
+            assert_wand_matches_score_all(&index, &["shared"], k);
+        }
+    }
+
+    #[test]
+    fn test_wand_tombstoned_docs() {
+        let mut index = Bm25Index::new();
+        for i in 0..50 {
+            let doc_key = DocKey::new("test:main", format!("http://example.org/doc{i}"));
+            let mut tf = HashMap::new();
+            tf.insert("hello", (i % 5 + 1) as u32);
+            tf.insert("world", 1);
+            index.add_document(doc_key, tf);
+        }
+
+        // Remove half the docs
+        for i in (0..50).step_by(2) {
+            let doc_key = DocKey::new("test:main", format!("http://example.org/doc{i}"));
+            index.remove_document(&doc_key);
+        }
+
+        index.rebuild_lookups();
+
+        for k in [1, 5, 10, 24] {
+            assert_wand_matches_score_all(&index, &["hello"], k);
+            assert_wand_matches_score_all(&index, &["hello", "world"], k);
+        }
+    }
+
+    #[test]
+    fn test_wand_edge_cases() {
+        let index = build_wand_test_index(10);
+        let scorer = Bm25Scorer::new(&index, &["alpha"]);
+
+        // k=0 → empty
+        assert!(scorer.top_k(0).is_empty());
+
+        // Unknown terms → empty
+        let scorer_unknown = Bm25Scorer::new(&index, &["nonexistent"]);
+        assert!(scorer_unknown.top_k(5).is_empty());
+
+        // k >= corpus size → falls back to score_all (same result)
+        assert_wand_matches_score_all(&index, &["alpha"], 10);
+        assert_wand_matches_score_all(&index, &["alpha"], 100);
+
+        // Empty query → empty
+        let scorer_empty = Bm25Scorer::new(&index, &[]);
+        assert!(scorer_empty.top_k(5).is_empty());
+    }
+
+    #[test]
+    fn test_wand_single_term() {
+        let index = build_wand_test_index(100);
+
+        // Degenerate single-term case — every cursor operation is on one posting list
+        for k in [1, 5, 10, 50, 99] {
+            assert_wand_matches_score_all(&index, &["alpha"], k);
+            assert_wand_matches_score_all(&index, &["beta"], k);
+            assert_wand_matches_score_all(&index, &["gamma"], k);
+            assert_wand_matches_score_all(&index, &["delta"], k);
+        }
+    }
+
+    #[test]
+    fn test_wand_fallback_no_blocks() {
+        // Without rebuild_lookups(), block_meta is empty → top_k falls back to score_all+truncate
+        let mut index = Bm25Index::new();
+        for i in 0..20 {
+            let doc_key = DocKey::new("test:main", format!("http://example.org/doc{i}"));
+            let mut tf = HashMap::new();
+            tf.insert("term", (i + 1) as u32);
+            index.add_document(doc_key, tf);
+        }
+        // No rebuild_lookups() → no block_meta
+
+        let scorer = Bm25Scorer::new(&index, &["term"]);
+        let top5 = scorer.top_k(5);
+        let mut all = scorer.score_all();
+        all.truncate(5);
+
+        assert_eq!(top5.len(), all.len());
+        for ((tk, ts), (ak, ascore)) in top5.iter().zip(all.iter()) {
+            assert_eq!(tk, ak);
+            assert_eq!(ts.to_bits(), ascore.to_bits());
+        }
+    }
+
+    #[test]
+    fn test_wand_heap_replaces_on_dockey_tie() {
+        // Heap full with worst entry (score=S, docKey="zzz..."), then encounter a doc
+        // with score == S and smaller DocKey — confirm it replaces the worst.
+        let mut index = Bm25Index::new();
+
+        // All docs get the same term with the same tf → identical scores
+        // DocKeys are lexicographically ordered: aaa, bbb, ..., zzz
+        let labels = ["aaa", "bbb", "ccc", "ddd", "eee", "fff", "zzz"];
+        for label in &labels {
+            let doc_key = DocKey::new("test:main", format!("http://example.org/{label}"));
+            let mut tf = HashMap::new();
+            tf.insert("equal", 1);
+            index.add_document(doc_key, tf);
+        }
+        index.rebuild_lookups();
+
+        // k=3: tie-breaking by DocKey ASC means aaa, bbb, ccc should win
+        let scorer = Bm25Scorer::new(&index, &["equal"]);
+        let results = scorer.top_k(3);
+
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0.subject_iri.as_ref(), "http://example.org/aaa");
+        assert_eq!(results[1].0.subject_iri.as_ref(), "http://example.org/bbb");
+        assert_eq!(results[2].0.subject_iri.as_ref(), "http://example.org/ccc");
+
+        // Verify scores are identical (bit-exact)
+        assert_eq!(results[0].1.to_bits(), results[1].1.to_bits());
+        assert_eq!(results[1].1.to_bits(), results[2].1.to_bits());
     }
 }

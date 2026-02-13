@@ -822,13 +822,17 @@ Query graph sources using the same syntax:
 ```json
 {
   "@context": {
-    "bm25": "http://ns.flur.ee/bm25#"
+    "f": "https://ns.flur.ee/db#"
   },
-  "from": "products-search:main@t:1000",
+  "from": "products:main@t:1000",
   "select": ["?product", "?score"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" },
-    { "@id": "?product", "bm25:score": "?score" }
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 10,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    }
   ],
   "orderBy": [["desc", "?score"]],
   "limit": 10

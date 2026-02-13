@@ -1,6 +1,6 @@
-//! JSON FQL Query Parser
+//! JSON-LD Query Parser
 //!
-//! Parses JSON-based FQL queries into the query execution engine's IR.
+//! Parses JSON-based JSON-LD queries into the query execution engine's IR.
 //!
 //! # Architecture
 //!
@@ -63,7 +63,7 @@ pub type PathAliasMap = HashMap<String, UnresolvedPathExpr>;
 // Re-export is_variable from node_map for use within this module
 use node_map::is_variable;
 
-/// Parse a JSON FQL query into an unresolved AST and determine the select mode.
+/// Parse a JSON-LD query into an unresolved AST and determine the select mode.
 ///
 /// This is phase 1 of parsing: pure, sync transformation from JSON to AST.
 /// No database access is required - IRI expansion uses the provided context.

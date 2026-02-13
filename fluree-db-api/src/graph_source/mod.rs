@@ -98,7 +98,7 @@
 //!
 //! - Same IRI in different ledgers = distinct documents (keyed by ledger alias + IRI)
 //! - `effective_t()` = minimum watermark across all source ledgers
-//! - Use `idx:ledger` binding to disambiguate results in joins
+//! - Use `f:resultLedger` binding to disambiguate results in joins
 
 // Internal modules
 mod bm25;

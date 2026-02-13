@@ -213,16 +213,29 @@ pub trait ContentAddressedWrite: StorageWrite {
 // Marker Trait
 // ============================================================================
 
+// Well-known storage method identifiers.
+// Use these constants instead of bare string literals when matching on `storage_method()`.
+
+/// Storage method for local filesystem storage.
+pub const STORAGE_METHOD_FILE: &str = "file";
+
+/// Storage method for in-memory storage (testing).
+pub const STORAGE_METHOD_MEMORY: &str = "memory";
+
+/// Storage method for AWS S3 object storage.
+pub const STORAGE_METHOD_S3: &str = "s3";
+
 /// Identifies the storage method/scheme for CID-to-address mapping.
 ///
-/// Every storage backend must declare its method name (e.g., `"file"`, `"memory"`,
-/// `"s3"`). This is used by [`StorageContentStore`] to map `ContentId` values to
+/// Every storage backend must declare its method name (e.g.,
+/// [`STORAGE_METHOD_FILE`], [`STORAGE_METHOD_MEMORY`], [`STORAGE_METHOD_S3`]).
+/// This is used by [`StorageContentStore`] to map `ContentId` values to
 /// physical storage addresses via [`content_address`].
 ///
 /// This trait is a supertrait of [`Storage`], ensuring that any type-erased
 /// `dyn Storage` (e.g., [`AnyStorage`]) automatically includes `storage_method()`.
 pub trait StorageMethod {
-    /// Return the storage method identifier (e.g., `"file"`, `"memory"`, `"s3"`).
+    /// Return the storage method identifier (e.g., [`STORAGE_METHOD_FILE`]).
     fn storage_method(&self) -> &str;
 }
 
@@ -508,6 +521,7 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
         ContentKind::GraphSourceSnapshot => {
             format!("graph-sources/{}/snapshots/{}.gssnap", prefix, hash_hex)
         }
+        ContentKind::SpatialIndex => format!("{}/index/spatial/{}.bin", prefix, hash_hex),
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
         _ => format!("{}/blob/{}.bin", prefix, hash_hex),
@@ -640,7 +654,7 @@ impl StorageWrite for MemoryStorage {
 
 impl StorageMethod for MemoryStorage {
     fn storage_method(&self) -> &str {
-        "memory"
+        STORAGE_METHOD_MEMORY
     }
 }
 
@@ -653,7 +667,7 @@ impl ContentAddressedWrite for MemoryStorage {
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult> {
-        let address = content_address("memory", kind, ledger_id, content_hash_hex);
+        let address = content_address(STORAGE_METHOD_MEMORY, kind, ledger_id, content_hash_hex);
         self.write_bytes(&address, bytes).await?;
         Ok(ContentWriteResult {
             address,
@@ -898,7 +912,7 @@ impl StorageWrite for FileStorage {
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 impl StorageMethod for FileStorage {
     fn storage_method(&self) -> &str {
-        "file"
+        STORAGE_METHOD_FILE
     }
 }
 
@@ -912,7 +926,7 @@ impl ContentAddressedWrite for FileStorage {
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> Result<ContentWriteResult> {
-        let address = content_address("file", kind, ledger_id, content_hash_hex);
+        let address = content_address(STORAGE_METHOD_FILE, kind, ledger_id, content_hash_hex);
         self.write_bytes(&address, bytes).await?;
         Ok(ContentWriteResult {
             address,

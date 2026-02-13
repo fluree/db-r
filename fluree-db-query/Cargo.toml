@@ -16,6 +16,7 @@ fluree-search-protocol = { path = "../fluree-search-protocol" }
 fluree-vocab = { path = "../fluree-vocab" }
 fluree-graph-json-ld = { path = "../fluree-graph-json-ld" }
 fluree-db-indexer = { path = "../fluree-db-indexer" }
+fluree-db-spatial = { path = "../fluree-db-spatial" }
 memmap2 = "0.9"
 futures = { workspace = true }
 async-trait = { workspace = true }
@@ -36,6 +37,8 @@ once_cell = "1"
 lru = "0.12"
 # BM25 index serialization
 postcard = { version = "1", features = ["alloc"] }
+# Compression for chunked BM25 snapshots (v4)
+zstd = { workspace = true }
 # Hash functions
 sha2 = "0.10"
 sha1 = "0.10"
@@ -52,6 +55,10 @@ xxhash-rust = "0.8"
 percent-encoding = "2"
 # Async runtime - needed for block_in_place in policy evaluation
 tokio = { workspace = true }
+# GeoRust ecosystem for WKT parsing and geometry types (S2 search)
+geo = "0.29"
+geo-types = "0.7"
+wkt = { version = "0.11", features = ["geo-types"] }
 # Embedded vector search (HNSW approximate nearest neighbor)
 usearch = { version = "2.16", optional = true }
 

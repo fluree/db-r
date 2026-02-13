@@ -1,6 +1,6 @@
 //! Query options parsing
 //!
-//! Parses FQL query modifiers:
+//! Parses JSON-LD query modifiers:
 //! - `limit` - maximum number of results
 //! - `offset` - skip first N results
 //! - `distinct` / `selectDistinct` - remove duplicate rows

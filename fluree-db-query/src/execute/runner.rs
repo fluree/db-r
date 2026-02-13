@@ -207,6 +207,16 @@ pub async fn prepare_execution(
         ontology.as_ref(),
     );
 
+    // Step 5b: Rewrite geof:distance patterns → Pattern::GeoSearch
+    //
+    // Detects Triple(?s, pred, ?loc) + Bind(?dist = geof:distance(?loc, WKT)) + Filter(?dist < r)
+    // and collapses them into a single Pattern::GeoSearch for index acceleration.
+    // This runs for both SPARQL and JSON-LD queries — same patterns, same rewrite.
+    let rewritten_patterns =
+        crate::geo_rewrite::rewrite_geo_patterns(rewritten_patterns, &|iri: &str| {
+            db.encode_iri(iri)
+        });
+
     if rewritten_patterns.len() != query.query.patterns.len() {
         tracing::debug!(
             original_count = query.query.patterns.len(),

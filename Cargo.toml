@@ -16,6 +16,7 @@ members = [
     "fluree-db-ledger",
     "fluree-db-transact",
     "fluree-db-indexer",
+    "fluree-db-spatial",
     "fluree-db-policy",
     "fluree-db-shacl",
     "fluree-db-reasoner",

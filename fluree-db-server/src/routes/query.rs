@@ -1,7 +1,7 @@
 //! Query endpoints: /fluree/query, /fluree/explain, /:ledger/query
 //!
-//! Supports both JSON (FQL) and SPARQL query content types:
-//! - `application/json`: FQL query format (JSON body with "from" field)
+//! Supports both JSON-LD and SPARQL query content types:
+//! - `application/json`: JSON-LD query format (JSON body with "from" field)
 //! - `application/sparql-query`: SPARQL query syntax (raw SPARQL string in body)
 //!
 //! For SPARQL UPDATE operations, use the transact endpoints instead.
@@ -40,7 +40,7 @@ fn effective_identity(credential: &MaybeCredential, bearer: &MaybeDataBearer) ->
         .or_else(|| bearer.0.as_ref().and_then(|p| p.identity.clone()))
 }
 
-/// Force auth identity/policy-class into FQL query opts, overriding client-provided values.
+/// Force auth identity/policy-class into JSON-LD query opts, overriding client-provided values.
 fn force_query_auth_opts(
     query: &mut JsonValue,
     identity: Option<&str>,
@@ -96,7 +96,7 @@ fn has_tracking_opts(query_json: &JsonValue) -> bool {
     false
 }
 
-/// Helper to extract ledger ID from request (for FQL queries)
+/// Helper to extract ledger ID from request (for JSON-LD queries)
 fn get_ledger_id(
     path_ledger: Option<&str>,
     headers: &FlureeHeaders,
@@ -138,7 +138,7 @@ fn inject_headers_into_query(query: &mut JsonValue, headers: &FlureeHeaders) {
 /// GET /fluree/query
 ///
 /// Supports:
-/// - FQL queries (JSON body with "from" field for ledger)
+/// - JSON-LD queries (JSON body with "from" field for ledger)
 /// - SPARQL queries (Content-Type: application/sparql-query)
 /// - Signed requests (JWS/VC format with Content-Type: application/jwt)
 ///   - Connection-scoped: requires FROM clause in SPARQL to specify ledger
@@ -227,7 +227,7 @@ pub async fn query(
             }
         }
     } else {
-        // Handle FQL query (JSON body)
+        // Handle JSON-LD query (JSON body)
         let mut query_json: JsonValue = credential.body_json()?;
 
         // Log query text according to configuration (only serialize if needed)
@@ -276,7 +276,7 @@ pub async fn query(
 /// GET /:ledger/query
 ///
 /// Supports:
-/// - FQL queries (JSON body)
+/// - JSON-LD queries (JSON body)
 /// - SPARQL queries (Content-Type: application/sparql-query)
 /// - Signed requests (JWS/VC format)
 ///   - Ledger-scoped: FROM clause is optional (ledger from path is used)
@@ -341,7 +341,7 @@ pub async fn query_ledger(
         return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref()).await;
     }
 
-    // Handle FQL query (JSON body)
+    // Handle JSON-LD query (JSON body)
     let mut query_json: JsonValue = credential.body_json()?;
 
     // Log query text according to configuration (only serialize if needed)
@@ -436,7 +436,11 @@ async fn execute_query(
     query_json: &JsonValue,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create execution span
-    let span = tracing::info_span!("query_execute", ledger_id = ledger_id, query_kind = "fql");
+    let span = tracing::info_span!(
+        "query_execute",
+        ledger_id = ledger_id,
+        query_kind = "jsonld"
+    );
     let _guard = span.enter();
 
     // Check for history query: explicit "to" key indicates history mode
@@ -530,7 +534,7 @@ async fn execute_query(
     Ok((HeaderMap::new(), Json(result)))
 }
 
-/// Execute an FQL query in proxy mode (uses FlureeInstance wrapper methods)
+/// Execute a JSON-LD query in proxy mode (uses FlureeInstance wrapper methods)
 async fn execute_query_proxy(
     state: &AppState,
     ledger_id: &str,

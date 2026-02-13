@@ -185,7 +185,7 @@ pub enum Commands {
         #[arg(num_args = 0..=2)]
         args: Vec<String>,
 
-        /// Inline query expression (SPARQL or FQL JSON).
+        /// Inline query expression (SPARQL or JSON-LD query).
         /// Use this instead of a file when passing a query directly.
         #[arg(short = 'e', long = "expr")]
         expr: Option<String>,
@@ -195,12 +195,12 @@ pub enum Commands {
         format: String,
 
         /// Force SPARQL query format
-        #[arg(long, conflicts_with = "fql")]
+        #[arg(long, conflicts_with = "jsonld")]
         sparql: bool,
 
-        /// Force FQL query format
+        /// Force JSON-LD query format
         #[arg(long, conflicts_with = "sparql")]
-        fql: bool,
+        jsonld: bool,
 
         /// Query at a specific point in time (transaction number, commit hash, or ISO-8601 timestamp)
         #[arg(long)]
