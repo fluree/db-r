@@ -22,6 +22,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+/// Maximum concurrent CAS operations for BM25 leaflet reads/writes.
+/// Caps socket pressure and S3 throttling for large indexes with many leaflets.
+const BM25_IO_CONCURRENCY: usize = 32;
+
 /// Best-effort deletion of old snapshot blobs from storage.
 /// Derives storage addresses from CIDs using the graph source namespace.
 /// Logs warnings on failure but does not propagate errors.
@@ -155,9 +159,7 @@ where
         );
 
         // 4. Persist index snapshot blob to CAS
-        let snapshot_id = self
-            .write_bm25_snapshot_blob(&graph_source_id, &index)
-            .await?;
+        let snapshot_id = self.write_bm25_snapshot(&graph_source_id, &index).await?;
 
         info!(
             snapshot_id = %snapshot_id,
@@ -307,12 +309,30 @@ where
         }
     }
 
-    /// Write a BM25 index snapshot blob to CAS (content-addressed storage).
+    /// Write a BM25 index snapshot to CAS, choosing v3 (single blob) or v4
+    /// (chunked) format based on the storage backend.
     ///
-    /// Uses the graph source namespace so the snapshot lands at
-    /// `graph-sources/{graph_source_id}/snapshots/{hash}.gssnap`. Returns the content ID.
-    /// Does NOT update nameservice or the manifest -- callers handle that.
-    pub(crate) async fn write_bm25_snapshot_blob(
+    /// - Native/file storage → v3 single blob (one CAS write, one read on load)
+    /// - S3/object store or memory → v4 chunked (root + posting leaflets for
+    ///   selective per-query loading)
+    ///
+    /// Returns the root `ContentId` — for v4 this is the root blob; leaflet
+    /// blobs are separate CAS objects referenced by CID from the root.
+    pub(crate) async fn write_bm25_snapshot(
+        &self,
+        graph_source_id: &str,
+        index: &fluree_db_query::bm25::Bm25Index,
+    ) -> Result<ContentId> {
+        if self.should_use_chunked_format() {
+            self.write_bm25_chunked_snapshot(graph_source_id, index)
+                .await
+        } else {
+            self.write_bm25_snapshot_v3(graph_source_id, index).await
+        }
+    }
+
+    /// Write a single-blob v3 snapshot to CAS. Used for native/file storage.
+    async fn write_bm25_snapshot_v3(
         &self,
         graph_source_id: &str,
         index: &fluree_db_query::bm25::Bm25Index,
@@ -325,6 +345,66 @@ where
             .put(fluree_db_core::ContentKind::GraphSourceSnapshot, &bytes)
             .await?;
         Ok(snapshot_id)
+    }
+
+    /// Write a v4 chunked snapshot: posting leaflets as separate CAS blobs,
+    /// then a root blob referencing them by CID.
+    async fn write_bm25_chunked_snapshot(
+        &self,
+        graph_source_id: &str,
+        index: &fluree_db_query::bm25::Bm25Index,
+    ) -> Result<ContentId> {
+        use fluree_db_query::bm25::{finalize_chunked_root, prepare_chunked};
+        use futures::stream::{self, StreamExt, TryStreamExt};
+
+        let mut prep = prepare_chunked(index)?;
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+
+        // Drain blobs for parallel writes — finalize_chunked_root only uses
+        // prep.root + prep.leaflet_infos, not leaflet_blobs.
+        let blobs = std::mem::take(&mut prep.leaflet_blobs);
+
+        // Write leaflets with bounded concurrency, preserving order via enumerate
+        let mut cid_results: Vec<(usize, Vec<u8>)> = stream::iter(blobs.into_iter().enumerate())
+            .map(|(i, blob)| {
+                let cs = cs.clone();
+                async move {
+                    let cid = cs
+                        .put(fluree_db_core::ContentKind::GraphSourceSnapshot, &blob)
+                        .await?;
+                    Ok::<_, crate::ApiError>((i, cid.to_bytes()))
+                }
+            })
+            .buffer_unordered(BM25_IO_CONCURRENCY)
+            .try_collect()
+            .await?;
+
+        // Restore order (buffer_unordered may complete out of order)
+        cid_results.sort_by_key(|(i, _)| *i);
+        let cid_bytes: Vec<Vec<u8>> = cid_results.into_iter().map(|(_, bytes)| bytes).collect();
+
+        // Finalize root with CID references, write to CAS
+        let root_bytes = finalize_chunked_root(prep, cid_bytes)?;
+        let root_cid = cs
+            .put(
+                fluree_db_core::ContentKind::GraphSourceSnapshot,
+                &root_bytes,
+            )
+            .await?;
+        Ok(root_cid)
+    }
+
+    /// Whether this storage backend should use v4 chunked format.
+    ///
+    /// S3/object stores benefit from selective per-query loading (fetch only
+    /// the posting leaflets needed). Local file storage is faster with a
+    /// single v3 blob (one read, one decompress). Memory storage uses v4
+    /// for test coverage.
+    pub(crate) fn should_use_chunked_format(&self) -> bool {
+        matches!(
+            self.storage().storage_method(),
+            fluree_db_core::STORAGE_METHOD_S3 | fluree_db_core::STORAGE_METHOD_MEMORY
+        )
     }
 
     /// Write a BM25 manifest to CAS and publish the manifest address as
@@ -427,6 +507,12 @@ where
     S: Storage + Clone + 'static,
     N: NameService + GraphSourcePublisher,
 {
+    /// Get the shared leaflet cache from LedgerManager (if caching is enabled).
+    fn leaflet_cache(&self) -> Option<Arc<fluree_db_indexer::run_index::LeafletCache>> {
+        self.ledger_manager()
+            .and_then(|lm| lm.leaflet_cache().cloned())
+    }
+
     /// Select the best BM25 snapshot for a given `as_of_t`.
     ///
     /// Loads the BM25 manifest from CAS and selects the snapshot with the
@@ -451,13 +537,12 @@ where
     /// Load a BM25 index for a specific `as_of_t` using snapshot selection.
     ///
     /// This is the time-travel aware version of `load_bm25_index`.
+    /// Automatically detects v4 chunked format and loads leaflets from CAS.
     pub async fn load_bm25_index_at(
         &self,
         graph_source_id: &str,
         as_of_t: i64,
     ) -> Result<(Arc<fluree_db_query::bm25::Bm25Index>, i64)> {
-        use fluree_db_query::bm25::deserialize;
-
         let selection = self
             .select_bm25_snapshot(graph_source_id, as_of_t)
             .await?
@@ -471,20 +556,19 @@ where
         let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
         let bytes = cs.get(&selection.snapshot_id).await?;
 
-        let index = deserialize(&bytes)?;
+        let index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
         Ok((Arc::new(index), selection.snapshot_t))
     }
 
     /// Load a BM25 index from storage (head snapshot).
     ///
     /// Loads the manifest, resolves the head snapshot, and deserializes.
+    /// Automatically detects v4 chunked format and loads leaflets from CAS.
     /// For time-travel queries, use `load_bm25_index_at` instead.
     pub async fn load_bm25_index(
         &self,
         graph_source_id: &str,
     ) -> Result<Arc<fluree_db_query::bm25::Bm25Index>> {
-        use fluree_db_query::bm25::deserialize;
-
         let manifest = self.load_bm25_manifest(graph_source_id).await?;
         let head = manifest.head().ok_or_else(|| {
             crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
@@ -492,8 +576,236 @@ where
 
         let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
-        let index = deserialize(&bytes)?;
+        let index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
         Ok(Arc::new(index))
+    }
+
+    /// Load a BM25 index from raw bytes, auto-detecting v4 chunked format.
+    ///
+    /// For v1-v3: single-blob deserialization.
+    /// For v4: deserialize root, fetch posting leaflets from CAS with caching
+    /// and bounded concurrency, then assemble.
+    pub(crate) async fn load_bm25_from_bytes(
+        &self,
+        graph_source_id: &str,
+        bytes: &[u8],
+    ) -> Result<fluree_db_query::bm25::Bm25Index> {
+        use fluree_db_indexer::run_index::LeafletCache;
+        use fluree_db_query::bm25::{
+            assemble_from_chunked_root, deserialize, deserialize_chunked_root,
+            deserialize_posting_leaflet, is_chunked_format, LeafletRef, PostingList,
+        };
+        use futures::stream::{self, StreamExt, TryStreamExt};
+
+        if is_chunked_format(bytes) {
+            let root = deserialize_chunked_root(bytes)?;
+            let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+            let cache = self.leaflet_cache();
+
+            let leaflet_refs = root.leaflet_refs();
+            let mut posting_lists = vec![PostingList::default(); root.next_term_idx() as usize];
+
+            // Partition leaflet refs into cache hits and misses
+            let mut hits: Vec<(LeafletRef, Arc<[u8]>)> = Vec::new();
+            let mut misses: Vec<LeafletRef> = Vec::new();
+
+            for lr in &leaflet_refs {
+                let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
+                if let Some(cached) = cache.as_ref().and_then(|c| c.get_bm25_leaflet(key)) {
+                    hits.push((lr.clone(), cached));
+                } else {
+                    misses.push(lr.clone());
+                }
+            }
+
+            // Fetch all misses with bounded concurrency
+            let fetched: Vec<(LeafletRef, Vec<u8>)> = stream::iter(misses.into_iter())
+                .map(|lr| {
+                    let cs = cs.clone();
+                    async move {
+                        let cid = ContentId::from_bytes(&lr.cid_bytes)?;
+                        let data = cs.get(&cid).await?;
+                        Ok::<_, crate::ApiError>((lr, data))
+                    }
+                })
+                .buffer_unordered(BM25_IO_CONCURRENCY)
+                .try_collect()
+                .await?;
+
+            // Cache + deserialize fetched leaflets (zero-copy Vec → Arc)
+            for (lr, raw) in fetched {
+                let bytes: Arc<[u8]> = raw.into_boxed_slice().into();
+                if let Some(c) = &cache {
+                    let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
+                    c.insert_bm25_leaflet(key, Arc::clone(&bytes));
+                }
+                let (first_idx, lists) = deserialize_posting_leaflet(&bytes)?;
+                for (i, pl) in lists.into_iter().enumerate() {
+                    posting_lists[first_idx as usize + i] = pl;
+                }
+            }
+
+            // Deserialize cache hits
+            for (_lr, cached_bytes) in &hits {
+                let (first_idx, lists) = deserialize_posting_leaflet(cached_bytes)?;
+                for (i, pl) in lists.into_iter().enumerate() {
+                    posting_lists[first_idx as usize + i] = pl;
+                }
+            }
+
+            Ok(assemble_from_chunked_root(root, posting_lists))
+        } else {
+            Ok(deserialize(bytes)?)
+        }
+    }
+
+    /// Search a v4 chunked BM25 index with selective leaflet loading.
+    ///
+    /// Instead of loading the entire index, this:
+    /// 1. Deserializes the root blob (terms, doc_meta, routing table)
+    /// 2. Analyzes the query to identify needed term indices
+    /// 3. Fetches only the posting leaflets containing those terms (with caching
+    ///    and bounded concurrency)
+    /// 4. Assembles a partial index and scores
+    ///
+    /// For non-v4 snapshots, falls back to full index load.
+    pub(crate) async fn search_bm25_selective(
+        &self,
+        graph_source_id: &str,
+        snapshot_bytes: &[u8],
+        query_text: &str,
+        limit: usize,
+    ) -> Result<fluree_db_query::bm25::Bm25SearchResult> {
+        use fluree_db_indexer::run_index::LeafletCache;
+        use fluree_db_query::bm25::{
+            assemble_from_chunked_root, deserialize_chunked_root, deserialize_posting_leaflet,
+            is_chunked_format, Analyzer, Bm25Scorer, Bm25SearchResult, LeafletRef, PostingList,
+            SearchHit,
+        };
+        use futures::stream::{self, StreamExt, TryStreamExt};
+
+        if !is_chunked_format(snapshot_bytes) {
+            // Not v4 — fall back to full index load + score
+            let index = self
+                .load_bm25_from_bytes(graph_source_id, snapshot_bytes)
+                .await?;
+            let index_t = index.watermark.effective_t();
+            let analyzer = Analyzer::clojure_parity_english();
+            let terms = analyzer.analyze_to_strings(query_text);
+            if terms.is_empty() {
+                return Ok(Bm25SearchResult::empty(index_t));
+            }
+            let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+            let scorer = Bm25Scorer::new(&index, &term_refs);
+            let hits: Vec<SearchHit> = scorer
+                .top_k(limit)
+                .into_iter()
+                .map(|(dk, score)| {
+                    SearchHit::new(
+                        dk.subject_iri.to_string(),
+                        dk.ledger_alias.to_string(),
+                        score,
+                    )
+                })
+                .collect();
+            return Ok(Bm25SearchResult::new(index_t, hits));
+        }
+
+        // V4 selective path
+        let root = deserialize_chunked_root(snapshot_bytes)?;
+
+        // Analyze query
+        let analyzer = Analyzer::clojure_parity_english();
+        let terms = analyzer.analyze_to_strings(query_text);
+        if terms.is_empty() {
+            return Ok(Bm25SearchResult::empty(0));
+        }
+
+        // Resolve terms → term_idxs
+        let term_idxs: Vec<u32> = terms
+            .iter()
+            .filter_map(|t| root.get_term(t).map(|e| e.idx))
+            .collect();
+
+        if term_idxs.is_empty() {
+            // No query terms exist in the index
+            return Ok(Bm25SearchResult::empty(0));
+        }
+
+        // Identify which leaflets contain these term_idxs
+        let needed_leaflets = root.leaflet_refs_for_terms(&term_idxs);
+
+        // Fetch needed leaflets with caching + bounded concurrency
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cache = self.leaflet_cache();
+        let mut posting_lists = vec![PostingList::default(); root.next_term_idx() as usize];
+
+        // Partition into cache hits and misses
+        let mut hits: Vec<(LeafletRef, Arc<[u8]>)> = Vec::new();
+        let mut misses: Vec<LeafletRef> = Vec::new();
+
+        for lr in &needed_leaflets {
+            let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
+            if let Some(cached) = cache.as_ref().and_then(|c| c.get_bm25_leaflet(key)) {
+                hits.push((lr.clone(), cached));
+            } else {
+                misses.push(lr.clone());
+            }
+        }
+
+        // Fetch all misses with bounded concurrency
+        let fetched: Vec<(LeafletRef, Vec<u8>)> = stream::iter(misses.into_iter())
+            .map(|lr| {
+                let cs = cs.clone();
+                async move {
+                    let cid = ContentId::from_bytes(&lr.cid_bytes)?;
+                    let data = cs.get(&cid).await?;
+                    Ok::<_, crate::ApiError>((lr, data))
+                }
+            })
+            .buffer_unordered(BM25_IO_CONCURRENCY)
+            .try_collect()
+            .await?;
+
+        // Cache + deserialize fetched leaflets (zero-copy Vec → Arc)
+        for (lr, raw) in fetched {
+            let bytes: Arc<[u8]> = raw.into_boxed_slice().into();
+            if let Some(c) = &cache {
+                let key = LeafletCache::cid_cache_key(&lr.cid_bytes);
+                c.insert_bm25_leaflet(key, Arc::clone(&bytes));
+            }
+            let (first_idx, lists) = deserialize_posting_leaflet(&bytes)?;
+            for (i, pl) in lists.into_iter().enumerate() {
+                posting_lists[first_idx as usize + i] = pl;
+            }
+        }
+
+        // Deserialize cache hits
+        for (_lr, cached_bytes) in &hits {
+            let (first_idx, lists) = deserialize_posting_leaflet(cached_bytes)?;
+            for (i, pl) in lists.into_iter().enumerate() {
+                posting_lists[first_idx as usize + i] = pl;
+            }
+        }
+
+        // Assemble partial index and score
+        let index = assemble_from_chunked_root(root, posting_lists);
+        let effective_t = index.watermark.effective_t();
+        let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+        let scorer = Bm25Scorer::new(&index, &term_refs);
+        let hits: Vec<SearchHit> = scorer
+            .top_k(limit)
+            .into_iter()
+            .map(|(dk, score)| {
+                SearchHit::new(
+                    dk.subject_iri.to_string(),
+                    dk.ledger_alias.to_string(),
+                    score,
+                )
+            })
+            .collect();
+
+        Ok(Bm25SearchResult::new(effective_t, hits))
     }
 
     /// Check if a BM25 index is stale relative to its source ledger.
@@ -561,7 +873,7 @@ where
     /// falling back to full resync if needed.
     pub async fn sync_bm25_index(&self, graph_source_id: &str) -> Result<Bm25SyncResult> {
         use fluree_db_novelty::trace_commits_by_id;
-        use fluree_db_query::bm25::{deserialize, CompiledPropertyDeps, IncrementalUpdater};
+        use fluree_db_query::bm25::{CompiledPropertyDeps, IncrementalUpdater};
         use futures::StreamExt;
 
         info!(graph_source_id = %graph_source_id, "Starting BM25 index sync");
@@ -615,7 +927,7 @@ where
         })?;
         let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
-        let mut index = deserialize(&bytes)?;
+        let mut index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
         let old_watermark = index.watermark.get(&source_ledger_alias).unwrap_or(0);
 
         // Already up to date?
@@ -712,9 +1024,7 @@ where
         );
 
         // 10. Persist updated index blob
-        let new_snapshot_id = self
-            .write_bm25_snapshot_blob(graph_source_id, &index)
-            .await?;
+        let new_snapshot_id = self.write_bm25_snapshot(graph_source_id, &index).await?;
 
         // 11. Update manifest, trim old snapshots, and publish
         let mut manifest = manifest;
@@ -750,7 +1060,7 @@ where
     /// Unlike `sync_bm25_index`, this re-runs the entire indexing query
     /// and rebuilds the index from scratch.
     pub async fn resync_bm25_index(&self, graph_source_id: &str) -> Result<Bm25SyncResult> {
-        use fluree_db_query::bm25::{deserialize, IncrementalUpdater};
+        use fluree_db_query::bm25::IncrementalUpdater;
 
         info!(graph_source_id = %graph_source_id, "Starting BM25 full resync");
 
@@ -798,7 +1108,7 @@ where
         })?;
         let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
-        let mut index = deserialize(&bytes)?;
+        let mut index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
         let old_watermark = index.watermark.get(&source_ledger).unwrap_or(0);
 
         // 3. Load source ledger
@@ -820,9 +1130,7 @@ where
         let update_result = updater.apply_full_sync(&results, ledger_t);
 
         // 6. Persist updated index blob
-        let new_snapshot_id = self
-            .write_bm25_snapshot_blob(graph_source_id, &index)
-            .await?;
+        let new_snapshot_id = self.write_bm25_snapshot(graph_source_id, &index).await?;
 
         // 7. Update manifest, trim old snapshots, and publish
         let mut manifest = manifest;
@@ -864,8 +1172,6 @@ where
         Arc<fluree_db_query::bm25::Bm25Index>,
         Option<Bm25SyncResult>,
     )> {
-        use fluree_db_query::bm25::deserialize;
-
         // Look up graph source record
         let record = self
             .nameservice
@@ -918,7 +1224,7 @@ where
 
         let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
-        let index = deserialize(&bytes)?;
+        let index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
 
         Ok((Arc::new(index), sync_result))
     }
@@ -1014,9 +1320,7 @@ where
         let update_result = updater.apply_full_sync(&results, target_t);
 
         // 6. Persist versioned snapshot blob
-        let snapshot_id = self
-            .write_bm25_snapshot_blob(graph_source_id, &index)
-            .await?;
+        let snapshot_id = self.write_bm25_snapshot(graph_source_id, &index).await?;
 
         // 7. Update manifest, trim old snapshots, and publish
         let mut manifest = manifest;

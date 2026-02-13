@@ -1498,59 +1498,11 @@ curl http://localhost:8090/version
 
 ## Graph Source Endpoints
 
-### POST /index/bm25
+> **Note:** HTTP endpoints for BM25 and vector index lifecycle management (create, sync, drop) are not yet implemented in the server. BM25 and vector indexes are currently managed via the Rust API (`Bm25CreateConfig`, `create_full_text_index`, `sync_bm25_index`, `drop_full_text_index`). See [BM25 Full-Text Search](../indexing-and-search/bm25.md) and [Vector Search](../indexing-and-search/vector-search.md) for API usage.
+>
+> BM25 search **is** available in queries via the `f:graphSource` / `f:searchText` pattern in where clauses — see the query documentation for details.
 
-Create or update a BM25 full-text search index.
-
-**URL:**
-```
-POST /index/bm25?ledger={ledger-id}
-```
-
-**Request Body:**
-
-```json
-{
-  "name": "products-search",
-  "source": "mydb:main",
-  "fields": [
-    { "predicate": "ex:title", "weight": 2.0 },
-    { "predicate": "ex:description", "weight": 1.0 }
-  ]
-}
-```
-
-**Response:**
-
-```json
-{
-  "name": "products-search:main",
-  "status": "indexing",
-  "documents": 0,
-  "started": "2024-01-22T10:30:00.000Z"
-}
-```
-
-### POST /index/vector
-
-Create or configure a vector search index. Requires the `vector` feature flag.
-
-**URL:**
-```
-POST /index/vector?ledger={ledger-id}
-```
-
-**Request Body:**
-
-```json
-{
-  "name": "products-vector",
-  "source": "mydb:main",
-  "embedding_property": "ex:embedding",
-  "dimensions": 768,
-  "metric": "cosine"
-}
-```
+Graph source metadata can be discovered via the [POST /nameservice/query](#post-nameservicequery) endpoint using `@type: "f:GraphSourceDatabase"`.
 
 ## Admin Endpoints
 

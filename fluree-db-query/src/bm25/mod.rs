@@ -5,7 +5,7 @@
 //!
 //! # Components
 //!
-//! - [`index`]: Core BM25 index data structures (`Bm25Index`, `DocKey`, `SparseVector`)
+//! - [`index`]: Core BM25 index data structures (`Bm25Index`, `DocKey`, `PostingList`)
 //! - [`scoring`]: BM25 scoring algorithm (`Bm25Scorer`, IDF calculation)
 //! - [`analyzer`]: Text analysis pipeline (`Analyzer`, tokenizers, filters)
 //! - [`text`]: Text extraction from JSON-LD values (`extract_text`)
@@ -31,13 +31,17 @@ pub use builder::{
     MultiBm25IndexBuilder,
 };
 pub use index::{
-    Bm25Config, Bm25Index, Bm25Stats, CompiledPropertyDeps, DocKey, GraphSourceWatermark,
-    PropertyDeps, SparseVector, TermEntry,
+    Bm25Config, Bm25Index, Bm25Stats, CompiledPropertyDeps, DocKey, DocMeta, GraphSourceWatermark,
+    Posting, PostingList, PropertyDeps, TermEntry,
 };
 pub use manifest::{Bm25Manifest, Bm25SnapshotEntry};
 pub use operator::{
     Bm25IndexProvider, Bm25SearchOperator, Bm25SearchProvider, Bm25SearchResult, SearchHit,
 };
-pub use scoring::{bm25_score, compute_idf, compute_term_score, Bm25Scorer};
-pub use serialize::{deserialize, read_snapshot, serialize, write_snapshot, SerializeError};
+pub use scoring::{compute_idf, compute_term_score, Bm25Scorer};
+pub use serialize::{
+    assemble_from_chunked_root, deserialize, deserialize_chunked_root, deserialize_posting_leaflet,
+    finalize_chunked_root, is_chunked_format, prepare_chunked, read_snapshot, serialize,
+    write_snapshot, ChunkedPrepResult, ChunkedRoot, LeafletInfo, LeafletRef, SerializeError,
+};
 pub use text::{extract_and_analyze, extract_text};

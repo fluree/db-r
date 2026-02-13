@@ -4,8 +4,9 @@
 //! with Clojure parity. Key design decisions:
 //!
 //! - `DocKey` uses canonical IRI strings (not `Sid`) for multi-ledger safety
-//! - Sparse vector representation for term frequencies
+//! - Inverted posting list representation for efficient query-time scoring
 //! - Per-ledger watermarks for multi-source graph sources
+//! - Lazy deletion with compact-on-serialize for CAS determinism
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -43,64 +44,32 @@ impl DocKey {
 }
 
 // ============================================================================
-// Sparse Vector Representation
+// Posting List Structures
 // ============================================================================
 
-/// Sparse vector for document term frequencies.
-///
-/// Stores only non-zero term frequencies as (term_idx, tf) pairs,
-/// sorted by term_idx for efficient intersection operations.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SparseVector {
-    /// (term_idx, term_frequency) pairs, sorted by term_idx
-    pub entries: Vec<(u32, u32)>,
+/// A single posting entry: a document that contains a given term, with its frequency.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Posting {
+    /// Internal document ID (index into doc_meta)
+    pub doc_id: u32,
+    /// Term frequency in this document
+    pub term_freq: u32,
 }
 
-impl SparseVector {
-    /// Create a new empty sparse vector
-    pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
+/// Posting list for a single term. Postings are sorted by doc_id.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PostingList {
+    /// Postings sorted by doc_id
+    pub postings: Vec<Posting>,
+}
 
-    /// Create a sparse vector from (term_idx, tf) pairs.
-    /// The entries will be sorted by term_idx.
-    pub fn from_entries(mut entries: Vec<(u32, u32)>) -> Self {
-        entries.sort_by_key(|(idx, _)| *idx);
-        Self { entries }
-    }
-
-    /// Get the term frequency for a given term index, or 0 if not present
-    pub fn get(&self, term_idx: u32) -> u32 {
-        match self
-            .entries
-            .binary_search_by_key(&term_idx, |(idx, _)| *idx)
-        {
-            Ok(pos) => self.entries[pos].1,
-            Err(_) => 0,
-        }
-    }
-
-    /// Number of unique terms in the document
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Check if the vector has no terms
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Total number of terms in the document (sum of all term frequencies)
-    pub fn doc_length(&self) -> u32 {
-        self.entries.iter().map(|(_, tf)| tf).sum()
-    }
-
-    /// Iterate over (term_idx, tf) pairs
-    pub fn iter(&self) -> impl Iterator<Item = &(u32, u32)> {
-        self.entries.iter()
-    }
+/// Document metadata entry: maps internal doc_id to identity and length.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocMeta {
+    /// The full document key (ledger_alias + subject_iri)
+    pub doc_key: DocKey,
+    /// Total term count in this document (for BM25 length normalization)
+    pub doc_len: u32,
 }
 
 // ============================================================================
@@ -112,7 +81,7 @@ impl SparseVector {
 /// Maps a term to its global index and tracks document frequency.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TermEntry {
-    /// Global index for this term (used in sparse vectors)
+    /// Global index for this term (used as index into posting_lists)
     pub idx: u32,
     /// Number of documents containing this term
     pub doc_freq: u32,
@@ -499,14 +468,6 @@ impl CompiledPropertyDeps {
     /// Filters flakes by predicate SID (O(1) lookup) and collects unique subject SIDs.
     /// This is the core of incremental update detection: given the flakes from a commit,
     /// determine which subjects need to be reindexed.
-    ///
-    /// # Arguments
-    ///
-    /// * `flakes` - Flakes from a commit (typically from novelty or commit delta)
-    ///
-    /// # Returns
-    ///
-    /// Set of subject SIDs that have changes to tracked properties.
     pub fn affected_subjects(&self, flakes: &[Flake]) -> HashSet<fluree_db_core::Sid> {
         flakes
             .iter()
@@ -518,17 +479,6 @@ impl CompiledPropertyDeps {
     /// Find subjects affected by a set of flakes, filtering by transaction time range.
     ///
     /// Like `affected_subjects`, but only considers flakes with `from_t < t <= to_t`.
-    /// This is useful for catch-up scenarios where we need to reindex for a range of commits.
-    ///
-    /// # Arguments
-    ///
-    /// * `flakes` - Flakes to filter
-    /// * `from_t` - Exclusive lower bound (flakes at this t are NOT included)
-    /// * `to_t` - Inclusive upper bound (flakes at this t ARE included)
-    ///
-    /// # Returns
-    ///
-    /// Set of subject SIDs that have changes to tracked properties in the time range.
     pub fn affected_subjects_in_range(
         &self,
         flakes: &[Flake],
@@ -552,18 +502,31 @@ impl CompiledPropertyDeps {
 ///
 /// Main index structure containing:
 /// - Term dictionary mapping terms to global indices
-/// - Document vectors (sparse tf representations)
+/// - Inverted posting lists (term → doc_ids + term frequencies)
+/// - Document metadata (doc_id → DocKey + doc_length)
 /// - Corpus statistics for scoring
 /// - Multi-ledger watermarks
 /// - Property dependencies for incremental updates
 ///
-/// Uses `BTreeMap` for deterministic serialization (content-addressable snapshots).
+/// Uses `BTreeMap` for terms to ensure deterministic serialization.
+/// `compact()` is called before serialization to ensure CAS-deterministic output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bm25Index {
     /// Term dictionary: term -> TermEntry (BTreeMap for deterministic order)
     pub terms: BTreeMap<Arc<str>, TermEntry>,
-    /// Document vectors: DocKey -> SparseVector (BTreeMap for deterministic order)
-    pub doc_vectors: BTreeMap<DocKey, SparseVector>,
+    /// Posting lists indexed by term_idx. Each PostingList is sorted by doc_id.
+    pub posting_lists: Vec<PostingList>,
+    /// Document metadata indexed by doc_id. None = tombstoned (lazily deleted).
+    pub doc_meta: Vec<Option<DocMeta>>,
+    /// Reverse lookup: DocKey → doc_id (not serialized — rebuilt on deserialize)
+    #[serde(skip)]
+    doc_id_lookup: HashMap<DocKey, u32>,
+    /// Forward lookup: doc_id → term indices in this doc (for lazy removal)
+    #[serde(skip)]
+    doc_terms: Vec<Option<Vec<u32>>>,
+    /// Reverse lookup: term_idx → term string (for efficient doc_freq updates)
+    #[serde(skip)]
+    idx_to_term: Vec<Arc<str>>,
     /// Corpus statistics
     pub stats: Bm25Stats,
     /// BM25 configuration parameters
@@ -574,6 +537,8 @@ pub struct Bm25Index {
     pub property_deps: PropertyDeps,
     /// Next term index to allocate
     next_term_idx: u32,
+    /// Next document ID to allocate
+    next_doc_id: u32,
 }
 
 impl Default for Bm25Index {
@@ -592,16 +557,22 @@ impl Bm25Index {
     pub fn with_config(config: Bm25Config) -> Self {
         Self {
             terms: BTreeMap::new(),
-            doc_vectors: BTreeMap::new(),
+            posting_lists: Vec::new(),
+            doc_meta: Vec::new(),
+            doc_id_lookup: HashMap::new(),
+            doc_terms: Vec::new(),
+            idx_to_term: Vec::new(),
             stats: Bm25Stats::new(),
             config,
             watermark: GraphSourceWatermark::new(),
             property_deps: PropertyDeps::new(),
             next_term_idx: 0,
+            next_doc_id: 0,
         }
     }
 
-    /// Get or create a term entry, returning its global index
+    /// Get or create a term entry, returning its global index.
+    /// Also extends posting_lists and idx_to_term for new terms.
     pub fn get_or_create_term(&mut self, term: &str) -> u32 {
         if let Some(entry) = self.terms.get(term) {
             return entry.idx;
@@ -610,7 +581,19 @@ impl Bm25Index {
         let idx = self.next_term_idx;
         self.next_term_idx += 1;
 
-        self.terms.insert(Arc::from(term), TermEntry::new(idx));
+        let term_arc: Arc<str> = Arc::from(term);
+        self.terms.insert(term_arc.clone(), TermEntry::new(idx));
+
+        // Extend posting_lists to accommodate the new term
+        while self.posting_lists.len() <= idx as usize {
+            self.posting_lists.push(PostingList::default());
+        }
+
+        // Extend idx_to_term
+        while self.idx_to_term.len() <= idx as usize {
+            self.idx_to_term.push(Arc::from(""));
+        }
+        self.idx_to_term[idx as usize] = term_arc;
 
         idx
     }
@@ -629,12 +612,45 @@ impl Bm25Index {
     ///
     /// `term_freqs` maps term strings to their frequency in the document.
     pub fn add_document(&mut self, doc_key: DocKey, term_freqs: HashMap<&str, u32>) {
-        // Convert terms to indices and build sparse vector
-        let mut entries: Vec<(u32, u32)> = Vec::with_capacity(term_freqs.len());
+        let doc_id = self.next_doc_id;
+        self.next_doc_id += 1;
+
+        // Compute doc_len
+        let doc_len: u32 = term_freqs.values().sum();
+
+        // Extend doc_meta and doc_terms to accommodate the new doc_id
+        while self.doc_meta.len() <= doc_id as usize {
+            self.doc_meta.push(None);
+        }
+        while self.doc_terms.len() <= doc_id as usize {
+            self.doc_terms.push(None);
+        }
+
+        // Store document metadata
+        self.doc_meta[doc_id as usize] = Some(DocMeta {
+            doc_key: doc_key.clone(),
+            doc_len,
+        });
+
+        // Insert into reverse lookup
+        self.doc_id_lookup.insert(doc_key, doc_id);
+
+        // Build posting entries and track term indices
+        let mut term_indices = Vec::with_capacity(term_freqs.len());
 
         for (term, tf) in term_freqs {
+            if tf == 0 {
+                continue;
+            }
+
             let idx = self.get_or_create_term(term);
-            entries.push((idx, tf));
+            term_indices.push(idx);
+
+            // Append posting to the term's posting list
+            self.posting_lists[idx as usize].postings.push(Posting {
+                doc_id,
+                term_freq: tf,
+            });
 
             // Update document frequency for this term
             if let Some(entry) = self.terms.get_mut(term) {
@@ -642,17 +658,11 @@ impl Bm25Index {
             }
         }
 
-        // Sort entries by term index
-        entries.sort_by_key(|(idx, _)| *idx);
-
-        let vec = SparseVector { entries };
-        let doc_len = vec.doc_length();
+        // Store term indices for this doc (for lazy removal)
+        self.doc_terms[doc_id as usize] = Some(term_indices);
 
         // Update corpus statistics
         self.stats.add_doc(doc_len);
-
-        // Store document vector
-        self.doc_vectors.insert(doc_key, vec);
     }
 
     /// Upsert a document: if it exists, remove it first to maintain correct stats.
@@ -669,30 +679,48 @@ impl Bm25Index {
         was_update
     }
 
-    /// Remove a document from the index
+    /// Remove a document from the index (lazy deletion).
+    ///
+    /// Tombstones the doc_meta entry and decrements doc_freq for each term,
+    /// but does NOT remove postings from posting lists. The scorer skips
+    /// tombstoned doc_ids. Stale postings are cleaned up by `compact()`.
     pub fn remove_document(&mut self, doc_key: &DocKey) -> bool {
-        if let Some(vec) = self.doc_vectors.remove(doc_key) {
-            let doc_len = vec.doc_length();
-            self.stats.remove_doc(doc_len);
+        let Some(&doc_id) = self.doc_id_lookup.get(doc_key) else {
+            return false;
+        };
 
-            // Update document frequencies for terms in this document
-            for (term_idx, _) in vec.entries {
-                // Find the term by its index (inefficient, but removal is rare)
-                for entry in self.terms.values_mut() {
-                    if entry.idx == term_idx {
+        // Get doc_len before tombstoning
+        let doc_len = match &self.doc_meta[doc_id as usize] {
+            Some(meta) => meta.doc_len,
+            None => return false, // Already tombstoned
+        };
+
+        // Decrement doc_freq for each term in this document
+        if let Some(Some(term_indices)) = self.doc_terms.get(doc_id as usize) {
+            for &term_idx in term_indices {
+                if let Some(term_str) = self.idx_to_term.get(term_idx as usize) {
+                    if let Some(entry) = self.terms.get_mut(term_str.as_ref()) {
                         entry.dec_doc_freq();
-                        break;
                     }
                 }
             }
-
-            true
-        } else {
-            false
         }
+
+        // Tombstone doc_meta
+        self.doc_meta[doc_id as usize] = None;
+        // Clear doc_terms
+        if (doc_id as usize) < self.doc_terms.len() {
+            self.doc_terms[doc_id as usize] = None;
+        }
+        // Remove from reverse lookup
+        self.doc_id_lookup.remove(doc_key);
+        // Update stats
+        self.stats.remove_doc(doc_len);
+
+        true
     }
 
-    /// Number of documents in the index
+    /// Number of documents in the index (excluding tombstoned)
     pub fn num_docs(&self) -> u64 {
         self.stats.num_docs
     }
@@ -704,17 +732,245 @@ impl Bm25Index {
 
     /// Check if a document exists in the index
     pub fn contains_doc(&self, doc_key: &DocKey) -> bool {
-        self.doc_vectors.contains_key(doc_key)
+        self.doc_id_lookup.contains_key(doc_key)
     }
 
-    /// Get the document vector for a document (if it exists)
-    pub fn get_doc_vector(&self, doc_key: &DocKey) -> Option<&SparseVector> {
-        self.doc_vectors.get(doc_key)
+    /// Get the document metadata for a document (if it exists and is not tombstoned)
+    pub fn get_doc_meta(&self, doc_key: &DocKey) -> Option<&DocMeta> {
+        let &doc_id = self.doc_id_lookup.get(doc_key)?;
+        self.doc_meta.get(doc_id as usize)?.as_ref()
     }
 
-    /// Iterate over all documents in the index
-    pub fn iter_docs(&self) -> impl Iterator<Item = (&DocKey, &SparseVector)> {
-        self.doc_vectors.iter()
+    /// Iterate over all live document keys in the index
+    pub fn iter_doc_keys(&self) -> impl Iterator<Item = &DocKey> {
+        self.doc_meta
+            .iter()
+            .filter_map(|opt| opt.as_ref())
+            .map(|meta| &meta.doc_key)
+    }
+
+    /// Create a Bm25Index from raw components (used by deserialization/conversion).
+    ///
+    /// Caller must call `rebuild_lookups()` after construction.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        terms: BTreeMap<Arc<str>, TermEntry>,
+        posting_lists: Vec<PostingList>,
+        doc_meta: Vec<Option<DocMeta>>,
+        stats: Bm25Stats,
+        config: Bm25Config,
+        watermark: GraphSourceWatermark,
+        property_deps: PropertyDeps,
+        next_term_idx: u32,
+        next_doc_id: u32,
+    ) -> Self {
+        Self {
+            terms,
+            posting_lists,
+            doc_meta,
+            doc_id_lookup: HashMap::new(),
+            doc_terms: Vec::new(),
+            idx_to_term: Vec::new(),
+            stats,
+            config,
+            watermark,
+            property_deps,
+            next_term_idx,
+            next_doc_id,
+        }
+    }
+
+    /// Get a posting list by term index
+    pub fn get_posting_list(&self, term_idx: u32) -> Option<&PostingList> {
+        self.posting_lists.get(term_idx as usize)
+    }
+
+    /// Get the next_doc_id (used by scorer for Vec sizing)
+    pub fn next_doc_id(&self) -> u32 {
+        self.next_doc_id
+    }
+
+    /// Look up doc_id for a DocKey (used by scorer)
+    pub fn doc_id_for(&self, doc_key: &DocKey) -> Option<u32> {
+        self.doc_id_lookup.get(doc_key).copied()
+    }
+
+    /// Rebuild transient lookup tables from serialized data.
+    ///
+    /// Must be called after deserialization. Reconstructs:
+    /// - `doc_id_lookup`: DocKey → doc_id from doc_meta
+    /// - `doc_terms`: doc_id → term indices from posting_lists (O(total_postings))
+    /// - `idx_to_term`: term_idx → term string from terms BTreeMap
+    pub fn rebuild_lookups(&mut self) {
+        // Rebuild doc_id_lookup
+        self.doc_id_lookup.clear();
+        for (doc_id, opt_meta) in self.doc_meta.iter().enumerate() {
+            if let Some(meta) = opt_meta {
+                self.doc_id_lookup
+                    .insert(meta.doc_key.clone(), doc_id as u32);
+            }
+        }
+
+        // Rebuild idx_to_term
+        self.idx_to_term = vec![Arc::from(""); self.next_term_idx as usize];
+        for (term_str, entry) in &self.terms {
+            if (entry.idx as usize) < self.idx_to_term.len() {
+                self.idx_to_term[entry.idx as usize] = term_str.clone();
+            }
+        }
+
+        // Rebuild doc_terms by scanning all posting lists.
+        // Invariant: each (term_idx, doc_id) pair should appear at most once.
+        self.doc_terms = vec![None; self.next_doc_id as usize];
+        for (term_idx, posting_list) in self.posting_lists.iter().enumerate() {
+            for posting in &posting_list.postings {
+                let doc_id = posting.doc_id as usize;
+                if doc_id < self.doc_terms.len() {
+                    // Only track for live docs
+                    if self
+                        .doc_meta
+                        .get(doc_id)
+                        .and_then(|opt| opt.as_ref())
+                        .is_some()
+                    {
+                        self.doc_terms[doc_id]
+                            .get_or_insert_with(Vec::new)
+                            .push(term_idx as u32);
+                    }
+                }
+            }
+        }
+
+        // Debug-only: verify no duplicate term indices per doc (would cause
+        // over-decrement of doc_freq on removal if violated)
+        #[cfg(debug_assertions)]
+        for (doc_id, opt_terms) in self.doc_terms.iter().enumerate() {
+            if let Some(terms) = opt_terms {
+                let mut sorted = terms.clone();
+                sorted.sort();
+                let before = sorted.len();
+                sorted.dedup();
+                debug_assert_eq!(
+                    before,
+                    sorted.len(),
+                    "doc_terms[{doc_id}] contains duplicate term indices — \
+                     posting lists have duplicate (term, doc) entries"
+                );
+            }
+        }
+    }
+
+    /// Compact the index: drop tombstones, renumber doc_ids and term_idx deterministically.
+    ///
+    /// This is the only place that physically rewrites posting lists. After compaction:
+    /// - doc_ids are 0..N assigned in BTreeMap<DocKey> order (deterministic)
+    /// - term_idx are 0..M assigned in BTreeMap<Arc<str>> key order (deterministic)
+    /// - All tombstoned entries and stale postings are removed
+    /// - Two indexes with the same logical content produce identical serialized bytes
+    pub fn compact(&mut self) {
+        // Collect live docs in deterministic order (BTreeMap<DocKey, _>)
+        let mut live_docs: BTreeMap<DocKey, u32> = BTreeMap::new(); // DocKey → old_doc_len
+        let mut old_doc_id_to_terms: HashMap<u32, Vec<(u32, u32)>> = HashMap::new(); // old_doc_id → [(old_term_idx, tf)]
+
+        // Build old_doc_id → term_freqs from posting lists
+        for (term_idx, posting_list) in self.posting_lists.iter().enumerate() {
+            for posting in &posting_list.postings {
+                let doc_id = posting.doc_id as usize;
+                if doc_id < self.doc_meta.len() {
+                    if let Some(meta) = &self.doc_meta[doc_id] {
+                        live_docs
+                            .entry(meta.doc_key.clone())
+                            .or_insert(meta.doc_len);
+                        old_doc_id_to_terms
+                            .entry(posting.doc_id)
+                            .or_default()
+                            .push((term_idx as u32, posting.term_freq));
+                    }
+                }
+            }
+        }
+
+        // Also collect live docs that may have no postings (shouldn't happen, but be safe)
+        for (doc_id, opt_meta) in self.doc_meta.iter().enumerate() {
+            if let Some(meta) = opt_meta {
+                live_docs
+                    .entry(meta.doc_key.clone())
+                    .or_insert(meta.doc_len);
+                // Ensure entry exists in old_doc_id_to_terms
+                old_doc_id_to_terms.entry(doc_id as u32).or_default();
+            }
+        }
+
+        // Assign new doc_ids in BTreeMap<DocKey> order
+        let mut old_doc_key_to_new_id: HashMap<DocKey, u32> = HashMap::new();
+        let mut new_doc_meta: Vec<Option<DocMeta>> = Vec::with_capacity(live_docs.len());
+        for (new_id, (doc_key, doc_len)) in live_docs.iter().enumerate() {
+            old_doc_key_to_new_id.insert(doc_key.clone(), new_id as u32);
+            new_doc_meta.push(Some(DocMeta {
+                doc_key: doc_key.clone(),
+                doc_len: *doc_len,
+            }));
+        }
+
+        // Reassign term_idx in BTreeMap<Arc<str>> key order
+        let mut old_term_idx_to_new: HashMap<u32, u32> = HashMap::new();
+        let mut new_terms: BTreeMap<Arc<str>, TermEntry> = BTreeMap::new();
+        for (new_idx, (term_str, old_entry)) in self.terms.iter().enumerate() {
+            old_term_idx_to_new.insert(old_entry.idx, new_idx as u32);
+            new_terms.insert(
+                term_str.clone(),
+                TermEntry {
+                    idx: new_idx as u32,
+                    doc_freq: old_entry.doc_freq,
+                },
+            );
+        }
+
+        // Build new posting lists using new term_idx and new doc_ids
+        let num_terms = new_terms.len();
+        let mut new_posting_lists: Vec<PostingList> =
+            (0..num_terms).map(|_| PostingList::default()).collect();
+
+        // Build from the old_doc_id_to_terms mapping
+        // We need to map: old_doc_id → DocKey → new_doc_id, and old_term_idx → new_term_idx
+        let old_doc_id_to_key: HashMap<u32, DocKey> = self
+            .doc_meta
+            .iter()
+            .enumerate()
+            .filter_map(|(id, opt)| opt.as_ref().map(|m| (id as u32, m.doc_key.clone())))
+            .collect();
+
+        for (old_doc_id, term_freqs) in &old_doc_id_to_terms {
+            if let Some(doc_key) = old_doc_id_to_key.get(old_doc_id) {
+                if let Some(&new_doc_id) = old_doc_key_to_new_id.get(doc_key) {
+                    for &(old_term_idx, tf) in term_freqs {
+                        if let Some(&new_term_idx) = old_term_idx_to_new.get(&old_term_idx) {
+                            new_posting_lists[new_term_idx as usize]
+                                .postings
+                                .push(Posting {
+                                    doc_id: new_doc_id,
+                                    term_freq: tf,
+                                });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort each posting list by doc_id
+        for pl in &mut new_posting_lists {
+            pl.postings.sort_by_key(|p| p.doc_id);
+        }
+
+        // Apply
+        self.terms = new_terms;
+        self.posting_lists = new_posting_lists;
+        self.doc_meta = new_doc_meta;
+        self.next_doc_id = live_docs.len() as u32;
+        self.next_term_idx = num_terms as u32;
+
+        // Rebuild transient lookups
+        self.rebuild_lookups();
     }
 }
 
@@ -732,23 +988,6 @@ mod tests {
         assert_eq!(k1, k2);
         assert_ne!(k1, k3);
         assert_ne!(k1, k4);
-    }
-
-    #[test]
-    fn test_sparse_vector_get() {
-        let vec = SparseVector::from_entries(vec![(1, 3), (5, 2), (10, 1)]);
-
-        assert_eq!(vec.get(1), 3);
-        assert_eq!(vec.get(5), 2);
-        assert_eq!(vec.get(10), 1);
-        assert_eq!(vec.get(0), 0); // Not present
-        assert_eq!(vec.get(7), 0); // Not present
-    }
-
-    #[test]
-    fn test_sparse_vector_doc_length() {
-        let vec = SparseVector::from_entries(vec![(1, 3), (5, 2), (10, 1)]);
-        assert_eq!(vec.doc_length(), 6);
     }
 
     #[test]
@@ -793,8 +1032,8 @@ mod tests {
         assert_eq!(index.num_terms(), 2);
         assert!(index.contains_doc(&doc_key));
 
-        let vec = index.get_doc_vector(&doc_key).unwrap();
-        assert_eq!(vec.doc_length(), 3);
+        let meta = index.get_doc_meta(&doc_key).unwrap();
+        assert_eq!(meta.doc_len, 3); // 2 + 1
     }
 
     #[test]
@@ -863,6 +1102,200 @@ mod tests {
             Some(1),
             "world should still have doc_freq 1"
         );
+    }
+
+    #[test]
+    fn test_posting_lists_populated() {
+        let mut index = Bm25Index::new();
+
+        let doc1 = DocKey::new("ledger:main", "http://example.org/doc1");
+        let mut tf1 = HashMap::new();
+        tf1.insert("hello", 2);
+        tf1.insert("world", 1);
+        index.add_document(doc1, tf1);
+
+        let doc2 = DocKey::new("ledger:main", "http://example.org/doc2");
+        let mut tf2 = HashMap::new();
+        tf2.insert("hello", 1);
+        tf2.insert("rust", 3);
+        index.add_document(doc2, tf2);
+
+        // "hello" should appear in both docs
+        let hello_idx = index.term_idx("hello").unwrap();
+        let hello_pl = index.get_posting_list(hello_idx).unwrap();
+        assert_eq!(hello_pl.postings.len(), 2);
+
+        // "world" only in doc1
+        let world_idx = index.term_idx("world").unwrap();
+        let world_pl = index.get_posting_list(world_idx).unwrap();
+        assert_eq!(world_pl.postings.len(), 1);
+
+        // "rust" only in doc2
+        let rust_idx = index.term_idx("rust").unwrap();
+        let rust_pl = index.get_posting_list(rust_idx).unwrap();
+        assert_eq!(rust_pl.postings.len(), 1);
+    }
+
+    #[test]
+    fn test_lazy_deletion_leaves_postings() {
+        let mut index = Bm25Index::new();
+
+        let doc1 = DocKey::new("ledger:main", "http://example.org/doc1");
+        let mut tf1 = HashMap::new();
+        tf1.insert("hello", 1);
+        index.add_document(doc1.clone(), tf1);
+
+        let hello_idx = index.term_idx("hello").unwrap();
+
+        // Posting list has 1 entry before removal
+        assert_eq!(index.get_posting_list(hello_idx).unwrap().postings.len(), 1);
+
+        // Remove doc — lazy, postings stay
+        index.remove_document(&doc1);
+
+        // Posting list still has 1 entry (stale)
+        assert_eq!(index.get_posting_list(hello_idx).unwrap().postings.len(), 1);
+
+        // But doc is not findable
+        assert!(!index.contains_doc(&doc1));
+        assert_eq!(index.num_docs(), 0);
+
+        // doc_freq should be decremented
+        assert_eq!(index.get_term("hello").unwrap().doc_freq, 0);
+    }
+
+    #[test]
+    fn test_compact_removes_stale_postings() {
+        let mut index = Bm25Index::new();
+
+        let doc1 = DocKey::new("ledger:main", "http://example.org/doc1");
+        let mut tf1 = HashMap::new();
+        tf1.insert("hello", 1);
+        index.add_document(doc1.clone(), tf1);
+
+        let doc2 = DocKey::new("ledger:main", "http://example.org/doc2");
+        let mut tf2 = HashMap::new();
+        tf2.insert("hello", 2);
+        index.add_document(doc2.clone(), tf2);
+
+        // Remove doc1 (lazy)
+        index.remove_document(&doc1);
+
+        // Before compact: 2 postings for "hello" (one stale)
+        let hello_idx = index.term_idx("hello").unwrap();
+        assert_eq!(index.get_posting_list(hello_idx).unwrap().postings.len(), 2);
+
+        // Compact
+        index.compact();
+
+        // After compact: 1 posting for "hello"
+        let hello_idx = index.term_idx("hello").unwrap();
+        assert_eq!(index.get_posting_list(hello_idx).unwrap().postings.len(), 1);
+
+        // doc2 still exists
+        assert!(index.contains_doc(&doc2));
+        assert_eq!(index.num_docs(), 1);
+    }
+
+    #[test]
+    fn test_compact_deterministic_ids() {
+        // Two indexes built in different order should produce identical compact() results
+        let mut index_a = Bm25Index::new();
+        let mut index_b = Bm25Index::new();
+
+        let doc1 = DocKey::new("ledger:main", "http://example.org/aaa");
+        let doc2 = DocKey::new("ledger:main", "http://example.org/bbb");
+
+        let mut tf1 = HashMap::new();
+        tf1.insert("alpha", 1);
+        tf1.insert("beta", 2);
+
+        let mut tf2 = HashMap::new();
+        tf2.insert("beta", 1);
+        tf2.insert("gamma", 3);
+
+        // Build in order: doc1, doc2
+        index_a.add_document(doc1.clone(), tf1.clone());
+        index_a.add_document(doc2.clone(), tf2.clone());
+
+        // Build in reverse order: doc2, doc1
+        index_b.add_document(doc2.clone(), tf2);
+        index_b.add_document(doc1.clone(), tf1);
+
+        index_a.compact();
+        index_b.compact();
+
+        // After compact, both should have doc_id 0 = aaa, doc_id 1 = bbb (BTreeMap order)
+        assert_eq!(index_a.doc_meta.len(), index_b.doc_meta.len());
+        for i in 0..index_a.doc_meta.len() {
+            let a = index_a.doc_meta[i].as_ref().unwrap();
+            let b = index_b.doc_meta[i].as_ref().unwrap();
+            assert_eq!(a.doc_key, b.doc_key);
+            assert_eq!(a.doc_len, b.doc_len);
+        }
+
+        // term_idx should also be deterministic (BTreeMap key order: alpha, beta, gamma)
+        assert_eq!(index_a.terms.len(), index_b.terms.len());
+        for (term, entry_a) in &index_a.terms {
+            let entry_b = index_b.terms.get(term).unwrap();
+            assert_eq!(entry_a.idx, entry_b.idx, "term_idx mismatch for {}", term);
+        }
+
+        // Posting lists should be identical
+        assert_eq!(index_a.posting_lists.len(), index_b.posting_lists.len());
+        for (i, (pl_a, pl_b)) in index_a
+            .posting_lists
+            .iter()
+            .zip(index_b.posting_lists.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                pl_a.postings.len(),
+                pl_b.postings.len(),
+                "posting list len mismatch at idx {}",
+                i
+            );
+            for (pa, pb) in pl_a.postings.iter().zip(pl_b.postings.iter()) {
+                assert_eq!(pa.doc_id, pb.doc_id, "doc_id mismatch at term_idx {}", i);
+                assert_eq!(
+                    pa.term_freq, pb.term_freq,
+                    "term_freq mismatch at term_idx {}",
+                    i
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_rebuild_lookups() {
+        let mut index = Bm25Index::new();
+
+        let doc1 = DocKey::new("ledger:main", "http://example.org/doc1");
+        let mut tf1 = HashMap::new();
+        tf1.insert("hello", 2);
+        tf1.insert("world", 1);
+        index.add_document(doc1.clone(), tf1);
+
+        // Clear transient fields to simulate deserialization
+        index.doc_id_lookup.clear();
+        index.doc_terms = vec![None; index.next_doc_id as usize];
+        index.idx_to_term.clear();
+
+        // Rebuild
+        index.rebuild_lookups();
+
+        // Verify doc_id_lookup works
+        assert!(index.contains_doc(&doc1));
+        assert_eq!(index.doc_id_for(&doc1), Some(0));
+
+        // Verify idx_to_term works
+        let hello_idx = index.term_idx("hello").unwrap();
+        assert_eq!(index.idx_to_term[hello_idx as usize].as_ref(), "hello");
+
+        // Verify doc_terms works
+        assert!(index.doc_terms[0].is_some());
+        let terms = index.doc_terms[0].as_ref().unwrap();
+        assert_eq!(terms.len(), 2); // hello + world
     }
 
     #[test]

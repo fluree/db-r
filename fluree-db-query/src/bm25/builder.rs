@@ -474,10 +474,11 @@ impl<'a> IncrementalUpdater<'a> {
         // Collect all existing doc keys for this ledger
         let existing_keys: Vec<DocKey> = self
             .index
-            .doc_vectors
-            .keys()
-            .filter(|k| k.ledger_alias == self.ledger_alias)
-            .cloned()
+            .doc_meta
+            .iter()
+            .filter_map(|opt| opt.as_ref())
+            .filter(|meta| meta.doc_key.ledger_alias == self.ledger_alias)
+            .map(|meta| meta.doc_key.clone())
             .collect();
 
         // Track which IRIs we see in the new results

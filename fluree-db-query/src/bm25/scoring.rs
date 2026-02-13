@@ -5,12 +5,18 @@
 //! - Score: Σ IDF * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc_len / avg_doc_len)))
 //!
 //! Default parameters: k1=1.2, b=0.75
+//!
+//! Scoring iterates posting lists (term → docs) rather than scanning all documents,
+//! making query time proportional to the number of matching postings rather than O(N).
 
 use std::collections::BTreeMap;
 
-use super::index::{Bm25Config, Bm25Index, DocKey, SparseVector};
+use super::index::{Bm25Config, Bm25Index, DocKey};
 
 /// BM25 scorer for computing document relevance scores.
+///
+/// Iterates posting lists for query terms, accumulating scores in a dense Vec.
+/// Tombstoned documents (lazy-deleted) are skipped during scoring.
 pub struct Bm25Scorer<'a> {
     index: &'a Bm25Index,
     /// Precomputed IDF values for query terms (term_idx -> idf)
@@ -46,25 +52,30 @@ impl<'a> Bm25Scorer<'a> {
     ///
     /// Returns the BM25 score, or 0.0 if the document has no matching terms.
     pub fn score(&self, doc_key: &DocKey) -> f64 {
-        let Some(doc_vec) = self.index.get_doc_vector(doc_key) else {
+        let Some(doc_id) = self.index.doc_id_for(doc_key) else {
             return 0.0;
         };
 
-        self.score_vector(doc_vec)
-    }
+        let Some(Some(meta)) = self.index.doc_meta.get(doc_id as usize) else {
+            return 0.0; // Tombstoned
+        };
 
-    /// Score a document vector against the query.
-    pub fn score_vector(&self, doc_vec: &SparseVector) -> f64 {
         let config = &self.index.config;
         let avg_dl = self.index.stats.avg_doc_len();
-        let doc_len = doc_vec.doc_length() as f64;
+        let doc_len = meta.doc_len as f64;
 
         let mut score = 0.0;
 
         for &(term_idx, idf) in &self.query_idfs {
-            let tf = doc_vec.get(term_idx) as f64;
-            if tf > 0.0 {
-                score += compute_term_score(tf, idf, doc_len, avg_dl, config);
+            if let Some(posting_list) = self.index.get_posting_list(term_idx) {
+                // Binary search for this doc_id in the posting list
+                if let Ok(pos) = posting_list
+                    .postings
+                    .binary_search_by_key(&doc_id, |p| p.doc_id)
+                {
+                    let tf = posting_list.postings[pos].term_freq as f64;
+                    score += compute_term_score(tf, idf, doc_len, avg_dl, config);
+                }
             }
         }
 
@@ -73,35 +84,54 @@ impl<'a> Bm25Scorer<'a> {
 
     /// Score all documents in the index, returning results sorted by score (descending).
     ///
-    /// Only returns documents with score > 0.
+    /// Only returns documents with score > 0. Uses a dense Vec accumulator
+    /// indexed by doc_id for efficient scoring. Tombstoned docs are skipped.
+    /// Ties are broken by DocKey ascending for deterministic output.
     pub fn score_all(&self) -> Vec<(DocKey, f64)> {
         let config = &self.index.config;
         let avg_dl = self.index.stats.avg_doc_len();
+        let next_doc_id = self.index.next_doc_id() as usize;
 
-        let mut results: Vec<(DocKey, f64)> = self
-            .index
-            .iter_docs()
-            .filter_map(|(doc_key, doc_vec)| {
-                let doc_len = doc_vec.doc_length() as f64;
-                let mut score = 0.0;
+        // Dense score accumulator — O(1) per posting
+        let mut scores = vec![0.0f64; next_doc_id];
 
-                for &(term_idx, idf) in &self.query_idfs {
-                    let tf = doc_vec.get(term_idx) as f64;
-                    if tf > 0.0 {
-                        score += compute_term_score(tf, idf, doc_len, avg_dl, config);
+        for &(term_idx, idf) in &self.query_idfs {
+            if let Some(posting_list) = self.index.get_posting_list(term_idx) {
+                for posting in &posting_list.postings {
+                    let doc_id = posting.doc_id as usize;
+                    if doc_id >= next_doc_id {
+                        continue;
+                    }
+                    // Check if doc is live (not tombstoned)
+                    if let Some(Some(meta)) = self.index.doc_meta.get(doc_id) {
+                        let tf = posting.term_freq as f64;
+                        let doc_len = meta.doc_len as f64;
+                        scores[doc_id] += compute_term_score(tf, idf, doc_len, avg_dl, config);
                     }
                 }
+            }
+        }
 
-                if score > 0.0 {
-                    Some((doc_key.clone(), score))
-                } else {
-                    None
-                }
+        // Collect non-zero scores with DocKeys
+        let mut results: Vec<(DocKey, f64)> = scores
+            .iter()
+            .enumerate()
+            .filter(|(_, &score)| score > 0.0)
+            .filter_map(|(doc_id, &score)| {
+                self.index
+                    .doc_meta
+                    .get(doc_id)
+                    .and_then(|opt| opt.as_ref())
+                    .map(|meta| (meta.doc_key.clone(), score))
             })
             .collect();
 
-        // Sort by score descending
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort by score descending, then DocKey ascending for deterministic tie-breaking
+        results.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
 
         results
     }
@@ -155,29 +185,6 @@ pub fn compute_term_score(
     let denominator = tf + k1 * (1.0 - b + b * len_norm);
 
     idf * numerator / denominator
-}
-
-/// Compute the full BM25 score for a document given query term frequencies.
-///
-/// This is a standalone function that doesn't require building a scorer,
-/// useful for one-off calculations.
-pub fn bm25_score(
-    doc_vec: &SparseVector,
-    query_term_idfs: &[(u32, f64)],
-    avg_doc_len: f64,
-    config: &Bm25Config,
-) -> f64 {
-    let doc_len = doc_vec.doc_length() as f64;
-    let mut score = 0.0;
-
-    for &(term_idx, idf) in query_term_idfs {
-        let tf = doc_vec.get(term_idx) as f64;
-        if tf > 0.0 {
-            score += compute_term_score(tf, idf, doc_len, avg_doc_len, config);
-        }
-    }
-
-    score
 }
 
 #[cfg(test)]
@@ -351,5 +358,30 @@ mod tests {
 
         // With different k1/b, score should still be positive
         assert!(score > 0.0);
+    }
+
+    #[test]
+    fn test_scorer_skips_tombstoned_docs() {
+        let mut index = Bm25Index::new();
+
+        let doc1 = DocKey::new("test:main", "http://example.org/doc1");
+        let mut tf1 = HashMap::new();
+        tf1.insert("hello", 1);
+        index.add_document(doc1.clone(), tf1);
+
+        let doc2 = DocKey::new("test:main", "http://example.org/doc2");
+        let mut tf2 = HashMap::new();
+        tf2.insert("hello", 2);
+        index.add_document(doc2.clone(), tf2);
+
+        // Remove doc1 (lazy — posting stays)
+        index.remove_document(&doc1);
+
+        let scorer = Bm25Scorer::new(&index, &["hello"]);
+        let results = scorer.score_all();
+
+        // Only doc2 should appear
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, doc2);
     }
 }

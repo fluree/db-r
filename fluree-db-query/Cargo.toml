@@ -37,6 +37,8 @@ once_cell = "1"
 lru = "0.12"
 # BM25 index serialization
 postcard = { version = "1", features = ["alloc"] }
+# Compression for chunked BM25 snapshots (v4)
+zstd = { workspace = true }
 # Hash functions
 sha2 = "0.10"
 sha1 = "0.10"

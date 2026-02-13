@@ -952,6 +952,7 @@ async fn main() -> Result<()> {
 use fluree_db_api::{
     FlureeBuilder, Bm25CreateConfig, Bm25FieldConfig, Result
 };
+use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -961,25 +962,29 @@ async fn main() -> Result<()> {
     // Insert searchable data and create BM25 index
     // ...
 
-    // Query with full-text search
-    let search_query = r#"
-        PREFIX bm25: <https://ns.flur.ee/bm25#>
+    // Query with full-text search using JSON-LD and the f:graphSource pattern
+    let search_query = json!({
+        "@context": {
+            "schema": "http://schema.org/",
+            "f": "https://ns.flur.ee/db#"
+        },
+        "from": "mydb:main",
+        "select": ["?product", "?score", "?name"],
+        "where": [
+            {
+                "f:graphSource": "products-search:main",
+                "f:searchText": "laptop",
+                "f:searchLimit": 10,
+                "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+            },
+            { "@id": "?product", "schema:name": "?name" }
+        ],
+        "orderBy": [["desc", "?score"]],
+        "limit": 10
+    });
 
-        SELECT ?product ?score ?name
-        WHERE {
-            GRAPH <products-search:main> {
-                ?product bm25:matches "laptop" .
-                ?product bm25:score ?score .
-            }
-            ?product schema:name ?name .
-        }
-        ORDER BY DESC(?score)
-        LIMIT 10
-    "#;
-
-    let result = fluree.graph("mydb:main")
-        .query()
-        .sparql(search_query)
+    let result = fluree.query_from()
+        .jsonld(&search_query)
         .execute()
         .await?;
 

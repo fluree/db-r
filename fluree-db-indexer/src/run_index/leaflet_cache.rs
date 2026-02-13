@@ -53,6 +53,9 @@ enum CacheKey {
     R2(LeafletCacheKey),
     /// Key = xxh3_128(CAS address). Content-addressed → immutable.
     DictLeaf(u128),
+    /// BM25 posting leaflet. Key = xxh3_128(CAS CID bytes).
+    /// Content-addressed → immutable, no epoch/time dimension needed.
+    Bm25Leaflet(u128),
 }
 
 // ============================================================================
@@ -108,6 +111,7 @@ enum CachedEntry {
     R1(CachedRegion1),
     R2(CachedRegion2),
     DictLeaf(Arc<[u8]>),
+    Bm25Leaflet(Arc<[u8]>),
 }
 
 impl CachedEntry {
@@ -117,6 +121,7 @@ impl CachedEntry {
             CachedEntry::R1(r1) => r1.byte_size(),
             CachedEntry::R2(r2) => r2.byte_size(),
             CachedEntry::DictLeaf(bytes) => bytes.len(),
+            CachedEntry::Bm25Leaflet(bytes) => bytes.len(),
         }
     }
 }
@@ -247,6 +252,37 @@ impl LeafletCache {
             Ok(_) => unreachable!("DictLeaf key always maps to DictLeaf entry"),
             Err(arc_err) => Err(io::Error::new(arc_err.kind(), arc_err.to_string())),
         }
+    }
+
+    // ========================================================================
+    // BM25 posting leaflet cache
+    // ========================================================================
+
+    /// Compute a cache key from raw CID bytes (xxh3_128 hash).
+    ///
+    /// Use for both BM25 leaflet and DictLeaf entries — produces a 128-bit key
+    /// from content-addressed CID bytes. The `CacheKey` enum discriminant
+    /// prevents collisions between entry types that share the same hash.
+    pub fn cid_cache_key(cid_bytes: &[u8]) -> u128 {
+        xxhash_rust::xxh3::xxh3_128(cid_bytes)
+    }
+
+    /// Check if a BM25 posting leaflet is cached (read-only, no insertion).
+    pub fn get_bm25_leaflet(&self, key: u128) -> Option<Arc<[u8]>> {
+        match self.inner.get(&CacheKey::Bm25Leaflet(key)) {
+            Some(CachedEntry::Bm25Leaflet(bytes)) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// Insert a BM25 posting leaflet into the cache.
+    ///
+    /// Call after fetching raw bytes from CAS. The bytes are the compressed
+    /// leaflet blob as stored in content-addressed storage — decompression
+    /// and deserialization happen at the call site on each access.
+    pub fn insert_bm25_leaflet(&self, key: u128, bytes: Arc<[u8]>) {
+        self.inner
+            .insert(CacheKey::Bm25Leaflet(key), CachedEntry::Bm25Leaflet(bytes));
     }
 
     // ========================================================================
@@ -431,6 +467,62 @@ mod tests {
 
         // Different dict key → miss.
         assert!(cache.get_dict_leaf(1000).is_none());
+    }
+
+    #[test]
+    fn test_bm25_leaflet_insert_get_miss() {
+        let cache = LeafletCache::with_max_bytes(10 * 1024 * 1024);
+
+        // Miss on empty cache.
+        assert!(cache.get_bm25_leaflet(42).is_none());
+
+        // Insert and retrieve.
+        let data: Arc<[u8]> = vec![0xDE, 0xAD, 0xBE, 0xEF].into_boxed_slice().into();
+        cache.insert_bm25_leaflet(42, data);
+        let got = cache.get_bm25_leaflet(42).unwrap();
+        assert_eq!(got.len(), 4);
+        assert_eq!(got[0], 0xDE);
+
+        // Different key → miss.
+        assert!(cache.get_bm25_leaflet(99).is_none());
+    }
+
+    #[test]
+    fn test_bm25_leaflet_coexists_with_other_types() {
+        let cache = LeafletCache::with_max_bytes(10 * 1024 * 1024);
+        let r1_key = make_key(42, 0, 100, 0);
+
+        // Insert R1, DictLeaf, and BM25Leaflet — all share the same pool.
+        cache.get_or_decode_r1(r1_key.clone(), || make_r1(50));
+
+        let dict_data: Arc<[u8]> = Arc::from(vec![1u8; 256].into_boxed_slice());
+        cache
+            .try_get_or_load_dict_leaf(999, || Ok(dict_data))
+            .unwrap();
+
+        let bm25_data: Arc<[u8]> = vec![2u8; 512].into_boxed_slice().into();
+        cache.insert_bm25_leaflet(888, bm25_data);
+
+        // All three retrievable from the same pool.
+        assert!(cache.get_r1(&r1_key).is_some());
+        assert!(cache.get_dict_leaf(999).is_some());
+        assert!(cache.get_bm25_leaflet(888).is_some());
+
+        // No cross-contamination: BM25 key 999 is not the same as DictLeaf key 999.
+        assert!(cache.get_bm25_leaflet(999).is_none());
+    }
+
+    #[test]
+    fn test_cid_cache_key_determinism() {
+        let cid_bytes = b"sha256:abc123def456";
+        let key1 = LeafletCache::cid_cache_key(cid_bytes);
+        let key2 = LeafletCache::cid_cache_key(cid_bytes);
+        assert_eq!(key1, key2);
+
+        // Different input → different key.
+        let other = b"sha256:xyz789";
+        let key3 = LeafletCache::cid_cache_key(other);
+        assert_ne!(key1, key3);
     }
 
     #[test]

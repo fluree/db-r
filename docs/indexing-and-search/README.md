@@ -106,11 +106,16 @@ BM25 provides ranked full-text search:
 **Searching:**
 ```json
 {
-  "from": "products-search:main",
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "mydb:main",
   "select": ["?product", "?score"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop computer" },
-    { "@id": "?product", "bm25:score": "?score" }
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop computer",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    }
   ],
   "orderBy": ["-?score"]
 }
@@ -164,17 +169,22 @@ Search indexes are exposed as graph sources:
 **Query Like Regular Ledgers:**
 ```json
 {
-  "from": ["mydb:main", "products-search:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "mydb:main",
   "select": ["?product", "?name", "?score"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" },
-    { "@id": "?product", "bm25:score": "?score" },
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    },
     { "@id": "?product", "schema:name": "?name" }
   ]
 }
 ```
 
-Combines structured data with search results.
+Combines structured data with search results via the `f:graphSource` pattern.
 
 ## Index Management
 
@@ -227,16 +237,22 @@ Combine search with graph queries:
 
 ```json
 {
-  "from": ["mydb:main", "products-search:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "mydb:main",
   "select": ["?product", "?category"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" },
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product" }
+    },
     { "@id": "?product", "schema:category": "?category" }
   ]
 }
 ```
 
-Query optimizer handles joins efficiently.
+Query optimizer handles joins between the search graph source and structured data efficiently.
 
 ## Use Cases
 
@@ -245,21 +261,33 @@ Query optimizer handles joins efficiently.
 **E-commerce Product Search:**
 ```json
 {
-  "from": "products-search:main",
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
+  "select": ["?product", "?score"],
   "where": [
-    { "@id": "?product", "bm25:matches": "wireless headphones" }
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "wireless headphones",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    }
   ],
-  "orderBy": ["-?score"],
-  "limit": 20
+  "orderBy": ["-?score"]
 }
 ```
 
 **Document Management:**
 ```json
 {
-  "from": "documents-search:main",
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "documents:main",
   "where": [
-    { "@id": "?doc", "bm25:matches": "quarterly report 2024" },
+    {
+      "f:graphSource": "documents-search:main",
+      "f:searchText": "quarterly report 2024",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?doc" }
+    },
     { "@id": "?doc", "ex:department": "finance" }
   ]
 }
@@ -318,14 +346,19 @@ Combine text and vector search:
 
 ```json
 {
-  "from": ["products-search:main", "products-vector:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "values": [
     ["?queryVec"],
     [{"@value": [0.1, 0.2, 0.3], "@type": "https://ns.flur.ee/db#embeddingVector"}]
   ],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" },
-    { "@id": "?product", "bm25:score": "?textScore" },
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 100,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?textScore" }
+    },
     {
       "f:graphSource": "products-vector:main",
       "f:queryVector": "?queryVec",
@@ -433,10 +466,16 @@ Limit results for performance:
 
 ```json
 {
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "docs:main",
   "where": [
-    { "@id": "?doc", "bm25:matches": "search query" }
-  ],
-  "limit": 100
+    {
+      "f:graphSource": "docs-search:main",
+      "f:searchText": "search query",
+      "f:searchLimit": 100,
+      "f:searchResult": { "f:resultId": "?doc" }
+    }
+  ]
 }
 ```
 

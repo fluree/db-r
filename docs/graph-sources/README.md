@@ -62,25 +62,21 @@ Graph sources are queried like regular ledgers:
 
 ```json
 {
-  "from": "products-search:main",
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "select": ["?product", "?score"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" },
-    { "@id": "?product", "bm25:score": "?score" }
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    }
   ]
 }
 ```
 
-Or in SPARQL:
-
-```sparql
-SELECT ?product ?score
-FROM <products-search:main>
-WHERE {
-  ?product bm25:matches "laptop" .
-  ?product bm25:score ?score .
-}
-```
+> **Note:** SPARQL queries use the same `f:` namespace pattern (`f:graphSource`, `f:searchText`, etc.) within JSON-LD query syntax.
 
 ## Multi-Graph Queries
 
@@ -88,11 +84,16 @@ Combine regular ledgers with graph sources:
 
 ```json
 {
-  "from": ["products:main", "products-search:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "select": ["?product", "?name", "?price", "?score"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" },
-    { "@id": "?product", "bm25:score": "?score" },
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    },
     { "@id": "?product", "schema:name": "?name" },
     { "@id": "?product", "schema:price": "?price" }
   ],
@@ -100,7 +101,7 @@ Combine regular ledgers with graph sources:
 }
 ```
 
-Joins structured data from products:main with search results from products-search:main.
+Joins structured data from products:main with search results from the products-search:main graph source.
 
 ## Graph Source Lifecycle
 
@@ -152,9 +153,15 @@ Execute queries against graph source:
 **Example:**
 ```json
 {
-  "from": "docs-search:main",
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "docs:main",
   "where": [
-    { "@id": "?doc", "bm25:matches": "quarterly report" }
+    {
+      "f:graphSource": "docs-search:main",
+      "f:searchText": "quarterly report",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?doc" }
+    }
   ]
 }
 ```
@@ -314,9 +321,15 @@ Push filters to graph sources:
 Good:
 ```json
 {
-  "from": ["products:main", "products-search:main"],
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "where": [
-    { "@id": "?p", "bm25:matches": "laptop" },  // Filter in search
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 50,
+      "f:searchResult": { "f:resultId": "?p" }
+    },
     { "@id": "?p", "schema:price": "?price" }
   ],
   "filter": "?price < 1000"
@@ -337,10 +350,16 @@ Limit results from graph sources:
 
 ```json
 {
+  "@context": {"f": "https://ns.flur.ee/db#"},
+  "from": "products:main",
   "where": [
-    { "@id": "?p", "bm25:matches": "query" }
-  ],
-  "limit": 100
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "query",
+      "f:searchLimit": 100,
+      "f:searchResult": { "f:resultId": "?p" }
+    }
+  ]
 }
 ```
 

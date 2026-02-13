@@ -595,6 +595,14 @@ pub struct LedgerManager<S, N> {
     shutdown: AtomicBool,
 }
 
+// Unconstrained accessors (no trait bounds needed — just field access).
+impl<S, N> LedgerManager<S, N> {
+    /// Get the shared leaflet cache (if configured).
+    pub fn leaflet_cache(&self) -> Option<&Arc<LeafletCache>> {
+        self.config.leaflet_cache.as_ref()
+    }
+}
+
 impl<S, N> LedgerManager<S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
