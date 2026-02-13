@@ -63,7 +63,10 @@ impl CompareOp {
                 None => return Ok(Some(ComparableValue::Bool(false))),
             };
 
-            let satisfied = cmp_values(&prev, &curr).is_some_and(|ord| self.satisfies(ord));
+            let satisfied = match cmp_values(&prev, &curr) {
+                Some(ord) => self.satisfies(ord),
+                None => matches!(self, CompareOp::Ne),
+            };
             if !satisfied {
                 return Ok(Some(ComparableValue::Bool(false)));
             }
@@ -216,6 +219,10 @@ mod tests {
         Expression::Const(FilterValue::Long(v))
     }
 
+    fn string(s: &str) -> Expression {
+        Expression::Const(FilterValue::String(s.to_string()))
+    }
+
     fn empty_row() -> BindingRow<'static> {
         BindingRow::new(&[], &[])
     }
@@ -287,5 +294,32 @@ mod tests {
         let args = vec![long(1), long(2), long(3)];
         let result = CompareOp::Ne.eval(&args, &row, None).unwrap();
         assert_eq!(result, Some(ComparableValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_ne_type_mismatch_is_true() {
+        let row = empty_row();
+        // 1 != "hello" → true (incomparable types are not equal)
+        let args = vec![long(1), string("hello")];
+        let result = CompareOp::Ne.eval(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_eq_type_mismatch_is_false() {
+        let row = empty_row();
+        // 1 = "hello" → false (incomparable types are not equal)
+        let args = vec![long(1), string("hello")];
+        let result = CompareOp::Eq.eval(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(false)));
+    }
+
+    #[test]
+    fn test_lt_type_mismatch_is_false() {
+        let row = empty_row();
+        // 1 < "hello" → false (incomparable types have no ordering)
+        let args = vec![long(1), string("hello")];
+        let result = CompareOp::Lt.eval(&args, &row, None).unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(false)));
     }
 }
