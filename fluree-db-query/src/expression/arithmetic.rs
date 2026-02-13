@@ -13,40 +13,36 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{ArithmeticOp, Expression};
 
-/// Evaluate addition
-pub fn eval_add<R: RowAccess>(
-    args: &[Expression],
-    row: &R,
-    ctx: Option<&ExecutionContext<'_>>,
-) -> Result<Option<ComparableValue>> {
-    eval_variadic_arithmetic(ArithmeticOp::Add, ctx, row, args)
-}
+impl ArithmeticOp {
+    /// Evaluate this arithmetic operation over variadic arguments (left-fold).
+    ///
+    /// - 1 arg → identity (return the value)
+    /// - 2+ args → fold: `op(op(a, b), c)` etc.
+    pub fn eval<R: RowAccess>(
+        &self,
+        args: &[Expression],
+        row: &R,
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> Result<Option<ComparableValue>> {
+        check_min_arity(args, 1, &self.to_string())?;
 
-/// Evaluate subtraction
-pub fn eval_sub<R: RowAccess>(
-    args: &[Expression],
-    row: &R,
-    ctx: Option<&ExecutionContext<'_>>,
-) -> Result<Option<ComparableValue>> {
-    eval_variadic_arithmetic(ArithmeticOp::Sub, ctx, row, args)
-}
+        let first = match args[0].eval_to_comparable(row, ctx)? {
+            Some(v) => v,
+            None => return Ok(None),
+        };
 
-/// Evaluate multiplication
-pub fn eval_mul<R: RowAccess>(
-    args: &[Expression],
-    row: &R,
-    ctx: Option<&ExecutionContext<'_>>,
-) -> Result<Option<ComparableValue>> {
-    eval_variadic_arithmetic(ArithmeticOp::Mul, ctx, row, args)
-}
-
-/// Evaluate division
-pub fn eval_div<R: RowAccess>(
-    args: &[Expression],
-    row: &R,
-    ctx: Option<&ExecutionContext<'_>>,
-) -> Result<Option<ComparableValue>> {
-    eval_variadic_arithmetic(ArithmeticOp::Div, ctx, row, args)
+        args[1..].iter().try_fold(Some(first), |acc, arg| {
+            let acc = match acc {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            let val = match arg.eval_to_comparable(row, ctx)? {
+                Some(v) => v,
+                None => return Ok(None),
+            };
+            Ok(Some(self.apply(acc, val)?))
+        })
+    }
 }
 
 /// Evaluate unary negation
@@ -69,36 +65,6 @@ pub fn eval_negate<R: RowAccess>(
     }
 }
 
-/// Variadic arithmetic: left-fold over all arguments
-///
-/// - 1 arg → identity (return the evaluated value)
-/// - 2+ args → fold: `op(op(a, b), c)` etc.
-fn eval_variadic_arithmetic<R: RowAccess>(
-    op: ArithmeticOp,
-    ctx: Option<&ExecutionContext<'_>>,
-    row: &R,
-    args: &[Expression],
-) -> Result<Option<ComparableValue>> {
-    check_min_arity(args, 1, &op.to_string())?;
-
-    let first = match args[0].eval_to_comparable(row, ctx)? {
-        Some(v) => v,
-        None => return Ok(None),
-    };
-
-    args[1..].iter().try_fold(Some(first), |acc, arg| {
-        let acc = match acc {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-        let val = match arg.eval_to_comparable(row, ctx)? {
-            Some(v) => v,
-            None => return Ok(None),
-        };
-        Ok(Some(op.apply(acc, val)?))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,7 +83,7 @@ mod tests {
     fn test_add_three_args() {
         let row = empty_row();
         let args = vec![long(1), long(2), long(3)];
-        let result = eval_add(&args, &row, None).unwrap();
+        let result = ArithmeticOp::Add.eval(&args, &row, None).unwrap();
         assert_eq!(result, Some(ComparableValue::Long(6)));
     }
 
@@ -125,7 +91,7 @@ mod tests {
     fn test_sub_three_args() {
         let row = empty_row();
         let args = vec![long(10), long(3), long(2)];
-        let result = eval_sub(&args, &row, None).unwrap();
+        let result = ArithmeticOp::Sub.eval(&args, &row, None).unwrap();
         assert_eq!(result, Some(ComparableValue::Long(5)));
     }
 
@@ -133,7 +99,7 @@ mod tests {
     fn test_mul_three_args() {
         let row = empty_row();
         let args = vec![long(2), long(3), long(4)];
-        let result = eval_mul(&args, &row, None).unwrap();
+        let result = ArithmeticOp::Mul.eval(&args, &row, None).unwrap();
         assert_eq!(result, Some(ComparableValue::Long(24)));
     }
 
@@ -141,7 +107,7 @@ mod tests {
     fn test_div_three_args() {
         let row = empty_row();
         let args = vec![long(24), long(4), long(3)];
-        let result = eval_div(&args, &row, None).unwrap();
+        let result = ArithmeticOp::Div.eval(&args, &row, None).unwrap();
         assert_eq!(result, Some(ComparableValue::Long(2)));
     }
 
@@ -149,7 +115,7 @@ mod tests {
     fn test_add_single_arg_identity() {
         let row = empty_row();
         let args = vec![long(42)];
-        let result = eval_add(&args, &row, None).unwrap();
+        let result = ArithmeticOp::Add.eval(&args, &row, None).unwrap();
         assert_eq!(result, Some(ComparableValue::Long(42)));
     }
 
@@ -157,6 +123,6 @@ mod tests {
     fn test_add_zero_args_error() {
         let row = empty_row();
         let args: Vec<Expression> = vec![];
-        assert!(eval_add(&args, &row, None).is_err());
+        assert!(ArithmeticOp::Add.eval(&args, &row, None).is_err());
     }
 }
