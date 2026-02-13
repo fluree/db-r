@@ -27,18 +27,61 @@
 //! even though chunk parsing is parallel.
 
 use crate::error::ApiError;
-use fluree_db_core::{ContentId, ContentKind, Storage, CODEC_FLUREE_INDEX_ROOT};
+use fluree_db_core::{
+    ContentId, ContentKind, ContentStore, Storage, CODEC_FLUREE_INDEX_ROOT,
+    CODEC_FLUREE_STATS_SKETCH,
+};
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
-/// Configuration for the bulk import pipeline.
+/// Progress event emitted at key points during the import pipeline.
 #[derive(Debug, Clone)]
+pub enum ImportPhase {
+    /// Reader thread is scanning through the file (emitted periodically).
+    Scanning {
+        /// Bytes of data read so far (excludes prefix block header).
+        bytes_read: u64,
+        /// Total data bytes in the file.
+        total_bytes: u64,
+    },
+    /// Chunk parsing started (emitted before chunk 0 serial parse).
+    Parsing {
+        chunk: usize,
+        total: usize,
+        chunk_bytes: u64,
+    },
+    /// Chunk committed during phase 2.
+    Committing {
+        chunk: usize,
+        total: usize,
+        cumulative_flakes: u64,
+        elapsed_secs: f64,
+    },
+    /// Index build in progress — reports flakes merged across all sort orders.
+    Indexing {
+        /// Flakes merged so far (summed across all active sort orders).
+        merged_flakes: u64,
+        /// Total flakes to merge (flakes * number of sort orders).
+        total_flakes: u64,
+        /// Seconds elapsed since indexing started.
+        elapsed_secs: f64,
+    },
+    /// Pipeline complete.
+    Done,
+}
+
+/// Callback type for import progress events.
+pub type ProgressFn = Arc<dyn Fn(ImportPhase) + Send + Sync>;
+
+/// Configuration for the bulk import pipeline.
+#[derive(Clone)]
 pub struct ImportConfig {
     /// Number of parallel TTL parse threads. Default: available parallelism (capped at 6).
     pub parse_threads: usize,
@@ -77,6 +120,19 @@ pub struct ImportConfig {
     pub max_inflight_chunks: usize,
     /// Whether `run_budget_mb` was explicitly set (vs derived from memory budget).
     run_budget_explicit: bool,
+    /// Optional progress callback invoked at key pipeline milestones.
+    pub progress: Option<ProgressFn>,
+}
+
+impl std::fmt::Debug for ImportConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportConfig")
+            .field("parse_threads", &self.parse_threads)
+            .field("memory_budget_mb", &self.memory_budget_mb)
+            .field("chunk_size_mb", &self.chunk_size_mb)
+            .field("progress", &self.progress.as_ref().map(|_| "..."))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for ImportConfig {
@@ -97,6 +153,7 @@ impl Default for ImportConfig {
             chunk_size_mb: 0,
             max_inflight_chunks: 0,
             run_budget_explicit: false,
+            progress: None,
         }
     }
 }
@@ -165,7 +222,7 @@ impl ImportConfig {
         let numerator = budget_mb.saturating_sub(2048) as f64;
         let denominator = max_inflight as f64 * 2.5 + 1.0;
         let raw = (numerator / denominator).floor() as usize;
-        raw.clamp(256, 4096)
+        raw.clamp(128, 512)
     }
 
     /// Effective run budget in MB (derived from budget if not explicitly set).
@@ -206,6 +263,13 @@ impl ImportConfig {
             chunk_size_mb: self.effective_chunk_size_mb(),
             max_inflight_chunks: self.effective_max_inflight(),
             run_budget_mb: self.effective_run_budget_mb(),
+        }
+    }
+
+    /// Emit a progress event (no-op when no callback is set).
+    fn emit_progress(&self, phase: ImportPhase) {
+        if let Some(ref cb) = self.progress {
+            cb(phase);
         }
     }
 }
@@ -313,39 +377,72 @@ impl From<fluree_db_core::Error> for ImportError {
 
 /// Abstraction over the source of import chunks.
 ///
-/// Either a set of pre-split files (existing behavior), or a single large
-/// Turtle file that is auto-split on the fly.
+/// Either a set of pre-split files (index-based access), or a streaming reader
+/// for a single large Turtle file (channel-based, no pre-scan).
 pub enum ChunkSource {
     /// Pre-split chunk files (existing behavior: `chunk_*.ttl` / `chunk_*.trig`).
     Files(Vec<PathBuf>),
-    /// Single large Turtle file, auto-split into byte-range chunks.
-    LargeFile(fluree_db_transact::turtle_splitter::TurtleChunkReader),
+    /// Streaming reader for a single large Turtle file. Chunks are emitted
+    /// through a channel as the file is read — no full pre-scan needed.
+    Streaming(fluree_db_transact::turtle_splitter::StreamingTurtleReader),
 }
 
 impl ChunkSource {
-    /// Number of chunks.
-    pub fn len(&self) -> usize {
+    /// Estimated number of chunks.
+    ///
+    /// Exact for `Files`, estimated for `Streaming` (file_size / chunk_size).
+    pub fn estimated_len(&self) -> usize {
         match self {
             Self::Files(files) => files.len(),
-            Self::LargeFile(reader) => reader.chunk_count(),
+            Self::Streaming(reader) => reader.estimated_chunk_count(),
         }
     }
 
-    /// Whether the source has no chunks.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    /// Whether this is a streaming source (no index-based access).
+    pub fn is_streaming(&self) -> bool {
+        matches!(self, Self::Streaming(_))
     }
 
-    /// Read chunk at `index` as a String.
+    /// Read chunk at `index` as a String (only for `Files` variant).
+    ///
+    /// Panics if called on `Streaming` — use `recv_next` instead.
     pub fn read_chunk(&self, index: usize) -> std::io::Result<String> {
         match self {
             Self::Files(files) => std::fs::read_to_string(&files[index]),
-            Self::LargeFile(reader) => reader.read_chunk(index)?.ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("chunk index {} out of range", index),
-                )
-            }),
+            Self::Streaming(_) => {
+                panic!("read_chunk not supported for streaming source; use recv_next")
+            }
+        }
+    }
+
+    /// Receive the next chunk from a streaming source as ready-to-parse TTL text.
+    ///
+    /// Returns `Ok(Some((index, text)))` for each chunk, `Ok(None)` when done.
+    /// The text includes the prefix block prepended to the raw bytes.
+    /// Only valid for `Streaming` variant.
+    pub fn recv_next(&self) -> std::result::Result<Option<(usize, String)>, ImportError> {
+        match self {
+            Self::Streaming(reader) => {
+                let payload = reader
+                    .recv_chunk()
+                    .map_err(|e| ImportError::NoChunks(format!("streaming read failed: {}", e)))?;
+                match payload {
+                    Some((idx, raw)) => {
+                        // Note: we return only the raw TTL data for this chunk
+                        // (no prefix block prepended). The streaming import
+                        // path parses with a pre-extracted header prelude to
+                        // avoid an extra full-chunk string copy.
+                        let data = String::from_utf8(raw).map_err(|e| {
+                            ImportError::Transact(format!("chunk {} invalid UTF-8: {}", idx, e))
+                        })?;
+                        Ok(Some((idx, data)))
+                    }
+                    None => Ok(None),
+                }
+            }
+            Self::Files(_) => {
+                panic!("recv_next not supported for file-based source; use read_chunk")
+            }
         }
     }
 
@@ -356,7 +453,7 @@ impl ChunkSource {
                 .get(index)
                 .and_then(|p| p.extension())
                 .is_some_and(|ext| ext == "trig"),
-            Self::LargeFile(_) => false, // Large file splitting is Turtle only.
+            Self::Streaming(_) => false, // Streaming is Turtle only.
         }
     }
 }
@@ -389,18 +486,37 @@ fn resolve_chunk_source(
     let is_ttl = path.extension().is_some_and(|ext| ext == "ttl");
 
     if is_ttl && file_size > chunk_size_bytes {
-        // Large file: auto-split.
-        let split_config =
-            fluree_db_transact::turtle_splitter::TurtleSplitConfig { chunk_size_bytes };
-        let reader =
-            fluree_db_transact::turtle_splitter::TurtleChunkReader::new(path, &split_config)
-                .map_err(|e| ImportError::NoChunks(format!("turtle file split failed: {}", e)))?;
+        // Large file: stream chunks via background reader thread.
+        let max_inflight = config.effective_max_inflight();
+
+        // Build progress callback that forwards to the import progress handler.
+        let scan_progress: Option<fluree_db_transact::turtle_splitter::ScanProgressFn> =
+            config.progress.as_ref().map(|cb| {
+                let cb = Arc::clone(cb);
+                let f: fluree_db_transact::turtle_splitter::ScanProgressFn =
+                    Arc::new(move |bytes_read, total_bytes| {
+                        cb(ImportPhase::Scanning {
+                            bytes_read,
+                            total_bytes,
+                        });
+                    });
+                f
+            });
+
+        let reader = fluree_db_transact::turtle_splitter::StreamingTurtleReader::new(
+            path,
+            chunk_size_bytes,
+            max_inflight,
+            scan_progress,
+        )
+        .map_err(|e| ImportError::NoChunks(format!("turtle file split failed: {}", e)))?;
         tracing::info!(
-            chunks = reader.chunk_count(),
+            estimated_chunks = reader.estimated_chunk_count(),
             chunk_size_mb = config.effective_chunk_size_mb(),
-            "auto-split large Turtle file"
+            file_size_mb = file_size / (1024 * 1024),
+            "streaming large Turtle file (no pre-scan)"
         );
-        Ok(ChunkSource::LargeFile(reader))
+        Ok(ChunkSource::Streaming(reader))
     } else {
         // Small file or non-TTL: treat as a single-element source.
         Ok(ChunkSource::Files(vec![path.to_path_buf()]))
@@ -434,7 +550,13 @@ pub struct ImportBuilder<'a, S: Storage + 'static, N> {
 impl<'a, S, N> ImportBuilder<'a, S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + Clone + Send + Sync + 'static,
+    N: NameService
+        + Publisher
+        + fluree_db_nameservice::ConfigPublisher
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     pub(crate) fn new(
         fluree: &'a super::Fluree<S, N>,
@@ -504,7 +626,7 @@ where
         self
     }
 
-    /// Whether to collect ID-based stats during commit resolution. Default: false.
+    /// Whether to collect ID-based stats during commit resolution. Default: true.
     pub fn collect_id_stats(mut self, v: bool) -> Self {
         self.config.collect_id_stats = v;
         self
@@ -513,6 +635,12 @@ where
     /// Publish nameservice checkpoint every N chunks. Default: 50. 0 disables.
     pub fn publish_every(mut self, n: usize) -> Self {
         self.config.publish_every = n;
+        self
+    }
+
+    /// Set a progress callback invoked at key pipeline milestones.
+    pub fn on_progress(mut self, f: impl Fn(ImportPhase) + Send + Sync + 'static) -> Self {
+        self.config.progress = Some(Arc::new(f));
         self
     }
 
@@ -560,7 +688,13 @@ where
 impl<'a, S, N> CreateBuilder<'a, S, N>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + Clone + Send + Sync + 'static,
+    N: NameService
+        + Publisher
+        + fluree_db_nameservice::ConfigPublisher
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     /// Attach a bulk import to this create operation.
     ///
@@ -627,7 +761,7 @@ async fn run_import_pipeline<S, N>(
 ) -> std::result::Result<ImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher,
+    N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
 {
     let pipeline_start = Instant::now();
     let _span = tracing::info_span!("bulk_import", alias = %alias).entered();
@@ -635,8 +769,13 @@ where
     // ---- Log effective settings and resolve chunk source ----
     config.log_effective_settings();
     let chunk_source = resolve_chunk_source(import_path, config)?;
-    let total = chunk_source.len();
-    tracing::info!(chunks = total, path = %import_path.display(), "resolved import chunks");
+    let estimated_total = chunk_source.estimated_len();
+    tracing::info!(
+        estimated_chunks = estimated_total,
+        streaming = chunk_source.is_streaming(),
+        path = %import_path.display(),
+        "resolved import chunks"
+    );
 
     // ---- Phase 1: Create ledger (init nameservice) ----
     let normalized_alias =
@@ -648,16 +787,23 @@ where
         .await
         .map_err(|e| ImportError::Storage(e.to_string()))?;
 
-    if let Some(ref record) = ns_record {
-        if record.commit_t > 0 || record.commit_head_id.is_some() {
+    let needs_init = match &ns_record {
+        None => true,
+        Some(record) if record.retracted => {
+            // Ledger was dropped — safe to re-create.
+            tracing::info!(alias = %normalized_alias, "re-initializing retracted ledger");
+            true
+        }
+        Some(record) if record.commit_t > 0 || record.commit_head_id.is_some() => {
             return Err(ImportError::Transact(format!(
                 "import requires a fresh ledger, but '{}' already has commits (t={})",
                 normalized_alias, record.commit_t
             )));
         }
-    }
+        Some(_) => false,
+    };
 
-    if ns_record.is_none() {
+    if needs_init {
         nameservice
             .publish_ledger_init(&normalized_alias)
             .await
@@ -685,8 +831,7 @@ where
 
     // ---- Phases 2-6: Import, build, upload, publish ----
     // Wrapped in a helper to ensure cleanup semantics:
-    // - On success + cleanup_local_files=true → delete session dir
-    // - On any failure → keep session dir for debugging
+    // - On success or failure + cleanup_local_files=true → delete session dir
     // - If cleanup itself fails → log warning, do not fail import
     let paths = PipelinePaths {
         run_dir: &run_dir,
@@ -704,29 +849,30 @@ where
     )
     .await;
 
+    // Cleanup session dir on both success and failure to avoid accumulating
+    // hundreds of GB of orphaned temp files from failed imports.
+    if config.cleanup_local_files {
+        if let Err(e) = std::fs::remove_dir_all(&session_dir) {
+            tracing::warn!(
+                session_dir = %session_dir.display(),
+                error = %e,
+                "failed to clean up import session directory"
+            );
+        } else {
+            tracing::info!(
+                session_dir = %session_dir.display(),
+                "import session directory cleaned up"
+            );
+        }
+    } else {
+        tracing::info!(
+            session_dir = %session_dir.display(),
+            "cleanup disabled; import artifacts retained"
+        );
+    }
+
     match pipeline_result {
         Ok(result) => {
-            // ---- Cleanup: only on full success ----
-            if config.cleanup_local_files {
-                if let Err(e) = std::fs::remove_dir_all(&session_dir) {
-                    tracing::warn!(
-                        session_dir = %session_dir.display(),
-                        error = %e,
-                        "failed to clean up import session directory (import succeeded)"
-                    );
-                } else {
-                    tracing::info!(
-                        session_dir = %session_dir.display(),
-                        "import session directory cleaned up"
-                    );
-                }
-            } else {
-                tracing::info!(
-                    session_dir = %session_dir.display(),
-                    "cleanup disabled; import artifacts retained"
-                );
-            }
-
             let total_elapsed = pipeline_start.elapsed();
             tracing::info!(
                 alias = %normalized_alias,
@@ -739,14 +885,7 @@ where
 
             Ok(result)
         }
-        Err(e) => {
-            tracing::warn!(
-                session_dir = %session_dir.display(),
-                error = %e,
-                "import failed; keeping session directory for debugging"
-            );
-            Err(e)
-        }
+        Err(e) => Err(e),
     }
 }
 
@@ -774,6 +913,8 @@ struct IndexBuildInput<'a> {
     namespace_codes: &'a HashMap<u16, String>,
     /// Optional stats hook from commit resolution.
     stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
+    /// Total flakes from commit resolution (used for indexing progress).
+    cumulative_flakes: u64,
 }
 
 /// Run phases 2-6: import chunks, build indexes, upload to CAS, write V2 root, publish.
@@ -791,7 +932,7 @@ async fn run_pipeline_phases<S, N>(
 ) -> std::result::Result<ImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher,
+    N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
 {
     // ---- Phase 2: Import TTL → commits + streaming runs ----
     let import_result = run_import_chunks(
@@ -823,6 +964,7 @@ where
             final_t: import_result.final_t,
             namespace_codes: &import_result.namespace_codes,
             stats_hook: import_result.stats_hook,
+            cumulative_flakes: import_result.cumulative_flakes,
         };
         let index_result = build_and_upload(
             storage,
@@ -842,6 +984,15 @@ where
         root_id = None;
         index_t = 0;
     }
+
+    // ---- Phase 7: Persist default context from turtle prefixes ----
+    if let Err(e) =
+        store_default_context(storage, nameservice, alias, &import_result.prefix_map).await
+    {
+        tracing::warn!(%e, "failed to persist default context (non-fatal)");
+    }
+
+    config.emit_progress(ImportPhase::Done);
 
     Ok(ImportResult {
         ledger_id: alias.to_string(),
@@ -870,6 +1021,8 @@ struct ChunkImportResult {
     total_asserts: u64,
     /// Total number of retractions across all commits.
     total_retracts: u64,
+    /// Turtle @prefix short names accumulated across all chunks: IRI → short prefix.
+    prefix_map: HashMap<String, String>,
 }
 
 /// Import all TTL chunks: parallel parse + serial commit + streaming runs.
@@ -890,14 +1043,15 @@ where
         RunGenerationResult, RunSortOrder,
     };
     use fluree_db_transact::import::{
-        finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk, ImportState,
-        ParsedChunk,
+        finalize_parsed_chunk, import_commit, import_commit_with_prelude, import_trig_commit,
+        parse_chunk, parse_chunk_with_prelude, ImportState, ParsedChunk,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    let total = chunk_source.len();
+    let is_streaming = chunk_source.is_streaming();
+    let estimated_total = chunk_source.estimated_len();
     let compress = config.compress_commits;
     let num_threads = config.parse_threads;
     let mut state = ImportState::new();
@@ -905,14 +1059,22 @@ where
     let collect_id_stats = config.collect_id_stats;
 
     // ---- Inflight permit channel (memory budget enforcement) ----
-    // Limits the number of chunk texts materialized in memory simultaneously.
-    let max_inflight = config.effective_max_inflight();
-    let (permit_tx, permit_rx) = std::sync::mpsc::sync_channel::<()>(max_inflight);
-    for _ in 0..max_inflight {
-        permit_tx.send(()).unwrap();
-    }
-    let permit_rx = std::sync::Arc::new(std::sync::Mutex::new(permit_rx));
-    let permit_tx_clone = permit_tx.clone();
+    // For Files mode: limits the number of chunk texts materialized in memory.
+    // For Streaming mode: backpressure is handled by the bounded channel in
+    // StreamingTurtleReader, so permits are not needed.
+    let (permit_tx, permit_rx) = if !is_streaming {
+        let max_inflight = config.effective_max_inflight();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<()>(max_inflight);
+        for _ in 0..max_inflight {
+            tx.send(()).unwrap();
+        }
+        (
+            Some(tx),
+            Some(std::sync::Arc::new(std::sync::Mutex::new(rx))),
+        )
+    } else {
+        (None, None)
+    };
 
     // ---- Spawn background run resolver (three session-scoped singletons) ----
     std::fs::create_dir_all(run_dir)?;
@@ -925,7 +1087,19 @@ where
     };
 
     // Bounded channel: backpressures import if resolver falls behind.
-    let (run_tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, String)>(2);
+    //
+    // Capacity tradeoff:
+    // - Larger capacity increases pipeline overlap (parse/commit can run ahead),
+    //   keeping CPU utilization higher when the resolver thread is the bottleneck.
+    // - Costs memory proportional to buffered commit blob sizes.
+    //
+    // Use a moderate multiple of parse threads (no new CLI knob).
+    //
+    // We clamp to avoid unbounded memory growth if commit blobs are large.
+    // If the resolver thread is slower than parse/commit finalization, this
+    // queue provides overlap without immediately stalling the pipeline.
+    let run_queue_cap = (num_threads.saturating_mul(8)).clamp(8, 64);
+    let (run_tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, String)>(run_queue_cap);
 
     let run_dir_clone = run_dir.to_path_buf();
     let resolver_handle: std::thread::JoinHandle<std::result::Result<RunGenerationResult, String>> =
@@ -938,7 +1112,17 @@ where
                 // Singleton 2: CommitResolver
                 let mut resolver = CommitResolver::new();
                 if collect_id_stats {
-                    resolver.set_stats_hook(fluree_db_indexer::stats::IdStatsHook::new());
+                    // Enable class tracking (class counts + class→property presence).
+                    //
+                    // NOTE: We intentionally disable ref-target tracking here (the
+                    // class→property→ref-class edges) because it can be very memory
+                    // intensive. We can compute ref edges later via a background job
+                    // or a second pass over subject-grouped records.
+                    let rdf_type_p_id = dicts.predicates.get_or_insert(fluree_vocab::rdf::TYPE);
+                    let mut stats_hook = fluree_db_indexer::stats::IdStatsHook::new();
+                    stats_hook.set_rdf_type_p_id(rdf_type_p_id);
+                    stats_hook.set_track_ref_targets(false);
+                    resolver.set_stats_hook(stats_hook);
                 }
 
                 // Singleton 3: MultiOrderRunWriter
@@ -1028,22 +1212,56 @@ where
             .map_err(|e| ImportError::RunGeneration(format!("spawn resolver: {}", e)))?;
 
     // ---- Phase 2a: Parse + commit chunk 0 serially (establishes namespaces) ----
-    if total > 0 {
-        let content = chunk_source.read_chunk(0)?;
+    // For streaming: pull from channel. For files: read by index.
+    let streaming_prelude = if is_streaming {
+        match &**chunk_source {
+            ChunkSource::Streaming(reader) => Some(reader.prelude().clone()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let chunk0_content = if is_streaming {
+        // Streaming: receive first chunk (reader thread already read it from disk).
+        chunk_source.recv_next()?.map(|(_idx, text)| text)
+    } else if estimated_total > 0 {
+        Some(chunk_source.read_chunk(0)?)
+    } else {
+        None
+    };
+
+    if let Some(content) = chunk0_content {
         let size_mb = content.len() as f64 / (1024.0 * 1024.0);
-        let is_trig = chunk_source.is_trig(0);
+        let is_trig = if !is_streaming {
+            chunk_source.is_trig(0)
+        } else {
+            false
+        };
         tracing::info!(
             chunk = 1,
-            total,
+            estimated_total,
             size_mb = format!("{:.1}", size_mb),
             is_trig,
+            starts_with = &content[..content.len().min(200)],
             "parsing chunk 0 serially (establishes namespaces)"
         );
 
-        // Use import_trig_commit for TriG files (handles named graphs),
-        // import_commit for pure Turtle (faster path)
+        config.emit_progress(ImportPhase::Parsing {
+            chunk: 1,
+            total: estimated_total,
+            chunk_bytes: content.len() as u64,
+        });
+
         let result = if is_trig {
             import_trig_commit(&mut state, &content, storage, alias, compress)
+                .await
+                .map_err(|e| ImportError::Transact(e.to_string()))?
+        } else if is_streaming {
+            // Streaming path: parse raw chunk data using the pre-extracted prelude.
+            let prelude = streaming_prelude
+                .as_ref()
+                .expect("streaming prelude must exist when streaming");
+            import_commit_with_prelude(&mut state, &content, prelude, storage, alias, compress)
                 .await
                 .map_err(|e| ImportError::Transact(e.to_string()))?
         } else {
@@ -1059,6 +1277,14 @@ where
             "chunk 0 committed"
         );
 
+        // Emit progress for chunk 0 (was previously missing).
+        config.emit_progress(ImportPhase::Committing {
+            chunk: 1,
+            total: estimated_total,
+            cumulative_flakes: state.cumulative_flakes,
+            elapsed_secs: run_start.elapsed().as_secs_f64(),
+        });
+
         // Feed to resolver (pass content hash hex for metadata)
         let hash_hex = result.commit_id.digest_hex();
         tokio::task::block_in_place(|| {
@@ -1069,67 +1295,85 @@ where
     }
 
     // ---- Phase 2b: Parse remaining chunks in parallel, commit serially ----
-    // Note: Parallel parsing only works with pure Turtle files. If any chunks are TriG,
-    // we fall back to serial processing (TriG needs parse_trig_phase1 which is different).
-    let has_trig = (1..total).any(|i| chunk_source.is_trig(i));
-    if total > 1 && num_threads > 0 && !has_trig {
-        let base_registry = state.ns_registry.clone();
+    //
+    // Create the shared namespace allocator from chunk 0's registry.
+    // All codes published so far (predefined defaults + chunk 0's delta)
+    // are tracked so subsequent commits only publish genuinely new codes.
+    use fluree_db_transact::SharedNamespaceAllocator;
+    use fluree_vocab::namespaces::OVERFLOW;
+    use rustc_hash::FxHashSet;
+
+    let shared_alloc = Arc::new(SharedNamespaceAllocator::from_registry(&state.ns_registry));
+    let mut published_codes: FxHashSet<u16> = state.ns_registry.all_codes();
+
+    if is_streaming {
+        // Streaming path: workers receive chunk data from the reader thread's
+        // channel. No worker I/O — the reader is the only entity reading from disk.
+        // This avoids double I/O that would kill throughput on external drives.
         let ledger = alias.to_string();
 
-        let next_chunk = Arc::new(AtomicUsize::new(1));
+        let (shared_rx, prelude) = match &**chunk_source {
+            ChunkSource::Streaming(reader) => (reader.shared_receiver(), reader.prelude().clone()),
+            _ => unreachable!(),
+        };
+
         let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<
             std::result::Result<(usize, ParsedChunk), String>,
         >(num_threads * 2);
 
-        // Spawn parse worker threads
         let mut parse_handles = Vec::with_capacity(num_threads);
         for thread_idx in 0..num_threads {
-            let next_chunk = Arc::clone(&next_chunk);
+            let shared_rx = Arc::clone(&shared_rx);
             let result_tx = result_tx.clone();
-            let base_registry = base_registry.clone();
+            let shared_alloc = Arc::clone(&shared_alloc);
             let ledger = ledger.clone();
-            let chunk_source = Arc::clone(chunk_source);
-            let permit_rx_ref = Arc::clone(&permit_rx);
-            let permit_tx_ref = permit_tx_clone.clone();
+            let prelude = prelude.clone();
 
             let handle = std::thread::Builder::new()
                 .name(format!("ttl-parser-{}", thread_idx))
-                .spawn(move || loop {
-                    let idx = next_chunk.fetch_add(1, Ordering::Relaxed);
-                    if idx >= chunk_source.len() {
-                        break;
-                    }
+                .spawn(move || {
+                    loop {
+                        // Pull next chunk data from the reader thread (no I/O here).
+                        let (idx, raw_bytes) = match shared_rx.lock().unwrap().recv() {
+                            Ok(payload) => payload,
+                            Err(_) => break, // Reader thread finished.
+                        };
 
-                    // Acquire inflight permit (blocks if at max_inflight).
-                    let permit_result = permit_rx_ref.lock().unwrap().recv();
-                    if permit_result.is_err() {
-                        break;
-                    }
-
-                    let ttl = match chunk_source.read_chunk(idx) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let _ = permit_tx_ref.send(()); // release permit
-                            let _ =
-                                result_tx.send(Err(format!("failed to read chunk {}: {}", idx, e)));
-                            break;
-                        }
-                    };
-
-                    let t = (idx + 1) as i64;
-                    match parse_chunk(&ttl, base_registry.clone(), t, &ledger, compress) {
-                        Ok(parsed) => {
-                            // Release permit — chunk text will be dropped after send.
-                            let _ = permit_tx_ref.send(());
-                            if result_tx.send(Ok((idx, parsed))).is_err() {
+                        // Convert raw bytes to String (CPU-only; no copy on success).
+                        let ttl = match String::from_utf8(raw_bytes) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let _ = result_tx
+                                    .send(Err(format!("chunk {} invalid UTF-8: {}", idx, e)));
                                 break;
                             }
-                        }
-                        Err(e) => {
-                            let _ = permit_tx_ref.send(()); // release permit
-                            let _ =
-                                result_tx.send(Err(format!("parse chunk {} failed: {}", idx, e)));
-                            break;
+                        };
+
+                        let t = (idx + 1) as i64;
+                        tracing::debug!(
+                            chunk_idx = idx,
+                            chunk_text_len = ttl.len(),
+                            starts_with = &ttl[..ttl.len().min(200)],
+                            "about to parse chunk"
+                        );
+                        match parse_chunk_with_prelude(
+                            &ttl,
+                            &shared_alloc,
+                            &prelude,
+                            t,
+                            &ledger,
+                            compress,
+                        ) {
+                            Ok(parsed) => {
+                                if result_tx.send(Ok((idx, parsed))).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = result_tx
+                                    .send(Err(format!("parse chunk {} failed: {}", idx, e)));
+                                break;
+                            }
                         }
                     }
                 })
@@ -1139,7 +1383,8 @@ where
         }
         drop(result_tx); // main thread's copy
 
-        // Serial commit loop: receive parsed chunks, reorder, finalize in order
+        // Serial commit loop: receive parsed chunks, reorder, finalize in order.
+        // Streaming chunks arrive out of order from parallel workers.
         let mut next_expected: usize = 1;
         let mut pending: BTreeMap<usize, ParsedChunk> = BTreeMap::new();
 
@@ -1149,14 +1394,29 @@ where
             pending.insert(idx, parsed);
 
             while let Some(parsed) = pending.remove(&next_expected) {
-                let result = finalize_parsed_chunk(&mut state, parsed, storage, alias)
+                // Commit-order publication: determine which codes from this chunk
+                // need to be introduced in this commit's namespace_delta.
+                let unpublished: FxHashSet<u16> = parsed
+                    .new_codes
+                    .iter()
+                    .copied()
+                    .filter(|c| *c < OVERFLOW && !published_codes.contains(c))
+                    .collect();
+                let ns_delta = if unpublished.is_empty() {
+                    std::collections::HashMap::new()
+                } else {
+                    shared_alloc.lookup_codes(&unpublished)
+                };
+                published_codes.extend(&unpublished);
+
+                let result = finalize_parsed_chunk(&mut state, parsed, ns_delta, storage, alias)
                     .await
                     .map_err(|e| ImportError::Transact(e.to_string()))?;
 
                 let total_elapsed = run_start.elapsed().as_secs_f64();
                 tracing::info!(
                     chunk = next_expected + 1,
-                    total,
+                    estimated_total,
                     t = result.t,
                     flakes = result.flake_count,
                     cumulative_flakes = state.cumulative_flakes,
@@ -1166,8 +1426,14 @@ where
                     ),
                     "chunk committed"
                 );
+                config.emit_progress(ImportPhase::Committing {
+                    chunk: next_expected + 1,
+                    total: estimated_total,
+                    cumulative_flakes: state.cumulative_flakes,
+                    elapsed_secs: total_elapsed,
+                });
 
-                // Feed to resolver (pass content hash hex for metadata)
+                // Feed to resolver
                 let resolver_send_failed = {
                     let hash_hex = result.commit_id.digest_hex();
                     tokio::task::block_in_place(|| {
@@ -1175,7 +1441,6 @@ where
                     })
                 };
                 if resolver_send_failed {
-                    // Drop sender so resolver thread exits, then join to get error
                     drop(run_tx);
                     let err = match resolver_handle.join() {
                         Ok(Err(e)) => format!("resolver failed: {}", e),
@@ -1196,7 +1461,6 @@ where
                     tracing::info!(
                         t = result.t,
                         chunk = next_expected + 1,
-                        total,
                         "published nameservice checkpoint"
                     );
                 }
@@ -1205,44 +1469,223 @@ where
             }
         }
 
-        // Wait for parse threads
+        // Wait for parse threads.
         for handle in parse_handles {
             handle.join().expect("parse thread panicked");
         }
-    } else if total > 1 {
-        // Serial fallback (0 threads or TriG files present)
-        for i in 1..total {
-            let content = chunk_source.read_chunk(i)?;
-            let is_trig = chunk_source.is_trig(i);
-            let result = if is_trig {
-                import_trig_commit(&mut state, &content, storage, alias, compress)
-                    .await
-                    .map_err(|e| ImportError::Transact(e.to_string()))?
-            } else {
-                import_commit(&mut state, &content, storage, alias, compress)
-                    .await
-                    .map_err(|e| ImportError::Transact(e.to_string()))?
-            };
 
-            let hash_hex = result.commit_id.digest_hex();
-            let send_failed = tokio::task::block_in_place(|| {
-                run_tx.send((result.commit_blob, hash_hex)).is_err()
-            });
-            if send_failed {
-                drop(run_tx);
-                let err = match resolver_handle.join() {
-                    Ok(Err(e)) => format!("resolver failed: {}", e),
-                    Err(p) => format!("resolver panicked: {:?}", p),
-                    Ok(Ok(_)) => "resolver exited unexpectedly".to_string(),
-                };
-                return Err(ImportError::RunGeneration(err));
+        // Note: The reader thread finishes when all chunks are consumed (channel
+        // drained). Any reader errors would have manifested as channel closure,
+        // which the parse workers handle by breaking their loop.
+        tracing::info!(
+            committed_chunks = next_expected,
+            "streaming import phase complete"
+        );
+    } else {
+        // File-based path: index-based access to chunk files.
+        let has_trig = (1..estimated_total).any(|i| chunk_source.is_trig(i));
+        if estimated_total > 1 && num_threads > 0 && !has_trig {
+            let ledger = alias.to_string();
+
+            let next_chunk = Arc::new(AtomicUsize::new(1));
+            let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<
+                std::result::Result<(usize, ParsedChunk), String>,
+            >(num_threads * 2);
+
+            let permit_rx = permit_rx.expect("permit_rx must exist for file-based path");
+            let permit_tx = permit_tx.expect("permit_tx must exist for file-based path");
+
+            // Spawn parse worker threads
+            let mut parse_handles = Vec::with_capacity(num_threads);
+            for thread_idx in 0..num_threads {
+                let next_chunk = Arc::clone(&next_chunk);
+                let result_tx = result_tx.clone();
+                let shared_alloc = Arc::clone(&shared_alloc);
+                let ledger = ledger.clone();
+                let chunk_source = Arc::clone(chunk_source);
+                let permit_rx_ref = Arc::clone(&permit_rx);
+                let permit_tx_ref = permit_tx.clone();
+                let total = estimated_total;
+
+                let handle = std::thread::Builder::new()
+                    .name(format!("ttl-parser-{}", thread_idx))
+                    .spawn(move || loop {
+                        let idx = next_chunk.fetch_add(1, Ordering::Relaxed);
+                        if idx >= total {
+                            break;
+                        }
+
+                        // Acquire inflight permit (blocks if at max_inflight).
+                        let permit_result = permit_rx_ref.lock().unwrap().recv();
+                        if permit_result.is_err() {
+                            break;
+                        }
+
+                        let ttl = match chunk_source.read_chunk(idx) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let _ = permit_tx_ref.send(()); // release permit
+                                let _ = result_tx
+                                    .send(Err(format!("failed to read chunk {}: {}", idx, e)));
+                                break;
+                            }
+                        };
+
+                        let t = (idx + 1) as i64;
+                        match parse_chunk(&ttl, &shared_alloc, t, &ledger, compress) {
+                            Ok(parsed) => {
+                                let _ = permit_tx_ref.send(());
+                                if result_tx.send(Ok((idx, parsed))).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = permit_tx_ref.send(());
+                                let _ = result_tx
+                                    .send(Err(format!("parse chunk {} failed: {}", idx, e)));
+                                break;
+                            }
+                        }
+                    })
+                    .map_err(|e| ImportError::Transact(format!("spawn parser: {}", e)))?;
+
+                parse_handles.push(handle);
+            }
+            drop(result_tx); // main thread's copy
+
+            // Serial commit loop: receive parsed chunks, reorder, finalize in order
+            let mut next_expected: usize = 1;
+            let mut pending: BTreeMap<usize, ParsedChunk> = BTreeMap::new();
+
+            for recv_result in result_rx {
+                let (idx, parsed) = recv_result.map_err(ImportError::Transact)?;
+
+                pending.insert(idx, parsed);
+
+                while let Some(parsed) = pending.remove(&next_expected) {
+                    // Commit-order publication: determine which codes from this chunk
+                    // need to be introduced in this commit's namespace_delta.
+                    let unpublished: FxHashSet<u16> = parsed
+                        .new_codes
+                        .iter()
+                        .copied()
+                        .filter(|c| *c < OVERFLOW && !published_codes.contains(c))
+                        .collect();
+                    let ns_delta = if unpublished.is_empty() {
+                        std::collections::HashMap::new()
+                    } else {
+                        shared_alloc.lookup_codes(&unpublished)
+                    };
+                    published_codes.extend(&unpublished);
+
+                    let result =
+                        finalize_parsed_chunk(&mut state, parsed, ns_delta, storage, alias)
+                            .await
+                            .map_err(|e| ImportError::Transact(e.to_string()))?;
+
+                    let total_elapsed = run_start.elapsed().as_secs_f64();
+                    tracing::info!(
+                        chunk = next_expected + 1,
+                        total = estimated_total,
+                        t = result.t,
+                        flakes = result.flake_count,
+                        cumulative_flakes = state.cumulative_flakes,
+                        flakes_per_sec = format!(
+                            "{:.2}M",
+                            state.cumulative_flakes as f64 / total_elapsed / 1_000_000.0
+                        ),
+                        "chunk committed"
+                    );
+                    config.emit_progress(ImportPhase::Committing {
+                        chunk: next_expected + 1,
+                        total: estimated_total,
+                        cumulative_flakes: state.cumulative_flakes,
+                        elapsed_secs: total_elapsed,
+                    });
+
+                    // Feed to resolver
+                    let resolver_send_failed = {
+                        let hash_hex = result.commit_id.digest_hex();
+                        tokio::task::block_in_place(|| {
+                            run_tx.send((result.commit_blob, hash_hex)).is_err()
+                        })
+                    };
+                    if resolver_send_failed {
+                        drop(run_tx);
+                        let err = match resolver_handle.join() {
+                            Ok(Err(e)) => format!("resolver failed: {}", e),
+                            Err(p) => format!("resolver panicked: {:?}", p),
+                            Ok(Ok(_)) => "resolver exited unexpectedly".to_string(),
+                        };
+                        return Err(ImportError::RunGeneration(err));
+                    }
+
+                    // Periodic nameservice checkpoint
+                    if config.publish_every > 0
+                        && (next_expected + 1).is_multiple_of(config.publish_every)
+                    {
+                        nameservice
+                            .publish_commit(alias, result.t, &result.commit_id)
+                            .await
+                            .map_err(|e| ImportError::Storage(e.to_string()))?;
+                        tracing::info!(
+                            t = result.t,
+                            chunk = next_expected + 1,
+                            total = estimated_total,
+                            "published nameservice checkpoint"
+                        );
+                    }
+
+                    next_expected += 1;
+                }
             }
 
-            if config.publish_every > 0 && (i + 1).is_multiple_of(config.publish_every) {
-                nameservice
-                    .publish_commit(alias, result.t, &result.commit_id)
-                    .await
-                    .map_err(|e| ImportError::Storage(e.to_string()))?;
+            // Wait for parse threads
+            for handle in parse_handles {
+                handle.join().expect("parse thread panicked");
+            }
+        } else if estimated_total > 1 {
+            // Serial fallback (0 threads or TriG files present)
+            for i in 1..estimated_total {
+                let content = chunk_source.read_chunk(i)?;
+                let is_trig = chunk_source.is_trig(i);
+                let result = if is_trig {
+                    import_trig_commit(&mut state, &content, storage, alias, compress)
+                        .await
+                        .map_err(|e| ImportError::Transact(e.to_string()))?
+                } else {
+                    import_commit(&mut state, &content, storage, alias, compress)
+                        .await
+                        .map_err(|e| ImportError::Transact(e.to_string()))?
+                };
+
+                config.emit_progress(ImportPhase::Committing {
+                    chunk: i + 1,
+                    total: estimated_total,
+                    cumulative_flakes: state.cumulative_flakes,
+                    elapsed_secs: run_start.elapsed().as_secs_f64(),
+                });
+
+                let hash_hex = result.commit_id.digest_hex();
+                let send_failed = tokio::task::block_in_place(|| {
+                    run_tx.send((result.commit_blob, hash_hex)).is_err()
+                });
+                if send_failed {
+                    drop(run_tx);
+                    let err = match resolver_handle.join() {
+                        Ok(Err(e)) => format!("resolver failed: {}", e),
+                        Err(p) => format!("resolver panicked: {:?}", p),
+                        Ok(Ok(_)) => "resolver exited unexpectedly".to_string(),
+                    };
+                    return Err(ImportError::RunGeneration(err));
+                }
+
+                if config.publish_every > 0 && (i + 1).is_multiple_of(config.publish_every) {
+                    nameservice
+                        .publish_commit(alias, result.t, &result.commit_id)
+                        .await
+                        .map_err(|e| ImportError::Storage(e.to_string()))?;
+                }
             }
         }
     }
@@ -1316,6 +1759,7 @@ where
         total_commit_size: run_result.total_commit_size,
         total_asserts: run_result.total_asserts,
         total_retracts: run_result.total_retracts,
+        prefix_map: state.prefix_map,
     })
 }
 
@@ -1344,8 +1788,8 @@ where
     N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{
-        build_all_indexes, precompute_language_dict, BinaryIndexRoot, CasArtifactsConfig,
-        PrefixTrie, RunSortOrder,
+        build_all_indexes, precompute_language_dict, BinaryIndexRoot, BinaryIndexStore,
+        CasArtifactsConfig, PrefixTrie, RunSortOrder,
     };
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
 
@@ -1366,6 +1810,15 @@ where
         index_dir = %input.index_dir.display(),
         "building multi-order indexes + uploading dicts (parallel)"
     );
+    // Emit initial indexing progress so the bar starts moving immediately
+    // after committing finishes (avoids appearance of hanging).
+    // Progress tracks POST merge only (one order), so total = actual flake count.
+    let total_index_flakes = input.cumulative_flakes;
+    config.emit_progress(ImportPhase::Indexing {
+        merged_flakes: 0,
+        total_flakes: total_index_flakes,
+        elapsed_secs: 0.0,
+    });
 
     // Pre-compute language dict so upload_dicts_from_disk can start immediately.
     let run_dir_for_lang = input.run_dir.to_path_buf();
@@ -1386,10 +1839,14 @@ where
         })
     };
 
+    // Shared counter incremented by each merge thread per row processed.
+    let merge_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     // Start index build (k-way merge + leaf/branch file writes).
     let run_dir_owned = input.run_dir.to_path_buf();
     let index_dir_owned = input.index_dir.to_path_buf();
-    let build_results = tokio::task::spawn_blocking(move || {
+    let build_counter = merge_counter.clone();
+    let build_handle = tokio::task::spawn_blocking(move || {
         build_all_indexes(
             &run_dir_owned,
             &index_dir_owned,
@@ -1397,11 +1854,49 @@ where
             25_000, // leaflet_rows
             10,     // leaflets_per_leaf
             1,      // zstd_level
+            Some(build_counter),
         )
-    })
-    .await
-    .map_err(|e| ImportError::IndexBuild(format!("index build task panicked: {}", e)))?
-    .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+    });
+
+    // Poll the merge counter every 250ms and emit progress events.
+    let poll_progress = config.progress.clone();
+    let poll_counter = merge_counter.clone();
+    let poll_total = total_index_flakes;
+    let poll_start = build_start;
+    let poll_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+        loop {
+            interval.tick().await;
+            let merged = poll_counter.load(std::sync::atomic::Ordering::Relaxed);
+            if let Some(ref cb) = poll_progress {
+                cb(ImportPhase::Indexing {
+                    merged_flakes: merged,
+                    total_flakes: poll_total,
+                    elapsed_secs: poll_start.elapsed().as_secs_f64(),
+                });
+            }
+            // Stop when build is complete (counter won't increase further)
+            if merged >= poll_total {
+                break;
+            }
+        }
+    });
+
+    let build_results = build_handle
+        .await
+        .map_err(|e| ImportError::IndexBuild(format!("index build task panicked: {}", e)))?
+        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+    // Stop the polling task
+    poll_handle.abort();
+
+    // Emit final build progress
+    let merged = merge_counter.load(std::sync::atomic::Ordering::Relaxed);
+    config.emit_progress(ImportPhase::Indexing {
+        merged_flakes: merged,
+        total_flakes: total_index_flakes,
+        elapsed_secs: build_start.elapsed().as_secs_f64(),
+    });
 
     tracing::info!(
         elapsed = ?build_start.elapsed(),
@@ -1457,10 +1952,30 @@ where
 
     // ---- Build stats JSON ----
     // Preferred: ID-based stats collected during commit resolution (per-graph property
-    // stats with datatype counts + HLL NDV). Fallback: SPOT build result for per-graph
-    // flake counts only.
-    let stats_json = if let Some(hook) = input.stats_hook {
-        let id_result = hook.finalize();
+    // stats with datatype counts + HLL NDV). Includes HLL sketch persistence so
+    // incremental index refresh can merge registers. Fallback: SPOT build result for
+    // per-graph flake counts only.
+    let (stats_json, sketch_ref) = if let Some(hook) = input.stats_hook {
+        // Persist HLL sketches BEFORE finalize consumes the hook.
+        let sketch_blob = fluree_db_indexer::stats::HllSketchBlob::from_properties(
+            input.final_t,
+            hook.properties(),
+        );
+        let sketch_bytes = sketch_blob
+            .to_json_bytes()
+            .map_err(|e| ImportError::Upload(format!("serialize HLL sketch: {}", e)))?;
+        let sketch_write = storage
+            .content_write_bytes(ContentKind::StatsSketch, alias, &sketch_bytes)
+            .await
+            .map_err(|e| ImportError::Upload(format!("write HLL sketch: {}", e)))?;
+        let sketch_cid =
+            ContentId::from_hex_digest(CODEC_FLUREE_STATS_SKETCH, &sketch_write.content_hash)
+                .expect("valid SHA-256 hash from storage write");
+
+        // Finalize with proper HLL merge for aggregate properties.
+        // When class tracking is enabled, this also returns class counts + class→property presence.
+        let (id_result, agg_props, class_counts, class_properties, _class_ref_targets) =
+            hook.finalize_with_aggregate_properties();
 
         // Per-graph stats (p_id-keyed, for StatsView.graph_properties)
         let graphs_json: Vec<serde_json::Value> = id_result
@@ -1491,39 +2006,19 @@ where
             })
             .collect();
 
-        // Aggregate per-property stats across graphs, map p_id → SID
-        // (for StatsView.properties — the map the planner actually consults)
-        struct AggProp {
-            count: u64,
-            ndv_values: u64,
-            ndv_subjects: u64,
-            last_modified_t: i64,
-        }
-        let mut agg: HashMap<u32, AggProp> = HashMap::new();
-        for g in &id_result.graphs {
-            for p in &g.properties {
-                let entry = agg.entry(p.p_id).or_insert(AggProp {
-                    count: 0,
-                    ndv_values: 0,
-                    ndv_subjects: 0,
-                    last_modified_t: 0,
-                });
-                entry.count += p.count;
-                entry.ndv_values = entry.ndv_values.max(p.ndv_values);
-                entry.ndv_subjects = entry.ndv_subjects.max(p.ndv_subjects);
-                entry.last_modified_t = entry.last_modified_t.max(p.last_modified_t);
-            }
-        }
-        let mut properties_json: Vec<serde_json::Value> = agg
+        // Top-level aggregate properties: use agg_props directly (proper HLL union).
+        // Replaces incorrect max()-based manual aggregation.
+        let mut properties_json: Vec<serde_json::Value> = agg_props
             .iter()
-            .filter_map(|(&p_id, prop)| {
-                let sid = predicate_sids.get(p_id as usize)?;
+            .filter_map(|p| {
+                let sid = predicate_sids.get(p.p_id as usize)?;
                 Some(serde_json::json!({
                     "sid": [sid.0, &sid.1],
-                    "count": prop.count,
-                    "ndv_values": prop.ndv_values,
-                    "ndv_subjects": prop.ndv_subjects,
-                    "last_modified_t": prop.last_modified_t,
+                    "count": p.count,
+                    "ndv_values": p.ndv_values,
+                    "ndv_subjects": p.ndv_subjects,
+                    "last_modified_t": p.last_modified_t,
+                    "datatypes": p.datatypes,
                 }))
             })
             .collect();
@@ -1560,12 +2055,59 @@ where
             "stats collected from IdStatsHook"
         );
 
-        serde_json::json!({
-            "flakes": id_result.total_flakes,
-            "size": 0,
-            "properties": properties_json,
-            "graphs": graphs_json,
-        })
+        // Class stats: counts + class→property presence.
+        //
+        // IMPORTANT: This intentionally does not include per-class per-property counts or
+        // per-class datatype breakdowns. Those are available via aggregate property stats
+        // (ledger-wide) and per-graph property stats (authoritative), and can be joined
+        // by the UI using the property SID.
+        let classes_json: Vec<serde_json::Value> = if class_counts.is_empty() {
+            Vec::new()
+        } else {
+            // Use BinaryIndexStore for sid64 -> IRI -> Sid encoding (no giant HashMap reverse map).
+            let store =
+                BinaryIndexStore::load(input.run_dir, input.index_dir).map_err(ImportError::Io)?;
+
+            class_counts
+                .iter()
+                .filter_map(|&(class_sid64, count)| {
+                    let iri = store.resolve_subject_iri(class_sid64).ok()?;
+                    let sid = store.encode_iri(&iri);
+
+                    // Properties used by instances of this class (presence only).
+                    let prop_usages: Vec<serde_json::Value> = class_properties
+                        .get(&class_sid64)
+                        .map(|props| {
+                            let mut sorted: Vec<u32> = props.iter().copied().collect();
+                            sorted.sort();
+                            sorted
+                                .iter()
+                                .filter_map(|&pid| {
+                                    let psid = predicate_sids.get(pid as usize)?;
+                                    Some(serde_json::json!([[psid.0, psid.1]]))
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    Some(serde_json::json!([
+                        [sid.namespace_code, sid.name.as_ref()],
+                        [count, prop_usages],
+                    ]))
+                })
+                .collect()
+        };
+
+        (
+            serde_json::json!({
+                "flakes": id_result.total_flakes,
+                "size": 0,
+                "properties": properties_json,
+                "graphs": graphs_json,
+                "classes": classes_json,
+            }),
+            Some(sketch_cid),
+        )
     } else {
         // Fallback: flake counts only (no per-property / datatype breakdown).
         let (_, spot_result) = build_results
@@ -1587,11 +2129,14 @@ where
 
         let total_flakes: u64 = spot_result.graphs.iter().map(|g| g.total_rows).sum();
 
-        serde_json::json!({
-            "flakes": total_flakes,
-            "size": 0,
-            "graphs": graph_stats
-        })
+        (
+            serde_json::json!({
+                "flakes": total_flakes,
+                "size": 0,
+                "graphs": graph_stats
+            }),
+            None,
+        )
     };
 
     // ---- Phase 5: Build V2 root ----
@@ -1608,7 +2153,7 @@ where
         schema: None,
         prev_index: None, // fresh import
         garbage: None,    // fresh import
-        sketch_ref: None, // sketches persisted on next incremental index build
+        sketch_ref,       // persisted HLL sketch (or None if stats disabled)
         subject_watermarks: uploaded_dicts.subject_watermarks,
         string_watermark: uploaded_dicts.string_watermark,
     });
@@ -1681,4 +2226,108 @@ fn session_id() -> String {
 fn derive_session_dir<S: Storage>(_storage: &S, alias_prefix: &str, sid: &str) -> PathBuf {
     let base = std::env::temp_dir().join("fluree-import");
     base.join(alias_prefix).join("tmp_import").join(sid)
+}
+
+/// Build a JSON-LD @context from turtle prefix declarations + built-in namespaces,
+/// write it to CAS, and push it as the ledger's default context via nameservice config.
+async fn store_default_context<S, N>(
+    storage: &S,
+    nameservice: &N,
+    alias: &str,
+    turtle_prefix_map: &HashMap<String, String>,
+) -> std::result::Result<(), ImportError>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    N: fluree_db_nameservice::ConfigPublisher,
+{
+    use fluree_db_nameservice::{ConfigPayload, ConfigValue};
+
+    // Build IRI → short prefix map, starting with well-known built-in prefixes.
+    // Turtle-declared prefixes override built-ins if they map the same IRI.
+    let builtin_prefixes: &[(&str, &str)] = &[
+        (fluree_vocab::rdf::NS, "rdf"),
+        (fluree_vocab::rdfs::NS, "rdfs"),
+        (fluree_vocab::xsd::NS, "xsd"),
+        (fluree_vocab::owl::NS, "owl"),
+        (fluree_vocab::shacl::NS, "sh"),
+        (fluree_vocab::geo::NS, "geo"),
+    ];
+
+    let mut context_map = serde_json::Map::new();
+
+    // Add built-ins first
+    for &(iri, short) in builtin_prefixes {
+        context_map.insert(
+            short.to_string(),
+            serde_json::Value::String(iri.to_string()),
+        );
+    }
+
+    // Overlay turtle-declared prefixes (IRI → short name)
+    for (iri, short) in turtle_prefix_map {
+        context_map.insert(short.clone(), serde_json::Value::String(iri.clone()));
+    }
+
+    if context_map.is_empty() {
+        return Ok(());
+    }
+
+    let context_json = serde_json::Value::Object(context_map);
+    let context_bytes = serde_json::to_vec(&context_json)
+        .map_err(|e| ImportError::Storage(format!("serialize default context: {}", e)))?;
+
+    // Write to CAS via ContentStore (returns CID)
+    let cs = fluree_db_core::content_store_for(storage.clone(), alias);
+    let cid = cs
+        .put(ContentKind::LedgerConfig, &context_bytes)
+        .await
+        .map_err(|e| ImportError::Storage(format!("write default context to CAS: {}", e)))?;
+
+    tracing::info!(
+        cid = %cid,
+        prefixes = context_json.as_object().map(|m| m.len()).unwrap_or(0),
+        "default context written to CAS"
+    );
+
+    // Read current config before push (needed for GC of old blob)
+    let current_config = nameservice
+        .get_config(alias)
+        .await
+        .map_err(|e| ImportError::Storage(format!("get config: {}", e)))?;
+
+    let old_default_context = current_config
+        .as_ref()
+        .and_then(|c| c.payload.as_ref())
+        .and_then(|p| p.default_context.clone());
+
+    // Push new CID to nameservice config
+    let new_config = ConfigValue::new(
+        current_config.as_ref().map_or(1, |c| c.v + 1),
+        Some(ConfigPayload::with_default_context(cid.clone())),
+    );
+
+    nameservice
+        .push_config(alias, current_config.as_ref(), &new_config)
+        .await
+        .map_err(|e| ImportError::Storage(format!("push default context config: {}", e)))?;
+
+    tracing::info!("default context published to nameservice config");
+
+    // GC: best-effort delete of the old context blob if CID changed
+    if let Some(old_cid) = old_default_context {
+        if old_cid != cid {
+            let kind = old_cid.content_kind().unwrap_or(ContentKind::LedgerConfig);
+            let addr = fluree_db_core::content_address(
+                storage.storage_method(),
+                kind,
+                alias,
+                &old_cid.digest_hex(),
+            );
+            if let Err(e) = storage.delete(&addr).await {
+                tracing::debug!(%e, old_addr = %addr, "could not GC old default context blob");
+            }
+        }
+    }
+
+    Ok(())
 }

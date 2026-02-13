@@ -11,7 +11,7 @@ use fluree_vocab::rdf;
 use rustc_hash::FxHashMap;
 
 use crate::error::{Result, TurtleError};
-use crate::lex::{tokenize, Token, TokenKind};
+use crate::lex::{StreamingLexer, Token, TokenKind};
 
 /// RDF well-known IRIs (imported from vocab crate)
 const RDF_TYPE: &str = rdf::TYPE;
@@ -23,10 +23,10 @@ const RDF_NIL: &str = rdf::NIL;
 pub struct Parser<'a, 'input, S> {
     /// Source input for span extraction.
     input: &'input str,
-    /// All tokens (batch-lexed).
-    tokens: Vec<Token>,
-    /// Current position in the token stream.
-    pos: usize,
+    /// Streaming lexer — produces tokens on demand (no Vec<Token>).
+    lexer: StreamingLexer<'input>,
+    /// The current token (most recently lexed).
+    current_token: Token,
     sink: &'a mut S,
     /// Cache of fully-expanded IRI string -> TermId (per-parse, in-memory).
     ///
@@ -58,12 +58,14 @@ pub struct Parser<'a, 'input, S> {
 impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
     /// Create a new parser.
     pub fn new(input: &'input str, sink: &'a mut S) -> Result<Self> {
-        let tokens = tokenize(input)?;
+        let mut lexer = StreamingLexer::new(input);
+        let current_token = lexer.next_token()?;
 
-        // Pre-size caches based on token count. Roughly 1 unique term per
-        // 3 tokens. Over-estimating is fine — it just wastes a bit of memory
-        // to avoid rehash resizing.
-        let est_unique = tokens.len() / 3;
+        // Pre-size caches based on input length. ~20 bytes per token on
+        // average in Turtle, ~3 tokens per unique term → ~60 bytes per
+        // unique term. Cap at 2M to avoid reserving hundreds of MB for
+        // very large chunks.
+        let est_unique = (input.len() / 60).min(2_000_000);
         let mut iri_term_cache = FxHashMap::default();
         iri_term_cache.reserve(est_unique);
         let mut prefixed_term_cache = FxHashMap::default();
@@ -71,8 +73,8 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
 
         Ok(Self {
             input,
-            tokens,
-            pos: 0,
+            lexer,
+            current_token,
             sink,
             iri_term_cache,
             prefixed_term_cache,
@@ -317,32 +319,33 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
 
     /// Check if we're at the end of input.
     fn is_at_end(&self) -> bool {
-        matches!(self.tokens[self.pos].kind, TokenKind::Eof)
+        matches!(self.current_token.kind, TokenKind::Eof)
     }
 
     /// Get the current token.
     #[inline]
     fn current(&self) -> &Token {
-        &self.tokens[self.pos]
+        &self.current_token
     }
 
     /// Advance to the next token.
     #[inline]
-    fn advance(&mut self) {
+    fn advance(&mut self) -> Result<()> {
         if !self.is_at_end() {
-            self.pos += 1;
+            self.current_token = self.lexer.next_token()?;
         }
+        Ok(())
     }
 
     /// Check if the current token matches the expected kind.
     fn check(&self, kind: &TokenKind) -> bool {
-        std::mem::discriminant(&self.tokens[self.pos].kind) == std::mem::discriminant(kind)
+        std::mem::discriminant(&self.current_token.kind) == std::mem::discriminant(kind)
     }
 
     /// Consume a token of the expected kind, or return an error.
     fn expect(&mut self, kind: &TokenKind) -> Result<()> {
         if self.check(kind) {
-            self.advance();
+            self.advance()?;
             Ok(())
         } else {
             Err(TurtleError::parse(
@@ -369,7 +372,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
     /// Parse @prefix or PREFIX directive.
     fn parse_prefix_directive(&mut self) -> Result<()> {
         let is_sparql_style = matches!(self.current().kind, TokenKind::KwSparqlPrefix);
-        self.advance(); // consume @prefix or PREFIX
+        self.advance()?; // consume @prefix or PREFIX
 
         // Get prefix name (must be PrefixedNameNs)
         let prefix = match self.current().kind {
@@ -385,7 +388,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 ))
             }
         };
-        self.advance();
+        self.advance()?;
 
         // Get namespace IRI
         let namespace = match self.current().kind.clone() {
@@ -403,7 +406,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 ))
             }
         };
-        self.advance();
+        self.advance()?;
 
         // Register prefix
         self.sink_on_prefix(&prefix, &namespace);
@@ -420,7 +423,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
     /// Parse @base or BASE directive.
     fn parse_base_directive(&mut self) -> Result<()> {
         let is_sparql_style = matches!(self.current().kind, TokenKind::KwSparqlBase);
-        self.advance(); // consume @base or BASE
+        self.advance()?; // consume @base or BASE
 
         // Get base IRI
         let base_iri = match self.current().kind.clone() {
@@ -437,7 +440,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 ))
             }
         };
-        self.advance();
+        self.advance()?;
 
         // Set base
         self.sink_on_base(&base_iri);
@@ -466,32 +469,32 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 let s = self.current().start;
                 let e = self.current().end;
                 let iri = self.iri_content(s, e);
-                self.advance();
+                self.advance()?;
                 self.resolve_iri_term(iri)
             }
             TokenKind::IriEscaped(iri) => {
-                self.advance();
+                self.advance()?;
                 self.resolve_iri_term(&iri)
             }
             TokenKind::PrefixedName | TokenKind::PrefixedNameNs => {
                 let s = self.current().start;
                 let e = self.current().end;
-                self.advance();
+                self.advance()?;
                 self.resolve_prefixed_term(s, e)
             }
             TokenKind::BlankNodeLabel => {
                 let label = self.blank_label(self.current().start, self.current().end);
-                self.advance();
+                self.advance()?;
                 Ok(self.sink_term_blank(Some(label)))
             }
             TokenKind::Anon => {
-                self.advance();
+                self.advance()?;
                 Ok(self.sink_term_blank(None))
             }
             TokenKind::LBracket => self.parse_blank_node_property_list(),
             TokenKind::LParen => self.parse_collection(),
             TokenKind::Nil => {
-                self.advance();
+                self.advance()?;
                 Ok(self.rdf_nil())
             }
             _ => Err(TurtleError::parse(
@@ -508,7 +511,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             self.parse_object_list(subject, predicate)?;
 
             if matches!(self.current().kind, TokenKind::Semicolon) {
-                self.advance();
+                self.advance()?;
                 if matches!(
                     self.current().kind,
                     TokenKind::Dot | TokenKind::RBracket | TokenKind::Eof
@@ -529,21 +532,21 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 let s = self.current().start;
                 let e = self.current().end;
                 let iri = self.iri_content(s, e);
-                self.advance();
+                self.advance()?;
                 self.resolve_iri_term(iri)
             }
             TokenKind::IriEscaped(iri) => {
-                self.advance();
+                self.advance()?;
                 self.resolve_iri_term(&iri)
             }
             TokenKind::PrefixedName | TokenKind::PrefixedNameNs => {
                 let s = self.current().start;
                 let e = self.current().end;
-                self.advance();
+                self.advance()?;
                 self.resolve_prefixed_term(s, e)
             }
             TokenKind::KwA => {
-                self.advance();
+                self.advance()?;
                 Ok(self.rdf_type())
             }
             _ => Err(TurtleError::parse(
@@ -564,7 +567,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                     self.parse_collection_as_list(subject, predicate)?;
                 }
                 TokenKind::Nil => {
-                    self.advance();
+                    self.advance()?;
                 }
                 _ => {
                     let object = self.parse_object()?;
@@ -573,7 +576,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             }
 
             if matches!(self.current().kind, TokenKind::Comma) {
-                self.advance();
+                self.advance()?;
             } else {
                 break;
             }
@@ -601,32 +604,32 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 let s = self.current().start;
                 let e = self.current().end;
                 let iri = self.iri_content(s, e);
-                self.advance();
+                self.advance()?;
                 self.resolve_iri_term(iri)
             }
             TokenKind::IriEscaped(iri) => {
-                self.advance();
+                self.advance()?;
                 self.resolve_iri_term(&iri)
             }
             TokenKind::PrefixedName | TokenKind::PrefixedNameNs => {
                 let s = self.current().start;
                 let e = self.current().end;
-                self.advance();
+                self.advance()?;
                 self.resolve_prefixed_term(s, e)
             }
             TokenKind::BlankNodeLabel => {
                 let label = self.blank_label(self.current().start, self.current().end);
-                self.advance();
+                self.advance()?;
                 Ok(self.sink_term_blank(Some(label)))
             }
             TokenKind::Anon => {
-                self.advance();
+                self.advance()?;
                 Ok(self.sink_term_blank(None))
             }
             TokenKind::LBracket => self.parse_blank_node_property_list(),
             TokenKind::LParen => self.parse_collection(),
             TokenKind::Nil => {
-                self.advance();
+                self.advance()?;
                 Ok(self.rdf_nil())
             }
             TokenKind::String | TokenKind::LongString | TokenKind::StringEscaped(_) => {
@@ -649,41 +652,41 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             TokenKind::String => {
                 let s = self.current().start;
                 let e = self.current().end;
-                self.advance();
+                self.advance()?;
                 self.parse_string_suffix(s, e, 1)
             }
             TokenKind::LongString => {
                 let s = self.current().start;
                 let e = self.current().end;
-                self.advance();
+                self.advance()?;
                 self.parse_string_suffix(s, e, 3)
             }
             TokenKind::StringEscaped(value) => {
-                self.advance();
+                self.advance()?;
                 self.parse_string_suffix_escaped(&value)
             }
             TokenKind::Integer(n) => {
-                self.advance();
+                self.advance()?;
                 Ok(self.sink_term_literal_value(LiteralValue::Integer(n), Datatype::xsd_integer()))
             }
             TokenKind::Decimal => {
                 let s = self.current().start;
                 let e = self.current().end;
                 let text = self.decimal_content(s, e);
-                self.advance();
+                self.advance()?;
                 Ok(self.sink_term_literal(text, Datatype::xsd_decimal(), None))
             }
             TokenKind::Double(n) => {
-                self.advance();
+                self.advance()?;
                 Ok(self.sink_term_literal_value(LiteralValue::Double(n), Datatype::xsd_double()))
             }
             TokenKind::KwTrue => {
-                self.advance();
+                self.advance()?;
                 Ok(self
                     .sink_term_literal_value(LiteralValue::Boolean(true), Datatype::xsd_boolean()))
             }
             TokenKind::KwFalse => {
-                self.advance();
+                self.advance()?;
                 Ok(self
                     .sink_term_literal_value(LiteralValue::Boolean(false), Datatype::xsd_boolean()))
             }
@@ -707,14 +710,14 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             TokenKind::LangTag => {
                 let ls = self.current().start;
                 let le = self.current().end;
-                self.advance();
+                self.advance()?;
                 let value =
                     &self.input[(str_start as usize + quote_len)..(str_end as usize - quote_len)];
                 let lang = self.lang_content(ls, le);
                 Ok(self.sink_term_literal(value, Datatype::rdf_lang_string(), Some(lang)))
             }
             TokenKind::DoubleCaret => {
-                self.advance();
+                self.advance()?;
                 let datatype_iri = self.parse_datatype_iri()?;
                 let value =
                     &self.input[(str_start as usize + quote_len)..(str_end as usize - quote_len)];
@@ -735,12 +738,12 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             TokenKind::LangTag => {
                 let ls = self.current().start;
                 let le = self.current().end;
-                self.advance();
+                self.advance()?;
                 let lang = self.lang_content(ls, le);
                 Ok(self.sink_term_literal(value, Datatype::rdf_lang_string(), Some(lang)))
             }
             TokenKind::DoubleCaret => {
-                self.advance();
+                self.advance()?;
                 let datatype_iri = self.parse_datatype_iri()?;
                 let datatype = Datatype::from_iri(&datatype_iri);
                 Ok(self.sink_term_literal(value, datatype, None))
@@ -756,7 +759,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 let s = self.current().start;
                 let e = self.current().end;
                 let iri = self.iri_content(s, e);
-                self.advance();
+                self.advance()?;
                 if self.base.is_none() && is_absolute_iri(iri) {
                     Ok(iri.to_string())
                 } else {
@@ -764,7 +767,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 }
             }
             TokenKind::IriEscaped(iri) => {
-                self.advance();
+                self.advance()?;
                 if self.base.is_none() && is_absolute_iri(&iri) {
                     Ok(iri.to_string())
                 } else {
@@ -778,7 +781,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
                 let colon_pos = span.find(':').unwrap_or(span.len());
                 let prefix = &span[..colon_pos];
                 let local = &span[colon_pos + 1..];
-                self.advance();
+                self.advance()?;
                 if local.contains('\\') {
                     let unescaped = unescape_pn_local(local);
                     self.expand_prefixed_name(prefix, &unescaped)
@@ -813,7 +816,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
         self.expect(&TokenKind::LParen)?;
 
         if matches!(self.current().kind, TokenKind::RParen) {
-            self.advance();
+            self.advance()?;
             return Ok(self.rdf_nil());
         }
 
@@ -1063,6 +1066,37 @@ fn remove_dot_segments(path: &str) -> String {
 /// Parse a Turtle document into GraphSink events.
 pub fn parse<S: GraphSink>(input: &str, sink: &mut S) -> Result<()> {
     Parser::new(input, sink)?.parse()
+}
+
+/// Parse Turtle input with a pre-seeded prefix map and optional base IRI.
+///
+/// This is useful when the caller has already extracted `@prefix` / `@base`
+/// directives (e.g., from a file header) and wants to parse subsequent Turtle
+/// fragments without re-prepending/re-parsing the directive text.
+///
+/// Notes:
+/// - The provided `prefixes` and `base` affect **prefix expansion and IRI resolution**
+///   inside the parser.
+/// - This function does **not** emit `on_prefix` / `on_base` events to the sink.
+///   Callers that need those events (e.g., to pre-register namespaces) should
+///   do so explicitly.
+pub fn parse_with_prefixes_base<S: GraphSink>(
+    input: &str,
+    sink: &mut S,
+    prefixes: &[(String, String)],
+    base: Option<&str>,
+) -> Result<()> {
+    let mut parser = Parser::new(input, sink)?;
+    if let Some(base) = base {
+        parser.base = Some(base.to_string());
+    }
+    if !prefixes.is_empty() {
+        parser.prefixes.reserve(prefixes.len());
+        for (prefix, namespace) in prefixes {
+            parser.prefixes.insert(prefix.clone(), namespace.clone());
+        }
+    }
+    parser.parse()
 }
 
 #[cfg(test)]

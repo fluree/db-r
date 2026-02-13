@@ -12,6 +12,25 @@ use clap::Parser;
 use cli::{Cli, Commands};
 use error::exit_with_error;
 
+fn init_tracing(cli: &Cli) {
+    // The CLI depends on library crates that emit `tracing` events.
+    // Without an installed subscriber, `RUST_LOG=...` has no effect.
+    //
+    // Default to "off" so we don't change output unless the user opts in
+    // via `RUST_LOG` (or other `EnvFilter`-compatible env vars).
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "off".into());
+
+    let ansi = !(cli.no_color || std::env::var_os("NO_COLOR").is_some());
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(ansi)
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .init();
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -23,6 +42,8 @@ async fn main() {
     if cli.no_color || std::env::var_os("NO_COLOR").is_some() {
         colored::control::set_override(false);
     }
+
+    init_tracing(&cli);
 
     if let Err(e) = run(cli).await {
         exit_with_error(e);
@@ -45,11 +66,22 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             ledger,
             from,
             chunk_size_mb,
+            memory_budget_mb,
+            parallelism,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
+            // Create-specific flags take precedence; fall back to global flags.
             let import_opts = commands::create::ImportOpts {
-                memory_budget_mb: cli.memory_budget_mb,
-                parallelism: cli.parallelism,
+                memory_budget_mb: if memory_budget_mb > 0 {
+                    memory_budget_mb
+                } else {
+                    cli.memory_budget_mb
+                },
+                parallelism: if parallelism > 0 {
+                    parallelism
+                } else {
+                    cli.parallelism
+                },
                 chunk_size_mb,
             };
             commands::create::run(
@@ -57,6 +89,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 from.as_deref(),
                 &fluree_dir,
                 cli.verbose,
+                cli.quiet,
                 &import_opts,
             )
             .await
@@ -124,6 +157,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             args,
             expr,
             format,
+            bench,
             sparql,
             fql,
             at,
@@ -134,6 +168,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 &args,
                 expr.as_deref(),
                 &format,
+                bench,
                 sparql,
                 fql,
                 at.as_deref(),

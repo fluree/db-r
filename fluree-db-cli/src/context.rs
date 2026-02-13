@@ -277,6 +277,7 @@ pub fn build_fluree(dirs: &FlureeDir) -> CliResult<Fluree<FileStorage, FileNameS
     let storage = config::resolve_storage_path(dirs);
     let storage_str = storage.to_string_lossy().to_string();
     FlureeBuilder::file(storage_str)
+        .with_ledger_caching()
         .build()
         .map_err(|e| CliError::Config(format!("failed to initialize Fluree: {e}")))
 }

@@ -87,7 +87,9 @@ where
 
         // 1. Parse to common IR (using primary db for namespace resolution).
         let (vars, parsed) = match &input {
-            QueryInput::JsonLd(json) => parse_jsonld_query(json, &primary.db)?,
+            QueryInput::JsonLd(json) => {
+                parse_jsonld_query(json, &primary.db, primary.default_context.as_ref())?
+            }
             QueryInput::Sparql(sparql) => {
                 // For dataset view, SPARQL FROM/FROM NAMED are allowed
                 // (they were validated when building the dataset)
@@ -142,9 +144,13 @@ where
 
         // Parse
         let (vars, parsed) = match &input {
-            QueryInput::JsonLd(json) => parse_jsonld_query(json, &primary.db).map_err(|e| {
-                crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-            })?,
+            QueryInput::JsonLd(json) => {
+                parse_jsonld_query(json, &primary.db, primary.default_context.as_ref()).map_err(
+                    |e| {
+                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                    },
+                )?
+            }
             QueryInput::Sparql(sparql) => parse_sparql_to_ir(sparql, &primary.db).map_err(|e| {
                 crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
             })?,

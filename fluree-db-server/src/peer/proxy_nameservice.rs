@@ -80,7 +80,9 @@ impl NsRecordResponse {
             commit_t: self.commit_t,
             index_head_id: self.index_head_id.and_then(|s| s.parse::<ContentId>().ok()),
             index_t: self.index_t,
-            default_context: self.default_context,
+            default_context: self
+                .default_context
+                .and_then(|s| s.parse::<ContentId>().ok()),
             retracted: self.retracted,
         }
     }

@@ -1435,6 +1435,7 @@ dependencies = [
  "encode_unicode",
  "libc",
  "once_cell",
+ "unicode-width",
  "windows-sys 0.59.0",
 ]
 
@@ -2290,12 +2291,15 @@ dependencies = [
  "fluree-db-api",
  "fluree-db-core",
  "fluree-db-credential",
+ "fluree-db-indexer",
  "fluree-db-nameservice",
  "fluree-db-nameservice-sync",
  "fluree-db-novelty",
+ "fluree-db-query",
  "fluree-vocab",
  "futures",
  "hex",
+ "indicatif",
  "open",
  "parking_lot",
  "predicates",
@@ -2309,6 +2313,7 @@ dependencies = [
  "tokio",
  "toml",
  "toml_edit",
+ "tracing-subscriber",
  "urlencoding",
 ]
 
@@ -2788,6 +2793,7 @@ dependencies = [
  "hex",
  "num-bigint",
  "once_cell",
+ "parking_lot",
  "postcard",
  "rustc-hash",
  "serde",
@@ -3607,6 +3613,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "indicatif"
+version = "0.17.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "183b3088984b400f4cfac3620d5e076c84da5364016b4f49473de574b2586235"
+dependencies = [
+ "console",
+ "number_prefix",
+ "portable-atomic",
+ "unicode-width",
+ "web-time",
+]
+
+[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4180,6 +4199,12 @@ dependencies = [
  "hermit-abi",
  "libc",
 ]
+
+[[package]]
+name = "number_prefix"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "once_cell"

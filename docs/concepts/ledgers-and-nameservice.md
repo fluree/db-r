@@ -224,7 +224,7 @@ curl -X POST http://localhost:8090/nameservice/query \
 | `f:status` | Status: "ready" or "retracted" |
 | `f:ledgerCommit` | Reference to latest commit ContentId |
 | `f:ledgerIndex` | Index info object with `@id` (ContentId) and `f:t` |
-| `f:defaultContext` | Default JSON-LD context ContentId (if set) |
+| `f:defaultContextCid` | Default JSON-LD context ContentId (if set) |
 
 **Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
 

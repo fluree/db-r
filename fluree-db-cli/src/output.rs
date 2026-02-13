@@ -1,6 +1,10 @@
 use crate::detect::QueryFormat;
 use crate::error::CliResult;
 use comfy_table::{ContentArrangement, Table};
+use fluree_db_api::format::{IriCompactor, SelectMode};
+use fluree_db_api::QueryResult;
+use fluree_db_core::{Db, FlakeValue};
+use fluree_db_query::binding::Binding;
 
 /// Output format for query results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10,32 +14,270 @@ pub enum OutputFormatKind {
     Csv,
 }
 
+/// Result of formatting: the rendered string plus the total row count.
+pub struct FormatOutput {
+    pub text: String,
+    pub total_rows: usize,
+}
+
+/// Fast-path SPARQL table formatting directly from `QueryResult` (no intermediate JSON).
+///
+/// Returns:
+/// - `Ok(Some(output))` when formatting succeeded
+/// - `Ok(None)` when the result contains grouped bindings that require SPARQL disaggregation;
+///   callers should fall back to the JSON-based formatter for correctness.
+pub fn format_sparql_table_from_result(
+    result: &QueryResult,
+    db: &Db,
+    limit: Option<usize>,
+) -> CliResult<Option<FormatOutput>> {
+    // Grouped bindings require cartesian disaggregation (SPARQL formatter logic).
+    // Rather than re-implement that here, fall back to the existing SPARQL JSON formatter.
+    let compactor = IriCompactor::new(db.namespaces(), &result.context);
+    let store = result.binary_store.as_deref();
+
+    let head_var_ids: Vec<fluree_db_query::VarId> = match result.select_mode {
+        SelectMode::Wildcard => result
+            .batches
+            .first()
+            .map(|b| {
+                b.schema()
+                    .iter()
+                    .copied()
+                    // Skip internal variables (?__pp0, ?__s0, etc.) from wildcard output.
+                    .filter(|&vid| !result.vars.name(vid).starts_with("?__"))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => result.select.clone(),
+    };
+
+    // Match SPARQL JSON head var behavior: strip '?' and sort lexicographically.
+    let mut head_pairs: Vec<(String, fluree_db_query::VarId)> = head_var_ids
+        .iter()
+        .map(|&var_id| (strip_question_mark(result.vars.name(var_id)), var_id))
+        .collect();
+    head_pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let headers: Vec<String> = head_pairs.iter().map(|(name, _)| name.clone()).collect();
+    if headers.is_empty() {
+        return Ok(Some(FormatOutput {
+            text: "(empty result set)".to_string(),
+            total_rows: 0,
+        }));
+    }
+
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(&headers);
+
+    let mut printed = 0usize;
+    let max_rows = limit.unwrap_or(usize::MAX);
+
+    // SelectOne should render only a single row (parity with SPARQL formatter).
+    let select_one = result.select_mode == SelectMode::One;
+
+    for batch in &result.batches {
+        for row in 0..batch.len() {
+            let mut cells: Vec<String> = Vec::with_capacity(head_pairs.len());
+            for (_, var_id) in &head_pairs {
+                let b = batch.get(row, *var_id).unwrap_or(&Binding::Unbound);
+                match sparql_table_cell(b, &compactor, store) {
+                    Ok(cell) => cells.push(cell),
+                    Err(SparqlTableFastPath::NeedsDisaggregation) => return Ok(None),
+                }
+            }
+            table.add_row(cells);
+            printed += 1;
+
+            if select_one || printed >= max_rows {
+                break;
+            }
+        }
+        if select_one || printed >= max_rows {
+            break;
+        }
+    }
+
+    let total_rows = if select_one {
+        if printed > 0 {
+            1
+        } else {
+            0
+        }
+    } else {
+        result.row_count()
+    };
+
+    Ok(Some(FormatOutput {
+        text: table.to_string(),
+        total_rows,
+    }))
+}
+
+#[derive(Debug)]
+enum SparqlTableFastPath {
+    NeedsDisaggregation,
+}
+
+fn strip_question_mark(var_name: &str) -> String {
+    var_name.strip_prefix('?').unwrap_or(var_name).to_string()
+}
+
+fn sparql_table_cell(
+    b: &Binding,
+    compactor: &IriCompactor,
+    store: Option<&fluree_db_indexer::run_index::BinaryIndexStore>,
+) -> Result<String, SparqlTableFastPath> {
+    let s = match b {
+        Binding::Unbound | Binding::Poisoned => String::new(),
+
+        Binding::Sid(sid) => compact_bnode_strip(compactor.compact_sid(sid).ok()),
+        Binding::IriMatch { iri, .. } => compact_bnode_strip(compactor.compact_iri(iri).ok()),
+        Binding::Iri(iri) => compact_bnode_strip(compactor.compact_iri(iri).ok()),
+
+        Binding::Lit { val, .. } => flake_value_to_table_cell(val, compactor),
+
+        Binding::EncodedSid { s_id } => {
+            let Some(store) = store else {
+                return Ok(format!("{b:?}"));
+            };
+            match store.resolve_subject_iri(*s_id) {
+                Ok(iri) => compact_bnode_strip(compactor.compact_iri(&iri).ok()),
+                Err(_) => format!("{b:?}"),
+            }
+        }
+        Binding::EncodedPid { p_id } => {
+            let Some(store) = store else {
+                return Ok(format!("{b:?}"));
+            };
+            match store.resolve_predicate_iri(*p_id) {
+                Some(iri) => compact_bnode_strip(compactor.compact_iri(iri).ok()),
+                None => format!("{b:?}"),
+            }
+        }
+        Binding::EncodedLit {
+            o_kind,
+            o_key,
+            p_id,
+            ..
+        } => {
+            let Some(store) = store else {
+                return Ok(format!("{b:?}"));
+            };
+            match store.decode_value(*o_kind, *o_key, *p_id) {
+                Ok(v) => flake_value_to_table_cell(&v, compactor),
+                Err(_) => format!("{b:?}"),
+            }
+        }
+
+        // Grouped values must be disaggregated into multiple rows for SPARQL semantics.
+        Binding::Grouped(_) => return Err(SparqlTableFastPath::NeedsDisaggregation),
+    };
+    Ok(s)
+}
+
+fn compact_bnode_strip(compacted: Option<String>) -> String {
+    let Some(s) = compacted else {
+        return String::new();
+    };
+    s.strip_prefix("_:").unwrap_or(&s).to_string()
+}
+
+fn flake_value_to_table_cell(v: &FlakeValue, compactor: &IriCompactor) -> String {
+    match v {
+        FlakeValue::String(s) => s.clone(),
+        FlakeValue::Long(n) => n.to_string(),
+        FlakeValue::Double(d) => d.to_string(),
+        FlakeValue::Boolean(b) => b.to_string(),
+        FlakeValue::Vector(v) => serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()),
+        FlakeValue::Json(s) => s.clone(),
+        FlakeValue::Ref(sid) => compact_bnode_strip(compactor.compact_sid(sid).ok()),
+        FlakeValue::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
 /// Format a query result JSON value for display.
+///
+/// When `limit` is `Some(n)`, only the first `n` rows are rendered.
+/// `total_rows` always reflects the *untruncated* result set size.
 pub fn format_result(
     json: &serde_json::Value,
     format: OutputFormatKind,
     query_format: QueryFormat,
-) -> CliResult<String> {
+    limit: Option<usize>,
+) -> CliResult<FormatOutput> {
     match format {
-        OutputFormatKind::Json => {
-            Ok(serde_json::to_string_pretty(json).unwrap_or_else(|_| json.to_string()))
+        OutputFormatKind::Json => format_json(json, query_format, limit),
+        OutputFormatKind::Table => format_as_table(json, query_format, limit),
+        OutputFormatKind::Csv => format_as_csv(json, query_format, limit),
+    }
+}
+
+fn format_json(
+    json: &serde_json::Value,
+    query_format: QueryFormat,
+    limit: Option<usize>,
+) -> CliResult<FormatOutput> {
+    let (total, output_json) = match query_format {
+        QueryFormat::Sparql => {
+            let total = sparql_row_count(json);
+            match limit {
+                Some(n) if n < total => {
+                    let mut truncated = json.clone();
+                    if let Some(bindings) = truncated
+                        .pointer_mut("/results/bindings")
+                        .and_then(|v| v.as_array_mut())
+                    {
+                        bindings.truncate(n);
+                    }
+                    (total, truncated)
+                }
+                _ => (total, json.clone()),
+            }
         }
-        OutputFormatKind::Table => format_as_table(json, query_format),
-        OutputFormatKind::Csv => format_as_csv(json, query_format),
+        QueryFormat::Fql => {
+            let total = fql_row_count(json);
+            match limit {
+                Some(n) if n < total => {
+                    let mut truncated = json.clone();
+                    if let Some(arr) = truncated.as_array_mut() {
+                        arr.truncate(n);
+                    }
+                    (total, truncated)
+                }
+                _ => (total, json.clone()),
+            }
+        }
+    };
+    let text =
+        serde_json::to_string_pretty(&output_json).unwrap_or_else(|_| output_json.to_string());
+    Ok(FormatOutput {
+        text,
+        total_rows: total,
+    })
+}
+
+fn format_as_table(
+    json: &serde_json::Value,
+    query_format: QueryFormat,
+    limit: Option<usize>,
+) -> CliResult<FormatOutput> {
+    match query_format {
+        QueryFormat::Sparql => format_sparql_table(json, limit),
+        QueryFormat::Fql => format_fql_table(json, limit),
     }
 }
 
-fn format_as_table(json: &serde_json::Value, query_format: QueryFormat) -> CliResult<String> {
+fn format_as_csv(
+    json: &serde_json::Value,
+    query_format: QueryFormat,
+    limit: Option<usize>,
+) -> CliResult<FormatOutput> {
     match query_format {
-        QueryFormat::Sparql => format_sparql_table(json),
-        QueryFormat::Fql => format_fql_table(json),
-    }
-}
-
-fn format_as_csv(json: &serde_json::Value, query_format: QueryFormat) -> CliResult<String> {
-    match query_format {
-        QueryFormat::Sparql => format_sparql_csv(json),
-        QueryFormat::Fql => format_fql_csv(json),
+        QueryFormat::Sparql => format_sparql_csv(json, limit),
+        QueryFormat::Fql => format_fql_csv(json, limit),
     }
 }
 
@@ -48,9 +290,18 @@ fn csv_escape(value: &str) -> String {
     }
 }
 
-fn format_sparql_table(json: &serde_json::Value) -> CliResult<String> {
-    // SPARQL JSON results format:
-    // { "head": {"vars": [...]}, "results": {"bindings": [{...}, ...]} }
+fn sparql_row_count(json: &serde_json::Value) -> usize {
+    json.pointer("/results/bindings")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0)
+}
+
+fn fql_row_count(json: &serde_json::Value) -> usize {
+    json.as_array().map(|a| a.len()).unwrap_or(0)
+}
+
+fn format_sparql_table(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
 
@@ -65,15 +316,23 @@ fn format_sparql_table(json: &serde_json::Value) -> CliResult<String> {
         .unwrap_or_default();
 
     if vars.is_empty() {
-        return Ok(serde_json::to_string_pretty(json).unwrap_or_default());
+        return Ok(FormatOutput {
+            text: serde_json::to_string_pretty(json).unwrap_or_default(),
+            total_rows: 0,
+        });
     }
 
     table.set_header(&vars);
 
     let bindings = json.pointer("/results/bindings").and_then(|v| v.as_array());
+    let total_rows = bindings.map(|b| b.len()).unwrap_or(0);
 
     if let Some(rows) = bindings {
-        for row in rows {
+        let display_rows: &[serde_json::Value] = match limit {
+            Some(n) if n < rows.len() => &rows[..n],
+            _ => rows,
+        };
+        for row in display_rows {
             let cells: Vec<String> = vars
                 .iter()
                 .map(|var| {
@@ -88,18 +347,29 @@ fn format_sparql_table(json: &serde_json::Value) -> CliResult<String> {
         }
     }
 
-    Ok(table.to_string())
+    Ok(FormatOutput {
+        text: table.to_string(),
+        total_rows,
+    })
 }
 
-fn format_fql_table(json: &serde_json::Value) -> CliResult<String> {
-    // FQL JSON-LD results: array of objects
+fn format_fql_table(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
     let arr = match json.as_array() {
         Some(a) => a,
-        None => return Ok(serde_json::to_string_pretty(json).unwrap_or_default()),
+        None => {
+            return Ok(FormatOutput {
+                text: serde_json::to_string_pretty(json).unwrap_or_default(),
+                total_rows: 0,
+            })
+        }
     };
 
+    let total_rows = arr.len();
     if arr.is_empty() {
-        return Ok("(empty result set)".to_string());
+        return Ok(FormatOutput {
+            text: "(empty result set)".to_string(),
+            total_rows: 0,
+        });
     }
 
     // Collect all keys from all objects for column headers
@@ -118,7 +388,11 @@ fn format_fql_table(json: &serde_json::Value) -> CliResult<String> {
     table.set_content_arrangement(ContentArrangement::Dynamic);
     table.set_header(&columns);
 
-    for obj in arr {
+    let display_rows: &[serde_json::Value] = match limit {
+        Some(n) if n < arr.len() => &arr[..n],
+        _ => arr,
+    };
+    for obj in display_rows {
         let cells: Vec<String> = columns
             .iter()
             .map(|col| {
@@ -133,10 +407,13 @@ fn format_fql_table(json: &serde_json::Value) -> CliResult<String> {
         table.add_row(cells);
     }
 
-    Ok(table.to_string())
+    Ok(FormatOutput {
+        text: table.to_string(),
+        total_rows,
+    })
 }
 
-fn format_sparql_csv(json: &serde_json::Value) -> CliResult<String> {
+fn format_sparql_csv(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
     let vars = json
         .pointer("/head/vars")
         .and_then(|v| v.as_array())
@@ -148,7 +425,10 @@ fn format_sparql_csv(json: &serde_json::Value) -> CliResult<String> {
         .unwrap_or_default();
 
     if vars.is_empty() {
-        return Ok(serde_json::to_string_pretty(json).unwrap_or_default());
+        return Ok(FormatOutput {
+            text: serde_json::to_string_pretty(json).unwrap_or_default(),
+            total_rows: 0,
+        });
     }
 
     let mut lines = Vec::new();
@@ -160,9 +440,14 @@ fn format_sparql_csv(json: &serde_json::Value) -> CliResult<String> {
     );
 
     let bindings = json.pointer("/results/bindings").and_then(|v| v.as_array());
+    let total_rows = bindings.map(|b| b.len()).unwrap_or(0);
 
     if let Some(rows) = bindings {
-        for row in rows {
+        let display_rows: &[serde_json::Value] = match limit {
+            Some(n) if n < rows.len() => &rows[..n],
+            _ => rows,
+        };
+        for row in display_rows {
             let cells: Vec<String> = vars
                 .iter()
                 .map(|var| {
@@ -178,17 +463,29 @@ fn format_sparql_csv(json: &serde_json::Value) -> CliResult<String> {
         }
     }
 
-    Ok(lines.join("\n"))
+    Ok(FormatOutput {
+        text: lines.join("\n"),
+        total_rows,
+    })
 }
 
-fn format_fql_csv(json: &serde_json::Value) -> CliResult<String> {
+fn format_fql_csv(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
     let arr = match json.as_array() {
         Some(a) => a,
-        None => return Ok(serde_json::to_string_pretty(json).unwrap_or_default()),
+        None => {
+            return Ok(FormatOutput {
+                text: serde_json::to_string_pretty(json).unwrap_or_default(),
+                total_rows: 0,
+            })
+        }
     };
 
+    let total_rows = arr.len();
     if arr.is_empty() {
-        return Ok(String::new());
+        return Ok(FormatOutput {
+            text: String::new(),
+            total_rows: 0,
+        });
     }
 
     // Collect all keys
@@ -212,7 +509,11 @@ fn format_fql_csv(json: &serde_json::Value) -> CliResult<String> {
             .join(","),
     );
 
-    for obj in arr {
+    let display_rows: &[serde_json::Value] = match limit {
+        Some(n) if n < arr.len() => &arr[..n],
+        _ => arr,
+    };
+    for obj in display_rows {
         let cells: Vec<String> = columns
             .iter()
             .map(|col| {
@@ -229,5 +530,8 @@ fn format_fql_csv(json: &serde_json::Value) -> CliResult<String> {
         lines.push(cells.join(","));
     }
 
-    Ok(lines.join("\n"))
+    Ok(FormatOutput {
+        text: lines.join("\n"),
+        total_rows,
+    })
 }

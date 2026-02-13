@@ -18,13 +18,38 @@ use super::QueryResult;
 
 /// Parse a JSON-LD query and prepare it for execution.
 ///
+/// If the query has no `@context` (or `context`) key and a `default_context`
+/// is provided, the default is injected so that prefix resolution succeeds
+/// without requiring the caller to repeat prefixes on every query.
+///
 /// Returns the variable registry and parsed query.
 pub(crate) fn parse_jsonld_query(
     query_json: &JsonValue,
     db: &Db,
+    default_context: Option<&JsonValue>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
+    let has_context = query_json.get("@context").is_some() || query_json.get("context").is_some();
+
+    let effective_query;
+    let query_ref = if !has_context {
+        if let Some(ctx) = default_context {
+            effective_query = {
+                let mut q = query_json.clone();
+                if let Some(obj) = q.as_object_mut() {
+                    obj.insert("@context".to_string(), ctx.clone());
+                }
+                q
+            };
+            &effective_query
+        } else {
+            query_json
+        }
+    } else {
+        query_json
+    };
+
     let mut vars = VarRegistry::new();
-    let parsed = parse_query(query_json, db, &mut vars)?;
+    let parsed = parse_query(query_ref, db, &mut vars)?;
     Ok((vars, parsed))
 }
 

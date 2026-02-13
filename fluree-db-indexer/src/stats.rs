@@ -612,6 +612,14 @@ pub struct IdStatsHook {
     graph_flakes: HashMap<u32, i64>,
     /// p_id for rdf:type (when set, enables class tracking)
     rdf_type_p_id: Option<u32>,
+    /// Whether to track reference target-class edges (class→property→ref-class).
+    ///
+    /// This can be very memory-intensive for large datasets because it requires
+    /// retaining per-subject reference histories until finalize time.
+    ///
+    /// When disabled, class counts + class→property presence still work, but
+    /// `finalize_with_aggregate_properties()` will return an empty `class_ref_targets`.
+    track_ref_targets: bool,
     /// Class membership counts: class sid64 → signed delta count
     class_counts: HashMap<u64, i64>,
     /// Subject → class sid64 → signed delta count (net rdf:type membership).
@@ -634,7 +642,12 @@ pub struct IdStatsHook {
 
 impl IdStatsHook {
     pub fn new() -> Self {
-        Self::default()
+        // Default behavior preserves existing incremental stats richness.
+        // Import paths may disable ref-target tracking explicitly.
+        Self {
+            track_ref_targets: true,
+            ..Self::default()
+        }
     }
 
     /// Create a hook seeded with prior per-property HLL sketches.
@@ -645,6 +658,7 @@ impl IdStatsHook {
     pub fn with_prior_properties(properties: HashMap<GraphPropertyKey, IdPropertyHll>) -> Self {
         Self {
             properties,
+            track_ref_targets: true,
             ..Self::default()
         }
     }
@@ -652,6 +666,11 @@ impl IdStatsHook {
     /// Set the predicate ID for rdf:type to enable class tracking.
     pub fn set_rdf_type_p_id(&mut self, p_id: u32) {
         self.rdf_type_p_id = Some(p_id);
+    }
+
+    /// Enable/disable tracking of reference target-class edges.
+    pub fn set_track_ref_targets(&mut self, enabled: bool) {
+        self.track_ref_targets = enabled;
     }
 
     /// Process a single record with resolved IDs.
@@ -711,7 +730,7 @@ impl IdStatsHook {
             //
             // We track both assertions and retractions via signed deltas.
             // Only applies to ref objects (ObjKind::REF_ID).
-            if rec.p_id != rdf_type_pid && rec.o_kind == 0x05 {
+            if self.track_ref_targets && rec.p_id != rdf_type_pid && rec.o_kind == 0x05 {
                 // Record per-subject ref history (for retroactive attribution on rdf:type)
                 *self
                     .subject_ref_history
@@ -746,6 +765,9 @@ impl IdStatsHook {
         if self.rdf_type_p_id.is_none() {
             self.rdf_type_p_id = other.rdf_type_p_id;
         }
+        if !self.track_ref_targets {
+            self.track_ref_targets = other.track_ref_targets;
+        }
         for (class_sid, delta) in other.class_counts {
             *self.class_counts.entry(class_sid).or_insert(0) += delta;
         }
@@ -759,12 +781,14 @@ impl IdStatsHook {
             self.subject_props.entry(subject).or_default().extend(props);
         }
         // Merge per-subject ref history.
-        for (subj, per_prop) in other.subject_ref_history {
-            let entry = self.subject_ref_history.entry(subj).or_default();
-            for (p_id, objs) in per_prop {
-                let o_entry = entry.entry(p_id).or_default();
-                for (obj, d) in objs {
-                    *o_entry.entry(obj).or_insert(0) += d;
+        if self.track_ref_targets {
+            for (subj, per_prop) in other.subject_ref_history {
+                let entry = self.subject_ref_history.entry(subj).or_default();
+                for (p_id, objs) in per_prop {
+                    let o_entry = entry.entry(p_id).or_default();
+                    for (obj, d) in objs {
+                        *o_entry.entry(obj).or_insert(0) += d;
+                    }
                 }
             }
         }

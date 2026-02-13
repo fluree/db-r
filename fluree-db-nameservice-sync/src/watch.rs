@@ -10,6 +10,7 @@ use std::pin::Pin;
 
 /// An event from a remote watch
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum RemoteEvent {
     /// A ledger record was created or updated on the remote
     LedgerUpdated(NsRecord),

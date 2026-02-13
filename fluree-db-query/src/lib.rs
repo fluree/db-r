@@ -49,6 +49,7 @@ pub mod planner;
 pub mod policy;
 pub mod project;
 pub mod property_join;
+pub mod property_join_count_all;
 pub mod property_path;
 pub mod r2rml;
 pub mod reasoning;
@@ -114,6 +115,7 @@ pub use planner::{
 pub use policy::{QueryPolicyEnforcer, QueryPolicyExecutor};
 pub use project::ProjectOperator;
 pub use property_join::PropertyJoinOperator;
+pub use property_join_count_all::PropertyJoinCountAllOperator;
 pub use property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 pub use r2rml::{NoOpR2rmlProvider, R2rmlProvider, R2rmlScanOperator, R2rmlTableProvider};
 pub use reasoning::{global_reasoning_cache, ReasoningOverlay};

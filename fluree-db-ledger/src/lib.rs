@@ -107,6 +107,12 @@ pub struct LedgerState {
     /// Set by `Fluree::ledger()` when a binary index is available. Used by
     /// the query engine to enable `BinaryScanOperator` for IRI resolution.
     pub binary_store: Option<TypeErasedStore>,
+    /// Default JSON-LD @context for this ledger.
+    ///
+    /// Captured from turtle @prefix declarations during import and augmented
+    /// with built-in namespace prefixes. Applied to queries that don't supply
+    /// their own @context. Loaded from CAS via `NsRecord.default_context`.
+    pub default_context: Option<serde_json::Value>,
 }
 
 impl LedgerState {
@@ -164,6 +170,7 @@ impl LedgerState {
                     head_index_id,
                     ns_record: Some(record),
                     binary_store: None,
+                    default_context: None,
                 });
             }
             _ => record.commit_head_id.clone(),
@@ -179,6 +186,7 @@ impl LedgerState {
             head_index_id,
             ns_record: Some(record),
             binary_store: None,
+            default_context: None,
         })
     }
 
@@ -249,6 +257,7 @@ impl LedgerState {
             head_index_id: None,
             ns_record: None,
             binary_store: None,
+            default_context: None,
         }
     }
 

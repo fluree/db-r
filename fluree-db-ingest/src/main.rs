@@ -300,6 +300,7 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
         &run_dir, &index_dir, orders, 25000, // leaflet_rows
         10,    // leaflets_per_leaf
         1,     // zstd_level
+        None,  // no progress counter
     )?;
 
     for (order, result) in &results {

@@ -122,12 +122,13 @@ impl Publisher for MemoryNameService {
     async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()> {
         let key = self.normalize_ledger_id(ledger_id);
 
-        // Check if record already exists (including retracted)
+        // Check if record already exists — reject even if retracted (soft-dropped).
+        // A hard drop removes the record entirely, which is required to reuse the alias.
         if self.records.read().contains_key(&key) {
             return Err(crate::NameServiceError::ledger_already_exists(&key));
         }
 
-        // Create minimal NsRecord
+        // Create (or reset) to a fresh NsRecord
         let (ledger_name, branch) = core_ledger_id::split_ledger_id(ledger_id)?;
         let record = NsRecord::new(ledger_name, branch);
         self.records.write().insert(key, record);
@@ -236,6 +237,17 @@ impl Publisher for MemoryNameService {
                 .event_tx
                 .send(NameServiceEvent::LedgerRetracted { ledger_id: key });
         }
+        Ok(())
+    }
+
+    async fn purge(&self, ledger_id: &str) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
+        self.records.write().remove(&key);
+        self.status_values.write().remove(&key);
+        self.config_values.write().remove(&key);
+        let _ = self
+            .event_tx
+            .send(NameServiceEvent::LedgerRetracted { ledger_id: key });
         Ok(())
     }
 
@@ -1517,9 +1529,10 @@ mod tests {
         assert!(unborn.is_unborn());
 
         // Push first config
+        let ctx_cid_v1 = ContentId::new(fluree_db_core::ContentKind::LedgerConfig, b"test-ctx-v1");
         let new_config = ConfigValue::new(
             1,
-            Some(ConfigPayload::with_default_context("fluree:ctx/v1")),
+            Some(ConfigPayload::with_default_context(ctx_cid_v1.clone())),
         );
         let result = ns
             .push_config("mydb:main", Some(&unborn), &new_config)
@@ -1533,7 +1546,7 @@ mod tests {
         assert_eq!(current.v, 1);
         assert_eq!(
             current.payload.as_ref().unwrap().default_context,
-            Some("fluree:ctx/v1".to_string())
+            Some(ctx_cid_v1.clone())
         );
     }
 
@@ -1545,18 +1558,20 @@ mod tests {
         let unborn = ns.get_config("mydb:main").await.unwrap().unwrap();
 
         // Push first config
+        let ctx_cid_v1 = ContentId::new(fluree_db_core::ContentKind::LedgerConfig, b"test-ctx-v1");
         let config_v1 = ConfigValue::new(
             1,
-            Some(ConfigPayload::with_default_context("fluree:ctx/v1")),
+            Some(ConfigPayload::with_default_context(ctx_cid_v1.clone())),
         );
         ns.push_config("mydb:main", Some(&unborn), &config_v1)
             .await
             .unwrap();
 
         // Push updated config
+        let ctx_cid_v2 = ContentId::new(fluree_db_core::ContentKind::LedgerConfig, b"test-ctx-v2");
         let config_v2 = ConfigValue::new(
             2,
-            Some(ConfigPayload::with_default_context("fluree:ctx/v2")),
+            Some(ConfigPayload::with_default_context(ctx_cid_v2.clone())),
         );
         let result = ns
             .push_config("mydb:main", Some(&config_v1), &config_v2)
@@ -1568,7 +1583,7 @@ mod tests {
         assert_eq!(current.v, 2);
         assert_eq!(
             current.payload.as_ref().unwrap().default_context,
-            Some("fluree:ctx/v2".to_string())
+            Some(ctx_cid_v2)
         );
     }
 

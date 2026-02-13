@@ -12,7 +12,7 @@
 mod inner {
     use crate::commit_v2::StreamingCommitWriter;
     use crate::generate::{infer_datatype, DT_ID, DT_JSON, DT_LANG_STRING};
-    use crate::namespace::NamespaceRegistry;
+    use crate::namespace::{NamespaceRegistry, NsAllocator, WorkerCache};
     use crate::value_convert::{convert_native_literal, convert_string_literal};
     use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
     use fluree_db_novelty::commit_v2::CommitV2Error;
@@ -53,16 +53,19 @@ mod inner {
         terms: Vec<ResolvedTerm>,
         blank_labels: HashMap<String, TermId>,
         blank_counter: u32,
-        ns_registry: &'a mut NamespaceRegistry,
+        ns: NsAllocator<'a>,
         t: i64,
         txn_id: String,
         writer: StreamingCommitWriter,
         /// First encoding error encountered (checked after parse).
         encode_error: Option<CommitV2Error>,
+        /// Turtle @prefix short names: IRI → short prefix (e.g., "http://example.org/" → "ex").
+        /// Captured from `on_prefix()` calls during parse.
+        prefix_map: HashMap<String, String>,
     }
 
     impl<'a> ImportSink<'a> {
-        /// Create a new ImportSink.
+        /// Create an ImportSink for serial paths (chunk 0, TriG, small files).
         ///
         /// # Arguments
         /// * `ns_registry` — namespace registry (seeded from predefined codes)
@@ -79,22 +82,45 @@ mod inner {
                 terms: Vec::new(),
                 blank_labels: HashMap::new(),
                 blank_counter: 0,
-                ns_registry,
+                ns: NsAllocator::Exclusive(ns_registry),
                 t,
                 txn_id,
                 writer: StreamingCommitWriter::new(compress)?,
                 encode_error: None,
+                prefix_map: HashMap::new(),
+            })
+        }
+
+        /// Create an ImportSink for parallel import workers.
+        pub fn new_cached(
+            worker_cache: &'a mut WorkerCache,
+            t: i64,
+            txn_id: String,
+            compress: bool,
+        ) -> Result<Self, CommitV2Error> {
+            Ok(Self {
+                terms: Vec::new(),
+                blank_labels: HashMap::new(),
+                blank_counter: 0,
+                ns: NsAllocator::Cached(worker_cache),
+                t,
+                txn_id,
+                writer: StreamingCommitWriter::new(compress)?,
+                encode_error: None,
+                prefix_map: HashMap::new(),
             })
         }
 
         /// Consume the sink and return the writer for finalization.
         ///
         /// Returns an error if any flake failed to encode during parsing.
-        pub fn finish(self) -> Result<StreamingCommitWriter, CommitV2Error> {
+        pub fn finish(
+            self,
+        ) -> Result<(StreamingCommitWriter, HashMap<String, String>), CommitV2Error> {
             if let Some(err) = self.encode_error {
                 return Err(err);
             }
-            Ok(self.writer)
+            Ok((self.writer, self.prefix_map))
         }
 
         // -- helpers ---------------------------------------------------------
@@ -107,7 +133,7 @@ mod inner {
 
         fn skolemize(&mut self, local: &str) -> Sid {
             let unique_id = format!("{}-{}", self.txn_id, local);
-            self.ns_registry.blank_node_sid(&unique_id)
+            self.ns.blank_node_sid(&unique_id)
         }
 
         fn resolve_sid(&self, id: TermId) -> Option<Sid> {
@@ -174,12 +200,16 @@ mod inner {
             // No-op — parser resolves relative IRIs before calling term_iri
         }
 
-        fn on_prefix(&mut self, _prefix: &str, namespace_iri: &str) {
-            self.ns_registry.get_or_allocate(namespace_iri);
+        fn on_prefix(&mut self, prefix: &str, namespace_iri: &str) {
+            self.ns.get_or_allocate(namespace_iri);
+            if !prefix.is_empty() {
+                self.prefix_map
+                    .insert(namespace_iri.to_string(), prefix.to_string());
+            }
         }
 
         fn term_iri(&mut self, iri: &str) -> TermId {
-            let sid = self.ns_registry.sid_for_iri(iri);
+            let sid = self.ns.sid_for_iri(iri);
             self.add_term(ResolvedTerm::Sid(sid))
         }
 
@@ -211,7 +241,7 @@ mod inner {
         ) -> TermId {
             let lang = language.map(|s| s.to_string());
             let dt_iri = datatype.as_iri();
-            let (flake_value, dt_sid) = convert_string_literal(value, dt_iri, self.ns_registry);
+            let (flake_value, dt_sid) = convert_string_literal(value, dt_iri, &mut self.ns);
 
             let dt_sid = if lang.is_some() {
                 DT_LANG_STRING.clone()
@@ -295,7 +325,7 @@ mod inner {
             let o = sink.term_literal("Alice", Datatype::xsd_string(), None);
             sink.emit_triple(s, p, o);
 
-            let writer = sink.finish().unwrap();
+            let (writer, _prefix_map) = sink.finish().unwrap();
             assert_eq!(writer.op_count(), 1);
 
             let result = writer.finish(&make_envelope(1)).unwrap();
@@ -337,7 +367,7 @@ mod inner {
             let o = sink.term_iri("http://example.org/bob");
             sink.emit_triple(s, p, o);
 
-            let writer = sink.finish().unwrap();
+            let (writer, _prefix_map) = sink.finish().unwrap();
             assert_eq!(writer.op_count(), 5);
 
             let result = writer.finish(&make_envelope(1)).unwrap();
@@ -360,7 +390,7 @@ mod inner {
             let o = sink.term_literal("Alice", Datatype::rdf_lang_string(), Some("en"));
             sink.emit_triple(s, p, o);
 
-            let writer = sink.finish().unwrap();
+            let (writer, _prefix_map) = sink.finish().unwrap();
             let result = writer.finish(&make_envelope(1)).unwrap();
             let decoded = read_commit(&result.bytes).unwrap();
 
@@ -400,7 +430,7 @@ mod inner {
             sink.emit_list_item(s, p, o1, 1);
             sink.emit_list_item(s, p, o2, 2);
 
-            let writer = sink.finish().unwrap();
+            let (writer, _prefix_map) = sink.finish().unwrap();
             assert_eq!(writer.op_count(), 3);
 
             let result = writer.finish(&make_envelope(1)).unwrap();

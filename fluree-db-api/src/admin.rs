@@ -287,12 +287,16 @@ where
             );
         }
 
-        // 5. Retract from nameservice
-        // Always attempt retract on normalized ledger_id - safe to call even if already
-        // retracted (idempotent) or NotFound (no-op). This handles cases where
-        // lookup used non-canonical ledger_id but retract needs the normalized form.
-        if let Err(e) = self.nameservice.retract(&ledger_id).await {
-            // Log but don't fail - retract may fail if truly not found
+        // 5. Retract or purge from nameservice
+        // Soft drop: retract (mark as retracted, alias cannot be reused)
+        // Hard drop: purge (remove record entirely, alias can be reused)
+        let ns_result = if matches!(mode, DropMode::Hard) {
+            self.nameservice.purge(&ledger_id).await
+        } else {
+            self.nameservice.retract(&ledger_id).await
+        };
+        if let Err(e) = ns_result {
+            // Log but don't fail - retract/purge may fail if truly not found
             warn!(ledger_id = %ledger_id, error = %e, "Nameservice retract warning");
             report.warnings.push(format!("Nameservice retract: {}", e));
         }

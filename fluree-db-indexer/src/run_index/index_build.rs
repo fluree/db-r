@@ -16,6 +16,8 @@ use super::run_record::{cmp_for_order, RunSortOrder};
 use super::streaming_reader::StreamingRunReader;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // ============================================================================
@@ -44,6 +46,10 @@ pub struct IndexBuildConfig {
     /// Whether to persist the unified language dict to disk.
     /// Set to false when called from `build_all_indexes` (which pre-computes it).
     pub persist_lang_dict: bool,
+    /// Shared counter incremented for each row merged in this order.
+    /// Only attached to a single order (POST) by `build_all_indexes` so that
+    /// the reported total matches the actual flake count, not flakes × orders.
+    pub progress: Option<Arc<AtomicU64>>,
 }
 
 impl Default for IndexBuildConfig {
@@ -57,6 +63,7 @@ impl Default for IndexBuildConfig {
             leaflets_per_leaf: 10,
             zstd_level: 1,
             persist_lang_dict: true,
+            progress: None,
         }
     }
 }
@@ -310,6 +317,9 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
         current_writer.as_mut().unwrap().push_record(record)?;
         total_rows += 1;
         records_since_log += 1;
+        if let Some(ref ctr) = config.progress {
+            ctr.fetch_add(1, Ordering::Relaxed);
+        }
 
         if records_since_log >= 10_000_000 {
             tracing::info!(
@@ -529,6 +539,7 @@ pub fn build_all_indexes(
     leaflet_rows: usize,
     leaflets_per_leaf: usize,
     zstd_level: i32,
+    progress: Option<Arc<AtomicU64>>,
 ) -> Result<Vec<(RunSortOrder, IndexBuildResult)>, IndexBuildError> {
     let _span = tracing::info_span!("build_all_indexes").entered();
     let start = Instant::now();
@@ -560,6 +571,14 @@ pub fn build_all_indexes(
 
                 let base = base_run_dir.to_path_buf();
                 let idx_dir = index_dir.to_path_buf();
+                // Only attach the progress counter to POST — it's the longest-running
+                // order and its row count equals the total flake count, so the
+                // caller can use cumulative_flakes (not ×4) as the denominator.
+                let order_progress = if order == RunSortOrder::Post {
+                    progress.clone()
+                } else {
+                    None
+                };
 
                 Some((order, s.spawn(move || {
                     let config = IndexBuildConfig {
@@ -571,6 +590,7 @@ pub fn build_all_indexes(
                         leaflets_per_leaf,
                         zstd_level,
                         persist_lang_dict: false, // already pre-computed
+                        progress: order_progress,
                     };
                     build_index(config)
                 })))

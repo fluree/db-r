@@ -2039,6 +2039,7 @@ mod tests {
             64, // leaflet_rows
             2,  // leaflets_per_leaf
             0,  // zstd_level
+            None,
         )
         .unwrap();
 

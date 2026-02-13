@@ -1207,7 +1207,7 @@ fn cli_respects_custom_storage_path_in_config() {
     let config = std::fs::read_to_string(&config_path).unwrap();
     // Replace the commented-out storage_path line with an active one
     let config = config.replace(
-        &format!("# storage_path = \".fluree/storage\""),
+        "# storage_path = \".fluree/storage\"",
         &format!("storage_path = \"{}\"", custom_storage.to_str().unwrap()),
     );
     // Uncomment [server] so the key is under the right section

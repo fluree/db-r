@@ -349,6 +349,7 @@ where
                 25_000, // leaflet_rows
                 10,     // leaflets_per_leaf
                 1,      // zstd_level
+                None,   // no progress counter
             )
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
