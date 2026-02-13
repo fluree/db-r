@@ -56,11 +56,109 @@ pub struct Posting {
     pub term_freq: u32,
 }
 
+/// Number of postings per block. Matches Lucene's default.
+/// 128 postings ≈ 1 KB per block at current `Posting` size — L1 cache friendly.
+pub(crate) const POSTING_BLOCK_SIZE: usize = 128;
+
+/// Per-block metadata for navigation and future WAND score upper bounds.
+///
+/// Each block covers a contiguous slice of the parent `PostingList.postings` vec.
+/// Block boundaries are implicit from `end_offset` values (block 0 starts at 0).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BlockMeta {
+    /// Exclusive end offset into the parent `PostingList.postings` vec.
+    /// Block i spans `postings[block_meta[i-1].end_offset .. block_meta[i].end_offset]`
+    /// (block 0 starts at 0).
+    pub end_offset: u32,
+    /// Maximum doc_id in this block. Since postings are sorted by doc_id,
+    /// this is always `postings[end_offset - 1].doc_id` (no scan needed).
+    pub max_doc_id: u32,
+    /// Maximum term_freq in this block. Used by WAND for per-block score upper bounds
+    /// (combined with global `min_doc_len` to compute a conservative BM25 upper bound).
+    pub max_tf: u32,
+}
+
 /// Posting list for a single term. Postings are sorted by doc_id.
+///
+/// `block_meta` is derived from `postings` and rebuilt by
+/// [`Bm25Index::rebuild_lookups()`]. It is empty during index building
+/// (when documents are being added) and populated after deserialization or
+/// compaction. Code that reads `block_meta` must handle the empty case
+/// (fall back to flat iteration/search).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PostingList {
     /// Postings sorted by doc_id
     pub postings: Vec<Posting>,
+    /// Block metadata for navigation. Derived — not serialized.
+    /// Empty during index building; populated by `rebuild_lookups()`.
+    #[serde(skip)]
+    pub(crate) block_meta: Vec<BlockMeta>,
+}
+
+impl PostingList {
+    /// Rebuild block metadata from the flat postings array.
+    ///
+    /// Single O(n) pass: `max_doc_id` is free (last posting in sorted block),
+    /// `max_tf` requires scanning each block. Negligible vs decompression cost.
+    pub fn rebuild_block_meta(&mut self) {
+        self.block_meta.clear();
+        if self.postings.is_empty() {
+            return;
+        }
+        debug_assert!(
+            self.postings.len() <= u32::MAX as usize,
+            "posting list exceeds u32 addressability"
+        );
+
+        let mut start = 0usize;
+        while start < self.postings.len() {
+            let end = (start + POSTING_BLOCK_SIZE).min(self.postings.len());
+            let block = &self.postings[start..end];
+            // max_doc_id: free from sort order (last element in sorted block)
+            let max_doc_id = block.last().unwrap().doc_id;
+            // max_tf: requires scanning the block
+            let max_tf = block.iter().map(|p| p.term_freq).max().unwrap_or(0);
+            self.block_meta.push(BlockMeta {
+                end_offset: end as u32,
+                max_doc_id,
+                max_tf,
+            });
+            start = end;
+        }
+    }
+
+    /// Get the postings slice for block at `block_idx`.
+    ///
+    /// # Panics
+    /// Panics if `block_idx >= self.block_meta.len()` or if `block_meta` is empty.
+    pub fn block_postings(&self, block_idx: usize) -> &[Posting] {
+        debug_assert!(
+            block_idx < self.block_meta.len(),
+            "block_idx {block_idx} out of range (num_blocks={})",
+            self.block_meta.len()
+        );
+        let start = if block_idx == 0 {
+            0
+        } else {
+            self.block_meta[block_idx - 1].end_offset as usize
+        };
+        let end = self.block_meta[block_idx].end_offset as usize;
+        &self.postings[start..end]
+    }
+
+    /// Find the first block whose `max_doc_id >= target_doc_id`.
+    /// Returns `None` if all blocks have `max_doc_id < target_doc_id`.
+    pub fn block_containing(&self, target_doc_id: u32) -> Option<usize> {
+        let idx = self
+            .block_meta
+            .partition_point(|bm| bm.max_doc_id < target_doc_id);
+        (idx < self.block_meta.len()).then_some(idx)
+    }
+
+    /// Number of blocks (0 if block_meta not yet populated).
+    pub fn num_blocks(&self) -> usize {
+        self.block_meta.len()
+    }
 }
 
 /// Document metadata entry: maps internal doc_id to identity and length.
@@ -858,6 +956,11 @@ impl Bm25Index {
                 );
             }
         }
+
+        // Rebuild block metadata for all posting lists
+        for pl in &mut self.posting_lists {
+            pl.rebuild_block_meta();
+        }
     }
 
     /// Compact the index: drop tombstones, renumber doc_ids and term_idx deterministically.
@@ -1631,5 +1734,218 @@ mod tests {
         // With no tracked predicates, no subjects should be affected
         let affected = compiled.affected_subjects(&flakes);
         assert!(affected.is_empty());
+    }
+
+    // ========================================================================
+    // Block metadata tests
+    // ========================================================================
+
+    /// Helper: build a PostingList with `n` postings (doc_ids 0..n, tf = doc_id % 7 + 1).
+    fn make_posting_list(n: usize) -> PostingList {
+        let postings: Vec<Posting> = (0..n)
+            .map(|i| Posting {
+                doc_id: i as u32,
+                term_freq: (i % 7) as u32 + 1,
+            })
+            .collect();
+        PostingList {
+            postings,
+            block_meta: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_block_meta_rebuild_various_sizes() {
+        for &n in &[0usize, 1, 127, 128, 129, 256, 300] {
+            let mut pl = make_posting_list(n);
+            pl.rebuild_block_meta();
+
+            let expected_blocks = if n == 0 {
+                0
+            } else {
+                n.div_ceil(POSTING_BLOCK_SIZE)
+            };
+            assert_eq!(
+                pl.num_blocks(),
+                expected_blocks,
+                "wrong block count for n={n}"
+            );
+
+            if n == 0 {
+                continue;
+            }
+
+            // Verify end_offset monotonically increasing and within bounds
+            let mut prev_end = 0u32;
+            for (i, bm) in pl.block_meta.iter().enumerate() {
+                assert!(
+                    bm.end_offset > prev_end || (i == 0 && bm.end_offset > 0),
+                    "end_offset not increasing at block {i} for n={n}"
+                );
+                assert!(
+                    bm.end_offset as usize <= n,
+                    "end_offset out of bounds at block {i} for n={n}"
+                );
+                prev_end = bm.end_offset;
+            }
+            // Last block covers all postings
+            assert_eq!(
+                pl.block_meta.last().unwrap().end_offset as usize,
+                n,
+                "last block end_offset != n for n={n}"
+            );
+
+            // Verify max_doc_id == last posting in block (sorted invariant)
+            for i in 0..pl.num_blocks() {
+                let block = pl.block_postings(i);
+                assert_eq!(
+                    block.last().unwrap().doc_id,
+                    pl.block_meta[i].max_doc_id,
+                    "max_doc_id mismatch at block {i} for n={n}"
+                );
+            }
+
+            // Verify max_tf matches actual max within each block
+            for i in 0..pl.num_blocks() {
+                let block = pl.block_postings(i);
+                let actual_max_tf = block.iter().map(|p| p.term_freq).max().unwrap();
+                assert_eq!(
+                    actual_max_tf, pl.block_meta[i].max_tf,
+                    "max_tf mismatch at block {i} for n={n}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_block_containing() {
+        let mut pl = make_posting_list(300); // ~3 blocks (0..127, 128..255, 256..299)
+        pl.rebuild_block_meta();
+        assert_eq!(pl.num_blocks(), 3);
+
+        // doc_id in first block
+        assert_eq!(pl.block_containing(0), Some(0));
+        assert_eq!(pl.block_containing(50), Some(0));
+        assert_eq!(pl.block_containing(127), Some(0));
+
+        // doc_id in second block
+        assert_eq!(pl.block_containing(128), Some(1));
+        assert_eq!(pl.block_containing(200), Some(1));
+        assert_eq!(pl.block_containing(255), Some(1));
+
+        // doc_id in third block
+        assert_eq!(pl.block_containing(256), Some(2));
+        assert_eq!(pl.block_containing(299), Some(2));
+
+        // doc_id larger than all blocks
+        assert_eq!(pl.block_containing(300), None);
+        assert_eq!(pl.block_containing(1000), None);
+
+        // Empty posting list
+        let empty = PostingList::default();
+        assert_eq!(empty.block_containing(0), None);
+    }
+
+    #[test]
+    fn test_block_postings_slices() {
+        let mut pl = make_posting_list(300);
+        pl.rebuild_block_meta();
+
+        // First block: 128 postings
+        let b0 = pl.block_postings(0);
+        assert_eq!(b0.len(), 128);
+        assert_eq!(b0[0].doc_id, 0);
+        assert_eq!(b0[127].doc_id, 127);
+
+        // Second block: 128 postings
+        let b1 = pl.block_postings(1);
+        assert_eq!(b1.len(), 128);
+        assert_eq!(b1[0].doc_id, 128);
+        assert_eq!(b1[127].doc_id, 255);
+
+        // Third block: 44 postings (300 - 256)
+        let b2 = pl.block_postings(2);
+        assert_eq!(b2.len(), 44);
+        assert_eq!(b2[0].doc_id, 256);
+        assert_eq!(b2[43].doc_id, 299);
+    }
+
+    #[test]
+    fn test_score_with_blocks_matches_flat() {
+        use crate::bm25::scoring::Bm25Scorer;
+
+        // Build an index large enough to span multiple blocks (>128 docs per term)
+        let mut index = Bm25Index::new();
+        for i in 0..300 {
+            let doc_key = DocKey::new("l:main", format!("http://ex.org/doc{i}"));
+            let mut tf = HashMap::new();
+            tf.insert("common", (i % 5) as u32 + 1);
+            if i % 3 == 0 {
+                tf.insert("rare", 1);
+            }
+            index.add_document(doc_key, tf);
+        }
+        // rebuild_lookups populates block_meta
+        index.rebuild_lookups();
+
+        let terms = &["common", "rare"];
+        let scorer_with_blocks = Bm25Scorer::new(&index, terms);
+
+        // Collect scores with blocks
+        let scores_with: Vec<(DocKey, f64)> = index
+            .iter_doc_keys()
+            .map(|dk| {
+                let s = scorer_with_blocks.score(dk);
+                (dk.clone(), s)
+            })
+            .collect();
+
+        // Clear block_meta to force flat fallback
+        for pl in &mut index.posting_lists {
+            pl.block_meta.clear();
+        }
+        let scorer_flat = Bm25Scorer::new(&index, terms);
+
+        // Collect scores without blocks (flat binary search)
+        for (dk, score_with) in &scores_with {
+            let score_flat = scorer_flat.score(dk);
+            assert_eq!(
+                f64::to_bits(*score_with),
+                f64::to_bits(score_flat),
+                "score mismatch for {:?}: with_blocks={score_with} flat={score_flat}",
+                dk.subject_iri
+            );
+        }
+    }
+
+    #[test]
+    fn test_block_meta_after_compact() {
+        // After compact, block_meta should be rebuilt correctly
+        let mut index = Bm25Index::new();
+        for i in 0..200 {
+            let doc_key = DocKey::new("l:main", format!("http://ex.org/doc{i}"));
+            let mut tf = HashMap::new();
+            tf.insert("word", i as u32 + 1);
+            index.add_document(doc_key, tf);
+        }
+        // Block meta empty during building
+        let word_idx = index.term_idx("word").unwrap();
+        assert!(
+            index
+                .get_posting_list(word_idx)
+                .unwrap()
+                .block_meta
+                .is_empty(),
+            "block_meta should be empty during building"
+        );
+
+        // compact() calls rebuild_lookups() which populates block_meta
+        index.compact();
+
+        let word_idx = index.term_idx("word").unwrap();
+        let pl = index.get_posting_list(word_idx).unwrap();
+        assert_eq!(pl.num_blocks(), 2); // ceil(200/128) = 2
+        assert_eq!(pl.block_postings(0).len(), 128);
+        assert_eq!(pl.block_postings(1).len(), 72);
     }
 }

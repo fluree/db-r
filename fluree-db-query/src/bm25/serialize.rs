@@ -216,7 +216,10 @@ fn delta_to_posting_list(dpl: DeltaPostingList) -> Result<PostingList> {
             term_freq: tf,
         });
     }
-    Ok(PostingList { postings })
+    Ok(PostingList {
+        postings,
+        block_meta: Vec::new(),
+    })
 }
 
 // ============================================================================
@@ -1484,6 +1487,7 @@ mod tests {
                         term_freq: i + 1,
                     })
                     .collect(),
+                block_meta: Vec::new(),
             })
             .collect();
 
@@ -1521,6 +1525,7 @@ mod tests {
                     term_freq: 1,
                 })
                 .collect(),
+            block_meta: Vec::new(),
         }];
 
         let groups = group_posting_lists(&lists, 1000);

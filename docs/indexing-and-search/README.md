@@ -25,11 +25,11 @@ Manual index rebuilding for recovery and maintenance:
 ### [BM25 Full-Text Search](bm25.md)
 
 Integrated full-text search using BM25 ranking:
-- Creating BM25 indexes
-- Configuring fields and weights
-- Executing text searches
-- Ranking and relevance
-- Real-time index updates
+- Creating BM25 indexes via Rust API
+- Query-based field selection (indexing query defines what to index)
+- BM25 scoring with configurable k1/b parameters
+- Block-Max WAND for efficient top-k queries
+- Incremental index updates via property-dependency tracking
 
 ### [Vector Search](vector-search.md)
 
@@ -91,17 +91,21 @@ See [Background Indexing](background-indexing.md) for details.
 
 BM25 provides ranked full-text search:
 
-**Creating Index:**
-```json
-{
-  "name": "products-search",
-  "source": "mydb:main",
-  "fields": [
-    { "predicate": "schema:name", "weight": 2.0 },
-    { "predicate": "schema:description", "weight": 1.0 }
-  ]
-}
+**Creating Index (Rust API):**
+```rust
+use fluree_db_api::Bm25CreateConfig;
+use serde_json::json;
+
+let query = json!({
+    "@context": { "schema": "http://schema.org/" },
+    "where": [{ "@id": "?x", "@type": "schema:Product", "schema:name": "?name" }],
+    "select": { "?x": ["@id", "schema:name", "schema:description"] }
+});
+let config = Bm25CreateConfig::new("products-search", "mydb:main", query);
+let result = fluree.create_full_text_index(config).await?;
 ```
+
+There are no HTTP endpoints for index management yet — indexes are managed via the Rust API.
 
 **Searching:**
 ```json
@@ -190,28 +194,25 @@ Combines structured data with search results via the `f:graphSource` pattern.
 
 ### Creating Indexes
 
-Create via API:
-
-```bash
-curl -X POST "http://localhost:8090/index/bm25?ledger=mydb:main" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "products-search",
-    "fields": [...]
-  }'
-```
+BM25 and vector indexes are created via the Rust API. See [BM25](bm25.md) and [Vector Search](vector-search.md) for details.
 
 ### Updating Indexes
 
-Indexes update automatically as data changes:
-- New transactions trigger index updates
-- Updates are asynchronous
-- Index lag monitored separately from main index
+BM25 indexes are **not** automatically updated when the source ledger changes. They must be explicitly synced:
+
+```rust
+// Incremental sync (detects changes since last watermark)
+let result = fluree.sync_bm25_index("products-search:main").await?;
+
+// Or use the Bm25MaintenanceWorker for automatic background syncing
+```
+
+The `Bm25MaintenanceWorker` can be configured to watch for ledger commits and sync automatically.
 
 ### Deleting Indexes
 
-```bash
-curl -X DELETE "http://localhost:8090/index/bm25/products-search:main"
+```rust
+let result = fluree.drop_full_text_index("products-search:main").await?;
 ```
 
 ## Performance Characteristics
@@ -219,9 +220,9 @@ curl -X DELETE "http://localhost:8090/index/bm25/products-search:main"
 ### BM25 Search
 
 - **Index Build Time**: O(n) for n documents
-- **Query Time**: O(log n) with inverted index
+- **Top-k Query Time**: Sub-linear via Block-Max WAND — skips posting list segments that cannot contribute to the top-k, with early termination. Falls back to O(total matching postings) when k approaches corpus size.
 - **Space**: ~2-3x document size
-- **Updates**: Incremental, O(doc size)
+- **Updates**: Incremental via property-dependency tracking, O(changed docs)
 
 ### Vector Search
 
@@ -375,45 +376,22 @@ Combine text and vector search:
 
 ## Monitoring
 
-### Check Index Status
+### Check BM25 Staleness
 
-```bash
-curl http://localhost:8090/index/status
+Check whether a BM25 index is behind its source ledger:
+
+```rust
+let check = fluree.check_bm25_staleness("products-search:main").await?;
+println!("Index at t={}, ledger at t={}, stale: {}, lag: {}",
+    check.index_t, check.ledger_t, check.is_stale, check.lag);
 ```
 
-Response:
-```json
-{
-  "indexes": [
-    {
-      "name": "products-search:main",
-      "type": "bm25",
-      "status": "ready",
-      "documents": 10523,
-      "last_updated": "2024-01-22T10:30:00Z",
-      "lag_ms": 1500
-    },
-    {
-      "name": "products-vector:main",
-      "type": "vector",
-      "status": "indexing",
-      "vectors": 8934,
-      "pending": 1589
-    }
-  ]
-}
-```
+### Background Maintenance
 
-### Index Metrics
-
-Track index performance:
-
-```javascript
-const metrics = await getIndexMetrics();
-console.log(`BM25 index lag: ${metrics.bm25_lag_ms}ms`);
-console.log(`Vector index size: ${metrics.vector_count} vectors`);
-console.log(`Query latency: ${metrics.avg_query_ms}ms`);
-```
+The `Bm25MaintenanceWorker` watches for source ledger commits and syncs indexes automatically:
+- Debounces rapid commits (configurable interval)
+- Bounded concurrency for concurrent sync operations
+- Registers/unregisters graph sources dynamically
 
 ## Best Practices
 
@@ -424,40 +402,40 @@ console.log(`Query latency: ${metrics.avg_query_ms}ms`);
 - **Semantic similarity**: Use vector search
 - **Hybrid**: Combine multiple indexes
 
-### 2. Configure Field Weights
+### 2. Tune BM25 Parameters
 
-Weight important fields higher in BM25:
+Adjust k1 and b for your corpus:
 
-```json
-{
-  "fields": [
-    { "predicate": "schema:name", "weight": 3.0 },
-    { "predicate": "schema:description", "weight": 1.0 },
-    { "predicate": "schema:tags", "weight": 2.0 }
-  ]
+```rust
+let config = Bm25CreateConfig::new("search", "docs:main", query)
+    .with_k1(1.5)  // Higher = more weight to term frequency (default: 1.2)
+    .with_b(0.5);   // Lower = less document length normalization (default: 0.75)
+```
+
+The indexing query controls **which properties** are indexed — all selected text properties contribute to the document's searchable content.
+
+### 3. Monitor Index Staleness
+
+Check staleness after bulk operations:
+
+```rust
+let check = fluree.check_bm25_staleness("search:main").await?;
+if check.is_stale {
+    fluree.sync_bm25_index("search:main").await?;
 }
 ```
 
-### 3. Monitor Index Lag
+### 4. Sync After Bulk Updates
 
-```javascript
-setInterval(async () => {
-  const status = await checkIndexStatus();
-  if (status.lag_ms > 5000) {
-    alert('Index lag exceeds 5 seconds');
-  }
-}, 30000);
-```
+BM25 indexes require explicit sync. After bulk inserts, sync once at the end:
 
-### 4. Batch Index Updates
-
-For bulk operations, allow time for indexing:
-
-```javascript
-for (const batch of batches) {
-  await transact(batch);
-  await waitForIndexing();
+```rust
+// Insert many documents...
+for batch in batches {
+    fluree.insert(ledger.clone(), &batch).await?;
 }
+// Sync the BM25 index once after all inserts
+fluree.sync_bm25_index("products-search:main").await?;
 ```
 
 ### 5. Use Appropriate Limits
