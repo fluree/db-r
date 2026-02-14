@@ -4,14 +4,12 @@
 //! using the postcard binary format. This enables persistence of the index
 //! for graph source storage.
 //!
-//! Supports four versions:
-//! - Version 1: Legacy format with document-oriented `doc_vectors` (forward index)
-//! - Version 2: Inverted index with absolute doc_ids in posting lists
+//! Supports two versions:
 //! - Version 3: Inverted index with delta-encoded doc_ids for compact serialization
 //! - Version 4: Chunked format — root blob with metadata + separate posting leaflet blobs
 //!
 //! Single-blob writes (v3) via `serialize()`. Chunked writes (v4) via
-//! `prepare_chunked()` + `finalize_chunked_root()`. All versions are readable.
+//! `prepare_chunked()` + `finalize_chunked_root()`.
 //! The caller (API layer) decides which format to write based on storage backend.
 
 use std::collections::BTreeMap;
@@ -21,7 +19,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::index::{
-    Bm25Config, Bm25Index, Bm25Stats, DocKey, DocMeta, GraphSourceWatermark, Posting, PostingList,
+    Bm25Config, Bm25Index, Bm25Stats, DocMeta, GraphSourceWatermark, Posting, PostingList,
     PropertyDeps, TermEntry,
 };
 
@@ -43,98 +41,11 @@ pub type Result<T> = std::result::Result<T, SerializeError>;
 /// Magic bytes for BM25 snapshot files
 const SNAPSHOT_MAGIC: &[u8; 4] = b"BM25";
 
-/// Legacy snapshot format version (document-oriented, forward index)
-const SNAPSHOT_VERSION_V1: u8 = 1;
-
-/// V2 snapshot format version (inverted index, absolute doc_ids)
-const SNAPSHOT_VERSION_V2: u8 = 2;
-
 /// V3 snapshot format version (inverted index, delta-encoded doc_ids)
 const SNAPSHOT_VERSION_V3: u8 = 3;
 
 /// Version written by serialize()
 const SNAPSHOT_VERSION: u8 = SNAPSHOT_VERSION_V3;
-
-// ============================================================================
-// Legacy v1 types (for backward-compatible deserialization)
-// ============================================================================
-
-/// Legacy sparse vector from v1 format
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct LegacySparseVector {
-    entries: Vec<(u32, u32)>,
-}
-
-impl LegacySparseVector {
-    fn doc_length(&self) -> u32 {
-        self.entries.iter().map(|(_, tf)| tf).sum()
-    }
-}
-
-/// Legacy BM25 index from v1 format — mirrors all serialized fields
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LegacyBm25Index {
-    terms: BTreeMap<Arc<str>, TermEntry>,
-    doc_vectors: BTreeMap<DocKey, LegacySparseVector>,
-    stats: Bm25Stats,
-    config: Bm25Config,
-    watermark: GraphSourceWatermark,
-    property_deps: PropertyDeps,
-    next_term_idx: u32,
-}
-
-/// Convert a legacy v1 index to the current v2 format.
-///
-/// Assigns doc_ids in BTreeMap<DocKey> iteration order (deterministic).
-/// Inverts the forward index into posting lists.
-fn convert_legacy_to_v2(legacy: LegacyBm25Index) -> Bm25Index {
-    let num_docs = legacy.doc_vectors.len();
-    let num_terms = legacy.next_term_idx as usize;
-
-    // Assign doc_ids 0..N in BTreeMap iteration order
-    let mut doc_meta: Vec<Option<DocMeta>> = Vec::with_capacity(num_docs);
-    let mut posting_lists: Vec<PostingList> =
-        (0..num_terms).map(|_| PostingList::default()).collect();
-
-    for (doc_id, (doc_key, sparse_vec)) in legacy.doc_vectors.iter().enumerate() {
-        let doc_len = sparse_vec.doc_length();
-        doc_meta.push(Some(DocMeta {
-            doc_key: doc_key.clone(),
-            doc_len,
-        }));
-
-        // Invert: for each term in the doc, append to posting list
-        for &(term_idx, tf) in &sparse_vec.entries {
-            if (term_idx as usize) < posting_lists.len() {
-                posting_lists[term_idx as usize].postings.push(Posting {
-                    doc_id: doc_id as u32,
-                    term_freq: tf,
-                });
-            }
-        }
-    }
-
-    // Sort each posting list by doc_id (should already be in order since
-    // we iterate BTreeMap docs in order and assign sequential ids)
-    for pl in &mut posting_lists {
-        pl.postings.sort_by_key(|p| p.doc_id);
-    }
-
-    let mut index = Bm25Index::from_parts(
-        legacy.terms,
-        posting_lists,
-        doc_meta,
-        legacy.stats,
-        legacy.config,
-        legacy.watermark,
-        legacy.property_deps,
-        legacy.next_term_idx,
-        num_docs as u32,
-    );
-
-    index.rebuild_lookups();
-    index
-}
 
 // ============================================================================
 // V3 delta-encoded types
@@ -502,9 +413,8 @@ pub fn serialize(index: &Bm25Index) -> Result<Vec<u8>> {
 
 /// Deserialize a BM25 index from bytes.
 ///
-/// Supports v1 (legacy forward index), v2 (inverted posting lists with absolute
-/// doc_ids), and v3 (inverted posting lists with delta-encoded doc_ids).
-/// Older snapshots are auto-converted on load.
+/// Only supports v3 (delta-encoded doc_ids). V4 chunked format requires
+/// the two-phase `deserialize_chunked_root()` + `deserialize_posting_leaflet()` API.
 pub fn deserialize(data: &[u8]) -> Result<Bm25Index> {
     if data.len() < 9 {
         return Err(SerializeError::InvalidFormat(
@@ -531,6 +441,13 @@ pub fn deserialize(data: &[u8]) -> Result<Bm25Index> {
         ));
     }
 
+    if version != SNAPSHOT_VERSION_V3 {
+        return Err(SerializeError::InvalidFormat(format!(
+            "Unsupported version: {} (only v3 and v4 supported)",
+            version,
+        )));
+    }
+
     // Read length prefix
     let len_bytes: [u8; 4] = data[5..9].try_into().unwrap();
     let len = u32::from_be_bytes(len_bytes) as usize;
@@ -541,46 +458,25 @@ pub fn deserialize(data: &[u8]) -> Result<Bm25Index> {
 
     let payload = &data[9..9 + len];
 
-    match version {
-        SNAPSHOT_VERSION_V1 => {
-            let legacy: LegacyBm25Index = postcard::from_bytes(payload)?;
-            Ok(convert_legacy_to_v2(legacy))
-        }
-        SNAPSHOT_VERSION_V2 => {
-            let mut index: Bm25Index = postcard::from_bytes(payload)?;
-            index.rebuild_lookups();
-            Ok(index)
-        }
-        SNAPSHOT_VERSION_V3 => {
-            let snapshot: DeltaBm25Snapshot = postcard::from_bytes(payload)?;
-            let posting_lists: Vec<PostingList> = snapshot
-                .posting_lists
-                .into_iter()
-                .map(delta_to_posting_list)
-                .collect::<Result<Vec<_>>>()?;
-            let mut index = Bm25Index::from_parts(
-                snapshot.terms,
-                posting_lists,
-                snapshot.doc_meta,
-                snapshot.stats,
-                snapshot.config,
-                snapshot.watermark,
-                snapshot.property_deps,
-                snapshot.next_term_idx,
-                snapshot.next_doc_id,
-            );
-            index.rebuild_lookups();
-            Ok(index)
-        }
-        _ => Err(SerializeError::InvalidFormat(format!(
-            "Unsupported version: {} (expected {}, {}, {}, or {})",
-            version,
-            SNAPSHOT_VERSION_V1,
-            SNAPSHOT_VERSION_V2,
-            SNAPSHOT_VERSION_V3,
-            SNAPSHOT_VERSION_V4
-        ))),
-    }
+    let snapshot: DeltaBm25Snapshot = postcard::from_bytes(payload)?;
+    let posting_lists: Vec<PostingList> = snapshot
+        .posting_lists
+        .into_iter()
+        .map(delta_to_posting_list)
+        .collect::<Result<Vec<_>>>()?;
+    let mut index = Bm25Index::from_parts(
+        snapshot.terms,
+        posting_lists,
+        snapshot.doc_meta,
+        snapshot.stats,
+        snapshot.config,
+        snapshot.watermark,
+        snapshot.property_deps,
+        snapshot.next_term_idx,
+        snapshot.next_doc_id,
+    );
+    index.rebuild_lookups();
+    Ok(index)
 }
 
 /// Write a BM25 index snapshot to a writer.
@@ -963,11 +859,8 @@ mod tests {
         match &result {
             Err(SerializeError::InvalidFormat(msg)) => {
                 assert!(
-                    msg.contains("1")
-                        && msg.contains("2")
-                        && msg.contains("3")
-                        && msg.contains("4"),
-                    "Error should list all supported versions: {msg}"
+                    msg.contains("v3") && msg.contains("v4"),
+                    "Error should list supported versions: {msg}"
                 );
             }
             other => panic!("Expected InvalidFormat, got: {other:?}"),
@@ -1053,47 +946,16 @@ mod tests {
     }
 
     #[test]
-    fn test_v2_deserialization() {
-        // Build an index via normal API, then manually serialize as v2
-        let mut index = Bm25Index::with_config(Bm25Config::new(1.5, 0.8));
-
-        let doc1 = DocKey::new("test:main", "http://example.org/doc1");
-        let mut tf1 = HashMap::new();
-        tf1.insert("hello", 2);
-        tf1.insert("world", 1);
-        index.add_document(doc1, tf1);
-
-        let doc2 = DocKey::new("test:main", "http://example.org/doc2");
-        let mut tf2 = HashMap::new();
-        tf2.insert("hello", 1);
-        tf2.insert("rust", 3);
-        index.add_document(doc2, tf2);
-
-        // Compact to get deterministic state, then serialize as v2 (direct postcard on Bm25Index)
-        let mut compacted = index.clone();
-        compacted.compact();
-        let payload = postcard::to_allocvec(&compacted).unwrap();
-
+    fn test_v2_rejected() {
+        // Old v2 format should be rejected
         let mut data = Vec::new();
         data.extend_from_slice(SNAPSHOT_MAGIC);
-        data.push(SNAPSHOT_VERSION_V2);
-        let len = payload.len() as u32;
-        data.extend_from_slice(&len.to_be_bytes());
-        data.extend_from_slice(&payload);
-
-        // Deserialize — should load via v2 path
-        let restored = deserialize(&data).expect("v2 deserialize failed");
-
-        assert_eq!(restored.num_docs(), 2);
-        assert_eq!(restored.num_terms(), 3);
-
-        let doc1 = DocKey::new("test:main", "http://example.org/doc1");
-        let doc2 = DocKey::new("test:main", "http://example.org/doc2");
-        assert!(restored.contains_doc(&doc1));
-        assert!(restored.contains_doc(&doc2));
-
-        let meta1 = restored.get_doc_meta(&doc1).unwrap();
-        assert_eq!(meta1.doc_len, 3);
+        data.push(2); // v2
+        data.extend_from_slice(&[0, 0, 0, 0]); // dummy length
+        let result = deserialize(&data);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Unsupported version"), "got: {msg}");
     }
 
     #[test]
@@ -1137,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn test_delta_encoding_reduces_size() {
+    fn test_delta_encoding_roundtrip_large() {
         // Build a large-ish index where one term appears in most docs
         // so that after compact(), doc_ids are 0..N with deltas of ~1
         let mut index = Bm25Index::new();
@@ -1153,30 +1015,11 @@ mod tests {
             index.add_document(doc, tf);
         }
 
-        // Serialize as v3 (the default)
+        // Serialize as v3 (the default) and verify roundtrip
         let v3_bytes = serialize(&index).expect("v3 serialize failed");
-
-        // Manually serialize the same compacted index as v2 for comparison
-        let mut compacted = index.clone();
-        compacted.compact();
-        let v2_payload = postcard::to_allocvec(&compacted).unwrap();
-        let mut v2_bytes = Vec::new();
-        v2_bytes.extend_from_slice(SNAPSHOT_MAGIC);
-        v2_bytes.push(SNAPSHOT_VERSION_V2);
-        let len = v2_payload.len() as u32;
-        v2_bytes.extend_from_slice(&len.to_be_bytes());
-        v2_bytes.extend_from_slice(&v2_payload);
-
-        assert!(
-            v3_bytes.len() < v2_bytes.len(),
-            "v3 ({} bytes) should be smaller than v2 ({} bytes)",
-            v3_bytes.len(),
-            v2_bytes.len()
-        );
-
-        // Verify roundtrip correctness
         let restored = deserialize(&v3_bytes).expect("v3 deserialize failed");
         assert_eq!(restored.num_docs(), 200);
+        assert_eq!(restored.num_terms(), 2);
     }
 
     #[test]
@@ -1221,73 +1064,16 @@ mod tests {
     }
 
     #[test]
-    fn test_v1_deserialization() {
-        // Build a v1 format blob manually
-        let legacy = LegacyBm25Index {
-            terms: {
-                let mut m = BTreeMap::new();
-                m.insert(
-                    Arc::from("hello"),
-                    TermEntry {
-                        idx: 0,
-                        doc_freq: 1,
-                    },
-                );
-                m.insert(
-                    Arc::from("world"),
-                    TermEntry {
-                        idx: 1,
-                        doc_freq: 1,
-                    },
-                );
-                m
-            },
-            doc_vectors: {
-                let mut m = BTreeMap::new();
-                m.insert(
-                    DocKey::new("test:main", "http://example.org/doc1"),
-                    LegacySparseVector {
-                        entries: vec![(0, 2), (1, 1)],
-                    },
-                );
-                m
-            },
-            stats: Bm25Stats {
-                num_docs: 1,
-                total_terms: 3,
-            },
-            config: Bm25Config::default(),
-            watermark: GraphSourceWatermark::new(),
-            property_deps: PropertyDeps::new(),
-            next_term_idx: 2,
-        };
-
-        // Serialize as v1
+    fn test_v1_rejected() {
+        // Old v1 format should be rejected
         let mut data = Vec::new();
         data.extend_from_slice(SNAPSHOT_MAGIC);
-        data.push(SNAPSHOT_VERSION_V1);
-        let payload = postcard::to_allocvec(&legacy).unwrap();
-        let len = payload.len() as u32;
-        data.extend_from_slice(&len.to_be_bytes());
-        data.extend_from_slice(&payload);
-
-        // Deserialize — should auto-convert to v2
-        let index = deserialize(&data).expect("v1 deserialize failed");
-
-        assert_eq!(index.num_docs(), 1);
-        assert_eq!(index.num_terms(), 2);
-
-        let doc1 = DocKey::new("test:main", "http://example.org/doc1");
-        assert!(index.contains_doc(&doc1));
-
-        let meta = index.get_doc_meta(&doc1).unwrap();
-        assert_eq!(meta.doc_len, 3);
-
-        // Posting lists should be populated
-        let hello_idx = index.term_idx("hello").unwrap();
-        let hello_pl = index.get_posting_list(hello_idx).unwrap();
-        assert_eq!(hello_pl.postings.len(), 1);
-        assert_eq!(hello_pl.postings[0].term_freq, 2);
+        data.push(1); // v1
+        data.extend_from_slice(&[0, 0, 0, 0]); // dummy length
+        let result = deserialize(&data);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Unsupported version"), "got: {msg}");
     }
 
     // ====================================================================

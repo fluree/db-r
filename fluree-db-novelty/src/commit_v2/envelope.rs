@@ -74,7 +74,7 @@ pub struct CommitV2Envelope {
     /// User-provided transaction metadata (replay-safe)
     pub txn_meta: Vec<TxnMetaEntry>,
     /// Named graph IRI to g_id mappings introduced by this commit.
-    pub graph_delta: HashMap<u32, String>,
+    pub graph_delta: HashMap<u16, String>,
 }
 
 impl CommitV2Envelope {
@@ -600,10 +600,10 @@ fn decode_ns_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u16, String>,
 }
 
 // =============================================================================
-// graph_delta (HashMap<u32, String>)
+// graph_delta (HashMap<u16, String>)
 // =============================================================================
 
-fn encode_graph_delta(delta: &HashMap<u32, String>, buf: &mut Vec<u8>) {
+fn encode_graph_delta(delta: &HashMap<u16, String>, buf: &mut Vec<u8>) {
     encode_varint(delta.len() as u64, buf);
     let mut entries: Vec<_> = delta.iter().collect();
     entries.sort_by_key(|(g_id, _)| **g_id);
@@ -613,11 +613,12 @@ fn encode_graph_delta(delta: &HashMap<u32, String>, buf: &mut Vec<u8>) {
     }
 }
 
-fn decode_graph_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u32, String>, CommitV2Error> {
+fn decode_graph_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u16, String>, CommitV2Error> {
     let count = decode_varint(data, pos)? as usize;
     let mut map = HashMap::with_capacity(count);
     for _ in 0..count {
-        let g_id = decode_varint(data, pos)? as u32;
+        let raw = decode_varint(data, pos)?;
+        let g_id = u16::try_from(raw).map_err(|_| CommitV2Error::GIdOutOfRange(raw))?;
         let iri = decode_len_str(data, pos)?;
         map.insert(g_id, iri);
     }

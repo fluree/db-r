@@ -75,7 +75,7 @@ pub struct DictRefs {
 pub struct GraphOrderRefs {
     /// CID of the branch manifest (FBR1).
     pub branch: ContentId,
-    /// CIDs of leaf files (FLI1), ordered by leaf index.
+    /// CIDs of leaf files (FLI2), ordered by leaf index.
     pub leaves: Vec<ContentId>,
 }
 

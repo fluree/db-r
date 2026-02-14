@@ -108,7 +108,7 @@ pub struct Txn {
     /// - `0`: default graph
     /// - `1`: txn-meta graph (`#txn-meta`)
     /// - `2+`: user-defined named graphs
-    pub graph_delta: FxHashMap<u32, String>,
+    pub graph_delta: FxHashMap<u16, String>,
 }
 
 impl Txn {
@@ -246,7 +246,7 @@ pub struct TripleTemplate {
     /// - `2+`: user-defined named graphs
     ///
     /// If None, defaults to 0 (default graph).
-    pub graph_id: Option<u32>,
+    pub graph_id: Option<u16>,
 }
 
 impl TripleTemplate {
@@ -286,7 +286,7 @@ impl TripleTemplate {
     /// - `0`: default graph
     /// - `1`: txn-meta graph (reserved for commit metadata)
     /// - `2+`: user-defined named graphs
-    pub fn with_graph_id(mut self, graph_id: u32) -> Self {
+    pub fn with_graph_id(mut self, graph_id: u16) -> Self {
         self.graph_id = Some(graph_id);
         self
     }

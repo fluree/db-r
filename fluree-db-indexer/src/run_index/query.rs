@@ -186,8 +186,11 @@ impl SpotQuery {
                         let o_key = decoded.o_keys[row];
                         let dt = decoded.dt_values[row];
                         let p_id = decoded.p_ids[row];
-                        let lang_id = decoded.lang_ids[row];
-                        let i_val = decoded.i_values[row];
+                        let lang_id = decoded.lang.as_ref().map_or(0, |c| c.get(row as u16));
+                        let i_val = decoded
+                            .i_col
+                            .as_ref()
+                            .map_or(ListIndex::none().as_i32(), |c| c.get(row as u16));
 
                         let p_iri = self
                             .predicates
@@ -205,7 +208,7 @@ impl SpotQuery {
                             o_key,
                             o_display,
                             dt,
-                            t: decoded.t_values[row],
+                            t: decoded.t_values[row] as i64,
                             lang_id,
                             i: i_val,
                         });

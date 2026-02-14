@@ -123,7 +123,7 @@ impl Db {
         Self {
             ledger_id: ledger_id.to_string(),
             t: 0,
-            version: 2,
+            version: 3,
             // Seed with baseline Fluree namespace codes (matches Clojure genesis-root-map).
             namespace_codes: default_namespace_codes(),
             stats: None,
@@ -145,7 +145,7 @@ impl Db {
         Self {
             ledger_id: meta.ledger_id,
             t: meta.t,
-            version: 2,
+            version: 3,
             namespace_codes: meta.namespace_codes,
             stats: meta.stats,
             schema: meta.schema,
@@ -156,15 +156,15 @@ impl Db {
         }
     }
 
-    /// Extract metadata from a v2 BinaryIndexRoot JSON blob.
-    pub fn from_v2_json(root: &serde_json::Value) -> Result<Self> {
+    /// Extract metadata from a v3 BinaryIndexRoot JSON blob.
+    pub fn from_root_json(root: &serde_json::Value) -> Result<Self> {
         let ledger_id = root["ledger_id"]
             .as_str()
-            .ok_or_else(|| Error::invalid_index("v2 root missing ledger_id"))?
+            .ok_or_else(|| Error::invalid_index("root missing ledger_id"))?
             .to_string();
         let t = root["index_t"]
             .as_i64()
-            .ok_or_else(|| Error::invalid_index("v2 root missing index_t"))?;
+            .ok_or_else(|| Error::invalid_index("root missing index_t"))?;
 
         let mut namespace_codes = HashMap::new();
         if let Some(obj) = root["namespace_codes"].as_object() {
@@ -260,10 +260,10 @@ impl Db {
     }
 }
 
-/// Load a database from a v2 index root content ID.
+/// Load a database from an index root content ID.
 ///
-/// Only v2/v3 (BinaryIndexRoot) roots are supported. The `"version"` field
-/// in the JSON root must be `2` or `3`; any other value is rejected.
+/// The `"version"` field in the JSON root must be `3`; any other value is
+/// rejected.
 ///
 /// The returned Db is metadata-only (`range_provider = None`). The caller
 /// (typically the API layer) must load a `BinaryIndexStore` and attach a
@@ -292,9 +292,9 @@ pub async fn load_db(
         .unwrap_or(0) as u32;
 
     match version {
-        2 | 3 => Db::from_v2_json(&root_json),
+        3 => Db::from_root_json(&root_json),
         v => Err(Error::invalid_index(format!(
-            "unsupported index root version: {} (only v2/v3 supported)",
+            "unsupported index root version: {} (only v3 supported)",
             v
         ))),
     }
@@ -325,9 +325,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_db_load_v2() {
+    async fn test_db_load_v3() {
         let root_json = serde_json::json!({
-            "version": 2,
+            "version": 3,
             "ledger_id": "test:main",
             "index_t": 42,
             "base_t": 0,
@@ -351,7 +351,7 @@ mod tests {
         let db = load_db(&storage, &root_id, "test:main").await.unwrap();
         assert_eq!(db.ledger_id, "test:main");
         assert_eq!(db.t, 42);
-        assert_eq!(db.version, 2);
+        assert_eq!(db.version, 3);
         assert!(db.range_provider.is_none());
         assert!(db.stats.is_some());
     }
@@ -372,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn test_db_encode_decode_sid() {
         let root_json = serde_json::json!({
-            "version": 2,
+            "version": 3,
             "ledger_id": "test:main",
             "index_t": 1,
             "base_t": 0,

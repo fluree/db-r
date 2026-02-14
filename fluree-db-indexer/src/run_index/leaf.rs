@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! [LeafHeader: variable size]
-//!   magic: "FLI1" (4B)
+//!   magic: "FLI2" (4B)
 //!   version: u8
 //!   leaflet_count: u8
 //!   dt_width: u8    (1=u8, 2=u16)
@@ -28,11 +28,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::{fs, io::Write};
 
-/// Magic bytes for a leaf file.
-const LEAF_MAGIC: [u8; 4] = *b"FLI1";
+/// Magic bytes for a leaf file (v2: Region 2 sparse lang/i, u32 t; Region 3 width-aware).
+const LEAF_MAGIC: [u8; 4] = *b"FLI2";
 
 /// Current leaf file format version.
-const LEAF_VERSION: u8 = 1;
+const LEAF_VERSION: u8 = 2;
 
 /// Fixed part of the leaf header: magic(4) + version(1) + leaflet_count(1) + pad(2) + total_rows(8) + first_key(28) + last_key(28) = 72.
 const LEAF_HEADER_FIXED: usize = 72;
@@ -152,7 +152,8 @@ const R3_DUMMY: Region3Entry = Region3Entry {
     p_id: 0,
     o_kind: 0,
     o_key: 0,
-    t_signed: 0,
+    t: 0,
+    op: 0,
     dt: 0,
     lang_id: 0,
     i: 0,

@@ -297,10 +297,16 @@ fn decode_raw_op<'a>(
         None
     };
 
-    // Optional list index
+    // Optional list index (unsigned varint)
     let i = if flags & OP_FLAG_HAS_I != 0 {
         let raw = decode_varint(data, pos)?;
-        Some(zigzag_decode(raw) as i32)
+        if raw > i32::MAX as u64 {
+            return Err(CommitV2Error::InvalidOp(format!(
+                "list index {} exceeds i32::MAX",
+                raw
+            )));
+        }
+        Some(raw as i32)
     } else {
         None
     };

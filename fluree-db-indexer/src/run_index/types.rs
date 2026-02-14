@@ -2,29 +2,6 @@
 
 use super::run_record::RunSortOrder;
 
-/// Mutable output column vectors for emitting row data.
-///
-/// Bundles the 8 column vectors that receive decoded row data during
-/// cursor merging (overlay/novelty/existing data merge operations).
-pub struct RowColumnOutput<'a> {
-    /// Subject IDs (u64).
-    pub s: &'a mut Vec<u64>,
-    /// Predicate IDs (u32).
-    pub p: &'a mut Vec<u32>,
-    /// Object kind discriminants.
-    pub o_kinds: &'a mut Vec<u8>,
-    /// Object key payloads.
-    pub o_keys: &'a mut Vec<u64>,
-    /// Datatype codes.
-    pub dt: &'a mut Vec<u32>,
-    /// Transaction timestamps.
-    pub t: &'a mut Vec<i64>,
-    /// Language tag IDs.
-    pub lang: &'a mut Vec<u16>,
-    /// List indices.
-    pub i: &'a mut Vec<i32>,
-}
-
 /// Immutable input column slices for reading row data.
 ///
 /// Bundles the 8 column slices that provide decoded row data during
@@ -40,8 +17,8 @@ pub struct RowColumnSlice<'a> {
     pub o_keys: &'a [u64],
     /// Datatype codes.
     pub dt: &'a [u32],
-    /// Transaction timestamps.
-    pub t: &'a [i64],
+    /// Transaction timestamps (u32 on disk/cache; widened to i64 at API boundary).
+    pub t: &'a [u32],
     /// Language tag IDs.
     pub lang: &'a [u16],
     /// List indices.
@@ -70,7 +47,7 @@ impl<'a> RowColumnSlice<'a> {
             o_kind: self.o_kinds[idx],
             o_key: self.o_keys[idx],
             dt: self.dt[idx],
-            t: self.t[idx],
+            t: self.t[idx] as i64,
             lang_id: self.lang[idx],
             i: self.i[idx],
         }

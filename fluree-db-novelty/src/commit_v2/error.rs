@@ -37,6 +37,12 @@ pub enum CommitV2Error {
     NonDefaultGraph { ns_code: u16, name_id: u32 },
     /// Size limit exceeded for envelope data.
     LimitExceeded(String),
+    /// Transaction number out of range for u32 encoding.
+    TOutOfRange(i64),
+    /// Graph ID out of range for u16 encoding.
+    GIdOutOfRange(u64),
+    /// Negative list index (not supported).
+    NegativeListIndex(i32),
 }
 
 impl fmt::Display for CommitV2Error {
@@ -89,6 +95,15 @@ impl fmt::Display for CommitV2Error {
             }
             Self::LimitExceeded(msg) => {
                 write!(f, "commit-v2: limit exceeded: {}", msg)
+            }
+            Self::TOutOfRange(t) => {
+                write!(f, "commit-v2: t value {} out of u32 range", t)
+            }
+            Self::GIdOutOfRange(g) => {
+                write!(f, "commit-v2: graph_delta key {} exceeds u16::MAX", g)
+            }
+            Self::NegativeListIndex(i) => {
+                write!(f, "commit-v2: negative list index {}", i)
             }
         }
     }

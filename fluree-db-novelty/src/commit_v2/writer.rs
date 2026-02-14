@@ -41,6 +41,11 @@ pub fn write_commit(
     compress: bool,
     signing: Option<(&SigningKey, &str)>,
 ) -> Result<CommitWriteResult, CommitV2Error> {
+    // Validate t fits in u32 for v3 wire format
+    if commit.t < 0 || commit.t > u32::MAX as i64 {
+        return Err(CommitV2Error::TOutOfRange(commit.t));
+    }
+
     let op_count = commit.flakes.len();
 
     // 1. Pre-compute signing metadata (needed for header before hash)

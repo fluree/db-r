@@ -236,7 +236,7 @@ pub struct Commit {
     /// - `0`: default graph
     /// - `1`: txn-meta graph (`#txn-meta`)
     /// - `2+`: user-defined named graphs
-    pub graph_delta: HashMap<u32, String>,
+    pub graph_delta: HashMap<u16, String>,
 }
 
 impl Commit {
