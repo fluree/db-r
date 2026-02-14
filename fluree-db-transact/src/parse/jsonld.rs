@@ -532,7 +532,7 @@ fn parse_expanded_triples(
     let mut blank_counter: usize = 0;
     match expanded {
         Value::Array(arr) => arr.iter().try_fold(Vec::new(), |mut templates, item| {
-            templates.extend(parse_expanded_object(
+            let (_subject, item_templates) = parse_expanded_object(
                 item,
                 context,
                 vars,
@@ -540,25 +540,33 @@ fn parse_expanded_triples(
                 object_var_parsing,
                 graph_ids,
                 &mut blank_counter,
-            )?);
+            )?;
+            templates.extend(item_templates);
             Ok(templates)
         }),
-        Value::Object(_) => parse_expanded_object(
-            expanded,
-            context,
-            vars,
-            ns_registry,
-            object_var_parsing,
-            graph_ids,
-            &mut blank_counter,
-        ),
+        Value::Object(_) => {
+            let (_subject, templates) = parse_expanded_object(
+                expanded,
+                context,
+                vars,
+                ns_registry,
+                object_var_parsing,
+                graph_ids,
+                &mut blank_counter,
+            )?;
+            Ok(templates)
+        }
         _ => Err(TransactError::Parse(
             "Expected expanded object or array of objects".to_string(),
         )),
     }
 }
 
-/// Parse a single expanded JSON-LD object into triple templates
+/// Parse a single expanded JSON-LD object into triple templates.
+///
+/// Returns the subject term assigned to this node (IRI, variable, or blank node)
+/// along with the generated triples. Callers that need to reference this node
+/// (e.g., as the object of a parent triple) use the returned subject directly.
 fn parse_expanded_object(
     expanded: &Value,
     context: &ParsedContext,
@@ -567,7 +575,7 @@ fn parse_expanded_object(
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
     blank_counter: &mut usize,
-) -> Result<Vec<TripleTemplate>> {
+) -> Result<(TemplateTerm, Vec<TripleTemplate>)> {
     let obj = expanded
         .as_object()
         .ok_or_else(|| TransactError::Parse("Expected expanded object".to_string()))?;
@@ -690,7 +698,7 @@ fn parse_expanded_object(
         }
     }
 
-    Ok(templates)
+    Ok((subject, templates))
 }
 
 /// Parse an expanded @id value
@@ -847,7 +855,7 @@ fn parse_expanded_value(
                     .keys()
                     .any(|k| k.as_str() != "@id" && k.as_str() != "@context");
                 if has_nested_props {
-                    let nested_templates = parse_expanded_object(
+                    let (_subject, nested_templates) = parse_expanded_object(
                         value,
                         context,
                         vars,
@@ -916,7 +924,7 @@ fn parse_expanded_value(
             // JSON-LD value keywords (@id, @value, @list, @variable), so it must
             // be a node object. Per the JSON-LD spec, a node without @id is a
             // blank node — regardless of whether it has @type or not.
-            let nested_templates = parse_expanded_object(
+            let (subject, nested_templates) = parse_expanded_object(
                 value,
                 context,
                 vars,
@@ -925,14 +933,6 @@ fn parse_expanded_value(
                 graph_ids,
                 blank_counter,
             )?;
-            let subject = nested_templates
-                .first()
-                .map(|t| t.subject.clone())
-                .ok_or_else(|| {
-                    TransactError::Parse(
-                        "Nested node object must contain at least one property".to_string(),
-                    )
-                })?;
             templates.extend(nested_templates);
             Ok(ParsedValue::new(subject))
         }
