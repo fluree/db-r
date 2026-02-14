@@ -62,7 +62,7 @@ pub enum BlockFetchError {
     #[error("No database context provided for policy filtering")]
     MissingDbContext,
 
-    /// FLI1 leaf parsing failed
+    /// FLI2 leaf parsing failed
     #[error("Leaf decode error: {0}")]
     LeafDecode(std::io::Error),
 
@@ -181,7 +181,7 @@ pub struct LedgerBlockContext<'a> {
     pub db: &'a Db,
     /// Time horizon for policy filtering (not always `db.t`).
     pub to_t: i64,
-    /// Binary index store for leaf decoding (None if not indexed / v1).
+    /// Binary index store for leaf decoding (None if not yet indexed).
     pub binary_store: Option<&'a BinaryIndexStore>,
 }
 
@@ -214,23 +214,23 @@ pub struct FetchedBlock {
 // Leaf Detection
 // ============================================================================
 
-/// Check if bytes appear to be an FLI1 leaf block.
+/// Check if bytes appear to be an FLI2 leaf block.
 ///
 /// Conservative: checks both the 4-byte magic prefix AND that the full
 /// header parses successfully. A `false` here is definitive (not a leaf);
 /// a `true` means the header is structurally valid but `decode_leaf_block`
 /// may still fail on corrupt leaflet data.
-pub fn is_fli1_leaf(bytes: &[u8]) -> bool {
-    bytes.len() >= 4 && bytes[0..4] == *b"FLI1" && read_leaf_header(bytes).is_ok()
+pub fn is_binary_leaf(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && bytes[0..4] == *b"FLI2" && read_leaf_header(bytes).is_ok()
 }
 
 // ============================================================================
 // Leaf Decoding
 // ============================================================================
 
-/// Decode an FLI1 binary leaf block into flakes.
+/// Decode an FLI2 binary leaf block into flakes.
 ///
-/// Returns the decoded flakes. Fails if the block is not a valid FLI1 leaf
+/// Returns the decoded flakes. Fails if the block is not a valid FLI2 leaf
 /// or if row-to-flake conversion fails (e.g., missing dictionary entries).
 pub fn decode_leaf_block(
     bytes: &[u8],
@@ -266,9 +266,14 @@ pub fn decode_leaf_block(
                 o_kind: decoded.o_kinds[idx],
                 o_key: decoded.o_keys[idx],
                 dt: decoded.dt_values[idx],
-                t: decoded.t_values[idx],
-                lang_id: decoded.lang_ids[idx],
-                i: decoded.i_values[idx],
+                t: decoded.t_values[idx] as i64,
+                lang_id: decoded.lang.as_ref().map_or(0, |c| c.get(idx as u16)),
+                i: decoded
+                    .i_col
+                    .as_ref()
+                    .map_or(fluree_db_core::ListIndex::none().as_i32(), |c| {
+                        c.get(idx as u16)
+                    }),
             };
             out.push(
                 store
@@ -392,7 +397,7 @@ pub async fn apply_policy_filter(
 /// 1. Checks the CID's content kind against the allowlist
 /// 2. Derives the storage address internally from `(storage_method, kind, ledger_id, digest)`
 /// 3. Reads raw bytes from storage
-/// 4. Detects whether the block is an FLI1 leaf (defense-in-depth, even when kind is `IndexLeaf`)
+/// 4. Detects whether the block is an FLI2 leaf (defense-in-depth, even when kind is `IndexLeaf`)
 /// 5. Under `PolicyEnforced`: leaf blocks are always decoded+filtered (never raw)
 /// 6. Under `TrustedInternal`: all blocks returned as raw bytes
 /// 7. Non-leaf blocks always returned as raw bytes (structural pointers)
@@ -436,8 +441,8 @@ pub async fn fetch_and_decode_block<S: Storage + Clone + 'static>(
     })?;
 
     // 5. Non-leaf blocks are structural pointers — return as-is regardless of mode
-    //    (FLI1 sniffing is defense-in-depth even when kind == IndexLeaf)
-    if !is_fli1_leaf(&bytes) {
+    //    (FLI2 sniffing is defense-in-depth even when kind == IndexLeaf)
+    if !is_binary_leaf(&bytes) {
         return Ok(FetchedBlock {
             content: BlockContent::RawBytes(bytes),
         });
@@ -543,32 +548,32 @@ mod tests {
     // --- Leaf detection tests ---
 
     #[test]
-    fn test_is_fli1_leaf_non_leaf_data() {
+    fn test_is_binary_leaf_non_leaf_data() {
         // JSON commit data
-        assert!(!is_fli1_leaf(b"{\"t\": 1}"));
+        assert!(!is_binary_leaf(b"{\"t\": 1}"));
         // Random bytes
-        assert!(!is_fli1_leaf(b"random data here"));
+        assert!(!is_binary_leaf(b"random data here"));
         // Too short
-        assert!(!is_fli1_leaf(b"FLI"));
+        assert!(!is_binary_leaf(b"FLI"));
         // Empty
-        assert!(!is_fli1_leaf(b""));
+        assert!(!is_binary_leaf(b""));
     }
 
     #[test]
-    fn test_is_fli1_leaf_magic_but_invalid_header() {
-        // Has FLI1 magic but header is too short / invalid
-        assert!(!is_fli1_leaf(b"FLI1short"));
+    fn test_is_binary_leaf_magic_but_invalid_header() {
+        // Has FLI2 magic but header is too short / invalid
+        assert!(!is_binary_leaf(b"FLI2short"));
     }
 
-    /// Build a minimal valid FLI1 leaf header (72 bytes, 0 leaflets).
-    /// This passes `is_fli1_leaf()` and `read_leaf_header()` but has no actual
+    /// Build a minimal valid FLI2 leaf header (72 bytes, 0 leaflets).
+    /// This passes `is_binary_leaf()` and `read_leaf_header()` but has no actual
     /// leaflet data.
-    fn make_minimal_fli1_header() -> Vec<u8> {
+    fn make_minimal_leaf_header() -> Vec<u8> {
         let mut buf = vec![0u8; 72];
-        // Magic: FLI1
-        buf[0..4].copy_from_slice(b"FLI1");
-        // Version: 1
-        buf[4] = 1;
+        // Magic: FLI2
+        buf[0..4].copy_from_slice(b"FLI2");
+        // Version: 2
+        buf[4] = 2;
         // leaflet_count: 0
         buf[5] = 0;
         // dt_width: 1 (u8)
@@ -582,9 +587,9 @@ mod tests {
     }
 
     #[test]
-    fn test_is_fli1_leaf_valid_minimal_header() {
-        let leaf_bytes = make_minimal_fli1_header();
-        assert!(is_fli1_leaf(&leaf_bytes));
+    fn test_is_binary_leaf_valid_minimal_header() {
+        let leaf_bytes = make_minimal_leaf_header();
+        assert!(is_binary_leaf(&leaf_bytes));
     }
 
     // --- Security enforcement tests ---
@@ -596,15 +601,15 @@ mod tests {
     fn test_policy_enforced_leaf_no_ledger_ctx_errors() {
         // PolicyEnforced + leaf detected + no ledger context → MissingBinaryStore
         // (NOT RawBytes)
-        let leaf_bytes = make_minimal_fli1_header();
-        assert!(is_fli1_leaf(&leaf_bytes));
+        let leaf_bytes = make_minimal_leaf_header();
+        assert!(is_binary_leaf(&leaf_bytes));
 
         let mode = EnforcementMode::PolicyEnforced {
             identity: None,
             policy_class: None,
         };
 
-        // Verify the invariant at the type level: if is_fli1_leaf is true and
+        // Verify the invariant at the type level: if is_binary_leaf is true and
         // mode is PolicyEnforced, the only valid outcomes are DecodedFlakes or error.
         // RawBytes is structurally impossible in that branch.
         match &mode {
@@ -622,7 +627,7 @@ mod tests {
     fn test_policy_enforced_non_leaf_returns_raw_bytes() {
         // PolicyEnforced + non-leaf → RawBytes is OK (structural data).
         let non_leaf_data = b"{\"t\": 1, \"address\": \"fluree:file://...\"}";
-        assert!(!is_fli1_leaf(non_leaf_data));
+        assert!(!is_binary_leaf(non_leaf_data));
 
         // Under PolicyEnforced, non-leaf blocks are returned as RawBytes.
         // This is the correct behavior — non-leaf blocks are metadata/pointers.
@@ -631,8 +636,8 @@ mod tests {
     #[test]
     fn test_trusted_internal_leaf_returns_raw_bytes() {
         // TrustedInternal + leaf → RawBytes is OK (trusted caller).
-        let leaf_bytes = make_minimal_fli1_header();
-        assert!(is_fli1_leaf(&leaf_bytes));
+        let leaf_bytes = make_minimal_leaf_header();
+        assert!(is_binary_leaf(&leaf_bytes));
 
         // Under TrustedInternal, even leaf blocks are returned as RawBytes.
         // This is the correct behavior for peer replication.
@@ -642,12 +647,12 @@ mod tests {
 
     #[test]
     fn test_decode_leaf_block_empty_leaf() {
-        // A valid FLI1 header with 0 leaflets should decode to empty flakes.
+        // A valid FLI2 header with 0 leaflets should decode to empty flakes.
         // This doesn't need a BinaryIndexStore since there are no rows.
         // However, decode_leaf_block still needs a store parameter.
-        // We just verify is_fli1_leaf succeeds and the header is valid.
-        let leaf_bytes = make_minimal_fli1_header();
-        assert!(is_fli1_leaf(&leaf_bytes));
+        // We just verify is_binary_leaf succeeds and the header is valid.
+        let leaf_bytes = make_minimal_leaf_header();
+        assert!(is_binary_leaf(&leaf_bytes));
 
         // Verify the header parses with no leaflets
         let header = read_leaf_header(&leaf_bytes).unwrap();

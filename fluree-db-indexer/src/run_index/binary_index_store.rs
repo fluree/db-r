@@ -1957,9 +1957,12 @@ impl BinaryIndexStore {
                         o_kind: decoded.o_kinds[row],
                         o_key: decoded.o_keys[row],
                         dt: decoded.dt_values[row],
-                        t: decoded.t_values[row],
-                        lang_id: decoded.lang_ids[row],
-                        i: decoded.i_values[row],
+                        t: decoded.t_values[row] as i64,
+                        lang_id: decoded.lang.as_ref().map_or(0, |c| c.get(row as u16)),
+                        i: decoded
+                            .i_col
+                            .as_ref()
+                            .map_or(ListIndex::none().as_i32(), |c| c.get(row as u16)),
                     };
                     let flake = self.row_to_flake(&decoded_row)?;
                     flakes.push(flake);

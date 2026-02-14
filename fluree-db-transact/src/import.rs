@@ -45,9 +45,9 @@ mod inner {
         pub import_time: String,
         /// Named graph IRI → g_id mapping (stable across chunks).
         /// g_id 0 = default graph, g_id 1 = txn-meta, g_id 2+ = user-defined.
-        pub graph_ids: HashMap<String, u32>,
+        pub graph_ids: HashMap<String, u16>,
         /// Next available g_id for user-defined named graphs.
-        pub next_gid: u32,
+        pub next_gid: u16,
         /// Accumulated turtle @prefix short names: IRI → short prefix.
         /// Captured from `on_prefix()` calls across all chunks.
         pub prefix_map: HashMap<String, String>,
@@ -464,7 +464,7 @@ mod inner {
         // 4. Process named graphs
         // Use session-level graph ID allocation for stability across chunks.
         // Only new mappings (introduced by this commit) go into graph_delta.
-        let mut graph_delta: HashMap<u32, String> = HashMap::new();
+        let mut graph_delta: HashMap<u16, String> = HashMap::new();
 
         for block in &phase1.named_graphs {
             // Allocate or reuse g_id for this graph IRI from session state
