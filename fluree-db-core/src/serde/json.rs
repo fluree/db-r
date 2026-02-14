@@ -632,7 +632,7 @@ pub fn raw_schema_to_index_schema(s: &RawDbRootSchema) -> IndexSchema {
 
 // NOTE: Legacy JSON leaf-node parsing/serialization was removed.
 //
-// The current index format stores leaf files as binary `FLI1` (leaflets inside),
+// The current index format stores leaf files as binary `FLI2` (leaflets inside),
 // and proxy transport uses `fluree-db-core::serde::flakes_transport` (FLKB).
 
 #[cfg(test)]

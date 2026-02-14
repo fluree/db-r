@@ -18,9 +18,125 @@
 //!   immutable — no epoch/time dimension needed.
 
 use fluree_db_core::subject_id::SubjectIdColumn;
+use fluree_db_core::ListIndex;
 use moka::sync::Cache;
 use std::io;
 use std::sync::Arc;
+
+// ============================================================================
+// Sparse column types (for lang_id and list-index)
+// ============================================================================
+
+/// Sparse u16 column for lang_id values.
+///
+/// Stores only the non-zero rows as parallel `(position, value)` arrays.
+/// Positions are sorted ascending. Binary search provides O(log n) lookup
+/// where n is the number of non-zero entries (typically tiny).
+#[derive(Clone, Debug)]
+pub struct SparseU16Column {
+    /// Sorted ascending row indices within the leaflet.
+    pub positions: Arc<[u16]>,
+    /// Parallel values (same length as positions).
+    pub values: Arc<[u16]>,
+}
+
+impl SparseU16Column {
+    /// Look up the value at `row`. Returns 0 if the row is absent.
+    #[inline]
+    pub fn get(&self, row: u16) -> u16 {
+        match self.positions.binary_search(&row) {
+            Ok(idx) => self.values[idx],
+            Err(_) => 0,
+        }
+    }
+
+    /// Number of non-zero entries.
+    #[inline]
+    pub fn count(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// Approximate byte size for cache weighing.
+    #[inline]
+    pub fn byte_size(&self) -> usize {
+        // positions: 2 bytes each, values: 2 bytes each
+        self.positions.len() * 4
+    }
+}
+
+/// Sparse list-index column with variable storage width.
+///
+/// Values are non-negative list positions stored at the narrowest width
+/// that fits the leaflet's `max_i`. Absent rows return `ListIndex::none()`.
+#[derive(Clone, Debug)]
+pub enum SparseIColumn {
+    U8 {
+        positions: Arc<[u16]>,
+        values: Arc<[u8]>,
+    },
+    U16 {
+        positions: Arc<[u16]>,
+        values: Arc<[u16]>,
+    },
+    U32 {
+        positions: Arc<[u16]>,
+        values: Arc<[u32]>,
+    },
+}
+
+impl SparseIColumn {
+    /// Look up the list index at `row`. Returns `ListIndex::none().as_i32()` if absent.
+    #[inline]
+    pub fn get(&self, row: u16) -> i32 {
+        match self {
+            SparseIColumn::U8 { positions, values } => match positions.binary_search(&row) {
+                Ok(idx) => values[idx] as i32,
+                Err(_) => ListIndex::none().as_i32(),
+            },
+            SparseIColumn::U16 { positions, values } => match positions.binary_search(&row) {
+                Ok(idx) => values[idx] as i32,
+                Err(_) => ListIndex::none().as_i32(),
+            },
+            SparseIColumn::U32 { positions, values } => match positions.binary_search(&row) {
+                Ok(idx) => values[idx] as i32,
+                Err(_) => ListIndex::none().as_i32(),
+            },
+        }
+    }
+
+    /// Number of non-sentinel entries.
+    #[inline]
+    pub fn count(&self) -> usize {
+        match self {
+            SparseIColumn::U8 { positions, .. } => positions.len(),
+            SparseIColumn::U16 { positions, .. } => positions.len(),
+            SparseIColumn::U32 { positions, .. } => positions.len(),
+        }
+    }
+
+    /// Approximate byte size for cache weighing.
+    #[inline]
+    pub fn byte_size(&self) -> usize {
+        match self {
+            // positions: 2 bytes each, values: 1 byte each
+            SparseIColumn::U8 { positions, .. } => positions.len() * 3,
+            // positions: 2 bytes each, values: 2 bytes each
+            SparseIColumn::U16 { positions, .. } => positions.len() * 4,
+            // positions: 2 bytes each, values: 4 bytes each
+            SparseIColumn::U32 { positions, .. } => positions.len() * 6,
+        }
+    }
+
+    /// The positions array (sorted ascending row indices).
+    #[inline]
+    pub fn positions(&self) -> &[u16] {
+        match self {
+            SparseIColumn::U8 { positions, .. } => positions,
+            SparseIColumn::U16 { positions, .. } => positions,
+            SparseIColumn::U32 { positions, .. } => positions,
+        }
+    }
+}
 
 // ============================================================================
 // Cache key
@@ -77,12 +193,16 @@ pub struct CachedRegion1 {
 }
 
 /// Cached decoded Region 2 (metadata columns: dt, t, lang, i).
+///
+/// `t` is stored as `u32` (narrowed from on-disk u32). Widen to `i64` at API
+/// boundaries via `t_i64()`. `lang` and `i` are stored sparsely — `None` when
+/// all rows have the default value (0 / sentinel).
 #[derive(Clone, Debug)]
 pub struct CachedRegion2 {
     pub dt_values: Arc<[u32]>,
-    pub t_values: Arc<[i64]>,
-    pub lang_ids: Arc<[u16]>,
-    pub i_values: Arc<[i32]>,
+    pub t_values: Arc<[u32]>,
+    pub lang: Option<SparseU16Column>,
+    pub i_col: Option<SparseIColumn>,
 }
 
 impl CachedRegion1 {
@@ -96,8 +216,32 @@ impl CachedRegion1 {
 impl CachedRegion2 {
     /// Approximate byte size of this cached value (for cache weighing).
     pub fn byte_size(&self) -> usize {
-        // dt(4) + t(8) + lang(2) + i(4) = 18 bytes per row
-        self.dt_values.len() * 18
+        let rows = self.dt_values.len();
+        // dt(4) + t(4) = 8 bytes per row, plus sparse overhead
+        let dense = rows * 8;
+        let lang_bytes = self.lang.as_ref().map_or(0, |c| c.byte_size());
+        let i_bytes = self.i_col.as_ref().map_or(0, |c| c.byte_size());
+        dense + lang_bytes + i_bytes
+    }
+
+    /// Get `t` at `row`, widened to i64 for API boundaries.
+    #[inline]
+    pub fn t_i64(&self, row: usize) -> i64 {
+        self.t_values[row] as i64
+    }
+
+    /// Get `lang_id` at `row` (0 if absent).
+    #[inline]
+    pub fn lang_id(&self, row: usize) -> u16 {
+        self.lang.as_ref().map_or(0, |c| c.get(row as u16))
+    }
+
+    /// Get list index at `row` (`ListIndex::none().as_i32()` if absent).
+    #[inline]
+    pub fn list_index(&self, row: usize) -> i32 {
+        self.i_col
+            .as_ref()
+            .map_or(ListIndex::none().as_i32(), |c| c.get(row as u16))
     }
 }
 
@@ -141,6 +285,46 @@ pub struct LeafletCache {
     inner: Cache<CacheKey, CachedEntry>,
 }
 
+macro_rules! region_cache_methods {
+    ($get_or:ident, $get:ident, $contains:ident, $cache_key_variant:ident, $entry_variant:ident, $ty:ty) => {
+        /// Get or decode a leaflet region for the given key.
+        ///
+        /// On cache miss, calls `decode_fn` to produce the value, inserts it,
+        /// and returns the cached copy.
+        pub fn $get_or<F>(&self, key: LeafletCacheKey, decode_fn: F) -> $ty
+        where
+            F: FnOnce() -> $ty,
+        {
+            let entry = self.inner.get_with(CacheKey::$cache_key_variant(key), || {
+                CachedEntry::$entry_variant(decode_fn())
+            });
+            match entry {
+                CachedEntry::$entry_variant(v) => v,
+                _ => unreachable!(concat!(
+                    stringify!($cache_key_variant),
+                    " key always maps to ",
+                    stringify!($entry_variant),
+                    " entry"
+                )),
+            }
+        }
+
+        /// Check if the region is cached for the given key (read-only, no insertion).
+        pub fn $get(&self, key: &LeafletCacheKey) -> Option<$ty> {
+            match self.inner.get(&CacheKey::$cache_key_variant(key.clone())) {
+                Some(CachedEntry::$entry_variant(v)) => Some(v),
+                _ => None,
+            }
+        }
+
+        /// Check if the region is cached for the given key.
+        pub fn $contains(&self, key: &LeafletCacheKey) -> bool {
+            self.inner
+                .contains_key(&CacheKey::$cache_key_variant(key.clone()))
+        }
+    };
+}
+
 impl LeafletCache {
     /// Create a new cache with the given maximum byte budget.
     ///
@@ -160,66 +344,13 @@ impl LeafletCache {
     // Region 1
     // ========================================================================
 
-    /// Get or decode Region 1 for the given key.
-    ///
-    /// On cache miss, calls `decode_fn` to produce the value, inserts it,
-    /// and returns the cached copy.
-    pub fn get_or_decode_r1<F>(&self, key: LeafletCacheKey, decode_fn: F) -> CachedRegion1
-    where
-        F: FnOnce() -> CachedRegion1,
-    {
-        let entry = self
-            .inner
-            .get_with(CacheKey::R1(key), || CachedEntry::R1(decode_fn()));
-        match entry {
-            CachedEntry::R1(r1) => r1,
-            _ => unreachable!("R1 key always maps to R1 entry"),
-        }
-    }
-
-    /// Check if Region 1 is cached for the given key (no insertion).
-    pub fn get_r1(&self, key: &LeafletCacheKey) -> Option<CachedRegion1> {
-        match self.inner.get(&CacheKey::R1(key.clone())) {
-            Some(CachedEntry::R1(r1)) => Some(r1),
-            _ => None,
-        }
-    }
-
-    /// Check if Region 1 is cached for the given key without cloning the value.
-    pub fn contains_r1(&self, key: &LeafletCacheKey) -> bool {
-        self.inner.contains_key(&CacheKey::R1(key.clone()))
-    }
+    region_cache_methods!(get_or_decode_r1, get_r1, contains_r1, R1, R1, CachedRegion1);
 
     // ========================================================================
     // Region 2
     // ========================================================================
 
-    /// Get or decode Region 2 for the given key.
-    pub fn get_or_decode_r2<F>(&self, key: LeafletCacheKey, decode_fn: F) -> CachedRegion2
-    where
-        F: FnOnce() -> CachedRegion2,
-    {
-        let entry = self
-            .inner
-            .get_with(CacheKey::R2(key), || CachedEntry::R2(decode_fn()));
-        match entry {
-            CachedEntry::R2(r2) => r2,
-            _ => unreachable!("R2 key always maps to R2 entry"),
-        }
-    }
-
-    /// Check if Region 2 is cached for the given key (no insertion).
-    pub fn get_r2(&self, key: &LeafletCacheKey) -> Option<CachedRegion2> {
-        match self.inner.get(&CacheKey::R2(key.clone())) {
-            Some(CachedEntry::R2(r2)) => Some(r2),
-            _ => None,
-        }
-    }
-
-    /// Check if Region 2 is cached for the given key without cloning the value.
-    pub fn contains_r2(&self, key: &LeafletCacheKey) -> bool {
-        self.inner.contains_key(&CacheKey::R2(key.clone()))
-    }
+    region_cache_methods!(get_or_decode_r2, get_r2, contains_r2, R2, R2, CachedRegion2);
 
     // ========================================================================
     // Dict tree leaf cache
@@ -330,9 +461,9 @@ mod tests {
     fn make_r2(row_count: usize) -> CachedRegion2 {
         CachedRegion2 {
             dt_values: vec![0u32; row_count].into(),
-            t_values: vec![1i64; row_count].into(),
-            lang_ids: vec![0u16; row_count].into(),
-            i_values: vec![i32::MIN; row_count].into(),
+            t_values: vec![1u32; row_count].into(),
+            lang: None,
+            i_col: None,
         }
     }
 
@@ -446,7 +577,8 @@ mod tests {
         assert_eq!(r1.byte_size(), 25000 * 17); // 425KB
 
         let r2 = make_r2(25000);
-        assert_eq!(r2.byte_size(), 25000 * 18); // 450KB
+        // dt(4) + t(4) = 8 bytes per row, no sparse overhead when lang/i absent
+        assert_eq!(r2.byte_size(), 25000 * 8); // 200KB
     }
 
     #[test]

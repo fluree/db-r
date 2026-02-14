@@ -61,7 +61,7 @@ pub struct FlakeGenerator<'a> {
     /// When a template has a `graph_id`, this map provides the corresponding
     /// graph Sid for `Flake::new_in_graph()`. Graph IDs 0 (default) and 1 (txn-meta)
     /// are reserved and should not appear in this map.
-    graph_sids: HashMap<u32, Sid>,
+    graph_sids: HashMap<u16, Sid>,
 }
 
 impl<'a> FlakeGenerator<'a> {
@@ -85,7 +85,7 @@ impl<'a> FlakeGenerator<'a> {
     /// The map should contain entries for user-defined named graphs (g_id >= 2).
     /// Templates with a `graph_id` matching an entry in this map will produce
     /// flakes in the corresponding named graph.
-    pub fn with_graph_sids(mut self, graph_sids: HashMap<u32, Sid>) -> Self {
+    pub fn with_graph_sids(mut self, graph_sids: HashMap<u16, Sid>) -> Self {
         self.graph_sids = graph_sids;
         self
     }

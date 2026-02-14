@@ -8,7 +8,7 @@
 //!
 //! Under `PolicyEnforced` mode (the only mode currently available via the storage
 //! proxy), the server **always** returns decoded, policy-filtered flakes (FLKB format)
-//! for leaf blocks — even if the client requests `application/octet-stream`. Raw FLI1
+//! for leaf blocks — even if the client requests `application/octet-stream`. Raw FLI2
 //! leaf bytes are never returned to end users.
 //!
 //! Both `read_bytes()` and `read_bytes_hint()` use flakes-first content negotiation:
@@ -21,7 +21,7 @@
 //!
 //! The `ReadHint` distinction is preserved for forward-compatibility: if a
 //! `TrustedInternal` enforcement mode is added later, `AnyBytes` could return
-//! raw FLI1 leaves while `PreferLeafFlakes` would still prefer FLKB.
+//! raw FLI2 leaves while `PreferLeafFlakes` would still prefer FLKB.
 
 use async_trait::async_trait;
 use fluree_db_core::error::{Error as CoreError, Result};
@@ -290,7 +290,7 @@ impl ProxyStorage {
 #[async_trait]
 impl StorageRead for ProxyStorage {
     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
-        // Under PolicyEnforced, leaf blocks always return FLKB (not raw FLI1).
+        // Under PolicyEnforced, leaf blocks always return FLKB (not raw FLI2).
         // Use flakes-first negotiation for deterministic behavior across block types:
         // - Leaves → FLKB (policy-filtered flakes)
         // - Non-leaves → raw bytes (via 406 fallback to octet-stream)

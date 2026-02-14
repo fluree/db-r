@@ -45,12 +45,6 @@ pub const LEAFLET_MAGIC: &[u8; 4] = b"FSC1";
 /// Current leaflet format version.
 pub const LEAFLET_VERSION: u8 = 2;
 
-/// Previous format version (without checksums) - still readable for backwards compatibility.
-const LEAFLET_VERSION_V1: u8 = 1;
-
-/// Header length for v1 (no checksums).
-const LEAFLET_HEADER_LEN_V1: usize = 36;
-
 /// Header length for v2 (with checksums).
 const LEAFLET_HEADER_LEN: usize = 44;
 
@@ -441,15 +435,11 @@ impl CellIndexReader {
         Ok(result)
     }
 
-    /// Read and decode a single leaflet.
-    ///
-    /// Supports both v1 (no checksums) and v2 (with checksums) formats for
-    /// backwards compatibility during index migration.
+    /// Read and decode a single leaflet (v2 format with checksums).
     fn read_leaflet(&self, meta: &LeafletMeta) -> Result<Vec<CellEntry>> {
         let data = (self.fetch_chunk)(&meta.content_hash)?;
 
-        // Check minimum header size (v1 is smaller)
-        if data.len() < LEAFLET_HEADER_LEN_V1 {
+        if data.len() < LEAFLET_HEADER_LEN {
             return Err(SpatialError::FormatError("leaflet too short".into()));
         }
 
@@ -459,49 +449,34 @@ impl CellIndexReader {
         }
 
         let version = data[4];
-        let header_len = match version {
-            LEAFLET_VERSION_V1 => LEAFLET_HEADER_LEN_V1,
-            LEAFLET_VERSION => LEAFLET_HEADER_LEN,
-            _ => {
-                return Err(SpatialError::FormatError(format!(
-                    "unsupported leaflet version: {}",
-                    version
-                )));
-            }
-        };
-
-        if data.len() < header_len {
-            return Err(SpatialError::FormatError("leaflet header truncated".into()));
+        if version != LEAFLET_VERSION {
+            return Err(SpatialError::FormatError(format!(
+                "unsupported leaflet version: {} (only v{} supported)",
+                version, LEAFLET_VERSION
+            )));
         }
 
         let entry_count = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
         let compressed_len = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
 
-        if data.len() < header_len + compressed_len {
+        if data.len() < LEAFLET_HEADER_LEN + compressed_len {
             return Err(SpatialError::FormatError("truncated leaflet body".into()));
         }
 
-        // Extract checksums for v2
-        let (expected_crc_compressed, expected_crc_uncompressed) = if version == LEAFLET_VERSION {
-            let crc_c = u32::from_le_bytes(data[36..40].try_into().unwrap());
-            let crc_u = u32::from_le_bytes(data[40..44].try_into().unwrap());
-            (Some(crc_c), Some(crc_u))
-        } else {
-            (None, None)
-        };
+        // Extract checksums
+        let expected_crc_compressed = u32::from_le_bytes(data[36..40].try_into().unwrap());
+        let expected_crc_uncompressed = u32::from_le_bytes(data[40..44].try_into().unwrap());
 
         // Get compressed data
-        let compressed = &data[header_len..header_len + compressed_len];
+        let compressed = &data[LEAFLET_HEADER_LEN..LEAFLET_HEADER_LEN + compressed_len];
 
         // Verify compressed checksum (quick integrity check before decompression)
-        if let Some(expected) = expected_crc_compressed {
-            let actual = crc32fast::hash(compressed);
-            if actual != expected {
-                return Err(SpatialError::FormatError(format!(
-                    "compressed CRC32 mismatch: expected {:08x}, got {:08x}",
-                    expected, actual
-                )));
-            }
+        let actual_crc_c = crc32fast::hash(compressed);
+        if actual_crc_c != expected_crc_compressed {
+            return Err(SpatialError::FormatError(format!(
+                "compressed CRC32 mismatch: expected {:08x}, got {:08x}",
+                expected_crc_compressed, actual_crc_c
+            )));
         }
 
         // Decompress
@@ -509,14 +484,12 @@ impl CellIndexReader {
             zstd::decode_all(compressed).map_err(|e| SpatialError::Io(std::io::Error::other(e)))?;
 
         // Verify uncompressed checksum (post-decompression validation)
-        if let Some(expected) = expected_crc_uncompressed {
-            let actual = crc32fast::hash(&decompressed);
-            if actual != expected {
-                return Err(SpatialError::FormatError(format!(
-                    "uncompressed CRC32 mismatch: expected {:08x}, got {:08x}",
-                    expected, actual
-                )));
-            }
+        let actual_crc_u = crc32fast::hash(&decompressed);
+        if actual_crc_u != expected_crc_uncompressed {
+            return Err(SpatialError::FormatError(format!(
+                "uncompressed CRC32 mismatch: expected {:08x}, got {:08x}",
+                expected_crc_uncompressed, actual_crc_u
+            )));
         }
 
         // Parse entries
