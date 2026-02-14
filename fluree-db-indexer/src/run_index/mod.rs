@@ -17,11 +17,14 @@ pub mod resolver;
 pub mod run_file;
 pub mod run_record;
 pub mod run_writer;
+pub mod spool;
 
 pub mod binary_cursor;
 pub mod binary_index_store;
 pub mod branch;
+pub mod chunk_dict;
 pub mod dict_io;
+pub mod dict_merge;
 pub mod index_build;
 pub mod index_root;
 pub mod lang_remap;
@@ -34,15 +37,24 @@ pub mod numbig_dict;
 pub mod numfloat_dict;
 pub mod query;
 pub mod replay;
+pub mod shared_pool;
 pub mod spot_cursor;
 pub mod streaming_reader;
 pub mod types;
 pub mod vector_arena;
+pub mod vocab_file;
+pub mod vocab_merge;
 
 pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
 pub use binary_index_store::BinaryIndexStore;
+pub use chunk_dict::{hash_subject, ChunkStringDict, ChunkSubjectDict};
+// dict_merge is superseded by vocab_merge (external-sort k-way merge)
+// but kept for its unit tests as a reference implementation.
 pub use fluree_db_core::PrefixTrie;
-pub use global_dict::{GlobalDicts, LanguageTagDict, PredicateDict, StringValueDict, SubjectDict};
+pub use global_dict::{
+    DictAllocator, DictWorkerCache, GlobalDicts, LanguageTagDict, PredicateDict,
+    SharedDictAllocator, StringValueDict, SubjectDict,
+};
 pub use index_build::{
     build_all_indexes, build_index, build_spot_index, precompute_language_dict, IndexBuildConfig,
     IndexBuildResult,
@@ -62,6 +74,11 @@ pub use run_file::{read_run_file, write_run_file, RunFileInfo};
 pub use run_record::{cmp_for_order, cmp_spot, RunRecord, RunSortOrder};
 pub use run_writer::{
     MultiOrderConfig, MultiOrderRunWriter, RecordSink, RunWriter, RunWriterConfig, RunWriterResult,
+};
+pub use shared_pool::{SharedNumBigPool, SharedVectorArenaPool};
+pub use spool::{
+    collect_chunk_run_files, remap_spool_to_runs, spool_to_runs, SpoolFileInfo, SpoolReader,
+    SpoolWriter,
 };
 pub use spot_cursor::SpotCursor;
 pub use streaming_reader::StreamingRunReader;

@@ -68,6 +68,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             chunk_size_mb,
             memory_budget_mb,
             parallelism,
+            run_budget_mb,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             // Create-specific flags take precedence; fall back to global flags.
@@ -83,6 +84,11 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                     cli.parallelism
                 },
                 chunk_size_mb,
+                run_budget_mb: if run_budget_mb > 0 {
+                    run_budget_mb
+                } else {
+                    cli.run_budget_mb
+                },
             };
             commands::create::run(
                 &ledger,

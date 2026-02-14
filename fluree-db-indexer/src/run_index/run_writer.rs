@@ -144,6 +144,18 @@ impl RunWriter {
             return Ok(());
         }
 
+        // Capacity we allow for the returned spare buffer.
+        //
+        // IMPORTANT: The "full" buffer handed to the background thread can grow to the
+        // configured max_records (i.e., up to the byte budget). If we simply `clear()`
+        // and return it as the spare buffer, we permanently retain that large allocation,
+        // which can explode RSS (especially with MultiOrderRunWriter × N workers).
+        //
+        // Instead we drop the large allocation after each flush and return a smaller
+        // pre-sized buffer for reuse. This trades some re-allocation work for stable,
+        // predictable memory usage during large imports.
+        let reuse_capacity = self.config.max_records().min(1_000_000);
+
         // 1. Wait for any pending background flush
         self.join_pending_flush()?;
 
@@ -155,6 +167,7 @@ impl RunWriter {
             .join(format!("run_{:05}.frn", run_index));
         let sort_order = self.config.sort_order;
         let lang_snapshot = lang_dict.clone(); // small — typically < 1KB
+        let reuse_capacity = reuse_capacity;
 
         // 3. Swap buffers: take full buffer, replace with spare (or fresh)
         let full_buffer = std::mem::replace(
@@ -203,8 +216,13 @@ impl RunWriter {
                         "run file flushed (background)"
                     );
 
-                    buf.clear();
-                    Ok(FlushResult { info, buffer: buf })
+                    // Drop the large buffer allocation after the flush to avoid retaining
+                    // multi-GB capacities across runs.
+                    drop(buf);
+                    Ok(FlushResult {
+                        info,
+                        buffer: Vec::with_capacity(reuse_capacity),
+                    })
                 })?,
         );
 

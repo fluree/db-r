@@ -20,13 +20,13 @@ mod inner {
     use crate::import_sink::ImportSink;
     use crate::namespace::{NamespaceRegistry, NsAllocator, SharedNamespaceAllocator, WorkerCache};
     use crate::parse::trig_meta::{parse_trig_phase1, resolve_trig_meta, RawObject, RawTerm};
-    use crate::turtle_splitter::TurtlePrelude;
     use crate::value_convert::convert_string_literal;
     use fluree_db_core::{
         ContentAddressedWrite, ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid,
         CODEC_FLUREE_COMMIT,
     };
     use fluree_db_novelty::CommitRef;
+    use fluree_graph_turtle::splitter::TurtlePrelude;
     use rustc_hash::FxHashSet;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -92,6 +92,10 @@ mod inner {
         /// Available for downstream consumers (e.g., run generation)
         /// without re-reading from storage.
         pub commit_blob: Vec<u8>,
+        /// Spool result from this chunk's parse (if spool was enabled).
+        /// Contains chunk-local dictionaries + spool file info for the
+        /// Tier 2 merge+remap pipeline.
+        pub spool_result: Option<crate::import_sink::SpoolResult>,
     }
 
     /// Import a single TTL chunk as a v2 commit blob.
@@ -105,12 +109,16 @@ mod inner {
     /// * `storage` — storage backend for writing commit blobs
     /// * `ledger_id` — ledger name for storage path construction
     /// * `compress` — whether to zstd-compress the ops stream
+    #[allow(clippy::too_many_arguments)]
     pub async fn import_commit<S>(
         state: &mut ImportState,
         ttl: &str,
         storage: &S,
         ledger_id: &str,
         compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
@@ -129,17 +137,30 @@ mod inner {
         .entered();
         let mut sink = ImportSink::new(&mut state.ns_registry, new_t, txn_id, compress)
             .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
         fluree_graph_turtle::parse(ttl, &mut sink)
             .map_err(|e| TransactError::Parse(e.to_string()))?;
         drop(_parse_span);
 
         // 2. Retrieve writer, get namespace delta, build envelope
-        let (writer, op_count, envelope) = {
+        let (writer, op_count, spool_result, envelope) = {
             let _span = tracing::info_span!("import_build_envelope", t = new_t).entered();
-            let (writer, chunk_prefix_map) = sink
+            let (writer, chunk_prefix_map, spool_ctx) = sink
                 .finish()
                 .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
             state.prefix_map.extend(chunk_prefix_map);
+
+            let spool_result = spool_ctx
+                .map(|ctx| ctx.finish())
+                .transpose()
+                .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
             let op_count = writer.op_count();
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
@@ -166,7 +187,7 @@ mod inner {
                 graph_delta: HashMap::new(),
             };
 
-            (writer, op_count, envelope)
+            (writer, op_count, spool_result, envelope)
         };
 
         // 4. Finalize blob
@@ -209,6 +230,7 @@ mod inner {
             flake_count: op_count,
             blob_bytes,
             commit_blob: result.bytes,
+            spool_result,
         })
     }
 
@@ -216,6 +238,7 @@ mod inner {
     ///
     /// This avoids the need to prepend the raw prefix block text onto every chunk,
     /// which would otherwise force an extra full-chunk string copy per parse.
+    #[allow(clippy::too_many_arguments)]
     pub async fn import_commit_with_prelude<S>(
         state: &mut ImportState,
         ttl: &str,
@@ -223,6 +246,9 @@ mod inner {
         storage: &S,
         ledger_id: &str,
         compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
@@ -250,6 +276,14 @@ mod inner {
         .entered();
         let mut sink = ImportSink::new(&mut state.ns_registry, new_t, txn_id, compress)
             .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
         fluree_graph_turtle::parse_with_prefixes_base(
             ttl,
             &mut sink,
@@ -259,11 +293,16 @@ mod inner {
         .map_err(|e| TransactError::Parse(e.to_string()))?;
         drop(_parse_span);
 
-        let (writer, op_count, envelope) = {
+        let (writer, op_count, spool_result, envelope) = {
             let _span = tracing::info_span!("import_build_envelope", t = new_t).entered();
-            let (writer, _chunk_prefix_map) = sink
+            let (writer, _chunk_prefix_map, spool_ctx) = sink
                 .finish()
                 .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+
+            let spool_result = spool_ctx
+                .map(|ctx| ctx.finish())
+                .transpose()
+                .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
             let op_count = writer.op_count();
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
@@ -289,7 +328,7 @@ mod inner {
                 graph_delta: HashMap::new(),
             };
 
-            (writer, op_count, envelope)
+            (writer, op_count, spool_result, envelope)
         };
 
         let result = {
@@ -329,6 +368,7 @@ mod inner {
             flake_count: op_count,
             blob_bytes,
             commit_blob: result.bytes,
+            spool_result,
         })
     }
 
@@ -350,12 +390,16 @@ mod inner {
     /// * `storage` — storage backend for writing commit blobs
     /// * `ledger_id` — ledger name for storage path construction
     /// * `compress` — whether to zstd-compress the ops stream
+    #[allow(clippy::too_many_arguments)]
     pub async fn import_trig_commit<S>(
         state: &mut ImportState,
         trig: &str,
         storage: &S,
         ledger_id: &str,
         compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
@@ -368,7 +412,17 @@ mod inner {
 
         // If no named graphs and no txn-meta, use the faster pure-Turtle path
         if phase1.named_graphs.is_empty() && phase1.raw_meta.is_none() {
-            return import_commit(state, trig, storage, ledger_id, compress).await;
+            return import_commit(
+                state,
+                trig,
+                storage,
+                ledger_id,
+                compress,
+                spool_dir,
+                spool_config,
+                chunk_idx,
+            )
+            .await;
         }
 
         let _parse_span = tracing::info_span!(
@@ -382,14 +436,29 @@ mod inner {
         // 2. Create ImportSink and parse default graph Turtle
         let mut sink = ImportSink::new(&mut state.ns_registry, new_t, txn_id.clone(), compress)
             .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
         fluree_graph_turtle::parse(&phase1.turtle, &mut sink)
             .map_err(|e| TransactError::Parse(e.to_string()))?;
 
         // 3. Retrieve writer for named graph flakes
-        let (mut writer, chunk_prefix_map) = sink
+        // Note: spool only captures default-graph triples parsed above.
+        // Named graph flakes (pushed below) are NOT spooled — TriG import
+        // falls back to the serial resolver path for index generation.
+        let (mut writer, chunk_prefix_map, spool_ctx) = sink
             .finish()
             .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
         state.prefix_map.extend(chunk_prefix_map);
+        let spool_result = spool_ctx
+            .map(|ctx| ctx.finish())
+            .transpose()
+            .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
         let mut op_count = writer.op_count();
 
         // 4. Process named graphs
@@ -525,6 +594,7 @@ mod inner {
             flake_count: op_count,
             blob_bytes,
             commit_blob: result.bytes,
+            spool_result,
         })
     }
 
@@ -634,6 +704,9 @@ mod inner {
         pub new_codes: FxHashSet<u16>,
         /// Turtle @prefix short names from this chunk: IRI → short prefix.
         pub prefix_map: HashMap<String, String>,
+        /// Spool result from parallel import (if enabled). Contains spool file
+        /// info and chunk-local dictionaries for the merge phase.
+        pub spool_result: Option<crate::import_sink::SpoolResult>,
     }
 
     /// Parse a TTL chunk into a `StreamingCommitWriter`. Thread-safe.
@@ -643,12 +716,19 @@ mod inner {
     /// `new_codes` set for commit-order publication by the serial finalizer.
     ///
     /// The `t` value is pre-assigned by the caller (chunk_index + 1).
+    ///
+    /// If `spool_dir` is `Some`, a spool file is written alongside the commit
+    /// blob for Phase A validation of the spool format.
+    #[allow(clippy::too_many_arguments)]
     pub fn parse_chunk(
         ttl: &str,
         alloc: &Arc<SharedNamespaceAllocator>,
         t: i64,
         ledger_id: &str,
         compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
     ) -> Result<ParsedChunk> {
         let txn_id = format!("{}-{}", ledger_id, t);
 
@@ -657,21 +737,35 @@ mod inner {
         let mut worker_cache = WorkerCache::new(Arc::clone(alloc));
         let mut sink = ImportSink::new_cached(&mut worker_cache, t, txn_id, compress)
             .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
         fluree_graph_turtle::parse(ttl, &mut sink)
             .map_err(|e| TransactError::Parse(e.to_string()))?;
         drop(_parse_span);
 
-        let (writer, prefix_map) = sink
+        let (writer, prefix_map, spool_ctx) = sink
             .finish()
             .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
         let op_count = writer.op_count();
         let new_codes = worker_cache.into_new_codes();
+
+        let spool_result = spool_ctx
+            .map(|ctx| ctx.finish())
+            .transpose()
+            .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
 
         Ok(ParsedChunk {
             writer,
             op_count,
             new_codes,
             prefix_map,
+            spool_result,
         })
     }
 
@@ -679,6 +773,10 @@ mod inner {
     ///
     /// Like `parse_chunk`, but does not require the prefix block text to be
     /// prepended onto `ttl`. Uses a [`WorkerCache`] for lock-free lookups.
+    ///
+    /// If `spool_dir` is `Some`, a spool file is written alongside the commit
+    /// blob for Phase A validation of the spool format.
+    #[allow(clippy::too_many_arguments)]
     pub fn parse_chunk_with_prelude(
         ttl: &str,
         alloc: &Arc<SharedNamespaceAllocator>,
@@ -686,6 +784,9 @@ mod inner {
         t: i64,
         ledger_id: &str,
         compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
     ) -> Result<ParsedChunk> {
         let txn_id = format!("{}-{}", ledger_id, t);
         let _parse_span = tracing::info_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
@@ -700,6 +801,13 @@ mod inner {
         let mut sink = ImportSink::new_cached(&mut worker_cache, t, txn_id, compress)
             .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
 
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
         fluree_graph_turtle::parse_with_prefixes_base(
             ttl,
             &mut sink,
@@ -709,11 +817,16 @@ mod inner {
         .map_err(|e| TransactError::Parse(e.to_string()))?;
         drop(_parse_span);
 
-        let (writer, _prefix_map) = sink
+        let (writer, _prefix_map, spool_ctx) = sink
             .finish()
             .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
         let op_count = writer.op_count();
         let new_codes = worker_cache.into_new_codes();
+
+        let spool_result = spool_ctx
+            .map(|ctx| ctx.finish())
+            .transpose()
+            .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
 
         Ok(ParsedChunk {
             writer,
@@ -722,6 +835,7 @@ mod inner {
             // Prelude prefixes are applied at session start; chunks should not
             // need to contribute additional prefix mappings.
             prefix_map: HashMap::new(),
+            spool_result,
         })
     }
 
@@ -800,6 +914,7 @@ mod inner {
             flake_count: parsed.op_count,
             blob_bytes,
             commit_blob: result.bytes,
+            spool_result: parsed.spool_result,
         })
     }
 }

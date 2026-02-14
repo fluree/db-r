@@ -28,6 +28,7 @@ pub mod adapter;
 pub mod error;
 pub mod lex;
 pub mod parser;
+pub mod splitter;
 
 pub use adapter::graph_to_transaction_json;
 pub use error::{Result, TurtleError};

@@ -2349,6 +2349,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -2521,10 +2522,12 @@ dependencies = [
  "fluree-vocab",
  "futures",
  "hex",
+ "libc",
  "memmap2",
  "moka",
  "num-bigint",
  "num-traits",
+ "parking_lot",
  "rustc-hash",
  "serde",
  "serde_json",
@@ -2963,6 +2966,7 @@ dependencies = [
  "fluree-vocab",
  "rustc-hash",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tracing",
  "winnow",

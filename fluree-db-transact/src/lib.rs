@@ -47,8 +47,9 @@ mod value_convert;
 #[cfg(feature = "import")]
 pub mod import;
 pub mod import_sink;
+/// Re-export from `fluree_graph_turtle::splitter` for backwards compatibility.
 #[cfg(feature = "import")]
-pub mod turtle_splitter;
+pub use fluree_graph_turtle::splitter as turtle_splitter;
 
 // Re-exports
 pub use address::parse_commit_id;

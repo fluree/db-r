@@ -123,14 +123,17 @@ async fn drop_ledger_hard_mode_deletes_files() {
         "Should have deleted commit files"
     );
 
-    // Verify nameservice retracted
+    // Verify nameservice purged (hard drop removes the record entirely,
+    // allowing the alias to be reused — unlike soft drop which only retracts).
     let record = fluree
         .nameservice()
         .lookup(ledger_id)
         .await
         .expect("lookup");
-    assert!(record.is_some());
-    assert!(record.unwrap().retracted);
+    assert!(
+        record.is_none(),
+        "Hard drop purges the record so it no longer exists"
+    );
 
     // Verify commit files deleted
     let files_after = fluree

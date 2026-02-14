@@ -99,6 +99,7 @@ impl StoredBigValue {
 ///
 /// Handles are sequential `u32` values (0, 1, 2, ...) assigned in insertion
 /// order. **Not** numerically ordered -- range queries post-filter.
+#[derive(Debug)]
 pub struct NumBigArena {
     /// Dedup: repr -> handle.
     dedup: HashMap<NumBigRepr, u32>,

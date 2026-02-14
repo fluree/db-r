@@ -252,7 +252,7 @@ pub async fn run(
                     detect::QueryFormat::Sparql => {
                         fluree.query_view(&view, content.as_str()).await?
                     }
-                    detect::QueryFormat::Fql => {
+                    detect::QueryFormat::JsonLd => {
                         let json_query: serde_json::Value = serde_json::from_str(&content)?;
                         fluree.query_view(&view, &json_query).await?
                     }
@@ -265,7 +265,7 @@ pub async fn run(
                     detect::QueryFormat::Sparql => {
                         fluree.query_view(&view, content.as_str()).await?
                     }
-                    detect::QueryFormat::Fql => {
+                    detect::QueryFormat::JsonLd => {
                         let json_query: serde_json::Value = serde_json::from_str(&content)?;
                         fluree.query_view(&view, &json_query).await?
                     }
@@ -299,7 +299,7 @@ pub async fn run(
                             print_footer(output.total_rows, Some(BENCH_ROWS), elapsed);
                         }
                     }
-                    detect::QueryFormat::Fql => {
+                    detect::QueryFormat::JsonLd => {
                         // JSON-LD can be nested; keep bench output in the lightweight TSV form.
                         let (text, total_rows) = format_bench_tsv(&result, &view.db, BENCH_ROWS);
                         print!("{text}");
@@ -308,7 +308,7 @@ pub async fn run(
                 }
             } else {
                 // JSON-LD queries can produce nested graph crawl results; always render as JSON.
-                let output_format = if query_format == detect::QueryFormat::Fql {
+                let output_format = if query_format == detect::QueryFormat::JsonLd {
                     OutputFormatKind::Json
                 } else {
                     output_format
@@ -331,7 +331,7 @@ pub async fn run(
                 // Full formatting path
                 let formatted_json = match query_format {
                     detect::QueryFormat::Sparql => result.to_sparql_json(&view.db)?,
-                    detect::QueryFormat::Fql => result.to_jsonld_async(&view.db).await?,
+                    detect::QueryFormat::JsonLd => result.to_jsonld_async(&view.db).await?,
                 };
                 let output =
                     output::format_result(&formatted_json, output_format, query_format, limit)?;

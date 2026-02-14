@@ -237,7 +237,7 @@ fn format_json(
                 _ => (total, json.clone()),
             }
         }
-        QueryFormat::Fql => {
+        QueryFormat::JsonLd => {
             let total = fql_row_count(json);
             match limit {
                 Some(n) if n < total => {
@@ -266,7 +266,7 @@ fn format_as_table(
 ) -> CliResult<FormatOutput> {
     match query_format {
         QueryFormat::Sparql => format_sparql_table(json, limit),
-        QueryFormat::Fql => format_fql_table(json, limit),
+        QueryFormat::JsonLd => format_jsonld_table(json, limit),
     }
 }
 
@@ -277,7 +277,7 @@ fn format_as_csv(
 ) -> CliResult<FormatOutput> {
     match query_format {
         QueryFormat::Sparql => format_sparql_csv(json, limit),
-        QueryFormat::Fql => format_fql_csv(json, limit),
+        QueryFormat::JsonLd => format_jsonld_csv(json, limit),
     }
 }
 
@@ -353,7 +353,7 @@ fn format_sparql_table(json: &serde_json::Value, limit: Option<usize>) -> CliRes
     })
 }
 
-fn format_fql_table(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
+fn format_jsonld_table(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
     let arr = match json.as_array() {
         Some(a) => a,
         None => {
@@ -469,7 +469,7 @@ fn format_sparql_csv(json: &serde_json::Value, limit: Option<usize>) -> CliResul
     })
 }
 
-fn format_fql_csv(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
+fn format_jsonld_csv(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
     let arr = match json.as_array() {
         Some(a) => a,
         None => {

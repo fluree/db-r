@@ -1,27 +1,31 @@
-//! Bulk import pipeline: TTL → commits → runs → indexes → CAS → publish.
+//! Bulk import pipeline: TTL → commits → spool → merge → remap → runs → indexes → CAS → publish.
 //!
 //! Provides `.create("mydb").import("/path/to/chunks/").execute().await` API
 //! on [`Fluree`] for high-throughput bulk import of Turtle data.
 //!
-//! ## Pipeline overview
+//! ## Pipeline overview (Tier 2: parallel local IDs + remap)
 //!
 //! 1. **Create ledger** — `nameservice.publish_ledger_init(ledger_id)`
-//! 2. **Import TTL → commits + runs** — parallel chunk parsing, serial commit
-//!    finalization, streaming run generation via background resolver thread
-//! 3. **Build indexes** — `build_all_indexes()` from completed run files
-//! 4. **CAS upload** — dicts + indexes uploaded to content-addressed storage
-//! 5. **V2 root** — `BinaryIndexRoot::from_cas_artifacts()` written to CAS
-//! 6. **Publish** — `nameservice.publish_index_allow_equal()`
-//! 7. **Cleanup** — remove tmp session directory (only on full success)
+//! 2. **Parse + commit** — parallel chunk parsing with chunk-local IDs written
+//!    to spool files, serial commit finalization
+//! 3. **Dict merge** — merge chunk-local subject/string dicts into global dicts,
+//!    produce per-chunk remap tables
+//! 4. **Parallel remap** — N threads read spool files, remap IDs to global,
+//!    write sorted run files
+//! 5. **Build indexes** — `build_all_indexes()` from completed run files
+//! 6. **CAS upload** — dicts + indexes uploaded to content-addressed storage
+//! 7. **V2 root** — `BinaryIndexRoot::from_cas_artifacts()` written to CAS
+//! 8. **Publish** — `nameservice.publish_index_allow_equal()`
+//! 9. **Cleanup** — remove tmp session directory (only on full success)
 //!
-//! ## Performance invariants
+//! ## Architecture
 //!
-//! The pipeline maintains three session-scoped singletons for correctness and
-//! streaming throughput:
-//!
-//! - **One `GlobalDicts`** — monotonic global dictionary assignment across all chunks.
-//! - **One `CommitResolver`** — resolves triples through the shared GlobalDicts.
-//! - **One `MultiOrderRunWriter`** — fed RunRecords during commit ingestion (no second pass).
+//! Parse workers resolve subjects/strings to **chunk-local IDs** via per-chunk
+//! dictionaries (`ChunkSubjectDict`, `ChunkStringDict`), while predicates,
+//! datatypes, and graphs use globally-assigned IDs via `SharedDictAllocator`.
+//! After all chunks are parsed, a merge pass deduplicates across chunks and
+//! builds remap tables. Parallel remap threads then convert chunk-local IDs to
+//! global IDs and produce sorted run files for the index builder.
 //!
 //! Commits are finalized in strict serial order (`t` increments by 1 per chunk)
 //! even though chunk parsing is parallel.
@@ -63,6 +67,13 @@ pub enum ImportPhase {
         total: usize,
         cumulative_flakes: u64,
         elapsed_secs: f64,
+    },
+    /// Index preparation stage (Tier 2): merge/persist/remap/link runs.
+    ///
+    /// Emitted before `Indexing` begins so the CLI doesn't appear to "hang" at 0%.
+    PreparingIndex {
+        /// Human-readable stage label (static string for cheap cloning).
+        stage: &'static str,
     },
     /// Index build in progress — reports flakes merged across all sort orders.
     Indexing {
@@ -232,8 +243,37 @@ impl ImportConfig {
         }
         let budget_mb = self.effective_memory_budget_mb();
         let chunk_size = self.effective_chunk_size_mb();
-        // Run budget = min(chunk_size, budget / 3)
-        chunk_size.min(budget_mb / 3).max(256)
+        let threads = self.parse_threads.max(1);
+        // IMPORTANT: In Tier 2, we have N independent run writers (one per remap worker),
+        // so the *total* run budget must scale with parallelism. Otherwise each writer
+        // gets a tiny slice and flushes many small run files, exploding disk I/O.
+        //
+        // Heuristic:
+        // - target total run budget ≈ chunk_size × threads (so each worker can buffer ~1 chunk)
+        // - cap at ~50% of the overall memory budget (leave room for dicts, parsing, etc.)
+        let desired_total = chunk_size.saturating_mul(threads);
+        let cap = (budget_mb / 2).max(256);
+        desired_total.min(cap).max(256)
+    }
+
+    /// Cap the number of concurrent "heavy" workers (remap/run generation).
+    ///
+    /// This is analogous to QLever's `NUM_EXTERNAL_SORTERS_AT_SAME_TIME`: it limits
+    /// the number of simultaneous large sequential writers and sorts, which can
+    /// otherwise thrash disk and OS cache on large imports.
+    ///
+    /// Override with `FLUREE_IMPORT_HEAVY_WORKERS=<n>`.
+    pub fn effective_heavy_workers(&self) -> usize {
+        if let Ok(v) = std::env::var("FLUREE_IMPORT_HEAVY_WORKERS") {
+            if let Ok(n) = v.parse::<usize>() {
+                return n.max(1);
+            }
+        }
+        // Heuristic: 1 worker per 16 GB of budget, clamped.
+        // 36 GB → 2 workers (matches QLever's default of 2 concurrent sorters).
+        let budget_mb = self.effective_memory_budget_mb();
+        let derived = (budget_mb / (16 * 1024)).max(1);
+        derived.min(self.parse_threads.max(1))
     }
 
     /// Log all computed import settings.
@@ -384,7 +424,7 @@ pub enum ChunkSource {
     Files(Vec<PathBuf>),
     /// Streaming reader for a single large Turtle file. Chunks are emitted
     /// through a channel as the file is read — no full pre-scan needed.
-    Streaming(fluree_db_transact::turtle_splitter::StreamingTurtleReader),
+    Streaming(fluree_graph_turtle::splitter::StreamingTurtleReader),
 }
 
 impl ChunkSource {
@@ -490,10 +530,10 @@ fn resolve_chunk_source(
         let max_inflight = config.effective_max_inflight();
 
         // Build progress callback that forwards to the import progress handler.
-        let scan_progress: Option<fluree_db_transact::turtle_splitter::ScanProgressFn> =
+        let scan_progress: Option<fluree_graph_turtle::splitter::ScanProgressFn> =
             config.progress.as_ref().map(|cb| {
                 let cb = Arc::clone(cb);
-                let f: fluree_db_transact::turtle_splitter::ScanProgressFn =
+                let f: fluree_graph_turtle::splitter::ScanProgressFn =
                     Arc::new(move |bytes_read, total_bytes| {
                         cb(ImportPhase::Scanning {
                             bytes_read,
@@ -503,7 +543,7 @@ fn resolve_chunk_source(
                 f
             });
 
-        let reader = fluree_db_transact::turtle_splitter::StreamingTurtleReader::new(
+        let reader = fluree_graph_turtle::splitter::StreamingTurtleReader::new(
             path,
             chunk_size_bytes,
             max_inflight,
@@ -1039,12 +1079,11 @@ where
     N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{
-        persist_namespaces, CommitResolver, GlobalDicts, MultiOrderConfig, MultiOrderRunWriter,
-        RunGenerationResult, RunSortOrder,
+        persist_namespaces, MultiOrderConfig, MultiOrderRunWriter, RunSortOrder,
     };
     use fluree_db_transact::import::{
-        finalize_parsed_chunk, import_commit, import_commit_with_prelude, import_trig_commit,
-        parse_chunk, parse_chunk_with_prelude, ImportState, ParsedChunk,
+        finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk,
+        parse_chunk_with_prelude, ImportState, ParsedChunk,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1076,143 +1115,34 @@ where
         (None, None)
     };
 
-    // ---- Spawn background run resolver (three session-scoped singletons) ----
+    // ---- Pipeline infrastructure ----
     std::fs::create_dir_all(run_dir)?;
-    let run_budget = config.effective_run_budget_mb();
-    let budget = run_budget * 1024 * 1024;
-    let mo_config = MultiOrderConfig {
-        total_budget_bytes: budget,
-        orders: RunSortOrder::all_build_orders().to_vec(),
-        base_run_dir: run_dir.to_path_buf(),
-    };
 
-    // Bounded channel: backpressures import if resolver falls behind.
+    // Spool directory for chunk-local spool files (Tier 2 pipeline).
+    let spool_dir = run_dir.join("spool");
+    std::fs::create_dir_all(&spool_dir)?;
+
+    // Collect spool infos and vocab file paths from all chunks for the merge phase.
+    // Chunk dicts are sorted and written to .voc files immediately, then dropped.
+    use fluree_db_indexer::run_index::spool::SpoolFileInfo;
+    let mut spool_infos: Vec<SpoolFileInfo> = Vec::new();
+    let vocab_dir = run_dir.join("vocab");
+    std::fs::create_dir_all(&vocab_dir)?;
+
+    // Track commit metadata across all chunks (previously tracked by resolver).
+    let mut total_commit_size: u64 = 0;
+    // In fresh import, all ops are assertions (no retractions).
+    // total_asserts = state.cumulative_flakes at the end.
+
+    // ---- Phase 2a: Parse + commit chunk 0, then parse remaining in parallel ----
     //
-    // Capacity tradeoff:
-    // - Larger capacity increases pipeline overlap (parse/commit can run ahead),
-    //   keeping CPU utilization higher when the resolver thread is the bottleneck.
-    // - Costs memory proportional to buffered commit blob sizes.
-    //
-    // Use a moderate multiple of parse threads (no new CLI knob).
-    //
-    // We clamp to avoid unbounded memory growth if commit blobs are large.
-    // If the resolver thread is slower than parse/commit finalization, this
-    // queue provides overlap without immediately stalling the pipeline.
-    let run_queue_cap = (num_threads.saturating_mul(8)).clamp(8, 64);
-    let (run_tx, rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, String)>(run_queue_cap);
+    // Create shared allocators BEFORE chunk 0 so all chunks (including chunk 0)
+    // can produce spool output. For streaming, register prelude prefixes first
+    // so the shared allocator knows about the data's namespace IRIs.
+    use fluree_db_transact::SharedNamespaceAllocator;
+    use fluree_vocab::namespaces::OVERFLOW;
+    use rustc_hash::FxHashSet;
 
-    let run_dir_clone = run_dir.to_path_buf();
-    let resolver_handle: std::thread::JoinHandle<std::result::Result<RunGenerationResult, String>> =
-        std::thread::Builder::new()
-            .name("run-resolver".into())
-            .spawn(move || {
-                // Singleton 1: GlobalDicts (file-backed subjects + strings in run_dir)
-                let mut dicts =
-                    GlobalDicts::new(&run_dir_clone).map_err(|e| format!("init dicts: {}", e))?;
-                // Singleton 2: CommitResolver
-                let mut resolver = CommitResolver::new();
-                if collect_id_stats {
-                    // Enable class tracking (class counts + class→property presence).
-                    //
-                    // NOTE: We intentionally disable ref-target tracking here (the
-                    // class→property→ref-class edges) because it can be very memory
-                    // intensive. We can compute ref edges later via a background job
-                    // or a second pass over subject-grouped records.
-                    let rdf_type_p_id = dicts.predicates.get_or_insert(fluree_vocab::rdf::TYPE);
-                    let mut stats_hook = fluree_db_indexer::stats::IdStatsHook::new();
-                    stats_hook.set_rdf_type_p_id(rdf_type_p_id);
-                    stats_hook.set_track_ref_targets(false);
-                    resolver.set_stats_hook(stats_hook);
-                }
-
-                // Singleton 3: MultiOrderRunWriter
-                let mut writer = MultiOrderRunWriter::new(mo_config)
-                    .map_err(|e| format!("init multi-order writer: {}", e))?;
-                let mut commit_count = 0usize;
-
-                // Accumulate commit statistics
-                let mut total_commit_size = 0u64;
-                let mut total_asserts = 0u64;
-                let mut total_retracts = 0u64;
-
-                while let Ok((bytes, commit_address)) = rx.recv() {
-                    let resolved = resolver
-                        .resolve_blob(&bytes, &commit_address, &mut dicts, &mut writer)
-                        .map_err(|e| format!("{}", e))?;
-                    commit_count += 1;
-
-                    // Accumulate totals
-                    total_commit_size += resolved.size;
-                    total_asserts += resolved.asserts as u64;
-                    total_retracts += resolved.retracts as u64;
-
-                    tracing::info!(
-                        commit = commit_count,
-                        t = resolved.t,
-                        ops = resolved.total_records,
-                        total_records = writer.total_records(),
-                        runs = writer.run_count(),
-                        subjects = dicts.subjects.len(),
-                        predicates = dicts.predicates.len(),
-                        "commit resolved"
-                    );
-                }
-
-                // Flush remaining run buffers
-                let order_results = writer
-                    .finish(&mut dicts.languages)
-                    .map_err(|e| format!("writer finish: {}", e))?;
-
-                let mut all_run_files = Vec::new();
-                let mut total_records = 0u64;
-                for (order, result) in &order_results {
-                    tracing::info!(
-                        order = order.dir_name(),
-                        run_files = result.run_files.len(),
-                        records = result.total_records,
-                        "order run generation complete"
-                    );
-                    all_run_files.extend(result.run_files.iter().cloned());
-                    total_records += result.total_records;
-                }
-
-                // Persist dictionaries for index build
-                dicts
-                    .persist(&run_dir_clone)
-                    .map_err(|e| format!("dict persist: {}", e))?;
-
-                // Persist namespace map
-                persist_namespaces(resolver.ns_prefixes(), &run_dir_clone)
-                    .map_err(|e| format!("namespace persist: {}", e))?;
-
-                // Persist reverse indexes
-                dicts
-                    .subjects
-                    .write_reverse_index(&run_dir_clone.join("subjects.rev"))
-                    .map_err(|e| format!("subjects.rev: {}", e))?;
-                dicts
-                    .strings
-                    .write_reverse_index(&run_dir_clone.join("strings.rev"))
-                    .map_err(|e| format!("strings.rev: {}", e))?;
-
-                Ok(RunGenerationResult {
-                    run_files: all_run_files,
-                    subject_count: dicts.subjects.len(),
-                    predicate_count: dicts.predicates.len(),
-                    string_count: dicts.strings.len(),
-                    needs_wide: dicts.subjects.needs_wide(),
-                    total_records,
-                    commit_count,
-                    stats_hook: resolver.take_stats_hook(),
-                    total_commit_size,
-                    total_asserts,
-                    total_retracts,
-                })
-            })
-            .map_err(|e| ImportError::RunGeneration(format!("spawn resolver: {}", e)))?;
-
-    // ---- Phase 2a: Parse + commit chunk 0 serially (establishes namespaces) ----
-    // For streaming: pull from channel. For files: read by index.
     let streaming_prelude = if is_streaming {
         match &**chunk_source {
             ChunkSource::Streaming(reader) => Some(reader.prelude().clone()),
@@ -1221,6 +1151,57 @@ where
     } else {
         None
     };
+
+    // For streaming: pre-register prelude prefixes so the shared allocator
+    // includes them (they won't appear as @prefix directives in chunk data).
+    if let Some(ref prelude) = streaming_prelude {
+        for (short, ns_iri) in &prelude.prefixes {
+            state.ns_registry.get_or_allocate(ns_iri);
+            if !short.is_empty() {
+                state.prefix_map.insert(ns_iri.clone(), short.clone());
+            }
+        }
+    }
+
+    let shared_alloc = Arc::new(SharedNamespaceAllocator::from_registry(&state.ns_registry));
+    let mut published_codes: FxHashSet<u16> = state.ns_registry.all_codes();
+
+    // Create shared allocators for the spool pipeline (Tier 2).
+    // These are the same seed values as GlobalDicts::new(), but wrapped in
+    // thread-safe SharedDictAllocator so parse workers can allocate IDs
+    // concurrently without the resolver bottleneck.
+    use fluree_db_indexer::run_index::global_dict::SharedDictAllocator;
+    use fluree_db_indexer::run_index::shared_pool::{SharedNumBigPool, SharedVectorArenaPool};
+    use fluree_db_transact::import_sink::SpoolConfig;
+
+    let spool_config = Arc::new(SpoolConfig {
+        predicate_alloc: Arc::new(SharedDictAllocator::new_predicate()),
+        datatype_alloc: Arc::new(SharedDictAllocator::new_datatype()),
+        graph_alloc: Arc::new(SharedDictAllocator::new_graph()),
+        numbig_pool: Arc::new(SharedNumBigPool::new()),
+        vector_pool: Arc::new(SharedVectorArenaPool::new()),
+        ns_alloc: Arc::clone(&shared_alloc),
+    });
+
+    // Helper: compute ns_delta for a parsed chunk and advance published_codes.
+    let compute_ns_delta = |new_codes: &FxHashSet<u16>,
+                            published: &mut FxHashSet<u16>|
+     -> std::collections::HashMap<u16, String> {
+        let unpublished: FxHashSet<u16> = new_codes
+            .iter()
+            .copied()
+            .filter(|c| *c < OVERFLOW && !published.contains(c))
+            .collect();
+        let delta = if unpublished.is_empty() {
+            std::collections::HashMap::new()
+        } else {
+            shared_alloc.lookup_codes(&unpublished)
+        };
+        published.extend(&unpublished);
+        delta
+    };
+
+    // ---- Parse + commit chunk 0 serially ----
     let chunk0_content = if is_streaming {
         // Streaming: receive first chunk (reader thread already read it from disk).
         chunk_source.recv_next()?.map(|(_idx, text)| text)
@@ -1253,22 +1234,65 @@ where
         });
 
         let result = if is_trig {
-            import_trig_commit(&mut state, &content, storage, alias, compress)
-                .await
-                .map_err(|e| ImportError::Transact(e.to_string()))?
-        } else if is_streaming {
-            // Streaming path: parse raw chunk data using the pre-extracted prelude.
-            let prelude = streaming_prelude
-                .as_ref()
-                .expect("streaming prelude must exist when streaming");
-            import_commit_with_prelude(&mut state, &content, prelude, storage, alias, compress)
-                .await
-                .map_err(|e| ImportError::Transact(e.to_string()))?
+            // TriG: use dedicated path (named graph support). Spool not
+            // supported for TriG — falls back to resolver for index generation.
+            import_trig_commit(
+                &mut state, &content, storage, alias, compress, None, None, 0,
+            )
+            .await
+            .map_err(|e| ImportError::Transact(e.to_string()))?
         } else {
-            import_commit(&mut state, &content, storage, alias, compress)
+            // Non-TriG chunk 0: parse via WorkerCache (same path as parallel
+            // chunks) so the SpoolContext can use the SharedNamespaceAllocator.
+            let parsed = if is_streaming {
+                let prelude = streaming_prelude
+                    .as_ref()
+                    .expect("streaming prelude must exist when streaming");
+                parse_chunk_with_prelude(
+                    &content,
+                    &shared_alloc,
+                    prelude,
+                    1, // t = chunk_index + 1
+                    alias,
+                    compress,
+                    Some(&spool_dir),
+                    Some(&spool_config),
+                    0,
+                )
+                .map_err(|e| ImportError::Transact(e.to_string()))?
+            } else {
+                parse_chunk(
+                    &content,
+                    &shared_alloc,
+                    1, // t = chunk_index + 1
+                    alias,
+                    compress,
+                    Some(&spool_dir),
+                    Some(&spool_config),
+                    0,
+                )
+                .map_err(|e| ImportError::Transact(e.to_string()))?
+            };
+
+            // Compute ns_delta and finalize commit blob.
+            // Note: spool_result is moved into parsed and carried through
+            // finalize_parsed_chunk → ImportCommitResult.
+            let ns_delta = compute_ns_delta(&parsed.new_codes, &mut published_codes);
+            finalize_parsed_chunk(&mut state, parsed, ns_delta, storage, alias)
                 .await
                 .map_err(|e| ImportError::Transact(e.to_string()))?
         };
+
+        // Persist chunk dicts as sorted .voc files, then drop them.
+        if let Some(sr) = result.spool_result {
+            let ci = sr.spool_info.chunk_idx;
+            spool_infos.push(sr.spool_info);
+            sr.subjects
+                .write_sorted_vocab(&vocab_dir.join(format!("chunk_{ci:05}.subjects.voc")))?;
+            sr.strings
+                .write_sorted_vocab(&vocab_dir.join(format!("chunk_{ci:05}.strings.voc")))?;
+        }
+        total_commit_size += result.blob_bytes as u64;
 
         tracing::info!(
             t = result.t,
@@ -1277,34 +1301,15 @@ where
             "chunk 0 committed"
         );
 
-        // Emit progress for chunk 0 (was previously missing).
         config.emit_progress(ImportPhase::Committing {
             chunk: 1,
             total: estimated_total,
             cumulative_flakes: state.cumulative_flakes,
             elapsed_secs: run_start.elapsed().as_secs_f64(),
         });
-
-        // Feed to resolver (pass content hash hex for metadata)
-        let hash_hex = result.commit_id.digest_hex();
-        tokio::task::block_in_place(|| {
-            run_tx
-                .send((result.commit_blob, hash_hex))
-                .map_err(|_| ImportError::RunGeneration("resolver exited unexpectedly".into()))
-        })?;
     }
 
     // ---- Phase 2b: Parse remaining chunks in parallel, commit serially ----
-    //
-    // Create the shared namespace allocator from chunk 0's registry.
-    // All codes published so far (predefined defaults + chunk 0's delta)
-    // are tracked so subsequent commits only publish genuinely new codes.
-    use fluree_db_transact::SharedNamespaceAllocator;
-    use fluree_vocab::namespaces::OVERFLOW;
-    use rustc_hash::FxHashSet;
-
-    let shared_alloc = Arc::new(SharedNamespaceAllocator::from_registry(&state.ns_registry));
-    let mut published_codes: FxHashSet<u16> = state.ns_registry.all_codes();
 
     if is_streaming {
         // Streaming path: workers receive chunk data from the reader thread's
@@ -1328,6 +1333,8 @@ where
             let shared_alloc = Arc::clone(&shared_alloc);
             let ledger = ledger.clone();
             let prelude = prelude.clone();
+            let spool_dir = spool_dir.clone();
+            let spool_config = Arc::clone(&spool_config);
 
             let handle = std::thread::Builder::new()
                 .name(format!("ttl-parser-{}", thread_idx))
@@ -1363,6 +1370,9 @@ where
                             t,
                             &ledger,
                             compress,
+                            Some(&spool_dir),
+                            Some(&spool_config),
+                            idx,
                         ) {
                             Ok(parsed) => {
                                 if result_tx.send(Ok((idx, parsed))).is_err() {
@@ -1396,22 +1406,24 @@ where
             while let Some(parsed) = pending.remove(&next_expected) {
                 // Commit-order publication: determine which codes from this chunk
                 // need to be introduced in this commit's namespace_delta.
-                let unpublished: FxHashSet<u16> = parsed
-                    .new_codes
-                    .iter()
-                    .copied()
-                    .filter(|c| *c < OVERFLOW && !published_codes.contains(c))
-                    .collect();
-                let ns_delta = if unpublished.is_empty() {
-                    std::collections::HashMap::new()
-                } else {
-                    shared_alloc.lookup_codes(&unpublished)
-                };
-                published_codes.extend(&unpublished);
+                let ns_delta = compute_ns_delta(&parsed.new_codes, &mut published_codes);
 
                 let result = finalize_parsed_chunk(&mut state, parsed, ns_delta, storage, alias)
                     .await
                     .map_err(|e| ImportError::Transact(e.to_string()))?;
+
+                // Persist chunk dicts as sorted .voc files, then drop them.
+                if let Some(sr) = result.spool_result {
+                    let ci = sr.spool_info.chunk_idx;
+                    spool_infos.push(sr.spool_info);
+                    sr.subjects.write_sorted_vocab(
+                        &vocab_dir.join(format!("chunk_{ci:05}.subjects.voc")),
+                    )?;
+                    sr.strings.write_sorted_vocab(
+                        &vocab_dir.join(format!("chunk_{ci:05}.strings.voc")),
+                    )?;
+                }
+                total_commit_size += result.blob_bytes as u64;
 
                 let total_elapsed = run_start.elapsed().as_secs_f64();
                 tracing::info!(
@@ -1432,23 +1444,6 @@ where
                     cumulative_flakes: state.cumulative_flakes,
                     elapsed_secs: total_elapsed,
                 });
-
-                // Feed to resolver
-                let resolver_send_failed = {
-                    let hash_hex = result.commit_id.digest_hex();
-                    tokio::task::block_in_place(|| {
-                        run_tx.send((result.commit_blob, hash_hex)).is_err()
-                    })
-                };
-                if resolver_send_failed {
-                    drop(run_tx);
-                    let err = match resolver_handle.join() {
-                        Ok(Err(e)) => format!("resolver failed: {}", e),
-                        Err(p) => format!("resolver panicked: {:?}", p),
-                        Ok(Ok(_)) => "resolver exited unexpectedly".to_string(),
-                    };
-                    return Err(ImportError::RunGeneration(err));
-                }
 
                 // Periodic nameservice checkpoint
                 if config.publish_every > 0
@@ -1506,6 +1501,8 @@ where
                 let permit_rx_ref = Arc::clone(&permit_rx);
                 let permit_tx_ref = permit_tx.clone();
                 let total = estimated_total;
+                let spool_dir = spool_dir.clone();
+                let spool_config = Arc::clone(&spool_config);
 
                 let handle = std::thread::Builder::new()
                     .name(format!("ttl-parser-{}", thread_idx))
@@ -1532,7 +1529,16 @@ where
                         };
 
                         let t = (idx + 1) as i64;
-                        match parse_chunk(&ttl, &shared_alloc, t, &ledger, compress) {
+                        match parse_chunk(
+                            &ttl,
+                            &shared_alloc,
+                            t,
+                            &ledger,
+                            compress,
+                            Some(&spool_dir),
+                            Some(&spool_config),
+                            idx,
+                        ) {
                             Ok(parsed) => {
                                 let _ = permit_tx_ref.send(());
                                 if result_tx.send(Ok((idx, parsed))).is_err() {
@@ -1563,25 +1569,25 @@ where
                 pending.insert(idx, parsed);
 
                 while let Some(parsed) = pending.remove(&next_expected) {
-                    // Commit-order publication: determine which codes from this chunk
-                    // need to be introduced in this commit's namespace_delta.
-                    let unpublished: FxHashSet<u16> = parsed
-                        .new_codes
-                        .iter()
-                        .copied()
-                        .filter(|c| *c < OVERFLOW && !published_codes.contains(c))
-                        .collect();
-                    let ns_delta = if unpublished.is_empty() {
-                        std::collections::HashMap::new()
-                    } else {
-                        shared_alloc.lookup_codes(&unpublished)
-                    };
-                    published_codes.extend(&unpublished);
+                    let ns_delta = compute_ns_delta(&parsed.new_codes, &mut published_codes);
 
                     let result =
                         finalize_parsed_chunk(&mut state, parsed, ns_delta, storage, alias)
                             .await
                             .map_err(|e| ImportError::Transact(e.to_string()))?;
+
+                    // Persist chunk dicts as sorted .voc files, then drop them.
+                    if let Some(sr) = result.spool_result {
+                        let ci = sr.spool_info.chunk_idx;
+                        spool_infos.push(sr.spool_info);
+                        sr.subjects.write_sorted_vocab(
+                            &vocab_dir.join(format!("chunk_{ci:05}.subjects.voc")),
+                        )?;
+                        sr.strings.write_sorted_vocab(
+                            &vocab_dir.join(format!("chunk_{ci:05}.strings.voc")),
+                        )?;
+                    }
+                    total_commit_size += result.blob_bytes as u64;
 
                     let total_elapsed = run_start.elapsed().as_secs_f64();
                     tracing::info!(
@@ -1602,23 +1608,6 @@ where
                         cumulative_flakes: state.cumulative_flakes,
                         elapsed_secs: total_elapsed,
                     });
-
-                    // Feed to resolver
-                    let resolver_send_failed = {
-                        let hash_hex = result.commit_id.digest_hex();
-                        tokio::task::block_in_place(|| {
-                            run_tx.send((result.commit_blob, hash_hex)).is_err()
-                        })
-                    };
-                    if resolver_send_failed {
-                        drop(run_tx);
-                        let err = match resolver_handle.join() {
-                            Ok(Err(e)) => format!("resolver failed: {}", e),
-                            Err(p) => format!("resolver panicked: {:?}", p),
-                            Ok(Ok(_)) => "resolver exited unexpectedly".to_string(),
-                        };
-                        return Err(ImportError::RunGeneration(err));
-                    }
 
                     // Periodic nameservice checkpoint
                     if config.publish_every > 0
@@ -1645,19 +1634,50 @@ where
                 handle.join().expect("parse thread panicked");
             }
         } else if estimated_total > 1 {
-            // Serial fallback (0 threads or TriG files present)
+            // Serial fallback (0 threads or TriG files present).
+            // Spool is enabled so that the merge/remap pipeline produces run files.
             for i in 1..estimated_total {
                 let content = chunk_source.read_chunk(i)?;
                 let is_trig = chunk_source.is_trig(i);
                 let result = if is_trig {
-                    import_trig_commit(&mut state, &content, storage, alias, compress)
-                        .await
-                        .map_err(|e| ImportError::Transact(e.to_string()))?
+                    import_trig_commit(
+                        &mut state,
+                        &content,
+                        storage,
+                        alias,
+                        compress,
+                        Some(&spool_dir),
+                        Some(&spool_config),
+                        i,
+                    )
+                    .await
+                    .map_err(|e| ImportError::Transact(e.to_string()))?
                 } else {
-                    import_commit(&mut state, &content, storage, alias, compress)
-                        .await
-                        .map_err(|e| ImportError::Transact(e.to_string()))?
+                    import_commit(
+                        &mut state,
+                        &content,
+                        storage,
+                        alias,
+                        compress,
+                        Some(&spool_dir),
+                        Some(&spool_config),
+                        i,
+                    )
+                    .await
+                    .map_err(|e| ImportError::Transact(e.to_string()))?
                 };
+
+                if let Some(sr) = result.spool_result {
+                    let ci = sr.spool_info.chunk_idx;
+                    spool_infos.push(sr.spool_info);
+                    sr.subjects.write_sorted_vocab(
+                        &vocab_dir.join(format!("chunk_{ci:05}.subjects.voc")),
+                    )?;
+                    sr.strings.write_sorted_vocab(
+                        &vocab_dir.join(format!("chunk_{ci:05}.strings.voc")),
+                    )?;
+                }
+                total_commit_size += result.blob_bytes as u64;
 
                 config.emit_progress(ImportPhase::Committing {
                     chunk: i + 1,
@@ -1665,20 +1685,6 @@ where
                     cumulative_flakes: state.cumulative_flakes,
                     elapsed_secs: run_start.elapsed().as_secs_f64(),
                 });
-
-                let hash_hex = result.commit_id.digest_hex();
-                let send_failed = tokio::task::block_in_place(|| {
-                    run_tx.send((result.commit_blob, hash_hex)).is_err()
-                });
-                if send_failed {
-                    drop(run_tx);
-                    let err = match resolver_handle.join() {
-                        Ok(Err(e)) => format!("resolver failed: {}", e),
-                        Err(p) => format!("resolver panicked: {:?}", p),
-                        Ok(Ok(_)) => "resolver exited unexpectedly".to_string(),
-                    };
-                    return Err(ImportError::RunGeneration(err));
-                }
 
                 if config.publish_every > 0 && (i + 1).is_multiple_of(config.publish_every) {
                     nameservice
@@ -1703,62 +1709,365 @@ where
         .map_err(|e| ImportError::Storage(e.to_string()))?;
     tracing::info!(t = state.t, "published final commit head");
 
-    // ---- Finish background resolver ----
-    drop(run_tx);
-    tracing::info!("waiting for run resolver to finish...");
-    let run_result = match resolver_handle.join() {
-        Ok(Ok(result)) => result,
-        Ok(Err(e)) => {
-            return Err(ImportError::RunGeneration(format!(
-                "run generation failed: {}",
-                e
-            )))
-        }
-        Err(_) => {
-            return Err(ImportError::RunGeneration(
-                "resolver thread panicked".into(),
-            ))
-        }
-    };
+    // ---- Phase 3: Merge chunk dictionaries via k-way sorted merge ----
+    //
+    // Sorted .voc files were written alongside each commit (one per chunk).
+    // Now k-way merge them to produce global forward dicts + mmap'd remap tables.
+    // Memory: O(K) where K = number of chunks (no hash maps).
+    config.emit_progress(ImportPhase::PreparingIndex {
+        stage: "Merging dictionaries",
+    });
 
+    // Sort spool_infos by chunk_idx so downstream remap phase sees them in order.
+    spool_infos.sort_by_key(|si| si.chunk_idx);
+
+    let total_spool_bytes: u64 = spool_infos.iter().map(|s| s.byte_len).sum();
     tracing::info!(
-        run_files = run_result.run_files.len(),
-        total_records = run_result.total_records,
-        subjects = run_result.subject_count,
-        predicates = run_result.predicate_count,
-        strings = run_result.string_count,
-        commits = run_result.commit_count,
-        "run generation complete"
+        chunks = spool_infos.len(),
+        spool_mb = (total_spool_bytes as f64) / (1024.0 * 1024.0),
+        "spool files written"
     );
 
-    // Load namespace codes from persisted namespaces.json
-    let ns_path = run_dir.join("namespaces.json");
-    let namespace_codes: HashMap<u16, String> = if ns_path.exists() {
-        let bytes = std::fs::read(&ns_path)?;
-        let entries: Vec<serde_json::Value> = serde_json::from_slice(&bytes).map_err(|e| {
-            ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-        })?;
-        entries
-            .iter()
-            .filter_map(|v| {
-                let code = v.get("code")?.as_u64()? as u16;
-                let prefix = v.get("prefix")?.as_str()?;
-                Some((code, prefix.to_string()))
+    tracing::info!(chunks = spool_infos.len(), "starting dictionary merge");
+    let merge_start = Instant::now();
+
+    // Get namespace codes for IRI reconstruction (subjects.fwd needs full IRIs).
+    let namespace_codes: HashMap<u16, String> = shared_alloc.lookup_codes(&published_codes);
+
+    let remap_dir = run_dir.join("remap");
+    std::fs::create_dir_all(&remap_dir)?;
+
+    // Build vocab file paths from spool_infos (deterministic naming).
+    let subject_vocab_paths: Vec<std::path::PathBuf> = spool_infos
+        .iter()
+        .map(|si| vocab_dir.join(format!("chunk_{:05}.subjects.voc", si.chunk_idx)))
+        .collect();
+    let string_vocab_paths: Vec<std::path::PathBuf> = spool_infos
+        .iter()
+        .map(|si| vocab_dir.join(format!("chunk_{:05}.strings.voc", si.chunk_idx)))
+        .collect();
+
+    use fluree_db_indexer::run_index::vocab_merge;
+
+    let subj_stats = vocab_merge::merge_subject_vocabs(
+        &subject_vocab_paths,
+        &remap_dir,
+        run_dir,
+        &namespace_codes,
+    )?;
+    let str_stats = vocab_merge::merge_string_vocabs(&string_vocab_paths, &remap_dir, run_dir)?;
+
+    let total_unique_subjects = subj_stats.total_unique;
+    let needs_wide = subj_stats.needs_wide;
+    let next_string_id = str_stats.total_unique;
+
+    // Delete .voc files now that merge is complete (free disk space early).
+    let _ = std::fs::remove_dir_all(&vocab_dir);
+
+    tracing::info!(
+        unique_subjects = total_unique_subjects,
+        unique_strings = next_string_id,
+        needs_wide,
+        elapsed_ms = merge_start.elapsed().as_millis(),
+        "dictionary merge + persistence complete"
+    );
+
+    // Unwrap the spool_config Arc (parse workers are done, only this thread holds it).
+    let spool_config = Arc::try_unwrap(spool_config).unwrap_or_else(|_| {
+        panic!("spool_config Arc still shared after all parse workers completed")
+    });
+
+    // Write predicates.json (JSON array of IRI strings, indexed by predicate ID).
+    {
+        let pred_alloc = &spool_config.predicate_alloc;
+        let pred_count = pred_alloc.len();
+        let preds: Vec<String> = (0..pred_count)
+            .map(|id| pred_alloc.resolve(id).unwrap_or_default())
+            .collect();
+        std::fs::write(
+            run_dir.join("predicates.json"),
+            serde_json::to_vec(&preds).map_err(|e| {
+                ImportError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+            })?,
+        )?;
+    }
+
+    // Write graphs.dict and datatypes.dict (FRD1 binary format).
+    {
+        use fluree_db_indexer::run_index::dict_io::write_predicate_dict;
+        let graphs_dict = spool_config.graph_alloc.to_predicate_dict();
+        write_predicate_dict(&run_dir.join("graphs.dict"), &graphs_dict)?;
+        let datatypes_dict = spool_config.datatype_alloc.to_predicate_dict();
+        write_predicate_dict(&run_dir.join("datatypes.dict"), &datatypes_dict)?;
+    }
+
+    // Persist namespaces.json from shared allocator.
+    persist_namespaces(&namespace_codes, run_dir)?;
+
+    // Persist numbig arenas from shared pool.
+    {
+        let numbig_arenas = Arc::try_unwrap(spool_config.numbig_pool)
+            .unwrap_or_else(|_| panic!("numbig_pool still shared after import"))
+            .into_arenas();
+        if !numbig_arenas.is_empty() {
+            let nb_dir = run_dir.join("numbig");
+            std::fs::create_dir_all(&nb_dir)?;
+            for (&p_id, arena) in &numbig_arenas {
+                fluree_db_indexer::run_index::numbig_dict::write_numbig_arena(
+                    &nb_dir.join(format!("p_{}.nba", p_id)),
+                    arena,
+                )?;
+            }
+            tracing::info!(
+                predicates = numbig_arenas.len(),
+                total_entries = numbig_arenas.values().map(|a| a.len()).sum::<usize>(),
+                "numbig arenas persisted"
+            );
+        }
+    }
+
+    // Persist vector arenas from shared pool.
+    {
+        let vector_arenas = Arc::try_unwrap(spool_config.vector_pool)
+            .unwrap_or_else(|_| panic!("vector_pool still shared after import"))
+            .into_arenas();
+        if !vector_arenas.is_empty() {
+            let vec_dir = run_dir.join("vectors");
+            std::fs::create_dir_all(&vec_dir)?;
+            for (&p_id, arena) in &vector_arenas {
+                if arena.is_empty() {
+                    continue;
+                }
+                let shard_paths = fluree_db_indexer::run_index::vector_arena::write_vector_shards(
+                    &vec_dir, p_id, arena,
+                )?;
+                let shard_infos: Vec<fluree_db_indexer::run_index::vector_arena::ShardInfo> =
+                    shard_paths
+                        .iter()
+                        .enumerate()
+                        .map(|(i, path)| {
+                            let cap = fluree_db_indexer::run_index::vector_arena::SHARD_CAPACITY;
+                            let start = i as u32 * cap;
+                            let count = (arena.len() - start).min(cap);
+                            fluree_db_indexer::run_index::vector_arena::ShardInfo {
+                                cas: path.display().to_string(),
+                                count,
+                            }
+                        })
+                        .collect();
+                fluree_db_indexer::run_index::vector_arena::write_vector_manifest(
+                    &vec_dir.join(format!("p_{}.vam", p_id)),
+                    arena,
+                    &shard_infos,
+                )?;
+            }
+            tracing::info!(
+                predicates = vector_arenas.len(),
+                total_vectors = vector_arenas
+                    .values()
+                    .map(|a| a.len() as usize)
+                    .sum::<usize>(),
+                "vector arenas persisted"
+            );
+        }
+    }
+
+    tracing::info!(
+        subjects = total_unique_subjects,
+        predicates = spool_config.predicate_alloc.len(),
+        strings = next_string_id,
+        "all dictionaries persisted"
+    );
+
+    // ---- Phase 4: Parallel remap spool → run files ----
+    config.emit_progress(ImportPhase::PreparingIndex {
+        stage: "Remapping spool → runs",
+    });
+    tracing::info!(chunks = spool_infos.len(), "starting parallel remap");
+    let remap_start = Instant::now();
+
+    // Build dt_tags table (datatype dict ID → ValueTypeTag) for stats hook.
+    let dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag> = {
+        let dt_count = spool_config.datatype_alloc.len();
+        (0..dt_count)
+            .map(|id| {
+                fluree_db_core::DatatypeDictId(id as u16)
+                    .to_value_type_tag()
+                    .unwrap_or(fluree_db_core::value_id::ValueTypeTag::UNKNOWN)
             })
             .collect()
-    } else {
-        HashMap::new()
     };
+
+    // Pre-insert rdf:type into predicate allocator for stats class tracking.
+    let rdf_type_p_id = spool_config
+        .predicate_alloc
+        .get_or_insert(fluree_vocab::rdf::TYPE);
+
+    // Split run budget across remap threads (minimum 64 MB per thread).
+    let run_budget_mb = config.effective_run_budget_mb();
+    // Cap remap concurrency to configured parse threads to avoid N-chunks thread explosion
+    // (and N×64MB writer buffers) on large imports.
+    let worker_cap = config.effective_heavy_workers();
+    let worker_count = std::cmp::min(
+        worker_cap,
+        std::cmp::min(num_threads.max(1), spool_infos.len().max(1)),
+    );
+    tracing::info!(
+        heavy_worker_cap = worker_cap,
+        remap_workers = worker_count,
+        parse_threads = num_threads,
+        "derived remap worker count"
+    );
+    let per_thread_budget_bytes =
+        ((run_budget_mb * 1024 * 1024) / worker_count).max(64 * 1024 * 1024);
+
+    let remap_run_dir = run_dir.to_path_buf();
+    let mut stats_hooks: Vec<fluree_db_indexer::stats::IdStatsHook> = Vec::new();
+    let mut total_remap_records: u64 = 0;
+    let cleanup_during_run = config.cleanup_local_files;
+
+    // Bounded remap parallelism: work distribution via atomic counter.
+    let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    std::thread::scope(|scope| -> std::result::Result<(), ImportError> {
+        let mut handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let spool_infos_ref = &spool_infos;
+            let dt_tags_ref = &dt_tags;
+            let remap_run_dir = remap_run_dir.clone();
+            let remap_dir = remap_dir.clone();
+            let next_chunk = std::sync::Arc::clone(&next_chunk);
+
+            handles.push(scope.spawn(move || -> std::result::Result<(u64, Vec<fluree_db_indexer::stats::IdStatsHook>), ImportError> {
+                let mut local_total = 0u64;
+                let mut local_hooks = Vec::new();
+
+                loop {
+                    let chunk_idx = next_chunk.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if chunk_idx >= spool_infos_ref.len() {
+                        break;
+                    }
+                    let spool_info = &spool_infos_ref[chunk_idx];
+                    let chunk_run_dir = remap_run_dir.join(format!("chunk_{}", chunk_idx));
+                    std::fs::create_dir_all(&chunk_run_dir)?;
+
+                    // Load remap tables for this chunk (written during merge).
+                    let subj_path = remap_dir.join(format!("subjects_{:05}.rmp", chunk_idx));
+                    let str_path = remap_dir.join(format!("strings_{:05}.rmp", chunk_idx));
+
+                    // Memory-map remap tables so we don't allocate multi-GB Vecs.
+                    use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
+                    let s_remap =
+                        MmapSubjectRemap::open(&subj_path).map_err(ImportError::Io)?;
+                    let str_remap =
+                        MmapStringRemap::open(&str_path).map_err(ImportError::Io)?;
+
+                    let mo_config = MultiOrderConfig {
+                        total_budget_bytes: per_thread_budget_bytes,
+                        orders: RunSortOrder::all_build_orders().to_vec(),
+                        base_run_dir: chunk_run_dir,
+                    };
+                    let mut writer = MultiOrderRunWriter::new(mo_config)
+                        .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
+                    let mut lang_dict = fluree_db_indexer::run_index::LanguageTagDict::new();
+
+                    let mut hook = if collect_id_stats {
+                        let h = fluree_db_indexer::stats::IdStatsHook::new();
+                        // TODO(perf): class tracking disabled to isolate 70GB memory stall.
+                        // h.set_rdf_type_p_id(rdf_type_p_id);
+                        Some(h)
+                    } else {
+                        None
+                    };
+
+                    use fluree_db_indexer::run_index::spool::remap_spool_to_runs;
+                    let written = remap_spool_to_runs(
+                        spool_info,
+                        &s_remap,
+                        &str_remap,
+                        &mut writer,
+                        &mut lang_dict,
+                        hook.as_mut(),
+                        Some(dt_tags_ref),
+                    )
+                    .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
+
+                    writer
+                        .finish(&mut lang_dict)
+                        .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
+
+                    local_total += written;
+                    if let Some(h) = hook {
+                        local_hooks.push(h);
+                    }
+
+                    // Aggressive cleanup to control disk usage:
+                    // remove per-chunk remap tables and spool file after successful remap.
+                    // Only enabled when `cleanup_local_files` is true.
+                    if cleanup_during_run {
+                        drop(s_remap);
+                        drop(str_remap);
+                        let _ = std::fs::remove_file(&subj_path);
+                        let _ = std::fs::remove_file(&str_path);
+                        let _ = std::fs::remove_file(&spool_info.path);
+                    }
+                }
+
+                Ok((local_total, local_hooks))
+            }));
+        }
+
+        for h in handles {
+            let (written, mut hooks) = h
+                .join()
+                .map_err(|_| ImportError::RunGeneration("remap thread panicked".into()))??;
+            total_remap_records += written;
+            stats_hooks.append(&mut hooks);
+        }
+
+        Ok(())
+    })?;
+
+    tracing::info!(
+        total_records = total_remap_records,
+        elapsed_ms = remap_start.elapsed().as_millis(),
+        "parallel remap complete"
+    );
+
+    // Best-effort accounting of run-file bytes written (after remap, before index build).
+    // Note: this reads directory metadata and can be slow on huge trees, but it's
+    // useful when diagnosing write amplification.
+    let run_bytes = dir_size_bytes(run_dir)?;
+    tracing::info!(
+        run_dir = %run_dir.display(),
+        run_mb = (run_bytes as f64) / (1024.0 * 1024.0),
+        "run directory size after remap"
+    );
+
+    // Merge stats hooks from all remap threads.
+    let stats_hook = if collect_id_stats && !stats_hooks.is_empty() {
+        let mut merged = stats_hooks.remove(0);
+        for hook in stats_hooks {
+            merged.merge_from(hook);
+        }
+        Some(merged)
+    } else {
+        None
+    };
+
+    // In a fresh import, all ops are assertions (no retractions).
+    let total_asserts = state.cumulative_flakes;
+    let total_retracts = 0u64;
 
     Ok(ChunkImportResult {
         final_t: state.t,
         cumulative_flakes: state.cumulative_flakes,
         commit_head_id,
         namespace_codes,
-        stats_hook: run_result.stats_hook,
-        total_commit_size: run_result.total_commit_size,
-        total_asserts: run_result.total_asserts,
-        total_retracts: run_result.total_retracts,
+        stats_hook,
+        total_commit_size,
+        total_asserts,
+        total_retracts,
         prefix_map: state.prefix_map,
     })
 }
@@ -1788,7 +2097,7 @@ where
     N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{
-        build_all_indexes, precompute_language_dict, BinaryIndexRoot, BinaryIndexStore,
+        build_all_indexes, precompute_language_dict, BinaryIndexRoot,
         CasArtifactsConfig, PrefixTrie, RunSortOrder,
     };
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
@@ -1932,6 +2241,7 @@ where
     );
 
     // ---- Build predicate SIDs via PrefixTrie (no BinaryIndexStore needed) ----
+    tracing::info!("post-upload: building predicate SIDs");
     let trie = PrefixTrie::from_namespace_codes(input.namespace_codes);
     let predicates_path = input.run_dir.join("predicates.json");
     let predicate_sids: Vec<(u16, String)> = if predicates_path.exists() {
@@ -1955,8 +2265,10 @@ where
     // stats with datatype counts + HLL NDV). Includes HLL sketch persistence so
     // incremental index refresh can merge registers. Fallback: SPOT build result for
     // per-graph flake counts only.
+    tracing::info!("post-upload: predicate SIDs built, starting stats");
     let (stats_json, sketch_ref) = if let Some(hook) = input.stats_hook {
         // Persist HLL sketches BEFORE finalize consumes the hook.
+        tracing::info!("post-upload: serializing HLL sketch blob");
         let sketch_blob = fluree_db_indexer::stats::HllSketchBlob::from_properties(
             input.final_t,
             hook.properties(),
@@ -1974,8 +2286,10 @@ where
 
         // Finalize with proper HLL merge for aggregate properties.
         // When class tracking is enabled, this also returns class counts + class→property presence.
+        tracing::info!("post-upload: HLL sketch written, calling finalize_with_aggregate_properties");
         let (id_result, agg_props, class_counts, class_properties, _class_ref_targets) =
             hook.finalize_with_aggregate_properties();
+        tracing::info!("post-upload: finalize complete, building stats JSON");
 
         // Per-graph stats (p_id-keyed, for StatsView.graph_properties)
         let graphs_json: Vec<serde_json::Value> = id_result
@@ -2061,18 +2375,60 @@ where
         // per-class datatype breakdowns. Those are available via aggregate property stats
         // (ledger-wide) and per-graph property stats (authoritative), and can be joined
         // by the UI using the property SID.
-        let classes_json: Vec<serde_json::Value> = if class_counts.is_empty() {
+        // TODO(perf): class stats disabled temporarily to isolate post-indexing stall.
+        let classes_json: Vec<serde_json::Value> = if true || class_counts.is_empty() {
             Vec::new()
         } else {
-            // Use BinaryIndexStore for sid64 -> IRI -> Sid encoding (no giant HashMap reverse map).
-            let store =
-                BinaryIndexStore::load(input.run_dir, input.index_dir).map_err(ImportError::Io)?;
+            // Resolve class sid64 → (ns_code, suffix) via targeted binary search
+            // into flat files. Avoids loading the entire BinaryIndexStore (which
+            // would allocate ~130 bytes × N_subjects of heap for ForwardEntry +
+            // ReverseEntry trees — tens of GB at scale).
+            use fluree_db_core::subject_id::SubjectId;
+            use fluree_db_indexer::run_index::dict_io;
+            use std::io::{Read as _, Seek as _, SeekFrom};
+
+            let sids_path = input.run_dir.join("subjects.sids");
+            let idx_path = input.run_dir.join("subjects.idx");
+            let fwd_path = input.run_dir.join("subjects.fwd");
+
+            // Read the sid64 array and forward index (offsets + lens).
+            // These are O(N) but only ~12 bytes/entry — much smaller than the
+            // full BinaryIndexStore which clones every suffix string twice.
+            let sids_vec = dict_io::read_subject_sid_map(&sids_path)
+                .map_err(ImportError::Io)?;
+            let (fwd_offsets, fwd_lens) = dict_io::read_forward_index(&idx_path)
+                .map_err(ImportError::Io)?;
+
+            // Open the forward file for targeted reads (no bulk load).
+            let mut fwd_file = std::fs::File::open(&fwd_path).map_err(ImportError::Io)?;
 
             class_counts
                 .iter()
                 .filter_map(|&(class_sid64, count)| {
-                    let iri = store.resolve_subject_iri(class_sid64).ok()?;
-                    let sid = store.encode_iri(&iri);
+                    let subj = SubjectId::from_u64(class_sid64);
+                    let ns_code = subj.ns_code();
+
+                    // Binary search for the sid64 in the sorted sids array.
+                    let pos = sids_vec.binary_search(&class_sid64).ok()?;
+
+                    // Read just this IRI from the forward file via seek+read.
+                    let off = fwd_offsets[pos];
+                    let len = fwd_lens[pos] as usize;
+                    let mut iri_buf = vec![0u8; len];
+                    fwd_file.seek(SeekFrom::Start(off)).ok()?;
+                    fwd_file.read_exact(&mut iri_buf).ok()?;
+                    let iri = std::str::from_utf8(&iri_buf).ok()?;
+
+                    // Strip namespace prefix to get the suffix.
+                    let prefix = input.namespace_codes
+                        .get(&ns_code)
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
+                    let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
+                        &iri[prefix.len()..]
+                    } else {
+                        iri
+                    };
 
                     // Properties used by instances of this class (presence only).
                     let prop_usages: Vec<serde_json::Value> = class_properties
@@ -2091,7 +2447,7 @@ where
                         .unwrap_or_default();
 
                     Some(serde_json::json!([
-                        [sid.namespace_code, sid.name.as_ref()],
+                        [ns_code, suffix],
                         [count, prop_usages],
                     ]))
                 })
@@ -2140,6 +2496,7 @@ where
     };
 
     // ---- Phase 5: Build V2 root ----
+    tracing::info!("post-upload: stats JSON built, constructing V2 root");
     let mut root = BinaryIndexRoot::from_cas_artifacts(CasArtifactsConfig {
         ledger_id: alias,
         index_t: input.final_t,
@@ -2163,9 +2520,11 @@ where
     root.total_asserts = total_asserts;
     root.total_retracts = total_retracts;
 
+    tracing::info!("post-upload: V2 root constructed, serializing to JSON");
     let root_bytes = root
         .to_json_bytes()
         .map_err(|e| ImportError::Upload(format!("serialize V2 root: {}", e)))?;
+    tracing::info!(root_bytes = root_bytes.len(), "post-upload: root serialized, writing to CAS");
 
     let write_result = storage
         .content_write_bytes(ContentKind::IndexRoot, alias, &root_bytes)
@@ -2224,8 +2583,35 @@ fn session_id() -> String {
 /// The cleanup phase removes this directory on success; on failure it is
 /// kept for debugging (logged with full path).
 fn derive_session_dir<S: Storage>(_storage: &S, alias_prefix: &str, sid: &str) -> PathBuf {
-    let base = std::env::temp_dir().join("fluree-import");
+    // Allow overriding import scratch space for large imports.
+    //
+    // This is critical on macOS where `std::env::temp_dir()` often points to a
+    // small system volume. For multi-GB TTL imports, run files + spool files
+    // can exceed hundreds of GB temporarily.
+    //
+    // Set `FLUREE_IMPORT_DIR=/path/with/space` to force the base directory.
+    let base = std::env::var_os("FLUREE_IMPORT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("fluree-import"));
     base.join(alias_prefix).join("tmp_import").join(sid)
+}
+
+fn dir_size_bytes(path: &Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    if !path.exists() {
+        return Ok(0);
+    }
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let p = entry.path();
+        if ft.is_dir() {
+            total += dir_size_bytes(&p)?;
+        } else if ft.is_file() {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
 }
 
 /// Build a JSON-LD @context from turtle prefix declarations + built-in namespaces,

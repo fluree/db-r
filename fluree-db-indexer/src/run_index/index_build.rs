@@ -153,6 +153,44 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
         "discovered run files"
     );
 
+    build_index_from_run_paths_inner(config, run_paths, start, order, order_name)
+}
+
+/// Build an index for a single order from an explicit list of run files.
+///
+/// This is used by import pipelines that write runs into
+/// `{base_run_dir}/chunk_{idx}/{order}/run_*.frn` (chunk-isolated layout),
+/// to avoid flattening run files via symlinks/hardlinks.
+pub fn build_index_from_run_paths(
+    config: IndexBuildConfig,
+    mut run_paths: Vec<PathBuf>,
+) -> Result<IndexBuildResult, IndexBuildError> {
+    if run_paths.is_empty() {
+        return Err(IndexBuildError::NoRunFiles);
+    }
+    run_paths.sort();
+
+    let order = config.sort_order;
+    let order_name = order.dir_name();
+    let start = Instant::now();
+    let _span = tracing::info_span!("build_index", order = order_name).entered();
+
+    tracing::info!(
+        run_files = run_paths.len(),
+        order = order_name,
+        "discovered run files"
+    );
+
+    build_index_from_run_paths_inner(config, run_paths, start, order, order_name)
+}
+
+fn build_index_from_run_paths_inner(
+    config: IndexBuildConfig,
+    run_paths: Vec<PathBuf>,
+    start: Instant,
+    order: RunSortOrder,
+    order_name: &str,
+) -> Result<IndexBuildResult, IndexBuildError> {
     // Ensure output directory exists
     std::fs::create_dir_all(&config.index_dir)?;
 
@@ -436,6 +474,39 @@ pub fn discover_run_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// Discover run files in the "chunk-isolated" layout:
+/// `{base_run_dir}/chunk_{idx}/{order}/run_*.frn`.
+fn discover_chunked_run_files(
+    base_run_dir: &Path,
+    order: RunSortOrder,
+) -> io::Result<Vec<PathBuf>> {
+    let mut chunk_dirs: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(base_run_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with("chunk_") {
+            chunk_dirs.push(path);
+        }
+    }
+    chunk_dirs.sort();
+
+    let mut out = Vec::new();
+    for chunk_dir in chunk_dirs {
+        let order_dir = chunk_dir.join(order.dir_name());
+        if !order_dir.exists() {
+            continue;
+        }
+        out.extend(discover_run_files(&order_dir)?);
+    }
+    Ok(out)
+}
+
 /// Finish a graph: write content-addressed branch manifest, return result.
 fn finish_graph(
     g_id: u32,
@@ -513,18 +584,21 @@ fn write_index_manifest(
 pub fn precompute_language_dict(base_run_dir: &Path) -> Result<(), IndexBuildError> {
     let lang_dict_path = base_run_dir.join("languages.dict");
     let spot_run_dir = base_run_dir.join("spot");
-    if spot_run_dir.exists() {
-        let mut spot_runs = discover_run_files(&spot_run_dir)?;
-        if !spot_runs.is_empty() {
-            spot_runs.sort();
-            let (unified_lang_dict, _) = build_lang_remap(&spot_runs)?;
-            write_language_dict(&lang_dict_path, &unified_lang_dict)?;
-            tracing::info!(
-                tags = unified_lang_dict.len(),
-                path = %lang_dict_path.display(),
-                "pre-computed unified language dict"
-            );
-        }
+    let mut spot_runs = if spot_run_dir.exists() {
+        discover_run_files(&spot_run_dir)?
+    } else {
+        discover_chunked_run_files(base_run_dir, RunSortOrder::Spot)?
+    };
+
+    if !spot_runs.is_empty() {
+        spot_runs.sort();
+        let (unified_lang_dict, _) = build_lang_remap(&spot_runs)?;
+        write_language_dict(&lang_dict_path, &unified_lang_dict)?;
+        tracing::info!(
+            tags = unified_lang_dict.len(),
+            path = %lang_dict_path.display(),
+            "pre-computed unified language dict"
+        );
     }
     Ok(())
 }
@@ -556,18 +630,32 @@ pub fn build_all_indexes(
             .iter()
             .filter_map(|&order| {
                 let run_dir = base_run_dir.join(order.dir_name());
-                if !run_dir.exists() {
-                    tracing::warn!(order = ?order, dir = %run_dir.display(), "run dir missing, skipping");
+                let mut run_paths = match if run_dir.exists() {
+                    discover_run_files(&run_dir)
+                } else {
+                    discover_chunked_run_files(base_run_dir, order)
+                } {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(
+                            order = ?order,
+                            base = %base_run_dir.display(),
+                            error = %e,
+                            "failed to discover run files for order, skipping"
+                        );
+                        return None;
+                    }
+                };
+
+                if run_paths.is_empty() {
+                    tracing::warn!(
+                        order = ?order,
+                        base = %base_run_dir.display(),
+                        "no run files discovered for order, skipping"
+                    );
                     return None;
                 }
-                // Skip orders with no run files (e.g. OPST when no IRI refs exist)
-                let has_run_files = discover_run_files(&run_dir)
-                    .map(|files| !files.is_empty())
-                    .unwrap_or(false);
-                if !has_run_files {
-                    tracing::warn!(order = ?order, dir = %run_dir.display(), "no run files, skipping");
-                    return None;
-                }
+                run_paths.sort();
 
                 let base = base_run_dir.to_path_buf();
                 let idx_dir = index_dir.to_path_buf();
@@ -580,20 +668,23 @@ pub fn build_all_indexes(
                     None
                 };
 
-                Some((order, s.spawn(move || {
-                    let config = IndexBuildConfig {
-                        run_dir,
-                        dicts_dir: base,
-                        index_dir: idx_dir,
-                        sort_order: order,
-                        leaflet_rows,
-                        leaflets_per_leaf,
-                        zstd_level,
-                        persist_lang_dict: false, // already pre-computed
-                        progress: order_progress,
-                    };
-                    build_index(config)
-                })))
+                Some((
+                    order,
+                    s.spawn(move || {
+                        let config = IndexBuildConfig {
+                            run_dir,
+                            dicts_dir: base,
+                            index_dir: idx_dir,
+                            sort_order: order,
+                            leaflet_rows,
+                            leaflets_per_leaf,
+                            zstd_level,
+                            persist_lang_dict: false, // already pre-computed
+                            progress: order_progress,
+                        };
+                        build_index_from_run_paths(config, run_paths)
+                    }),
+                ))
             })
             .collect();
 

@@ -24,8 +24,8 @@ use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::{parse, tokenize, TokenKind};
 use fluree_graph_ir::{Datatype, GraphSink, LiteralValue, TermId};
-use fluree_graph_turtle::{parse, tokenize, TokenKind};
 
 // ============================================================================
 // Configuration
@@ -1425,7 +1425,7 @@ ex:dave ex:name \"Dave\" ; ex:age 35 .
         for i in 0..reader.chunk_count() {
             let chunk_text = reader.read_chunk(i).unwrap().unwrap();
             // Parse with fluree_graph_turtle to verify it's valid Turtle.
-            let json = fluree_graph_turtle::parse_to_json(&chunk_text).unwrap();
+            let json = crate::parse_to_json(&chunk_text).unwrap();
             let arr = json.as_array().unwrap();
             for node in arr {
                 all_subjects.push(node["@id"].as_str().unwrap().to_string());
@@ -1552,7 +1552,7 @@ ex:dave ex:name \"Dave\" ; ex:age 35 .
 
         let mut all_subjects = Vec::new();
         while let Some((_idx, chunk_text)) = recv_as_text(&reader) {
-            let json = fluree_graph_turtle::parse_to_json(&chunk_text).unwrap();
+            let json = crate::parse_to_json(&chunk_text).unwrap();
             let arr = json.as_array().unwrap();
             for node in arr {
                 all_subjects.push(node["@id"].as_str().unwrap().to_string());
@@ -1637,7 +1637,7 @@ ex:carol ex:name \"Carol\" .
                 "every chunk must include xsd prefix"
             );
             // Verify each chunk is valid Turtle.
-            fluree_graph_turtle::parse_to_json(&text).expect("chunk should be valid Turtle");
+            crate::parse_to_json(&text).expect("chunk should be valid Turtle");
         }
 
         reader.join().unwrap();
@@ -1662,7 +1662,7 @@ ex:bob ex:name \"Bob\" .
 
         let mut count = 0;
         while let Some((_idx, text)) = recv_as_text(&reader) {
-            fluree_graph_turtle::parse_to_json(&text).expect("chunk should be valid Turtle");
+            crate::parse_to_json(&text).expect("chunk should be valid Turtle");
             count += 1;
         }
 
@@ -1687,7 +1687,7 @@ ex:carol ex:name \"Carol\" .\n";
 
         let mut count = 0usize;
         while let Some((_idx, text)) = recv_as_text(&reader) {
-            fluree_graph_turtle::parse_to_json(&text).expect("chunk should be valid Turtle");
+            crate::parse_to_json(&text).expect("chunk should be valid Turtle");
             count += 1;
         }
 

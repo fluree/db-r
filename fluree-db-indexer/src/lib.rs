@@ -785,31 +785,20 @@ async fn upload_dicts_to_cas<S: Storage>(
         })
     }
 
-    // Small flat dicts
-    let (graphs, _) = upload_flat(
-        storage,
-        ledger_id,
-        &run_dir.join("graphs.dict"),
-        DictKind::Graphs,
-    )
-    .await?;
-    let (datatypes, _) = upload_flat(
-        storage,
-        ledger_id,
-        &run_dir.join("datatypes.dict"),
-        DictKind::Datatypes,
-    )
-    .await?;
-    let (languages, _) = upload_flat(
-        storage,
-        ledger_id,
-        &run_dir.join("languages.dict"),
-        DictKind::Languages,
-    )
-    .await?;
+    // Small flat dicts (upload in parallel)
+    let graphs_path = run_dir.join("graphs.dict");
+    let datatypes_path = run_dir.join("datatypes.dict");
+    let languages_path = run_dir.join("languages.dict");
+    let (graphs_result, datatypes_result, languages_result) = tokio::try_join!(
+        upload_flat(storage, ledger_id, &graphs_path, DictKind::Graphs),
+        upload_flat(storage, ledger_id, &datatypes_path, DictKind::Datatypes),
+        upload_flat(storage, ledger_id, &languages_path, DictKind::Languages),
+    )?;
+    let graphs = graphs_result.0;
+    let datatypes = datatypes_result.0;
+    let languages = languages_result.0;
 
-    // Subject trees – strip namespace prefix so trees store suffix-only values,
-    // matching the format expected by translate_range / find_subject_id lookups.
+    // Build subject + string trees (CPU-bound, synchronous)
     let subject_pairs = dicts
         .subjects
         .read_all_entries()
@@ -859,12 +848,6 @@ async fn upload_dicts_to_cas<S: Storage>(
     let sr_tree = builder::build_reverse_tree(subj_rev, builder::DEFAULT_TARGET_LEAF_BYTES)
         .map_err(|e| IndexerError::StorageWrite(format!("build subject rev tree: {}", e)))?;
 
-    let subject_forward =
-        upload_tree(storage, ledger_id, sf_tree, DictKind::SubjectForward).await?;
-    let subject_reverse =
-        upload_tree(storage, ledger_id, sr_tree, DictKind::SubjectReverse).await?;
-
-    // String trees (read from file-backed forward file)
     let string_pairs = dicts
         .strings
         .all_entries()
@@ -890,75 +873,103 @@ async fn upload_dicts_to_cas<S: Storage>(
     let str_tree = builder::build_reverse_tree(str_rev, builder::DEFAULT_TARGET_LEAF_BYTES)
         .map_err(|e| IndexerError::StorageWrite(format!("build string rev tree: {}", e)))?;
 
-    let string_forward = upload_tree(storage, ledger_id, stf_tree, DictKind::StringForward).await?;
-    let string_reverse = upload_tree(storage, ledger_id, str_tree, DictKind::StringReverse).await?;
-
-    // Per-predicate numbig arenas
-    let mut numbig = BTreeMap::new();
-    let nb_dir = run_dir.join("numbig");
-    for &p_id in numbig_p_ids {
-        let path = nb_dir.join(format!("p_{}.nba", p_id));
-        if path.exists() {
-            let (cid, _) =
-                upload_flat(storage, ledger_id, &path, DictKind::NumBig { p_id }).await?;
-            numbig.insert(p_id.to_string(), cid);
-        }
-    }
-
-    // Per-predicate vector arena shards + manifests
-    let mut vectors = BTreeMap::new();
-    let vec_dir = run_dir.join("vectors");
-    if vec_dir.exists() {
-        for (&p_id, arena) in &dicts.vectors {
-            if arena.is_empty() {
-                continue;
+    // Upload all trees + numbig + vectors in parallel
+    let (subject_trees, string_trees, numbig, vectors) = tokio::try_join!(
+        // Task A: subject trees
+        async {
+            let subject_forward =
+                upload_tree(storage, ledger_id, sf_tree, DictKind::SubjectForward).await?;
+            let subject_reverse =
+                upload_tree(storage, ledger_id, sr_tree, DictKind::SubjectReverse).await?;
+            Ok::<_, IndexerError>((subject_forward, subject_reverse))
+        },
+        // Task B: string trees
+        async {
+            let string_forward =
+                upload_tree(storage, ledger_id, stf_tree, DictKind::StringForward).await?;
+            let string_reverse =
+                upload_tree(storage, ledger_id, str_tree, DictKind::StringReverse).await?;
+            Ok::<_, IndexerError>((string_forward, string_reverse))
+        },
+        // Task C: numbig arenas
+        async {
+            let mut numbig = BTreeMap::new();
+            let nb_dir = run_dir.join("numbig");
+            for &p_id in numbig_p_ids {
+                let path = nb_dir.join(format!("p_{}.nba", p_id));
+                if path.exists() {
+                    let (cid, _) =
+                        upload_flat(storage, ledger_id, &path, DictKind::NumBig { p_id }).await?;
+                    numbig.insert(p_id.to_string(), cid);
+                }
             }
-            // Upload each shard file
-            let cap = run_index::vector_arena::SHARD_CAPACITY as usize;
-            let total = arena.len() as usize;
-            let num_shards = total.div_ceil(cap);
-            let mut shard_cids = Vec::with_capacity(num_shards);
-            let mut shard_infos = Vec::with_capacity(num_shards);
+            Ok::<_, IndexerError>(numbig)
+        },
+        // Task D: vector arenas
+        async {
+            let mut vectors = BTreeMap::new();
+            let vec_dir = run_dir.join("vectors");
+            if vec_dir.exists() {
+                for (&p_id, arena) in &dicts.vectors {
+                    if arena.is_empty() {
+                        continue;
+                    }
+                    let cap = run_index::vector_arena::SHARD_CAPACITY as usize;
+                    let total = arena.len() as usize;
+                    let num_shards = total.div_ceil(cap);
+                    let mut shard_cids = Vec::with_capacity(num_shards);
+                    let mut shard_infos = Vec::with_capacity(num_shards);
 
-            for shard_idx in 0..num_shards {
-                let shard_path = vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                let (shard_cid, shard_wr) = upload_flat(
-                    storage,
-                    ledger_id,
-                    &shard_path,
-                    DictKind::VectorShard { p_id },
-                )
-                .await?;
-                let start_vec = shard_idx * cap;
-                let count = (total - start_vec).min(cap) as u32;
-                shard_infos.push(run_index::vector_arena::ShardInfo {
-                    cas: shard_wr.address,
-                    count,
-                });
-                shard_cids.push(shard_cid);
+                    for shard_idx in 0..num_shards {
+                        let shard_path = vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
+                        let (shard_cid, shard_wr) = upload_flat(
+                            storage,
+                            ledger_id,
+                            &shard_path,
+                            DictKind::VectorShard { p_id },
+                        )
+                        .await?;
+                        let start_vec = shard_idx * cap;
+                        let count = (total - start_vec).min(cap) as u32;
+                        shard_infos.push(run_index::vector_arena::ShardInfo {
+                            cas: shard_wr.address,
+                            count,
+                        });
+                        shard_cids.push(shard_cid);
+                    }
+
+                    let manifest_path = vec_dir.join(format!("p_{}.vam", p_id));
+                    run_index::vector_arena::write_vector_manifest(
+                        &manifest_path,
+                        arena,
+                        &shard_infos,
+                    )
+                    .map_err(|e| {
+                        IndexerError::StorageWrite(format!("write vector manifest: {}", e))
+                    })?;
+                    let (manifest_cid, _) = upload_flat(
+                        storage,
+                        ledger_id,
+                        &manifest_path,
+                        DictKind::VectorManifest { p_id },
+                    )
+                    .await?;
+
+                    vectors.insert(
+                        p_id.to_string(),
+                        run_index::VectorDictRef {
+                            manifest: manifest_cid,
+                            shards: shard_cids,
+                        },
+                    );
+                }
             }
+            Ok::<_, IndexerError>(vectors)
+        },
+    )?;
 
-            // Write final manifest with real CAS addresses, then upload
-            let manifest_path = vec_dir.join(format!("p_{}.vam", p_id));
-            run_index::vector_arena::write_vector_manifest(&manifest_path, arena, &shard_infos)
-                .map_err(|e| IndexerError::StorageWrite(format!("write vector manifest: {}", e)))?;
-            let (manifest_cid, _) = upload_flat(
-                storage,
-                ledger_id,
-                &manifest_path,
-                DictKind::VectorManifest { p_id },
-            )
-            .await?;
-
-            vectors.insert(
-                p_id.to_string(),
-                run_index::VectorDictRef {
-                    manifest: manifest_cid,
-                    shards: shard_cids,
-                },
-            );
-        }
-    }
+    let (subject_forward, subject_reverse) = subject_trees;
+    let (string_forward, string_reverse) = string_trees;
 
     tracing::info!(
         subject_count = dicts.subjects.len(),
@@ -1188,14 +1199,13 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     run_dir: &std::path::Path,
     namespace_codes: &std::collections::HashMap<u16, String>,
 ) -> Result<UploadedDicts> {
-    use dict_tree::builder::{self, TreeBuildResult};
-    use dict_tree::forward_leaf::ForwardEntry;
-    use dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
+    use dict_tree::branch::{id_to_branch_key, BranchLeafEntry, DictBranch};
+    use dict_tree::builder;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::{ContentKind, DictKind, SubjectIdEncoding};
     use std::collections::BTreeMap;
 
-    // ---- Inner helpers (same pattern as upload_dicts_to_cas) ----
+    // ---- Inner helpers ----
 
     async fn upload_flat<S: Storage>(
         storage: &S,
@@ -1221,397 +1231,1028 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         Ok((cid, result))
     }
 
-    async fn upload_tree<S: Storage>(
-        storage: &S,
-        ledger_id: &str,
-        result: TreeBuildResult,
-        dict: DictKind,
-    ) -> Result<run_index::DictTreeRefs> {
-        use futures::StreamExt;
-        use std::sync::Arc;
-        use tokio::sync::Semaphore;
-
-        let kind = ContentKind::DictBlob { dict };
-
-        // Bounded parallelism for dict leaf uploads.
-        // Default is slightly lower than index leaves because dict leaf bytes are already in memory.
-        let leaf_upload_concurrency: usize = std::env::var("FLUREE_CAS_UPLOAD_CONCURRENCY")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(12)
-            .clamp(1, 128);
-        let sem = Arc::new(Semaphore::new(leaf_upload_concurrency));
-
-        let total_leaves = result.leaves.len();
-        let mut leaf_cid_slots: Vec<Option<ContentId>> = vec![None; total_leaves];
-        let mut hash_to_address = std::collections::HashMap::with_capacity(total_leaves);
-
-        let mut futs = futures::stream::FuturesUnordered::new();
-        for (idx, leaf) in result.leaves.iter().enumerate() {
-            let sem = Arc::clone(&sem);
-            let bytes = &leaf.bytes;
-            let hash = leaf.hash.clone();
-            futs.push(async move {
-                let _permit = sem.acquire_owned().await.map_err(|_| {
-                    IndexerError::StorageWrite("dict leaf upload semaphore closed".into())
-                })?;
-                let cas_result = storage
-                    .content_write_bytes(ContentKind::DictBlob { dict }, ledger_id, bytes)
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                let cid = cid_from_write(ContentKind::DictBlob { dict }, &cas_result);
-                Ok::<(usize, ContentId, String, String), IndexerError>((
-                    idx,
-                    cid,
-                    hash,
-                    cas_result.address,
-                ))
-            });
-        }
-
-        while let Some(res) = futs.next().await {
-            let (idx, cid, hash, addr) = res?;
-            leaf_cid_slots[idx] = Some(cid);
-            hash_to_address.insert(hash, addr);
-        }
-
-        let leaf_cids: Vec<ContentId> = leaf_cid_slots
-            .into_iter()
-            .enumerate()
-            .map(|(i, slot)| slot.unwrap_or_else(|| panic!("dict leaf {i} was not uploaded")))
-            .collect();
-
-        let (_, branch_bytes, _) = builder::finalize_branch(result.branch, &hash_to_address)
-            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-        let branch_result = storage
-            .content_write_bytes(kind, ledger_id, &branch_bytes)
-            .await
-            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-        Ok(run_index::DictTreeRefs {
-            branch: cid_from_write(kind, &branch_result),
-            leaves: leaf_cids,
-        })
-    }
-
-    // ---- 1. Upload flat dicts ----
+    // ---- 1. Upload flat dicts in parallel ----
     tracing::info!("uploading flat dictionary artifacts (graphs, datatypes, languages)");
-    let (graphs, _) = upload_flat(
-        storage,
-        ledger_id,
-        &run_dir.join("graphs.dict"),
-        DictKind::Graphs,
-    )
-    .await?;
-    let (datatypes, _) = upload_flat(
-        storage,
-        ledger_id,
-        &run_dir.join("datatypes.dict"),
-        DictKind::Datatypes,
-    )
-    .await?;
-    let (languages, _) = upload_flat(
-        storage,
-        ledger_id,
-        &run_dir.join("languages.dict"),
-        DictKind::Languages,
-    )
-    .await?;
+    let graphs_path = run_dir.join("graphs.dict");
+    let datatypes_path = run_dir.join("datatypes.dict");
+    let languages_path = run_dir.join("languages.dict");
+    let (graphs_result, datatypes_result, languages_result) = tokio::try_join!(
+        upload_flat(storage, ledger_id, &graphs_path, DictKind::Graphs),
+        upload_flat(storage, ledger_id, &datatypes_path, DictKind::Datatypes),
+        upload_flat(storage, ledger_id, &languages_path, DictKind::Languages),
+    )?;
+    let graphs = graphs_result.0;
+    let datatypes = datatypes_result.0;
+    let languages = languages_result.0;
     tracing::info!("flat dicts uploaded");
 
-    // ---- 2. Read subjects.fwd + subjects.idx + subjects.sids → build trees ----
-    //
-    // Memory strategy: build forward and reverse trees in SEPARATE passes so
-    // we never hold both entry sets simultaneously. Each pass iterates through
-    // the same fwd_data/offsets/lens but only allocates one entry vec at a time.
-    // Subject data (fwd_data, offsets, lens) is dropped before string processing.
-    tracing::info!("reading subject dictionary files from disk");
+    // ---- 2. Read sids (needed for both subject trees and watermark computation) ----
     let sids_path = run_dir.join("subjects.sids");
     let sids: Vec<u64> = run_index::dict_io::read_subject_sid_map(&sids_path)
         .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", sids_path.display(), e)))?;
 
-    // Subject forward + reverse trees (scoped to drop fwd_data before strings)
-    let (subject_forward, subject_reverse) = {
-        let subj_idx_path = run_dir.join("subjects.idx");
-        let (subj_offsets, subj_lens) = run_index::dict_io::read_forward_index(&subj_idx_path)
-            .map_err(|e| {
-                IndexerError::StorageRead(format!("read {}: {}", subj_idx_path.display(), e))
-            })?;
-        let subj_fwd_path = run_dir.join("subjects.fwd");
-        let subj_fwd_data = tokio::fs::read(&subj_fwd_path).await.map_err(|e| {
-            IndexerError::StorageRead(format!("read {}: {}", subj_fwd_path.display(), e))
-        })?;
-        tracing::info!(
-            subjects = sids.len(),
-            fwd_bytes = subj_fwd_data.len(),
-            "subject dict files loaded"
-        );
+    // ---- 3. Upload subject trees, string trees, numbig, vectors in parallel ----
+    tracing::info!(
+        "uploading subject trees, string trees, numbig arenas, and vector arenas in parallel"
+    );
 
-        // Helper closure: extract ns-compressed suffix from IRI
-        let subject_suffix = |sid: u64, off: u64, len: u32| -> (u16, Vec<u8>) {
-            let iri = &subj_fwd_data[off as usize..(off as usize + len as usize)];
-            let iri_str = std::str::from_utf8(iri).unwrap_or("");
-            let ns_code = SubjectId::from_u64(sid).ns_code();
-            let prefix = namespace_codes
-                .get(&ns_code)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
-                &iri[prefix.len()..]
+    let (subject_trees, string_result, numbig, vectors) = tokio::try_join!(
+        // Task A: Subject forward + reverse trees
+        async {
+            let subj_idx_path = run_dir.join("subjects.idx");
+            let (subj_offsets, subj_lens) = run_index::dict_io::read_forward_index(&subj_idx_path)
+                .map_err(|e| {
+                    IndexerError::StorageRead(format!("read {}: {}", subj_idx_path.display(), e))
+                })?;
+            let subj_fwd_path = run_dir.join("subjects.fwd");
+            let subj_fwd_file = std::fs::File::open(&subj_fwd_path).map_err(|e| {
+                IndexerError::StorageRead(format!("open {}: {}", subj_fwd_path.display(), e))
+            })?;
+            let subj_fwd_data = unsafe { memmap2::Mmap::map(&subj_fwd_file) }.map_err(|e| {
+                IndexerError::StorageRead(format!("mmap {}: {}", subj_fwd_path.display(), e))
+            })?;
+            tracing::info!(
+                subjects = sids.len(),
+                fwd_bytes = subj_fwd_data.len(),
+                "subject dict files loaded"
+            );
+
+            // Precompute suffix ranges so we can sort/build trees without allocating per-entry Vecs.
+            let mut ns_codes: Vec<u16> = Vec::with_capacity(sids.len());
+            let mut suf_offs: Vec<u64> = Vec::with_capacity(sids.len());
+            let mut suf_lens: Vec<u32> = Vec::with_capacity(sids.len());
+            for (&sid, (&off, &len)) in sids
+                .iter()
+                .zip(subj_offsets.iter().zip(subj_lens.iter()))
+            {
+                let ns_code = SubjectId::from_u64(sid).ns_code();
+                let iri = &subj_fwd_data[off as usize..(off as usize + len as usize)];
+                let prefix_bytes = namespace_codes
+                    .get(&ns_code)
+                    .map(|s| s.as_bytes())
+                    .unwrap_or(b"");
+                if !prefix_bytes.is_empty() && iri.starts_with(prefix_bytes) {
+                    ns_codes.push(ns_code);
+                    suf_offs.push(off + prefix_bytes.len() as u64);
+                    suf_lens.push(len.saturating_sub(prefix_bytes.len() as u32));
+                } else {
+                    ns_codes.push(ns_code);
+                    suf_offs.push(off);
+                    suf_lens.push(len);
+                }
+            }
+
+            // Pass 1: forward tree
+            tracing::info!("building subject forward tree");
+            // Fast path: when subjects were produced by vocab-merge, `subjects.sids` and
+            // the forward file are already in ascending sid64 order (and in `(ns_code, suffix)`
+            // key order). Avoid an O(n log n) sort of indices in that case.
+            let sids_sorted = sids
+                .windows(2)
+                .all(|w| w[0] <= w[1]);
+
+            let id_order: Option<Vec<usize>> = if sids_sorted {
+                None
             } else {
-                iri
+                let mut v: Vec<usize> = (0..sids.len()).collect();
+                v.sort_unstable_by_key(|&i| sids[i]);
+                Some(v)
             };
-            (ns_code, suffix.to_vec())
-        };
+            let subject_forward = {
+                use dict_tree::forward_leaf::FORWARD_LEAF_MAGIC;
+                let kind = ContentKind::DictBlob {
+                    dict: DictKind::SubjectForward,
+                };
+                let mut leaf_cids: Vec<ContentId> = Vec::new();
+                let mut branch_entries: Vec<BranchLeafEntry> = Vec::new();
 
-        // Pass 1: forward tree (entries sorted by id)
-        tracing::info!("building subject forward tree");
-        let sf_tree = {
-            let mut entries: Vec<ForwardEntry> = Vec::with_capacity(sids.len());
-            for (&sid, (&off, &len)) in sids.iter().zip(subj_offsets.iter().zip(subj_lens.iter())) {
-                let (_ns, suffix) = subject_suffix(sid, off, len);
-                entries.push(ForwardEntry {
-                    id: sid,
-                    value: suffix,
-                });
-            }
-            entries.sort_by_key(|e| e.id);
-            builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
-                .map_err(|e| IndexerError::StorageWrite(format!("build subject fwd tree: {}", e)))?
-        }; // entries dropped
-        tracing::info!(
-            leaves = sf_tree.leaves.len(),
-            "uploading subject forward tree to CAS"
-        );
-        let subject_forward =
-            upload_tree(storage, ledger_id, sf_tree, DictKind::SubjectForward).await?;
+                let mut leaf_offsets: Vec<u32> = Vec::new();
+                let mut leaf_data: Vec<u8> = Vec::new();
+                let mut data_offset: u32 = 0;
+                let mut leaf_first: u64 = 0;
+                let mut leaf_last: u64 = 0;
+                let mut leaf_count: u32 = 0;
 
-        // Pass 2: reverse tree (entries sorted by key)
-        tracing::info!("building subject reverse tree");
-        let sr_tree = {
-            let mut entries: Vec<ReverseEntry> = Vec::with_capacity(sids.len());
-            for (&sid, (&off, &len)) in sids.iter().zip(subj_offsets.iter().zip(subj_lens.iter())) {
-                let (ns_code, suffix) = subject_suffix(sid, off, len);
-                entries.push(ReverseEntry {
-                    key: subject_reverse_key(ns_code, &suffix),
-                    id: sid,
-                });
-            }
-            entries.sort_by(|a, b| a.key.cmp(&b.key));
-            builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
-                .map_err(|e| IndexerError::StorageWrite(format!("build subject rev tree: {}", e)))?
-        }; // entries dropped
-        tracing::info!(
-            leaves = sr_tree.leaves.len(),
-            "uploading subject reverse tree to CAS"
-        );
-        let subject_reverse =
-            upload_tree(storage, ledger_id, sr_tree, DictKind::SubjectReverse).await?;
-
-        tracing::info!("subject CoW trees uploaded");
-        (subject_forward, subject_reverse)
-    }; // subj_fwd_data, subj_offsets, subj_lens all dropped here
-
-    // ---- 3. Read strings.fwd + strings.idx → build trees ----
-    //
-    // Same two-pass strategy: forward tree first, drop entries, then reverse tree.
-    tracing::info!("reading string dictionary files from disk");
-    let str_idx_path = run_dir.join("strings.idx");
-    let str_fwd_path = run_dir.join("strings.fwd");
-    let (string_count, string_forward, string_reverse) = if str_idx_path.exists()
-        && str_fwd_path.exists()
-    {
-        let (str_offsets, str_lens) = run_index::dict_io::read_forward_index(&str_idx_path)
-            .map_err(|e| {
-                IndexerError::StorageRead(format!("read {}: {}", str_idx_path.display(), e))
-            })?;
-        let str_fwd_data = tokio::fs::read(&str_fwd_path).await.map_err(|e| {
-            IndexerError::StorageRead(format!("read {}: {}", str_fwd_path.display(), e))
-        })?;
-        let count = str_offsets.len();
-        tracing::info!(
-            strings = count,
-            fwd_bytes = str_fwd_data.len(),
-            "string dict files loaded"
-        );
-
-        // Pass 1: forward tree
-        tracing::info!("building string forward tree");
-        let stf_tree = {
-            let entries: Vec<ForwardEntry> = str_offsets
-                .iter()
-                .zip(str_lens.iter())
-                .enumerate()
-                .map(|(i, (&off, &len))| ForwardEntry {
-                    id: i as u64,
-                    value: str_fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
-                })
-                .collect();
-            builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
-                .map_err(|e| IndexerError::StorageWrite(format!("build string fwd tree: {}", e)))?
-        }; // entries dropped
-        tracing::info!(
-            leaves = stf_tree.leaves.len(),
-            "uploading string forward tree to CAS"
-        );
-        let sf = upload_tree(storage, ledger_id, stf_tree, DictKind::StringForward).await?;
-
-        // Pass 2: reverse tree
-        tracing::info!("building string reverse tree");
-        let str_tree = {
-            let mut entries: Vec<ReverseEntry> = str_offsets
-                .iter()
-                .zip(str_lens.iter())
-                .enumerate()
-                .map(|(i, (&off, &len))| ReverseEntry {
-                    key: str_fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
-                    id: i as u64,
-                })
-                .collect();
-            entries.sort_by(|a, b| a.key.cmp(&b.key));
-            builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)
-                .map_err(|e| IndexerError::StorageWrite(format!("build string rev tree: {}", e)))?
-        }; // entries dropped
-        tracing::info!(
-            leaves = str_tree.leaves.len(),
-            "uploading string reverse tree to CAS"
-        );
-        let sr = upload_tree(storage, ledger_id, str_tree, DictKind::StringReverse).await?;
-
-        tracing::info!("string CoW trees uploaded");
-        (count, sf, sr)
-    } else {
-        // No strings persisted — empty trees
-        let empty_fwd = builder::build_forward_tree(vec![], builder::DEFAULT_TARGET_LEAF_BYTES)
-            .map_err(|e| {
-                IndexerError::StorageWrite(format!("build empty string fwd tree: {}", e))
-            })?;
-        let empty_rev = builder::build_reverse_tree(vec![], builder::DEFAULT_TARGET_LEAF_BYTES)
-            .map_err(|e| {
-                IndexerError::StorageWrite(format!("build empty string rev tree: {}", e))
-            })?;
-        let sf = upload_tree(storage, ledger_id, empty_fwd, DictKind::StringForward).await?;
-        let sr = upload_tree(storage, ledger_id, empty_rev, DictKind::StringReverse).await?;
-        (0, sf, sr)
-    };
-
-    // ---- 4. Upload per-predicate numbig arenas ----
-    let mut numbig = BTreeMap::new();
-    let nb_dir = run_dir.join("numbig");
-    if nb_dir.exists() {
-        for entry in std::fs::read_dir(&nb_dir)
-            .map_err(|e| IndexerError::StorageRead(format!("read numbig dir: {}", e)))?
-        {
-            let entry = entry
-                .map_err(|e| IndexerError::StorageRead(format!("read numbig entry: {}", e)))?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if let Some(rest) = name_str.strip_prefix("p_") {
-                if let Some(id_str) = rest.strip_suffix(".nba") {
-                    if let Ok(p_id) = id_str.parse::<u32>() {
-                        let (cid, _) = upload_flat(
-                            storage,
-                            ledger_id,
-                            &entry.path(),
-                            DictKind::NumBig { p_id },
-                        )
-                        .await?;
-                        numbig.insert(p_id.to_string(), cid);
+                let flush = |leaf_offsets: &mut Vec<u32>,
+                                 leaf_data: &mut Vec<u8>,
+                                 leaf_count: &mut u32,
+                                 data_offset: &mut u32,
+                                 leaf_first: &mut u64,
+                                 leaf_last: &mut u64|
+                 -> Option<(Vec<u8>, u64, u64, u32)> {
+                    if *leaf_count == 0 {
+                        return None;
                     }
-                }
-            }
-        }
-    }
+                    let entry_count = *leaf_count;
+                    let header_size = 8;
+                    let offset_table_size = leaf_offsets.len() * 4;
+                    let total = header_size + offset_table_size + leaf_data.len();
+                    let mut buf = Vec::with_capacity(total);
+                    buf.extend_from_slice(&FORWARD_LEAF_MAGIC);
+                    buf.extend_from_slice(&entry_count.to_le_bytes());
+                    for off in leaf_offsets.iter() {
+                        buf.extend_from_slice(&off.to_le_bytes());
+                    }
+                    buf.extend_from_slice(leaf_data);
+                    let out = (buf, *leaf_first, *leaf_last, entry_count);
+                    leaf_offsets.clear();
+                    leaf_data.clear();
+                    *data_offset = 0;
+                    *leaf_count = 0;
+                    *leaf_first = 0;
+                    *leaf_last = 0;
+                    Some(out)
+                };
 
-    // ---- 4b. Upload per-predicate vector arena shards + manifests ----
-    let mut vectors = BTreeMap::new();
-    let vec_dir = run_dir.join("vectors");
-    if vec_dir.exists() {
-        // Scan for manifest files to discover which predicates have vectors
-        for entry in std::fs::read_dir(&vec_dir)
-            .map_err(|e| IndexerError::StorageRead(format!("read vectors dir: {}", e)))?
-        {
-            let entry = entry
-                .map_err(|e| IndexerError::StorageRead(format!("read vectors entry: {}", e)))?;
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if let Some(rest) = name_str.strip_prefix("p_") {
-                if let Some(id_str) = rest.strip_suffix(".vam") {
-                    if let Ok(p_id) = id_str.parse::<u32>() {
-                        // Read manifest to find shard count
-                        let manifest_bytes = tokio::fs::read(entry.path()).await.map_err(|e| {
-                            IndexerError::StorageRead(format!("read vector manifest: {}", e))
-                        })?;
-                        let manifest =
-                            run_index::vector_arena::read_vector_manifest(&manifest_bytes)
-                                .map_err(|e| {
-                                    IndexerError::StorageRead(format!(
-                                        "parse vector manifest: {}",
-                                        e
-                                    ))
-                                })?;
+                match &id_order {
+                    None => {
+                        for i in 0..sids.len() {
+                            let sid = sids[i];
+                            let off = suf_offs[i] as usize;
+                            let len = suf_lens[i] as usize;
+                            let suffix = &subj_fwd_data[off..off + len];
 
-                        // Upload each shard
-                        let mut shard_cids = Vec::with_capacity(manifest.shards.len());
-                        let mut shard_infos = Vec::with_capacity(manifest.shards.len());
-                        for (shard_idx, shard_info) in manifest.shards.iter().enumerate() {
-                            let shard_path =
-                                vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                            let (shard_cid, shard_wr) = upload_flat(
-                                storage,
-                                ledger_id,
-                                &shard_path,
-                                DictKind::VectorShard { p_id },
-                            )
-                            .await?;
-                            shard_infos.push(run_index::vector_arena::ShardInfo {
-                                cas: shard_wr.address,
-                                count: shard_info.count,
-                            });
-                            shard_cids.push(shard_cid);
+                            if leaf_count == 0 {
+                                leaf_first = sid;
+                            }
+                            leaf_last = sid;
+
+                            leaf_offsets.push(data_offset);
+                            leaf_data.extend_from_slice(&sid.to_le_bytes());
+                            leaf_data.extend_from_slice(&(suffix.len() as u32).to_le_bytes());
+                            leaf_data.extend_from_slice(suffix);
+                            data_offset += (12 + suffix.len()) as u32;
+                            leaf_count += 1;
+
+                            if (leaf_data.len() + leaf_offsets.len() * 4 + 8)
+                                >= builder::DEFAULT_TARGET_LEAF_BYTES
+                            {
+                                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
+                                    &mut leaf_offsets,
+                                    &mut leaf_data,
+                                    &mut leaf_count,
+                                    &mut data_offset,
+                                    &mut leaf_first,
+                                    &mut leaf_last,
+                                ) {
+                                    let cas_result = storage
+                                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                        .await
+                                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                                    branch_entries.push(BranchLeafEntry {
+                                        first_key: id_to_branch_key(first_id),
+                                        last_key: id_to_branch_key(last_id),
+                                        entry_count: cnt,
+                                        address: cas_result.address,
+                                    });
+                                }
+                            }
                         }
+                    }
+                    Some(order) => {
+                        for &i in order {
+                            let sid = sids[i];
+                            let off = suf_offs[i] as usize;
+                            let len = suf_lens[i] as usize;
+                            let suffix = &subj_fwd_data[off..off + len];
 
-                        // Re-write manifest with real CAS addresses, then upload
-                        let final_manifest = run_index::vector_arena::VectorManifest {
-                            shards: shard_infos,
-                            ..manifest
-                        };
-                        let manifest_json =
-                            serde_json::to_vec_pretty(&final_manifest).map_err(|e| {
-                                IndexerError::StorageWrite(format!(
-                                    "serialize vector manifest: {}",
-                                    e
-                                ))
-                            })?;
-                        let final_manifest_path = vec_dir.join(format!("p_{}_final.vam", p_id));
-                        std::fs::write(&final_manifest_path, &manifest_json).map_err(|e| {
-                            IndexerError::StorageWrite(format!(
-                                "write final vector manifest: {}",
-                                e
-                            ))
-                        })?;
-                        let (manifest_cid, _) = upload_flat(
-                            storage,
-                            ledger_id,
-                            &final_manifest_path,
-                            DictKind::VectorManifest { p_id },
-                        )
-                        .await?;
+                            if leaf_count == 0 {
+                                leaf_first = sid;
+                            }
+                            leaf_last = sid;
 
-                        vectors.insert(
-                            p_id.to_string(),
-                            run_index::VectorDictRef {
-                                manifest: manifest_cid,
-                                shards: shard_cids,
-                            },
-                        );
+                            leaf_offsets.push(data_offset);
+                            leaf_data.extend_from_slice(&sid.to_le_bytes());
+                            leaf_data.extend_from_slice(&(suffix.len() as u32).to_le_bytes());
+                            leaf_data.extend_from_slice(suffix);
+                            data_offset += (12 + suffix.len()) as u32;
+                            leaf_count += 1;
+
+                            if (leaf_data.len() + leaf_offsets.len() * 4 + 8)
+                                >= builder::DEFAULT_TARGET_LEAF_BYTES
+                            {
+                                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
+                                    &mut leaf_offsets,
+                                    &mut leaf_data,
+                                    &mut leaf_count,
+                                    &mut data_offset,
+                                    &mut leaf_first,
+                                    &mut leaf_last,
+                                ) {
+                                    let cas_result = storage
+                                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                        .await
+                                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                                    branch_entries.push(BranchLeafEntry {
+                                        first_key: id_to_branch_key(first_id),
+                                        last_key: id_to_branch_key(last_id),
+                                        entry_count: cnt,
+                                        address: cas_result.address,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
+                    &mut leaf_offsets,
+                    &mut leaf_data,
+                    &mut leaf_count,
+                    &mut data_offset,
+                    &mut leaf_first,
+                    &mut leaf_last,
+                ) {
+                    let cas_result = storage
+                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                    branch_entries.push(BranchLeafEntry {
+                        first_key: id_to_branch_key(first_id),
+                        last_key: id_to_branch_key(last_id),
+                        entry_count: cnt,
+                        address: cas_result.address,
+                    });
+                }
+
+                let branch = DictBranch { leaves: branch_entries };
+                let branch_bytes = branch.encode();
+                let branch_result = storage
+                    .content_write_bytes(kind, ledger_id, &branch_bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                run_index::DictTreeRefs {
+                    branch: cid_from_write(kind, &branch_result),
+                    leaves: leaf_cids,
+                }
+            };
+
+            // Pass 2: reverse tree
+            // Fast path: when subjects were produced by vocab-merge, the file order is already
+            // sorted by `(ns_code, suffix)` (which matches the reverse-tree key ordering).
+            // Avoid sorting indices by comparing huge byte slices.
+            let keys_sorted = {
+                let mut ok = true;
+                for i in 1..sids.len() {
+                    let prev_ns = ns_codes[i - 1];
+                    let curr_ns = ns_codes[i];
+                    if prev_ns < curr_ns {
+                        continue;
+                    }
+                    if prev_ns > curr_ns {
+                        ok = false;
+                        break;
+                    }
+                    let a = &subj_fwd_data[suf_offs[i - 1] as usize
+                        ..(suf_offs[i - 1] as usize + suf_lens[i - 1] as usize)];
+                    let b = &subj_fwd_data[suf_offs[i] as usize
+                        ..(suf_offs[i] as usize + suf_lens[i] as usize)];
+                    if a > b {
+                        ok = false;
+                        break;
+                    }
+                }
+                ok
+            };
+            tracing::info!(
+                sids_sorted,
+                keys_sorted,
+                "subject dict ordering check (fast-path eligibility)"
+            );
+
+            let rev_order: Option<Vec<usize>> = if keys_sorted {
+                None
+            } else {
+                tracing::info!("building subject reverse tree (fallback index-sort)");
+                let mut v: Vec<usize> = (0..sids.len()).collect();
+                v.sort_unstable_by(|&a, &b| {
+                    let na = ns_codes[a];
+                    let nb = ns_codes[b];
+                    match na.cmp(&nb) {
+                        std::cmp::Ordering::Equal => {
+                            let sa = &subj_fwd_data[suf_offs[a] as usize
+                                ..(suf_offs[a] as usize + suf_lens[a] as usize)];
+                            let sb = &subj_fwd_data[suf_offs[b] as usize
+                                ..(suf_offs[b] as usize + suf_lens[b] as usize)];
+                            sa.cmp(sb)
+                        }
+                        other => other,
+                    }
+                });
+                Some(v)
+            };
+            let subject_reverse = {
+                use dict_tree::reverse_leaf::REVERSE_LEAF_MAGIC;
+                let kind = ContentKind::DictBlob {
+                    dict: DictKind::SubjectReverse,
+                };
+                let mut leaf_cids: Vec<ContentId> = Vec::new();
+                let mut branch_entries: Vec<BranchLeafEntry> = Vec::new();
+
+                let mut leaf_offsets: Vec<u32> = Vec::new();
+                let mut leaf_data: Vec<u8> = Vec::new();
+                let mut chunk_bytes: usize = 0;
+                let mut first_key: Option<Vec<u8>> = None;
+                // Track last key parts for branch boundary (avoid per-entry allocation).
+                let mut last_ns: u16 = 0;
+                let mut last_off: u64 = 0;
+                let mut last_len: u32 = 0;
+
+                let flush = |leaf_offsets: &mut Vec<u32>,
+                                 leaf_data: &mut Vec<u8>,
+                                 first_key: &mut Option<Vec<u8>>,
+                                 last_ns: &mut u16,
+                                 last_off: &mut u64,
+                                 last_len: &mut u32,
+                                 chunk_bytes: &mut usize|
+                 -> Result<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
+                    if leaf_offsets.is_empty() {
+                        return Ok(None);
+                    }
+                    let entry_count = leaf_offsets.len() as u32;
+                    let header_size = 8;
+                    let offset_table_size = leaf_offsets.len() * 4;
+                    let total = header_size + offset_table_size + leaf_data.len();
+                    let mut buf = Vec::with_capacity(total);
+                    buf.extend_from_slice(&REVERSE_LEAF_MAGIC);
+                    buf.extend_from_slice(&entry_count.to_le_bytes());
+                    for off in leaf_offsets.iter() {
+                        buf.extend_from_slice(&off.to_le_bytes());
+                    }
+                    buf.extend_from_slice(leaf_data);
+                    debug_assert_eq!(buf.len(), total);
+                    let fk = first_key.take().unwrap_or_default();
+                    let suffix = &subj_fwd_data[*last_off as usize..(*last_off as usize + *last_len as usize)];
+                    let mut lk = Vec::with_capacity(2 + suffix.len());
+                    lk.extend_from_slice(&last_ns.to_be_bytes());
+                    lk.extend_from_slice(suffix);
+                    leaf_offsets.clear();
+                    leaf_data.clear();
+                    *chunk_bytes = 0;
+                    Ok(Some((buf, fk, lk)))
+                };
+
+                match &rev_order {
+                    None => {
+                        for i in 0..sids.len() {
+                            let ns = ns_codes[i];
+                            let suffix = &subj_fwd_data[suf_offs[i] as usize
+                                ..(suf_offs[i] as usize + suf_lens[i] as usize)];
+                            let sid = sids[i];
+
+                            // Key = [ns_code BE][suffix]
+                            let key_len = 2 + suffix.len();
+                            let entry_size = 12 + key_len;
+                            leaf_offsets.push(chunk_bytes as u32);
+                            chunk_bytes += entry_size;
+
+                            leaf_data.extend_from_slice(&(key_len as u32).to_le_bytes());
+                            leaf_data.extend_from_slice(&ns.to_be_bytes());
+                            leaf_data.extend_from_slice(suffix);
+                            leaf_data.extend_from_slice(&sid.to_le_bytes());
+
+                            if first_key.is_none() {
+                                let mut k = Vec::with_capacity(key_len);
+                                k.extend_from_slice(&ns.to_be_bytes());
+                                k.extend_from_slice(suffix);
+                                first_key = Some(k);
+                            }
+                            last_ns = ns;
+                            last_off = suf_offs[i];
+                            last_len = suf_lens[i];
+
+                            if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
+                                if let Some((leaf_bytes, fk, lk)) = flush(
+                                    &mut leaf_offsets,
+                                    &mut leaf_data,
+                                    &mut first_key,
+                                    &mut last_ns,
+                                    &mut last_off,
+                                    &mut last_len,
+                                    &mut chunk_bytes,
+                                )? {
+                                    let cas_result = storage
+                                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                        .await
+                                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                                    branch_entries.push(BranchLeafEntry {
+                                        first_key: fk,
+                                        last_key: lk,
+                                        entry_count: 0,
+                                        address: cas_result.address,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Some(order) => {
+                        for &i in order {
+                            let ns = ns_codes[i];
+                            let suffix = &subj_fwd_data[suf_offs[i] as usize
+                                ..(suf_offs[i] as usize + suf_lens[i] as usize)];
+                            let sid = sids[i];
+
+                            // Key = [ns_code BE][suffix]
+                            let key_len = 2 + suffix.len();
+                            let entry_size = 12 + key_len;
+                            leaf_offsets.push(chunk_bytes as u32);
+                            chunk_bytes += entry_size;
+
+                            leaf_data.extend_from_slice(&(key_len as u32).to_le_bytes());
+                            leaf_data.extend_from_slice(&ns.to_be_bytes());
+                            leaf_data.extend_from_slice(suffix);
+                            leaf_data.extend_from_slice(&sid.to_le_bytes());
+
+                            if first_key.is_none() {
+                                let mut k = Vec::with_capacity(key_len);
+                                k.extend_from_slice(&ns.to_be_bytes());
+                                k.extend_from_slice(suffix);
+                                first_key = Some(k);
+                            }
+                            last_ns = ns;
+                            last_off = suf_offs[i];
+                            last_len = suf_lens[i];
+
+                            if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
+                                if let Some((leaf_bytes, fk, lk)) = flush(
+                                    &mut leaf_offsets,
+                                    &mut leaf_data,
+                                    &mut first_key,
+                                    &mut last_ns,
+                                    &mut last_off,
+                                    &mut last_len,
+                                    &mut chunk_bytes,
+                                )? {
+                                    let cas_result = storage
+                                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                        .await
+                                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                                    branch_entries.push(BranchLeafEntry {
+                                        first_key: fk,
+                                        last_key: lk,
+                                        entry_count: 0,
+                                        address: cas_result.address,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some((leaf_bytes, fk, lk)) =
+                    flush(&mut leaf_offsets, &mut leaf_data, &mut first_key, &mut last_ns, &mut last_off, &mut last_len, &mut chunk_bytes)?
+                {
+                    let cas_result = storage
+                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                    branch_entries.push(BranchLeafEntry {
+                        first_key: fk,
+                        last_key: lk,
+                        entry_count: 0,
+                        address: cas_result.address,
+                    });
+                }
+
+                let branch = DictBranch { leaves: branch_entries };
+                let branch_bytes = branch.encode();
+                let branch_result = storage
+                    .content_write_bytes(kind, ledger_id, &branch_bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                Ok::<_, IndexerError>(run_index::DictTreeRefs {
+                    branch: cid_from_write(kind, &branch_result),
+                    leaves: leaf_cids,
+                })?
+            };
+
+            tracing::info!("subject CoW trees uploaded");
+            Ok::<_, IndexerError>((subject_forward, subject_reverse))
+        },
+        // Task B: String forward + reverse trees
+        async {
+            let str_idx_path = run_dir.join("strings.idx");
+            let str_fwd_path = run_dir.join("strings.fwd");
+            if str_idx_path.exists() && str_fwd_path.exists() {
+                let (str_offsets, str_lens) = run_index::dict_io::read_forward_index(&str_idx_path)
+                    .map_err(|e| {
+                        IndexerError::StorageRead(format!("read {}: {}", str_idx_path.display(), e))
+                    })?;
+                let str_fwd_file = std::fs::File::open(&str_fwd_path).map_err(|e| {
+                    IndexerError::StorageRead(format!("open {}: {}", str_fwd_path.display(), e))
+                })?;
+                let str_fwd_data = unsafe { memmap2::Mmap::map(&str_fwd_file) }.map_err(|e| {
+                    IndexerError::StorageRead(format!("mmap {}: {}", str_fwd_path.display(), e))
+                })?;
+                let count = str_offsets.len();
+                tracing::info!(
+                    strings = count,
+                    fwd_bytes = str_fwd_data.len(),
+                    "string dict files loaded"
+                );
+
+                // Pass 1: forward tree
+                tracing::info!("building string forward tree (streaming, zero-copy)");
+                // IDs are 0..count contiguous and already in order of the forward file.
+                let mut leaf_offsets: Vec<u32> = Vec::new();
+                let mut leaf_data: Vec<u8> = Vec::new();
+                let mut data_offset: u32 = 0;
+                let mut leaf_first: u64 = 0;
+                let mut leaf_last: u64 = 0;
+                let mut leaf_count: u32 = 0;
+                let kind = ContentKind::DictBlob {
+                    dict: DictKind::StringForward,
+                };
+                let mut leaf_cids: Vec<ContentId> = Vec::new();
+                let mut branch_entries: Vec<BranchLeafEntry> = Vec::new();
+                use dict_tree::forward_leaf::FORWARD_LEAF_MAGIC;
+
+                let flush = |leaf_offsets: &mut Vec<u32>,
+                                 leaf_data: &mut Vec<u8>,
+                                 leaf_count: &mut u32,
+                                 data_offset: &mut u32,
+                                 leaf_first: &mut u64,
+                                 leaf_last: &mut u64|
+                 -> Option<(Vec<u8>, u64, u64, u32)> {
+                    if *leaf_count == 0 {
+                        return None;
+                    }
+                    let entry_count = *leaf_count;
+                    let header_size = 8;
+                    let offset_table_size = leaf_offsets.len() * 4;
+                    let total = header_size + offset_table_size + leaf_data.len();
+                    let mut buf = Vec::with_capacity(total);
+                    buf.extend_from_slice(&FORWARD_LEAF_MAGIC);
+                    buf.extend_from_slice(&entry_count.to_le_bytes());
+                    for off in leaf_offsets.iter() {
+                        buf.extend_from_slice(&off.to_le_bytes());
+                    }
+                    buf.extend_from_slice(leaf_data);
+                    let out = (buf, *leaf_first, *leaf_last, entry_count);
+                    leaf_offsets.clear();
+                    leaf_data.clear();
+                    *data_offset = 0;
+                    *leaf_count = 0;
+                    *leaf_first = 0;
+                    *leaf_last = 0;
+                    Some(out)
+                };
+
+                for i in 0..count {
+                    let off = str_offsets[i] as usize;
+                    let len = str_lens[i] as usize;
+                    let bytes = &str_fwd_data[off..off + len];
+                    let id = i as u64;
+                    if leaf_count == 0 {
+                        leaf_first = id;
+                    }
+                    leaf_last = id;
+                    leaf_offsets.push(data_offset);
+                    leaf_data.extend_from_slice(&id.to_le_bytes());
+                    leaf_data.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                    leaf_data.extend_from_slice(bytes);
+                    data_offset += (12 + bytes.len()) as u32;
+                    leaf_count += 1;
+
+                    if (leaf_data.len() + leaf_offsets.len() * 4 + 8) >= builder::DEFAULT_TARGET_LEAF_BYTES {
+                        if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
+                            &mut leaf_offsets,
+                            &mut leaf_data,
+                            &mut leaf_count,
+                            &mut data_offset,
+                            &mut leaf_first,
+                            &mut leaf_last,
+                        ) {
+                            let cas_result = storage
+                                .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                .await
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                            leaf_cids.push(cid_from_write(kind, &cas_result));
+                            branch_entries.push(BranchLeafEntry {
+                                first_key: id_to_branch_key(first_id),
+                                last_key: id_to_branch_key(last_id),
+                                entry_count: cnt,
+                                address: cas_result.address,
+                            });
+                        }
+                    }
+                }
+
+                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
+                    &mut leaf_offsets,
+                    &mut leaf_data,
+                    &mut leaf_count,
+                    &mut data_offset,
+                    &mut leaf_first,
+                    &mut leaf_last,
+                ) {
+                    let cas_result = storage
+                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                    branch_entries.push(BranchLeafEntry {
+                        first_key: id_to_branch_key(first_id),
+                        last_key: id_to_branch_key(last_id),
+                        entry_count: cnt,
+                        address: cas_result.address,
+                    });
+                }
+
+                let branch = DictBranch { leaves: branch_entries };
+                let branch_bytes = branch.encode();
+                let branch_result = storage
+                    .content_write_bytes(kind, ledger_id, &branch_bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let sf = run_index::DictTreeRefs {
+                    branch: cid_from_write(kind, &branch_result),
+                    leaves: leaf_cids,
+                };
+
+                // Pass 2: reverse tree
+                // Fast path: when strings were produced by vocab-merge, IDs are assigned
+                // in lexicographic key order, so the forward file order is already the
+                // correct reverse-tree key order. Avoid sorting indices (O(n log n)).
+                let strings_sorted = {
+                    let mut ok = true;
+                    for i in 1..count {
+                        let oa = str_offsets[i - 1] as usize;
+                        let la = str_lens[i - 1] as usize;
+                        let ob = str_offsets[i] as usize;
+                        let lb = str_lens[i] as usize;
+                        if str_fwd_data[oa..oa + la] > str_fwd_data[ob..ob + lb] {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    ok
+                };
+                tracing::info!(
+                    strings_sorted,
+                    "string dict ordering check (fast-path eligibility)"
+                );
+
+                let rev_order: Option<Vec<usize>> = if strings_sorted {
+                    None
+                } else {
+                    tracing::info!("building string reverse tree (fallback index-sort)");
+                    let mut v: Vec<usize> = (0..count).collect();
+                    v.sort_unstable_by(|&a, &b| {
+                        let oa = str_offsets[a] as usize;
+                        let la = str_lens[a] as usize;
+                        let ob = str_offsets[b] as usize;
+                        let lb = str_lens[b] as usize;
+                        str_fwd_data[oa..oa + la].cmp(&str_fwd_data[ob..ob + lb])
+                    });
+                    Some(v)
+                };
+
+                let sr = {
+                    use dict_tree::reverse_leaf::REVERSE_LEAF_MAGIC;
+                    let kind = ContentKind::DictBlob {
+                        dict: DictKind::StringReverse,
+                    };
+                    let mut leaf_cids: Vec<ContentId> = Vec::new();
+                    let mut branch_entries: Vec<BranchLeafEntry> = Vec::new();
+
+                    let mut leaf_offsets: Vec<u32> = Vec::new();
+                    let mut leaf_data: Vec<u8> = Vec::new();
+                    let mut chunk_bytes: usize = 0;
+                    let mut first_key: Option<Vec<u8>> = None;
+                    // Track last key slice for boundary without cloning per entry.
+                    let mut last_off: usize = 0;
+                    let mut last_len: usize = 0;
+
+                    let flush = |leaf_offsets: &mut Vec<u32>,
+                                     leaf_data: &mut Vec<u8>,
+                                     first_key: &mut Option<Vec<u8>>,
+                                     last_off: &mut usize,
+                                     last_len: &mut usize,
+                                     chunk_bytes: &mut usize|
+                     -> Result<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
+                        if leaf_offsets.is_empty() {
+                            return Ok(None);
+                        }
+                        let entry_count = leaf_offsets.len() as u32;
+                        let header_size = 8;
+                        let offset_table_size = leaf_offsets.len() * 4;
+                        let total = header_size + offset_table_size + leaf_data.len();
+                        let mut buf = Vec::with_capacity(total);
+                        buf.extend_from_slice(&REVERSE_LEAF_MAGIC);
+                        buf.extend_from_slice(&entry_count.to_le_bytes());
+                        for off in leaf_offsets.iter() {
+                            buf.extend_from_slice(&off.to_le_bytes());
+                        }
+                        buf.extend_from_slice(leaf_data);
+                        debug_assert_eq!(buf.len(), total);
+                        let fk = first_key.take().unwrap_or_default();
+                        let lk = str_fwd_data[*last_off..(*last_off + *last_len)].to_vec();
+                        leaf_offsets.clear();
+                        leaf_data.clear();
+                        *chunk_bytes = 0;
+                        Ok(Some((buf, fk, lk)))
+                    };
+
+                    match &rev_order {
+                        None => {
+                            for i in 0..count {
+                                let off = str_offsets[i] as usize;
+                                let len = str_lens[i] as usize;
+                                let key = &str_fwd_data[off..off + len];
+                                let id = i as u64;
+
+                                let entry_size = 12 + key.len();
+                                leaf_offsets.push(chunk_bytes as u32);
+                                chunk_bytes += entry_size;
+
+                                leaf_data.extend_from_slice(&(key.len() as u32).to_le_bytes());
+                                leaf_data.extend_from_slice(key);
+                                leaf_data.extend_from_slice(&id.to_le_bytes());
+
+                                if first_key.is_none() {
+                                    first_key = Some(key.to_vec());
+                                }
+                                last_off = off;
+                                last_len = len;
+
+                                if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
+                                    if let Some((leaf_bytes, fk, lk)) = flush(
+                                        &mut leaf_offsets,
+                                        &mut leaf_data,
+                                        &mut first_key,
+                                        &mut last_off,
+                                        &mut last_len,
+                                        &mut chunk_bytes,
+                                    )? {
+                                        let cas_result = storage
+                                            .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                            .await
+                                            .map_err(|e| {
+                                                IndexerError::StorageWrite(e.to_string())
+                                            })?;
+                                        leaf_cids.push(cid_from_write(kind, &cas_result));
+                                        branch_entries.push(BranchLeafEntry {
+                                            first_key: fk,
+                                            last_key: lk,
+                                            entry_count: 0,
+                                            address: cas_result.address,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        Some(order) => {
+                            for &i in order {
+                                let off = str_offsets[i] as usize;
+                                let len = str_lens[i] as usize;
+                                let key = &str_fwd_data[off..off + len];
+                                let id = i as u64;
+
+                                let entry_size = 12 + key.len();
+                                leaf_offsets.push(chunk_bytes as u32);
+                                chunk_bytes += entry_size;
+
+                                leaf_data.extend_from_slice(&(key.len() as u32).to_le_bytes());
+                                leaf_data.extend_from_slice(key);
+                                leaf_data.extend_from_slice(&id.to_le_bytes());
+
+                                if first_key.is_none() {
+                                    first_key = Some(key.to_vec());
+                                }
+                                last_off = off;
+                                last_len = len;
+
+                                if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
+                                    if let Some((leaf_bytes, fk, lk)) = flush(
+                                        &mut leaf_offsets,
+                                        &mut leaf_data,
+                                        &mut first_key,
+                                        &mut last_off,
+                                        &mut last_len,
+                                        &mut chunk_bytes,
+                                    )? {
+                                        let cas_result = storage
+                                            .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                            .await
+                                            .map_err(|e| {
+                                                IndexerError::StorageWrite(e.to_string())
+                                            })?;
+                                        leaf_cids.push(cid_from_write(kind, &cas_result));
+                                        branch_entries.push(BranchLeafEntry {
+                                            first_key: fk,
+                                            last_key: lk,
+                                            entry_count: 0,
+                                            address: cas_result.address,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some((leaf_bytes, fk, lk)) =
+                        flush(&mut leaf_offsets, &mut leaf_data, &mut first_key, &mut last_off, &mut last_len, &mut chunk_bytes)?
+                    {
+                        let cas_result = storage
+                            .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                            .await
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                        leaf_cids.push(cid_from_write(kind, &cas_result));
+                        branch_entries.push(BranchLeafEntry {
+                            first_key: fk,
+                            last_key: lk,
+                            entry_count: 0,
+                            address: cas_result.address,
+                        });
+                    }
+
+                    let branch = DictBranch { leaves: branch_entries };
+                    let branch_bytes = branch.encode();
+                    let branch_result = storage
+                        .content_write_bytes(kind, ledger_id, &branch_bytes)
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                    Ok::<_, IndexerError>(run_index::DictTreeRefs {
+                        branch: cid_from_write(kind, &branch_result),
+                        leaves: leaf_cids,
+                    })?
+                };
+
+                tracing::info!("string CoW trees uploaded");
+                Ok::<_, IndexerError>((count, sf, sr))
+            } else {
+                // No strings persisted — empty trees
+                // No strings persisted — empty trees (branch with no leaves)
+                let kind_fwd = ContentKind::DictBlob {
+                    dict: DictKind::StringForward,
+                };
+                let kind_rev = ContentKind::DictBlob {
+                    dict: DictKind::StringReverse,
+                };
+                let empty_branch = DictBranch { leaves: vec![] };
+                let empty_bytes = empty_branch.encode();
+                let wr_fwd = storage
+                    .content_write_bytes(kind_fwd, ledger_id, &empty_bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let wr_rev = storage
+                    .content_write_bytes(kind_rev, ledger_id, &empty_bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                Ok((
+                    0,
+                    run_index::DictTreeRefs {
+                        branch: cid_from_write(kind_fwd, &wr_fwd),
+                        leaves: vec![],
+                    },
+                    run_index::DictTreeRefs {
+                        branch: cid_from_write(kind_rev, &wr_rev),
+                        leaves: vec![],
+                    },
+                ))
+            }
+        },
+        // Task C: Numbig arenas
+        async {
+            let mut numbig = BTreeMap::new();
+            let nb_dir = run_dir.join("numbig");
+            if nb_dir.exists() {
+                for entry in std::fs::read_dir(&nb_dir)
+                    .map_err(|e| IndexerError::StorageRead(format!("read numbig dir: {}", e)))?
+                {
+                    let entry = entry.map_err(|e| {
+                        IndexerError::StorageRead(format!("read numbig entry: {}", e))
+                    })?;
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if let Some(rest) = name_str.strip_prefix("p_") {
+                        if let Some(id_str) = rest.strip_suffix(".nba") {
+                            if let Ok(p_id) = id_str.parse::<u32>() {
+                                let (cid, _) = upload_flat(
+                                    storage,
+                                    ledger_id,
+                                    &entry.path(),
+                                    DictKind::NumBig { p_id },
+                                )
+                                .await?;
+                                numbig.insert(p_id.to_string(), cid);
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
+            Ok::<_, IndexerError>(numbig)
+        },
+        // Task D: Vector arenas
+        async {
+            let mut vectors = BTreeMap::new();
+            let vec_dir = run_dir.join("vectors");
+            if vec_dir.exists() {
+                for entry in std::fs::read_dir(&vec_dir)
+                    .map_err(|e| IndexerError::StorageRead(format!("read vectors dir: {}", e)))?
+                {
+                    let entry = entry.map_err(|e| {
+                        IndexerError::StorageRead(format!("read vectors entry: {}", e))
+                    })?;
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if let Some(rest) = name_str.strip_prefix("p_") {
+                        if let Some(id_str) = rest.strip_suffix(".vam") {
+                            if let Ok(p_id) = id_str.parse::<u32>() {
+                                let manifest_bytes =
+                                    tokio::fs::read(entry.path()).await.map_err(|e| {
+                                        IndexerError::StorageRead(format!(
+                                            "read vector manifest: {}",
+                                            e
+                                        ))
+                                    })?;
+                                let manifest =
+                                    run_index::vector_arena::read_vector_manifest(&manifest_bytes)
+                                        .map_err(|e| {
+                                            IndexerError::StorageRead(format!(
+                                                "parse vector manifest: {}",
+                                                e
+                                            ))
+                                        })?;
 
-    // ---- 5. Compute subject_id_encoding + watermarks from sids ----
+                                let mut shard_cids = Vec::with_capacity(manifest.shards.len());
+                                let mut shard_infos = Vec::with_capacity(manifest.shards.len());
+                                for (shard_idx, shard_info) in manifest.shards.iter().enumerate() {
+                                    let shard_path =
+                                        vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
+                                    let (shard_cid, shard_wr) = upload_flat(
+                                        storage,
+                                        ledger_id,
+                                        &shard_path,
+                                        DictKind::VectorShard { p_id },
+                                    )
+                                    .await?;
+                                    shard_infos.push(run_index::vector_arena::ShardInfo {
+                                        cas: shard_wr.address,
+                                        count: shard_info.count,
+                                    });
+                                    shard_cids.push(shard_cid);
+                                }
+
+                                let final_manifest = run_index::vector_arena::VectorManifest {
+                                    shards: shard_infos,
+                                    ..manifest
+                                };
+                                let manifest_json = serde_json::to_vec_pretty(&final_manifest)
+                                    .map_err(|e| {
+                                        IndexerError::StorageWrite(format!(
+                                            "serialize vector manifest: {}",
+                                            e
+                                        ))
+                                    })?;
+                                let final_manifest_path =
+                                    vec_dir.join(format!("p_{}_final.vam", p_id));
+                                std::fs::write(&final_manifest_path, &manifest_json).map_err(
+                                    |e| {
+                                        IndexerError::StorageWrite(format!(
+                                            "write final vector manifest: {}",
+                                            e
+                                        ))
+                                    },
+                                )?;
+                                let (manifest_cid, _) = upload_flat(
+                                    storage,
+                                    ledger_id,
+                                    &final_manifest_path,
+                                    DictKind::VectorManifest { p_id },
+                                )
+                                .await?;
+
+                                vectors.insert(
+                                    p_id.to_string(),
+                                    run_index::VectorDictRef {
+                                        manifest: manifest_cid,
+                                        shards: shard_cids,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Ok::<_, IndexerError>(vectors)
+        },
+    )?;
+
+    let (subject_forward, subject_reverse) = subject_trees;
+    let (string_count, string_forward, string_reverse) = string_result;
+
+    // ---- 4. Compute subject_id_encoding + watermarks from sids ----
     let overflow_ns: u16 = 0xFFFF;
     let mut needs_wide = false;
     let mut max_ns_code: u16 = 0;
@@ -1624,7 +2265,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 
         if ns_code == overflow_ns {
             needs_wide = true;
-            // Overflow namespace: watermark stays at 0
             continue;
         }
 
@@ -1648,7 +2288,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         SubjectIdEncoding::Narrow
     };
 
-    // Build watermarks vec: watermarks[i] = max local_id for ns_code i
     let watermark_len = if watermark_map.is_empty() {
         0
     } else {

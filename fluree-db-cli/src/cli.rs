@@ -32,6 +32,13 @@ pub struct Cli {
     /// 0 = auto (system cores, default cap 6). Explicit values are not capped.
     #[arg(long, global = true, default_value_t = 0)]
     pub parallelism: usize,
+
+    /// Run-writer budget in MB for bulk import (0 = auto).
+    ///
+    /// Larger values reduce the number of temporary run files during remap/indexing
+    /// at the cost of higher peak memory.
+    #[arg(long, global = true, default_value_t = 0)]
+    pub run_budget_mb: usize,
 }
 
 #[derive(Subcommand)]
@@ -70,6 +77,12 @@ pub enum Commands {
         /// 0 = auto (system cores, default cap 6). Explicit values are not capped.
         #[arg(long, default_value_t = 0)]
         parallelism: usize,
+
+        /// Run-writer budget in MB for bulk import (0 = auto).
+        ///
+        /// Larger values reduce the number of temporary run files during remap/indexing.
+        #[arg(long, default_value_t = 0)]
+        run_budget_mb: usize,
     },
 
     /// Set the active ledger

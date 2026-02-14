@@ -10,6 +10,7 @@ pub struct ImportOpts {
     pub memory_budget_mb: usize,
     pub parallelism: usize,
     pub chunk_size_mb: usize,
+    pub run_budget_mb: usize,
 }
 
 pub async fn run(
@@ -143,9 +144,13 @@ where
     if import_opts.chunk_size_mb > 0 {
         builder = builder.chunk_size_mb(import_opts.chunk_size_mb);
     }
+    if import_opts.run_budget_mb > 0 {
+        builder = builder.run_budget_mb(import_opts.run_budget_mb);
+    }
     let settings = builder.effective_import_settings();
     let mem_auto = import_opts.memory_budget_mb == 0;
     let par_auto = import_opts.parallelism == 0;
+    let run_auto = import_opts.run_budget_mb == 0;
     if !quiet {
         eprintln!(
             "Import settings: memory budget {} MB{}, parallelism {}{}, chunk size {} MB, run budget {} MB",
@@ -156,8 +161,8 @@ where
             settings.chunk_size_mb,
             settings.run_budget_mb,
         );
-        if mem_auto || par_auto {
-            eprintln!("  Override with --memory-budget-mb and --parallelism");
+        if mem_auto || par_auto || run_auto {
+            eprintln!("  Override with --memory-budget-mb, --parallelism, and --run-budget-mb");
         }
     }
 
@@ -231,6 +236,13 @@ where
                 0.0
             };
             cb.set_message(format!("{:.2} M flakes/s", rate));
+        }
+        ImportPhase::PreparingIndex { stage } => {
+            cb.finish();
+            // Show activity immediately (avoid "Indexing 0%" during merge/remap).
+            ib.set_length(100);
+            ib.set_position(1);
+            ib.set_message(stage.to_string());
         }
         ImportPhase::Indexing {
             merged_flakes,

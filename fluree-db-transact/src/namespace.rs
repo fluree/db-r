@@ -418,6 +418,14 @@ impl SharedNamespaceAllocator {
         result
     }
 
+    /// Look up the prefix string for a namespace code.
+    ///
+    /// Returns `None` if the code is not registered (should not happen for
+    /// codes returned by `get_or_allocate` or `sid_for_iri`).
+    pub fn get_prefix(&self, code: u16) -> Option<String> {
+        self.inner.read().names.get(&code).cloned()
+    }
+
     /// Take a snapshot of the current state for worker initialization.
     ///
     /// Returns `(codes, trie, next_code)`. Workers use the trie for local
