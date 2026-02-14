@@ -529,6 +529,7 @@ fn parse_expanded_triples(
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
 ) -> Result<Vec<TripleTemplate>> {
+    let mut blank_counter: usize = 0;
     match expanded {
         Value::Array(arr) => arr.iter().try_fold(Vec::new(), |mut templates, item| {
             templates.extend(parse_expanded_object(
@@ -538,6 +539,7 @@ fn parse_expanded_triples(
                 ns_registry,
                 object_var_parsing,
                 graph_ids,
+                &mut blank_counter,
             )?);
             Ok(templates)
         }),
@@ -548,6 +550,7 @@ fn parse_expanded_triples(
             ns_registry,
             object_var_parsing,
             graph_ids,
+            &mut blank_counter,
         ),
         _ => Err(TransactError::Parse(
             "Expected expanded object or array of objects".to_string(),
@@ -563,6 +566,7 @@ fn parse_expanded_object(
     ns_registry: &mut NamespaceRegistry,
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
+    blank_counter: &mut usize,
 ) -> Result<Vec<TripleTemplate>> {
     let obj = expanded
         .as_object()
@@ -596,7 +600,9 @@ fn parse_expanded_object(
         parse_expanded_id(id, vars, ns_registry)?
     } else {
         // Generate a blank node if no @id
-        TemplateTerm::BlankNode(format!("_:b{}", templates.len()))
+        let n = *blank_counter;
+        *blank_counter += 1;
+        TemplateTerm::BlankNode(format!("_:b{}", n))
     };
 
     // Parse each predicate-object pair
@@ -662,6 +668,7 @@ fn parse_expanded_object(
             &mut templates,
             object_var_parsing,
             graph_ids,
+            blank_counter,
         )?;
 
         for parsed_value in parsed_values {
@@ -753,6 +760,7 @@ impl ParsedValue {
 /// In expanded JSON-LD, values are wrapped in arrays and may have @value/@type/@language.
 /// Handles @list specially by expanding list elements into multiple ParsedValues with
 /// list_index set.
+#[allow(clippy::too_many_arguments)]
 fn parse_expanded_objects(
     value: &Value,
     context: &ParsedContext,
@@ -761,6 +769,7 @@ fn parse_expanded_objects(
     templates: &mut Vec<TripleTemplate>,
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
+    blank_counter: &mut usize,
 ) -> Result<Vec<ParsedValue>> {
     match value {
         Value::Array(arr) => {
@@ -790,6 +799,7 @@ fn parse_expanded_objects(
                     templates,
                     object_var_parsing,
                     graph_ids,
+                    blank_counter,
                 )?);
             }
             Ok(results)
@@ -802,6 +812,7 @@ fn parse_expanded_objects(
             templates,
             object_var_parsing,
             graph_ids,
+            blank_counter,
         )?]),
     }
 }
@@ -809,11 +820,14 @@ fn parse_expanded_objects(
 /// Parse a single expanded value
 ///
 /// Handles:
-/// - `{"@id": "..."}` - reference
+/// - `{"@id": "..."}` - reference (with optional nested property materialization)
 /// - `{"@value": "...", "@type": "..."}` - typed literal
 /// - `{"@value": "...", "@language": "..."}` - language-tagged string
 /// - `{"@value": "..."}` - plain literal
-/// - `{"@list": [...]}` - list (future)
+/// - `{"@list": [...]}` - list
+/// - `{"@variable": "..."}` - Fluree variable extension
+/// - `{...}` - nested blank node (no @id/@value/@list/@variable)
+#[allow(clippy::too_many_arguments)]
 fn parse_expanded_value(
     value: &Value,
     context: &ParsedContext,
@@ -822,6 +836,7 @@ fn parse_expanded_value(
     templates: &mut Vec<TripleTemplate>,
     object_var_parsing: bool,
     graph_ids: &mut GraphIdAssigner,
+    blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     match value {
         Value::Object(obj) => {
@@ -839,6 +854,7 @@ fn parse_expanded_value(
                         ns_registry,
                         object_var_parsing,
                         graph_ids,
+                        blank_counter,
                     )?;
                     templates.extend(nested_templates);
                 }
@@ -895,10 +911,30 @@ fn parse_expanded_value(
                 return Ok(ParsedValue::new(TemplateTerm::Var(var_id)));
             }
 
-            Err(TransactError::Parse(format!(
-                "Unsupported expanded value object: {:?}",
-                value
-            )))
+            // Nested node object without @id — treat as a blank node.
+            // Any object that reaches this point has properties but none of the
+            // JSON-LD value keywords (@id, @value, @list, @variable), so it must
+            // be a node object. Per the JSON-LD spec, a node without @id is a
+            // blank node — regardless of whether it has @type or not.
+            let nested_templates = parse_expanded_object(
+                value,
+                context,
+                vars,
+                ns_registry,
+                object_var_parsing,
+                graph_ids,
+                blank_counter,
+            )?;
+            let subject = nested_templates
+                .first()
+                .map(|t| t.subject.clone())
+                .ok_or_else(|| {
+                    TransactError::Parse(
+                        "Nested node object must contain at least one property".to_string(),
+                    )
+                })?;
+            templates.extend(nested_templates);
+            Ok(ParsedValue::new(subject))
         }
         // Direct values (shouldn't happen in properly expanded JSON-LD, but handle for robustness)
         Value::String(s) => {
@@ -1431,6 +1467,7 @@ mod tests {
         let mut templates: Vec<TripleTemplate> = Vec::new();
         let ctx = ParsedContext::new();
         let mut graph_ids = GraphIdAssigner::new();
+        let mut blank_counter: usize = 0;
 
         // @value with @type - should preserve datatype
         let val = json!({"@value": "42", "@type": "http://www.w3.org/2001/XMLSchema#integer"});
@@ -1442,6 +1479,7 @@ mod tests {
             &mut templates,
             true,
             &mut graph_ids,
+            &mut blank_counter,
         )
         .unwrap();
         assert!(matches!(
@@ -1460,6 +1498,7 @@ mod tests {
         let mut templates: Vec<TripleTemplate> = Vec::new();
         let ctx = ParsedContext::new();
         let mut graph_ids = GraphIdAssigner::new();
+        let mut blank_counter: usize = 0;
 
         // @value with @language
         let val = json!({"@value": "Hello", "@language": "en"});
@@ -1471,6 +1510,7 @@ mod tests {
             &mut templates,
             true,
             &mut graph_ids,
+            &mut blank_counter,
         )
         .unwrap();
         assert!(matches!(
@@ -1575,5 +1615,269 @@ mod tests {
             &templates[2].object,
             TemplateTerm::Value(FlakeValue::String(s)) if s == "blue"
         ));
+    }
+
+    #[test]
+    fn test_parse_nested_blank_node() {
+        // A property value that is a node object without @id should be treated as a blank node.
+        // Input is in expanded JSON-LD form (arrays around values, @type is array of strings).
+        let mut ns_registry = test_registry();
+        let ctx = ParsedContext::new();
+        let mut vars = VarRegistry::new();
+        let mut graph_ids = GraphIdAssigner::new();
+
+        let expanded = json!([{
+            "@id": "http://example.org/thing/1",
+            "http://example.org/relatedTo": [{
+                "@type": ["http://example.org/Widget"],
+                "http://example.org/name": [{"@value": "nested-widget"}]
+            }]
+        }]);
+
+        let templates = parse_expanded_triples(
+            &expanded,
+            &ctx,
+            &mut vars,
+            &mut ns_registry,
+            false,
+            &mut graph_ids,
+        )
+        .unwrap();
+
+        // Should have 3 triples (order: nested triples first, then parent reference):
+        //   _:b0    rdf:type  Widget           (nested, materialized first)
+        //   _:b0    name      "nested-widget"  (nested, materialized first)
+        //   thing/1 relatedTo _:b0             (parent reference, added last)
+        assert_eq!(templates.len(), 3);
+
+        // Find the parent→blank node reference triple (parent subject is a Sid)
+        let ref_triple = templates
+            .iter()
+            .find(|t| matches!(&t.subject, TemplateTerm::Sid(_)))
+            .expect("Expected a triple with parent Sid subject");
+        assert!(matches!(&ref_triple.object, TemplateTerm::BlankNode(_)));
+
+        // Extract the blank node label from the reference
+        let bnode_label = match &ref_triple.object {
+            TemplateTerm::BlankNode(label) => label.clone(),
+            _ => panic!("Expected BlankNode"),
+        };
+
+        // The other 2 triples should use the same blank node as subject
+        let bnode_triples: Vec<_> = templates
+            .iter()
+            .filter(|t| matches!(&t.subject, TemplateTerm::BlankNode(_)))
+            .collect();
+        assert_eq!(bnode_triples.len(), 2);
+        for t in &bnode_triples {
+            let label = match &t.subject {
+                TemplateTerm::BlankNode(l) => l.as_str(),
+                _ => unreachable!(),
+            };
+            assert_eq!(label, bnode_label);
+        }
+    }
+
+    #[test]
+    fn test_parse_doubly_nested_blank_nodes() {
+        // Two levels of nesting, both without @id — must get distinct blank node IDs.
+        let mut ns_registry = test_registry();
+        let ctx = ParsedContext::new();
+        let mut vars = VarRegistry::new();
+        let mut graph_ids = GraphIdAssigner::new();
+
+        let expanded = json!([{
+            "@id": "http://example.org/root",
+            "http://example.org/outer": [{
+                "@type": ["http://example.org/Outer"],
+                "http://example.org/inner": [{
+                    "@type": ["http://example.org/Inner"],
+                    "http://example.org/value": [{"@value": "deep"}]
+                }]
+            }]
+        }]);
+
+        let templates = parse_expanded_triples(
+            &expanded,
+            &ctx,
+            &mut vars,
+            &mut ns_registry,
+            false,
+            &mut graph_ids,
+        )
+        .unwrap();
+
+        // Collect all blank node labels used as subjects
+        let bnode_subjects: Vec<&str> = templates
+            .iter()
+            .filter_map(|t| match &t.subject {
+                TemplateTerm::BlankNode(label) => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        // There should be at least 2 distinct blank node labels (outer + inner)
+        let mut unique: Vec<&str> = bnode_subjects.clone();
+        unique.sort();
+        unique.dedup();
+        assert!(
+            unique.len() >= 2,
+            "Expected at least 2 distinct blank node labels, got: {:?}",
+            unique
+        );
+    }
+
+    #[test]
+    fn test_parse_sibling_nested_blank_nodes() {
+        // Two sibling nested objects without @id under different properties — distinct blank nodes.
+        let mut ns_registry = test_registry();
+        let ctx = ParsedContext::new();
+        let mut vars = VarRegistry::new();
+        let mut graph_ids = GraphIdAssigner::new();
+
+        let expanded = json!([{
+            "@id": "http://example.org/parent",
+            "http://example.org/left": [{
+                "@type": ["http://example.org/Left"],
+                "http://example.org/label": [{"@value": "L"}]
+            }],
+            "http://example.org/right": [{
+                "@type": ["http://example.org/Right"],
+                "http://example.org/label": [{"@value": "R"}]
+            }]
+        }]);
+
+        let templates = parse_expanded_triples(
+            &expanded,
+            &ctx,
+            &mut vars,
+            &mut ns_registry,
+            false,
+            &mut graph_ids,
+        )
+        .unwrap();
+
+        // Collect blank node labels used as objects of the parent (the references)
+        let bnode_refs: Vec<&str> = templates
+            .iter()
+            .filter(|t| matches!(&t.subject, TemplateTerm::Sid(_)))
+            .filter_map(|t| match &t.object {
+                TemplateTerm::BlankNode(label) => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            bnode_refs.len(),
+            2,
+            "Expected 2 blank node references from parent"
+        );
+        assert_ne!(
+            bnode_refs[0], bnode_refs[1],
+            "Sibling blank nodes must have distinct labels"
+        );
+    }
+
+    #[test]
+    fn test_parse_nested_blank_node_insert() {
+        // End-to-end: parse_insert with compact JSON-LD containing nested blank nodes.
+        // This mirrors the real-world scenario from the bug report.
+        let mut ns_registry = test_registry();
+        let json = json!({
+            "@context": {
+                "ex": "http://example.org/",
+                "prov": "http://www.w3.org/ns/prov#"
+            },
+            "@id": "ex:calendar/1",
+            "@type": "ex:Calendar",
+            "prov:wasGeneratedBy": {
+                "@type": "prov:Generation",
+                "prov:atTime": "2026-02-14T18:58:49Z",
+                "prov:hadActivity": {
+                    "@type": "prov:Activity",
+                    "prov:atLocation": "row:1"
+                }
+            }
+        });
+
+        let txn = parse_insert(&json, TxnOpts::default(), &mut ns_registry).unwrap();
+
+        // Should succeed and produce triples for:
+        //   calendar/1  rdf:type       Calendar
+        //   calendar/1  wasGeneratedBy _:b0
+        //   _:b0        rdf:type       Generation
+        //   _:b0        atTime         "2026-02-14T18:58:49Z"
+        //   _:b0        hadActivity    _:b1
+        //   _:b1        rdf:type       Activity
+        //   _:b1        atLocation     "row:1"
+        assert!(
+            txn.insert_templates.len() >= 7,
+            "Expected at least 7 triples, got {}",
+            txn.insert_templates.len()
+        );
+
+        // Verify at least 2 distinct blank node subjects exist
+        let bnode_subjects: std::collections::HashSet<_> = txn
+            .insert_templates
+            .iter()
+            .filter_map(|t| match &t.subject {
+                TemplateTerm::BlankNode(label) => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            bnode_subjects.len() >= 2,
+            "Expected at least 2 distinct blank node subjects, got: {:?}",
+            bnode_subjects
+        );
+    }
+
+    #[test]
+    fn test_parse_nested_blank_node_without_type() {
+        // Nested blank nodes do NOT require @type. Any object with properties
+        // but no @id is a blank node per the JSON-LD spec.
+        let mut ns_registry = test_registry();
+        let json = json!({
+            "@context": {"ex": "http://example.org/"},
+            "@id": "ex:andrew",
+            "ex:name": "andrew",
+            "ex:friend": {
+                "ex:name": "ben",
+                "ex:friend": {
+                    "ex:name": "jake"
+                }
+            }
+        });
+
+        let txn = parse_insert(&json, TxnOpts::default(), &mut ns_registry).unwrap();
+
+        // Should produce:
+        //   andrew  name    "andrew"
+        //   andrew  friend  _:b0
+        //   _:b0    name    "ben"
+        //   _:b0    friend  _:b1
+        //   _:b1    name    "jake"
+        assert_eq!(
+            txn.insert_templates.len(),
+            5,
+            "Expected 5 triples, got {}",
+            txn.insert_templates.len()
+        );
+
+        // Verify 2 distinct blank node subjects (ben and jake)
+        let bnode_subjects: std::collections::HashSet<_> = txn
+            .insert_templates
+            .iter()
+            .filter_map(|t| match &t.subject {
+                TemplateTerm::BlankNode(label) => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            bnode_subjects.len(),
+            2,
+            "Expected 2 distinct blank node subjects, got: {:?}",
+            bnode_subjects
+        );
     }
 }
