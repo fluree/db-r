@@ -611,9 +611,9 @@ mod tests {
 
         // sid64 format: (ns_code << 48) | local_counter_in_ns
         // ns=5 has Alice(0) and Bob(1), ns=10 has Carol(0)
-        assert_eq!(sid_alice, (5u64 << 48) | 0);
+        assert_eq!(sid_alice, 5u64 << 48);
         assert_eq!(sid_bob, (5u64 << 48) | 1);
-        assert_eq!(sid_carol, (10u64 << 48) | 0);
+        assert_eq!(sid_carol, 10u64 << 48);
 
         std::fs::remove_dir_all(&dir).ok();
     }

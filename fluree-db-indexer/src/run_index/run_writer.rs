@@ -68,9 +68,9 @@ pub struct RunWriter {
     /// Completed run file infos.
     run_files: Vec<RunFileInfo>,
     /// Min t seen across all records.
-    min_t: i64,
+    min_t: u32,
     /// Max t seen across all records.
-    max_t: i64,
+    max_t: u32,
     /// Whether to clear the language dict after each flush.
     /// True for standalone writers; false for sub-writers inside MultiOrderRunWriter
     /// (avoids lang_id mismatch when writers flush at different times).
@@ -97,8 +97,8 @@ impl RunWriter {
             run_count: 0,
             total_records: 0,
             run_files: Vec::new(),
-            min_t: i64::MAX,
-            max_t: i64::MIN,
+            min_t: u32::MAX,
+            max_t: 0,
             clear_lang_on_flush: true,
             pending_flush: None,
             spare_buffer: None,
@@ -167,7 +167,6 @@ impl RunWriter {
             .join(format!("run_{:05}.frn", run_index));
         let sort_order = self.config.sort_order;
         let lang_snapshot = lang_dict.clone(); // small — typically < 1KB
-        let reuse_capacity = reuse_capacity;
 
         // 3. Swap buffers: take full buffer, replace with spare (or fresh)
         let full_buffer = std::mem::replace(
@@ -190,7 +189,7 @@ impl RunWriter {
                     let sort_elapsed = sort_start.elapsed();
 
                     let (run_min_t, run_max_t) =
-                        buf.iter().fold((i64::MAX, i64::MIN), |(min, max), r| {
+                        buf.iter().fold((u32::MAX, 0u32), |(min, max), r| {
                             (min.min(r.t), max.max(r.t))
                         });
 
@@ -246,16 +245,8 @@ impl RunWriter {
         Ok(RunWriterResult {
             run_files: self.run_files,
             total_records: self.total_records,
-            min_t: if self.min_t == i64::MAX {
-                0
-            } else {
-                self.min_t
-            },
-            max_t: if self.max_t == i64::MIN {
-                0
-            } else {
-                self.max_t
-            },
+            min_t: if self.min_t == u32::MAX { 0 } else { self.min_t },
+            max_t: self.max_t,
         })
     }
 
@@ -286,8 +277,8 @@ impl RecordSink for RunWriter {
 pub struct RunWriterResult {
     pub run_files: Vec<RunFileInfo>,
     pub total_records: u64,
-    pub min_t: i64,
-    pub max_t: i64,
+    pub min_t: u32,
+    pub max_t: u32,
 }
 
 // ============================================================================
@@ -391,7 +382,7 @@ mod tests {
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
 
-    fn make_test_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_test_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -456,9 +447,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // Set budget to exactly 2 records (96 bytes at 48 bytes/record)
+        // Set budget to exactly 2 records (80 bytes at 40 bytes/record)
         let config = RunWriterConfig {
-            buffer_budget_bytes: 96,
+            buffer_budget_bytes: 80,
             sort_order: RunSortOrder::Spot,
             run_dir: dir.clone(),
         };

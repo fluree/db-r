@@ -34,8 +34,8 @@ const LEAF_MAGIC: [u8; 4] = *b"FLI2";
 /// Current leaf file format version.
 const LEAF_VERSION: u8 = 2;
 
-/// Fixed part of the leaf header: magic(4) + version(1) + leaflet_count(1) + pad(2) + total_rows(8) + first_key(28) + last_key(28) = 72.
-const LEAF_HEADER_FIXED: usize = 72;
+/// Fixed part of the leaf header: magic(4) + version(1) + leaflet_count(1) + pad(2) + total_rows(8) + first_key(26) + last_key(26) = 68.
+const LEAF_HEADER_FIXED: usize = 68;
 
 /// Per-leaflet directory entry: offset(8) + compressed_len(4) + row_count(4) + first_s_id(8) + first_p_id(4) = 28.
 const LEAFLET_DIR_ENTRY: usize = 28;
@@ -45,13 +45,13 @@ const LEAFLET_DIR_ENTRY: usize = 28;
 // ============================================================================
 
 /// Compact sort key stored in leaf headers and branch entries.
-/// 28 bytes: g_id(4) + s_id(8) + p_id(4) + dt(2) + o_kind(1) + _pad(1) + o_key(8) = 28.
+/// 26 bytes: g_id(2) + s_id(8) + p_id(4) + dt(2) + o_kind(1) + _pad(1) + o_key(8) = 26.
 ///
-/// Note: For branch routing we use full RunRecord keys (40 bytes). This
+/// Note: For branch routing we use full RunRecord keys (34 bytes). This
 /// compact form is only used inside leaf file headers for space efficiency.
 #[derive(Debug, Clone, Copy)]
 pub struct SortKey {
-    pub g_id: u32,
+    pub g_id: u16,
     pub s_id: u64,
     pub p_id: u32,
     pub dt: u16,
@@ -59,7 +59,7 @@ pub struct SortKey {
     pub _pad: u8,
     pub o_key: u64,
 }
-// Serialized size is SORT_KEY_BYTES (28); in-memory layout may differ.
+// Serialized size is SORT_KEY_BYTES (26); in-memory layout may differ.
 
 impl SortKey {
     fn from_record(r: &RunRecord) -> Self {
@@ -75,30 +75,30 @@ impl SortKey {
     }
 
     fn write_to(&self, buf: &mut [u8]) {
-        buf[0..4].copy_from_slice(&self.g_id.to_le_bytes());
-        buf[4..12].copy_from_slice(&self.s_id.to_le_bytes());
-        buf[12..16].copy_from_slice(&self.p_id.to_le_bytes());
-        buf[16..18].copy_from_slice(&self.dt.to_le_bytes());
-        buf[18] = self.o_kind;
-        buf[19] = 0;
-        buf[20..28].copy_from_slice(&self.o_key.to_le_bytes());
+        buf[0..2].copy_from_slice(&self.g_id.to_le_bytes());
+        buf[2..10].copy_from_slice(&self.s_id.to_le_bytes());
+        buf[10..14].copy_from_slice(&self.p_id.to_le_bytes());
+        buf[14..16].copy_from_slice(&self.dt.to_le_bytes());
+        buf[16] = self.o_kind;
+        buf[17] = 0;
+        buf[18..26].copy_from_slice(&self.o_key.to_le_bytes());
     }
 
     fn read_from(buf: &[u8]) -> Self {
         Self {
-            g_id: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
-            s_id: u64::from_le_bytes(buf[4..12].try_into().unwrap()),
-            p_id: u32::from_le_bytes(buf[12..16].try_into().unwrap()),
-            dt: u16::from_le_bytes(buf[16..18].try_into().unwrap()),
-            o_kind: buf[18],
+            g_id: u16::from_le_bytes(buf[0..2].try_into().unwrap()),
+            s_id: u64::from_le_bytes(buf[2..10].try_into().unwrap()),
+            p_id: u32::from_le_bytes(buf[10..14].try_into().unwrap()),
+            dt: u16::from_le_bytes(buf[14..16].try_into().unwrap()),
+            o_kind: buf[16],
             _pad: 0,
-            o_key: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+            o_key: u64::from_le_bytes(buf[18..26].try_into().unwrap()),
         }
     }
 }
 
-/// Sort key written size in bytes (exactly 28 bytes in leaf headers).
-const SORT_KEY_BYTES: usize = 28;
+/// Sort key written size in bytes (exactly 26 bytes in leaf headers).
+const SORT_KEY_BYTES: usize = 26;
 
 // ============================================================================
 // Encoded leaflet (intermediate)
@@ -643,7 +643,7 @@ mod tests {
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
 
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),

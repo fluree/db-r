@@ -29,11 +29,12 @@ mod inner {
     use crate::value_convert::{convert_native_literal, convert_string_literal};
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
-    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, ListIndex, Sid};
+    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
     use fluree_db_indexer::run_index::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
     use fluree_db_indexer::run_index::global_dict::{DictWorkerCache, SharedDictAllocator};
     use fluree_db_indexer::run_index::shared_pool::{SharedNumBigPool, SharedVectorArenaPool};
     use fluree_db_indexer::run_index::spool::{SpoolFileInfo, SpoolWriter};
+    use fluree_db_indexer::run_index::run_record::LIST_INDEX_NONE;
     use fluree_db_indexer::run_index::RunRecord;
     use fluree_db_novelty::commit_v2::CommitV2Error;
     use fluree_graph_ir::{Datatype, GraphSink, LiteralValue, TermId};
@@ -369,19 +370,18 @@ mod inner {
             let (o_kind, o_key) = self.resolve_object_value(o, p_id);
             let lang_id = lang.map(|l| self.assign_lang_id(l)).unwrap_or(0);
             let i = list_index
-                .map(ListIndex)
-                .unwrap_or_else(ListIndex::none)
-                .as_i32();
+                .map(|idx| idx as u32)
+                .unwrap_or(LIST_INDEX_NONE);
 
             let record = RunRecord {
-                g_id: self.g_id,
+                g_id: self.g_id as u16,
                 s_id: SubjectId::from_u64(s_id),
                 p_id,
                 dt: dt_id,
                 o_kind,
                 op: 1, // always assert during import
                 o_key,
-                t,
+                t: t as u32,
                 lang_id,
                 i,
             };

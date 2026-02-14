@@ -1193,6 +1193,7 @@ pub struct UploadedDicts {
 ///   - Overflow ns_code (0xFFFF): always wide, watermark = 0
 ///   - `needs_wide` = any local_id exceeds `u16::MAX`
 ///   - `string_watermark` = string entry count − 1 (IDs are 0..=N contiguous)
+#[allow(clippy::type_complexity)]
 pub async fn upload_dicts_from_disk<S: Storage>(
     storage: &S,
     ledger_id: &str,

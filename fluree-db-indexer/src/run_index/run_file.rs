@@ -7,8 +7,8 @@
 //!   lang_dict_offset: u64
 //!   lang_dict_len: u64
 //!   records_offset: u64
-//!   min_t: i64, max_t: i64
-//!   _reserved: [u8; 8]
+//!   min_t: u32, max_t: u32
+//!   _reserved: [u8; 16]
 //! [Language tag dictionary]
 //!   count: u16
 //!   entries: [len: u8, utf8_bytes]*
@@ -40,9 +40,10 @@ pub const RUN_MAGIC: [u8; 4] = *b"FRN1";
 /// Current run file format version.
 ///
 /// Version history:
-/// - 1: header + lang dict + raw record stream
-/// - 2: header + lang dict + (optional) zstd-compressed record blocks
-pub const RUN_VERSION: u8 = 2;
+/// - 1: header + lang dict + raw record stream (44-byte records)
+/// - 2: header + lang dict + (optional) zstd-compressed record blocks (44-byte records)
+/// - 3: 34-byte records (g_id removed from wire; t→u32, i→u32)
+pub const RUN_VERSION: u8 = 3;
 
 /// Run file flags.
 const RUN_FLAG_ZSTD_BLOCKS: u8 = 1 << 0;
@@ -60,12 +61,14 @@ pub struct RunFileHeader {
     pub lang_dict_offset: u64,
     pub lang_dict_len: u64,
     pub records_offset: u64,
-    pub min_t: i64,
-    pub max_t: i64,
+    pub min_t: u32,
+    pub max_t: u32,
 }
 
 impl RunFileHeader {
     /// Write the header to the first 64 bytes of `buf`.
+    ///
+    /// `min_t`/`max_t` are stored as `u32` at offsets 40..44 and 44..48 (v3+).
     pub fn write_to(&self, buf: &mut [u8]) {
         debug_assert!(buf.len() >= RUN_HEADER_LEN);
         buf[0..4].copy_from_slice(&RUN_MAGIC);
@@ -77,9 +80,9 @@ impl RunFileHeader {
         buf[16..24].copy_from_slice(&self.lang_dict_offset.to_le_bytes());
         buf[24..32].copy_from_slice(&self.lang_dict_len.to_le_bytes());
         buf[32..40].copy_from_slice(&self.records_offset.to_le_bytes());
-        buf[40..48].copy_from_slice(&self.min_t.to_le_bytes());
-        buf[48..56].copy_from_slice(&self.max_t.to_le_bytes());
-        buf[56..64].fill(0); // reserved
+        buf[40..44].copy_from_slice(&self.min_t.to_le_bytes());
+        buf[44..48].copy_from_slice(&self.max_t.to_le_bytes());
+        buf[48..64].fill(0); // reserved
     }
 
     /// Read the header from the first 64 bytes of `buf`.
@@ -101,7 +104,7 @@ impl RunFileHeader {
             ));
         }
         let version = buf[4];
-        if version != 1 && version != 2 {
+        if !(1..=3).contains(&version) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("run file: unsupported version {}", version),
@@ -114,6 +117,17 @@ impl RunFileHeader {
             )
         })?;
 
+        // v1/v2 stored min_t/max_t as i64 at [40..56]; v3 stores as u32 at [40..48].
+        let (min_t, max_t) = if version <= 2 {
+            let min = i64::from_le_bytes(buf[40..48].try_into().unwrap());
+            let max = i64::from_le_bytes(buf[48..56].try_into().unwrap());
+            (min as u32, max as u32)
+        } else {
+            let min = u32::from_le_bytes(buf[40..44].try_into().unwrap());
+            let max = u32::from_le_bytes(buf[44..48].try_into().unwrap());
+            (min, max)
+        };
+
         Ok(Self {
             version,
             sort_order,
@@ -122,8 +136,8 @@ impl RunFileHeader {
             lang_dict_offset: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
             lang_dict_len: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
             records_offset: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
-            min_t: i64::from_le_bytes(buf[40..48].try_into().unwrap()),
-            max_t: i64::from_le_bytes(buf[48..56].try_into().unwrap()),
+            min_t,
+            max_t,
         })
     }
 }
@@ -198,8 +212,8 @@ pub fn write_run_file(
     records: &[RunRecord],
     lang_dict: &LanguageTagDict,
     sort_order: RunSortOrder,
-    min_t: i64,
-    max_t: i64,
+    min_t: u32,
+    max_t: u32,
 ) -> io::Result<RunFileInfo> {
     let raw = std::fs::File::create(path)?;
     try_disable_os_cache(&raw);
@@ -399,8 +413,8 @@ pub struct RunFileInfo {
     pub path: std::path::PathBuf,
     pub record_count: u64,
     pub sort_order: RunSortOrder,
-    pub min_t: i64,
-    pub max_t: i64,
+    pub min_t: u32,
+    pub max_t: u32,
 }
 
 // ============================================================================
@@ -431,7 +445,7 @@ mod tests {
         header.write_to(&mut buf);
 
         let parsed = RunFileHeader::read_from(&buf).unwrap();
-        assert!(parsed.version == 1 || parsed.version == 2);
+        assert!((1..=3).contains(&parsed.version));
         assert_eq!(parsed.sort_order, RunSortOrder::Spot);
         assert_eq!(parsed.record_count, 1000);
         assert_eq!(parsed.min_t, 1);

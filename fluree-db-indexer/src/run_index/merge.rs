@@ -4,9 +4,9 @@
 //! `StreamingRunReader` streams into a single globally-sorted sequence.
 //! Provides both raw (`next`) and deduplicating (`next_deduped`) iteration.
 
-use super::run_record::RunRecord;
+use super::run_record::{RunRecord, LIST_INDEX_NONE};
 use super::streaming_reader::StreamingRunReader;
-use fluree_db_core::{DatatypeDictId, ListIndex};
+use fluree_db_core::DatatypeDictId;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::io;
@@ -101,9 +101,9 @@ impl KWayMerge {
     /// Pop the next deduplicated record.
     ///
     /// Conditional identity for dedup:
-    /// - Base: `(g_id, s_id, p_id, o, dt)`
+    /// - Base: `(s_id, p_id, o, dt)`
     /// - If `dt == LANG_STRING`: also compare `lang_id`
-    /// - If `i != ListIndex::none()`: also compare `i`
+    /// - If `i != LIST_INDEX_NONE`: also compare `i`
     ///
     /// Among records with the same identity, keeps the one with the highest `t`.
     /// Records are consumed in SPOT order (ascending `t` for same base key),
@@ -139,16 +139,18 @@ impl KWayMerge {
 
 /// Check if two records have the same identity for dedup purposes.
 ///
-/// Base identity: `(g_id, s_id, p_id, o, dt)`.
+/// Base identity: `(s_id, p_id, o, dt)`. `g_id` is NOT part of identity —
+/// each graph is indexed independently, so all records in a merge stream
+/// share the same graph.
+///
 /// Extended with `lang_id` when `dt == LANG_STRING` (because "Alice"@en
 /// and "Alice"@fr are distinct RDF literals).
-/// Extended with `i` when `i != ListIndex::none()` (because list entries
+/// Extended with `i` when `i != LIST_INDEX_NONE` (because list entries
 /// at different positions are distinct facts).
 #[inline]
 fn same_identity(a: &RunRecord, b: &RunRecord) -> bool {
-    // Base identity
-    if a.g_id != b.g_id
-        || a.s_id != b.s_id
+    // Base identity (no g_id — graph is implicit)
+    if a.s_id != b.s_id
         || a.p_id != b.p_id
         || a.o_kind != b.o_kind
         || a.o_key != b.o_key
@@ -163,7 +165,7 @@ fn same_identity(a: &RunRecord, b: &RunRecord) -> bool {
     }
 
     // Conditional: list index — if either record has an index, require equality
-    if (a.i != ListIndex::none().as_i32() || b.i != ListIndex::none().as_i32()) && a.i != b.i {
+    if (a.i != LIST_INDEX_NONE || b.i != LIST_INDEX_NONE) && a.i != b.i {
         return false;
     }
 
@@ -184,7 +186,7 @@ mod tests {
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
 
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -199,7 +201,7 @@ mod tests {
         )
     }
 
-    fn make_lang_record(s_id: u64, p_id: u32, lex_id: u32, t: i64, lang_id: u16) -> RunRecord {
+    fn make_lang_record(s_id: u64, p_id: u32, lex_id: u32, t: u32, lang_id: u16) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -214,7 +216,7 @@ mod tests {
         )
     }
 
-    fn make_list_record(s_id: u64, p_id: u32, val: i64, t: i64, i: i32) -> RunRecord {
+    fn make_list_record(s_id: u64, p_id: u32, val: i64, t: u32, i: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -238,9 +240,9 @@ mod tests {
         records.sort_unstable_by(cmp_spot);
         let path = dir.join(name);
         let lang_dict = LanguageTagDict::new();
-        let (min_t, max_t) = records.iter().fold((i64::MAX, i64::MIN), |(min, max), r| {
-            (min.min(r.t), max.max(r.t))
-        });
+        let (min_t, max_t) = records
+            .iter()
+            .fold((u32::MAX, 0u32), |(min, max), r| (min.min(r.t), max.max(r.t)));
         write_run_file(
             &path,
             &records,

@@ -1172,8 +1172,6 @@ impl BinaryIndexStore {
         _order: RunSortOrder,
         g_id: u32,
     ) -> io::Result<Option<(RunRecord, RunRecord)>> {
-        use fluree_db_core::ListIndex;
-
         // Translate bound components to integer IDs
         let s_id = match s {
             Some(sid) => match self.sid_to_s_id(sid)? {
@@ -1208,29 +1206,29 @@ impl BinaryIndexStore {
             .unwrap_or((ObjKind::MAX.as_u8(), u64::MAX));
 
         let min_key = RunRecord {
-            g_id,
+            g_id: g_id as u16,
             s_id: SubjectId::from_u64(s_id.unwrap_or(0)),
             p_id: p_id.unwrap_or(0),
             dt: 0,
             o_kind: min_o_kind,
             op: 0,
             o_key: min_o_key,
-            t: i64::MIN,
+            t: 0,
             lang_id: 0,
-            i: ListIndex::none().as_i32(),
+            i: 0,
         };
 
         let max_key = RunRecord {
-            g_id,
+            g_id: g_id as u16,
             s_id: SubjectId::from_u64(s_id.unwrap_or(u64::MAX)),
             p_id: p_id.unwrap_or(u32::MAX),
             dt: u16::MAX,
             o_kind: max_o_kind,
             op: 1,
             o_key: max_o_key,
-            t: i64::MAX,
+            t: u32::MAX,
             lang_id: u16::MAX,
-            i: i32::MAX,
+            i: u32::MAX,
         };
 
         Ok(Some((min_key, max_key)))
@@ -1917,7 +1915,7 @@ impl BinaryIndexStore {
             None => return Ok(Vec::new()),
         };
 
-        let leaf_range = branch.find_leaves_for_subject(g_id, s_id);
+        let leaf_range = branch.find_leaves_for_subject(s_id);
         let mut flakes = Vec::new();
 
         for leaf_idx in leaf_range {

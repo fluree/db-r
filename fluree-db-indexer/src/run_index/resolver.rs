@@ -9,7 +9,7 @@
 //! 6. Emit RunRecord
 
 use super::global_dict::GlobalDicts;
-use super::run_record::RunRecord;
+use super::run_record::{RunRecord, LIST_INDEX_NONE};
 use super::run_writer::RecordSink;
 use bigdecimal::BigDecimal;
 use chrono;
@@ -19,7 +19,7 @@ use fluree_db_core::temporal::{
     GYearMonth, Time, YearMonthDuration,
 };
 use fluree_db_core::value_id::{ObjKey, ObjKind};
-use fluree_db_core::{DatatypeDictId, ListIndex};
+use fluree_db_core::DatatypeDictId;
 use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
 use fluree_db_novelty::commit_v2::{load_commit_ops, CommitV2Error};
@@ -35,7 +35,7 @@ pub struct ResolvedCommit {
     /// Total records emitted (ops + txn-meta records).
     pub total_records: u32,
     /// Transaction time of this commit.
-    pub t: i64,
+    pub t: u32,
     /// Size of the commit blob in bytes.
     pub size: u64,
     /// Number of assertions in this commit.
@@ -100,7 +100,7 @@ impl CommitResolver {
         dicts: &mut GlobalDicts,
         writer: &mut W,
     ) -> Result<(u32, u32), ResolverError> {
-        let t = commit_ops.t;
+        let t = commit_ops.t as u32;
         let mut asserts = 0u32;
         let mut retracts = 0u32;
 
@@ -117,14 +117,14 @@ impl CommitResolver {
                     raw_op.dt_name,
                 );
                 hook.on_record(&crate::stats::StatsRecord {
-                    g_id: record.g_id,
+                    g_id: record.g_id as u32,
                     p_id: record.p_id,
                     s_id: record.s_id.as_u64(),
                     dt,
                     o_hash: crate::stats::value_hash(record.o_kind, record.o_key),
                     o_kind: record.o_kind,
                     o_key: record.o_key,
-                    t: record.t,
+                    t: record.t as i64,
                     op: record.op != 0,
                 });
             }
@@ -171,7 +171,7 @@ impl CommitResolver {
         )?;
         Ok(ResolvedCommit {
             total_records: asserts + retracts + meta_count,
-            t: commit_ops.t,
+            t: commit_ops.t as u32,
             size: commit_size,
             asserts,
             retracts,
@@ -209,10 +209,11 @@ impl CommitResolver {
         let hex = commit_hash_hex;
 
         // 2. g_id=1 (pre-reserved in GlobalDicts::new())
-        let g_id = dicts.graphs.get_or_insert_parts(fluree::DB, "txn-meta") + 1;
-        debug_assert_eq!(g_id, 1, "txn-meta graph must be g_id=1");
+        let g_id_raw = dicts.graphs.get_or_insert_parts(fluree::DB, "txn-meta") + 1;
+        debug_assert_eq!(g_id_raw, 1, "txn-meta graph must be g_id=1");
+        let g_id = g_id_raw as u16;
 
-        let t = envelope.t;
+        let t = envelope.t as u32;
 
         // 3. Resolve commit subject: "fluree:commit:sha256:<hex>"
         let commit_iri = format!("{}{}", fluree::COMMIT, hex);
@@ -256,7 +257,7 @@ impl CommitResolver {
                 o_key: o_key.as_u64(),
                 t,
                 lang_id: 0,
-                i: ListIndex::none().as_i32(),
+                i: LIST_INDEX_NONE,
             };
             writer
                 .push(record, &mut dicts.languages)
@@ -295,7 +296,7 @@ impl CommitResolver {
             commit_s_id,
             p_t,
             ObjKind::NUM_INT,
-            ObjKey::encode_i64(t),
+            ObjKey::encode_i64(t as i64),
             DatatypeDictId::INTEGER.as_u16(),
         )?;
 
@@ -381,8 +382,8 @@ impl CommitResolver {
     fn emit_txn_meta_entry<W: RecordSink>(
         &mut self,
         commit_s_id: u64,
-        g_id: u32,
-        t: i64,
+        g_id: u16,
+        t: u32,
         entry: &fluree_db_novelty::TxnMetaEntry,
         dicts: &mut GlobalDicts,
         writer: &mut W,
@@ -406,7 +407,7 @@ impl CommitResolver {
             o_key: o_key.as_u64(),
             t,
             lang_id,
-            i: ListIndex::none().as_i32(),
+            i: LIST_INDEX_NONE,
         };
         writer
             .push(record, &mut dicts.languages)
@@ -518,7 +519,7 @@ impl CommitResolver {
     fn resolve_single_op(
         &mut self,
         op: &RawOp<'_>,
-        t: i64,
+        t: u32,
         dicts: &mut GlobalDicts,
     ) -> Result<RunRecord, CommitV2Error> {
         // 1. Resolve graph
@@ -555,8 +556,11 @@ impl CommitResolver {
         // 6. Language tag
         let lang_id = dicts.languages.get_or_insert(op.lang);
 
-        // 7. List index
-        let i = op.i;
+        // 7. List index (convert Option<i32> to u32 with sentinel)
+        let i = match op.i {
+            Some(idx) => idx as u32,
+            None => LIST_INDEX_NONE,
+        };
 
         Ok(RunRecord {
             g_id,
@@ -568,7 +572,7 @@ impl CommitResolver {
             o_key: o_key.as_u64(),
             t,
             lang_id,
-            i: i.unwrap_or(ListIndex::none().as_i32()),
+            i,
         })
     }
 
@@ -581,13 +585,20 @@ impl CommitResolver {
         ns_code: u16,
         name: &str,
         dicts: &mut GlobalDicts,
-    ) -> io::Result<u32> {
+    ) -> io::Result<u16> {
         if ns_code == 0 && name.is_empty() {
             return Ok(0); // default graph
         }
         let prefix = self.lookup_prefix(ns_code);
         // +1 to reserve 0 for default graph
-        Ok(dicts.graphs.get_or_insert_parts(prefix, name) + 1)
+        let raw = dicts.graphs.get_or_insert_parts(prefix, name) + 1;
+        if raw > u16::MAX as u32 {
+            return Err(io::Error::other(format!(
+                "graph count {} exceeds u16::MAX",
+                raw
+            )));
+        }
+        Ok(raw as u16)
     }
 
     /// Resolve subject IRI -> global sid64 using streaming xxh3_128.
@@ -1355,9 +1366,10 @@ mod tests {
         let (_, _, records) = crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
         assert_eq!(records.len(), 7);
 
-        // All records should be in g_id=1
+        // g_id is not stored in the 34-byte run wire format (only in spool files),
+        // so round-tripped records always have g_id=0.  The g_id=1 reservation is
+        // verified via the graph dict check above.
         for rec in &records {
-            assert_eq!(rec.g_id, 1, "txn-meta records must be in g_id=1");
             assert_eq!(rec.op, 1, "txn-meta records must be asserts");
         }
 
@@ -1544,9 +1556,11 @@ mod tests {
             crate::run_index::read_run_file(&result.run_files[0].path).unwrap();
         assert_eq!(records.len(), 12);
 
-        // All records should be in g_id=1
+        // g_id is not stored in the 34-byte run wire format, so round-tripped
+        // records always have g_id=0.  The emit path sets g_id=1 on the in-memory
+        // records; verify the content is otherwise correct.
         for rec in &records {
-            assert_eq!(rec.g_id, 1, "txn-meta records must be in g_id=1");
+            assert_eq!(rec.op, 1, "txn-meta records must be asserts");
         }
 
         // Verify user predicates were registered

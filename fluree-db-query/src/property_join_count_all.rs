@@ -538,8 +538,8 @@ mod tests {
         }
 
         // Run records (PSOT only)
-        let g_id = 0u32;
-        let t = 1i64;
+        let g_id: u16 = 0;
+        let t: u32 = 1;
         let records = vec![
             // s1 hasSignature oA,oB
             RunRecord::new(

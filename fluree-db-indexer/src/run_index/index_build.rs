@@ -269,7 +269,7 @@ fn build_index_from_run_paths_inner(
     let mut total_rows: u64 = 0;
     let mut retract_count: u64 = 0;
     let mut records_since_log: u64 = 0;
-    let mut max_t: i64 = 0;
+    let mut max_t: u32 = 0;
     let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -282,7 +282,7 @@ fn build_index_from_run_paths_inner(
     let mut perf_leaf_flush_time = Duration::ZERO;
 
     // Current graph state
-    let mut current_g_id: Option<u32> = None;
+    let mut current_g_id: Option<u16> = None;
     let mut current_writer: Option<LeafWriter> = None;
 
     while let Some(record) = merge.next_deduped()? {
@@ -318,8 +318,12 @@ fn build_index_from_run_paths_inner(
                 }
                 let leaf_infos = writer.finish()?;
                 if let Some(prev_g_id) = current_g_id {
-                    let result =
-                        finish_graph(prev_g_id, leaf_infos, &config.index_dir, order_name)?;
+                    let result = finish_graph(
+                        prev_g_id as u32,
+                        leaf_infos,
+                        &config.index_dir,
+                        order_name,
+                    )?;
                     tracing::info!(
                         g_id = prev_g_id,
                         leaves = result.leaf_count,
@@ -385,7 +389,8 @@ fn build_index_from_run_paths_inner(
         }
         let leaf_infos = writer.finish()?;
         if let Some(g_id) = current_g_id {
-            let result = finish_graph(g_id, leaf_infos, &config.index_dir, order_name)?;
+            let result =
+                finish_graph(g_id as u32, leaf_infos, &config.index_dir, order_name)?;
             tracing::info!(
                 g_id,
                 leaves = result.leaf_count,
@@ -535,7 +540,7 @@ fn write_index_manifest(
     index_dir: &Path,
     graphs: &[GraphIndexResult],
     total_rows: u64,
-    max_t: i64,
+    max_t: u32,
     order_name: &str,
 ) -> io::Result<()> {
     let manifest_path = index_dir.join(format!("index_manifest_{}.json", order_name));
@@ -718,7 +723,7 @@ mod tests {
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
 
-    fn make_record(g_id: u32, s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(g_id: u16, s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             g_id,
             fluree_db_core::subject_id::SubjectId::from_u64(s_id),
@@ -738,11 +743,11 @@ mod tests {
         let path = dir.join(name);
         let lang_dict = LanguageTagDict::new();
         let (min_t, max_t) = if records.is_empty() {
-            (0, 0)
+            (0u32, 0u32)
         } else {
-            records.iter().fold((i64::MAX, i64::MIN), |(min, max), r| {
-                (min.min(r.t), max.max(r.t))
-            })
+            records
+                .iter()
+                .fold((u32::MAX, 0u32), |(min, max), r| (min.min(r.t), max.max(r.t)))
         };
         write_run_file(
             &path,
@@ -809,21 +814,32 @@ mod tests {
 
     #[test]
     fn test_multi_graph() {
+        // Run files use the 34-byte wire format which does NOT include g_id.
+        // Multi-graph partitioning requires the spool pipeline (36-byte format
+        // with g_id). Here we write two separate run files — one per graph —
+        // and verify that both are indexed into a single graph (g_id=0) because
+        // all records read from run files have g_id=0.
         let dir = std::env::temp_dir().join("fluree_test_index_build_multi_g");
         let _ = std::fs::remove_dir_all(&dir);
         let run_dir = dir.join("tmp_import");
         let index_dir = dir.join("index");
         std::fs::create_dir_all(&run_dir).unwrap();
 
-        // Records in graph 0 and graph 1 (sorted by cmp_spot: g_id first)
+        // Two run files with distinct subjects (g_id param ignored in run wire format)
         write_sorted_run(
             &run_dir,
             "run_00000.frn",
             vec![
                 make_record(0, 1, 1, 10, 1),
                 make_record(0, 2, 1, 20, 1),
-                make_record(1, 1, 1, 100, 1),
-                make_record(1, 2, 1, 200, 1),
+            ],
+        );
+        write_sorted_run(
+            &run_dir,
+            "run_00001.frn",
+            vec![
+                make_record(0, 3, 1, 100, 1),
+                make_record(0, 4, 1, 200, 1),
             ],
         );
 
@@ -838,22 +854,17 @@ mod tests {
 
         let result = build_spot_index(config).unwrap();
 
+        // All records land in graph 0 (run files do not carry g_id)
         assert_eq!(result.total_rows, 4);
-        assert_eq!(result.graphs.len(), 2);
+        assert_eq!(result.graphs.len(), 1);
         assert_eq!(result.graphs[0].g_id, 0);
-        assert_eq!(result.graphs[0].total_rows, 2);
-        assert_eq!(result.graphs[1].g_id, 1);
-        assert_eq!(result.graphs[1].total_rows, 2);
+        assert_eq!(result.graphs[0].total_rows, 4);
 
-        // Verify separate graph directories have branch files
+        // Verify branch file exists
         let g0_branch = result.graphs[0]
             .graph_dir
             .join(format!("{}.fbr", result.graphs[0].branch_hash));
-        let g1_branch = result.graphs[1]
-            .graph_dir
-            .join(format!("{}.fbr", result.graphs[1].branch_hash));
         assert!(g0_branch.exists());
-        assert!(g1_branch.exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

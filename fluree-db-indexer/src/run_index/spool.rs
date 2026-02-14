@@ -1,17 +1,16 @@
 //! Spool format for the Tier 2 parallel import pipeline.
 //!
-//! A spool file is a flat sequence of [`RunRecord`]-wire-format records (44 bytes
-//! each) written during Turtle parse. The file has **no header** — it is a raw
-//! byte stream. Unlike run files, spool files are unsorted and may contain
-//! chunk-local IDs (subjects, strings) that require remapping before they can be
-//! fed into the index builder.
+//! A spool file is a flat sequence of [`RunRecord`] spool-wire-format records
+//! (36 bytes each, includes `g_id`) written during Turtle parse. Unlike run
+//! files, spool files are unsorted and may contain chunk-local IDs (subjects,
+//! strings) that require remapping before they can be fed into the index builder.
 //!
 //! ## Phase A (format + plumbing validation)
 //!
 //! During Phase A, spool records contain **chunk-local IDs** (not global).
 //! True global IDs are only available inside the resolver's `GlobalDicts`, which
 //! the spool pipeline intentionally bypasses. Phase A validates:
-//! - Wire format correctness (44-byte RunRecord round-trip)
+//! - Wire format correctness (36-byte spool RunRecord round-trip)
 //! - Record count consistency (each parsed triple produces a spool record)
 //! - Plumbing: spool files are created, written, and collected correctly
 //!
@@ -26,10 +25,12 @@
 //!
 //! ## Wire format
 //!
-//! Each record is exactly [`RECORD_WIRE_SIZE`] (44) bytes, little-endian,
-//! identical to [`RunRecord::write_le`] / [`RunRecord::read_le`].
+//! Each record is exactly [`SPOOL_RECORD_WIRE_SIZE`] (36) bytes, little-endian,
+//! serialized via [`RunRecord::write_spool_le`] / [`RunRecord::read_spool_le`].
+//! Unlike the 34-byte run wire format, spool records include `g_id: u16`
+//! because spool files are pre-graph-partition.
 
-use super::run_record::{RunRecord, RECORD_WIRE_SIZE};
+use super::run_record::{RunRecord, SPOOL_RECORD_WIRE_SIZE};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -396,8 +397,8 @@ impl SpoolWriter {
     /// Append a single record to the spool file.
     #[inline]
     pub fn push(&mut self, record: &RunRecord) -> io::Result<()> {
-        let mut buf = [0u8; RECORD_WIRE_SIZE];
-        record.write_le(&mut buf);
+        let mut buf = [0u8; SPOOL_RECORD_WIRE_SIZE];
+        record.write_spool_le(&mut buf);
         match &mut self.inner {
             SpoolWriterInner::Raw(w) => w.write_all(&buf)?,
             SpoolWriterInner::Zstd(w) => w.write_all(&buf)?,
@@ -537,14 +538,14 @@ impl SpoolReader {
             } else {
                 // Validate truncation for uncompressed versioned files.
                 let expected_size =
-                    (SPOOL_HEADER_LEN as u64) + record_count * RECORD_WIRE_SIZE as u64;
+                    (SPOOL_HEADER_LEN as u64) + record_count * SPOOL_RECORD_WIRE_SIZE as u64;
                 let actual_size = std::fs::metadata(path.as_ref())?.len();
                 if actual_size < expected_size {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
                             "spool file truncated: expected {} bytes (header {} + {} records × {}), got {}",
-                            expected_size, SPOOL_HEADER_LEN, record_count, RECORD_WIRE_SIZE, actual_size
+                            expected_size, SPOOL_HEADER_LEN, record_count, SPOOL_RECORD_WIRE_SIZE, actual_size
                         ),
                     ));
                 }
@@ -555,14 +556,14 @@ impl SpoolReader {
             }
         } else {
             // Legacy headerless spool: raw record stream.
-            let expected_size = record_count * RECORD_WIRE_SIZE as u64;
+            let expected_size = record_count * SPOOL_RECORD_WIRE_SIZE as u64;
             let actual_size = file.metadata()?.len();
             if actual_size < expected_size {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
                         "spool file truncated: expected {} bytes ({} records × {}), got {}",
-                        expected_size, record_count, RECORD_WIRE_SIZE, actual_size
+                        expected_size, record_count, SPOOL_RECORD_WIRE_SIZE, actual_size
                     ),
                 ));
             }
@@ -578,13 +579,13 @@ impl SpoolReader {
         if self.remaining == 0 {
             return Ok(None);
         }
-        let mut buf = [0u8; RECORD_WIRE_SIZE];
+        let mut buf = [0u8; SPOOL_RECORD_WIRE_SIZE];
         match &mut self.inner {
             SpoolReaderInner::Raw(r) => r.read_exact(&mut buf)?,
             SpoolReaderInner::Zstd(r) => r.read_exact(&mut buf)?,
         }
         self.remaining -= 1;
-        Ok(Some(RunRecord::read_le(&buf)))
+        Ok(Some(RunRecord::read_spool_le(&buf)))
     }
 
     /// Number of records remaining to be read.
@@ -795,14 +796,14 @@ pub fn remap_spool_to_runs(
                 .and_then(|t| t.get(record.dt as usize).copied())
                 .unwrap_or(ValueTypeTag::UNKNOWN);
             hook.on_record(&crate::stats::StatsRecord {
-                g_id: record.g_id,
+                g_id: record.g_id as u32,
                 p_id: record.p_id,
                 s_id: record.s_id.as_u64(),
                 dt,
                 o_hash: crate::stats::value_hash(record.o_kind, record.o_key),
                 o_kind: record.o_kind,
                 o_key: record.o_key,
-                t: record.t,
+                t: record.t as i64,
                 op: record.op != 0,
             });
         }
@@ -821,11 +822,12 @@ pub fn remap_spool_to_runs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::run_record::LIST_INDEX_NONE;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
-    use fluree_db_core::{DatatypeDictId, ListIndex};
+    use fluree_db_core::DatatypeDictId;
 
-    fn make_record(s_id: u64, p_id: u32, o_kind: ObjKind, o_key: u64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, o_kind: ObjKind, o_key: u64, t: u32) -> RunRecord {
         RunRecord {
             g_id: 0,
             s_id: SubjectId::from_u64(s_id),
@@ -836,7 +838,7 @@ mod tests {
             o_key,
             t,
             lang_id: 0,
-            i: ListIndex::none().as_i32(),
+            i: LIST_INDEX_NONE,
         }
     }
 
@@ -935,14 +937,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("trunc.spool");
 
-        // Write 1 record (44 bytes)
+        // Write 1 record (36 bytes)
         let mut writer = SpoolWriter::new(&path, 0).unwrap();
         writer
             .push(&make_record(1, 1, ObjKind::NUM_INT, 1, 1))
             .unwrap();
         writer.finish().unwrap();
 
-        // Try to open claiming 2 records (88 bytes expected)
+        // Try to open claiming 2 records (72 bytes expected)
         let result = SpoolReader::open(&path, 2);
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1011,7 +1013,7 @@ mod tests {
             o_kind: ObjKind::LEX_ID.as_u8(),
             op: 0, // retraction
             o_key: 123,
-            t: -1,
+            t: 999,
             lang_id: 3,
             i: 42,
         };
@@ -1030,7 +1032,7 @@ mod tests {
         assert_eq!(read.o_kind, ObjKind::LEX_ID.as_u8());
         assert_eq!(read.op, 0);
         assert_eq!(read.o_key, 123);
-        assert_eq!(read.t, -1);
+        assert_eq!(read.t, 999);
         assert_eq!(read.lang_id, 3);
         assert_eq!(read.i, 42);
 

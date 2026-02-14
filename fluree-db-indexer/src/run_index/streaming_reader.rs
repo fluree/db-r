@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-/// Number of records to buffer per read. 8192 × 44 bytes ≈ 352 KB.
+/// Number of records to buffer per read. 8192 × 34 bytes ≈ 272 KB.
 const BUFFER_SIZE: usize = 8192;
 
 /// Run file flags (must match `run_file.rs`).
@@ -279,7 +279,7 @@ mod tests {
     use fluree_db_core::DatatypeDictId;
     use std::cmp::Ordering;
 
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),

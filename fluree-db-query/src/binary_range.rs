@@ -24,7 +24,6 @@ use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::range::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::ListIndex;
 use fluree_db_core::{Flake, IndexType, OverlayProvider, RangeProvider, Sid};
 use fluree_db_indexer::run_index::run_record::{RunRecord, RunSortOrder};
 use fluree_db_indexer::run_index::{
@@ -132,28 +131,28 @@ fn binary_lookup_subject_predicate_refs_batched(
 
     // Cursor bounds: PSOT key interval restricted to [min_s_id, max_s_id] within this predicate.
     let min_key = RunRecord {
-        g_id,
+        g_id: g_id as u16,
         s_id: SubjectId::from_u64(min_s_id),
         p_id,
         dt: 0,
         o_kind: 0,
         op: 0,
         o_key: 0,
-        t: i64::MIN,
+        t: 0,
         lang_id: 0,
-        i: ListIndex::none().as_i32(),
+        i: 0,
     };
     let max_key = RunRecord {
-        g_id,
+        g_id: g_id as u16,
         s_id: SubjectId::from_u64(max_s_id),
         p_id,
         dt: u16::MAX,
         o_kind: u8::MAX,
         op: u8::MAX,
         o_key: u64::MAX,
-        t: i64::MAX,
+        t: u32::MAX,
         lang_id: u16::MAX,
-        i: i32::MAX,
+        i: u32::MAX,
     };
 
     // Filter: keep the predicate fixed. Subject set filtering happens post-decode.

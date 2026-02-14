@@ -894,32 +894,31 @@ impl NestedLoopJoinOperator {
         min_s_id: u64,
         max_s_id: u64,
     ) -> std::ops::Range<usize> {
-        use fluree_db_core::ListIndex;
         use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord};
 
         let min_key = RunRecord {
-            g_id,
+            g_id: g_id as u16,
             s_id: SubjectId::from_u64(min_s_id),
             p_id,
             dt: 0,
             o_kind: 0,
             op: 0,
             o_key: 0,
-            t: i64::MIN,
+            t: 0,
             lang_id: 0,
-            i: ListIndex::none().as_i32(),
+            i: 0,
         };
         let max_key = RunRecord {
-            g_id,
+            g_id: g_id as u16,
             s_id: SubjectId::from_u64(max_s_id),
             p_id,
             dt: u16::MAX,
             o_kind: u8::MAX,
             op: u8::MAX,
             o_key: u64::MAX,
-            t: i64::MAX,
+            t: u32::MAX,
             lang_id: u16::MAX,
-            i: i32::MAX,
+            i: u32::MAX,
         };
         branch.find_leaves_in_range(&min_key, &max_key, cmp_psot)
     }
@@ -1906,8 +1905,8 @@ mod tests {
         // score1 hasScore 0.5 ; score1 refersInstance concept1
         // score2 hasScore 0.3 ; score2 refersInstance concept2
         // Filter (>0.4) should keep only score1 → concept1.
-        let g_id = 0u32;
-        let t = 1i64;
+        let g_id: u16 = 0;
+        let t: u32 = 1;
         let records = vec![
             // score1 hasScore 0.5
             RunRecord::new(

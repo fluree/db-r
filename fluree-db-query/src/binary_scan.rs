@@ -855,28 +855,28 @@ impl Operator for BinaryScanOperator {
                                     };
 
                                 let min_key = RunRecord {
-                                    g_id: self.g_id,
+                                    g_id: self.g_id as u16,
                                     s_id: SubjectId::from_u64(s_id),
                                     p_id: p_id.unwrap_or(0),
                                     dt: 0,
                                     o_kind: min_o_kind,
                                     op: 0,
                                     o_key: min_o_key,
-                                    t: i64::MIN,
+                                    t: 0,
                                     lang_id: 0,
-                                    i: ListIndex::none().as_i32(),
+                                    i: 0,
                                 };
                                 let max_key = RunRecord {
-                                    g_id: self.g_id,
+                                    g_id: self.g_id as u16,
                                     s_id: SubjectId::from_u64(s_id),
                                     p_id: p_id.unwrap_or(u32::MAX),
                                     dt: u16::MAX,
                                     o_kind: max_o_kind,
                                     op: 1,
                                     o_key: max_o_key,
-                                    t: i64::MAX,
+                                    t: u32::MAX,
                                     lang_id: u16::MAX,
-                                    i: i32::MAX,
+                                    i: u32::MAX,
                                 };
                                 tracing::trace!(s_id, "binary_scan: created overlay-only bounds");
                                 Some((min_key, max_key))

@@ -575,7 +575,7 @@ impl BinaryCursor {
             };
         };
 
-        let leaf_indices = branch.find_leaves_for_subject(g_id, s_id);
+        let leaf_indices = branch.find_leaves_for_subject(s_id);
 
         let current_idx = leaf_indices.start;
         // Don't set exhausted = true even when leaf_indices is empty.
