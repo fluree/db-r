@@ -6,8 +6,9 @@
 //!
 //! Provides generic helpers to reduce duplication between parsing formats.
 
-use super::ast::{UnresolvedArithmeticOp, UnresolvedCompareOp, UnresolvedExpression};
+use super::ast::UnresolvedExpression;
 use super::error::{ParseError, Result};
+use std::sync::Arc;
 
 /// Validate argument count and return error if it doesn't match expected count
 ///
@@ -46,59 +47,30 @@ pub fn validate_min_arg_count<T>(args: &[T], min: usize, context: &str) -> Resul
     Ok(())
 }
 
-/// Build a binary comparison expression from left and right operands
+/// Build a variadic function call expression
 ///
 /// Generic over the input type `T` so it works with both:
 /// - `&UnresolvedExpression` (already parsed, for S-expressions)
 /// - `&JsonValue` (needs parsing, for data expressions)
 ///
 /// The `parser` function converts `T` to `UnresolvedExpression`.
-pub fn build_binary_compare<T, F>(
+pub fn build_call<T, F>(
     args: &[T],
-    op: UnresolvedCompareOp,
+    func: &str,
     parser: F,
+    min_args: usize,
     context: &str,
 ) -> Result<UnresolvedExpression>
 where
     F: Fn(&T) -> Result<UnresolvedExpression>,
 {
-    validate_arg_count(args, 2, context)?;
+    validate_min_arg_count(args, min_args, context)?;
 
-    let left = parser(&args[0])?;
-    let right = parser(&args[1])?;
+    let parsed: Result<Vec<_>> = args.iter().map(parser).collect();
 
-    Ok(UnresolvedExpression::Compare {
-        op,
-        left: Box::new(left),
-        right: Box::new(right),
-    })
-}
-
-/// Build a binary arithmetic expression from left and right operands
-///
-/// Generic over the input type `T` so it works with both:
-/// - `&UnresolvedExpression` (already parsed, for S-expressions)
-/// - `&JsonValue` (needs parsing, for data expressions)
-///
-/// The `parser` function converts `T` to `UnresolvedExpression`.
-pub fn build_binary_arithmetic<T, F>(
-    args: &[T],
-    op: UnresolvedArithmeticOp,
-    parser: F,
-    context: &str,
-) -> Result<UnresolvedExpression>
-where
-    F: Fn(&T) -> Result<UnresolvedExpression>,
-{
-    validate_arg_count(args, 2, context)?;
-
-    let left = parser(&args[0])?;
-    let right = parser(&args[1])?;
-
-    Ok(UnresolvedExpression::Arithmetic {
-        op,
-        left: Box::new(left),
-        right: Box::new(right),
+    Ok(UnresolvedExpression::Call {
+        func: Arc::from(func),
+        args: parsed?,
     })
 }
 
@@ -135,52 +107,46 @@ where
     Ok(UnresolvedExpression::Not(Box::new(expr)))
 }
 
-/// Build a unary negation expression (arithmetic negation: -x)
-pub fn build_negate<T, F>(args: &[T], parser: F) -> Result<UnresolvedExpression>
-where
-    F: Fn(&T) -> Result<UnresolvedExpression>,
-{
-    validate_arg_count(args, 1, "unary negation")?;
-
-    let expr = parser(&args[0])?;
-    Ok(UnresolvedExpression::Negate(Box::new(expr)))
+/// Check if an operator name is a comparison operator
+///
+/// Recognizes: `=`, `eq`, `!=`, `<>`, `ne`, `<`, `lt`, `<=`, `le`, `>`, `gt`, `>=`, `ge`
+pub fn is_compare_op(op: &str) -> bool {
+    matches!(
+        op.to_lowercase().as_str(),
+        "=" | "eq" | "!=" | "<>" | "ne" | "<" | "lt" | "<=" | "le" | ">" | "gt" | ">=" | "ge"
+    )
 }
 
-/// Map operator name string to comparison operator enum
+/// Check if an operator name is an arithmetic operator
 ///
-/// Handles multiple aliases:
-/// - `=`, `eq` → Eq
-/// - `!=`, `<>`, `ne` → Ne
-/// - `<`, `lt` → Lt
-/// - `<=`, `le` → Le
-/// - `>`, `gt` → Gt
-/// - `>=`, `ge` → Ge
-pub fn parse_compare_op(op: &str) -> Option<UnresolvedCompareOp> {
-    match op.to_lowercase().as_str() {
-        "=" | "eq" => Some(UnresolvedCompareOp::Eq),
-        "!=" | "<>" | "ne" => Some(UnresolvedCompareOp::Ne),
-        "<" | "lt" => Some(UnresolvedCompareOp::Lt),
-        "<=" | "le" => Some(UnresolvedCompareOp::Le),
-        ">" | "gt" => Some(UnresolvedCompareOp::Gt),
-        ">=" | "ge" => Some(UnresolvedCompareOp::Ge),
-        _ => None,
-    }
+/// Recognizes: `+`, `add`, `-`, `sub`, `*`, `mul`, `/`, `div`
+pub fn is_arithmetic_op(op: &str) -> bool {
+    matches!(
+        op.to_lowercase().as_str(),
+        "+" | "add" | "-" | "sub" | "*" | "mul" | "/" | "div"
+    )
 }
 
-/// Map operator name string to arithmetic operator enum
+/// Normalize an operator name to its canonical symbol form
 ///
-/// Handles multiple aliases:
-/// - `+`, `add` → Add
-/// - `-`, `sub` → Sub
-/// - `*`, `mul` → Mul
-/// - `/`, `div` → Div
-pub fn parse_arithmetic_op(op: &str) -> Option<UnresolvedArithmeticOp> {
+/// Maps word aliases to their symbol equivalents:
+/// - `eq` → `=`, `ne` → `!=`, `lt` → `<`, `le` → `<=`, `gt` → `>`, `ge` → `>=`
+/// - `add` → `+`, `sub` → `-`, `mul` → `*`, `div` → `/`
+///
+/// Returns the input unchanged if it's already in symbol form or unrecognized.
+pub fn normalize_op(op: &str) -> &str {
     match op.to_lowercase().as_str() {
-        "+" | "add" => Some(UnresolvedArithmeticOp::Add),
-        "-" | "sub" => Some(UnresolvedArithmeticOp::Sub),
-        "*" | "mul" => Some(UnresolvedArithmeticOp::Mul),
-        "/" | "div" => Some(UnresolvedArithmeticOp::Div),
-        _ => None,
+        "eq" => "=",
+        "ne" | "<>" => "!=",
+        "lt" => "<",
+        "le" => "<=",
+        "gt" => ">",
+        "ge" => ">=",
+        "add" => "+",
+        "sub" => "-",
+        "mul" => "*",
+        "div" => "/",
+        _ => op,
     }
 }
 
@@ -205,81 +171,97 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_compare_op() {
-        assert_eq!(parse_compare_op("="), Some(UnresolvedCompareOp::Eq));
-        assert_eq!(parse_compare_op("eq"), Some(UnresolvedCompareOp::Eq));
-        assert_eq!(parse_compare_op("EQ"), Some(UnresolvedCompareOp::Eq));
-
-        assert_eq!(parse_compare_op("!="), Some(UnresolvedCompareOp::Ne));
-        assert_eq!(parse_compare_op("<>"), Some(UnresolvedCompareOp::Ne));
-        assert_eq!(parse_compare_op("ne"), Some(UnresolvedCompareOp::Ne));
-
-        assert_eq!(parse_compare_op("<"), Some(UnresolvedCompareOp::Lt));
-        assert_eq!(parse_compare_op("lt"), Some(UnresolvedCompareOp::Lt));
-
-        assert_eq!(parse_compare_op("<="), Some(UnresolvedCompareOp::Le));
-        assert_eq!(parse_compare_op("le"), Some(UnresolvedCompareOp::Le));
-
-        assert_eq!(parse_compare_op(">"), Some(UnresolvedCompareOp::Gt));
-        assert_eq!(parse_compare_op("gt"), Some(UnresolvedCompareOp::Gt));
-
-        assert_eq!(parse_compare_op(">="), Some(UnresolvedCompareOp::Ge));
-        assert_eq!(parse_compare_op("ge"), Some(UnresolvedCompareOp::Ge));
-
-        assert_eq!(parse_compare_op("unknown"), None);
-    }
-
-    #[test]
-    fn test_parse_arithmetic_op() {
-        assert_eq!(parse_arithmetic_op("+"), Some(UnresolvedArithmeticOp::Add));
-        assert_eq!(
-            parse_arithmetic_op("add"),
-            Some(UnresolvedArithmeticOp::Add)
-        );
-        assert_eq!(
-            parse_arithmetic_op("ADD"),
-            Some(UnresolvedArithmeticOp::Add)
-        );
-
-        assert_eq!(parse_arithmetic_op("-"), Some(UnresolvedArithmeticOp::Sub));
-        assert_eq!(
-            parse_arithmetic_op("sub"),
-            Some(UnresolvedArithmeticOp::Sub)
-        );
-
-        assert_eq!(parse_arithmetic_op("*"), Some(UnresolvedArithmeticOp::Mul));
-        assert_eq!(
-            parse_arithmetic_op("mul"),
-            Some(UnresolvedArithmeticOp::Mul)
-        );
-
-        assert_eq!(parse_arithmetic_op("/"), Some(UnresolvedArithmeticOp::Div));
-        assert_eq!(
-            parse_arithmetic_op("div"),
-            Some(UnresolvedArithmeticOp::Div)
-        );
-
-        assert_eq!(parse_arithmetic_op("unknown"), None);
-    }
-
-    #[test]
-    fn test_build_binary_compare() {
-        // Test with a simple identity parser
+    fn test_build_call() {
         let args = vec![1, 2];
         let parser =
             |x: &i32| -> Result<UnresolvedExpression> { Ok(UnresolvedExpression::long(*x as i64)) };
 
-        let expr = build_binary_compare(&args, UnresolvedCompareOp::Eq, parser, "test comparison")
-            .unwrap();
+        let expr = build_call(&args, "=", parser, 1, "test comparison").unwrap();
 
         match expr {
-            UnresolvedExpression::Compare { op, left, right } => {
-                assert_eq!(op, UnresolvedCompareOp::Eq);
-                assert!(matches!(*left, UnresolvedExpression::Const(_)));
-                assert!(matches!(*right, UnresolvedExpression::Const(_)));
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "=");
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], UnresolvedExpression::Const(_)));
+                assert!(matches!(args[1], UnresolvedExpression::Const(_)));
             }
-            _ => panic!("Expected Compare expression"),
+            _ => panic!("Expected Call expression"),
         }
+    }
+
+    #[test]
+    fn test_build_call_variadic() {
+        let args = vec![1, 2, 3];
+        let parser =
+            |x: &i32| -> Result<UnresolvedExpression> { Ok(UnresolvedExpression::long(*x as i64)) };
+
+        let expr = build_call(&args, "<", parser, 1, "test comparison").unwrap();
+
+        match expr {
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "<");
+                assert_eq!(args.len(), 3);
+            }
+            _ => panic!("Expected Call expression"),
+        }
+    }
+
+    #[test]
+    fn test_build_call_single_arg() {
+        let args = vec![1];
+        let parser =
+            |x: &i32| -> Result<UnresolvedExpression> { Ok(UnresolvedExpression::long(*x as i64)) };
+
+        let expr = build_call(&args, "+", parser, 1, "test arithmetic").unwrap();
+
+        match expr {
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "+");
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("Expected Call expression"),
+        }
+    }
+
+    #[test]
+    fn test_is_compare_op() {
+        assert!(is_compare_op("="));
+        assert!(is_compare_op("eq"));
+        assert!(is_compare_op("EQ"));
+        assert!(is_compare_op("!="));
+        assert!(is_compare_op("<>"));
+        assert!(is_compare_op("<"));
+        assert!(is_compare_op(">="));
+        assert!(!is_compare_op("+"));
+        assert!(!is_compare_op("unknown"));
+    }
+
+    #[test]
+    fn test_is_arithmetic_op() {
+        assert!(is_arithmetic_op("+"));
+        assert!(is_arithmetic_op("add"));
+        assert!(is_arithmetic_op("ADD"));
+        assert!(is_arithmetic_op("-"));
+        assert!(is_arithmetic_op("*"));
+        assert!(is_arithmetic_op("/"));
+        assert!(!is_arithmetic_op("="));
+        assert!(!is_arithmetic_op("unknown"));
+    }
+
+    #[test]
+    fn test_normalize_op() {
+        assert_eq!(normalize_op("eq"), "=");
+        assert_eq!(normalize_op("ne"), "!=");
+        assert_eq!(normalize_op("lt"), "<");
+        assert_eq!(normalize_op("le"), "<=");
+        assert_eq!(normalize_op("gt"), ">");
+        assert_eq!(normalize_op("ge"), ">=");
+        assert_eq!(normalize_op("add"), "+");
+        assert_eq!(normalize_op("sub"), "-");
+        assert_eq!(normalize_op("mul"), "*");
+        assert_eq!(normalize_op("div"), "/");
+        assert_eq!(normalize_op("="), "=");
+        assert_eq!(normalize_op("unknown"), "unknown");
     }
 
     #[test]

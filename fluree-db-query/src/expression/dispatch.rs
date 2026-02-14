@@ -8,9 +8,11 @@ use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
 
 use super::value::ComparableValue;
+use crate::ir::{ArithmeticOp, CompareOp};
+
 use super::{
-    arithmetic, compare, conditional, datetime, fluree, geo, hash, logical, numeric, rdf, string,
-    types, uuid, vector,
+    arithmetic, conditional, datetime, fluree, geo, hash, logical, numeric, rdf, string, types,
+    uuid, vector,
 };
 
 impl Function {
@@ -29,18 +31,18 @@ impl Function {
     ) -> Result<Option<ComparableValue>> {
         match self {
             // Comparison operators
-            Function::Eq => compare::eval_eq(args, row, ctx),
-            Function::Ne => compare::eval_ne(args, row, ctx),
-            Function::Lt => compare::eval_lt(args, row, ctx),
-            Function::Le => compare::eval_le(args, row, ctx),
-            Function::Gt => compare::eval_gt(args, row, ctx),
-            Function::Ge => compare::eval_ge(args, row, ctx),
+            Function::Eq => CompareOp::Eq.eval(args, row, ctx),
+            Function::Ne => CompareOp::Ne.eval(args, row, ctx),
+            Function::Lt => CompareOp::Lt.eval(args, row, ctx),
+            Function::Le => CompareOp::Le.eval(args, row, ctx),
+            Function::Gt => CompareOp::Gt.eval(args, row, ctx),
+            Function::Ge => CompareOp::Ge.eval(args, row, ctx),
 
             // Arithmetic operators
-            Function::Add => arithmetic::eval_add(args, row, ctx),
-            Function::Sub => arithmetic::eval_sub(args, row, ctx),
-            Function::Mul => arithmetic::eval_mul(args, row, ctx),
-            Function::Div => arithmetic::eval_div(args, row, ctx),
+            Function::Add => ArithmeticOp::Add.eval(args, row, ctx),
+            Function::Sub => ArithmeticOp::Sub.eval(args, row, ctx),
+            Function::Mul => ArithmeticOp::Mul.eval(args, row, ctx),
+            Function::Div => ArithmeticOp::Div.eval(args, row, ctx),
             Function::Negate => arithmetic::eval_negate(args, row, ctx),
 
             // Logical operators

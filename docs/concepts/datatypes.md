@@ -256,6 +256,16 @@ WHERE {
 }
 ```
 
+### Comparisons Between Incompatible Types
+
+When a filter compares values of incompatible types (e.g., a number and a string), the behavior depends on the operator:
+
+- **Equality** (`=`) returns `false` — values of different types are never equal
+- **Inequality** (`!=`) returns `true` — values of different types are never equal
+- **Ordering** (`<`, `<=`, `>`, `>=`) raises an error — ordering between incompatible types is undefined
+
+Numeric types (long, double, bigint, decimal) are mutually comparable via automatic promotion, so cross-numeric comparisons work as expected. Similarly, temporal types can be compared with string representations that parse to the same temporal type.
+
 ### Type Casting in Queries
 
 SPARQL provides functions for type conversion:

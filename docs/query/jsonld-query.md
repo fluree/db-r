@@ -530,12 +530,20 @@ Each step must be a simple predicate (`ex:p`), inverse simple predicate (`^ex:p`
 
 ### Comparison Functions
 
-- `(= ?x ?y)` - Equality
-- `(!= ?x ?y)` - Inequality
-- `(> ?x ?y)` - Greater than
-- `(>= ?x ?y)` - Greater than or equal
-- `(< ?x ?y)` - Less than
-- `(<= ?x ?y)` - Less than or equal
+Comparison operators accept two or more arguments. With multiple arguments, they chain pairwise: `(< ?a ?b ?c)` means `?a < ?b AND ?b < ?c`.
+
+- `(= ?x ?y ...)` - Equality
+- `(!= ?x ?y ...)` - Inequality
+- `(> ?x ?y ...)` - Greater than
+- `(>= ?x ?y ...)` - Greater than or equal
+- `(< ?x ?y ...)` - Less than
+- `(<= ?x ?y ...)` - Less than or equal
+
+When comparing incomparable types (e.g., a number and a string):
+
+- `=` yields `false` — values of different types are not equal
+- `!=` yields `true` — values of different types are not equal
+- `<`, `<=`, `>`, `>=` raise an error — ordering between incompatible types is undefined
 
 ### Logical Functions
 
@@ -552,10 +560,13 @@ Each step must be a simple predicate (`ex:p`), inverse simple predicate (`^ex:p`
 
 ### Numeric Functions
 
-- `(+ ?x ?y)` - Addition
-- `(- ?x ?y)` - Subtraction
-- `(* ?x ?y)` - Multiplication
-- `(/ ?x ?y)` - Division
+Arithmetic operators accept two or more arguments. With multiple arguments, they fold left: `(+ ?x ?y ?z)` evaluates as `(?x + ?y) + ?z`. A single argument returns the value unchanged.
+
+- `(+ ?x ?y ...)` - Addition
+- `(- ?x ?y ...)` - Subtraction
+- `(* ?x ?y ...)` - Multiplication
+- `(/ ?x ?y ...)` - Division
+- `(- ?x)` - Unary negation (single argument)
 - `(abs ?x)` - Absolute value
 
 ### Vector Similarity Functions

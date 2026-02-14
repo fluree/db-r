@@ -107,6 +107,21 @@ pub fn check_arity(args: &[Expression], expected: usize, fn_name: &str) -> Resul
     }
 }
 
+/// Check that a function has at least the minimum number of arguments
+#[inline]
+pub fn check_min_arity(args: &[Expression], min: usize, fn_name: &str) -> Result<()> {
+    if args.len() < min {
+        Err(QueryError::InvalidFilter(format!(
+            "{} requires at least {} argument{}",
+            fn_name,
+            min,
+            if min == 1 { "" } else { "s" }
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 // =============================================================================
 // DateTime Parsing
 // =============================================================================

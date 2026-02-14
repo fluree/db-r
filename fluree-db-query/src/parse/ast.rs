@@ -427,26 +427,6 @@ impl UnresolvedVectorSearchPattern {
     }
 }
 
-/// Comparison operators for filter expressions
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnresolvedCompareOp {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-}
-
-/// Arithmetic operators for filter expressions
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnresolvedArithmeticOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-}
-
 /// Filter value (constant) before resolution
 #[derive(Debug, Clone, PartialEq)]
 pub enum UnresolvedFilterValue {
@@ -472,20 +452,6 @@ pub enum UnresolvedExpression {
     Var(Arc<str>),
     /// Constant value
     Const(UnresolvedFilterValue),
-    /// Comparison operation
-    Compare {
-        op: UnresolvedCompareOp,
-        left: Box<UnresolvedExpression>,
-        right: Box<UnresolvedExpression>,
-    },
-    /// Arithmetic operation
-    Arithmetic {
-        op: UnresolvedArithmeticOp,
-        left: Box<UnresolvedExpression>,
-        right: Box<UnresolvedExpression>,
-    },
-    /// Unary negation
-    Negate(Box<UnresolvedExpression>),
     /// Logical AND
     And(Vec<UnresolvedExpression>),
     /// Logical OR
