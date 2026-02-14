@@ -1297,18 +1297,27 @@ impl Expression {
     /// FILTER(?age > 18 AND ?age < 65)  -> range-safe (becomes scan bounds)
     /// FILTER(?age != 30)               -> NOT range-safe (post-scan filter)
     /// FILTER(?x > ?y)                  -> NOT range-safe (no constant bound)
+    /// (< 10 ?x 20)                     -> range-safe (sandwich: const var const)
+    /// (< ?x ?y 20)                     -> NOT range-safe (non-sandwich variadic)
     /// ```
     pub fn is_range_safe(&self) -> bool {
         match self {
             Expression::Call { func, args } => match func {
                 // Comparison operators (except Ne) are range-safe if var vs const
                 Function::Eq | Function::Lt | Function::Le | Function::Gt | Function::Ge => {
-                    args.len() == 2
+                    // 2-arg: var vs const (either order)
+                    (args.len() == 2
                         && matches!(
                             (&args[0], &args[1]),
                             (Expression::Var(_), Expression::Const(_))
                                 | (Expression::Const(_), Expression::Var(_))
-                        )
+                        ))
+                    // 3-arg sandwich: const var const
+                    || (args.len() == 3
+                        && matches!(
+                            (&args[0], &args[1], &args[2]),
+                            (Expression::Const(_), Expression::Var(_), Expression::Const(_))
+                        ))
                 }
                 // AND of range-safe expressions is range-safe
                 Function::And => args.iter().all(|e| e.is_range_safe()),

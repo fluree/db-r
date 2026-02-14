@@ -706,6 +706,7 @@ fn compare_range_values(a: &RangeValue, b: &RangeValue) -> std::cmp::Ordering {
 ///
 /// - `?var op const` where op is `<`, `<=`, `>`, `>=`, `=`
 /// - `const op ?var` (reversed comparison)
+/// - `(op const ?var const)` — "sandwich" pattern producing two-sided bounds
 /// - `AND` of the above (constraints are merged for tighter bounds)
 pub fn extract_range_constraints(expr: &Expression) -> Option<Vec<RangeConstraint>> {
     if !expr.is_range_safe() {
@@ -716,11 +717,33 @@ pub fn extract_range_constraints(expr: &Expression) -> Option<Vec<RangeConstrain
         Expression::Call { func, args } => match func {
             // Comparison operators
             Function::Eq | Function::Lt | Function::Le | Function::Gt | Function::Ge => {
+                let op = func_to_compare_op(func);
+
+                // 3-arg sandwich: (op const ?var const) → two-sided bounds
+                if args.len() == 3 {
+                    if let (Some(lo_val), Some(var), Some(hi_val)) = (
+                        extract_const(&args[0]),
+                        extract_var(&args[1]),
+                        extract_const(&args[2]),
+                    ) {
+                        // Pair 1: const op ?var → ?var reversed_op const
+                        let left_constraint =
+                            create_constraint(var, reverse_compare_op(op), lo_val, false);
+                        // Pair 2: ?var op const
+                        let right_constraint = create_constraint(var, op, hi_val, false);
+                        // Merge both into one constraint
+                        let mut merged = left_constraint;
+                        merged.merge(&right_constraint);
+                        return Some(vec![merged]);
+                    }
+                    return None;
+                }
+
+                // 2-arg: ?var op const or const op ?var
                 if args.len() != 2 {
                     return None;
                 }
                 let (left, right) = (&args[0], &args[1]);
-                let op = func_to_compare_op(func);
 
                 // Try ?var op const
                 if let (Some(var), Some(val)) = (extract_var(left), extract_const(right)) {
@@ -1250,7 +1273,7 @@ mod tests {
     }
 
     // Range extraction tests
-    use crate::ir::{Expression, FilterValue};
+    use crate::ir::{Expression, FilterValue, Function};
 
     #[test]
     fn test_extract_range_simple_gt() {
@@ -1631,5 +1654,242 @@ mod tests {
         ]);
 
         assert!(extract_object_bounds_for_var(&filter, VarId(0)).is_none());
+    }
+
+    // =========================================================================
+    // Sandwich (3-arg variadic comparison) tests
+    // =========================================================================
+
+    /// Build a 3-arg comparison expression: (op a b c)
+    fn sandwich(func: Function, a: Expression, b: Expression, c: Expression) -> Expression {
+        Expression::Call {
+            func,
+            args: vec![a, b, c],
+        }
+    }
+
+    #[test]
+    fn test_is_range_safe_sandwich() {
+        // (< 10 ?x 20) → range-safe
+        let expr = sandwich(
+            Function::Lt,
+            Expression::Const(FilterValue::Long(10)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(20)),
+        );
+        assert!(expr.is_range_safe());
+
+        // (<= 10 ?x 20) → range-safe
+        let expr = sandwich(
+            Function::Le,
+            Expression::Const(FilterValue::Long(10)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(20)),
+        );
+        assert!(expr.is_range_safe());
+
+        // (> 20 ?x 10) → range-safe
+        let expr = sandwich(
+            Function::Gt,
+            Expression::Const(FilterValue::Long(20)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(10)),
+        );
+        assert!(expr.is_range_safe());
+
+        // (>= 20 ?x 10) → range-safe
+        let expr = sandwich(
+            Function::Ge,
+            Expression::Const(FilterValue::Long(20)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(10)),
+        );
+        assert!(expr.is_range_safe());
+
+        // (= 5 ?x 5) → range-safe
+        let expr = sandwich(
+            Function::Eq,
+            Expression::Const(FilterValue::Long(5)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(5)),
+        );
+        assert!(expr.is_range_safe());
+    }
+
+    #[test]
+    fn test_is_range_safe_non_sandwich_variadic() {
+        // (< ?x ?y 20) → NOT range-safe (var var const)
+        let expr = Expression::Call {
+            func: Function::Lt,
+            args: vec![
+                Expression::Var(VarId(0)),
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(20)),
+            ],
+        };
+        assert!(!expr.is_range_safe());
+
+        // (< 10 20 ?x) → NOT range-safe (const const var)
+        let expr = Expression::Call {
+            func: Function::Lt,
+            args: vec![
+                Expression::Const(FilterValue::Long(10)),
+                Expression::Const(FilterValue::Long(20)),
+                Expression::Var(VarId(0)),
+            ],
+        };
+        assert!(!expr.is_range_safe());
+
+        // (< ?x 10 ?y) → NOT range-safe (var const var)
+        let expr = Expression::Call {
+            func: Function::Lt,
+            args: vec![
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::Long(10)),
+                Expression::Var(VarId(1)),
+            ],
+        };
+        assert!(!expr.is_range_safe());
+    }
+
+    #[test]
+    fn test_extract_range_sandwich_lt() {
+        // (< 10 ?x 20) → lower=10 exclusive, upper=20 exclusive
+        let expr = sandwich(
+            Function::Lt,
+            Expression::Const(FilterValue::Long(10)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(20)),
+        );
+
+        let constraints = extract_range_constraints(&expr).expect("should extract");
+        assert_eq!(constraints.len(), 1);
+
+        let c = &constraints[0];
+        assert_eq!(c.var, VarId(0));
+        assert_eq!(c.lower, Some((RangeValue::Long(10), false))); // 10 < ?x → exclusive
+        assert_eq!(c.upper, Some((RangeValue::Long(20), false))); // ?x < 20 → exclusive
+    }
+
+    #[test]
+    fn test_extract_range_sandwich_le() {
+        // (<= 10 ?x 20) → lower=10 inclusive, upper=20 inclusive
+        let expr = sandwich(
+            Function::Le,
+            Expression::Const(FilterValue::Long(10)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(20)),
+        );
+
+        let constraints = extract_range_constraints(&expr).expect("should extract");
+        assert_eq!(constraints.len(), 1);
+
+        let c = &constraints[0];
+        assert_eq!(c.var, VarId(0));
+        assert_eq!(c.lower, Some((RangeValue::Long(10), true))); // 10 <= ?x → inclusive
+        assert_eq!(c.upper, Some((RangeValue::Long(20), true))); // ?x <= 20 → inclusive
+    }
+
+    #[test]
+    fn test_extract_range_sandwich_gt() {
+        // (> 20 ?x 10) → 20 > ?x > 10 → upper=20 exclusive, lower=10 exclusive
+        let expr = sandwich(
+            Function::Gt,
+            Expression::Const(FilterValue::Long(20)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(10)),
+        );
+
+        let constraints = extract_range_constraints(&expr).expect("should extract");
+        assert_eq!(constraints.len(), 1);
+
+        let c = &constraints[0];
+        assert_eq!(c.var, VarId(0));
+        // Pair 1: 20 > ?x → ?x < 20 → upper=20 exclusive
+        assert_eq!(c.upper, Some((RangeValue::Long(20), false)));
+        // Pair 2: ?x > 10 → lower=10 exclusive
+        assert_eq!(c.lower, Some((RangeValue::Long(10), false)));
+    }
+
+    #[test]
+    fn test_extract_range_sandwich_ge() {
+        // (>= 20 ?x 10) → 20 >= ?x >= 10 → upper=20 inclusive, lower=10 inclusive
+        let expr = sandwich(
+            Function::Ge,
+            Expression::Const(FilterValue::Long(20)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(10)),
+        );
+
+        let constraints = extract_range_constraints(&expr).expect("should extract");
+        assert_eq!(constraints.len(), 1);
+
+        let c = &constraints[0];
+        assert_eq!(c.var, VarId(0));
+        // Pair 1: 20 >= ?x → ?x <= 20 → upper=20 inclusive
+        assert_eq!(c.upper, Some((RangeValue::Long(20), true)));
+        // Pair 2: ?x >= 10 → lower=10 inclusive
+        assert_eq!(c.lower, Some((RangeValue::Long(10), true)));
+    }
+
+    #[test]
+    fn test_extract_range_sandwich_eq() {
+        // (= 5 ?x 5) → point range: lower=5 inclusive, upper=5 inclusive
+        let expr = sandwich(
+            Function::Eq,
+            Expression::Const(FilterValue::Long(5)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(5)),
+        );
+
+        let constraints = extract_range_constraints(&expr).expect("should extract");
+        assert_eq!(constraints.len(), 1);
+
+        let c = &constraints[0];
+        assert_eq!(c.var, VarId(0));
+        assert_eq!(c.lower, Some((RangeValue::Long(5), true)));
+        assert_eq!(c.upper, Some((RangeValue::Long(5), true)));
+        assert!(!c.is_unsatisfiable());
+    }
+
+    #[test]
+    fn test_extract_range_sandwich_eq_unsatisfiable() {
+        // (= 5 ?x 10) → both constants must be equal for satisfiability
+        let expr = sandwich(
+            Function::Eq,
+            Expression::Const(FilterValue::Long(5)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(10)),
+        );
+
+        let constraints = extract_range_constraints(&expr).expect("should extract");
+        assert_eq!(constraints.len(), 1);
+
+        let c = &constraints[0];
+        // lower=5 inclusive, upper=10 inclusive (from two Eq constraints)
+        // But Eq sets BOTH lower and upper, so merge produces:
+        // lower = max(5, 10) = 10 inclusive, upper = min(5, 10) = 5 inclusive
+        // This is unsatisfiable (lower > upper)
+        assert!(c.is_unsatisfiable());
+    }
+
+    #[test]
+    fn test_extract_range_sandwich_object_bounds() {
+        // (< 10 ?x 20) should produce correct ObjectBounds
+        let expr = sandwich(
+            Function::Lt,
+            Expression::Const(FilterValue::Long(10)),
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(20)),
+        );
+
+        let bounds = extract_object_bounds_for_var(&expr, VarId(0)).expect("should extract bounds");
+
+        assert!(!bounds.matches(&FlakeValue::Long(10))); // exclusive lower
+        assert!(bounds.matches(&FlakeValue::Long(11)));
+        assert!(bounds.matches(&FlakeValue::Long(19)));
+        assert!(!bounds.matches(&FlakeValue::Long(20))); // exclusive upper
+        assert!(!bounds.matches(&FlakeValue::Long(5))); // below range
+        assert!(!bounds.matches(&FlakeValue::Long(25))); // above range
     }
 }

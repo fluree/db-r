@@ -194,6 +194,8 @@ mod tests {
     use crate::pattern::Term;
     use fluree_db_core::Sid;
 
+    use crate::ir::Function;
+
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
         TriplePattern::new(
             Term::Var(s_var),
@@ -313,5 +315,39 @@ mod tests {
         // Upper: min(100, 80) = 80
         let (upper_val, _) = merged.upper.as_ref().unwrap();
         assert_eq!(*upper_val, FlakeValue::Long(80));
+    }
+
+    #[test]
+    fn test_extract_bounds_sandwich() {
+        // Triple: ?s :age ?age
+        // Filter: (< 10 ?age 20) — sandwich pattern
+        let triples = vec![make_pattern(VarId(0), "age", VarId(1))];
+        let filter = Expression::Call {
+            func: Function::Lt,
+            args: vec![
+                Expression::Const(FilterValue::Long(10)),
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::Long(20)),
+            ],
+        };
+
+        let (bounds, consumed) = extract_bounds_from_filters(&triples, &[filter]);
+
+        // Should have bounds for VarId(1) (the object variable)
+        assert!(bounds.contains_key(&VarId(1)));
+        let obj_bounds = bounds.get(&VarId(1)).unwrap();
+
+        // Lower: > 10 (exclusive)
+        let (lower_val, lower_inclusive) = obj_bounds.lower.as_ref().expect("should have lower");
+        assert_eq!(*lower_val, FlakeValue::Long(10));
+        assert!(!lower_inclusive);
+
+        // Upper: < 20 (exclusive)
+        let (upper_val, upper_inclusive) = obj_bounds.upper.as_ref().expect("should have upper");
+        assert_eq!(*upper_val, FlakeValue::Long(20));
+        assert!(!upper_inclusive);
+
+        // Filter should be consumed (single var, fully captured)
+        assert_eq!(consumed, vec![0]);
     }
 }
