@@ -139,6 +139,48 @@ impl ChunkSubjectDict {
         }
         writer.finish()
     }
+
+    /// Sort entries by canonical subject order `(ns_code ASC, suffix ASC)`,
+    /// write a sorted vocab file with **sorted-position IDs** (0, 1, 2, ...),
+    /// and return the insertion→sorted remap table.
+    ///
+    /// The remap table has length `self.len()`. `remap[insertion_id] = sorted_position`.
+    /// This remap is used to convert chunk-local insertion-order IDs in buffered
+    /// records to sorted-order IDs before writing sorted commit files.
+    ///
+    /// The vocab file entries use sorted-position IDs as `local_id` so the
+    /// downstream k-way merge produces remap tables mapping
+    /// `sorted_local_id → global_id`.
+    ///
+    /// Consumes `self`. Returns `(remap, entry_count)`.
+    pub fn sort_and_write_sorted_vocab(self, path: &Path) -> io::Result<(Vec<u64>, u64)> {
+        let forward = self.forward;
+        let n = forward.len();
+
+        // Build sorted indices.
+        let mut sorted_indices: Vec<usize> = (0..n).collect();
+        sorted_indices.sort_unstable_by(|&a, &b| {
+            let (ns_a, ref suf_a) = forward[a];
+            let (ns_b, ref suf_b) = forward[b];
+            ns_a.cmp(&ns_b).then_with(|| suf_a.cmp(suf_b))
+        });
+
+        // Build insertion→sorted remap: remap[insertion_id] = sorted_position.
+        let mut remap = vec![0u64; n];
+        for (sorted_pos, &orig_idx) in sorted_indices.iter().enumerate() {
+            remap[orig_idx] = sorted_pos as u64;
+        }
+
+        // Write vocab with sorted-position IDs.
+        let mut writer = SubjectVocabWriter::new(path)?;
+        for (sorted_pos, &orig_idx) in sorted_indices.iter().enumerate() {
+            let (ns_code, ref suffix) = forward[orig_idx];
+            writer.write_entry(ns_code, sorted_pos as u64, suffix)?;
+        }
+        let count = writer.finish()?;
+
+        Ok((remap, count))
+    }
 }
 
 impl Default for ChunkSubjectDict {
@@ -247,6 +289,36 @@ impl ChunkStringDict {
             writer.write_entry(idx as u32, &forward[idx])?;
         }
         writer.finish()
+    }
+
+    /// Sort entries by UTF-8 byte-lex order, write a sorted vocab file with
+    /// **sorted-position IDs** (0, 1, 2, ...), and return the insertion→sorted
+    /// remap table.
+    ///
+    /// The remap table has length `self.len()`. `remap[insertion_id] = sorted_position`.
+    ///
+    /// Consumes `self`. Returns `(remap, entry_count)`.
+    pub fn sort_and_write_sorted_vocab(self, path: &Path) -> io::Result<(Vec<u32>, u64)> {
+        let forward = self.forward;
+        let n = forward.len();
+
+        let mut sorted_indices: Vec<usize> = (0..n).collect();
+        sorted_indices.sort_unstable_by(|&a, &b| forward[a].cmp(&forward[b]));
+
+        // Build insertion→sorted remap.
+        let mut remap = vec![0u32; n];
+        for (sorted_pos, &orig_idx) in sorted_indices.iter().enumerate() {
+            remap[orig_idx] = sorted_pos as u32;
+        }
+
+        // Write vocab with sorted-position IDs.
+        let mut writer = StringVocabWriter::new(path)?;
+        for (sorted_pos, &orig_idx) in sorted_indices.iter().enumerate() {
+            writer.write_entry(sorted_pos as u32, &forward[orig_idx])?;
+        }
+        let count = writer.finish()?;
+
+        Ok((remap, count))
     }
 }
 

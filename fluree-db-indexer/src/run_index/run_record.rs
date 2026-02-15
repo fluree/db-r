@@ -280,6 +280,13 @@ pub fn cmp_opst(a: &RunRecord, b: &RunRecord) -> Ordering {
         .then(a.op.cmp(&b.op))
 }
 
+/// Comparator: `(g_id, SPOT)`. Used for sorted commit files where records
+/// from multiple graphs need to be partitioned then SPOT-sorted within each.
+#[inline]
+pub fn cmp_g_spot(a: &RunRecord, b: &RunRecord) -> Ordering {
+    a.g_id.cmp(&b.g_id).then_with(|| cmp_spot(a, b))
+}
+
 /// Return the comparator function for a given sort order.
 pub fn cmp_for_order(order: RunSortOrder) -> fn(&RunRecord, &RunRecord) -> Ordering {
     match order {
@@ -335,6 +342,12 @@ impl RunSortOrder {
     /// All orders that should be built during index generation.
     pub fn all_build_orders() -> &'static [RunSortOrder] {
         &[Self::Spot, Self::Psot, Self::Post, Self::Opst]
+    }
+
+    /// Secondary orders (all except SPOT). Used when SPOT is built separately
+    /// from sorted commit files via streaming k-way merge.
+    pub fn secondary_orders() -> &'static [RunSortOrder] {
+        &[Self::Psot, Self::Post, Self::Opst]
     }
 }
 

@@ -83,6 +83,16 @@ pub enum Commands {
         /// Larger values reduce the number of temporary run files during remap/indexing.
         #[arg(long, default_value_t = 0)]
         run_budget_mb: usize,
+
+        /// Records per leaflet in index files. Default: 25000.
+        /// Larger values produce fewer, bigger leaflets (less I/O, more memory per read).
+        #[arg(long, default_value_t = 25_000)]
+        leaflet_rows: usize,
+
+        /// Leaflets per leaf file. Default: 10.
+        /// Larger values produce fewer leaf files (shallower tree, bigger reads).
+        #[arg(long, default_value_t = 10)]
+        leaflets_per_leaf: usize,
     },
 
     /// Set the active ledger

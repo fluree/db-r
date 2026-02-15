@@ -102,6 +102,11 @@ impl OutputCols {
         self.i.push(if rec.i == LIST_INDEX_NONE {
             ListIndex::none().as_i32()
         } else {
+            debug_assert!(
+                rec.i <= i32::MAX as u32,
+                "list index {} exceeds i32::MAX, would wrap in novelty merge",
+                rec.i
+            );
             rec.i as i32
         });
     }

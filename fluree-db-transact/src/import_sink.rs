@@ -79,8 +79,9 @@ mod inner {
         pub ns_alloc: Arc<SharedNamespaceAllocator>,
     }
 
-    /// Result of finishing a [`SpoolContext`] — contains the spool file info
-    /// and the chunk-local dictionaries needed for the merge phase.
+    /// Result of finishing a [`SpoolContext`] via [`SpoolContext::finish`] —
+    /// contains the spool file info and the chunk-local dictionaries needed for
+    /// the merge phase.
     pub struct SpoolResult {
         /// Spool file metadata (path, record count).
         pub spool_info: SpoolFileInfo,
@@ -88,6 +89,22 @@ mod inner {
         pub subjects: ChunkSubjectDict,
         /// Chunk-local string dictionary (chunk-local ID → string bytes).
         pub strings: ChunkStringDict,
+    }
+
+    /// Result of finishing a [`SpoolContext`] via [`SpoolContext::finish_buffered`] —
+    /// returns the buffered records in memory (no spool file written) along with
+    /// chunk-local dictionaries and language map.
+    pub struct BufferedSpoolResult {
+        /// All buffered RunRecords (insertion-order, chunk-local IDs).
+        pub records: Vec<RunRecord>,
+        /// Chunk-local subject dictionary (chunk-local ID → ns_code + name).
+        pub subjects: ChunkSubjectDict,
+        /// Chunk-local string dictionary (chunk-local ID → string bytes).
+        pub strings: ChunkStringDict,
+        /// Per-chunk language tags (tag string → chunk-local lang_id).
+        pub languages: rustc_hash::FxHashMap<String, u16>,
+        /// Chunk index (for deterministic ordering in merge phase).
+        pub chunk_idx: usize,
     }
 
     /// Per-chunk context for writing spool records during parse (Phase B).
@@ -102,7 +119,11 @@ mod inner {
     /// **BigInt/Decimal and vectors** get global handles via shared pools.
     /// No remap needed.
     pub struct SpoolContext {
-        writer: SpoolWriter,
+        /// Buffered records (insertion-order, chunk-local IDs).
+        records: Vec<RunRecord>,
+        /// Path for writing spool file (used by `finish()` backward-compat path).
+        spool_path: std::path::PathBuf,
+        chunk_idx: usize,
         // Chunk-local dicts (need remap after merge)
         subjects: ChunkSubjectDict,
         strings: ChunkStringDict,
@@ -124,8 +145,6 @@ mod inner {
         next_lang_id: u16,
         /// Graph ID for all records in this chunk (0 = default).
         g_id: u32,
-        /// First spool write error (latched, checked at finish).
-        spool_error: Option<std::io::Error>,
     }
 
     impl SpoolContext {
@@ -140,7 +159,9 @@ mod inner {
             config: &SpoolConfig,
         ) -> std::io::Result<Self> {
             Ok(Self {
-                writer: SpoolWriter::new(spool_path, chunk_idx)?,
+                records: Vec::new(),
+                spool_path: spool_path.into(),
+                chunk_idx,
                 subjects: ChunkSubjectDict::new(),
                 strings: ChunkStringDict::new(),
                 predicates: DictWorkerCache::new(Arc::clone(&config.predicate_alloc)),
@@ -153,27 +174,45 @@ mod inner {
                 languages: FxHashMap::default(),
                 next_lang_id: 1, // 0 = no language tag
                 g_id,
-                spool_error: None,
             })
         }
 
-        /// Number of spool records written.
+        /// Number of records buffered so far.
         pub fn record_count(&self) -> u64 {
-            self.writer.record_count()
+            self.records.len() as u64
         }
 
-        /// Finish the spool context. Returns [`SpoolResult`] containing the
-        /// spool file info and chunk-local dictionaries for the merge phase.
+        /// Finish the spool context by writing buffered records to a spool file.
+        ///
+        /// Returns [`SpoolResult`] containing the spool file info and chunk-local
+        /// dictionaries for the merge phase. This is the backward-compatible path
+        /// used by the existing import pipeline.
         pub fn finish(self) -> Result<SpoolResult, std::io::Error> {
-            if let Some(e) = self.spool_error {
-                return Err(e);
+            let mut writer = SpoolWriter::new(&self.spool_path, self.chunk_idx)?;
+            for record in &self.records {
+                writer.push(record)?;
             }
-            let spool_info = self.writer.finish()?;
+            let spool_info = writer.finish()?;
             Ok(SpoolResult {
                 spool_info,
                 subjects: self.subjects,
                 strings: self.strings,
             })
+        }
+
+        /// Finish the spool context, returning buffered records in memory.
+        ///
+        /// No spool file is written. The returned [`BufferedSpoolResult`]
+        /// contains all records with chunk-local IDs ready for post-parse
+        /// sorting and sorted commit file writing.
+        pub fn finish_buffered(self) -> BufferedSpoolResult {
+            BufferedSpoolResult {
+                records: self.records,
+                subjects: self.subjects,
+                strings: self.strings,
+                languages: self.languages,
+                chunk_idx: self.chunk_idx,
+            }
         }
 
         // -- Namespace prefix lookup --
@@ -370,7 +409,10 @@ mod inner {
             let (o_kind, o_key) = self.resolve_object_value(o, p_id);
             let lang_id = lang.map(|l| self.assign_lang_id(l)).unwrap_or(0);
             let i = list_index
-                .map(|idx| idx as u32)
+                .map(|idx| {
+                    debug_assert!(idx >= 0, "negative list index {idx} in import data");
+                    u32::try_from(idx).unwrap_or(LIST_INDEX_NONE)
+                })
                 .unwrap_or(LIST_INDEX_NONE);
 
             let record = RunRecord {
@@ -386,12 +428,7 @@ mod inner {
                 i,
             };
 
-            if let Err(e) = self.writer.push(&record) {
-                if self.spool_error.is_none() {
-                    tracing::error!("SpoolContext: spool write failed: {}", e);
-                    self.spool_error = Some(e);
-                }
-            }
+            self.records.push(record);
         }
     }
 
@@ -1014,6 +1051,7 @@ mod inner {
     }
 }
 
+pub use inner::BufferedSpoolResult;
 pub use inner::ImportSink;
 pub use inner::SpoolConfig;
 pub use inner::SpoolContext;

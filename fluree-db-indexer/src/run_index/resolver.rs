@@ -558,7 +558,12 @@ impl CommitResolver {
 
         // 7. List index (convert Option<i32> to u32 with sentinel)
         let i = match op.i {
-            Some(idx) => idx as u32,
+            Some(idx) if idx >= 0 => idx as u32,
+            Some(idx) => {
+                return Err(CommitV2Error::InvalidOp(format!(
+                    "negative list index {idx} is invalid"
+                )));
+            }
             None => LIST_INDEX_NONE,
         };
 

@@ -728,6 +728,52 @@ pub fn spool_to_runs(
 }
 
 // ============================================================================
+// Record remap helper
+// ============================================================================
+
+/// Remap chunk-local IDs in a single record to global IDs, in place.
+///
+/// Applies:
+/// - **Subject remap**: `s_id` (chunk-local → global sid64)
+/// - **REF_ID remap**: `o_key` for `REF_ID` objects (chunk-local → global sid64)
+/// - **String remap**: `o_key` for `LEX_ID`/`JSON_ID` objects (chunk-local → global string ID)
+///
+/// All other object kinds (inline numerics, booleans, dates, etc.) and fields
+/// (p_id, dt, g_id, lang_id) are passed through unchanged — they already have
+/// global IDs from shared allocators.
+#[inline]
+pub fn remap_record(
+    record: &mut RunRecord,
+    subject_remap: &dyn SubjectRemap,
+    string_remap: &dyn StringRemap,
+) -> io::Result<()> {
+    use fluree_db_core::subject_id::SubjectId;
+    use fluree_db_core::value_id::{ObjKey, ObjKind};
+
+    // Remap subject: chunk-local u64 → global sid64
+    let local_s = record.s_id.as_u64();
+    let global_s = subject_remap.get(local_s as usize)?;
+    record.s_id = SubjectId::from_u64(global_s);
+
+    // Remap object if it holds a chunk-local ID
+    let o_kind = ObjKind::from_u8(record.o_kind);
+    if o_kind == ObjKind::REF_ID {
+        // Object reference: chunk-local subject ID → global sid64
+        let local_o = record.o_key;
+        let global_o = subject_remap.get(local_o as usize)?;
+        record.o_key = global_o;
+    } else if o_kind == ObjKind::LEX_ID || o_kind == ObjKind::JSON_ID {
+        // String literal / JSON: chunk-local string ID → global string ID
+        let local_str = ObjKey::from_u64(record.o_key).decode_u32_id();
+        let global_str = string_remap.get(local_str as usize)?;
+        record.o_key = ObjKey::encode_u32_id(global_str).as_u64();
+    }
+    // All other o_kind values: inline values with no chunk-local IDs
+
+    Ok(())
+}
+
+// ============================================================================
 // Remap pass (Phase B)
 // ============================================================================
 
@@ -761,8 +807,7 @@ pub fn remap_spool_to_runs(
     mut stats_hook: Option<&mut crate::stats::IdStatsHook>,
     dt_tags: Option<&[fluree_db_core::value_id::ValueTypeTag]>,
 ) -> io::Result<u64> {
-    use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::value_id::{ObjKey, ObjKind, ValueTypeTag};
+    use fluree_db_core::value_id::ValueTypeTag;
 
     let reader = SpoolReader::open(&spool_info.path, spool_info.record_count)?;
     let mut count = 0u64;
@@ -770,25 +815,7 @@ pub fn remap_spool_to_runs(
     for result in reader {
         let mut record = result?;
 
-        // Remap subject: chunk-local u64 → global sid64
-        let local_s = record.s_id.as_u64();
-        let global_s = subject_remap.get(local_s as usize)?;
-        record.s_id = SubjectId::from_u64(global_s);
-
-        // Remap object if it holds a chunk-local ID
-        let o_kind = ObjKind::from_u8(record.o_kind);
-        if o_kind == ObjKind::REF_ID {
-            // Object reference: chunk-local subject ID → global sid64
-            let local_o = record.o_key;
-            let global_o = subject_remap.get(local_o as usize)?;
-            record.o_key = global_o;
-        } else if o_kind == ObjKind::LEX_ID || o_kind == ObjKind::JSON_ID {
-            // String literal / JSON: chunk-local string ID → global string ID
-            let local_str = ObjKey::from_u64(record.o_key).decode_u32_id();
-            let global_str = string_remap.get(local_str as usize)?;
-            record.o_key = ObjKey::encode_u32_id(global_str).as_u64();
-        }
-        // All other o_kind values: inline values with no chunk-local IDs
+        remap_record(&mut record, subject_remap, string_remap)?;
 
         // Feed remapped record to stats hook (global IDs are now valid)
         if let Some(ref mut hook) = stats_hook {
@@ -813,6 +840,183 @@ pub fn remap_spool_to_runs(
     }
 
     Ok(count)
+}
+
+// ============================================================================
+// Remap sorted commit → secondary run files (Phase D)
+// ============================================================================
+
+/// Read a sorted commit file (`.fsc`), apply subject+string+language remap,
+/// collect HLL stats, and feed remapped records to a [`MultiOrderRunWriter`]
+/// for secondary index orders (PSOT/POST/OPST).
+///
+/// This is the Phase D function — it reads the same sorted commit files
+/// written in Phase A, applies the global remaps from Phase B, and
+/// produces run files for the secondary indexes built in Phase E.
+///
+/// Unlike [`remap_spool_to_runs`], which reads unsorted spool files:
+/// - Source is a sorted commit file (SPOT-sorted, 36-byte spool wire format)
+/// - Records have sorted-position chunk-local IDs (not insertion-order)
+/// - HLL stats are collected here (with global IDs for accuracy)
+/// - Language tag IDs are remapped from chunk-local to global
+///
+/// `lang_remap` maps chunk-local lang_id → global lang_id. `remap[0] = 0`
+/// (sentinel for "no tag"). Empty slice means no remap needed.
+///
+/// Returns the number of records written.
+#[allow(clippy::too_many_arguments)]
+pub fn remap_commit_to_runs(
+    commit_path: &std::path::Path,
+    record_count: u64,
+    subject_remap: &dyn SubjectRemap,
+    string_remap: &dyn StringRemap,
+    lang_remap: &[u16],
+    writer: &mut super::run_writer::MultiOrderRunWriter,
+    lang_dict: &mut super::global_dict::LanguageTagDict,
+    mut stats_hook: Option<&mut crate::stats::IdStatsHook>,
+    dt_tags: Option<&[fluree_db_core::value_id::ValueTypeTag]>,
+) -> io::Result<u64> {
+    use fluree_db_core::value_id::ValueTypeTag;
+
+    let reader = SpoolReader::open(commit_path, record_count)?;
+    let mut count = 0u64;
+
+    for result in reader {
+        let mut record = result?;
+
+        remap_record(&mut record, subject_remap, string_remap)?;
+
+        // Remap language tag ID (chunk-local → global)
+        if !lang_remap.is_empty() && record.lang_id != 0 {
+            if let Some(&global_id) = lang_remap.get(record.lang_id as usize) {
+                record.lang_id = global_id;
+            }
+        }
+
+        // Feed remapped record to stats hook (global IDs are now valid)
+        if let Some(ref mut hook) = stats_hook {
+            let dt = dt_tags
+                .and_then(|t| t.get(record.dt as usize).copied())
+                .unwrap_or(ValueTypeTag::UNKNOWN);
+            hook.on_record(&crate::stats::StatsRecord {
+                g_id: record.g_id as u32,
+                p_id: record.p_id,
+                s_id: record.s_id.as_u64(),
+                dt,
+                o_hash: crate::stats::value_hash(record.o_kind, record.o_key),
+                o_kind: record.o_kind,
+                o_key: record.o_key,
+                t: record.t as i64,
+                op: record.op != 0,
+            });
+        }
+
+        writer.push(record, lang_dict)?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
+// ============================================================================
+// Sorted commit file (Phase A: sort + remap + write)
+// ============================================================================
+
+/// Result of sorting, remapping, and writing a sorted commit file.
+#[derive(Debug, Clone)]
+pub struct SortedCommitInfo {
+    /// Path to the sorted commit file (.fsc).
+    pub path: PathBuf,
+    /// Number of records in the file.
+    pub record_count: u64,
+    /// File size on disk (bytes).
+    pub byte_len: u64,
+    /// Chunk index that produced this sorted commit.
+    pub chunk_idx: usize,
+    /// Number of unique subjects in this chunk.
+    pub subject_count: u64,
+    /// Number of unique strings in this chunk.
+    pub string_count: u64,
+}
+
+/// Sort, remap, and write a sorted commit file from buffered parse output.
+///
+/// This implements Plan Phase A steps A.2 and A.3:
+///
+/// 1. Sort subjects by canonical order `(ns_code ASC, suffix ASC)` and write
+///    a sorted vocab file with sorted-position IDs.
+/// 2. Sort strings by UTF-8 byte-lex order and write a sorted vocab file.
+/// 3. Remap all buffered records from insertion-order local IDs to sorted-order
+///    IDs using [`remap_record()`].
+/// 4. Sort records by `(g_id, SPOT)` using [`cmp_g_spot`].
+/// 5. Write the sorted records to a spool-wire-format file (`.fsc`).
+///
+/// The resulting file is an intermediate artifact for the SPOT index merge
+/// (Phase C). It is NOT the permanent commit — that is the commit-v2 blob
+/// written during parse via `StreamingCommitWriter`.
+///
+/// The sorted vocab files use sorted-position IDs as `local_id`, so the
+/// downstream k-way merge produces remap tables mapping
+/// `sorted_local_id → global_id`.
+///
+/// [`cmp_g_spot`]: super::run_record::cmp_g_spot
+pub fn sort_remap_and_write_sorted_commit(
+    mut records: Vec<RunRecord>,
+    subjects: super::chunk_dict::ChunkSubjectDict,
+    strings: super::chunk_dict::ChunkStringDict,
+    subject_vocab_path: &Path,
+    string_vocab_path: &Path,
+    commit_path: &Path,
+    chunk_idx: usize,
+    languages: Option<(&rustc_hash::FxHashMap<String, u16>, &Path)>,
+) -> io::Result<SortedCommitInfo> {
+    // A.2 step 1: Sort subjects and build insertion→sorted remap.
+    let (subject_remap, subject_count) =
+        subjects.sort_and_write_sorted_vocab(subject_vocab_path)?;
+
+    // A.2 step 2: Sort strings and build insertion→sorted remap.
+    let (string_remap, string_count) = strings.sort_and_write_sorted_vocab(string_vocab_path)?;
+
+    // A.2 step 2b: Write per-chunk language vocab file.
+    // Language tags are chunk-local (assigned in parse order). We persist
+    // them as a LanguageTagDict so that Phase B can build a unified dict
+    // with per-chunk remap tables for the SPOT merge.
+    if let Some((lang_map, lang_vocab_path)) = languages {
+        let mut lang_dict = super::global_dict::LanguageTagDict::new();
+        // Insert tags in ID order (1, 2, ...) to preserve the chunk-local mapping.
+        let mut entries: Vec<(&String, &u16)> = lang_map.iter().collect();
+        entries.sort_by_key(|(_, &id)| id);
+        for (tag, _) in entries {
+            lang_dict.get_or_insert(Some(tag));
+        }
+        let lang_bytes = super::run_file::serialize_lang_dict(&lang_dict);
+        std::fs::write(lang_vocab_path, &lang_bytes)?;
+    }
+
+    // A.2 step 3: Remap all records (insertion-order → sorted-order local IDs).
+    // Reuses remap_record() — Vec<u64>/Vec<u32> implement SubjectRemap/StringRemap.
+    for record in &mut records {
+        remap_record(record, &subject_remap, &string_remap)?;
+    }
+
+    // A.2 step 4: Sort records by (g_id, SPOT).
+    records.sort_unstable_by(super::run_record::cmp_g_spot);
+
+    // A.3: Write sorted commit file (.fsc) via SpoolWriter (spool wire format).
+    let mut writer = SpoolWriter::new(commit_path, chunk_idx)?;
+    for record in &records {
+        writer.push(record)?;
+    }
+    let spool_info = writer.finish()?;
+
+    Ok(SortedCommitInfo {
+        path: spool_info.path,
+        record_count: spool_info.record_count,
+        byte_len: spool_info.byte_len,
+        chunk_idx: spool_info.chunk_idx,
+        subject_count,
+        string_count,
+    })
 }
 
 // ============================================================================
@@ -1363,6 +1567,236 @@ mod tests {
 
         // The graph entry should contain 3 properties (p_id 10, 20, 30)
         assert_eq!(result.graphs[0].properties.len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_sort_remap_and_write_sorted_commit() {
+        use super::super::chunk_dict::{ChunkSubjectDict, ChunkStringDict};
+
+        let dir = std::env::temp_dir().join("fluree_test_sorted_commit");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Build chunk dicts with known insertion order.
+        // Subjects: 0="ns10:Bob", 1="ns5:Alice", 2="ns10:Alice"
+        // Canonical sort: (ns5:Alice=1) < (ns10:Alice=2) < (ns10:Bob=0)
+        // So insertion→sorted remap: [2, 0, 1]
+        let mut subj_dict = ChunkSubjectDict::new();
+        let s0 = subj_dict.get_or_insert(10, b"Bob");    // insertion 0 → sorted 2
+        let s1 = subj_dict.get_or_insert(5, b"Alice");   // insertion 1 → sorted 0
+        let s2 = subj_dict.get_or_insert(10, b"Alice");  // insertion 2 → sorted 1
+        assert_eq!(s0, 0);
+        assert_eq!(s1, 1);
+        assert_eq!(s2, 2);
+
+        // Strings: 0="zebra", 1="apple"
+        // Sorted: "apple"(1) < "zebra"(0)
+        // insertion→sorted remap: [1, 0]
+        let mut str_dict = ChunkStringDict::new();
+        let st0 = str_dict.get_or_insert(b"zebra");  // insertion 0 → sorted 1
+        let st1 = str_dict.get_or_insert(b"apple");  // insertion 1 → sorted 0
+        assert_eq!(st0, 0);
+        assert_eq!(st1, 1);
+
+        // Build records with insertion-order local IDs:
+        //   rec0: s_id=0 (Bob@ns10), p_id=10, LEX_ID obj=string 0 ("zebra")
+        //   rec1: s_id=1 (Alice@ns5), p_id=20, REF_ID obj=subject 2 (Alice@ns10)
+        //   rec2: s_id=2 (Alice@ns10), p_id=10, NUM_INT obj=42
+        let records = vec![
+            make_record(0, 10, ObjKind::LEX_ID, ObjKey::encode_u32_id(0).as_u64(), 1),
+            make_record(1, 20, ObjKind::REF_ID, 2, 1),
+            make_record(2, 10, ObjKind::NUM_INT, ObjKey::encode_i64(42).as_u64(), 1),
+        ];
+
+        let subj_vocab = dir.join("subjects.voc");
+        let str_vocab = dir.join("strings.voc");
+        let commit_path = dir.join("commit_0.fsc");
+
+        let info = sort_remap_and_write_sorted_commit(
+            records,
+            subj_dict,
+            str_dict,
+            &subj_vocab,
+            &str_vocab,
+            &commit_path,
+            0,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(info.record_count, 3);
+        assert_eq!(info.subject_count, 3);
+        assert_eq!(info.string_count, 2);
+        assert_eq!(info.chunk_idx, 0);
+
+        // Read back the sorted commit file.
+        let reader = SpoolReader::open(&commit_path, 3).unwrap();
+        let read: Vec<RunRecord> = reader.map(|r| r.unwrap()).collect();
+        assert_eq!(read.len(), 3);
+
+        // After remap:
+        //   rec0: s_id=2, LEX_ID obj=1  (Bob→sorted 2, "zebra"→sorted 1)
+        //   rec1: s_id=0, REF_ID obj=1  (Alice@ns5→sorted 0, Alice@ns10→sorted 1)
+        //   rec2: s_id=1, NUM_INT obj=42 (Alice@ns10→sorted 1, obj unchanged)
+        //
+        // SPOT sort by s_id: rec1(s=0) < rec2(s=1) < rec0(s=2)
+        assert_eq!(read[0].s_id, SubjectId::from_u64(0)); // Alice@ns5
+        assert_eq!(read[0].p_id, 20);
+        assert_eq!(read[0].o_kind, ObjKind::REF_ID.as_u8());
+        assert_eq!(read[0].o_key, 1); // ref to Alice@ns10 (sorted pos 1)
+
+        assert_eq!(read[1].s_id, SubjectId::from_u64(1)); // Alice@ns10
+        assert_eq!(read[1].p_id, 10);
+        assert_eq!(read[1].o_kind, ObjKind::NUM_INT.as_u8());
+        assert_eq!(read[1].o_key, ObjKey::encode_i64(42).as_u64());
+
+        assert_eq!(read[2].s_id, SubjectId::from_u64(2)); // Bob@ns10
+        assert_eq!(read[2].p_id, 10);
+        assert_eq!(read[2].o_kind, ObjKind::LEX_ID.as_u8());
+        assert_eq!(ObjKey::from_u64(read[2].o_key).decode_u32_id(), 1); // "zebra" → sorted 1
+
+        // Verify SPOT order: records must be sorted by s_id ascending
+        assert!(read[0].s_id.as_u64() <= read[1].s_id.as_u64());
+        assert!(read[1].s_id.as_u64() <= read[2].s_id.as_u64());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_sorted_commit_multi_graph() {
+        use super::super::chunk_dict::{ChunkSubjectDict, ChunkStringDict};
+
+        let dir = std::env::temp_dir().join("fluree_test_sorted_commit_mg");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut subj_dict = ChunkSubjectDict::new();
+        subj_dict.get_or_insert(10, b"A"); // insertion 0
+        subj_dict.get_or_insert(10, b"B"); // insertion 1
+
+        let str_dict = ChunkStringDict::new(); // no strings
+
+        // Records in two graphs (g_id=1 and g_id=0), unsorted.
+        let mut rec0 = make_record(1, 10, ObjKind::NUM_INT, 1, 1);
+        rec0.g_id = 1;
+        let mut rec1 = make_record(0, 10, ObjKind::NUM_INT, 2, 1);
+        rec1.g_id = 0;
+        let mut rec2 = make_record(1, 20, ObjKind::NUM_INT, 3, 1);
+        rec2.g_id = 0;
+        let records = vec![rec0, rec1, rec2];
+
+        let subj_vocab = dir.join("subjects.voc");
+        let str_vocab = dir.join("strings.voc");
+        let commit_path = dir.join("commit_0.fsc");
+
+        let info = sort_remap_and_write_sorted_commit(
+            records,
+            subj_dict,
+            str_dict,
+            &subj_vocab,
+            &str_vocab,
+            &commit_path,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(info.record_count, 3);
+
+        // Read back.
+        let reader = SpoolReader::open(&commit_path, 3).unwrap();
+        let read: Vec<RunRecord> = reader.map(|r| r.unwrap()).collect();
+
+        // cmp_g_spot sorts by g_id first: g_id=0 records before g_id=1.
+        // Subject remap: A(0)→0, B(1)→1 (already canonical order for ns10).
+        assert_eq!(read[0].g_id, 0);
+        assert_eq!(read[1].g_id, 0);
+        assert_eq!(read[2].g_id, 1);
+
+        // Within g_id=0: SPOT sorts by s_id: A(0) < B(1)
+        assert!(read[0].s_id.as_u64() <= read[1].s_id.as_u64());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_remap_commit_to_runs() {
+        use super::super::chunk_dict::{ChunkSubjectDict, ChunkStringDict};
+        use super::super::global_dict::LanguageTagDict;
+        use super::super::run_record::RunSortOrder;
+        use super::super::run_writer::{MultiOrderConfig, MultiOrderRunWriter};
+
+        let dir = std::env::temp_dir().join("fluree_test_remap_commit_runs");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create a sorted commit file: 2 subjects, 1 string
+        let mut subj_dict = ChunkSubjectDict::new();
+        subj_dict.get_or_insert(10, b"A"); // sorted 0
+        subj_dict.get_or_insert(10, b"B"); // sorted 1
+
+        let mut str_dict = ChunkStringDict::new();
+        str_dict.get_or_insert(b"hello"); // sorted 0
+
+        let records = vec![
+            make_record(0, 10, ObjKind::LEX_ID, ObjKey::encode_u32_id(0).as_u64(), 1),
+            make_record(1, 20, ObjKind::REF_ID, 0, 1),
+        ];
+
+        let info = sort_remap_and_write_sorted_commit(
+            records,
+            subj_dict,
+            str_dict,
+            &dir.join("subj.voc"),
+            &dir.join("str.voc"),
+            &dir.join("commit_0.fsc"),
+            0,
+            None,
+        )
+        .unwrap();
+
+        // Global remap: sorted 0 (A) → 1000, sorted 1 (B) → 2000
+        let subject_remap = vec![1000u64, 2000];
+        // Global string remap: sorted 0 (hello) → 42
+        let string_remap = vec![42u32];
+
+        // Create 3-order run writer (PSOT, POST, OPST)
+        let run_dir = dir.join("runs");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let mo_config = MultiOrderConfig {
+            total_budget_bytes: 4 * 1024 * 1024,
+            orders: RunSortOrder::secondary_orders().to_vec(),
+            base_run_dir: run_dir.clone(),
+        };
+        let mut writer = MultiOrderRunWriter::new(mo_config).unwrap();
+        let mut lang_dict = LanguageTagDict::new();
+        let mut stats_hook = crate::stats::IdStatsHook::new();
+
+        let written = remap_commit_to_runs(
+            &dir.join("commit_0.fsc"),
+            info.record_count,
+            &subject_remap,
+            &string_remap,
+            &[], // no lang remap
+            &mut writer,
+            &mut lang_dict,
+            Some(&mut stats_hook),
+            None,
+        )
+        .unwrap();
+        assert_eq!(written, 2);
+
+        // Flush and verify run files exist for all 3 orders
+        let results = writer.finish(&mut lang_dict).unwrap();
+        assert_eq!(results.len(), 3);
+        for (order, result) in &results {
+            assert_eq!(result.total_records, 2, "order {:?} should have 2 records", order);
+        }
+
+        // Verify stats hook received records
+        let (result, _, _, _, _) = stats_hook.finalize_with_aggregate_properties();
+        assert_eq!(result.total_flakes, 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -721,6 +721,11 @@ impl Region3Entry {
             i: if r.i == LIST_INDEX_NONE {
                 ListIndex::none().as_i32()
             } else {
+                debug_assert!(
+                    r.i <= i32::MAX as u32,
+                    "list index {} exceeds i32::MAX, would wrap in Region3Entry",
+                    r.i
+                );
                 r.i as i32
             },
         }

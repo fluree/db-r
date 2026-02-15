@@ -12,7 +12,7 @@ use super::lang_remap::build_lang_remap;
 use super::leaf::{LeafInfo, LeafWriter};
 use super::leaflet::p_width_for_max;
 use super::merge::KWayMerge;
-use super::run_record::{cmp_for_order, RunSortOrder};
+use super::run_record::{cmp_for_order, RunRecord, RunSortOrder};
 use super::streaming_reader::StreamingRunReader;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -459,6 +459,215 @@ pub fn build_spot_index(config: IndexBuildConfig) -> Result<IndexBuildResult, In
 }
 
 // ============================================================================
+// SPOT merge from sorted commit files (Phase C)
+// ============================================================================
+
+/// Input for one sorted commit file in `build_spot_from_sorted_commits`.
+pub struct SortedCommitInput {
+    /// Path to the sorted commit file (.fsc).
+    pub commit_path: PathBuf,
+    /// Subject remap: sorted-local → global sid64.
+    pub subject_remap: Box<dyn super::spool::SubjectRemap + Send>,
+    /// String remap: sorted-local → global string ID.
+    pub string_remap: Box<dyn super::spool::StringRemap + Send>,
+    /// Language tag remap: chunk-local lang_id → global lang_id.
+    /// `remap[0] = 0` (sentinel). Empty means no remap needed.
+    pub lang_remap: Vec<u16>,
+}
+
+/// Configuration for building SPOT indexes from sorted commit files.
+pub struct SpotFromCommitsConfig {
+    /// Output directory for per-graph indexes.
+    pub index_dir: PathBuf,
+    /// Predicate field width in bytes (1, 2, or 4).
+    pub p_width: u8,
+    /// Datatype field width in bytes (1 or 2, computed from datatype dict size).
+    pub dt_width: u8,
+    /// Target rows per leaflet.
+    pub leaflet_rows: usize,
+    /// Leaflets per leaf file.
+    pub leaflets_per_leaf: usize,
+    /// zstd compression level.
+    pub zstd_level: i32,
+    /// Progress counter (incremented per row merged).
+    pub progress: Option<Arc<AtomicU64>>,
+    /// Skip deduplication during merge. Safe for fresh bulk import where each
+    /// chunk produces unique asserts and there are no retractions.
+    pub skip_dedup: bool,
+}
+
+/// Build per-graph SPOT indexes by k-way merging sorted commit files.
+///
+/// Each commit file contains records sorted by `(g_id, SPOT)` with
+/// sorted-position chunk-local IDs. The per-commit remap tables (from the
+/// Phase B vocabulary merge) are applied on-the-fly during the merge via
+/// [`StreamingSortedCommitReader`].
+///
+/// Because the chunk-local IDs are assigned in canonical order and the
+/// global IDs are assigned in the same order (monotone remap), the
+/// per-commit SPOT sort order is preserved after remap. This makes the
+/// k-way merge correct — it produces globally-sorted `(g_id, SPOT)` output.
+///
+/// Graph transitions (`g_id` changes) create per-graph index segments,
+/// each with its own leaf files and branch manifest.
+pub fn build_spot_from_sorted_commits(
+    inputs: Vec<SortedCommitInput>,
+    config: SpotFromCommitsConfig,
+) -> Result<IndexBuildResult, IndexBuildError> {
+    use super::run_record::cmp_g_spot;
+    use super::sorted_commit_reader::StreamingSortedCommitReader;
+
+    let order = RunSortOrder::Spot;
+    let order_name = order.dir_name();
+    let start = Instant::now();
+    let _span = tracing::info_span!("build_spot_from_commits").entered();
+
+    if inputs.is_empty() {
+        return Err(IndexBuildError::NoRunFiles);
+    }
+
+    std::fs::create_dir_all(&config.index_dir)?;
+
+    // Open streaming readers with per-commit remaps.
+    let mut streams = Vec::with_capacity(inputs.len());
+    for (i, input) in inputs.into_iter().enumerate() {
+        let reader = StreamingSortedCommitReader::open(
+            &input.commit_path,
+            input.subject_remap,
+            input.string_remap,
+            input.lang_remap,
+        )?;
+        tracing::debug!(
+            commit = i,
+            records = reader.record_count(),
+            path = %input.commit_path.display(),
+            "opened sorted commit stream"
+        );
+        streams.push(reader);
+    }
+
+    // K-way merge with (g_id, SPOT) comparator.
+    let mut merge = KWayMerge::new(streams, cmp_g_spot)?;
+
+    // Merge loop: pull records, split by g_id, write per-graph indexes.
+    let mut graph_results: Vec<GraphIndexResult> = Vec::new();
+    let mut total_rows: u64 = 0;
+    let mut retract_count: u64 = 0;
+    let mut max_t: u32 = 0;
+    let skip_dedup = config.skip_dedup;
+
+    let mut current_g_id: Option<u16> = None;
+    let mut current_writer: Option<LeafWriter> = None;
+
+    let next_fn = |merge: &mut KWayMerge<StreamingSortedCommitReader>| -> io::Result<Option<RunRecord>> {
+        if skip_dedup {
+            merge.next_record()
+        } else {
+            merge.next_deduped()
+        }
+    };
+
+    while let Some(record) = next_fn(&mut merge)? {
+        if record.t > max_t {
+            max_t = record.t;
+        }
+
+        if record.op == 0 {
+            retract_count += 1;
+            continue;
+        }
+
+        let g_id = record.g_id;
+
+        // Detect g_id transition
+        if current_g_id != Some(g_id) {
+            // Finish previous graph
+            if let Some(writer) = current_writer.take() {
+                let leaf_infos = writer.finish()?;
+                if let Some(prev_g_id) = current_g_id {
+                    let result = finish_graph(
+                        prev_g_id as u32,
+                        leaf_infos,
+                        &config.index_dir,
+                        order_name,
+                    )?;
+                    tracing::info!(
+                        g_id = prev_g_id,
+                        leaves = result.leaf_count,
+                        rows = result.total_rows,
+                        "SPOT graph complete"
+                    );
+                    graph_results.push(result);
+                }
+            }
+
+            // Start new graph
+            let graph_dir = config
+                .index_dir
+                .join(format!("graph_{}/{}", g_id, order_name));
+            std::fs::create_dir_all(&graph_dir)?;
+
+            current_writer = Some(LeafWriter::with_widths(
+                graph_dir,
+                config.leaflet_rows,
+                config.leaflets_per_leaf,
+                config.zstd_level,
+                config.dt_width,
+                config.p_width,
+                order,
+            ));
+            current_g_id = Some(g_id);
+        }
+
+        current_writer.as_mut().unwrap().push_record(record)?;
+        total_rows += 1;
+        if let Some(ref ctr) = config.progress {
+            ctr.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    // Finish last graph
+    if let Some(writer) = current_writer.take() {
+        let leaf_infos = writer.finish()?;
+        if let Some(g_id) = current_g_id {
+            let result = finish_graph(g_id as u32, leaf_infos, &config.index_dir, order_name)?;
+            tracing::info!(
+                g_id,
+                leaves = result.leaf_count,
+                rows = result.total_rows,
+                "SPOT graph complete"
+            );
+            graph_results.push(result);
+        }
+    }
+
+    write_index_manifest(
+        &config.index_dir,
+        &graph_results,
+        total_rows,
+        max_t,
+        order_name,
+    )?;
+
+    let elapsed = start.elapsed();
+    tracing::info!(
+        graphs = graph_results.len(),
+        total_rows,
+        retract_count,
+        max_t,
+        elapsed_s = elapsed.as_secs(),
+        "SPOT index build from sorted commits complete"
+    );
+
+    Ok(IndexBuildResult {
+        graphs: graph_results,
+        total_rows,
+        index_dir: config.index_dir,
+        elapsed,
+    })
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -894,6 +1103,155 @@ mod tests {
 
         // After dedup: only 1 record
         assert_eq!(result.total_rows, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_spot_from_sorted_commits() {
+        use crate::run_index::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
+        use crate::run_index::run_record::LIST_INDEX_NONE;
+        use crate::run_index::spool::sort_remap_and_write_sorted_commit;
+        use fluree_db_core::subject_id::SubjectId;
+
+        let dir = std::env::temp_dir().join("fluree_test_spot_from_commits");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let index_dir = dir.join("index");
+
+        // Chunk 0: subjects A, C (ns=10)
+        let mut subj0 = ChunkSubjectDict::new();
+        subj0.get_or_insert(10, b"A"); // sorted 0
+        subj0.get_or_insert(10, b"C"); // sorted 1
+        let str0 = ChunkStringDict::new();
+
+        let recs0 = vec![
+            RunRecord {
+                g_id: 0,
+                s_id: SubjectId::from_u64(0),
+                p_id: 10,
+                o_kind: ObjKind::NUM_INT.as_u8(),
+                o_key: ObjKey::encode_i64(1).as_u64(),
+                t: 1,
+                op: 1,
+                dt: DatatypeDictId::INTEGER.as_u16(),
+                lang_id: 0,
+                i: LIST_INDEX_NONE,
+            },
+            RunRecord {
+                g_id: 0,
+                s_id: SubjectId::from_u64(1),
+                p_id: 10,
+                o_kind: ObjKind::NUM_INT.as_u8(),
+                o_key: ObjKey::encode_i64(3).as_u64(),
+                t: 1,
+                op: 1,
+                dt: DatatypeDictId::INTEGER.as_u16(),
+                lang_id: 0,
+                i: LIST_INDEX_NONE,
+            },
+        ];
+
+        sort_remap_and_write_sorted_commit(
+            recs0,
+            subj0,
+            str0,
+            &dir.join("subj0.voc"),
+            &dir.join("str0.voc"),
+            &dir.join("commit_0.fsc"),
+            0,
+            None,
+        )
+        .unwrap();
+
+        // Chunk 1: subjects B, D (ns=10)
+        let mut subj1 = ChunkSubjectDict::new();
+        subj1.get_or_insert(10, b"B"); // sorted 0
+        subj1.get_or_insert(10, b"D"); // sorted 1
+        let str1 = ChunkStringDict::new();
+
+        let recs1 = vec![
+            RunRecord {
+                g_id: 0,
+                s_id: SubjectId::from_u64(0),
+                p_id: 10,
+                o_kind: ObjKind::NUM_INT.as_u8(),
+                o_key: ObjKey::encode_i64(2).as_u64(),
+                t: 2,
+                op: 1,
+                dt: DatatypeDictId::INTEGER.as_u16(),
+                lang_id: 0,
+                i: LIST_INDEX_NONE,
+            },
+            RunRecord {
+                g_id: 0,
+                s_id: SubjectId::from_u64(1),
+                p_id: 10,
+                o_kind: ObjKind::NUM_INT.as_u8(),
+                o_key: ObjKey::encode_i64(4).as_u64(),
+                t: 2,
+                op: 1,
+                dt: DatatypeDictId::INTEGER.as_u16(),
+                lang_id: 0,
+                i: LIST_INDEX_NONE,
+            },
+        ];
+
+        sort_remap_and_write_sorted_commit(
+            recs1,
+            subj1,
+            str1,
+            &dir.join("subj1.voc"),
+            &dir.join("str1.voc"),
+            &dir.join("commit_1.fsc"),
+            1,
+            None,
+        )
+        .unwrap();
+
+        // Global remaps (monotone):
+        // Chunk 0: sorted 0 (A) → 100, sorted 1 (C) → 300
+        // Chunk 1: sorted 0 (B) → 200, sorted 1 (D) → 400
+        let inputs = vec![
+            SortedCommitInput {
+                commit_path: dir.join("commit_0.fsc"),
+                subject_remap: Box::new(vec![100u64, 300]),
+                string_remap: Box::new(Vec::<u32>::new()),
+                lang_remap: vec![],
+            },
+            SortedCommitInput {
+                commit_path: dir.join("commit_1.fsc"),
+                subject_remap: Box::new(vec![200u64, 400]),
+                string_remap: Box::new(Vec::<u32>::new()),
+                lang_remap: vec![],
+            },
+        ];
+
+        let config = SpotFromCommitsConfig {
+            index_dir: index_dir.clone(),
+            p_width: 2,
+            dt_width: 1,
+            leaflet_rows: 100,
+            leaflets_per_leaf: 10,
+            zstd_level: 1,
+            progress: None,
+            skip_dedup: false,
+        };
+
+        let result = build_spot_from_sorted_commits(inputs, config).unwrap();
+
+        assert_eq!(result.total_rows, 4);
+        assert_eq!(result.graphs.len(), 1);
+        assert_eq!(result.graphs[0].g_id, 0);
+        assert_eq!(result.graphs[0].total_rows, 4);
+
+        // Verify branch file exists
+        let branch_path = result.graphs[0]
+            .graph_dir
+            .join(format!("{}.fbr", result.graphs[0].branch_hash));
+        assert!(branch_path.exists());
+        assert!(index_dir.join("index_manifest_spot.json").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

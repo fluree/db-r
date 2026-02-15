@@ -1,8 +1,12 @@
-//! K-way merge of N sorted run file streams.
+//! K-way merge of N sorted streams.
 //!
-//! Uses a min-heap (`BinaryHeap<Reverse<…>>`) to merge N
-//! `StreamingRunReader` streams into a single globally-sorted sequence.
-//! Provides both raw (`next`) and deduplicating (`next_deduped`) iteration.
+//! Uses a min-heap (`BinaryHeap<Reverse<…>>`) to merge N streams into a
+//! single globally-sorted sequence. Provides both raw (`next`) and
+//! deduplicating (`next_deduped`) iteration.
+//!
+//! Generic over [`MergeSource`] — works with both [`StreamingRunReader`]
+//! (34-byte run files) and [`StreamingSortedCommitReader`] (36-byte sorted
+//! commit files with on-the-fly remap).
 
 use super::run_record::{RunRecord, LIST_INDEX_NONE};
 use super::streaming_reader::StreamingRunReader;
@@ -11,8 +15,43 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 use std::io;
 
+// ============================================================================
+// MergeSource trait
+// ============================================================================
+
+/// Trait for buffered, forward-only record streams that can be k-way merged.
+///
+/// Implemented by [`StreamingRunReader`] (run files) and
+/// [`StreamingSortedCommitReader`] (sorted commit files with remap).
+pub trait MergeSource {
+    /// Peek at the current record without advancing. Returns `None` if exhausted.
+    fn peek(&self) -> Option<&RunRecord>;
+
+    /// Advance to the next record, refilling the internal buffer from disk
+    /// if needed.
+    fn advance(&mut self) -> io::Result<()>;
+
+    /// True when all records have been consumed.
+    fn is_exhausted(&self) -> bool;
+}
+
+impl MergeSource for StreamingRunReader {
+    #[inline]
+    fn peek(&self) -> Option<&RunRecord> {
+        StreamingRunReader::peek(self)
+    }
+
+    fn advance(&mut self) -> io::Result<()> {
+        StreamingRunReader::advance(self)
+    }
+
+    fn is_exhausted(&self) -> bool {
+        StreamingRunReader::is_exhausted(self)
+    }
+}
+
 /// Comparator function type for RunRecord ordering.
-type CmpFn = fn(&RunRecord, &RunRecord) -> Ordering;
+pub type CmpFn = fn(&RunRecord, &RunRecord) -> Ordering;
 
 /// Entry in the min-heap: a record + which stream it came from.
 struct HeapEntry {
@@ -42,20 +81,20 @@ impl Ord for HeapEntry {
     }
 }
 
-/// K-way merge iterator over sorted run file streams.
+/// K-way merge iterator over sorted streams.
 ///
-/// Merges N `StreamingRunReader` streams using a min-heap.
+/// Merges N [`MergeSource`] streams using a min-heap.
 /// Records emerge in the order defined by the provided comparator.
-pub struct KWayMerge {
+pub struct KWayMerge<T: MergeSource> {
     heap: BinaryHeap<Reverse<HeapEntry>>,
-    streams: Vec<StreamingRunReader>,
+    streams: Vec<T>,
     cmp_fn: CmpFn,
 }
 
-impl KWayMerge {
+impl<T: MergeSource> KWayMerge<T> {
     /// Create a merge from opened streams. Seeds the heap with the first
     /// record from each non-empty stream.
-    pub fn new(streams: Vec<StreamingRunReader>, cmp_fn: CmpFn) -> io::Result<Self> {
+    pub fn new(streams: Vec<T>, cmp_fn: CmpFn) -> io::Result<Self> {
         let mut heap = BinaryHeap::with_capacity(streams.len());
 
         for (idx, stream) in streams.iter().enumerate() {
@@ -75,7 +114,7 @@ impl KWayMerge {
         })
     }
 
-    /// Pop the next record in global SPOT order (no deduplication).
+    /// Pop the next record in merge order (no deduplication).
     pub fn next_record(&mut self) -> io::Result<Option<RunRecord>> {
         let entry = match self.heap.pop() {
             Some(Reverse(e)) => e,

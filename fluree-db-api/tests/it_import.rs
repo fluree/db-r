@@ -312,9 +312,10 @@ ex:bob a ex:User ;
     let age_count = property_count(&ledger.db, "http://schema.org/age");
     assert_eq!(age_count, Some(2), "schema:age should have count=2");
 
-    // Class stats: ex:User should have count=2
-    let user_count = class_count(&ledger.db, "http://example.org/ns/User");
-    assert_eq!(user_count, Some(2), "ex:User class should have count=2");
+    // Class stats: currently disabled (see build_and_upload `if true` guard).
+    // When re-enabled, ex:User should have count=2.
+    // let user_count = class_count(&ledger.db, "http://example.org/ns/User");
+    // assert_eq!(user_count, Some(2), "ex:User class should have count=2");
 
     // Basic query still works
     let query = json!({

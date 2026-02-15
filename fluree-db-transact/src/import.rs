@@ -92,10 +92,10 @@ mod inner {
         /// Available for downstream consumers (e.g., run generation)
         /// without re-reading from storage.
         pub commit_blob: Vec<u8>,
-        /// Spool result from this chunk's parse (if spool was enabled).
-        /// Contains chunk-local dictionaries + spool file info for the
-        /// Tier 2 merge+remap pipeline.
-        pub spool_result: Option<crate::import_sink::SpoolResult>,
+        /// Buffered spool result from this chunk's parse (if spool was enabled).
+        /// Contains buffered RunRecords with chunk-local IDs and chunk-local
+        /// dictionaries for the post-parse sort + sorted commit write pipeline.
+        pub spool_result: Option<crate::import_sink::BufferedSpoolResult>,
     }
 
     /// Import a single TTL chunk as a v2 commit blob.
@@ -157,10 +157,7 @@ mod inner {
                 .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
             state.prefix_map.extend(chunk_prefix_map);
 
-            let spool_result = spool_ctx
-                .map(|ctx| ctx.finish())
-                .transpose()
-                .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
+            let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
             let op_count = writer.op_count();
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
@@ -299,10 +296,7 @@ mod inner {
                 .finish()
                 .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
 
-            let spool_result = spool_ctx
-                .map(|ctx| ctx.finish())
-                .transpose()
-                .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
+            let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
             let op_count = writer.op_count();
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
@@ -455,10 +449,7 @@ mod inner {
             .finish()
             .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
         state.prefix_map.extend(chunk_prefix_map);
-        let spool_result = spool_ctx
-            .map(|ctx| ctx.finish())
-            .transpose()
-            .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
+        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
         let mut op_count = writer.op_count();
 
         // 4. Process named graphs
@@ -704,9 +695,10 @@ mod inner {
         pub new_codes: FxHashSet<u16>,
         /// Turtle @prefix short names from this chunk: IRI → short prefix.
         pub prefix_map: HashMap<String, String>,
-        /// Spool result from parallel import (if enabled). Contains spool file
-        /// info and chunk-local dictionaries for the merge phase.
-        pub spool_result: Option<crate::import_sink::SpoolResult>,
+        /// Buffered spool result from parallel import (if enabled). Contains
+        /// buffered RunRecords with chunk-local IDs and chunk-local
+        /// dictionaries for the post-parse sort + sorted commit write pipeline.
+        pub spool_result: Option<crate::import_sink::BufferedSpoolResult>,
     }
 
     /// Parse a TTL chunk into a `StreamingCommitWriter`. Thread-safe.
@@ -755,10 +747,7 @@ mod inner {
         let op_count = writer.op_count();
         let new_codes = worker_cache.into_new_codes();
 
-        let spool_result = spool_ctx
-            .map(|ctx| ctx.finish())
-            .transpose()
-            .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
+        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
 
         Ok(ParsedChunk {
             writer,
@@ -823,10 +812,7 @@ mod inner {
         let op_count = writer.op_count();
         let new_codes = worker_cache.into_new_codes();
 
-        let spool_result = spool_ctx
-            .map(|ctx| ctx.finish())
-            .transpose()
-            .map_err(|e| TransactError::Parse(format!("spool finish: {}", e)))?;
+        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
 
         Ok(ParsedChunk {
             writer,

@@ -74,27 +74,30 @@ impl Ord for SubjectHeapEntry {
 
 /// Merge all sorted subject vocab files into global forward dict + remap tables.
 ///
-/// - `vocab_paths`: sorted `.voc` file paths, one per chunk (index = chunk_id)
+/// - `vocab_paths`: sorted `.voc` file paths, one per chunk
+/// - `chunk_ids`: original chunk indices (used for remap file naming: `subjects_NNNNN.rmp`)
 /// - `remap_dir`: directory for remap output files (`subjects_NNNNN.rmp`)
 /// - `run_dir`: directory for forward dict output files
 /// - `namespace_codes`: ns_code → IRI prefix for full IRI reconstruction
 pub fn merge_subject_vocabs(
     vocab_paths: &[PathBuf],
+    chunk_ids: &[usize],
     remap_dir: &Path,
     run_dir: &Path,
     namespace_codes: &HashMap<u16, String>,
 ) -> io::Result<SubjectMergeStats> {
     let k = vocab_paths.len();
+    assert_eq!(chunk_ids.len(), k, "chunk_ids must match vocab_paths length");
 
     // Open all readers + create mmap'd remap files.
     let mut readers: Vec<SubjectVocabReader> = Vec::with_capacity(k);
     let mut remaps: Vec<MmapRemapU64> = Vec::with_capacity(k);
 
-    for (chunk_id, path) in vocab_paths.iter().enumerate() {
+    for (i, path) in vocab_paths.iter().enumerate() {
         let reader = SubjectVocabReader::open(path)?;
         let entry_count = reader.header().entry_count;
 
-        let remap_path = remap_dir.join(format!("subjects_{:05}.rmp", chunk_id));
+        let remap_path = remap_dir.join(format!("subjects_{:05}.rmp", chunk_ids[i]));
         let remap = MmapRemapU64::create(&remap_path, entry_count)?;
 
         readers.push(reader);
@@ -227,21 +230,25 @@ impl Ord for StringHeapEntry {
 }
 
 /// Merge all sorted string vocab files into global forward dict + remap tables.
+///
+/// - `chunk_ids`: original chunk indices (used for remap file naming: `strings_NNNNN.rmp`)
 pub fn merge_string_vocabs(
     vocab_paths: &[PathBuf],
+    chunk_ids: &[usize],
     remap_dir: &Path,
     run_dir: &Path,
 ) -> io::Result<StringMergeStats> {
     let k = vocab_paths.len();
+    assert_eq!(chunk_ids.len(), k, "chunk_ids must match vocab_paths length");
 
     let mut readers: Vec<StringVocabReader> = Vec::with_capacity(k);
     let mut remaps: Vec<MmapRemapU32> = Vec::with_capacity(k);
 
-    for (chunk_id, path) in vocab_paths.iter().enumerate() {
+    for (i, path) in vocab_paths.iter().enumerate() {
         let reader = StringVocabReader::open(path)?;
         let entry_count = reader.header().entry_count;
 
-        let remap_path = remap_dir.join(format!("strings_{:05}.rmp", chunk_id));
+        let remap_path = remap_dir.join(format!("strings_{:05}.rmp", chunk_ids[i]));
         let remap = MmapRemapU32::create(&remap_path, entry_count)?;
 
         readers.push(reader);
@@ -589,7 +596,7 @@ mod tests {
             (10, "http://foo/".to_string()),
         ]);
 
-        let stats = merge_subject_vocabs(&[voc], &remap_dir, &dir, &ns).unwrap();
+        let stats = merge_subject_vocabs(&[voc], &[0], &remap_dir, &dir, &ns).unwrap();
         assert_eq!(stats.total_unique, 3);
         assert!(!stats.needs_wide);
 
@@ -631,7 +638,7 @@ mod tests {
 
         let ns = HashMap::from([(5u16, "http://ex.org/".to_string())]);
 
-        let stats = merge_subject_vocabs(&[voc0, voc1], &remap_dir, &dir, &ns).unwrap();
+        let stats = merge_subject_vocabs(&[voc0, voc1], &[0, 1], &remap_dir, &dir, &ns).unwrap();
         assert_eq!(stats.total_unique, 3); // Alice, Bob, Carol
 
         let remap0 = MmapSubjectRemap::open(remap_dir.join("subjects_00000.rmp")).unwrap();
@@ -670,7 +677,7 @@ mod tests {
             let v0 = make_subject_vocab(dir, 0, &[(1, b"X"), (2, b"Y")]);
             let v1 = make_subject_vocab(dir, 1, &[(1, b"X"), (1, b"Z")]);
 
-            merge_subject_vocabs(&[v0, v1], &remap_dir, dir, &ns).unwrap();
+            merge_subject_vocabs(&[v0, v1], &[0, 1], &remap_dir, dir, &ns).unwrap();
         }
 
         // Compare remap files byte-for-byte.
@@ -696,7 +703,7 @@ mod tests {
 
         let ns = HashMap::from([(5u16, "http://ex.org/".to_string())]);
 
-        let stats = merge_subject_vocabs(&[v0, v1, v2], &remap_dir, &dir, &ns).unwrap();
+        let stats = merge_subject_vocabs(&[v0, v1, v2], &[0, 1, 2], &remap_dir, &dir, &ns).unwrap();
         assert_eq!(stats.total_unique, 2);
 
         // Empty chunk's remap file should exist but be zero-length.
@@ -717,7 +724,7 @@ mod tests {
 
         let voc = make_string_vocab(&dir, 0, &[b"alpha", b"beta", b"gamma"]);
 
-        let stats = merge_string_vocabs(&[voc], &remap_dir, &dir).unwrap();
+        let stats = merge_string_vocabs(&[voc], &[0], &remap_dir, &dir).unwrap();
         assert_eq!(stats.total_unique, 3);
 
         let remap = MmapStringRemap::open(remap_dir.join("strings_00000.rmp")).unwrap();
@@ -742,7 +749,7 @@ mod tests {
         let v0 = make_string_vocab(&dir, 0, &[b"hello", b"world"]);
         let v1 = make_string_vocab(&dir, 1, &[b"hello", b"rust"]); // "hello" is dup
 
-        let stats = merge_string_vocabs(&[v0, v1], &remap_dir, &dir).unwrap();
+        let stats = merge_string_vocabs(&[v0, v1], &[0, 1], &remap_dir, &dir).unwrap();
         assert_eq!(stats.total_unique, 3); // hello, rust, world
 
         let remap0 = MmapStringRemap::open(remap_dir.join("strings_00000.rmp")).unwrap();
@@ -777,7 +784,7 @@ mod tests {
         let v0 = make_string_vocab(&dir, 0, &[b"x"]);
         let v1 = make_string_vocab(&dir, 1, &[]);
 
-        let stats = merge_string_vocabs(&[v0, v1], &remap_dir, &dir).unwrap();
+        let stats = merge_string_vocabs(&[v0, v1], &[0, 1], &remap_dir, &dir).unwrap();
         assert_eq!(stats.total_unique, 1);
 
         let remap1_path = remap_dir.join("strings_00001.rmp");
