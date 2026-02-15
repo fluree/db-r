@@ -251,7 +251,7 @@ impl ImportConfig {
         let numerator = budget_mb.saturating_sub(2048) as f64;
         let denominator = max_inflight as f64 * 2.5 + 1.0;
         let raw = (numerator / denominator).floor() as usize;
-        raw.clamp(128, 1024)
+        raw.clamp(128, 768)
     }
 
     /// Effective run budget in MB (derived from budget if not explicitly set).
@@ -1194,8 +1194,24 @@ where
     // Background sort/write pipeline: sorted commit files (.fsc) + vocab files (.voc)
     // are produced asynchronously after commit-v2 finalization. The serial commit loop
     // hands off records+dicts to spawn_blocking tasks, then continues immediately.
-    // Semaphore bounds memory: each inflight job holds a Vec<RunRecord> (~800MB for 20M flakes).
-    let sort_write_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
+    // Semaphore bounds memory: each inflight job holds a Vec<RunRecord>.
+    // Scale permits inversely with chunk size — smaller chunks need less memory per job,
+    // so we can safely run more concurrently without RSS explosion.
+    // Target: ~3GB total inflight sort/write memory.
+    let chunk_mb = config.effective_chunk_size_mb();
+    let sort_write_permits = match chunk_mb {
+        0..=256 => 8,
+        257..=512 => 6,
+        513..=768 => 4,
+        _ => 3,
+    };
+    tracing::info!(
+        sort_write_permits,
+        chunk_mb,
+        "background sort/write semaphore"
+    );
+    let sort_write_semaphore =
+        std::sync::Arc::new(tokio::sync::Semaphore::new(sort_write_permits));
     let mut sort_write_handles: Vec<
         tokio::task::JoinHandle<std::io::Result<SortedCommitInfo>>,
     > = Vec::new();
@@ -1790,7 +1806,26 @@ where
     let needs_wide = subj_stats.needs_wide;
     let next_string_id = str_stats.total_unique;
 
-    // Delete .voc files now that merge is complete (free disk space early).
+    // Build unified language dict + per-chunk remap tables from per-chunk lang vocab files.
+    // Must happen BEFORE deleting vocab_dir (which contains the .languages.voc files).
+    // This is needed so that:
+    // 1. remap_commit_to_runs can remap chunk-local lang_ids → global lang_ids
+    // 2. The unified dict is passed to RunWriter so run files have correct lang dicts
+    // 3. All indexes (SPOT, PSOT, POST, OPST) use consistent global lang_ids
+    let lang_vocab_paths: Vec<std::path::PathBuf> = sorted_commit_infos
+        .iter()
+        .map(|si| vocab_dir.join(format!("chunk_{:05}.languages.voc", si.chunk_idx)))
+        .collect();
+    let (unified_lang_dict, lang_remaps) =
+        fluree_db_indexer::run_index::build_lang_remap_from_vocabs(&lang_vocab_paths)
+            .map_err(|e| ImportError::RunGeneration(format!("lang remap: {}", e)))?;
+    tracing::info!(
+        tags = unified_lang_dict.len(),
+        chunks = lang_remaps.len(),
+        "built unified language dict"
+    );
+
+    // Delete .voc files now that all merges (subject, string, language) are complete.
     let _ = std::fs::remove_dir_all(&vocab_dir);
 
     tracing::info!(
@@ -1926,24 +1961,6 @@ where
     let _rdf_type_p_id = spool_config
         .predicate_alloc
         .get_or_insert(fluree_vocab::rdf::TYPE);
-
-    // Build unified language dict + per-chunk remap tables from per-chunk lang vocab files.
-    // This is needed BEFORE Phase D so that:
-    // 1. remap_commit_to_runs can remap chunk-local lang_ids → global lang_ids
-    // 2. The unified dict is passed to RunWriter so run files have correct lang dicts
-    // 3. All indexes (SPOT, PSOT, POST, OPST) use consistent global lang_ids
-    let lang_vocab_paths: Vec<std::path::PathBuf> = sorted_commit_infos
-        .iter()
-        .map(|si| vocab_dir.join(format!("chunk_{:05}.languages.voc", si.chunk_idx)))
-        .collect();
-    let (unified_lang_dict, lang_remaps) =
-        fluree_db_indexer::run_index::build_lang_remap_from_vocabs(&lang_vocab_paths)
-            .map_err(|e| ImportError::RunGeneration(format!("lang remap: {}", e)))?;
-    tracing::info!(
-        tags = unified_lang_dict.len(),
-        chunks = lang_remaps.len(),
-        "built unified language dict"
-    );
 
     // In a fresh import, all ops are assertions (no retractions).
     let total_asserts = state.cumulative_flakes;
