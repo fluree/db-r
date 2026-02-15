@@ -68,7 +68,6 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             chunk_size_mb,
             memory_budget_mb,
             parallelism,
-            run_budget_mb,
             leaflet_rows,
             leaflets_per_leaf,
         } => {
@@ -86,11 +85,6 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                     cli.parallelism
                 },
                 chunk_size_mb,
-                run_budget_mb: if run_budget_mb > 0 {
-                    run_budget_mb
-                } else {
-                    cli.run_budget_mb
-                },
                 leaflet_rows,
                 leaflets_per_leaf,
             };

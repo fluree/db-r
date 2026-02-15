@@ -96,8 +96,6 @@ pub type ProgressFn = Arc<dyn Fn(ImportPhase) + Send + Sync>;
 pub struct ImportConfig {
     /// Number of parallel TTL parse threads. Default: available parallelism (capped at 6).
     pub parse_threads: usize,
-    /// Run writer memory budget in MB. 0 = derive from memory budget. Default: 0.
-    pub run_budget_mb: usize,
     /// Whether to build multi-order indexes after runs. Default: true.
     pub build_index: bool,
     /// Whether to publish to nameservice after index build. Default: true.
@@ -121,8 +119,8 @@ pub struct ImportConfig {
     pub publish_every: usize,
     /// Overall memory budget in MB for the import pipeline. 0 = auto-detect (75% of RAM).
     ///
-    /// Used to derive `chunk_size_mb`, `max_inflight_chunks`, and `run_budget_mb`
-    /// when those fields are left at 0.
+    /// Used to derive `chunk_size_mb` and `max_inflight_chunks` when those fields
+    /// are left at 0.
     pub memory_budget_mb: usize,
     /// Chunk size in MB for splitting a single large Turtle file. 0 = derive from budget.
     pub chunk_size_mb: usize,
@@ -143,8 +141,6 @@ pub struct ImportConfig {
     /// Number of leaflets per leaf file. Default: 10.
     /// Larger values produce fewer, bigger leaf files (less tree depth, bigger reads).
     pub leaflets_per_leaf: usize,
-    /// Whether `run_budget_mb` was explicitly set (vs derived from memory budget).
-    run_budget_explicit: bool,
     /// Optional progress callback invoked at key pipeline milestones.
     pub progress: Option<ProgressFn>,
 }
@@ -168,7 +164,6 @@ impl Default for ImportConfig {
             .unwrap_or(4);
         Self {
             parse_threads: threads,
-            run_budget_mb: 0,
             build_index: true,
             publish: true,
             cleanup_local_files: true,
@@ -181,7 +176,6 @@ impl Default for ImportConfig {
             max_inflight_chunks: 0,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
-            run_budget_explicit: false,
             progress: None,
         }
     }
@@ -254,11 +248,8 @@ impl ImportConfig {
         raw.clamp(128, 768)
     }
 
-    /// Effective run budget in MB (derived from budget if not explicitly set).
+    /// Effective run budget in MB (always auto-derived from budget and parallelism).
     pub fn effective_run_budget_mb(&self) -> usize {
-        if self.run_budget_explicit && self.run_budget_mb > 0 {
-            return self.run_budget_mb;
-        }
         let budget_mb = self.effective_memory_budget_mb();
         let chunk_size = self.effective_chunk_size_mb();
         let threads = self.parse_threads.max(1);
@@ -279,7 +270,7 @@ impl ImportConfig {
     /// Phase D remap workers read pre-written sorted commit files, apply
     /// subject+string remap, sort into 3 secondary orders, and write run files.
     /// Memory per worker is bounded by `per_thread_budget_bytes` (derived from
-    /// `run_budget_mb / worker_count`), so we can safely run as many workers as
+    /// `effective_run_budget_mb() / worker_count`), so we can safely run as many workers as
     /// we have parse threads (which is already capped at CPU count, max 6).
     ///
     /// Override with `FLUREE_IMPORT_HEAVY_WORKERS=<n>`.
@@ -318,7 +309,6 @@ impl ImportConfig {
             parallelism: self.parse_threads,
             chunk_size_mb: self.effective_chunk_size_mb(),
             max_inflight_chunks: self.effective_max_inflight(),
-            run_budget_mb: self.effective_run_budget_mb(),
         }
     }
 
@@ -342,8 +332,6 @@ pub struct EffectiveImportSettings {
     pub chunk_size_mb: usize,
     /// Max inflight chunks (derived from budget when not set).
     pub max_inflight_chunks: usize,
-    /// Run budget in MB for multi-order indexing (derived when not set).
-    pub run_budget_mb: usize,
 }
 
 // ============================================================================
@@ -630,13 +618,6 @@ where
     /// Set the number of parallel TTL parse threads.
     pub fn threads(mut self, n: usize) -> Self {
         self.config.parse_threads = n;
-        self
-    }
-
-    /// Set the run writer memory budget in MB. Overrides budget derivation.
-    pub fn run_budget_mb(mut self, mb: usize) -> Self {
-        self.config.run_budget_mb = mb;
-        self.config.run_budget_explicit = true;
         self
     }
 
@@ -2142,6 +2123,7 @@ where
                 zstd_level: 1,
                 progress: Some(spot_counter),
                 skip_dedup: true, // Fresh import: unique asserts, no retractions.
+                skip_region3: true, // Append-only: no history journal needed.
             },
         )
     });
@@ -2324,6 +2306,7 @@ where
             1, // zstd_level
             Some(secondary_counter),
             true, // skip_dedup: fresh import, unique asserts only
+            true, // skip_region3: append-only, no history journal needed
         )
         .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 

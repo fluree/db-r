@@ -1,18 +1,22 @@
 //! K-way merge of N sorted streams.
 //!
-//! Uses a min-heap (`BinaryHeap<Reverse<…>>`) to merge N streams into a
-//! single globally-sorted sequence. Provides both raw (`next`) and
-//! deduplicating (`next_deduped`) iteration.
+//! Uses a manual min-heap to merge N streams into a single globally-sorted
+//! sequence. Provides both raw (`next_record`) and deduplicating
+//! (`next_deduped`) iteration.
 //!
 //! Generic over [`MergeSource`] — works with both [`StreamingRunReader`]
 //! (34-byte run files) and [`StreamingSortedCommitReader`] (36-byte sorted
 //! commit files with on-the-fly remap).
+//!
+//! The comparator `F` is a generic type parameter, enabling the compiler to
+//! monomorphize each instantiation and inline the comparator in heap
+//! operations. This eliminates indirect function-pointer calls on the hot
+//! path (~2.7 billion comparisons for 543M records).
 
 use super::run_record::{RunRecord, LIST_INDEX_NONE};
 use super::streaming_reader::StreamingRunReader;
 use fluree_db_core::DatatypeDictId;
-use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
+use std::cmp::Ordering;
 use std::io;
 
 // ============================================================================
@@ -50,74 +54,140 @@ impl MergeSource for StreamingRunReader {
     }
 }
 
-/// Comparator function type for RunRecord ordering.
+/// Comparator function type for RunRecord ordering (backward-compat alias).
 pub type CmpFn = fn(&RunRecord, &RunRecord) -> Ordering;
 
+// ============================================================================
+// HeapEntry (no comparator — comparator lives on KWayMerge)
+// ============================================================================
+
 /// Entry in the min-heap: a record + which stream it came from.
+///
+/// 48 bytes: RunRecord (40) + stream_idx (8). No comparator stored per-entry.
 struct HeapEntry {
     record: RunRecord,
     stream_idx: usize,
-    cmp_fn: CmpFn,
 }
 
-impl PartialEq for HeapEntry {
-    fn eq(&self, other: &Self) -> bool {
-        (self.cmp_fn)(&self.record, &other.record) == Ordering::Equal
-            && self.stream_idx == other.stream_idx
-    }
-}
-
-impl Eq for HeapEntry {}
-
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for HeapEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.cmp_fn)(&self.record, &other.record).then(self.stream_idx.cmp(&other.stream_idx))
-    }
-}
+// ============================================================================
+// KWayMerge — manual min-heap with generic comparator
+// ============================================================================
 
 /// K-way merge iterator over sorted streams.
 ///
-/// Merges N [`MergeSource`] streams using a min-heap.
-/// Records emerge in the order defined by the provided comparator.
-pub struct KWayMerge<T: MergeSource> {
-    heap: BinaryHeap<Reverse<HeapEntry>>,
+/// Merges N [`MergeSource`] streams using a manual min-heap with a
+/// monomorphized comparator. Records emerge in the order defined by `F`.
+pub struct KWayMerge<T: MergeSource, F: Fn(&RunRecord, &RunRecord) -> Ordering> {
+    heap: Vec<HeapEntry>,
     streams: Vec<T>,
-    cmp_fn: CmpFn,
+    cmp: F,
 }
 
-impl<T: MergeSource> KWayMerge<T> {
+impl<T: MergeSource, F: Fn(&RunRecord, &RunRecord) -> Ordering> KWayMerge<T, F> {
     /// Create a merge from opened streams. Seeds the heap with the first
     /// record from each non-empty stream.
-    pub fn new(streams: Vec<T>, cmp_fn: CmpFn) -> io::Result<Self> {
-        let mut heap = BinaryHeap::with_capacity(streams.len());
+    pub fn new(streams: Vec<T>, cmp: F) -> io::Result<Self> {
+        let cap = streams.len();
+        let mut heap = Vec::with_capacity(cap);
 
         for (idx, stream) in streams.iter().enumerate() {
             if let Some(rec) = stream.peek() {
-                heap.push(Reverse(HeapEntry {
+                heap.push(HeapEntry {
                     record: *rec,
                     stream_idx: idx,
-                    cmp_fn,
-                }));
+                });
             }
         }
 
-        Ok(Self {
-            heap,
-            streams,
-            cmp_fn,
-        })
+        let mut me = Self { heap, streams, cmp };
+
+        // Build-heap: heapify from the last internal node down to root.
+        if me.heap.len() > 1 {
+            let last_internal = (me.heap.len() / 2).saturating_sub(1);
+            for i in (0..=last_internal).rev() {
+                me.sift_down(i);
+            }
+        }
+
+        Ok(me)
     }
+
+    // ---- Manual min-heap operations ----
+
+    /// Compare two heap entries: first by record comparator, then stream_idx.
+    #[inline]
+    fn heap_less(&self, i: usize, j: usize) -> bool {
+        let ord = (self.cmp)(&self.heap[i].record, &self.heap[j].record);
+        match ord {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => self.heap[i].stream_idx < self.heap[j].stream_idx,
+        }
+    }
+
+    /// Sift an element down to its correct position (restore heap after root replacement).
+    #[inline]
+    fn sift_down(&mut self, mut pos: usize) {
+        let len = self.heap.len();
+        loop {
+            let left = 2 * pos + 1;
+            if left >= len {
+                break;
+            }
+            let right = left + 1;
+            let mut smallest = left;
+            if right < len && self.heap_less(right, left) {
+                smallest = right;
+            }
+            if self.heap_less(pos, smallest) || !self.heap_less(smallest, pos) {
+                // pos <= smallest (equal counts as "no swap needed")
+                break;
+            }
+            self.heap.swap(pos, smallest);
+            pos = smallest;
+        }
+    }
+
+    /// Sift an element up to its correct position (restore heap after push).
+    #[inline]
+    fn sift_up(&mut self, mut pos: usize) {
+        while pos > 0 {
+            let parent = (pos - 1) / 2;
+            if !self.heap_less(pos, parent) {
+                break;
+            }
+            self.heap.swap(pos, parent);
+            pos = parent;
+        }
+    }
+
+    /// Pop the minimum element from the heap.
+    fn heap_pop(&mut self) -> Option<HeapEntry> {
+        if self.heap.is_empty() {
+            return None;
+        }
+        let last = self.heap.len() - 1;
+        self.heap.swap(0, last);
+        let entry = self.heap.pop().unwrap();
+        if !self.heap.is_empty() {
+            self.sift_down(0);
+        }
+        Some(entry)
+    }
+
+    /// Push an element onto the heap.
+    fn heap_push(&mut self, entry: HeapEntry) {
+        self.heap.push(entry);
+        let pos = self.heap.len() - 1;
+        self.sift_up(pos);
+    }
+
+    // ---- Public API ----
 
     /// Pop the next record in merge order (no deduplication).
     pub fn next_record(&mut self) -> io::Result<Option<RunRecord>> {
-        let entry = match self.heap.pop() {
-            Some(Reverse(e)) => e,
+        let entry = match self.heap_pop() {
+            Some(e) => e,
             None => return Ok(None),
         };
 
@@ -127,11 +197,10 @@ impl<T: MergeSource> KWayMerge<T> {
         // Advance the stream and push its next record into the heap
         self.streams[idx].advance()?;
         if let Some(next_rec) = self.streams[idx].peek() {
-            self.heap.push(Reverse(HeapEntry {
+            self.heap_push(HeapEntry {
                 record: *next_rec,
                 stream_idx: idx,
-                cmp_fn: self.cmp_fn,
-            }));
+            });
         }
 
         Ok(Some(record))
@@ -155,8 +224,8 @@ impl<T: MergeSource> KWayMerge<T> {
 
         // Consume all consecutive duplicates with the same identity
         loop {
-            match self.heap.peek() {
-                Some(Reverse(entry)) if same_identity(&best, &entry.record) => {
+            match self.heap.first() {
+                Some(entry) if same_identity(&best, &entry.record) => {
                     let dup = self.next_record()?.unwrap();
                     // Keep the record with higher t (for same identity, later t wins)
                     if dup.t > best.t || (dup.t == best.t && dup.op >= best.op) {

@@ -263,6 +263,9 @@ pub struct LeafWriter {
     leaf_infos: Vec<LeafInfo>,
     perf: LeafWriterPerf,
     perf_enabled: bool,
+    /// When true, skip Region 3 (history journal) entirely. Safe for
+    /// append-only bulk import where all ops are asserts with unique `t`.
+    skip_region3: bool,
 }
 
 impl LeafWriter {
@@ -318,7 +321,17 @@ impl LeafWriter {
             leaf_infos: Vec::new(),
             perf: LeafWriterPerf::default(),
             perf_enabled,
+            skip_region3: false,
         }
+    }
+
+    /// Enable or disable Region 3 (history journal) generation.
+    ///
+    /// When `true`, leaflets are encoded without Region 3 — skipping the
+    /// per-leaflet allocation, radix sort, and zstd compression of history
+    /// entries. Safe for append-only bulk import where all ops are asserts.
+    pub fn set_skip_region3(&mut self, skip: bool) {
+        self.skip_region3 = skip;
     }
 
     /// Push a single record. Flushes leaflet/leaf as thresholds are hit.
@@ -347,21 +360,23 @@ impl LeafWriter {
         let first_s_id = self.record_buf[0].s_id.as_u64();
         let first_p_id = self.record_buf[0].p_id;
 
-        // Build R3 entries for time-travel support in bulk builds.
-        // Must be sorted in reverse chronological order (newest first) for replay.
-        let r3_t0 = self.perf_enabled.then(std::time::Instant::now);
-        let mut r3_entries: Vec<Region3Entry> = self
-            .record_buf
-            .iter()
-            .map(Region3Entry::from_run_record)
-            .collect();
-        radix_sort_r3_abs_t_desc(&mut r3_entries, &mut self.r3_tmp);
-        if let Some(t) = r3_t0 {
-            self.perf.region3_build_time += t.elapsed();
-        }
-        let data = self
-            .leaflet_encoder
-            .encode_leaflet_with_r3(&self.record_buf, &r3_entries);
+        // Build R3 entries for time-travel support (skip for append-only import).
+        let data = if self.skip_region3 {
+            self.leaflet_encoder.encode_leaflet(&self.record_buf)
+        } else {
+            let r3_t0 = self.perf_enabled.then(std::time::Instant::now);
+            let mut r3_entries: Vec<Region3Entry> = self
+                .record_buf
+                .iter()
+                .map(Region3Entry::from_run_record)
+                .collect();
+            radix_sort_r3_abs_t_desc(&mut r3_entries, &mut self.r3_tmp);
+            if let Some(t) = r3_t0 {
+                self.perf.region3_build_time += t.elapsed();
+            }
+            self.leaflet_encoder
+                .encode_leaflet_with_r3(&self.record_buf, &r3_entries)
+        };
         self.record_buf.clear();
         if let Some(t) = t0 {
             self.perf.leaflet_encode_time += t.elapsed();

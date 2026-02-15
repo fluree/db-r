@@ -2274,7 +2274,6 @@ where
     /// let result = fluree.create("mydb")
     ///     .import("/data/chunks/")
     ///     .threads(8)
-    ///     .run_budget_mb(4096)
     ///     .execute()
     ///     .await?;
     ///

@@ -2032,6 +2032,7 @@ mod tests {
             0,  // zstd_level
             None,
             false,
+            false,
         )
         .unwrap();
 

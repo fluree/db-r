@@ -352,6 +352,7 @@ where
                 1,      // zstd_level
                 None,   // no progress counter
                 false,  // skip_dedup: regular index build needs dedup
+                false,  // skip_region3: regular build needs history journal
             )
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 

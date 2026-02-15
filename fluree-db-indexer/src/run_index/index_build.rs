@@ -12,13 +12,19 @@ use super::lang_remap::build_lang_remap;
 use super::leaf::{LeafInfo, LeafWriter};
 use super::leaflet::p_width_for_max;
 use super::merge::KWayMerge;
-use super::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+use super::run_record::{cmp_for_order, RunSortOrder};
 use super::streaming_reader::StreamingRunReader;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Batch size for progress counter updates. Instead of a per-row atomic
+/// fetch_add, accumulate locally and flush every N rows. Reduces cache-line
+/// contention across cores. 4096 chosen as a sweet spot: small enough for
+/// responsive progress reporting, large enough to amortize the atomic.
+const PROGRESS_BATCH_SIZE: u64 = 4096;
 
 // ============================================================================
 // Configuration
@@ -53,6 +59,9 @@ pub struct IndexBuildConfig {
     /// Skip deduplication during merge. Safe for fresh bulk import where each
     /// chunk produces unique asserts and there are no retractions.
     pub skip_dedup: bool,
+    /// Skip Region 3 (history journal) in leaflets. Safe for append-only
+    /// bulk import where all ops are asserts with unique `t` values.
+    pub skip_region3: bool,
 }
 
 impl Default for IndexBuildConfig {
@@ -68,6 +77,7 @@ impl Default for IndexBuildConfig {
             persist_lang_dict: true,
             progress: None,
             skip_dedup: false,
+            skip_region3: false,
         }
     }
 }
@@ -273,6 +283,7 @@ fn build_index_from_run_paths_inner(
     let mut total_rows: u64 = 0;
     let mut retract_count: u64 = 0;
     let mut records_since_log: u64 = 0;
+    let mut progress_batch: u64 = 0;
     let mut max_t: u32 = 0;
     let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -290,16 +301,14 @@ fn build_index_from_run_paths_inner(
     let mut current_writer: Option<LeafWriter> = None;
     let skip_dedup = config.skip_dedup;
 
-    let next_fn =
-        |merge: &mut KWayMerge<StreamingRunReader>| -> io::Result<Option<RunRecord>> {
-            if skip_dedup {
-                merge.next_record()
-            } else {
-                merge.next_deduped()
-            }
+    loop {
+        let record = if skip_dedup {
+            merge.next_record()?
+        } else {
+            merge.next_deduped()?
         };
+        let Some(record) = record else { break };
 
-    while let Some(record) = next_fn(&mut merge)? {
         // Track max t for manifest metadata (must happen before retraction
         // skip so that retraction-only commits are still reflected in max_t).
         if record.t > max_t {
@@ -357,7 +366,7 @@ fn build_index_from_run_paths_inner(
 
             tracing::info!(g_id, path = %graph_dir.display(), "starting graph index");
 
-            current_writer = Some(LeafWriter::with_widths(
+            let mut writer = LeafWriter::with_widths(
                 graph_dir,
                 config.leaflet_rows,
                 config.leaflets_per_leaf,
@@ -365,7 +374,9 @@ fn build_index_from_run_paths_inner(
                 dt_width,
                 p_width,
                 order,
-            ));
+            );
+            writer.set_skip_region3(config.skip_region3);
+            current_writer = Some(writer);
             current_g_id = Some(g_id);
         }
 
@@ -373,8 +384,12 @@ fn build_index_from_run_paths_inner(
         current_writer.as_mut().unwrap().push_record(record)?;
         total_rows += 1;
         records_since_log += 1;
-        if let Some(ref ctr) = config.progress {
-            ctr.fetch_add(1, Ordering::Relaxed);
+        progress_batch += 1;
+        if progress_batch >= PROGRESS_BATCH_SIZE {
+            if let Some(ref ctr) = config.progress {
+                ctr.fetch_add(progress_batch, Ordering::Relaxed);
+            }
+            progress_batch = 0;
         }
 
         if records_since_log >= 10_000_000 {
@@ -385,6 +400,13 @@ fn build_index_from_run_paths_inner(
                 "merge progress"
             );
             records_since_log = 0;
+        }
+    }
+
+    // Flush remaining progress batch
+    if progress_batch > 0 {
+        if let Some(ref ctr) = config.progress {
+            ctr.fetch_add(progress_batch, Ordering::Relaxed);
         }
     }
 
@@ -508,6 +530,9 @@ pub struct SpotFromCommitsConfig {
     /// Skip deduplication during merge. Safe for fresh bulk import where each
     /// chunk produces unique asserts and there are no retractions.
     pub skip_dedup: bool,
+    /// Skip Region 3 (history journal) in leaflets. Safe for append-only
+    /// bulk import where all ops are asserts with unique `t` values.
+    pub skip_region3: bool,
 }
 
 /// Build per-graph SPOT indexes by k-way merging sorted commit files.
@@ -567,21 +592,21 @@ pub fn build_spot_from_sorted_commits(
     let mut graph_results: Vec<GraphIndexResult> = Vec::new();
     let mut total_rows: u64 = 0;
     let mut retract_count: u64 = 0;
+    let mut progress_batch: u64 = 0;
     let mut max_t: u32 = 0;
     let skip_dedup = config.skip_dedup;
 
     let mut current_g_id: Option<u16> = None;
     let mut current_writer: Option<LeafWriter> = None;
 
-    let next_fn = |merge: &mut KWayMerge<StreamingSortedCommitReader>| -> io::Result<Option<RunRecord>> {
-        if skip_dedup {
-            merge.next_record()
+    loop {
+        let record = if skip_dedup {
+            merge.next_record()?
         } else {
-            merge.next_deduped()
-        }
-    };
+            merge.next_deduped()?
+        };
+        let Some(record) = record else { break };
 
-    while let Some(record) = next_fn(&mut merge)? {
         if record.t > max_t {
             max_t = record.t;
         }
@@ -621,7 +646,7 @@ pub fn build_spot_from_sorted_commits(
                 .join(format!("graph_{}/{}", g_id, order_name));
             std::fs::create_dir_all(&graph_dir)?;
 
-            current_writer = Some(LeafWriter::with_widths(
+            let mut writer = LeafWriter::with_widths(
                 graph_dir,
                 config.leaflet_rows,
                 config.leaflets_per_leaf,
@@ -629,14 +654,27 @@ pub fn build_spot_from_sorted_commits(
                 config.dt_width,
                 config.p_width,
                 order,
-            ));
+            );
+            writer.set_skip_region3(config.skip_region3);
+            current_writer = Some(writer);
             current_g_id = Some(g_id);
         }
 
         current_writer.as_mut().unwrap().push_record(record)?;
         total_rows += 1;
+        progress_batch += 1;
+        if progress_batch >= PROGRESS_BATCH_SIZE {
+            if let Some(ref ctr) = config.progress {
+                ctr.fetch_add(progress_batch, Ordering::Relaxed);
+            }
+            progress_batch = 0;
+        }
+    }
+
+    // Flush remaining progress batch
+    if progress_batch > 0 {
         if let Some(ref ctr) = config.progress {
-            ctr.fetch_add(1, Ordering::Relaxed);
+            ctr.fetch_add(progress_batch, Ordering::Relaxed);
         }
     }
 
@@ -843,6 +881,7 @@ pub fn build_all_indexes(
     zstd_level: i32,
     progress: Option<Arc<AtomicU64>>,
     skip_dedup: bool,
+    skip_region3: bool,
 ) -> Result<Vec<(RunSortOrder, IndexBuildResult)>, IndexBuildError> {
     let _span = tracing::info_span!("build_all_indexes").entered();
     let start = Instant::now();
@@ -911,6 +950,7 @@ pub fn build_all_indexes(
                             persist_lang_dict: false, // already pre-computed
                             progress: order_progress,
                             skip_dedup,
+                            skip_region3,
                         };
                         build_index_from_run_paths(config, run_paths)
                     }),
@@ -1253,6 +1293,7 @@ mod tests {
             zstd_level: 1,
             progress: None,
             skip_dedup: false,
+            skip_region3: false,
         };
 
         let result = build_spot_from_sorted_commits(inputs, config).unwrap();

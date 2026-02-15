@@ -215,17 +215,13 @@ struct Args {
     run_dir: Option<PathBuf>,
 
     /// Overall memory budget in MB (0 = auto-detect 75% of system RAM).
-    /// Derives chunk-size-mb, run-budget-mb, and max-inflight if not set.
+    /// Derives chunk-size-mb and max-inflight if not set.
     #[arg(long, default_value_t = 0)]
     memory_budget_mb: usize,
 
     /// Chunk size in MB for splitting a single large Turtle file (0 = derive from budget).
     #[arg(long, default_value_t = 0)]
     chunk_size_mb: usize,
-
-    /// Run writer memory budget in MB (0 = derive from memory budget).
-    #[arg(long, default_value_t = 0)]
-    run_budget_mb: usize,
 
     /// Build multi-order indexes (SPOT, PSOT, POST, OPST).
     /// Included automatically with --import. Can also be run standalone from existing run files.
@@ -302,6 +298,7 @@ async fn run_build_index(args: &Args) -> Result<(), Box<dyn std::error::Error>> 
         1,     // zstd_level
         None,  // no progress counter
         false, // skip_dedup
+        false, // skip_region3
     )?;
 
     for (order, result) in &results {
@@ -685,10 +682,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if args.chunk_size_mb > 0 {
             builder = builder.chunk_size_mb(args.chunk_size_mb);
         }
-        if args.run_budget_mb > 0 {
-            builder = builder.run_budget_mb(args.run_budget_mb);
-        }
-
         builder = builder
             .compress(!args.no_compress)
             .collect_id_stats(!args.no_id_stats)

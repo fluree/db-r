@@ -10,7 +10,6 @@ pub struct ImportOpts {
     pub memory_budget_mb: usize,
     pub parallelism: usize,
     pub chunk_size_mb: usize,
-    pub run_budget_mb: usize,
     pub leaflet_rows: usize,
     pub leaflets_per_leaf: usize,
 }
@@ -146,9 +145,6 @@ where
     if import_opts.chunk_size_mb > 0 {
         builder = builder.chunk_size_mb(import_opts.chunk_size_mb);
     }
-    if import_opts.run_budget_mb > 0 {
-        builder = builder.run_budget_mb(import_opts.run_budget_mb);
-    }
     if import_opts.leaflet_rows != 25_000 {
         builder = builder.leaflet_rows(import_opts.leaflet_rows);
     }
@@ -158,19 +154,17 @@ where
     let settings = builder.effective_import_settings();
     let mem_auto = import_opts.memory_budget_mb == 0;
     let par_auto = import_opts.parallelism == 0;
-    let run_auto = import_opts.run_budget_mb == 0;
     if !quiet {
         eprintln!(
-            "Import settings: memory budget {} MB{}, parallelism {}{}, chunk size {} MB, run budget {} MB",
+            "Import settings: memory budget {} MB{}, parallelism {}{}, chunk size {} MB",
             settings.memory_budget_mb,
             if mem_auto { " (auto)" } else { "" },
             settings.parallelism,
             if par_auto { " (auto)" } else { "" },
             settings.chunk_size_mb,
-            settings.run_budget_mb,
         );
-        if mem_auto || par_auto || run_auto {
-            eprintln!("  Override with --memory-budget-mb, --parallelism, and --run-budget-mb");
+        if mem_auto || par_auto {
+            eprintln!("  Override with --memory-budget-mb and --parallelism");
         }
     }
 
