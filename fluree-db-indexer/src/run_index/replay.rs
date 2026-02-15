@@ -6,9 +6,9 @@
 //! ## Algorithm
 //!
 //! **Pass 1** — Scan Region 3 entries (newest→oldest). For each entry where
-//! `|t_signed| > t_target`:
-//! - Asserts added after `t_target` must be **excluded** from current state
-//! - Retracts made after `t_target` must be **included** back into current state
+//! `entry.t > t_target`:
+//! - Asserts (op=1) added after `t_target` must be **excluded** from current state
+//! - Retracts (op=0) made after `t_target` must be **included** back into current state
 //!
 //! **Pass 2** — Three-way merge of Region 1 rows (minus excludes) plus includes,
 //! maintaining the leaflet's sort order.
@@ -38,7 +38,7 @@ pub struct ReplayedLeaflet {
     pub o_kinds: Vec<u8>,
     pub o_keys: Vec<u64>,
     pub dt_values: Vec<u32>,
-    pub t_values: Vec<i64>,
+    pub t_values: Vec<u32>,
     pub lang_ids: Vec<u16>,
     pub i_values: Vec<i32>,
     pub row_count: usize,
@@ -155,10 +155,10 @@ pub fn replay_leaflet(
 
     // ---- Pass 1: Scan Region 3, build exclude/include sets ----
     //
-    // Walk entries newest→oldest. For entries where |t_signed| > t_target:
-    // - Assert (t_signed > 0): this fact was added AFTER t_target, so it
+    // Walk entries newest→oldest. For entries where entry.t > t_target:
+    // - Assert (op=1): this fact was added AFTER t_target, so it
     //   should NOT exist at t_target → add to exclude set
-    // - Retract (t_signed < 0): this fact was removed AFTER t_target, so it
+    // - Retract (op=0): this fact was removed AFTER t_target, so it
     //   SHOULD exist at t_target → add to include list
     //
     // First-seen-per-key wins (Region 3 is newest-first, so first occurrence
@@ -188,15 +188,16 @@ pub fn replay_leaflet(
             exclude.insert(key);
         } else {
             // Fact was retracted after t_target — include back into state.
-            // Reconstruct the entry with positive t (it was alive at t_target).
+            // Reconstruct the entry as an assert (it was alive at t_target).
             //
-            // Note: `t_signed` is set to the retraction's abs_t, not the
-            // original assertion time. Region 3 doesn't store the original
-            // assertion time separately. For query purposes this is acceptable
-            // — the restored row represents "this fact existed at t_target"
-            // and the exact assertion time is not needed for state reconstruction.
+            // Note: `t` keeps the retraction's t value, not the original
+            // assertion time. Region 3 doesn't store the original assertion
+            // time separately. For query purposes this is acceptable — the
+            // restored row represents "this fact existed at t_target" and
+            // the exact assertion time is not needed for state reconstruction.
+            // We flip `op` to 1 (assert) since the fact is being restored.
             let mut restored = *entry;
-            restored.t_signed = abs_t as i64; // make it an assert
+            restored.op = 1; // make it an assert
             include.push(restored);
         }
     }
@@ -337,7 +338,7 @@ fn emit_include_entry(out: &mut ReplayedLeaflet, entry: &Region3Entry) {
     out.o_kinds.push(entry.o_kind);
     out.o_keys.push(entry.o_key);
     out.dt_values.push(entry.dt as u32);
-    out.t_values.push(entry.t_signed); // positive (restored assert)
+    out.t_values.push(entry.t); // positive (restored assert)
     out.lang_ids.push(entry.lang_id);
     out.i_values.push(entry.i);
 }
@@ -352,13 +353,17 @@ mod tests {
     use fluree_db_core::ListIndex;
 
     /// Helper: build a Region3Entry.
+    ///
+    /// Accepts `t_signed: i64` for test ergonomics: positive = assert, negative = retract.
+    /// Internally maps to `t: u32` + `op: u8` (1=assert, 0=retract).
     fn r3(s_id: u64, p_id: u32, o_kind: u8, o_key: u64, t_signed: i64, dt: u16) -> Region3Entry {
         Region3Entry {
             s_id,
             p_id,
             o_kind,
             o_key,
-            t_signed,
+            t: t_signed.unsigned_abs() as u32,
+            op: if t_signed >= 0 { 1 } else { 0 },
             dt,
             lang_id: 0,
             i: ListIndex::none().as_i32(),
@@ -385,13 +390,13 @@ mod tests {
     fn test_replay_no_changes_returns_none() {
         // Region 3 is empty — no replay needed
         let input = row_slice!(
-            &[1, 2],
-            &[10, 10],
-            &[0, 0],
-            &[100, 200],
-            &[1, 1],
-            &[5, 5],
-            &[0, 0],
+            &[1u64, 2],
+            &[10u32, 10],
+            &[0u8, 0],
+            &[100u64, 200],
+            &[1u32, 1],
+            &[5u32, 5],
+            &[0u16, 0],
             &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
         );
         let result = replay_leaflet(&input, &[], 3, RunSortOrder::Spot);
@@ -407,13 +412,13 @@ mod tests {
         ];
 
         let input = row_slice!(
-            &[1, 2],
-            &[10, 10],
-            &[0, 0],
-            &[100, 200],
-            &[1, 1],
-            &[3, 2],
-            &[0, 0],
+            &[1u64, 2],
+            &[10u32, 10],
+            &[0u8, 0],
+            &[100u64, 200],
+            &[1u32, 1],
+            &[3u32, 2],
+            &[0u16, 0],
             &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
         );
         let result = replay_leaflet(&input, &r3_entries, 5, RunSortOrder::Spot);
@@ -431,13 +436,13 @@ mod tests {
         ];
 
         let input = row_slice!(
-            &[1],
-            &[10],
-            &[0],
-            &[100],
-            &[1],
-            &[5],
-            &[0],
+            &[1u64],
+            &[10u32],
+            &[0u8],
+            &[100u64],
+            &[1u32],
+            &[5u32],
+            &[0u16],
             &[ListIndex::none().as_i32()]
         );
         let result = replay_leaflet(&input, &r3_entries, 3, RunSortOrder::Spot);
@@ -463,7 +468,7 @@ mod tests {
         let empty8: &[u8] = &[];
         let empty16: &[u16] = &[];
         let emptyi: &[i32] = &[];
-        let emptyt: &[i64] = &[];
+        let emptyt: &[u32] = &[];
         let input = row_slice!(empty, empty32, empty8, empty, empty32, emptyt, empty16, emptyi);
         let result = replay_leaflet(&input, &r3_entries, 3, RunSortOrder::Spot);
         let out = result.expect("should produce replay");
@@ -498,7 +503,7 @@ mod tests {
             &[0u8, 0, 0],
             &[100u64, 200, 400],
             &[1u32, 1, 1],
-            &[3i64, 8, 3],
+            &[3u32, 8, 3],
             &[0u16, 0, 0],
             &[
                 ListIndex::none().as_i32(),
@@ -533,7 +538,7 @@ mod tests {
             &[0u8],
             &[100u64],
             &[1u32],
-            &[10i64],
+            &[10u32],
             &[0u16],
             &[ListIndex::none().as_i32()]
         );
@@ -563,7 +568,7 @@ mod tests {
             &[0u8, 0],
             &[100u64, 300],
             &[1u32, 1],
-            &[3i64, 3],
+            &[3u32, 3],
             &[0u16, 0],
             &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
         );
@@ -594,7 +599,7 @@ mod tests {
             &[0u8],
             &[300u64],
             &[1u32],
-            &[3i64],
+            &[3u32],
             &[0u16],
             &[ListIndex::none().as_i32()]
         );
@@ -619,7 +624,7 @@ mod tests {
             &[0u8, 0],
             &[100u64, 200],
             &[1u32, 1],
-            &[8i64, 7],
+            &[8u32, 7],
             &[0u16, 0],
             &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
         );
@@ -644,7 +649,7 @@ mod tests {
             &[0u8, 0],
             &[100u64, 200],
             &[1u32, 1],
-            &[5i64, 8],
+            &[5u32, 8],
             &[0u16, 0],
             &[ListIndex::none().as_i32(), ListIndex::none().as_i32()]
         );
@@ -690,7 +695,7 @@ mod tests {
             &[0u8],
             &[100u64],
             &[1u32],
-            &[8i64],
+            &[8u32],
             &[0u16],
             &[ListIndex::none().as_i32()]
         );
@@ -737,7 +742,7 @@ mod tests {
             &[0u8],
             &[100u64],
             &[1u32],
-            &[8i64],
+            &[8u32],
             &[0u16],
             &[ListIndex::none().as_i32()]
         );
@@ -766,9 +771,10 @@ mod tests {
             p_id: 10,
             o_kind: 0,
             o_key: 100,
-            t_signed: -8, // retract at t=8
-            dt: 11,       // LANG_STRING
-            lang_id: 2,   // French
+            t: 8,       // retract at t=8
+            op: 0,      // retract
+            dt: 11,     // LANG_STRING
+            lang_id: 2, // French
             i: ListIndex::none().as_i32(),
         }];
 
@@ -778,7 +784,7 @@ mod tests {
             &[0u8],    // o_kinds
             &[100u64], // o_keys
             &[11u32],  // dt (LANG_STRING)
-            &[3i64],   // t
+            &[3u32],   // t
             &[1u16],   // lang_ids (English)
             &[ListIndex::none().as_i32()]
         );
@@ -832,7 +838,7 @@ mod tests {
             &[0u8, 0, 0],
             &[100u64, 300, 500],
             &[1u32, 1, 1],
-            &[6i64, 7, 10], // t values
+            &[6u32, 7, 10], // t values
             &[0u16, 0, 0],
             &[
                 ListIndex::none().as_i32(),

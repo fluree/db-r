@@ -203,26 +203,26 @@ pub struct StageResult {
     /// User-provided transaction metadata (extracted from envelope-form JSON-LD)
     pub txn_meta: Vec<TxnMetaEntry>,
     /// Named graph IRI to g_id mappings introduced by this transaction
-    pub graph_delta: rustc_hash::FxHashMap<u32, String>,
+    pub graph_delta: rustc_hash::FxHashMap<u16, String>,
 }
 
 /// Convert named graph blocks to TripleTemplates with proper graph_id assignments.
 ///
 /// Returns a tuple of (templates, graph_delta) where:
 /// - templates: Vec<TripleTemplate> with graph_id set for each template
-/// - graph_delta: HashMap<u32, String> mapping g_id to graph IRI
+/// - graph_delta: HashMap<u16, String> mapping g_id to graph IRI
 ///
 /// Graph IDs are assigned starting at 2 (0=default, 1=txn-meta).
 fn convert_named_graphs_to_templates(
     named_graphs: &[NamedGraphBlock],
     ns_registry: &mut NamespaceRegistry,
-) -> Result<(Vec<TripleTemplate>, rustc_hash::FxHashMap<u32, String>)> {
+) -> Result<(Vec<TripleTemplate>, rustc_hash::FxHashMap<u16, String>)> {
     use fluree_db_transact::{RawObject, RawTerm};
 
     let mut templates = Vec::new();
-    let mut graph_delta: rustc_hash::FxHashMap<u32, String> = rustc_hash::FxHashMap::default();
-    let mut iri_to_id: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut next_graph_id: u32 = 2; // 0=default, 1=txn-meta
+    let mut graph_delta: rustc_hash::FxHashMap<u16, String> = rustc_hash::FxHashMap::default();
+    let mut iri_to_id: std::collections::HashMap<String, u16> = std::collections::HashMap::new();
+    let mut next_graph_id: u16 = 2; // 0=default, 1=txn-meta
 
     // Helper to expand prefixed name to full IRI
     fn expand_prefixed_name(

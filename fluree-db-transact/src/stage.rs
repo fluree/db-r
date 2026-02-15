@@ -163,7 +163,7 @@ pub async fn stage(
     let txn_id = generate_txn_id();
 
     // Convert graph_delta (g_id -> IRI) to graph_sids (g_id -> Sid) for named graph support
-    let graph_sids: std::collections::HashMap<u32, Sid> = txn
+    let graph_sids: std::collections::HashMap<u16, Sid> = txn
         .graph_delta
         .iter()
         .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
@@ -628,13 +628,13 @@ async fn generate_upsert_deletions(
     ledger: &LedgerState,
     txn: &Txn,
     new_t: i64,
-    graph_sids: &std::collections::HashMap<u32, Sid>,
+    graph_sids: &std::collections::HashMap<u16, Sid>,
 ) -> Result<Vec<fluree_db_core::Flake>> {
     use fluree_db_core::Flake;
 
     // Collect unique (subject, predicate, graph_id) tuples from insert templates
     // Include graph_id to ensure retractions are created in the correct graph
-    let mut spg_tuples: HashSet<(Sid, Sid, Option<u32>)> = HashSet::new();
+    let mut spg_tuples: HashSet<(Sid, Sid, Option<u16>)> = HashSet::new();
     for template in &txn.insert_templates {
         if let (TemplateTerm::Sid(s), TemplateTerm::Sid(p)) =
             (&template.subject, &template.predicate)
@@ -733,13 +733,13 @@ async fn generate_upsert_deletions(
 ///
 /// Returns None if no binary store is attached (genesis / not yet indexed) or if
 /// the attached store isn't a `BinaryIndexStore`.
-fn db_with_graph_range_provider(ledger: &LedgerState, g_id: u32) -> Option<fluree_db_core::Db> {
+fn db_with_graph_range_provider(ledger: &LedgerState, g_id: u16) -> Option<fluree_db_core::Db> {
     let store: Arc<BinaryIndexStore> = ledger
         .binary_store
         .as_ref()
         .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok())?;
 
-    let provider = BinaryRangeProvider::new(store, Arc::clone(&ledger.dict_novelty), g_id);
+    let provider = BinaryRangeProvider::new(store, Arc::clone(&ledger.dict_novelty), g_id as u32);
     Some(ledger.db.clone().with_range_provider(Arc::new(provider)))
 }
 
@@ -752,9 +752,9 @@ fn query_novelty_for_graph(
     ledger: &LedgerState,
     subject: &Sid,
     predicate: &Sid,
-    target_g_id: u32,
+    target_g_id: u16,
     o_var: VarId,
-    graph_sids: &std::collections::HashMap<u32, Sid>,
+    graph_sids: &std::collections::HashMap<u16, Sid>,
 ) -> Vec<Batch> {
     use fluree_db_core::IndexType;
 

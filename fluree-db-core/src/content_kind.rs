@@ -24,7 +24,7 @@ pub const CODEC_FLUREE_INDEX_ROOT: u64 = FLUREE_CODEC_BASE + 3;
 /// Multicodec for Fluree index branch manifests (FBR1).
 pub const CODEC_FLUREE_INDEX_BRANCH: u64 = FLUREE_CODEC_BASE + 4;
 
-/// Multicodec for Fluree index leaf files (FLI1).
+/// Multicodec for Fluree index leaf files (FLI2).
 pub const CODEC_FLUREE_INDEX_LEAF: u64 = FLUREE_CODEC_BASE + 5;
 
 /// Multicodec for Fluree dictionary blobs (all sub-kinds).
@@ -110,7 +110,7 @@ pub enum ContentKind {
     DictBlob { dict: DictKind },
     /// Index branch manifest (FBR1 format)
     IndexBranch,
-    /// Index leaf file (FLI1 format)
+    /// Index leaf file (FLI2 format)
     IndexLeaf,
     /// Ledger configuration object (origin discovery, replication defaults)
     LedgerConfig,

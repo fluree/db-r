@@ -29,8 +29,8 @@ use std::collections::HashMap;
 /// They do not need to be globally stable across commits, as long as the commit
 /// carries the mapping used to encode flakes.
 struct GraphIdAssigner {
-    iri_to_id: HashMap<String, u32>,
-    next_id: u32, // 2+ reserved for user graphs
+    iri_to_id: HashMap<String, u16>,
+    next_id: u16, // 2+ reserved for user graphs
 }
 
 impl GraphIdAssigner {
@@ -41,7 +41,7 @@ impl GraphIdAssigner {
         }
     }
 
-    fn get_or_assign(&mut self, iri: &str) -> u32 {
+    fn get_or_assign(&mut self, iri: &str) -> u16 {
         if let Some(&id) = self.iri_to_id.get(iri) {
             return id;
         }
@@ -51,7 +51,7 @@ impl GraphIdAssigner {
         id
     }
 
-    fn delta(&self) -> rustc_hash::FxHashMap<u32, String> {
+    fn delta(&self) -> rustc_hash::FxHashMap<u16, String> {
         self.iri_to_id
             .iter()
             .map(|(iri, &g_id)| (g_id, iri.clone()))
