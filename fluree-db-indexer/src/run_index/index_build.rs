@@ -50,6 +50,9 @@ pub struct IndexBuildConfig {
     /// Only attached to a single order (POST) by `build_all_indexes` so that
     /// the reported total matches the actual flake count, not flakes × orders.
     pub progress: Option<Arc<AtomicU64>>,
+    /// Skip deduplication during merge. Safe for fresh bulk import where each
+    /// chunk produces unique asserts and there are no retractions.
+    pub skip_dedup: bool,
 }
 
 impl Default for IndexBuildConfig {
@@ -64,6 +67,7 @@ impl Default for IndexBuildConfig {
             zstd_level: 1,
             persist_lang_dict: true,
             progress: None,
+            skip_dedup: false,
         }
     }
 }
@@ -284,8 +288,18 @@ fn build_index_from_run_paths_inner(
     // Current graph state
     let mut current_g_id: Option<u16> = None;
     let mut current_writer: Option<LeafWriter> = None;
+    let skip_dedup = config.skip_dedup;
 
-    while let Some(record) = merge.next_deduped()? {
+    let next_fn =
+        |merge: &mut KWayMerge<StreamingRunReader>| -> io::Result<Option<RunRecord>> {
+            if skip_dedup {
+                merge.next_record()
+            } else {
+                merge.next_deduped()
+            }
+        };
+
+    while let Some(record) = next_fn(&mut merge)? {
         // Track max t for manifest metadata (must happen before retraction
         // skip so that retraction-only commits are still reflected in max_t).
         if record.t > max_t {
@@ -828,6 +842,7 @@ pub fn build_all_indexes(
     leaflets_per_leaf: usize,
     zstd_level: i32,
     progress: Option<Arc<AtomicU64>>,
+    skip_dedup: bool,
 ) -> Result<Vec<(RunSortOrder, IndexBuildResult)>, IndexBuildError> {
     let _span = tracing::info_span!("build_all_indexes").entered();
     let start = Instant::now();
@@ -895,6 +910,7 @@ pub fn build_all_indexes(
                             zstd_level,
                             persist_lang_dict: false, // already pre-computed
                             progress: order_progress,
+                            skip_dedup,
                         };
                         build_index_from_run_paths(config, run_paths)
                     }),

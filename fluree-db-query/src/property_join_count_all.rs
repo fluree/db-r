@@ -701,6 +701,7 @@ mod tests {
             2,  // leaflets_per_leaf
             0,  // zstd_level
             None,
+            false,
         )
         .unwrap();
 

@@ -351,6 +351,7 @@ where
                 10,     // leaflets_per_leaf
                 1,      // zstd_level
                 None,   // no progress counter
+                false,  // skip_dedup: regular index build needs dedup
             )
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 

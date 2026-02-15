@@ -970,12 +970,25 @@ pub fn sort_remap_and_write_sorted_commit(
     chunk_idx: usize,
     languages: Option<(&rustc_hash::FxHashMap<String, u16>, &Path)>,
 ) -> io::Result<SortedCommitInfo> {
-    // A.2 step 1: Sort subjects and build insertion→sorted remap.
-    let (subject_remap, subject_count) =
-        subjects.sort_and_write_sorted_vocab(subject_vocab_path)?;
+    // A.2 steps 1+2: Sort subjects and strings in parallel, writing vocab
+    // files and building insertion→sorted remap tables for each.
+    let (subject_remap, subject_count, string_remap, string_count) =
+        std::thread::scope(|scope| -> io::Result<(Vec<u64>, u64, Vec<u32>, u64)> {
+            // Spawn subject sort on a background thread.
+            let subj_handle =
+                scope.spawn(|| subjects.sort_and_write_sorted_vocab(subject_vocab_path));
 
-    // A.2 step 2: Sort strings and build insertion→sorted remap.
-    let (string_remap, string_count) = strings.sort_and_write_sorted_vocab(string_vocab_path)?;
+            // Sort strings on the current thread concurrently.
+            let (string_remap, string_count) =
+                strings.sort_and_write_sorted_vocab(string_vocab_path)?;
+
+            // Wait for subject sort to complete.
+            let (subject_remap, subject_count) = subj_handle
+                .join()
+                .map_err(|_| io::Error::other("subject sort thread panicked"))??;
+
+            Ok((subject_remap, subject_count, string_remap, string_count))
+        })?;
 
     // A.2 step 2b: Write per-chunk language vocab file.
     // Language tags are chunk-local (assigned in parse order). We persist

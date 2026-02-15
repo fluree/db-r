@@ -987,8 +987,6 @@ struct IndexBuildInput<'a> {
     final_t: i64,
     /// Namespace code to prefix mappings.
     namespace_codes: &'a HashMap<u16, String>,
-    /// Optional stats hook from commit resolution.
-    stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
     /// Total flakes from commit resolution (used for indexing progress).
     cumulative_flakes: u64,
     /// Sorted commit file infos for Phase C (SPOT build from sorted commits).
@@ -997,7 +995,7 @@ struct IndexBuildInput<'a> {
     /// lang vocab files. All indexes use this mapping.
     unified_lang_dict: fluree_db_indexer::run_index::LanguageTagDict,
     /// Per-chunk language remap tables (chunk-local lang_id → global lang_id).
-    /// Built during Phase D from per-chunk lang vocab files. Passed to Phase C
+    /// Built from per-chunk lang vocab files. Passed to Phase C
     /// to avoid recomputing.
     lang_remaps: Vec<Vec<u16>>,
     /// Predicate field width in bytes (1, 2, or 4). Pre-computed from predicate
@@ -1006,6 +1004,10 @@ struct IndexBuildInput<'a> {
     /// Datatype field width in bytes (1 or 2). Pre-computed from datatype dict
     /// size to avoid re-reading datatypes.dict in build_and_upload.
     dt_width: u8,
+    /// Datatype ID → ValueTypeTag mapping (for stats hook in Phase D).
+    dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag>,
+    /// Whether to collect ID-based stats during Phase D remap.
+    collect_id_stats: bool,
 }
 
 /// Run phases 2-6: import chunks, build indexes, upload to CAS, write V2 root, publish.
@@ -1054,13 +1056,14 @@ where
             index_dir: paths.index_dir,
             final_t: import_result.final_t,
             namespace_codes: &import_result.namespace_codes,
-            stats_hook: import_result.stats_hook,
             cumulative_flakes: import_result.cumulative_flakes,
             sorted_commit_infos: import_result.sorted_commit_infos,
             unified_lang_dict: import_result.unified_lang_dict,
             lang_remaps: import_result.lang_remaps,
             p_width: import_result.p_width,
             dt_width: import_result.dt_width,
+            dt_tags: import_result.dt_tags,
+            collect_id_stats: config.collect_id_stats,
         };
         let index_result = build_and_upload(
             storage,
@@ -1110,7 +1113,6 @@ struct ChunkImportResult {
     cumulative_flakes: u64,
     commit_head_id: fluree_db_core::ContentId,
     namespace_codes: HashMap<u16, String>,
-    stats_hook: Option<fluree_db_indexer::stats::IdStatsHook>,
     /// Total size of all commit blobs in bytes.
     total_commit_size: u64,
     /// Total number of assertions across all commits.
@@ -1130,6 +1132,8 @@ struct ChunkImportResult {
     p_width: u8,
     /// Datatype field width in bytes (1 or 2).
     dt_width: u8,
+    /// Datatype ID → ValueTypeTag mapping (for stats hook in Phase D).
+    dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag>,
 }
 
 /// Import all TTL chunks: parallel parse + serial commit + streaming runs.
@@ -1145,10 +1149,7 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Publisher,
 {
-    use fluree_db_indexer::run_index::{
-        persist_namespaces, MultiOrderConfig, MultiOrderRunWriter, RunSortOrder,
-        SortedCommitInfo,
-    };
+    use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo};
     use fluree_db_indexer::run_index::spool::sort_remap_and_write_sorted_commit;
     use fluree_db_transact::import::{
         finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk,
@@ -1164,7 +1165,6 @@ where
     let num_threads = config.parse_threads;
     let mut state = ImportState::new();
     let run_start = Instant::now();
-    let collect_id_stats = config.collect_id_stats;
 
     // ---- Inflight permit channel (memory budget enforcement) ----
     // For Files mode: limits the number of chunk texts materialized in memory.
@@ -1191,9 +1191,14 @@ where
     let spool_dir = run_dir.join("spool");
     std::fs::create_dir_all(&spool_dir)?;
 
-    // Collect sorted commit infos and vocab file paths from all chunks for the merge phase.
-    // Chunk dicts are sorted and written to .voc files during sort_remap_and_write_sorted_commit.
-    let mut sorted_commit_infos: Vec<SortedCommitInfo> = Vec::new();
+    // Background sort/write pipeline: sorted commit files (.fsc) + vocab files (.voc)
+    // are produced asynchronously after commit-v2 finalization. The serial commit loop
+    // hands off records+dicts to spawn_blocking tasks, then continues immediately.
+    // Semaphore bounds memory: each inflight job holds a Vec<RunRecord> (~800MB for 20M flakes).
+    let sort_write_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
+    let mut sort_write_handles: Vec<
+        tokio::task::JoinHandle<std::io::Result<SortedCommitInfo>>,
+    > = Vec::new();
     let vocab_dir = run_dir.join("vocab");
     std::fs::create_dir_all(&vocab_dir)?;
 
@@ -1376,21 +1381,32 @@ where
                     .await
                     .map_err(|e| ImportError::Transact(e.to_string()))?;
 
-                // Sort + remap records, write sorted commit file + vocab files.
+                // Hand off sort + remap + write to a background task.
+                // This decouples .fsc/.voc production from the serial commit loop,
+                // so the next chunk's finalization can overlap.
                 if let Some(sr) = result.spool_result {
                     let ci = sr.chunk_idx;
-                    let lang_vocab_path = vocab_dir.join(format!("chunk_{ci:05}.languages.voc"));
-                    let commit_info = sort_remap_and_write_sorted_commit(
-                        sr.records,
-                        sr.subjects,
-                        sr.strings,
-                        &vocab_dir.join(format!("chunk_{ci:05}.subjects.voc")),
-                        &vocab_dir.join(format!("chunk_{ci:05}.strings.voc")),
-                        &spool_dir.join(format!("commit_{ci:05}.fsc")),
-                        ci,
-                        Some((&sr.languages, &lang_vocab_path)),
-                    )?;
-                    sorted_commit_infos.push(commit_info);
+                    let vd = vocab_dir.clone();
+                    let sd = spool_dir.clone();
+                    let permit = sort_write_semaphore
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .expect("semaphore closed");
+                    sort_write_handles.push(tokio::task::spawn_blocking(move || {
+                        let r = sort_remap_and_write_sorted_commit(
+                            sr.records,
+                            sr.subjects,
+                            sr.strings,
+                            &vd.join(format!("chunk_{ci:05}.subjects.voc")),
+                            &vd.join(format!("chunk_{ci:05}.strings.voc")),
+                            &sd.join(format!("commit_{ci:05}.fsc")),
+                            ci,
+                            Some((&sr.languages, &vd.join(format!("chunk_{ci:05}.languages.voc")))),
+                        );
+                        drop(permit);
+                        r
+                    }));
                 }
                 total_commit_size += result.blob_bytes as u64;
 
@@ -1545,21 +1561,30 @@ where
                             .await
                             .map_err(|e| ImportError::Transact(e.to_string()))?;
 
-                    // Sort + remap records, write sorted commit file + vocab files.
+                    // Hand off sort + remap + write to a background task.
                     if let Some(sr) = result.spool_result {
                         let ci = sr.chunk_idx;
-                        let lang_vocab_path = vocab_dir.join(format!("chunk_{ci:05}.languages.voc"));
-                        let commit_info = sort_remap_and_write_sorted_commit(
-                            sr.records,
-                            sr.subjects,
-                            sr.strings,
-                            &vocab_dir.join(format!("chunk_{ci:05}.subjects.voc")),
-                            &vocab_dir.join(format!("chunk_{ci:05}.strings.voc")),
-                            &spool_dir.join(format!("commit_{ci:05}.fsc")),
-                            ci,
-                            Some((&sr.languages, &lang_vocab_path)),
-                        )?;
-                        sorted_commit_infos.push(commit_info);
+                        let vd = vocab_dir.clone();
+                        let sd = spool_dir.clone();
+                        let permit = sort_write_semaphore
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .expect("semaphore closed");
+                        sort_write_handles.push(tokio::task::spawn_blocking(move || {
+                            let r = sort_remap_and_write_sorted_commit(
+                                sr.records,
+                                sr.subjects,
+                                sr.strings,
+                                &vd.join(format!("chunk_{ci:05}.subjects.voc")),
+                                &vd.join(format!("chunk_{ci:05}.strings.voc")),
+                                &sd.join(format!("commit_{ci:05}.fsc")),
+                                ci,
+                                Some((&sr.languages, &vd.join(format!("chunk_{ci:05}.languages.voc")))),
+                            );
+                            drop(permit);
+                            r
+                        }));
                     }
                     total_commit_size += result.blob_bytes as u64;
 
@@ -1641,21 +1666,30 @@ where
                     .map_err(|e| ImportError::Transact(e.to_string()))?
                 };
 
-                // Sort + remap records, write sorted commit file + vocab files.
+                // Hand off sort + remap + write to a background task.
                 if let Some(sr) = result.spool_result {
                     let ci = sr.chunk_idx;
-                    let lang_vocab_path = vocab_dir.join(format!("chunk_{ci:05}.languages.voc"));
-                    let commit_info = sort_remap_and_write_sorted_commit(
-                        sr.records,
-                        sr.subjects,
-                        sr.strings,
-                        &vocab_dir.join(format!("chunk_{ci:05}.subjects.voc")),
-                        &vocab_dir.join(format!("chunk_{ci:05}.strings.voc")),
-                        &spool_dir.join(format!("commit_{ci:05}.fsc")),
-                        ci,
-                        Some((&sr.languages, &lang_vocab_path)),
-                    )?;
-                    sorted_commit_infos.push(commit_info);
+                    let vd = vocab_dir.clone();
+                    let sd = spool_dir.clone();
+                    let permit = sort_write_semaphore
+                        .clone()
+                        .acquire_owned()
+                        .await
+                        .expect("semaphore closed");
+                    sort_write_handles.push(tokio::task::spawn_blocking(move || {
+                        let r = sort_remap_and_write_sorted_commit(
+                            sr.records,
+                            sr.subjects,
+                            sr.strings,
+                            &vd.join(format!("chunk_{ci:05}.subjects.voc")),
+                            &vd.join(format!("chunk_{ci:05}.strings.voc")),
+                            &sd.join(format!("commit_{ci:05}.fsc")),
+                            ci,
+                            Some((&sr.languages, &vd.join(format!("chunk_{ci:05}.languages.voc")))),
+                        );
+                        drop(permit);
+                        r
+                    }));
                 }
                 total_commit_size += result.blob_bytes as u64;
 
@@ -1688,6 +1722,19 @@ where
         .await
         .map_err(|e| ImportError::Storage(e.to_string()))?;
     tracing::info!(t = state.t, "published final commit head");
+
+    // ---- Collect background sort/write results ----
+    // Wait for all background sort_remap_and_write_sorted_commit tasks to complete.
+    // Their .fsc and .voc files must exist before Phase B can merge dictionaries.
+    let mut sorted_commit_infos: Vec<SortedCommitInfo> =
+        Vec::with_capacity(sort_write_handles.len());
+    for handle in sort_write_handles {
+        let info = handle
+            .await
+            .map_err(|e| ImportError::RunGeneration(format!("sort/write task panicked: {}", e)))?
+            .map_err(|e| ImportError::Io(e))?;
+        sorted_commit_infos.push(info);
+    }
 
     // ---- Phase 3: Merge chunk dictionaries via k-way sorted merge ----
     //
@@ -1861,15 +1908,7 @@ where
         "all dictionaries persisted"
     );
 
-    // ---- Phase 4: Parallel remap sorted commits → run files (secondary orders only) ----
-    // SPOT is built directly from sorted commits in Phase C (inside build_and_upload).
-    config.emit_progress(ImportPhase::PreparingIndex {
-        stage: "Remapping commits → runs",
-    });
-    tracing::info!(chunks = sorted_commit_infos.len(), "starting parallel remap (secondary orders)");
-    let remap_start = Instant::now();
-
-    // Build dt_tags table (datatype dict ID → ValueTypeTag) for stats hook.
+    // Build dt_tags table (datatype dict ID → ValueTypeTag) for stats hook in Phase D.
     let dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag> = {
         let dt_count = spool_config.datatype_alloc.len();
         (0..dt_count)
@@ -1888,28 +1927,6 @@ where
         .predicate_alloc
         .get_or_insert(fluree_vocab::rdf::TYPE);
 
-    // Split run budget across remap threads (minimum 64 MB per thread).
-    let run_budget_mb = config.effective_run_budget_mb();
-    // Cap remap concurrency to configured parse threads to avoid N-chunks thread explosion
-    // (and N×64MB writer buffers) on large imports.
-    let worker_cap = config.effective_heavy_workers();
-    let worker_count = std::cmp::min(
-        worker_cap,
-        std::cmp::min(num_threads.max(1), sorted_commit_infos.len().max(1)),
-    );
-    tracing::info!(
-        heavy_worker_cap = worker_cap,
-        remap_workers = worker_count,
-        parse_threads = num_threads,
-        "derived remap worker count"
-    );
-    let per_thread_budget_bytes =
-        ((run_budget_mb * 1024 * 1024) / worker_count).max(64 * 1024 * 1024);
-
-    let remap_run_dir = run_dir.to_path_buf();
-    let mut stats_hooks: Vec<fluree_db_indexer::stats::IdStatsHook> = Vec::new();
-    let mut total_remap_records: u64 = 0;
-
     // Build unified language dict + per-chunk remap tables from per-chunk lang vocab files.
     // This is needed BEFORE Phase D so that:
     // 1. remap_commit_to_runs can remap chunk-local lang_ids → global lang_ids
@@ -1925,145 +1942,8 @@ where
     tracing::info!(
         tags = unified_lang_dict.len(),
         chunks = lang_remaps.len(),
-        "built unified language dict for Phase D remap"
+        "built unified language dict"
     );
-
-    // Bounded remap parallelism: work distribution via atomic counter.
-    let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-    std::thread::scope(|scope| -> std::result::Result<(), ImportError> {
-        let mut handles = Vec::with_capacity(worker_count);
-        for _ in 0..worker_count {
-            let commit_infos_ref = &sorted_commit_infos;
-            let dt_tags_ref = &dt_tags;
-            let lang_remaps_ref = &lang_remaps;
-            let remap_run_dir = remap_run_dir.clone();
-            let remap_dir = remap_dir.clone();
-            let next_chunk = std::sync::Arc::clone(&next_chunk);
-
-            handles.push(scope.spawn(move || -> std::result::Result<(u64, Vec<fluree_db_indexer::stats::IdStatsHook>), ImportError> {
-                let mut local_total = 0u64;
-                let mut local_hooks = Vec::new();
-
-                loop {
-                    let pos = next_chunk.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if pos >= commit_infos_ref.len() {
-                        break;
-                    }
-                    let commit_info = &commit_infos_ref[pos];
-                    let ci = commit_info.chunk_idx;
-                    let chunk_run_dir = remap_run_dir.join(format!("chunk_{ci}"));
-                    std::fs::create_dir_all(&chunk_run_dir)?;
-
-                    // Load remap tables for this chunk (written during merge, named by chunk_idx).
-                    let subj_path = remap_dir.join(format!("subjects_{ci:05}.rmp"));
-                    let str_path = remap_dir.join(format!("strings_{ci:05}.rmp"));
-
-                    // Memory-map remap tables so we don't allocate multi-GB Vecs.
-                    use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
-                    let s_remap =
-                        MmapSubjectRemap::open(&subj_path).map_err(ImportError::Io)?;
-                    let str_remap =
-                        MmapStringRemap::open(&str_path).map_err(ImportError::Io)?;
-
-                    // Secondary orders only (PSOT/POST/OPST) — SPOT built from sorted commits in Phase C.
-                    let mo_config = MultiOrderConfig {
-                        total_budget_bytes: per_thread_budget_bytes,
-                        orders: RunSortOrder::secondary_orders().to_vec(),
-                        base_run_dir: chunk_run_dir,
-                    };
-                    let mut writer = MultiOrderRunWriter::new(mo_config)
-                        .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
-                    // Empty lang dict: Phase D already remaps lang_ids to global values,
-                    // so run files don't need the full unified dict embedded. Phase E's
-                    // build_lang_remap sees empty dicts, produces sentinel-only remaps,
-                    // and StreamingRunReader passes global lang_ids through unchanged.
-                    // The authoritative unified dict is in languages.dict (written separately).
-                    let mut lang_dict = fluree_db_indexer::run_index::LanguageTagDict::new();
-
-                    let mut hook = if collect_id_stats {
-                        let h = fluree_db_indexer::stats::IdStatsHook::new();
-                        Some(h)
-                    } else {
-                        None
-                    };
-
-                    // Per-chunk lang remap: chunk-local lang_id → global lang_id.
-                    // lang_remaps is indexed by position in sorted_commit_infos (same order).
-                    let chunk_lang_remap = lang_remaps_ref
-                        .get(pos)
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&[0]);
-
-                    use fluree_db_indexer::run_index::spool::remap_commit_to_runs;
-                    let written = remap_commit_to_runs(
-                        &commit_info.path,
-                        commit_info.record_count,
-                        &s_remap,
-                        &str_remap,
-                        chunk_lang_remap,
-                        &mut writer,
-                        &mut lang_dict,
-                        hook.as_mut(),
-                        Some(dt_tags_ref),
-                    )
-                    .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
-
-                    writer
-                        .finish(&mut lang_dict)
-                        .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
-
-                    local_total += written;
-                    if let Some(h) = hook {
-                        local_hooks.push(h);
-                    }
-
-                    // Note: remap tables and sorted commit files are kept for
-                    // Phase C (SPOT build from sorted commits in build_and_upload).
-                    // They are cleaned up with the session directory.
-                }
-
-                Ok((local_total, local_hooks))
-            }));
-        }
-
-        for h in handles {
-            let (written, mut hooks) = h
-                .join()
-                .map_err(|_| ImportError::RunGeneration("remap thread panicked".into()))??;
-            total_remap_records += written;
-            stats_hooks.append(&mut hooks);
-        }
-
-        Ok(())
-    })?;
-
-    tracing::info!(
-        total_records = total_remap_records,
-        elapsed_ms = remap_start.elapsed().as_millis(),
-        "parallel remap complete"
-    );
-
-    // Best-effort accounting of run-file bytes written (after remap, before index build).
-    // Note: this reads directory metadata and can be slow on huge trees, but it's
-    // useful when diagnosing write amplification.
-    let run_bytes = dir_size_bytes(run_dir)?;
-    tracing::info!(
-        run_dir = %run_dir.display(),
-        run_mb = (run_bytes as f64) / (1024.0 * 1024.0),
-        "run directory size after remap"
-    );
-
-    // Merge stats hooks from all remap threads.
-    let stats_hook = if collect_id_stats && !stats_hooks.is_empty() {
-        let mut merged = stats_hooks.remove(0);
-        for hook in stats_hooks {
-            merged.merge_from(hook);
-        }
-        Some(merged)
-    } else {
-        None
-    };
 
     // In a fresh import, all ops are assertions (no retractions).
     let total_asserts = state.cumulative_flakes;
@@ -2086,7 +1966,6 @@ where
         cumulative_flakes: state.cumulative_flakes,
         commit_head_id,
         namespace_codes,
-        stats_hook,
         total_commit_size,
         total_asserts,
         total_retracts,
@@ -2096,6 +1975,7 @@ where
         lang_remaps,
         p_width,
         dt_width,
+        dt_tags,
     })
 }
 
@@ -2130,15 +2010,15 @@ where
     use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
 
-    // ---- Phase C+E: Build SPOT from sorted commits + secondary indexes + upload dicts ----
+    // ---- Phase C (SPOT) + Phase D (remap) + Phase E (secondary build) ----
     //
     // Pipeline overlap:
-    //   - Pre-compute language dict (fast, needed by both paths)
     //   - Start Phase C (SPOT build from sorted commits, k-way merge)
-    //   - Start Phase E (secondary index build, k-way merge from run files)
+    //   - Start Phase D→E (remap to secondary run files, THEN secondary index build)
     //   - Start dict upload (CoW tree building + CAS writes)
-    //   - All three run concurrently
-    //   - After builds complete, upload index segments to CAS
+    //   - Phase C and Phase D run concurrently (Phase C doesn't depend on D)
+    //   - Phase E chains after Phase D (needs run files from D)
+    //   - After all builds complete, upload index segments to CAS
     //   - Wait for dict upload to finish (may already be done)
     let build_start = Instant::now();
     let secondary_orders = RunSortOrder::secondary_orders();
@@ -2148,7 +2028,7 @@ where
         sorted_commits = input.sorted_commit_infos.len(),
         run_dir = %input.run_dir.display(),
         index_dir = %input.index_dir.display(),
-        "building SPOT from sorted commits + secondary indexes + uploading dicts (parallel)"
+        "starting Phase C (SPOT) + Phase D→E (remap→secondary) + dict upload (parallel)"
     );
     // Emit initial indexing progress so the bar starts moving immediately
     // after committing finishes (avoids appearance of hanging).
@@ -2162,10 +2042,7 @@ where
 
     // Write the authoritative unified language dict to languages.dict so
     // upload_dicts_from_disk can include it. This dict was built from per-chunk
-    // lang vocab files and used for Phase D remap — all indexes use these
-    // global lang_ids. Skip precompute_language_dict (which would read run file
-    // lang dicts — now also correct since Phase D remaps to global IDs, but the
-    // unified dict from vocab files is the canonical source).
+    // lang vocab files — all indexes use these global lang_ids.
     {
         let lang_dict_path = input.run_dir.join("languages.dict");
         fluree_db_indexer::run_index::dict_io::write_language_dict(
@@ -2201,7 +2078,7 @@ where
     // ---- Phase C: Build SPOT index from sorted commit files (streaming k-way merge) ----
     let remap_dir = input.run_dir.join("remap");
 
-    // Use pre-computed lang remaps from Phase D (avoids re-reading per-chunk lang vocab files).
+    // Use pre-computed lang remaps (avoids re-reading per-chunk lang vocab files).
     let lang_remaps = input.lang_remaps;
 
     let mut spot_inputs: Vec<SortedCommitInput> = Vec::with_capacity(input.sorted_commit_infos.len());
@@ -2252,20 +2129,188 @@ where
         )
     });
 
-    // ---- Phase E: Build secondary indexes from run files (PSOT/POST/OPST) ----
-    let run_dir_owned = input.run_dir.to_path_buf();
-    let index_dir_owned = input.index_dir.to_path_buf();
+    // ---- Phase D→E: Remap to secondary run files, then build secondary indexes ----
+    //
+    // Phase D (remap) runs concurrently with Phase C (SPOT build) — no dependency.
+    // Phase E (secondary index build) chains after Phase D (needs run files).
+    // Both run inside a single spawn_blocking task.
+    let remap_run_dir = input.run_dir.to_path_buf();
+    let remap_remap_dir = remap_dir.clone();
+    let sorted_commit_infos = input.sorted_commit_infos;
+    let dt_tags = input.dt_tags;
+    let collect_id_stats = input.collect_id_stats;
+    let run_budget_mb = config.effective_run_budget_mb();
+    let worker_cap = config.effective_heavy_workers();
+    let remap_lang_remaps: Vec<Vec<u16>> = lang_remaps.clone();
     let secondary_counter = merge_counter.clone();
-    let secondary_handle = tokio::task::spawn_blocking(move || {
-        build_all_indexes(
-            &run_dir_owned,
-            &index_dir_owned,
+    let de_index_dir = input.index_dir.to_path_buf();
+
+    config.emit_progress(ImportPhase::PreparingIndex {
+        stage: "Remapping commits → runs",
+    });
+
+    // Phase D→E result: (secondary index results, optional stats hook).
+    type DeResult = (
+        Vec<(RunSortOrder, fluree_db_indexer::run_index::IndexBuildResult)>,
+        Option<fluree_db_indexer::stats::IdStatsHook>,
+    );
+
+    let de_handle = tokio::task::spawn_blocking(move || -> std::result::Result<DeResult, ImportError> {
+        use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
+        use fluree_db_indexer::run_index::{
+            MultiOrderConfig, MultiOrderRunWriter, RunSortOrder as RSO,
+        };
+
+        // ---- Phase D: Parallel remap sorted commits → run files (secondary orders only) ----
+        tracing::info!(
+            chunks = sorted_commit_infos.len(),
+            "starting parallel remap (secondary orders, concurrent with SPOT build)"
+        );
+        let remap_start = Instant::now();
+
+        let worker_count = std::cmp::min(
+            worker_cap,
+            sorted_commit_infos.len().max(1),
+        );
+        tracing::info!(
+            heavy_worker_cap = worker_cap,
+            remap_workers = worker_count,
+            "derived remap worker count"
+        );
+        let per_thread_budget_bytes =
+            ((run_budget_mb * 1024 * 1024) / worker_count).max(64 * 1024 * 1024);
+
+        let mut stats_hooks: Vec<fluree_db_indexer::stats::IdStatsHook> = Vec::new();
+        let mut total_remap_records: u64 = 0;
+
+        // Bounded remap parallelism: work distribution via atomic counter.
+        let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        std::thread::scope(|scope| -> std::result::Result<(), ImportError> {
+            let mut handles = Vec::with_capacity(worker_count);
+            for _ in 0..worker_count {
+                let commit_infos_ref = &sorted_commit_infos;
+                let dt_tags_ref = &dt_tags;
+                let lang_remaps_ref = &remap_lang_remaps;
+                let remap_run_dir = remap_run_dir.clone();
+                let remap_dir = remap_remap_dir.clone();
+                let next_chunk = std::sync::Arc::clone(&next_chunk);
+
+                handles.push(scope.spawn(move || -> std::result::Result<(u64, Vec<fluree_db_indexer::stats::IdStatsHook>), ImportError> {
+                    let mut local_total = 0u64;
+                    let mut local_hooks = Vec::new();
+
+                    loop {
+                        let pos = next_chunk.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if pos >= commit_infos_ref.len() {
+                            break;
+                        }
+                        let commit_info = &commit_infos_ref[pos];
+                        let ci = commit_info.chunk_idx;
+                        let chunk_run_dir = remap_run_dir.join(format!("chunk_{ci}"));
+                        std::fs::create_dir_all(&chunk_run_dir)?;
+
+                        // Load remap tables for this chunk.
+                        let subj_path = remap_dir.join(format!("subjects_{ci:05}.rmp"));
+                        let str_path = remap_dir.join(format!("strings_{ci:05}.rmp"));
+                        let s_remap =
+                            MmapSubjectRemap::open(&subj_path).map_err(ImportError::Io)?;
+                        let str_remap =
+                            MmapStringRemap::open(&str_path).map_err(ImportError::Io)?;
+
+                        // Secondary orders only (PSOT/POST/OPST) — SPOT built from sorted commits in Phase C.
+                        let mo_config = MultiOrderConfig {
+                            total_budget_bytes: per_thread_budget_bytes,
+                            orders: RSO::secondary_orders().to_vec(),
+                            base_run_dir: chunk_run_dir,
+                        };
+                        let mut writer = MultiOrderRunWriter::new(mo_config)
+                            .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
+                        let mut lang_dict = fluree_db_indexer::run_index::LanguageTagDict::new();
+
+                        let mut hook = if collect_id_stats {
+                            Some(fluree_db_indexer::stats::IdStatsHook::new())
+                        } else {
+                            None
+                        };
+
+                        let chunk_lang_remap = lang_remaps_ref
+                            .get(pos)
+                            .map(|v| v.as_slice())
+                            .unwrap_or(&[0]);
+
+                        use fluree_db_indexer::run_index::spool::remap_commit_to_runs;
+                        let written = remap_commit_to_runs(
+                            &commit_info.path,
+                            commit_info.record_count,
+                            &s_remap,
+                            &str_remap,
+                            chunk_lang_remap,
+                            &mut writer,
+                            &mut lang_dict,
+                            hook.as_mut(),
+                            Some(dt_tags_ref),
+                        )
+                        .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
+
+                        writer
+                            .finish(&mut lang_dict)
+                            .map_err(|e| ImportError::RunGeneration(e.to_string()))?;
+
+                        local_total += written;
+                        if let Some(h) = hook {
+                            local_hooks.push(h);
+                        }
+                    }
+
+                    Ok((local_total, local_hooks))
+                }));
+            }
+
+            for h in handles {
+                let (written, mut hooks) = h
+                    .join()
+                    .map_err(|_| ImportError::RunGeneration("remap thread panicked".into()))??;
+                total_remap_records += written;
+                stats_hooks.append(&mut hooks);
+            }
+
+            Ok(())
+        })?;
+
+        tracing::info!(
+            total_records = total_remap_records,
+            elapsed_ms = remap_start.elapsed().as_millis(),
+            "parallel remap complete"
+        );
+
+        // Merge stats hooks from all remap threads.
+        let stats_hook = if collect_id_stats && !stats_hooks.is_empty() {
+            let mut merged = stats_hooks.remove(0);
+            for hook in stats_hooks {
+                merged.merge_from(hook);
+            }
+            Some(merged)
+        } else {
+            None
+        };
+
+        // ---- Phase E: Build secondary indexes from run files (PSOT/POST/OPST) ----
+        // Chains after Phase D — needs the run files just written.
+        tracing::info!("starting secondary index build (PSOT/POST/OPST)");
+        let secondary_results = build_all_indexes(
+            &remap_run_dir,
+            &de_index_dir,
             secondary_orders,
             sec_leaflet_rows,
             sec_leaflets_per_leaf,
             1, // zstd_level
             Some(secondary_counter),
+            true, // skip_dedup: fresh import, unique asserts only
         )
+        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+
+        Ok((secondary_results, stats_hook))
     });
 
     // Poll the merge counter every 250ms and emit progress events.
@@ -2292,16 +2337,15 @@ where
         }
     });
 
-    // Wait for both builds to complete.
+    // Wait for both concurrent pipelines to complete.
     let spot_result = spot_handle
         .await
         .map_err(|e| ImportError::IndexBuild(format!("SPOT build task panicked: {}", e)))?
         .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
-    let mut build_results = secondary_handle
+    let (mut build_results, stats_hook) = de_handle
         .await
-        .map_err(|e| ImportError::IndexBuild(format!("secondary index build task panicked: {}", e)))?
-        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+        .map_err(|e| ImportError::IndexBuild(format!("Phase D→E task panicked: {}", e)))??;
 
     // Combine SPOT result with secondary results.
     build_results.push((RunSortOrder::Spot, spot_result));
@@ -2376,7 +2420,7 @@ where
     // incremental index refresh can merge registers. Fallback: SPOT build result for
     // per-graph flake counts only.
     tracing::info!("post-upload: predicate SIDs built, starting stats");
-    let (stats_json, sketch_ref) = if let Some(hook) = input.stats_hook {
+    let (stats_json, sketch_ref) = if let Some(hook) = stats_hook {
         // Persist HLL sketches BEFORE finalize consumes the hook.
         tracing::info!("post-upload: serializing HLL sketch blob");
         let sketch_blob = fluree_db_indexer::stats::HllSketchBlob::from_properties(
@@ -2704,24 +2748,6 @@ fn derive_session_dir<S: Storage>(_storage: &S, alias_prefix: &str, sid: &str) -
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("fluree-import"));
     base.join(alias_prefix).join("tmp_import").join(sid)
-}
-
-fn dir_size_bytes(path: &Path) -> std::io::Result<u64> {
-    let mut total = 0u64;
-    if !path.exists() {
-        return Ok(0);
-    }
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        let p = entry.path();
-        if ft.is_dir() {
-            total += dir_size_bytes(&p)?;
-        } else if ft.is_file() {
-            total += entry.metadata()?.len();
-        }
-    }
-    Ok(total)
 }
 
 /// Build a JSON-LD @context from turtle prefix declarations + built-in namespaces,
