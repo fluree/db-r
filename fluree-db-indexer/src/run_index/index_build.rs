@@ -300,12 +300,16 @@ fn build_index_from_run_paths_inner(
     let mut current_g_id: Option<u16> = None;
     let mut current_writer: Option<LeafWriter> = None;
     let skip_dedup = config.skip_dedup;
+    // Scratch buffer reused across merge iterations to collect non-winning
+    // duplicates (history entries for Region 3).
+    let mut history_scratch: Vec<super::run_record::RunRecord> = Vec::new();
 
     loop {
         let record = if skip_dedup {
             merge.next_record()?
         } else {
-            merge.next_deduped()?
+            history_scratch.clear();
+            merge.next_deduped_with_history(&mut history_scratch)?
         };
         let Some(record) = record else { break };
 
@@ -317,6 +321,8 @@ fn build_index_from_run_paths_inner(
 
         // Snapshot semantics: if dedup selected a retract (op=0), the fact is
         // no longer asserted and must be excluded from the snapshot index.
+        // History for retracted facts is discarded — they have no R1 row to
+        // attach R3 history to. (The novelty merge path handles this case.)
         if record.op == 0 {
             retract_count += 1;
             continue;
@@ -380,8 +386,11 @@ fn build_index_from_run_paths_inner(
             current_g_id = Some(g_id);
         }
 
-        // Push record to current writer
-        current_writer.as_mut().unwrap().push_record(record)?;
+        // Push record (R1) with associated history entries (R3) to current writer.
+        current_writer
+            .as_mut()
+            .unwrap()
+            .push_record_with_history(record, &history_scratch)?;
         total_rows += 1;
         records_since_log += 1;
         progress_batch += 1;
@@ -598,12 +607,14 @@ pub fn build_spot_from_sorted_commits(
 
     let mut current_g_id: Option<u16> = None;
     let mut current_writer: Option<LeafWriter> = None;
+    let mut history_scratch: Vec<super::run_record::RunRecord> = Vec::new();
 
     loop {
         let record = if skip_dedup {
             merge.next_record()?
         } else {
-            merge.next_deduped()?
+            history_scratch.clear();
+            merge.next_deduped_with_history(&mut history_scratch)?
         };
         let Some(record) = record else { break };
 
@@ -660,7 +671,10 @@ pub fn build_spot_from_sorted_commits(
             current_g_id = Some(g_id);
         }
 
-        current_writer.as_mut().unwrap().push_record(record)?;
+        current_writer
+            .as_mut()
+            .unwrap()
+            .push_record_with_history(record, &history_scratch)?;
         total_rows += 1;
         progress_batch += 1;
         if progress_batch >= PROGRESS_BATCH_SIZE {

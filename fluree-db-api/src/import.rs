@@ -2030,8 +2030,11 @@ where
     );
     // Emit initial indexing progress so the bar starts moving immediately
     // after committing finishes (avoids appearance of hanging).
-    // Progress tracks POST merge only (one order), so total = actual flake count.
-    let total_index_flakes = input.cumulative_flakes;
+    // Two concurrent pipelines contribute to the shared counter:
+    //   - SPOT build (Phase C): ~N flakes
+    //   - Secondary build (Phase E, POST order only): ~N flakes
+    // Total progress = 2 × actual flake count.
+    let total_index_flakes = input.cumulative_flakes * 2;
     config.emit_progress(ImportPhase::Indexing {
         merged_flakes: 0,
         total_flakes: total_index_flakes,

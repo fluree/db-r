@@ -247,8 +247,12 @@ pub struct LeafWriter {
     dt_width: u8,
     /// Width of p_id encoding in bytes (2 = u16, 4 = u32).
     p_width: u8,
-    /// Buffer of records for the current leaflet.
+    /// Buffer of records for the current leaflet (Region 1 + 2).
     record_buf: Vec<RunRecord>,
+    /// Buffer of history entries for the current leaflet (Region 3).
+    /// Contains only non-winning duplicates from merge dedup — NOT a copy
+    /// of record_buf. Empty for single-version facts.
+    history_buf: Vec<Region3Entry>,
     /// Scratch buffer reused for Region 3 sorting.
     r3_tmp: Vec<Region3Entry>,
     /// Encoded leaflets for the current leaf file.
@@ -313,6 +317,7 @@ impl LeafWriter {
             dt_width,
             p_width,
             record_buf: Vec::with_capacity(leaflet_rows),
+            history_buf: Vec::new(),
             r3_tmp: Vec::with_capacity(leaflet_rows),
             current_leaflets: Vec::with_capacity(leaflets_per_leaf),
             leaf_first_record: None,
@@ -334,13 +339,35 @@ impl LeafWriter {
         self.skip_region3 = skip;
     }
 
-    /// Push a single record. Flushes leaflet/leaf as thresholds are hit.
+    /// Push a single record (no history). Flushes leaflet/leaf as thresholds are hit.
     pub fn push_record(&mut self, record: RunRecord) -> io::Result<()> {
+        self.push_record_with_history(record, &[])
+    }
+
+    /// Push a record for Region 1 along with its associated history entries
+    /// for Region 3. The history entries are non-winning duplicates from the
+    /// merge dedup — they represent intermediate asserts and retractions for
+    /// the same fact identity.
+    ///
+    /// Record and history are pushed atomically (before the flush threshold
+    /// check) so that history entries are always flushed with the correct
+    /// leaflet.
+    pub fn push_record_with_history(
+        &mut self,
+        record: RunRecord,
+        history: &[RunRecord],
+    ) -> io::Result<()> {
         if self.leaf_first_record.is_none() {
             self.leaf_first_record = Some(record);
         }
         self.last_record = Some(record);
         self.record_buf.push(record);
+
+        if !self.skip_region3 {
+            for h in history {
+                self.history_buf.push(Region3Entry::from_run_record(h));
+            }
+        }
 
         if self.record_buf.len() >= self.leaflet_rows {
             self.flush_leaflet()?;
@@ -360,24 +387,22 @@ impl LeafWriter {
         let first_s_id = self.record_buf[0].s_id.as_u64();
         let first_p_id = self.record_buf[0].p_id;
 
-        // Build R3 entries for time-travel support (skip for append-only import).
-        let data = if self.skip_region3 {
+        // Build R3 from externally-provided history entries (non-winning
+        // duplicates from merge dedup). Only facts with multi-version history
+        // contribute entries; single-version facts produce empty R3.
+        let data = if self.skip_region3 || self.history_buf.is_empty() {
             self.leaflet_encoder.encode_leaflet(&self.record_buf)
         } else {
             let r3_t0 = self.perf_enabled.then(std::time::Instant::now);
-            let mut r3_entries: Vec<Region3Entry> = self
-                .record_buf
-                .iter()
-                .map(Region3Entry::from_run_record)
-                .collect();
-            radix_sort_r3_abs_t_desc(&mut r3_entries, &mut self.r3_tmp);
+            radix_sort_r3_abs_t_desc(&mut self.history_buf, &mut self.r3_tmp);
             if let Some(t) = r3_t0 {
                 self.perf.region3_build_time += t.elapsed();
             }
             self.leaflet_encoder
-                .encode_leaflet_with_r3(&self.record_buf, &r3_entries)
+                .encode_leaflet_with_r3(&self.record_buf, &self.history_buf)
         };
         self.record_buf.clear();
+        self.history_buf.clear();
         if let Some(t) = t0 {
             self.perf.leaflet_encode_time += t.elapsed();
         }

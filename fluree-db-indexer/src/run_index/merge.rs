@@ -239,6 +239,44 @@ impl<T: MergeSource, F: Fn(&RunRecord, &RunRecord) -> Ordering> KWayMerge<T, F> 
         Ok(Some(best))
     }
 
+    /// Pop the next deduplicated record, collecting non-winning duplicates.
+    ///
+    /// Works like [`next_deduped`] but also captures all consumed non-winning
+    /// records into `history`. The caller must clear `history` before each
+    /// call (the method does NOT clear it, allowing pre-allocated reuse).
+    ///
+    /// For single-version facts (no duplicates), `history` remains empty.
+    /// For multi-version facts, `history` contains the older/losing records
+    /// (intermediate asserts, retractions) — everything except the winner.
+    pub fn next_deduped_with_history(
+        &mut self,
+        history: &mut Vec<RunRecord>,
+    ) -> io::Result<Option<RunRecord>> {
+        let mut best = match self.next_record()? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        // Consume all consecutive duplicates with the same identity
+        loop {
+            match self.heap.first() {
+                Some(entry) if same_identity(&best, &entry.record) => {
+                    let dup = self.next_record()?.unwrap();
+                    // Keep the record with higher t (for same identity, later t wins)
+                    if dup.t > best.t || (dup.t == best.t && dup.op >= best.op) {
+                        history.push(best); // old best becomes history
+                        best = dup;
+                    } else {
+                        history.push(dup); // dup is older, goes to history
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        Ok(Some(best))
+    }
+
     /// True when all streams are exhausted.
     pub fn is_exhausted(&self) -> bool {
         self.heap.is_empty()
@@ -608,6 +646,196 @@ mod tests {
             (results[5].s_id, results[5].p_id),
             (SubjectId::from_u64(5), 1)
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Tests for next_deduped_with_history ----
+
+    /// Make a record with explicit assert/retract flag.
+    fn make_record_op(s_id: u64, p_id: u32, val: i64, t: u32, assert: bool) -> RunRecord {
+        RunRecord::new(
+            0,
+            SubjectId::from_u64(s_id),
+            p_id,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
+            t,
+            assert,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
+        )
+    }
+
+    #[test]
+    fn test_dedup_with_history_single_version() {
+        // Single version of each fact — history should be empty.
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_single");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![make_record(1, 1, 10, 1), make_record(2, 1, 20, 1)],
+        );
+
+        let streams = open_streams(&[p0]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        // First record: s=1
+        history.clear();
+        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        assert_eq!(rec.s_id, SubjectId::from_u64(1));
+        assert!(history.is_empty(), "single-version fact should have no history");
+
+        // Second record: s=2
+        history.clear();
+        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        assert_eq!(rec.s_id, SubjectId::from_u64(2));
+        assert!(history.is_empty());
+
+        // Done
+        history.clear();
+        assert!(merge.next_deduped_with_history(&mut history).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dedup_with_history_two_versions() {
+        // Same fact at t=1 and t=2 — winner is t=2, history is t=1.
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_two");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(&dir, "r0.frn", vec![make_record(1, 1, 10, 1)]);
+        let p1 = write_sorted_run(&dir, "r1.frn", vec![make_record(1, 1, 10, 2)]);
+
+        let streams = open_streams(&[p0, p1]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        assert_eq!(rec.t, 2, "winner should be t=2");
+        assert_eq!(history.len(), 1, "should have one history entry");
+        assert_eq!(history[0].t, 1, "history entry should be t=1");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dedup_with_history_assert_retract_reassert() {
+        // Same fact: assert t=1, retract t=2, assert t=3
+        // Winner: assert at t=3. History: [assert t=1, retract t=2]
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_ara");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![make_record_op(1, 1, 10, 1, true)], // assert t=1
+        );
+        let p1 = write_sorted_run(
+            &dir,
+            "r1.frn",
+            vec![make_record_op(1, 1, 10, 2, false)], // retract t=2
+        );
+        let p2 = write_sorted_run(
+            &dir,
+            "r2.frn",
+            vec![make_record_op(1, 1, 10, 3, true)], // assert t=3
+        );
+
+        let streams = open_streams(&[p0, p1, p2]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        assert_eq!(rec.t, 3, "winner should be assert at t=3");
+        assert_eq!(rec.op, 1, "winner should be assert");
+        assert_eq!(history.len(), 2, "should have two history entries");
+
+        // History contains both the t=1 assert and t=2 retract
+        let hist_ts: Vec<u32> = history.iter().map(|r| r.t).collect();
+        assert!(hist_ts.contains(&1), "history should contain t=1");
+        assert!(hist_ts.contains(&2), "history should contain t=2");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dedup_with_history_retract_wins() {
+        // Same fact: assert t=1, retract t=2
+        // Winner: retract at t=2. History: [assert t=1]
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_retract_wins");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![make_record_op(1, 1, 10, 1, true)],
+        );
+        let p1 = write_sorted_run(
+            &dir,
+            "r1.frn",
+            vec![make_record_op(1, 1, 10, 2, false)],
+        );
+
+        let streams = open_streams(&[p0, p1]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        assert_eq!(rec.t, 2, "winner should be retract at t=2");
+        assert_eq!(rec.op, 0, "winner should be retract");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].t, 1);
+        assert_eq!(history[0].op, 1, "history should contain the assert");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dedup_with_history_mixed_facts() {
+        // Two different facts: s=1 (multi-version) and s=2 (single-version)
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_mixed");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![make_record(1, 1, 10, 1), make_record(2, 1, 20, 1)],
+        );
+        let p1 = write_sorted_run(
+            &dir,
+            "r1.frn",
+            vec![make_record(1, 1, 10, 5)], // s=1 updated at t=5
+        );
+
+        let streams = open_streams(&[p0, p1]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        // s=1: multi-version, winner t=5, history [t=1]
+        history.clear();
+        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        assert_eq!(rec.s_id, SubjectId::from_u64(1));
+        assert_eq!(rec.t, 5);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].t, 1);
+
+        // s=2: single-version, no history
+        history.clear();
+        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        assert_eq!(rec.s_id, SubjectId::from_u64(2));
+        assert_eq!(rec.t, 1);
+        assert!(history.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

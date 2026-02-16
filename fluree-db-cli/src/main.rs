@@ -13,13 +13,24 @@ use cli::{Cli, Commands};
 use error::exit_with_error;
 
 fn init_tracing(cli: &Cli) {
-    // The CLI depends on library crates that emit `tracing` events.
-    // Without an installed subscriber, `RUST_LOG=...` has no effect.
-    //
-    // Default to "off" so we don't change output unless the user opts in
-    // via `RUST_LOG` (or other `EnvFilter`-compatible env vars).
-    let filter =
-        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "off".into());
+    // CLI tracing policy:
+    //   --quiet  → always "off" (no logs, no matter what)
+    //   --verbose → "info" level for fluree crates (useful diagnostics)
+    //   default  → "off" (clean terminal, progress bars only)
+    //   RUST_LOG → honoured only when neither --verbose nor --quiet is set,
+    //              so developers can still get fine-grained control.
+    let filter = if cli.quiet {
+        tracing_subscriber::EnvFilter::new("off")
+    } else if cli.verbose {
+        // --verbose: honour RUST_LOG if set, otherwise show info for fluree crates.
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "info".into())
+    } else {
+        // Default: suppress all logs. RUST_LOG is intentionally ignored so that
+        // developer env vars don't leak log lines into the user-facing CLI output
+        // (which uses progress bars on stderr). Use --verbose to see logs.
+        tracing_subscriber::EnvFilter::new("off")
+    };
 
     let ansi = !(cli.no_color || std::env::var_os("NO_COLOR").is_some());
 

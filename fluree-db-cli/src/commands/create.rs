@@ -260,16 +260,24 @@ where
                 merged_flakes
             };
             ib.set_position(pos);
-            let merged_m = merged_flakes as f64 / 1_000_000.0;
-            let total_m = total_flakes as f64 / 1_000_000.0;
+            // Display actual flake count (total_flakes includes both SPOT
+            // and secondary pipeline contributions for progress accuracy,
+            // but the user should see the real dataset size).
+            let actual_flakes = total_flakes / 2;
+            let actual_m = actual_flakes as f64 / 1_000_000.0;
+            let pct = if total_flakes > 0 {
+                merged_flakes as f64 / total_flakes as f64 * 100.0
+            } else {
+                0.0
+            };
             let rate = if elapsed_secs > 0.0 {
-                merged_m / elapsed_secs
+                actual_m * (pct / 100.0) / elapsed_secs
             } else {
                 0.0
             };
             ib.set_message(format!(
-                "{:.1}M / {:.1}M flakes  {:.2} M/s",
-                merged_m, total_m, rate
+                "{:.1}M flakes  {:.0}%  {:.2} M/s",
+                actual_m, pct, rate
             ));
         }
         ImportPhase::Done => {
