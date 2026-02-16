@@ -937,6 +937,12 @@ pub struct SortedCommitInfo {
     pub subject_count: u64,
     /// Number of unique strings in this chunk.
     pub string_count: u64,
+    /// Path to the types-map sidecar (`.types`), if rdf:type extraction was enabled.
+    ///
+    /// Contains `(g_id: u16, s_sorted_local: u64, class_sorted_local: u64)` tuples
+    /// (18 bytes each) for every `rdf:type` assertion. Used after Phase B vocab merge
+    /// to build the global subject→class bitset table.
+    pub types_map_path: Option<PathBuf>,
 }
 
 /// Sort, remap, and write a sorted commit file from buffered parse output.
@@ -960,6 +966,17 @@ pub struct SortedCommitInfo {
 /// `sorted_local_id → global_id`.
 ///
 /// [`cmp_g_spot`]: super::run_record::cmp_g_spot
+/// Configuration for optional types-map sidecar extraction.
+pub struct TypesMapConfig<'a> {
+    /// Predicate ID for `rdf:type`.
+    pub rdf_type_p_id: u32,
+    /// Directory to write the `.types` sidecar file.
+    pub output_dir: &'a Path,
+}
+
+/// Wire size for a types-map entry: g_id(2) + s_sorted_local(8) + class_sorted_local(8).
+pub const TYPES_MAP_ENTRY_SIZE: usize = 18;
+
 #[allow(clippy::too_many_arguments)]
 pub fn sort_remap_and_write_sorted_commit(
     mut records: Vec<RunRecord>,
@@ -970,6 +987,7 @@ pub fn sort_remap_and_write_sorted_commit(
     commit_path: &Path,
     chunk_idx: usize,
     languages: Option<(&rustc_hash::FxHashMap<String, u16>, &Path)>,
+    types_map: Option<TypesMapConfig<'_>>,
 ) -> io::Result<SortedCommitInfo> {
     // A.2 steps 1+2: Sort subjects and strings in parallel, writing vocab
     // files and building insertion→sorted remap tables for each.
@@ -1023,6 +1041,34 @@ pub fn sort_remap_and_write_sorted_commit(
     }
     let spool_info = writer.finish()?;
 
+    // A.3b: Optionally extract rdf:type edges into a tiny sidecar file.
+    // Records are already remapped to sorted-local IDs (step A.2), so both
+    // s_id and o_key (class) are sorted-position IDs that can be remapped to
+    // global sid64 using the Phase B subject remap table.
+    let types_map_path = if let Some(tm) = types_map {
+        let ref_id = fluree_db_core::value_id::ObjKind::REF_ID.as_u8();
+        let path = tm.output_dir.join(format!("chunk_{chunk_idx:05}.types"));
+        let file = std::fs::File::create(&path)?;
+        let mut bw = BufWriter::new(file);
+        let mut count: u64 = 0;
+        for record in &records {
+            if record.p_id == tm.rdf_type_p_id
+                && record.o_kind == ref_id
+                && record.op == 1
+            {
+                bw.write_all(&record.g_id.to_le_bytes())?;
+                bw.write_all(&record.s_id.as_u64().to_le_bytes())?;
+                bw.write_all(&record.o_key.to_le_bytes())?;
+                count += 1;
+            }
+        }
+        bw.flush()?;
+        tracing::debug!(chunk_idx, count, "types-map sidecar written");
+        Some(path)
+    } else {
+        None
+    };
+
     Ok(SortedCommitInfo {
         path: spool_info.path,
         record_count: spool_info.record_count,
@@ -1030,6 +1076,7 @@ pub fn sort_remap_and_write_sorted_commit(
         chunk_idx: spool_info.chunk_idx,
         subject_count,
         string_count,
+        types_map_path,
     })
 }
 
@@ -1637,6 +1684,7 @@ mod tests {
             &commit_path,
             0,
             None,
+            None,
         )
         .unwrap();
 
@@ -1714,6 +1762,7 @@ mod tests {
             &commit_path,
             0,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(info.record_count, 3);
@@ -1766,6 +1815,7 @@ mod tests {
             &dir.join("str.voc"),
             &dir.join("commit_0.fsc"),
             0,
+            None,
             None,
         )
         .unwrap();

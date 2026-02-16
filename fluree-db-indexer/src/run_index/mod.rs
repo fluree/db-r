@@ -58,8 +58,8 @@ pub use global_dict::{
 };
 pub use index_build::{
     build_all_indexes, build_index, build_spot_from_sorted_commits, build_spot_index,
-    precompute_language_dict, IndexBuildConfig, IndexBuildResult, SortedCommitInput,
-    SpotClassStats, SpotFromCommitsConfig, DT_REF_ID,
+    precompute_language_dict, ClassBitsetTable, IndexBuildConfig, IndexBuildResult,
+    SortedCommitInput, SpotClassStats, SpotFromCommitsConfig, DT_REF_ID,
 };
 pub use index_root::{
     BinaryGarbageRef, BinaryIndexRoot, BinaryPrevIndexRef, CasArtifactsConfig, DictRefs,
@@ -82,7 +82,7 @@ pub use sorted_commit_reader::StreamingSortedCommitReader;
 pub use spool::{
     collect_chunk_run_files, remap_commit_to_runs, remap_spool_to_runs,
     sort_remap_and_write_sorted_commit, spool_to_runs, SortedCommitInfo, SpoolFileInfo,
-    SpoolReader, SpoolWriter,
+    SpoolReader, SpoolWriter, TypesMapConfig,
 };
 pub use spot_cursor::SpotCursor;
 pub use streaming_reader::StreamingRunReader;

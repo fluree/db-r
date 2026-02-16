@@ -275,6 +275,7 @@ mod tests {
             &commit_path,
             0,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(info.record_count, 2);
@@ -351,6 +352,7 @@ mod tests {
             &commit_path,
             0,
             None,
+            None,
         )
         .unwrap();
 
@@ -404,6 +406,7 @@ mod tests {
             &dir.join("commit_0.fsc"),
             0,
             None,
+            None,
         )
         .unwrap();
 
@@ -424,6 +427,7 @@ mod tests {
             &dir.join("str1.voc"),
             &dir.join("commit_1.fsc"),
             1,
+            None,
             None,
         )
         .unwrap();

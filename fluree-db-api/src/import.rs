@@ -1136,7 +1136,7 @@ where
     N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::spool::sort_remap_and_write_sorted_commit;
-    use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo};
+    use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo, TypesMapConfig};
     use fluree_db_transact::import::{
         finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk,
         parse_chunk_with_prelude, ImportState, ParsedChunk,
@@ -1255,6 +1255,13 @@ where
         vector_pool: Arc::new(SharedVectorArenaPool::new()),
         ns_alloc: Arc::clone(&shared_alloc),
     });
+
+    // Pre-insert rdf:type so we know the predicate ID before Phase A begins.
+    // This allows sort_remap_and_write_sorted_commit to extract rdf:type edges
+    // into a types-map sidecar for building the subject→class bitset table.
+    let rdf_type_p_id = spool_config
+        .predicate_alloc
+        .get_or_insert(fluree_vocab::rdf::TYPE);
 
     // Helper: compute ns_delta for a parsed chunk and advance published_codes.
     let compute_ns_delta = |new_codes: &FxHashSet<u16>,
@@ -1406,6 +1413,10 @@ where
                                 &sr.languages,
                                 &vd.join(format!("chunk_{ci:05}.languages.voc")),
                             )),
+                            Some(TypesMapConfig {
+                                rdf_type_p_id,
+                                output_dir: &sd,
+                            }),
                         );
                         drop(permit);
                         r
@@ -1587,6 +1598,10 @@ where
                                     &sr.languages,
                                     &vd.join(format!("chunk_{ci:05}.languages.voc")),
                                 )),
+                                Some(TypesMapConfig {
+                                    rdf_type_p_id,
+                                    output_dir: &sd,
+                                }),
                             );
                             drop(permit);
                             r
@@ -1695,6 +1710,10 @@ where
                                 &sr.languages,
                                 &vd.join(format!("chunk_{ci:05}.languages.voc")),
                             )),
+                            Some(TypesMapConfig {
+                                rdf_type_p_id,
+                                output_dir: &sd,
+                            }),
                         );
                         drop(permit);
                         r
@@ -1952,11 +1971,8 @@ where
             .collect()
     };
 
-    // Pre-insert rdf:type into predicate allocator for class stats tracking.
-    // Used by the SPOT merge to collect class→property→datatype stats inline.
-    let rdf_type_p_id = spool_config
-        .predicate_alloc
-        .get_or_insert(fluree_vocab::rdf::TYPE);
+    // rdf_type_p_id was pre-inserted before Phase A (used for types-map sidecar +
+    // SPOT merge class stats tracking).
 
     // In a fresh import, all ops are assertions (no retractions).
     let total_asserts = state.cumulative_flakes;
@@ -2020,7 +2036,7 @@ where
     use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
     use fluree_db_indexer::run_index::{
         build_all_indexes, build_spot_from_sorted_commits, BinaryIndexRoot, CasArtifactsConfig,
-        PrefixTrie, RunSortOrder, SortedCommitInput, SpotFromCommitsConfig,
+        ClassBitsetTable, PrefixTrie, RunSortOrder, SortedCommitInput, SpotFromCommitsConfig,
     };
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
 
@@ -2092,14 +2108,19 @@ where
     let p_width = input.p_width;
     let dt_width = input.dt_width;
 
-    // ---- Phase C: Build SPOT index from sorted commit files (streaming k-way merge) ----
+    // ---- Phase B.5: Load remap tables + build class bitset table ----
     let remap_dir = input.run_dir.join("remap");
 
     // Use pre-computed lang remaps (avoids re-reading per-chunk lang vocab files).
     let lang_remaps = input.lang_remaps;
 
-    let mut spot_inputs: Vec<SortedCommitInput> =
-        Vec::with_capacity(input.sorted_commit_infos.len());
+    // Load per-chunk remap tables (mmap). We need subject remaps *before* moving
+    // them into spot_inputs so we can build the class bitset table.
+    let n_chunks = input.sorted_commit_infos.len();
+    let mut subject_remaps: Vec<MmapSubjectRemap> = Vec::with_capacity(n_chunks);
+    let mut string_remaps: Vec<MmapStringRemap> = Vec::with_capacity(n_chunks);
+    let mut chunk_lang_remaps: Vec<Vec<u16>> = Vec::with_capacity(n_chunks);
+
     for (pos, info) in input.sorted_commit_infos.iter().enumerate() {
         let ci = info.chunk_idx;
         let subj_path = remap_dir.join(format!("subjects_{ci:05}.rmp"));
@@ -2116,16 +2137,58 @@ where
                 format!("string remap {}: {}", str_path.display(), e),
             ))
         })?;
-        // lang_remaps is indexed by position (same order as sorted_commit_infos).
         let lang_remap = lang_remaps.get(pos).cloned().unwrap_or_else(|| vec![0]);
+        subject_remaps.push(s_remap);
+        string_remaps.push(str_remap);
+        chunk_lang_remaps.push(lang_remap);
+    }
+
+    // Build subject→class bitset table from types-map sidecars (Phase B.5).
+    // Each sidecar contains (g_id, s_sorted_local, class_sorted_local) tuples
+    // written during Phase A. Subject remap converts sorted-local → global sid64.
+    let bitset_inputs: Vec<(&std::path::Path, &dyn fluree_db_indexer::run_index::spool::SubjectRemap)> =
+        input
+            .sorted_commit_infos
+            .iter()
+            .zip(subject_remaps.iter())
+            .filter_map(|(info, remap)| {
+                info.types_map_path
+                    .as_ref()
+                    .map(|p| (p.as_path(), remap as &dyn fluree_db_indexer::run_index::spool::SubjectRemap))
+            })
+            .collect();
+
+    let class_bitset = if !bitset_inputs.is_empty() {
+        let bitset_start = Instant::now();
+        let table = ClassBitsetTable::build_from_type_maps(&bitset_inputs)
+            .map_err(ImportError::Io)?;
+        tracing::info!(
+            classes = table.class_count(),
+            elapsed_ms = bitset_start.elapsed().as_millis(),
+            "class bitset table ready for SPOT merge"
+        );
+        Some(table)
+    } else {
+        None
+    };
+
+    // Assemble SPOT inputs (move remaps into boxed trait objects).
+    let mut spot_inputs: Vec<SortedCommitInput> = Vec::with_capacity(n_chunks);
+    for (i, ((s_remap, str_remap), lang_remap)) in subject_remaps
+        .into_iter()
+        .zip(string_remaps)
+        .zip(chunk_lang_remaps)
+        .enumerate()
+    {
         spot_inputs.push(SortedCommitInput {
-            commit_path: info.path.clone(),
+            commit_path: input.sorted_commit_infos[i].path.clone(),
             subject_remap: Box::new(s_remap),
             string_remap: Box::new(str_remap),
             lang_remap,
         });
     }
 
+    // ---- Phase C: Build SPOT index from sorted commit files (streaming k-way merge) ----
     let spot_leaflet_rows = config.leaflet_rows;
     let spot_leaflets_per_leaf = config.leaflets_per_leaf;
     let sec_leaflet_rows = config.leaflet_rows;
@@ -2148,6 +2211,7 @@ where
                 skip_dedup: true,   // Fresh import: unique asserts, no retractions.
                 skip_region3: true, // Append-only: no history journal needed.
                 rdf_type_p_id: Some(spot_rdf_type_p_id),
+                class_bitset,
             },
         )
     });
@@ -2697,38 +2761,44 @@ fn build_class_stats_json(
         dict_io::read_forward_index(&idx_path).map_err(ImportError::Io)?;
     let mut fwd_file = std::fs::File::open(&fwd_path).map_err(ImportError::Io)?;
 
+    // Helper: resolve sid64 → (ns_code, suffix_string).
+    let resolve_sid = |sid64: u64, file: &mut std::fs::File| -> Option<(u16, String)> {
+        let subj = SubjectId::from_u64(sid64);
+        let ns_code = subj.ns_code();
+        let pos = sids_vec.binary_search(&sid64).ok()?;
+        let off = fwd_offsets[pos];
+        let len = fwd_lens[pos] as usize;
+        let mut iri_buf = vec![0u8; len];
+        file.seek(SeekFrom::Start(off)).ok()?;
+        file.read_exact(&mut iri_buf).ok()?;
+        let iri = std::str::from_utf8(&iri_buf).ok()?;
+        let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+        let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
+            &iri[prefix.len()..]
+        } else {
+            iri
+        };
+        Some((ns_code, suffix.to_string()))
+    };
+
     // Sort class entries by sid64 for deterministic output.
     let mut class_entries: Vec<(&u64, &u64)> = cs.class_counts.iter().collect();
     class_entries.sort_by_key(|&(sid, _)| *sid);
 
+    // Per-class ref-target data (if available).
+    let class_refs = &cs.class_prop_refs;
+
     let classes_json: Vec<serde_json::Value> = class_entries
         .iter()
         .filter_map(|&(&class_sid64, &count)| {
-            let subj = SubjectId::from_u64(class_sid64);
-            let ns_code = subj.ns_code();
+            let (ns_code, suffix) = resolve_sid(class_sid64, &mut fwd_file)?;
 
-            // Binary search for the sid64 in the sorted sids array.
-            let pos = sids_vec.binary_search(&class_sid64).ok()?;
+            // Look up this class's ref-target map (if any).
+            let ref_map = class_refs.get(&class_sid64);
 
-            // Read just this IRI suffix from the forward file via seek+read.
-            let off = fwd_offsets[pos];
-            let len = fwd_lens[pos] as usize;
-            let mut iri_buf = vec![0u8; len];
-            fwd_file.seek(SeekFrom::Start(off)).ok()?;
-            fwd_file.read_exact(&mut iri_buf).ok()?;
-            let iri = std::str::from_utf8(&iri_buf).ok()?;
-
-            let prefix = namespace_codes
-                .get(&ns_code)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
-                &iri[prefix.len()..]
-            } else {
-                iri
-            };
-
-            // Build property → datatype breakdown for this class.
+            // Build property entries. Each property gets dt breakdown, and
+            // optionally ref-target class info using the DB-R extended object
+            // format: {"ref-classes": [[[ns, suffix], count], ...]}.
             let prop_json: Vec<serde_json::Value> =
                 if let Some(prop_map) = cs.class_prop_dts.get(&class_sid64) {
                     let mut props: Vec<_> = prop_map.iter().collect();
@@ -2739,23 +2809,42 @@ fn build_class_stats_json(
                         .filter_map(|&(&p_id, dt_map)| {
                             let psid = predicate_sids.get(p_id as usize)?;
 
-                            // Build datatype counts: [[dt_name, count], ...]
-                            let mut dts: Vec<_> = dt_map.iter().collect();
-                            dts.sort_by_key(|&(dt, _)| *dt);
-                            let dt_json: Vec<serde_json::Value> = dts
-                                .iter()
-                                .map(|&(&dt, &count)| {
-                                    if dt == DT_REF_ID {
-                                        serde_json::json!(["@id", count])
-                                    } else if let Some(tag) = dt_tags.get(dt as usize) {
-                                        serde_json::json!([tag.as_u8(), count])
-                                    } else {
-                                        serde_json::json!([dt, count])
-                                    }
-                                })
-                                .collect();
+                            // Check if this property has ref-target class data.
+                            let prop_refs = ref_map.and_then(|rm| rm.get(&p_id));
 
-                            Some(serde_json::json!([[psid.0, &psid.1], dt_json]))
+                            if let Some(target_map) = prop_refs {
+                                // Emit DB-R extended object with ref-classes.
+                                let mut targets: Vec<_> = target_map.iter().collect();
+                                targets.sort_by_key(|&(sid, _)| *sid);
+                                let refs_json: Vec<serde_json::Value> = targets
+                                    .iter()
+                                    .filter_map(|&(&target_sid, &tcount)| {
+                                        let (tns, tsuffix) =
+                                            resolve_sid(target_sid, &mut fwd_file)?;
+                                        Some(serde_json::json!([[tns, tsuffix], tcount]))
+                                    })
+                                    .collect();
+                                Some(serde_json::json!(
+                                    [[psid.0, &psid.1], {"ref-classes": refs_json}]
+                                ))
+                            } else {
+                                // Standard format: property with datatype counts.
+                                let mut dts: Vec<_> = dt_map.iter().collect();
+                                dts.sort_by_key(|&(dt, _)| *dt);
+                                let dt_json: Vec<serde_json::Value> = dts
+                                    .iter()
+                                    .map(|&(&dt, &count)| {
+                                        if dt == DT_REF_ID {
+                                            serde_json::json!(["@id", count])
+                                        } else if let Some(tag) = dt_tags.get(dt as usize) {
+                                            serde_json::json!([tag.as_u8(), count])
+                                        } else {
+                                            serde_json::json!([dt, count])
+                                        }
+                                    })
+                                    .collect();
+                                Some(serde_json::json!([[psid.0, &psid.1], dt_json]))
+                            }
                         })
                         .collect()
                 } else {

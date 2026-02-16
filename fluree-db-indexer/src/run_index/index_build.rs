@@ -526,6 +526,12 @@ pub struct SpotClassStats {
     pub class_counts: HashMap<u64, u64>,
     /// class sid64 → p_id → dt → flake count
     pub class_prop_dts: HashMap<u64, HashMap<u32, HashMap<u16, u64>>>,
+    /// class sid64 → p_id → target_class sid64 → count
+    ///
+    /// For each REF_ID property on a typed subject, records what classes the
+    /// *target* subject belongs to. Built using the [`ClassBitsetTable`] which
+    /// maps every subject to its class membership bitset.
+    pub class_prop_refs: HashMap<u64, HashMap<u32, HashMap<u64, u64>>>,
 }
 
 /// Internal streaming collector for class stats during SPOT merge.
@@ -541,18 +547,25 @@ struct SpotClassStatsCollector {
     classes: Vec<u64>,
     /// Per-property datatype counts for current subject: (p_id, dt) → count.
     prop_dts: HashMap<(u32, u16), u64>,
+    /// REF_ID targets per property for the current subject: (p_id, target_sid).
+    /// Collected so we can resolve target classes at flush time via the bitset.
+    ref_targets: Vec<(u32, u64)>,
+    /// Optional bitset table for resolving target classes.
+    class_bitset: Option<ClassBitsetTable>,
     /// Global accumulators.
     result: SpotClassStats,
 }
 
 impl SpotClassStatsCollector {
-    fn new(rdf_type_p_id: u32) -> Self {
+    fn new(rdf_type_p_id: u32, class_bitset: Option<ClassBitsetTable>) -> Self {
         Self {
             rdf_type_p_id,
             current_s_id: None,
             current_g_id: 0,
             classes: Vec::new(),
             prop_dts: HashMap::new(),
+            ref_targets: Vec::new(),
+            class_bitset,
             result: SpotClassStats::default(),
         }
     }
@@ -576,12 +589,14 @@ impl SpotClassStatsCollector {
             self.classes.push(rec.o_key);
         } else {
             // Regular property → track (p_id, dt) pair.
-            let dt = if rec.o_kind == ObjKind::REF_ID.as_u8() {
-                DT_REF_ID
-            } else {
-                rec.dt
-            };
+            let is_ref = rec.o_kind == ObjKind::REF_ID.as_u8();
+            let dt = if is_ref { DT_REF_ID } else { rec.dt };
             *self.prop_dts.entry((rec.p_id, dt)).or_insert(0) += 1;
+
+            // Collect REF_ID targets for ref-target class resolution at flush time.
+            if is_ref && self.class_bitset.is_some() {
+                self.ref_targets.push((rec.p_id, rec.o_key));
+            }
         }
     }
 
@@ -589,6 +604,7 @@ impl SpotClassStatsCollector {
     fn flush_subject(&mut self) {
         if self.classes.is_empty() {
             self.prop_dts.clear();
+            self.ref_targets.clear();
             return;
         }
         for &class_sid in &self.classes {
@@ -598,14 +614,172 @@ impl SpotClassStatsCollector {
                 *class_entry.entry(p_id).or_default().entry(dt).or_insert(0) += count;
             }
         }
+
+        // Resolve ref-target classes: for each REF_ID property, look up the
+        // target subject's class bitset (scoped to current graph) and attribute
+        // to source classes.
+        if let Some(ref bitset) = self.class_bitset {
+            for &(p_id, target_sid) in &self.ref_targets {
+                let target_bits = bitset.get(self.current_g_id, target_sid);
+                if target_bits == 0 {
+                    continue; // Target has no known classes.
+                }
+                // Expand bitset into individual target classes.
+                for &src_class in &self.classes {
+                    let ref_entry = self
+                        .result
+                        .class_prop_refs
+                        .entry(src_class)
+                        .or_default()
+                        .entry(p_id)
+                        .or_default();
+                    let mut bits = target_bits;
+                    while bits != 0 {
+                        let bit_idx = bits.trailing_zeros() as usize;
+                        let target_class = bitset.bit_to_class[bit_idx];
+                        *ref_entry.entry(target_class).or_insert(0) += 1;
+                        bits &= bits - 1; // Clear lowest set bit.
+                    }
+                }
+            }
+        }
+
         self.classes.clear();
         self.prop_dts.clear();
+        self.ref_targets.clear();
     }
 
     /// Consume the collector, flushing any remaining subject, and return results.
     fn finish(mut self) -> SpotClassStats {
         self.flush_subject();
         self.result
+    }
+}
+
+// ---- Subject→class bitset table (built from types-map sidecars) ----
+
+/// Dense per-graph, per-namespace subject→class bitset table.
+///
+/// Each subject can belong to up to 64 classes (one bit per class in a `u64`).
+/// Built from Phase A `.types` sidecars after Phase B vocab merge provides
+/// the global subject remap tables. Used during the SPOT merge to look up
+/// class membership for *both* the source subject and REF_ID targets.
+///
+/// Graph-scoped: a subject's class membership is specific to the graph where
+/// the `rdf:type` assertion appeared. The SPOT merge passes the current
+/// `g_id` when looking up class bits.
+///
+/// Within each graph, the table is indexed by `sid64` decomposition:
+/// `ns_code = sid >> 48`, `local_id = sid & 0x0000_FFFF_FFFF_FFFF`.
+/// Per-namespace arrays are dense — untyped subjects have bitset value 0.
+pub struct ClassBitsetTable {
+    /// Class SID → bit index (0..63). Only the first 64 classes get bits.
+    /// Used during `build_from_type_maps`; kept for potential future lookups
+    /// (e.g., checking whether a specific class is tracked).
+    #[expect(dead_code)]
+    class_to_bit: HashMap<u64, u8>,
+    /// Bit index → class SID (for output formatting).
+    pub bit_to_class: Vec<u64>,
+    /// Per-graph, per-namespace bitset arrays.
+    /// `graph_bitsets[g_id][ns_code][local_id]` → class membership bitset.
+    graph_bitsets: HashMap<u16, HashMap<u16, Vec<u64>>>,
+}
+
+impl ClassBitsetTable {
+    /// Look up the class bitset for a subject in a specific graph.
+    /// Returns 0 if untyped or if the graph has no type data.
+    #[inline]
+    pub fn get(&self, g_id: u16, sid: u64) -> u64 {
+        let ns_code = (sid >> 48) as u16;
+        let local_id = (sid & 0x0000_FFFF_FFFF_FFFF) as usize;
+        self.graph_bitsets
+            .get(&g_id)
+            .and_then(|ns| ns.get(&ns_code))
+            .and_then(|v| v.get(local_id).copied())
+            .unwrap_or(0)
+    }
+
+    /// Number of classes tracked (≤ 64).
+    pub fn class_count(&self) -> usize {
+        self.bit_to_class.len()
+    }
+
+    /// Build from types-map sidecars + per-chunk subject remap tables.
+    ///
+    /// Each entry in `inputs` is `(types_map_path, subject_remap)` for one chunk.
+    /// The sidecar contains 18-byte entries: `(g_id: u16, s_sorted_local: u64,
+    /// class_sorted_local: u64)`. Subject remap converts sorted-local → global sid64.
+    ///
+    /// Class bits are assigned dynamically (first-come, first-served), capped at 64.
+    /// Subjects with classes beyond the 64th are partially tracked (only the first
+    /// 64 class assignments produce bits).
+    pub fn build_from_type_maps(
+        inputs: &[(&Path, &dyn super::spool::SubjectRemap)],
+    ) -> io::Result<Self> {
+        use std::io::{BufReader, Read};
+
+        let mut class_to_bit: HashMap<u64, u8> = HashMap::new();
+        let mut bit_to_class: Vec<u64> = Vec::new();
+        let mut graph_bitsets: HashMap<u16, HashMap<u16, Vec<u64>>> = HashMap::new();
+
+        let mut buf = [0u8; 18];
+        for &(path, remap) in inputs {
+            let file = std::fs::File::open(path)?;
+            let file_len = file.metadata()?.len();
+            let entry_count = file_len / 18;
+            let mut reader = BufReader::new(file);
+
+            for _ in 0..entry_count {
+                reader.read_exact(&mut buf)?;
+
+                // Parse sidecar entry (LE): g_id(2) + s_sorted_local(8) + class_sorted_local(8)
+                let g_id = u16::from_le_bytes([buf[0], buf[1]]);
+                let s_local = u64::from_le_bytes(buf[2..10].try_into().unwrap());
+                let c_local = u64::from_le_bytes(buf[10..18].try_into().unwrap());
+
+                let s_global = remap.get(s_local as usize)?;
+                let c_global = remap.get(c_local as usize)?;
+
+                // Assign class bit (capped at 64).
+                let bit_idx = if let Some(&idx) = class_to_bit.get(&c_global) {
+                    idx
+                } else if bit_to_class.len() < 64 {
+                    let idx = bit_to_class.len() as u8;
+                    class_to_bit.insert(c_global, idx);
+                    bit_to_class.push(c_global);
+                    idx
+                } else {
+                    continue; // > 64 classes — skip this entry
+                };
+
+                // Set bit in subject's per-graph bitset.
+                let ns_code = (s_global >> 48) as u16;
+                let local_id = (s_global & 0x0000_FFFF_FFFF_FFFF) as usize;
+                let ns_map = graph_bitsets.entry(g_id).or_default();
+                let vec = ns_map.entry(ns_code).or_default();
+                if local_id >= vec.len() {
+                    vec.resize(local_id + 1, 0);
+                }
+                vec[local_id] |= 1u64 << bit_idx;
+            }
+        }
+
+        tracing::info!(
+            classes = bit_to_class.len(),
+            graphs = graph_bitsets.len(),
+            total_subjects = graph_bitsets
+                .values()
+                .flat_map(|ns| ns.values())
+                .map(|v| v.len())
+                .sum::<usize>(),
+            "class bitset table built"
+        );
+
+        Ok(Self {
+            class_to_bit,
+            bit_to_class,
+            graph_bitsets,
+        })
     }
 }
 
@@ -648,6 +822,10 @@ pub struct SpotFromCommitsConfig {
     /// statistics collection during the merge. The returned [`SpotClassStats`]
     /// will contain per-class instance counts and property/datatype breakdowns.
     pub rdf_type_p_id: Option<u32>,
+    /// Optional subject→class bitset table. When provided alongside `rdf_type_p_id`,
+    /// enables ref-target class attribution: for each REF_ID property, the target
+    /// subject's classes are looked up and recorded in [`SpotClassStats::class_prop_refs`].
+    pub class_bitset: Option<ClassBitsetTable>,
 }
 
 /// Build per-graph SPOT indexes by k-way merging sorted commit files.
@@ -706,7 +884,7 @@ pub fn build_spot_from_sorted_commits(
     // Optionally collect class→property→datatype stats during merge.
     let mut class_stats_collector = config
         .rdf_type_p_id
-        .map(SpotClassStatsCollector::new);
+        .map(|p_id| SpotClassStatsCollector::new(p_id, config.class_bitset));
 
     // Merge loop: pull records, split by g_id, write per-graph indexes.
     let mut graph_results: Vec<GraphIndexResult> = Vec::new();
@@ -822,8 +1000,15 @@ pub fn build_spot_from_sorted_commits(
     // Finalize class stats collector (flushes last subject).
     let class_stats = class_stats_collector.map(|c| {
         let stats = c.finish();
+        let ref_classes = stats
+            .class_prop_refs
+            .values()
+            .flat_map(|props| props.values().flat_map(|targets| targets.keys()))
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         tracing::info!(
             classes = stats.class_counts.len(),
+            ref_target_classes = ref_classes,
             "class stats collected during SPOT merge"
         );
         stats
@@ -1352,6 +1537,7 @@ mod tests {
             &dir.join("commit_0.fsc"),
             0,
             None,
+            None,
         )
         .unwrap();
 
@@ -1397,6 +1583,7 @@ mod tests {
             &dir.join("commit_1.fsc"),
             1,
             None,
+            None,
         )
         .unwrap();
 
@@ -1429,6 +1616,7 @@ mod tests {
             skip_dedup: false,
             skip_region3: false,
             rdf_type_p_id: None,
+            class_bitset: None,
         };
 
         let (result, _class_stats) = build_spot_from_sorted_commits(inputs, config).unwrap();
