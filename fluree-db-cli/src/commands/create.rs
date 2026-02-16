@@ -292,13 +292,41 @@ where
     config::write_active_ledger(fluree_dir, ledger)?;
 
     let secs = elapsed.as_secs_f64();
+    let total_m = result.flake_count as f64 / 1_000_000.0;
+    let mflakes_per_sec = total_m / secs;
     println!(
-        "Created ledger '{}' (imported {} flakes, t={}, {:.2}s)",
-        ledger,
-        format_with_commas(result.flake_count),
-        result.t,
-        secs
+        "\nAbout your data:\nLedger '{}' — {:.1}M flakes, t={}, {:.2}s ({:.2} M flakes/s)",
+        ledger, total_m, result.t, secs, mflakes_per_sec
     );
+
+    if let Some(ref summary) = result.summary {
+        if !summary.top_classes.is_empty() {
+            println!("\n  Top classes:");
+            for (iri, count) in &summary.top_classes {
+                println!("    {:>12}  {}", format_with_commas(*count), iri);
+            }
+        }
+        if !summary.top_properties.is_empty() {
+            println!("\n  Top properties:");
+            for (iri, count) in &summary.top_properties {
+                println!("    {:>12}  {}", format_with_commas(*count), iri);
+            }
+        }
+        if !summary.top_connections.is_empty() {
+            println!("\n  Top connections:");
+            for (src, prop, tgt, count) in &summary.top_connections {
+                println!(
+                    "    {:>12}  {} -> {} -> {}",
+                    format_with_commas(*count),
+                    src,
+                    prop,
+                    tgt
+                );
+            }
+        }
+        println!();
+    }
+
     Ok(())
 }
 

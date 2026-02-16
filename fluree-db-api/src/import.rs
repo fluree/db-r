@@ -353,6 +353,19 @@ pub struct ImportResult {
     pub root_id: Option<fluree_db_core::ContentId>,
     /// Index t (same as `t` for fresh import). 0 if `build_index == false`.
     pub index_t: i64,
+    /// Optional summary of top classes, properties, and connections.
+    pub summary: Option<ImportSummary>,
+}
+
+/// Lightweight summary of the imported dataset for CLI display.
+#[derive(Debug)]
+pub struct ImportSummary {
+    /// Top classes by instance count: `(class_iri, count)`.
+    pub top_classes: Vec<(String, u64)>,
+    /// Top properties by flake count: `(property_iri, count)`.
+    pub top_properties: Vec<(String, u64)>,
+    /// Top connections by count: `(source_class, property, target_class, count)`.
+    pub top_connections: Vec<(String, String, String, u64)>,
 }
 
 // ============================================================================
@@ -991,6 +1004,8 @@ struct IndexBuildInput<'a> {
     rdf_type_p_id: u32,
     /// Whether to collect ID-based stats during Phase D remap.
     collect_id_stats: bool,
+    /// Turtle @prefix IRI → short prefix name, for IRI compaction in display.
+    prefix_map: &'a HashMap<String, String>,
 }
 
 /// Run phases 2-6: import chunks, build indexes, upload to CAS, write V2 root, publish.
@@ -1032,6 +1047,7 @@ where
     // ---- Phases 3-6: Build index, upload, root, publish ----
     let root_id;
     let index_t;
+    let summary;
 
     if config.build_index {
         let build_input = IndexBuildInput {
@@ -1048,6 +1064,7 @@ where
             dt_tags: import_result.dt_tags,
             rdf_type_p_id: import_result.rdf_type_p_id,
             collect_id_stats: config.collect_id_stats,
+            prefix_map: &import_result.prefix_map,
         };
         let index_result = build_and_upload(
             storage,
@@ -1063,9 +1080,11 @@ where
 
         root_id = Some(index_result.root_id);
         index_t = index_result.index_t;
+        summary = index_result.summary;
     } else {
         root_id = None;
         index_t = 0;
+        summary = None;
     }
 
     // ---- Phase 7: Persist default context from turtle prefixes ----
@@ -1084,6 +1103,7 @@ where
         commit_head_id: import_result.commit_head_id,
         root_id,
         index_t,
+        summary,
     })
 }
 
@@ -1805,36 +1825,68 @@ where
         .iter()
         .map(|si| vocab_dir.join(format!("chunk_{:05}.strings.voc", si.chunk_idx)))
         .collect();
+    let lang_vocab_paths: Vec<std::path::PathBuf> = sorted_commit_infos
+        .iter()
+        .map(|si| vocab_dir.join(format!("chunk_{:05}.languages.voc", si.chunk_idx)))
+        .collect();
 
     use fluree_db_indexer::run_index::vocab_merge;
 
-    let subj_stats = vocab_merge::merge_subject_vocabs(
-        &subject_vocab_paths,
-        &chunk_ids,
-        &remap_dir,
-        run_dir,
-        &namespace_codes,
-    )?;
-    let str_stats =
-        vocab_merge::merge_string_vocabs(&string_vocab_paths, &chunk_ids, &remap_dir, run_dir)?;
+    // Phase B can use more CPU: subject, string, and language merges are independent.
+    // Run them concurrently to better utilize cores while this phase is otherwise I/O-bound.
+    let run_dir_path = run_dir.to_path_buf();
+    let remap_dir_path = remap_dir.to_path_buf();
+
+    let subj_vocab_paths_for_task = subject_vocab_paths.clone();
+    let chunk_ids_for_subj = chunk_ids.clone();
+    let namespace_codes_for_subj = namespace_codes.clone();
+    let run_dir_for_subj = run_dir_path.clone();
+    let remap_dir_for_subj = remap_dir_path.clone();
+    let subj_handle = tokio::task::spawn_blocking(move || {
+        vocab_merge::merge_subject_vocabs(
+            &subj_vocab_paths_for_task,
+            &chunk_ids_for_subj,
+            &remap_dir_for_subj,
+            &run_dir_for_subj,
+            &namespace_codes_for_subj,
+        )
+    });
+
+    let str_vocab_paths_for_task = string_vocab_paths.clone();
+    let chunk_ids_for_str = chunk_ids.clone();
+    let run_dir_for_str = run_dir_path.clone();
+    let remap_dir_for_str = remap_dir_path.clone();
+    let str_handle = tokio::task::spawn_blocking(move || {
+        vocab_merge::merge_string_vocabs(
+            &str_vocab_paths_for_task,
+            &chunk_ids_for_str,
+            &remap_dir_for_str,
+            &run_dir_for_str,
+        )
+    });
+
+    let lang_vocab_paths_for_task = lang_vocab_paths.clone();
+    let lang_handle = tokio::task::spawn_blocking(move || {
+        fluree_db_indexer::run_index::build_lang_remap_from_vocabs(&lang_vocab_paths_for_task)
+    });
+
+    let subj_stats = subj_handle
+        .await
+        .map_err(|e| ImportError::RunGeneration(format!("subject vocab merge panicked: {}", e)))?
+        .map_err(ImportError::Io)?;
+    let str_stats = str_handle
+        .await
+        .map_err(|e| ImportError::RunGeneration(format!("string vocab merge panicked: {}", e)))?
+        .map_err(ImportError::Io)?;
+    let (unified_lang_dict, lang_remaps) = lang_handle
+        .await
+        .map_err(|e| ImportError::RunGeneration(format!("language vocab merge panicked: {}", e)))?
+        .map_err(|e| ImportError::RunGeneration(format!("lang remap: {}", e)))?;
 
     let total_unique_subjects = subj_stats.total_unique;
     let needs_wide = subj_stats.needs_wide;
     let next_string_id = str_stats.total_unique;
 
-    // Build unified language dict + per-chunk remap tables from per-chunk lang vocab files.
-    // Must happen BEFORE deleting vocab_dir (which contains the .languages.voc files).
-    // This is needed so that:
-    // 1. remap_commit_to_runs can remap chunk-local lang_ids → global lang_ids
-    // 2. The unified dict is passed to RunWriter so run files have correct lang dicts
-    // 3. All indexes (SPOT, PSOT, POST, OPST) use consistent global lang_ids
-    let lang_vocab_paths: Vec<std::path::PathBuf> = sorted_commit_infos
-        .iter()
-        .map(|si| vocab_dir.join(format!("chunk_{:05}.languages.voc", si.chunk_idx)))
-        .collect();
-    let (unified_lang_dict, lang_remaps) =
-        fluree_db_indexer::run_index::build_lang_remap_from_vocabs(&lang_vocab_paths)
-            .map_err(|e| ImportError::RunGeneration(format!("lang remap: {}", e)))?;
     tracing::info!(
         tags = unified_lang_dict.len(),
         chunks = lang_remaps.len(),
@@ -2016,6 +2068,7 @@ where
 struct IndexUploadResult {
     root_id: fluree_db_core::ContentId,
     index_t: i64,
+    summary: Option<ImportSummary>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2508,7 +2561,7 @@ where
     // incremental index refresh can merge registers. Fallback: SPOT build result for
     // per-graph flake counts only.
     tracing::info!("post-upload: predicate SIDs built, starting stats");
-    let (stats_json, sketch_ref) = if let Some(hook) = stats_hook {
+    let (stats_json, sketch_ref, summary) = if let Some(hook) = stats_hook {
         // Persist HLL sketches BEFORE finalize consumes the hook.
         tracing::info!("post-upload: serializing HLL sketch blob");
         let sketch_blob = fluree_db_indexer::stats::HllSketchBlob::from_properties(
@@ -2623,6 +2676,16 @@ where
             Vec::new()
         };
 
+        // Build CLI display summary from already-computed stats.
+        let summary = build_import_summary(
+            spot_class_stats.as_ref(),
+            &agg_props,
+            &predicate_sids,
+            input.namespace_codes,
+            input.run_dir,
+            input.prefix_map,
+        );
+
         (
             serde_json::json!({
                 "flakes": id_result.total_flakes,
@@ -2632,6 +2695,7 @@ where
                 "classes": classes_json,
             }),
             Some(sketch_cid),
+            Some(summary),
         )
     } else {
         // Fallback: flake counts only (no per-property / datatype breakdown).
@@ -2660,6 +2724,7 @@ where
                 "size": 0,
                 "graphs": graph_stats
             }),
+            None,
             None,
         )
     };
@@ -2729,6 +2794,7 @@ where
     Ok(IndexUploadResult {
         root_id,
         index_t: input.final_t,
+        summary,
     })
 }
 
@@ -2863,6 +2929,151 @@ fn build_class_stats_json(
     );
 
     Ok(classes_json)
+}
+
+/// Build a lightweight import summary for CLI display.
+///
+/// Extracts top-5 classes, properties, and connections from the already-computed
+/// stats data. Uses the subject dict files on disk for class IRI resolution.
+fn build_import_summary(
+    spot_class_stats: Option<&fluree_db_indexer::run_index::SpotClassStats>,
+    agg_props: &[fluree_db_core::GraphPropertyStatEntry],
+    predicate_sids: &[(u16, String)],
+    namespace_codes: &HashMap<u16, String>,
+    run_dir: &Path,
+    prefix_map: &HashMap<String, String>,
+) -> ImportSummary {
+    // Build IRI → compact form using turtle @prefix declarations + well-known builtins.
+    // prefix_map is IRI → short (e.g., "https://dblp.org/rdf/schema#" → "dblp").
+    // Builtins fill in common prefixes that may not appear in @prefix.
+    let builtin_prefixes: &[(&str, &str)] = &[
+        (fluree_vocab::rdf::NS, "rdf"),
+        (fluree_vocab::rdfs::NS, "rdfs"),
+        (fluree_vocab::xsd::NS, "xsd"),
+        (fluree_vocab::owl::NS, "owl"),
+        (fluree_vocab::shacl::NS, "sh"),
+    ];
+    let mut iri_to_short: Vec<(&str, &str)> = prefix_map
+        .iter()
+        .map(|(iri, short)| (iri.as_str(), short.as_str()))
+        .collect();
+    for &(iri, short) in builtin_prefixes {
+        if !prefix_map.contains_key(iri) {
+            iri_to_short.push((iri, short));
+        }
+    }
+    // Sort longest-first so longest match wins.
+    iri_to_short.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+
+    let compact = |full_iri: &str| -> String {
+        for &(ns_iri, short) in &iri_to_short {
+            if let Some(suffix) = full_iri.strip_prefix(ns_iri) {
+                return format!("{}:{}", short, suffix);
+            }
+        }
+        full_iri.to_string()
+    };
+    // ---- Top 5 properties by count ----
+    let mut props_sorted: Vec<_> = agg_props.iter().collect();
+    props_sorted.sort_by(|a, b| b.count.cmp(&a.count));
+    let top_properties: Vec<(String, u64)> = props_sorted
+        .iter()
+        .take(5)
+        .filter_map(|p| {
+            let (ns_code, suffix) = predicate_sids.get(p.p_id as usize)?;
+            let ns_iri = namespace_codes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
+            Some((compact(&format!("{}{}", ns_iri, suffix)), p.count))
+        })
+        .collect();
+
+    let cs = match spot_class_stats {
+        Some(cs) if !cs.class_counts.is_empty() => cs,
+        _ => {
+            return ImportSummary {
+                top_classes: Vec::new(),
+                top_properties,
+                top_connections: Vec::new(),
+            };
+        }
+    };
+
+    // Build SID resolver from dict files on disk.
+    use fluree_db_core::subject_id::SubjectId;
+    use fluree_db_indexer::run_index::dict_io;
+
+    let resolve_sid_to_iri = |sid64: u64| -> Option<String> {
+        let subj = SubjectId::from_u64(sid64);
+        let ns_code = subj.ns_code();
+        let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+        // Try to resolve via dict files; fall back to numeric representation.
+        let sids_path = run_dir.join("subjects.sids");
+        let idx_path = run_dir.join("subjects.idx");
+        let fwd_path = run_dir.join("subjects.fwd");
+
+        let sids_vec = dict_io::read_subject_sid_map(&sids_path).ok()?;
+        let (fwd_offsets, fwd_lens) = dict_io::read_forward_index(&idx_path).ok()?;
+        let pos = sids_vec.binary_search(&sid64).ok()?;
+        let off = fwd_offsets[pos];
+        let len = fwd_lens[pos] as usize;
+        let mut iri_buf = vec![0u8; len];
+        let mut file = std::fs::File::open(&fwd_path).ok()?;
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        file.seek(SeekFrom::Start(off)).ok()?;
+        file.read_exact(&mut iri_buf).ok()?;
+        let iri = std::str::from_utf8(&iri_buf).ok()?;
+        let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
+            &iri[prefix.len()..]
+        } else {
+            iri
+        };
+        Some(format!("{}{}", prefix, suffix))
+    };
+
+    // Cache resolved IRIs to avoid repeated file I/O.
+    let mut iri_cache: HashMap<u64, Option<String>> = HashMap::new();
+    let mut resolve_cached = |sid64: u64| -> Option<String> {
+        iri_cache
+            .entry(sid64)
+            .or_insert_with(|| resolve_sid_to_iri(sid64))
+            .clone()
+    };
+
+    // ---- Top 5 classes by count ----
+    let mut classes_sorted: Vec<_> = cs.class_counts.iter().collect();
+    classes_sorted.sort_by(|a, b| b.1.cmp(a.1));
+    let top_classes: Vec<(String, u64)> = classes_sorted
+        .iter()
+        .take(5)
+        .filter_map(|(&sid, &count)| Some((compact(&resolve_cached(sid)?), count)))
+        .collect();
+
+    // ---- Top 5 connections: Class → property → Class ----
+    let mut connections: Vec<(u64, u32, u64, u64)> = Vec::new();
+    for (&src_class, prop_map) in &cs.class_prop_refs {
+        for (&p_id, target_map) in prop_map {
+            for (&target_class, &count) in target_map {
+                connections.push((src_class, p_id, target_class, count));
+            }
+        }
+    }
+    connections.sort_by(|a, b| b.3.cmp(&a.3));
+    let top_connections: Vec<(String, String, String, u64)> = connections
+        .iter()
+        .take(5)
+        .filter_map(|&(src, p_id, tgt, count)| {
+            let src_iri = compact(&resolve_cached(src)?);
+            let tgt_iri = compact(&resolve_cached(tgt)?);
+            let (ns_code, suffix) = predicate_sids.get(p_id as usize)?;
+            let ns_iri = namespace_codes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
+            Some((src_iri, compact(&format!("{}{}", ns_iri, suffix)), tgt_iri, count))
+        })
+        .collect();
+
+    ImportSummary {
+        top_classes,
+        top_properties,
+        top_connections,
+    }
 }
 
 // ============================================================================

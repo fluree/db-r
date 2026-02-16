@@ -22,8 +22,17 @@ use super::spool::{remap_record, StringRemap, SubjectRemap};
 use std::io::{self, BufReader, Read};
 use std::path::Path;
 
-/// Number of records to buffer per read. 8192 × 36 bytes ≈ 288 KB.
-const BUFFER_SIZE: usize = 8192;
+/// Number of records to buffer per read.
+///
+/// Default 32k records:
+/// - 32_768 × 36 bytes ≈ 1.13 MB raw bytes per stream
+/// - 32_768 × 40 bytes ≈ 1.25 MB decoded `RunRecord`s per stream
+///
+/// This reduces refill frequency and amortizes per-fill overhead.
+const BUFFER_SIZE: usize = 32_768;
+
+/// Underlying file read buffer size (in bytes) for uncompressed `.fsc` files.
+const FILE_BUF_BYTES: usize = 1024 * 1024; // 1 MiB
 
 /// Spool file flags (must match `spool.rs`).
 const SPOOL_FLAG_ZSTD: u8 = 1 << 0;
@@ -110,7 +119,7 @@ impl StreamingSortedCommitReader {
             let decoder = zstd::stream::read::Decoder::new(file)?;
             BufReaderVariant::Zstd(decoder)
         } else {
-            BufReaderVariant::Raw(BufReader::new(file))
+            BufReaderVariant::Raw(BufReader::with_capacity(FILE_BUF_BYTES, file))
         };
 
         let mut reader = Self {

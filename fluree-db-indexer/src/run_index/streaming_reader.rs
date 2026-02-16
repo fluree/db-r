@@ -12,8 +12,22 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-/// Number of records to buffer per read. 8192 × 34 bytes ≈ 272 KB.
-const BUFFER_SIZE: usize = 8192;
+/// Number of records to buffer per read.
+///
+/// Default 32k records:
+/// - 32_768 × 34 bytes ≈ 1.06 MB raw bytes per stream
+/// - 32_768 × 40 bytes ≈ 1.25 MB decoded `RunRecord`s per stream
+///
+/// This reduces refill frequency and amortizes per-fill overhead (syscalls,
+/// decode loop, optional lang remap) vs the previous 8k (~272 KB) setting.
+const BUFFER_SIZE: usize = 32_768;
+
+/// Underlying file read buffer size (in bytes).
+///
+/// `BufReader`'s default is small (8 KB). Because we frequently `read_exact()`
+/// hundreds of KB to MB at a time, using a larger internal buffer reduces the
+/// number of underlying read() calls and improves throughput on fast SSDs.
+const FILE_BUF_BYTES: usize = 1024 * 1024; // 1 MiB
 
 /// Run file flags (must match `run_file.rs`).
 const RUN_FLAG_ZSTD_BLOCKS: u8 = 1 << 0;
@@ -50,6 +64,8 @@ pub struct StreamingRunReader {
     buf_pos: usize,
     /// Number of records still in the file (not yet read into buffer).
     remaining: u64,
+    /// Cached perf flag (avoid env var lookup per refill).
+    perf_enabled: bool,
 }
 
 impl StreamingRunReader {
@@ -58,7 +74,11 @@ impl StreamingRunReader {
     /// `lang_remap` maps per-run lang_id → global lang_id. Pass empty
     /// vec if no remapping is needed. Must have `remap[0] = 0`.
     pub fn open(path: &Path, lang_remap: Vec<u16>) -> io::Result<Self> {
-        let mut file = BufReader::new(std::fs::File::open(path)?);
+        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let mut file = BufReader::with_capacity(FILE_BUF_BYTES, std::fs::File::open(path)?);
 
         // Read header
         let mut header_buf = [0u8; RUN_HEADER_LEN];
@@ -87,6 +107,7 @@ impl StreamingRunReader {
             block_pos: 0,
             buf_pos: 0,
             remaining: 0,
+            perf_enabled,
         };
         reader.remaining = reader.header.record_count;
 
@@ -134,10 +155,7 @@ impl StreamingRunReader {
 
     /// Fill the buffer with the next batch of records from disk.
     fn fill_buffer(&mut self) -> io::Result<()> {
-        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let t0 = perf_enabled.then(Instant::now);
+        let t0 = self.perf_enabled.then(Instant::now);
 
         let to_read = (self.remaining as usize).min(BUFFER_SIZE);
         if to_read == 0 {
@@ -245,10 +263,7 @@ impl StreamingRunReader {
 
 impl Drop for StreamingRunReader {
     fn drop(&mut self) {
-        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if !perf_enabled {
+        if !self.perf_enabled {
             return;
         }
         // Aggregate across all reader instances; only emit once when the last one drops

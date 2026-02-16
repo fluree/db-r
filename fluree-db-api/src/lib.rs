@@ -105,7 +105,7 @@ pub use graph_source::{
 pub use graph_transact_builder::{GraphTransactBuilder, StagedGraph};
 pub use import::{
     CreateBuilder, EffectiveImportSettings, ImportBuilder, ImportConfig, ImportError, ImportPhase,
-    ImportResult,
+    ImportResult, ImportSummary,
 };
 pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{

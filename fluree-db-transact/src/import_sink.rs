@@ -215,20 +215,6 @@ mod inner {
             }
         }
 
-        // -- Namespace prefix lookup --
-
-        /// Look up the namespace prefix for a code, caching locally.
-        fn prefix_for_code(&mut self, code: u16) -> &str {
-            if !self.ns_prefix_cache.contains_key(&code) {
-                let prefix = self.ns_alloc.get_prefix(code).unwrap_or_default();
-                self.ns_prefix_cache.insert(code, prefix);
-            }
-            self.ns_prefix_cache
-                .get(&code)
-                .map(|s| s.as_str())
-                .unwrap_or("")
-        }
-
         // -- ID assignment helpers --
 
         /// Assign a chunk-local subject ID. Uses `ChunkSubjectDict` with
@@ -242,14 +228,36 @@ mod inner {
         fn assign_predicate_id(&mut self, sid: &Sid) -> u32 {
             // Look up the namespace prefix, then use parts-based insertion
             // to get a global predicate ID.
-            let prefix = self.prefix_for_code(sid.namespace_code).to_string();
-            self.predicates.get_or_insert_parts(&prefix, &sid.name)
+            //
+            // Important: avoid returning a `&str` from a `&mut self` helper here,
+            // because that would borrow the whole `SpoolContext` mutably and
+            // prevent a simultaneous mutable borrow of `self.predicates`.
+            let code = sid.namespace_code;
+            if !self.ns_prefix_cache.contains_key(&code) {
+                let prefix = self.ns_alloc.get_prefix(code).unwrap_or_default();
+                self.ns_prefix_cache.insert(code, prefix);
+            }
+            let prefix = self
+                .ns_prefix_cache
+                .get(&code)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            self.predicates.get_or_insert_parts(prefix, &sid.name)
         }
 
         /// Assign a global datatype ID via `DictWorkerCache`.
         fn assign_datatype_id(&mut self, sid: &Sid) -> u16 {
-            let prefix = self.prefix_for_code(sid.namespace_code).to_string();
-            self.datatypes.get_or_insert_parts(&prefix, &sid.name) as u16
+            let code = sid.namespace_code;
+            if !self.ns_prefix_cache.contains_key(&code) {
+                let prefix = self.ns_alloc.get_prefix(code).unwrap_or_default();
+                self.ns_prefix_cache.insert(code, prefix);
+            }
+            let prefix = self
+                .ns_prefix_cache
+                .get(&code)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            self.datatypes.get_or_insert_parts(prefix, &sid.name) as u16
         }
 
         /// Assign a chunk-local string ID via `ChunkStringDict`.
