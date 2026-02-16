@@ -236,20 +236,6 @@ fn property_count(db: &Db, iri: &str) -> Option<u64> {
     None
 }
 
-/// Look up the count for a class IRI in db.stats.
-fn class_count(db: &Db, iri: &str) -> Option<u64> {
-    let stats = db.stats.as_ref()?;
-    let classes = stats.classes.as_ref()?;
-    for c in classes {
-        if let Some(full) = db.decode_sid(&c.class_sid) {
-            if full == iri {
-                return Some(c.count);
-            }
-        }
-    }
-    None
-}
-
 // ============================================================================
 // Import with stats collection
 // ============================================================================

@@ -11,8 +11,7 @@ use super::branch::{
     find_branch_file, read_branch_manifest, read_branch_manifest_from_bytes, BranchManifest,
 };
 use super::dict_io::{
-    read_forward_index, read_language_dict, read_language_dict_from_bytes, read_predicate_dict,
-    read_predicate_dict_from_bytes, read_subject_sid_map,
+    read_forward_index, read_language_dict, read_predicate_dict, read_subject_sid_map,
 };
 use super::global_dict::{LanguageTagDict, PredicateDict};
 use super::index_root::BinaryIndexRoot;
@@ -663,40 +662,46 @@ impl BinaryIndexStore {
             "loaded namespace codes + built prefix trie"
         );
 
-        // ---- Load language tag dict (cache-aware) ----
-        let lang_bytes =
-            fetch_cached_bytes(cs.as_ref(), &root.dict_refs.languages, cache_dir, "dict").await?;
-        let language_tags = if !lang_bytes.is_empty() {
-            read_language_dict_from_bytes(&lang_bytes)?
-        } else {
-            LanguageTagDict::new()
-        };
+        // ---- Load language tag dict (inline in v4 root) ----
+        // NOTE: `root.language_tags` may be empty (no tags). This is valid.
+        let mut language_tags = LanguageTagDict::new();
+        for tag in &root.language_tags {
+            language_tags.get_or_insert(Some(tag));
+        }
         tracing::info!(tags = language_tags.len(), "loaded language dict");
 
-        // ---- Load datatype dict → pre-compute dt_sids (cache-aware) ----
-        let dt_bytes =
-            fetch_cached_bytes(cs.as_ref(), &root.dict_refs.datatypes, cache_dir, "dict").await?;
-        let dt_dict = read_predicate_dict_from_bytes(&dt_bytes)?;
-        let dt_sids: Vec<Sid> = (0..dt_dict.len())
-            .map(|id| {
-                let iri = dt_dict.resolve(id).unwrap_or("");
-                match prefix_trie.longest_match(iri) {
-                    Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-                    None => Sid::new(0, iri),
-                }
+        // ---- Load datatype dict → pre-compute dt_sids (inline in v4 root) ----
+        if root.datatype_iris.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "index root missing datatype_iris (required in v4)",
+            ));
+        }
+        let dt_sids: Vec<Sid> = root
+            .datatype_iris
+            .iter()
+            .map(|iri| match prefix_trie.longest_match(iri) {
+                Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
+                None => Sid::new(0, iri),
             })
             .collect();
-        tracing::info!(datatypes = dt_dict.len(), "loaded datatype dict → dt_sids");
+        tracing::info!(datatypes = dt_sids.len(), "loaded datatype dict → dt_sids");
 
-        // ---- Load graphs dict (cache-aware) ----
-        // Build reverse map: IRI → dict_index (0-based). g_id = dict_index + 1.
-        let graphs_bytes =
-            fetch_cached_bytes(cs.as_ref(), &root.dict_refs.graphs, cache_dir, "dict").await?;
-        let graphs_dict = read_predicate_dict_from_bytes(&graphs_bytes)?;
-        let graphs_reverse: HashMap<String, u32> = (0..graphs_dict.len())
-            .filter_map(|id| graphs_dict.resolve(id).map(|iri| (iri.to_string(), id)))
+        // ---- Load graphs dict (inline in v4 root) ----
+        // graphs_reverse stores dict_index (0-based). g_id = dict_index + 1.
+        if root.graph_iris.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "index root missing graph_iris (required in v4)",
+            ));
+        }
+        let graphs_reverse: HashMap<String, u32> = root
+            .graph_iris
+            .iter()
+            .enumerate()
+            .map(|(id, iri)| (iri.to_string(), id as u32))
             .collect();
-        tracing::info!(graphs = graphs_dict.len(), "loaded graphs dict");
+        tracing::info!(graphs = graphs_reverse.len(), "loaded graphs dict");
 
         // ---- Load numbig arenas (cache-aware) ----
         let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> = HashMap::new();

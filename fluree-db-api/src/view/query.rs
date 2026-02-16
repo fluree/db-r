@@ -66,7 +66,7 @@ where
             QueryInput::Sparql(sparql) => {
                 // Validate no dataset clauses
                 self.validate_sparql_for_view(sparql)?;
-                parse_sparql_to_ir(sparql, &view.db)?
+                parse_sparql_to_ir(sparql, &view.db, view.default_context.as_ref())?
             }
         };
         let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
@@ -135,7 +135,7 @@ where
                 self.validate_sparql_for_view(sparql).map_err(|e| {
                     crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                 })?;
-                parse_sparql_to_ir(sparql, &view.db).map_err(|e| {
+                parse_sparql_to_ir(sparql, &view.db, view.default_context.as_ref()).map_err(|e| {
                     crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                 })?
             }

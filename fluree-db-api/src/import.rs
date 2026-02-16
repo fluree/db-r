@@ -14,7 +14,7 @@
 //!    write sorted run files
 //! 5. **Build indexes** — `build_all_indexes()` from completed run files
 //! 6. **CAS upload** — dicts + indexes uploaded to content-addressed storage
-//! 7. **V2 root** — `BinaryIndexRoot::from_cas_artifacts()` written to CAS
+//! 7. **V4 root** — `BinaryIndexRoot::from_cas_artifacts()` written to CAS
 //! 8. **Publish** — `nameservice.publish_index_allow_equal()`
 //! 9. **Cleanup** — remove tmp session directory (only on full success)
 //!
@@ -1008,7 +1008,7 @@ struct IndexBuildInput<'a> {
     prefix_map: &'a HashMap<String, String>,
 }
 
-/// Run phases 2-6: import chunks, build indexes, upload to CAS, write V2 root, publish.
+/// Run phases 2-6: import chunks, build indexes, upload to CAS, write V4 root, publish.
 ///
 /// Separated from `run_import_pipeline` to enable clean error-path handling:
 /// on failure, the caller keeps the session dir for debugging.
@@ -1206,29 +1206,34 @@ where
         }));
     }
 
-    async fn commit_parsed_chunks_in_order<S, N>(
-        result_rx: std::sync::mpsc::Receiver<std::result::Result<(usize, ParsedChunk), String>>,
+    /// Shared immutable environment for the serial commit pipeline.
+    struct CommitPipelineEnv<'a, S, N> {
         estimated_total: usize,
         run_start: Instant,
+        storage: &'a S,
+        nameservice: &'a N,
+        alias: &'a str,
+        config: &'a ImportConfig,
+        sort_write_semaphore: &'a Arc<tokio::sync::Semaphore>,
+        vocab_dir: &'a Path,
+        spool_dir: &'a Path,
+        rdf_type_p_id: u32,
+    }
+
+    async fn commit_parsed_chunks_in_order<S, N>(
+        result_rx: std::sync::mpsc::Receiver<std::result::Result<(usize, ParsedChunk), String>>,
+        env: &CommitPipelineEnv<'_, S, N>,
         state: &mut ImportState,
         published_codes: &mut rustc_hash::FxHashSet<u16>,
         compute_ns_delta: impl Fn(
             &rustc_hash::FxHashSet<u16>,
             &mut rustc_hash::FxHashSet<u16>,
         ) -> std::collections::HashMap<u16, String>,
-        storage: &S,
-        nameservice: &N,
-        alias: &str,
-        config: &ImportConfig,
         sort_write_handles: &mut Vec<
             tokio::task::JoinHandle<
                 std::io::Result<fluree_db_indexer::run_index::SortedCommitInfo>,
             >,
         >,
-        sort_write_semaphore: &Arc<tokio::sync::Semaphore>,
-        vocab_dir: &Path,
-        spool_dir: &Path,
-        rdf_type_p_id: u32,
         total_commit_size: &mut u64,
     ) -> std::result::Result<usize, ImportError>
     where
@@ -1248,17 +1253,18 @@ where
             while let Some(parsed) = pending.remove(&next_expected) {
                 let ns_delta = compute_ns_delta(&parsed.new_codes, published_codes);
 
-                let result = finalize_parsed_chunk(state, parsed, ns_delta, storage, alias)
-                    .await
-                    .map_err(|e| ImportError::Transact(e.to_string()))?;
+                let result =
+                    finalize_parsed_chunk(state, parsed, ns_delta, env.storage, env.alias)
+                        .await
+                        .map_err(|e| ImportError::Transact(e.to_string()))?;
 
                 if let Some(sr) = result.spool_result {
                     spawn_sorted_commit_write(
                         sort_write_handles,
-                        sort_write_semaphore,
-                        vocab_dir,
-                        spool_dir,
-                        rdf_type_p_id,
+                        env.sort_write_semaphore,
+                        env.vocab_dir,
+                        env.spool_dir,
+                        env.rdf_type_p_id,
                         sr,
                     )
                     .await;
@@ -1266,10 +1272,10 @@ where
 
                 *total_commit_size += result.blob_bytes as u64;
 
-                let total_elapsed = run_start.elapsed().as_secs_f64();
+                let total_elapsed = env.run_start.elapsed().as_secs_f64();
                 tracing::info!(
                     chunk = next_expected + 1,
-                    total = estimated_total,
+                    total = env.estimated_total,
                     t = result.t,
                     flakes = result.flake_count,
                     cumulative_flakes = state.cumulative_flakes,
@@ -1279,19 +1285,19 @@ where
                     ),
                     "chunk committed"
                 );
-                config.emit_progress(ImportPhase::Committing {
+                env.config.emit_progress(ImportPhase::Committing {
                     chunk: next_expected + 1,
-                    total: estimated_total,
+                    total: env.estimated_total,
                     cumulative_flakes: state.cumulative_flakes,
                     elapsed_secs: total_elapsed,
                 });
 
                 // Periodic nameservice checkpoint
-                if config.publish_every > 0
-                    && (next_expected + 1).is_multiple_of(config.publish_every)
+                if env.config.publish_every > 0
+                    && (next_expected + 1).is_multiple_of(env.config.publish_every)
                 {
-                    nameservice
-                        .publish_commit(alias, result.t, &result.commit_id)
+                    env.nameservice
+                        .publish_commit(env.alias, result.t, &result.commit_id)
                         .await
                         .map_err(|e| ImportError::Storage(e.to_string()))?;
                     tracing::info!(
@@ -1444,38 +1450,43 @@ where
         delta
     };
 
+    /// Shared context for parsing TTL chunks.
+    struct ParseChunkContext<'a> {
+        shared_alloc: &'a Arc<SharedNamespaceAllocator>,
+        prelude: Option<&'a fluree_graph_turtle::splitter::TurtlePrelude>,
+        ledger: &'a str,
+        compress: bool,
+        spool_dir: &'a Path,
+        spool_config: &'a Arc<SpoolConfig>,
+    }
+
     fn parse_ttl_chunk(
         ttl: &str,
-        shared_alloc: &Arc<SharedNamespaceAllocator>,
-        prelude: Option<&fluree_graph_turtle::splitter::TurtlePrelude>,
+        ctx: &ParseChunkContext<'_>,
         t: i64,
-        ledger: &str,
-        compress: bool,
-        spool_dir: &Path,
-        spool_config: &Arc<SpoolConfig>,
         idx: usize,
     ) -> std::result::Result<ParsedChunk, String> {
-        let parsed = if let Some(prelude) = prelude {
+        let parsed = if let Some(prelude) = ctx.prelude {
             parse_chunk_with_prelude(
                 ttl,
-                shared_alloc,
+                ctx.shared_alloc,
                 prelude,
                 t,
-                ledger,
-                compress,
-                Some(spool_dir),
-                Some(spool_config),
+                ctx.ledger,
+                ctx.compress,
+                Some(ctx.spool_dir),
+                Some(ctx.spool_config),
                 idx,
             )
         } else {
             parse_chunk(
                 ttl,
-                shared_alloc,
+                ctx.shared_alloc,
                 t,
-                ledger,
-                compress,
-                Some(spool_dir),
-                Some(spool_config),
+                ctx.ledger,
+                ctx.compress,
+                Some(ctx.spool_dir),
+                Some(ctx.spool_config),
                 idx,
             )
         };
@@ -1487,6 +1498,19 @@ where
     // All chunks (including chunk 0) go through the parallel pipeline.
     // SharedNamespaceAllocator + SharedDictAllocator are created above,
     // so no chunk needs to "establish namespaces" before others can start.
+
+    let commit_env = CommitPipelineEnv {
+        estimated_total,
+        run_start,
+        storage,
+        nameservice,
+        alias,
+        config,
+        sort_write_semaphore: &sort_write_semaphore,
+        vocab_dir: &vocab_dir,
+        spool_dir: &spool_dir,
+        rdf_type_p_id,
+    };
 
     if is_streaming {
         // Streaming path: workers receive chunk data from the reader thread's
@@ -1516,6 +1540,14 @@ where
             let handle = std::thread::Builder::new()
                 .name(format!("ttl-parser-{}", thread_idx))
                 .spawn(move || {
+                    let ctx = ParseChunkContext {
+                        shared_alloc: &shared_alloc,
+                        prelude: Some(&prelude),
+                        ledger: &ledger,
+                        compress,
+                        spool_dir: &spool_dir,
+                        spool_config: &spool_config,
+                    };
                     loop {
                         // Pull next chunk data from the reader thread (no I/O here).
                         let (idx, raw_bytes) = match shared_rx.lock().unwrap().recv() {
@@ -1540,17 +1572,7 @@ where
                             starts_with = &ttl[..ttl.len().min(200)],
                             "about to parse chunk"
                         );
-                        match parse_ttl_chunk(
-                            &ttl,
-                            &shared_alloc,
-                            Some(&prelude),
-                            t,
-                            &ledger,
-                            compress,
-                            &spool_dir,
-                            &spool_config,
-                            idx,
-                        ) {
+                        match parse_ttl_chunk(&ttl, &ctx, t, idx) {
                             Ok(parsed) => {
                                 if result_tx.send(Ok((idx, parsed))).is_err() {
                                     break;
@@ -1572,20 +1594,11 @@ where
 
         let next_expected = commit_parsed_chunks_in_order(
             result_rx,
-            estimated_total,
-            run_start,
+            &commit_env,
             &mut state,
             &mut published_codes,
             compute_ns_delta,
-            storage,
-            nameservice,
-            alias,
-            config,
             &mut sort_write_handles,
-            &sort_write_semaphore,
-            &vocab_dir,
-            &spool_dir,
-            rdf_type_p_id,
             &mut total_commit_size,
         )
         .await?;
@@ -1632,51 +1645,51 @@ where
 
                 let handle = std::thread::Builder::new()
                     .name(format!("ttl-parser-{}", thread_idx))
-                    .spawn(move || loop {
-                        let idx = next_chunk.fetch_add(1, Ordering::Relaxed);
-                        if idx >= total {
-                            break;
-                        }
-
-                        // Acquire inflight permit (blocks if at max_inflight).
-                        let permit_result = permit_rx_ref.lock().unwrap().recv();
-                        if permit_result.is_err() {
-                            break;
-                        }
-
-                        let ttl = match chunk_source.read_chunk(idx) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                let _ = permit_tx_ref.send(()); // release permit
-                                let _ = result_tx
-                                    .send(Err(format!("failed to read chunk {}: {}", idx, e)));
+                    .spawn(move || {
+                        let ctx = ParseChunkContext {
+                            shared_alloc: &shared_alloc,
+                            prelude: None,
+                            ledger: &ledger,
+                            compress,
+                            spool_dir: &spool_dir,
+                            spool_config: &spool_config,
+                        };
+                        loop {
+                            let idx = next_chunk.fetch_add(1, Ordering::Relaxed);
+                            if idx >= total {
                                 break;
                             }
-                        };
 
-                        let t = (idx + 1) as i64;
-                        match parse_ttl_chunk(
-                            &ttl,
-                            &shared_alloc,
-                            None,
-                            t,
-                            &ledger,
-                            compress,
-                            &spool_dir,
-                            &spool_config,
-                            idx,
-                        ) {
-                            Ok(parsed) => {
-                                let _ = permit_tx_ref.send(());
-                                if result_tx.send(Ok((idx, parsed))).is_err() {
+                            // Acquire inflight permit (blocks if at max_inflight).
+                            let permit_result = permit_rx_ref.lock().unwrap().recv();
+                            if permit_result.is_err() {
+                                break;
+                            }
+
+                            let ttl = match chunk_source.read_chunk(idx) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    let _ = permit_tx_ref.send(()); // release permit
+                                    let _ = result_tx
+                                        .send(Err(format!("failed to read chunk {}: {}", idx, e)));
                                     break;
                                 }
-                            }
-                            Err(e) => {
-                                let _ = permit_tx_ref.send(());
-                                let _ = result_tx
-                                    .send(Err(format!("parse chunk {} failed: {}", idx, e)));
-                                break;
+                            };
+
+                            let t = (idx + 1) as i64;
+                            match parse_ttl_chunk(&ttl, &ctx, t, idx) {
+                                Ok(parsed) => {
+                                    let _ = permit_tx_ref.send(());
+                                    if result_tx.send(Ok((idx, parsed))).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = permit_tx_ref.send(());
+                                    let _ = result_tx
+                                        .send(Err(format!("parse chunk {} failed: {}", idx, e)));
+                                    break;
+                                }
                             }
                         }
                     })
@@ -1688,20 +1701,11 @@ where
 
             let _committed_chunks = commit_parsed_chunks_in_order(
                 result_rx,
-                estimated_total,
-                run_start,
+                &commit_env,
                 &mut state,
                 &mut published_codes,
                 compute_ns_delta,
-                storage,
-                nameservice,
-                alias,
-                config,
                 &mut sort_write_handles,
-                &sort_write_semaphore,
-                &vocab_dir,
-                &spool_dir,
-                rdf_type_p_id,
                 &mut total_commit_size,
             )
             .await?;
@@ -2084,7 +2088,7 @@ where
 }
 
 // ============================================================================
-// Phase 3-6: Build indexes, upload to CAS, write V2 root, publish
+// Phase 3-6: Build indexes, upload to CAS, write V4 root, publish
 // ============================================================================
 
 struct IndexUploadResult {
@@ -2762,8 +2766,8 @@ where
         )
     };
 
-    // ---- Phase 5: Build V2 root ----
-    tracing::info!("post-upload: stats JSON built, constructing V2 root");
+    // ---- Phase 5: Build V4 root ----
+    tracing::info!("post-upload: stats JSON built, constructing V4 root");
     let mut root = BinaryIndexRoot::from_cas_artifacts(CasArtifactsConfig {
         ledger_id: alias,
         index_t: input.final_t,
@@ -2780,6 +2784,9 @@ where
         sketch_ref,       // persisted HLL sketch (or None if stats disabled)
         subject_watermarks: uploaded_dicts.subject_watermarks,
         string_watermark: uploaded_dicts.string_watermark,
+        graph_iris: uploaded_dicts.graph_iris,
+        datatype_iris: uploaded_dicts.datatype_iris,
+        language_tags: uploaded_dicts.language_tags,
     });
 
     // Populate cumulative commit statistics (optional planner telemetry).
@@ -2787,10 +2794,10 @@ where
     root.total_asserts = total_asserts;
     root.total_retracts = total_retracts;
 
-    tracing::info!("post-upload: V2 root constructed, serializing to JSON");
+    tracing::info!("post-upload: V4 root constructed, serializing to JSON");
     let root_bytes = root
         .to_json_bytes()
-        .map_err(|e| ImportError::Upload(format!("serialize V2 root: {}", e)))?;
+        .map_err(|e| ImportError::Upload(format!("serialize V4 root: {}", e)))?;
     tracing::info!(
         root_bytes = root_bytes.len(),
         "post-upload: root serialized, writing to CAS"
@@ -2799,7 +2806,7 @@ where
     let write_result = storage
         .content_write_bytes(ContentKind::IndexRoot, alias, &root_bytes)
         .await
-        .map_err(|e| ImportError::Upload(format!("write V2 root: {}", e)))?;
+        .map_err(|e| ImportError::Upload(format!("write V4 root: {}", e)))?;
 
     // Derive ContentId from the root's content hash
     let root_id = ContentId::from_hex_digest(CODEC_FLUREE_INDEX_ROOT, &write_result.content_hash)
@@ -2808,7 +2815,7 @@ where
     tracing::info!(
         root_id = %root_id,
         index_t = input.final_t,
-        "V2 index root written to CAS"
+        "V4 index root written to CAS"
     );
 
     // ---- Phase 6: Publish ----

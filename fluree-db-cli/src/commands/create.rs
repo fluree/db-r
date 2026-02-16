@@ -200,6 +200,9 @@ where
     let sb = scan_bar.clone();
     let cb = commit_bar.clone();
     let ib = index_bar.clone();
+    // Track when the commit phase actually starts (first Committing event),
+    // so M flakes/s reflects commit throughput, not reading/parsing time.
+    let commit_start: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     builder = builder.on_progress(move |phase| match phase {
         ImportPhase::Parsing {
             chunk,
@@ -228,12 +231,14 @@ where
             chunk,
             total,
             cumulative_flakes,
-            elapsed_secs,
+            ..
         } => {
+            let t0 = *commit_start.get_or_init(std::time::Instant::now);
             cb.set_length(total as u64);
             cb.set_position(chunk as u64);
-            let rate = if elapsed_secs > 0.0 {
-                cumulative_flakes as f64 / elapsed_secs / 1_000_000.0
+            let secs = t0.elapsed().as_secs_f64();
+            let rate = if secs > 0.0 {
+                cumulative_flakes as f64 / secs / 1_000_000.0
             } else {
                 0.0
             };
@@ -260,25 +265,14 @@ where
                 merged_flakes
             };
             ib.set_position(pos);
-            // Display actual flake count (total_flakes includes both SPOT
-            // and secondary pipeline contributions for progress accuracy,
-            // but the user should see the real dataset size).
-            let actual_flakes = total_flakes / 2;
-            let actual_m = actual_flakes as f64 / 1_000_000.0;
-            let pct = if total_flakes > 0 {
-                merged_flakes as f64 / total_flakes as f64 * 100.0
-            } else {
-                0.0
-            };
+            // Rate in real flakes/s (total_flakes is 2× because SPOT +
+            // secondary pipelines both contribute to progress).
             let rate = if elapsed_secs > 0.0 {
-                actual_m * (pct / 100.0) / elapsed_secs
+                merged_flakes as f64 / 2.0 / 1_000_000.0 / elapsed_secs
             } else {
                 0.0
             };
-            ib.set_message(format!(
-                "{:.1}M flakes  {:.0}%  {:.2} M/s",
-                actual_m, pct, rate
-            ));
+            ib.set_message(format!("{:.2} M flakes/s", rate));
         }
         ImportPhase::Done => {
             ib.finish();
@@ -295,8 +289,8 @@ where
     let total_m = result.flake_count as f64 / 1_000_000.0;
     let mflakes_per_sec = total_m / secs;
     println!(
-        "\nAbout your data:\nLedger '{}' — {:.1}M flakes, t={}, {:.2}s ({:.2} M flakes/s)",
-        ledger, total_m, result.t, secs, mflakes_per_sec
+        "\n\nAbout ledger '{}':\nImported {:.1}M flakes in {:.2}s ({:.2} M flakes/s) across {} commits (t={})",
+        ledger, total_m, secs, mflakes_per_sec, result.t, result.t
     );
 
     if let Some(ref summary) = result.summary {

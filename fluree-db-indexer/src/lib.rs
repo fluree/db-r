@@ -464,7 +464,7 @@ where
             )
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // ---- Phase D: Upload artifacts to CAS and write v2 root ----
+            // ---- Phase D: Upload artifacts to CAS and write v4 root ----
 
             // D.1: Load store for max_t / base_t / namespace_codes
             let store = run_index::BinaryIndexStore::load(&run_dir, &index_dir)
@@ -677,7 +677,7 @@ where
                 }
             };
 
-            // D.5: Build v2 root with CAS addresses and stats (initially without GC fields)
+            // D.5: Build v4 root with CAS addresses and stats (initially without GC fields)
             let sid_encoding = if dicts.subjects.needs_wide() {
                 fluree_db_core::SubjectIdEncoding::Wide
             } else {
@@ -685,6 +685,22 @@ where
             };
             let subject_watermarks = dicts.subjects.subject_watermarks();
             let string_watermark = dicts.strings.len().saturating_sub(1);
+
+            // Inline tiny flat dicts into the root so CAS loads can skip
+            // fetching them (especially beneficial for S3 cold starts).
+            let graph_iris: Vec<String> = (0..dicts.graphs.len())
+                .map(|id| dicts.graphs.resolve(id).unwrap_or("").to_string())
+                .collect();
+            let datatype_iris: Vec<String> = (0..dicts.datatypes.len())
+                .map(|id| dicts.datatypes.resolve(id).unwrap_or("").to_string())
+                .collect();
+            let mut language_tags: Vec<(u16, String)> = dicts
+                .languages
+                .iter()
+                .map(|(id, tag)| (id, tag.to_string()))
+                .collect();
+            language_tags.sort_unstable_by_key(|(id, _)| *id);
+            let language_tags: Vec<String> = language_tags.into_iter().map(|(_, tag)| tag).collect();
 
             let mut root =
                 run_index::BinaryIndexRoot::from_cas_artifacts(run_index::CasArtifactsConfig {
@@ -703,6 +719,9 @@ where
                     sketch_ref,
                     subject_watermarks,
                     string_watermark,
+                    graph_iris,
+                    datatype_iris,
+                    language_tags,
                 });
 
             // Populate cumulative commit stats (kept out of CasArtifactsConfig for now).
@@ -716,13 +735,12 @@ where
             // compute the set difference. This guarantees both sides use the
             // same enumeration method, eliminating divergence risk.
             //
-            // Note: The GC chain breaks at the v2→v3 boundary because v2 roots
-            // won't parse via `from_json_bytes` (version check). New v3 chains
-            // start fresh. The GC collector needs updating for v3 format (future work).
+            // Note: The GC chain breaks across root schema version boundaries
+            // because older roots won't parse via `from_json_bytes` (version check).
+            // Mixed-format chains start fresh at the newest supported version.
             if let Some(prev_id) = prev_root_id.as_ref() {
-                // Try to load the previous root as a v3 binary root.
-                // If it's a v2 or legacy format, skip GC linking — mixed-format
-                // chains will start a fresh GC chain from this root.
+                // Try to load the previous root as a binary root at our supported version.
+                // If it's legacy, skip GC linking — mixed-format chains start fresh here.
                 let prev_bytes = content_store.get(prev_id).await.ok();
                 let prev_root = prev_bytes
                     .as_deref()
@@ -764,7 +782,7 @@ where
                 index_t = root.index_t,
                 base_t = root.base_t,
                 graphs = root.graphs.len(),
-                "binary index built (v2), writing CAS root"
+                "binary index built (v4), writing CAS root"
             );
 
             // D.6: Write root to CAS (auto-hash of canonical compact JSON)
@@ -819,9 +837,11 @@ where
 
 /// Build dictionary CoW trees and upload all dictionary artifacts to CAS.
 ///
-/// Small-cardinality dictionaries (graphs, datatypes, languages) are uploaded
-/// as flat blobs. Subject and string dictionaries are built into CoW trees
-/// (branch + leaves) for O(log n) lookup at query time.
+/// Subject and string dictionaries are built into CoW trees (branch + leaves)
+/// for O(log n) lookup at query time.
+///
+/// Small dictionaries (graphs, datatypes, languages) are embedded inline in the
+/// v4 index root and are not uploaded as separate dict blobs.
 async fn upload_dicts_to_cas<S: Storage>(
     storage: &S,
     ledger_id: &str,
@@ -871,37 +891,6 @@ async fn upload_dicts_to_cas<S: Storage>(
             leaves: leaf_cids,
         })
     }
-
-    // Small flat dicts (upload in parallel)
-    let graphs_path = run_dir.join("graphs.dict");
-    let datatypes_path = run_dir.join("datatypes.dict");
-    let languages_path = run_dir.join("languages.dict");
-    let (graphs_result, datatypes_result, languages_result) = tokio::try_join!(
-        upload_dict_file(
-            storage,
-            ledger_id,
-            &graphs_path,
-            DictKind::Graphs,
-            "dict artifact uploaded to CAS"
-        ),
-        upload_dict_file(
-            storage,
-            ledger_id,
-            &datatypes_path,
-            DictKind::Datatypes,
-            "dict artifact uploaded to CAS"
-        ),
-        upload_dict_file(
-            storage,
-            ledger_id,
-            &languages_path,
-            DictKind::Languages,
-            "dict artifact uploaded to CAS"
-        ),
-    )?;
-    let graphs = graphs_result.0;
-    let datatypes = datatypes_result.0;
-    let languages = languages_result.0;
 
     // Build subject + string trees (CPU-bound, synchronous)
     let subject_pairs = dicts
@@ -1093,9 +1082,6 @@ async fn upload_dicts_to_cas<S: Storage>(
     );
 
     Ok(run_index::DictRefs {
-        graphs,
-        datatypes,
-        languages,
         subject_forward,
         subject_reverse,
         string_forward,
@@ -1292,6 +1278,12 @@ pub struct UploadedDicts {
     pub subject_id_encoding: fluree_db_core::SubjectIdEncoding,
     pub subject_watermarks: Vec<u64>,
     pub string_watermark: u32,
+    /// Graph IRIs by dict_index (0-based). `g_id = dict_index + 1`.
+    pub graph_iris: Vec<String>,
+    /// Datatype IRIs by dt_id (0-based).
+    pub datatype_iris: Vec<String>,
+    /// Language tags by (lang_id - 1). `lang_id = index + 1`, 0 = "no tag".
+    pub language_tags: Vec<String>,
 }
 
 /// Upload dictionary artifacts from persisted flat files to CAS.
@@ -1324,38 +1316,39 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     use fluree_db_core::{ContentKind, DictKind, SubjectIdEncoding};
     use std::collections::BTreeMap;
 
-    // ---- 1. Upload flat dicts in parallel ----
-    tracing::info!("uploading flat dictionary artifacts (graphs, datatypes, languages)");
+    // ---- 1. Read small dicts for v4 root inlining ----
+    tracing::info!("reading small dictionaries for v4 root (graphs, datatypes, languages)");
+
     let graphs_path = run_dir.join("graphs.dict");
+    let graphs_dict = run_index::dict_io::read_predicate_dict(&graphs_path).map_err(|e| {
+        IndexerError::StorageRead(format!("read {}: {}", graphs_path.display(), e))
+    })?;
+    let graph_iris: Vec<String> = (0..graphs_dict.len())
+        .filter_map(|id| graphs_dict.resolve(id).map(|iri| iri.to_string()))
+        .collect();
+
     let datatypes_path = run_dir.join("datatypes.dict");
+    let datatypes_dict = run_index::dict_io::read_predicate_dict(&datatypes_path).map_err(|e| {
+        IndexerError::StorageRead(format!("read {}: {}", datatypes_path.display(), e))
+    })?;
+    let datatype_iris: Vec<String> = (0..datatypes_dict.len())
+        .filter_map(|id| datatypes_dict.resolve(id).map(|iri| iri.to_string()))
+        .collect();
+
     let languages_path = run_dir.join("languages.dict");
-    let (graphs_result, datatypes_result, languages_result) = tokio::try_join!(
-        upload_dict_file(
-            storage,
-            ledger_id,
-            &graphs_path,
-            DictKind::Graphs,
-            "dict artifact uploaded to CAS (from disk)"
-        ),
-        upload_dict_file(
-            storage,
-            ledger_id,
-            &datatypes_path,
-            DictKind::Datatypes,
-            "dict artifact uploaded to CAS (from disk)"
-        ),
-        upload_dict_file(
-            storage,
-            ledger_id,
-            &languages_path,
-            DictKind::Languages,
-            "dict artifact uploaded to CAS (from disk)"
-        ),
-    )?;
-    let graphs = graphs_result.0;
-    let datatypes = datatypes_result.0;
-    let languages = languages_result.0;
-    tracing::info!("flat dicts uploaded");
+    let language_tags = if languages_path.exists() {
+        let lang_dict = run_index::dict_io::read_language_dict(&languages_path).map_err(|e| {
+            IndexerError::StorageRead(format!("read {}: {}", languages_path.display(), e))
+        })?;
+        let mut tags: Vec<(u16, String)> = lang_dict
+            .iter()
+            .map(|(id, tag)| (id, tag.to_string()))
+            .collect();
+        tags.sort_unstable_by_key(|(id, _)| *id);
+        tags.into_iter().map(|(_, tag)| tag).collect()
+    } else {
+        Vec::new()
+    };
 
     // ---- 2. Read sids (needed for both subject trees and watermark computation) ----
     let sids_path = run_dir.join("subjects.sids");
@@ -2333,9 +2326,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 
     Ok(UploadedDicts {
         dict_refs: run_index::DictRefs {
-            graphs,
-            datatypes,
-            languages,
             subject_forward,
             subject_reverse,
             string_forward,
@@ -2346,6 +2336,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         subject_id_encoding,
         subject_watermarks,
         string_watermark,
+        graph_iris,
+        datatype_iris,
+        language_tags,
     })
 }
 

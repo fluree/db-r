@@ -1,4 +1,4 @@
-//! Binary index root descriptor (v3, CID-based).
+//! Binary index root descriptor (v4, CID-based).
 //!
 //! The `BinaryIndexRoot` is the canonical metadata record for a binary
 //! columnar index. It is published to the nameservice via `index_head_id`
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 /// Schema version for `BinaryIndexRoot` with CID references.
-pub const BINARY_INDEX_ROOT_VERSION: u32 = 3;
+pub const BINARY_INDEX_ROOT_VERSION: u32 = 4;
 
 // ============================================================================
 // CID reference types
@@ -42,16 +42,13 @@ pub struct VectorDictRef {
     pub shards: Vec<ContentId>,
 }
 
-/// CID references for all dictionary artifacts.
+/// CID references for all dictionary artifacts stored in CAS.
 ///
-/// Small-cardinality dictionaries (graphs, datatypes, languages) use a
-/// single flat blob. Large dictionaries (subjects, strings) use CoW
-/// trees with a branch + leaves structure.
+/// Large dictionaries (subjects, strings) use CoW trees with a branch + leaves
+/// structure. Small dictionaries (graphs, datatypes, languages) are embedded
+/// inline in the index root (v4) and therefore do not appear here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DictRefs {
-    pub graphs: ContentId,
-    pub datatypes: ContentId,
-    pub languages: ContentId,
     /// Subject forward tree: sid64 → suffix (ns-compressed, prefix stripped).
     pub subject_forward: DictTreeRefs,
     /// Subject reverse tree: [ns_code BE][suffix] → sid64 (ns-compressed).
@@ -115,7 +112,7 @@ pub struct BinaryGarbageRef {
 }
 
 // ============================================================================
-// BinaryIndexRoot (v3, CID-based)
+// BinaryIndexRoot (v4, CID-based)
 // ============================================================================
 
 /// Graph entry: references CIDs per sort order.
@@ -161,6 +158,16 @@ pub struct CasArtifactsConfig<'a> {
     pub subject_watermarks: Vec<u64>,
     /// String dictionary watermark.
     pub string_watermark: u32,
+
+    // =========================================================================
+    // Small dict inlines (required in v4)
+    // =========================================================================
+    /// Graph IRIs by dict_index (0-based). `g_id = dict_index + 1`.
+    pub graph_iris: Vec<String>,
+    /// Datatype IRIs by dt_id (0-based).
+    pub datatype_iris: Vec<String>,
+    /// Language tags by (lang_id - 1). `lang_id = index + 1`, 0 = "no tag".
+    pub language_tags: Vec<String>,
 }
 
 /// Binary index root with CID-based artifact references.
@@ -209,6 +216,16 @@ pub struct BinaryIndexRoot {
 
     /// CID references of all dictionary artifacts.
     pub dict_refs: DictRefs,
+
+    // =========================================================================
+    // Small dict inlines (required in v4)
+    // =========================================================================
+    /// Graph IRIs by dict_index (0-based). `g_id = dict_index + 1`.
+    pub graph_iris: Vec<String>,
+    /// Datatype IRIs by dt_id (0-based).
+    pub datatype_iris: Vec<String>,
+    /// Language tags by (lang_id - 1). `lang_id = index + 1`, 0 = "no tag".
+    pub language_tags: Vec<String>,
 
     /// Inline index statistics.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -273,7 +290,7 @@ impl BinaryIndexRoot {
         serde_json::to_vec(self)
     }
 
-    /// Deserialize from JSON bytes, accepting only v3.
+    /// Deserialize from JSON bytes, accepting only v4.
     pub fn from_json_bytes(bytes: &[u8]) -> serde_json::Result<Self> {
         let root: Self = serde_json::from_slice(bytes)?;
         if root.version != BINARY_INDEX_ROOT_VERSION {
@@ -317,6 +334,9 @@ impl BinaryIndexRoot {
             namespace_codes: ns_codes,
             subject_id_encoding: cfg.subject_id_encoding,
             dict_refs: cfg.dict_refs,
+            graph_iris: cfg.graph_iris,
+            datatype_iris: cfg.datatype_iris,
+            language_tags: cfg.language_tags,
             stats: cfg.stats,
             schema: cfg.schema,
             prev_index: cfg.prev_index,
@@ -332,8 +352,8 @@ impl BinaryIndexRoot {
 
     /// Collect all CAS content-artifact CIDs referenced by this root.
     ///
-    /// Includes: dict artifacts (3 flat + 4 tree branches + tree leaves +
-    /// numbig), branch manifests, and leaf files for every graph × order.
+    /// Includes: dict artifacts (4 dictionary trees: branches + leaves +
+    /// numbig + vectors), branch manifests, and leaf files for every graph × order.
     /// Does NOT include the root's own CID or the garbage manifest
     /// CID — those are managed by the GC chain (prev_index / garbage
     /// pointers).
@@ -342,11 +362,8 @@ impl BinaryIndexRoot {
     pub fn all_cas_ids(&self) -> Vec<ContentId> {
         let mut ids = Vec::new();
 
-        // Dict artifacts: 3 flat dicts + 4 trees (branch + leaves each)
+        // Dict artifacts: 4 trees (branch + leaves each)
         let d = &self.dict_refs;
-        ids.push(d.graphs.clone());
-        ids.push(d.datatypes.clone());
-        ids.push(d.languages.clone());
         // Subject & string dictionary trees
         for tree in [
             &d.subject_forward,
@@ -407,9 +424,6 @@ mod tests {
 
     fn sample_dict_refs() -> DictRefs {
         DictRefs {
-            graphs: test_cid(DICT, "graphs"),
-            datatypes: test_cid(DICT, "datatypes"),
-            languages: test_cid(DICT, "languages"),
             subject_forward: DictTreeRefs {
                 branch: test_cid(DICT, "sf_branch"),
                 leaves: vec![test_cid(DICT, "sf_l0")],
@@ -457,6 +471,9 @@ mod tests {
             sketch_ref: None,
             subject_watermarks: vec![],
             string_watermark: 0,
+            graph_iris: vec!["http://example.org/graph0".to_string()],
+            datatype_iris: vec!["@id".to_string()],
+            language_tags: vec![],
         }
     }
 
@@ -490,6 +507,9 @@ mod tests {
             },
             subject_id_encoding: fluree_db_core::SubjectIdEncoding::Narrow,
             dict_refs: sample_dict_refs(),
+            graph_iris: vec!["http://example.org/graph0".to_string()],
+            datatype_iris: vec!["@id".to_string()],
+            language_tags: vec![],
             stats: None,
             schema: None,
             prev_index: None,
@@ -608,9 +628,6 @@ mod tests {
         numbig.insert("12".to_string(), test_cid(DICT, "numbig_12"));
 
         let dicts = DictRefs {
-            graphs: test_cid(DICT, "graphs"),
-            datatypes: test_cid(DICT, "dt"),
-            languages: test_cid(DICT, "lang"),
             subject_forward: DictTreeRefs {
                 branch: test_cid(DICT, "sf_br"),
                 leaves: vec![test_cid(DICT, "sf_l0")],
@@ -673,13 +690,16 @@ mod tests {
             sketch_ref: None,
             subject_watermarks: vec![],
             string_watermark: 0,
+            graph_iris: vec!["http://example.org/graph0".to_string()],
+            datatype_iris: vec!["@id".to_string()],
+            language_tags: vec![],
         });
 
         let ids = root.all_cas_ids();
 
-        // 3 flat dicts + 4 tree branches + 4 tree leaves + 2 numbig
-        //   + 2 graph branches + 3 graph leaves = 18
-        assert_eq!(ids.len(), 18);
+        // 4 tree branches + 4 tree leaves + 2 numbig
+        //   + 2 graph branches + 3 graph leaves = 15
+        assert_eq!(ids.len(), 15);
 
         // Verify sorted
         for w in ids.windows(2) {
@@ -719,6 +739,9 @@ mod tests {
             sketch_ref: None,
             subject_watermarks: vec![],
             string_watermark: 0,
+            graph_iris: vec!["http://example.org/graph0".to_string()],
+            datatype_iris: vec!["@id".to_string()],
+            language_tags: vec![],
         });
 
         let bytes = root.to_json_bytes().unwrap();
@@ -783,6 +806,9 @@ mod tests {
             sketch_ref: None,
             subject_watermarks: vec![100, 200, 300],
             string_watermark: 500,
+            graph_iris: vec!["http://example.org/graph0".to_string()],
+            datatype_iris: vec!["@id".to_string()],
+            language_tags: vec![],
         });
 
         let bytes = root.to_json_bytes().unwrap();

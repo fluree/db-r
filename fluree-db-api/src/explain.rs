@@ -276,7 +276,7 @@ pub async fn explain_jsonld(db: &fluree_db_core::Db, query_json: &JsonValue) -> 
 /// Returns a JSON object like:
 /// `{ "query": "<sparql string>", "plan": { ... } }`
 pub async fn explain_sparql(db: &fluree_db_core::Db, sparql: &str) -> Result<JsonValue> {
-    let (vars, parsed) = parse_sparql_to_ir(sparql, db)?;
+    let (vars, parsed) = parse_sparql_to_ir(sparql, db, None)?;
 
     explain_from_parsed(db, &vars, &parsed, json!(sparql), None)
 }

@@ -35,8 +35,8 @@ fn create_graph_dir(index_dir: &Path, g_id: u16, order_name: &str) -> io::Result
     Ok(graph_dir)
 }
 
-#[inline]
-fn new_leaf_writer_for_graph(
+/// Parameters for constructing a [`LeafWriter`] for a single graph order.
+struct LeafWriterParams {
     graph_dir: PathBuf,
     leaflet_rows: usize,
     leaflets_per_leaf: usize,
@@ -45,17 +45,20 @@ fn new_leaf_writer_for_graph(
     p_width: u8,
     order: RunSortOrder,
     skip_region3: bool,
-) -> LeafWriter {
+}
+
+#[inline]
+fn new_leaf_writer_for_graph(params: LeafWriterParams) -> LeafWriter {
     let mut writer = LeafWriter::with_widths(
-        graph_dir,
-        leaflet_rows,
-        leaflets_per_leaf,
-        zstd_level,
-        dt_width,
-        p_width,
-        order,
+        params.graph_dir,
+        params.leaflet_rows,
+        params.leaflets_per_leaf,
+        params.zstd_level,
+        params.dt_width,
+        params.p_width,
+        params.order,
     );
-    writer.set_skip_region3(skip_region3);
+    writer.set_skip_region3(params.skip_region3);
     writer
 }
 
@@ -446,16 +449,16 @@ fn build_index_from_run_paths_inner(
                 &config.index_dir,
                 order_name,
                 |graph_dir| {
-                    new_leaf_writer_for_graph(
+                    new_leaf_writer_for_graph(LeafWriterParams {
                         graph_dir,
-                        config.leaflet_rows,
-                        config.leaflets_per_leaf,
-                        config.zstd_level,
+                        leaflet_rows: config.leaflet_rows,
+                        leaflets_per_leaf: config.leaflets_per_leaf,
+                        zstd_level: config.zstd_level,
                         dt_width,
                         p_width,
                         order,
-                        config.skip_region3,
-                    )
+                        skip_region3: config.skip_region3,
+                    })
                 },
                 |g_id, graph_dir| {
                     tracing::info!(g_id, path = %graph_dir.display(), "starting graph index");
@@ -1027,16 +1030,16 @@ pub fn build_spot_from_sorted_commits(
                 &config.index_dir,
                 order_name,
                 |graph_dir| {
-                    new_leaf_writer_for_graph(
+                    new_leaf_writer_for_graph(LeafWriterParams {
                         graph_dir,
-                        config.leaflet_rows,
-                        config.leaflets_per_leaf,
-                        config.zstd_level,
-                        config.dt_width,
-                        config.p_width,
+                        leaflet_rows: config.leaflet_rows,
+                        leaflets_per_leaf: config.leaflets_per_leaf,
+                        zstd_level: config.zstd_level,
+                        dt_width: config.dt_width,
+                        p_width: config.p_width,
                         order,
-                        config.skip_region3,
-                    )
+                        skip_region3: config.skip_region3,
+                    })
                 },
                 |_g_id, _graph_dir| {},
             )?;

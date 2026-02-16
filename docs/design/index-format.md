@@ -18,11 +18,11 @@ A binary index build produces:
   - a set of content-addressed **leaf files** (`FLI1`, file extension `.fli`)
   - each leaf contains multiple **leaflets** (compressed blocks with independently compressed regions)
 - **Shared dictionary artifacts**:
-  - small flat dictionaries (predicates, datatypes, languages)
+  - small dictionaries (predicates, graphs, datatypes, languages) embedded in the **index root** (CAS) and/or persisted as flat files in local builds
   - large dictionaries (subjects, strings) stored as **CoW single-level B-tree-like trees**
     (a branch manifest `DTB1` + multiple leaf blobs `DLF1`/`DLR1`)
 - **Manifests / roots** that describe how to load the above either from a local directory layout
-  or from the content store via `BinaryIndexRootV2` (all artifacts referenced by ContentId).
+  or from the content store via `BinaryIndexRoot` (v4, CID-based).
 
 Fact indexes exist in up to four sort orders (see `RunSortOrder`):
 
@@ -88,23 +88,29 @@ The per-order manifest is JSON and summarizes all graphs for a sort order:
 - `max_t`: max transaction `t` in the indexed snapshot
 - `graphs[]`: `g_id`, `leaf_count`, `total_rows`, `branch_hash`, and `directory` (relative path)
 
-## Root descriptor (CAS): `BinaryIndexRootV2`
+## Root descriptor (CAS): `BinaryIndexRoot` (v4)
 
-When publishing an index to nameservice / CAS, the canonical entrypoint is the **v2 root**
-(`BinaryIndexRootV2`, JSON, schema version `2`).
+When publishing an index to nameservice / CAS, the canonical entrypoint is the **v4 root**
+(`BinaryIndexRoot`, JSON, schema version `4`).
 
 Key properties:
 
-- **Explicit ContentId references** for every artifact (dicts, branches, leaves).
+- **CID references** for bulk artifacts (dicts, branches, leaves).
 - Deterministic JSON serialization (uses `BTreeMap`) so the root itself is suitable for content hashing to derive its own ContentId.
 - Tracks `index_t` (max transaction covered) and `base_t` (earliest time for which Region 3 history is valid).
+- Embeds **predicate ID mapping** and **namespace prefix table** inline, so query-time predicate IRI → `p_id` translation does not require fetching a redundant predicate dictionary blob.
+- Embeds small dictionaries (**graphs**, **datatypes**, **languages**) inline, so query-time graph/dt/lang resolution does not require fetching tiny dict blobs (important for S3 cold starts).
 
 At a high level the root references:
 
-- **Dictionary ContentIds**:
-  - flat blobs: `graphs`, `datatypes`, `languages`
+- **Inline small dictionaries** (embedded in the root JSON):
+  - `graph_iris[]` (dict_index → graph IRI; `g_id = dict_index + 1`)
+  - `datatype_iris[]` (dt_id → datatype IRI)
+  - `language_tags[]` (lang_id-1 → tag string; `lang_id = index + 1`, 0 = “no tag”)
+- **Dictionary ContentIds** (CAS artifacts):
   - tree blobs: subject/string forward & reverse (`DTB1` branch + `DLF1`/`DLR1` leaves)
   - optional per-predicate numbig arenas
+  - optional per-predicate vector arenas (manifest + shards)
 - **Per-graph fact index ContentIds**:
   - for each graph: a map of order name → `{ branch, leaves[] }`
 
@@ -313,7 +319,9 @@ for each entry:
   utf8_bytes: [u8; len]
 ```
 
-This format is used for predicate-like dictionaries (including datatypes and languages).
+This format is used for predicate-like dictionaries. In local builds these are written
+as flat files (e.g., `graphs.dict`, `datatypes.dict`, `languages.dict`), but in CAS
+publishes (v4 root) these small dictionaries are embedded inline in the root JSON.
 
 ### Legacy forward files + index (`FSI1`) (primarily build-time)
 
@@ -395,7 +403,7 @@ The `u16` big-endian prefix ensures that lexicographic byte comparisons match lo
 
 - Leaf and branch filenames (local) are derived from **SHA-256** content hashes; remote references use ContentId (CIDv1).
 - Content-addressed artifacts are immutable; caches can key by ContentId.
-- `BinaryIndexRootV2` provides a GC chain (`prev_index`) and an optional garbage manifest pointer to
+- `BinaryIndexRoot` (v4) provides a GC chain (`prev_index`) and an optional garbage manifest pointer to
   support retention-based cleanup of replaced artifacts.
 
 ## Versioning notes

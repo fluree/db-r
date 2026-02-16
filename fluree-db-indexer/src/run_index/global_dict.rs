@@ -1100,7 +1100,7 @@ impl GlobalDicts {
         )?;
 
         // Write predicate id → IRI table (JSON array by id).
-        // This is not a CAS artifact; the canonical query-time mapping is in the v2 root.
+        // This is not a CAS artifact; the canonical query-time mapping is in the v4 root.
         let preds: Vec<&str> = (0..self.predicates.len())
             .map(|p_id| self.predicates.resolve(p_id).unwrap_or(""))
             .collect();
