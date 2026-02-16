@@ -87,7 +87,11 @@ pub fn merge_subject_vocabs(
     namespace_codes: &HashMap<u16, String>,
 ) -> io::Result<SubjectMergeStats> {
     let k = vocab_paths.len();
-    assert_eq!(chunk_ids.len(), k, "chunk_ids must match vocab_paths length");
+    assert_eq!(
+        chunk_ids.len(),
+        k,
+        "chunk_ids must match vocab_paths length"
+    );
 
     // Open all readers + create mmap'd remap files.
     let mut readers: Vec<SubjectVocabReader> = Vec::with_capacity(k);
@@ -239,7 +243,11 @@ pub fn merge_string_vocabs(
     run_dir: &Path,
 ) -> io::Result<StringMergeStats> {
     let k = vocab_paths.len();
-    assert_eq!(chunk_ids.len(), k, "chunk_ids must match vocab_paths length");
+    assert_eq!(
+        chunk_ids.len(),
+        k,
+        "chunk_ids must match vocab_paths length"
+    );
 
     let mut readers: Vec<StringVocabReader> = Vec::with_capacity(k);
     let mut remaps: Vec<MmapRemapU32> = Vec::with_capacity(k);

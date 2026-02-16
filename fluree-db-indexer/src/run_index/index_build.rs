@@ -12,8 +12,10 @@ use super::lang_remap::build_lang_remap;
 use super::leaf::{LeafInfo, LeafWriter};
 use super::leaflet::p_width_for_max;
 use super::merge::KWayMerge;
-use super::run_record::{cmp_for_order, RunSortOrder};
+use super::run_record::{cmp_for_order, RunRecord, RunSortOrder};
 use super::streaming_reader::StreamingRunReader;
+use fluree_db_core::value_id::ObjKind;
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -347,12 +349,8 @@ fn build_index_from_run_paths_inner(
                 }
                 let leaf_infos = writer.finish()?;
                 if let Some(prev_g_id) = current_g_id {
-                    let result = finish_graph(
-                        prev_g_id as u32,
-                        leaf_infos,
-                        &config.index_dir,
-                        order_name,
-                    )?;
+                    let result =
+                        finish_graph(prev_g_id as u32, leaf_infos, &config.index_dir, order_name)?;
                     tracing::info!(
                         g_id = prev_g_id,
                         leaves = result.leaf_count,
@@ -434,8 +432,7 @@ fn build_index_from_run_paths_inner(
         }
         let leaf_infos = writer.finish()?;
         if let Some(g_id) = current_g_id {
-            let result =
-                finish_graph(g_id as u32, leaf_infos, &config.index_dir, order_name)?;
+            let result = finish_graph(g_id as u32, leaf_infos, &config.index_dir, order_name)?;
             tracing::info!(
                 g_id,
                 leaves = result.leaf_count,
@@ -507,6 +504,111 @@ pub fn build_spot_index(config: IndexBuildConfig) -> Result<IndexBuildResult, In
 // SPOT merge from sorted commit files (Phase C)
 // ============================================================================
 
+// ---- Class statistics collected during SPOT merge ----
+
+/// Sentinel datatype value used in [`SpotClassStats`] for object-reference
+/// properties (`ObjKind::REF_ID`). Displayed as `@id` in stats output.
+pub const DT_REF_ID: u16 = u16::MAX;
+
+/// Class→property→datatype statistics collected during the SPOT merge.
+///
+/// Exploits SPOT ordering (subject-grouped) to compute class statistics
+/// with O(properties-per-subject) memory per subject group. Only the global
+/// accumulators grow with distinct classes/properties.
+///
+/// # Datatype keys
+///
+/// The inner `u16` key is a `DatatypeDictId` for literal values, or
+/// [`DT_REF_ID`] (`u16::MAX`) for object references (`@id`).
+#[derive(Debug, Default)]
+pub struct SpotClassStats {
+    /// class sid64 → instance count (number of subjects with this rdf:type)
+    pub class_counts: HashMap<u64, u64>,
+    /// class sid64 → p_id → dt → flake count
+    pub class_prop_dts: HashMap<u64, HashMap<u32, HashMap<u16, u64>>>,
+}
+
+/// Internal streaming collector for class stats during SPOT merge.
+///
+/// Records must arrive in SPOT order (subject-grouped). On subject transition,
+/// accumulated per-subject class membership and property usage are flushed
+/// into the global `result` accumulators.
+struct SpotClassStatsCollector {
+    rdf_type_p_id: u32,
+    current_s_id: Option<u64>,
+    current_g_id: u16,
+    /// Classes the current subject belongs to (rdf:type REF_ID targets).
+    classes: Vec<u64>,
+    /// Per-property datatype counts for current subject: (p_id, dt) → count.
+    prop_dts: HashMap<(u32, u16), u64>,
+    /// Global accumulators.
+    result: SpotClassStats,
+}
+
+impl SpotClassStatsCollector {
+    fn new(rdf_type_p_id: u32) -> Self {
+        Self {
+            rdf_type_p_id,
+            current_s_id: None,
+            current_g_id: 0,
+            classes: Vec::new(),
+            prop_dts: HashMap::new(),
+            result: SpotClassStats::default(),
+        }
+    }
+
+    /// Process a single record from the SPOT merge.
+    ///
+    /// Must only be called with asserted records (op == 1) — retracted records
+    /// are already filtered by the merge loop.
+    #[inline]
+    fn on_record(&mut self, rec: &RunRecord) {
+        let s_id = rec.s_id.as_u64();
+        // Flush on subject or graph transition.
+        if self.current_s_id != Some(s_id) || self.current_g_id != rec.g_id {
+            self.flush_subject();
+            self.current_s_id = Some(s_id);
+            self.current_g_id = rec.g_id;
+        }
+
+        if rec.p_id == self.rdf_type_p_id && rec.o_kind == ObjKind::REF_ID.as_u8() {
+            // rdf:type assertion → record class membership.
+            self.classes.push(rec.o_key);
+        } else {
+            // Regular property → track (p_id, dt) pair.
+            let dt = if rec.o_kind == ObjKind::REF_ID.as_u8() {
+                DT_REF_ID
+            } else {
+                rec.dt
+            };
+            *self.prop_dts.entry((rec.p_id, dt)).or_insert(0) += 1;
+        }
+    }
+
+    /// Flush accumulated per-subject state into global class accumulators.
+    fn flush_subject(&mut self) {
+        if self.classes.is_empty() {
+            self.prop_dts.clear();
+            return;
+        }
+        for &class_sid in &self.classes {
+            *self.result.class_counts.entry(class_sid).or_insert(0) += 1;
+            let class_entry = self.result.class_prop_dts.entry(class_sid).or_default();
+            for (&(p_id, dt), &count) in &self.prop_dts {
+                *class_entry.entry(p_id).or_default().entry(dt).or_insert(0) += count;
+            }
+        }
+        self.classes.clear();
+        self.prop_dts.clear();
+    }
+
+    /// Consume the collector, flushing any remaining subject, and return results.
+    fn finish(mut self) -> SpotClassStats {
+        self.flush_subject();
+        self.result
+    }
+}
+
 /// Input for one sorted commit file in `build_spot_from_sorted_commits`.
 pub struct SortedCommitInput {
     /// Path to the sorted commit file (.fsc).
@@ -542,6 +644,10 @@ pub struct SpotFromCommitsConfig {
     /// Skip Region 3 (history journal) in leaflets. Safe for append-only
     /// bulk import where all ops are asserts with unique `t` values.
     pub skip_region3: bool,
+    /// Predicate ID for rdf:type. When set, enables inline class→property→datatype
+    /// statistics collection during the merge. The returned [`SpotClassStats`]
+    /// will contain per-class instance counts and property/datatype breakdowns.
+    pub rdf_type_p_id: Option<u32>,
 }
 
 /// Build per-graph SPOT indexes by k-way merging sorted commit files.
@@ -561,7 +667,7 @@ pub struct SpotFromCommitsConfig {
 pub fn build_spot_from_sorted_commits(
     inputs: Vec<SortedCommitInput>,
     config: SpotFromCommitsConfig,
-) -> Result<IndexBuildResult, IndexBuildError> {
+) -> Result<(IndexBuildResult, Option<SpotClassStats>), IndexBuildError> {
     use super::run_record::cmp_g_spot;
     use super::sorted_commit_reader::StreamingSortedCommitReader;
 
@@ -597,6 +703,11 @@ pub fn build_spot_from_sorted_commits(
     // K-way merge with (g_id, SPOT) comparator.
     let mut merge = KWayMerge::new(streams, cmp_g_spot)?;
 
+    // Optionally collect class→property→datatype stats during merge.
+    let mut class_stats_collector = config
+        .rdf_type_p_id
+        .map(SpotClassStatsCollector::new);
+
     // Merge loop: pull records, split by g_id, write per-graph indexes.
     let mut graph_results: Vec<GraphIndexResult> = Vec::new();
     let mut total_rows: u64 = 0;
@@ -607,7 +718,7 @@ pub fn build_spot_from_sorted_commits(
 
     let mut current_g_id: Option<u16> = None;
     let mut current_writer: Option<LeafWriter> = None;
-    let mut history_scratch: Vec<super::run_record::RunRecord> = Vec::new();
+    let mut history_scratch: Vec<RunRecord> = Vec::new();
 
     loop {
         let record = if skip_dedup {
@@ -635,12 +746,8 @@ pub fn build_spot_from_sorted_commits(
             if let Some(writer) = current_writer.take() {
                 let leaf_infos = writer.finish()?;
                 if let Some(prev_g_id) = current_g_id {
-                    let result = finish_graph(
-                        prev_g_id as u32,
-                        leaf_infos,
-                        &config.index_dir,
-                        order_name,
-                    )?;
+                    let result =
+                        finish_graph(prev_g_id as u32, leaf_infos, &config.index_dir, order_name)?;
                     tracing::info!(
                         g_id = prev_g_id,
                         leaves = result.leaf_count,
@@ -669,6 +776,11 @@ pub fn build_spot_from_sorted_commits(
             writer.set_skip_region3(config.skip_region3);
             current_writer = Some(writer);
             current_g_id = Some(g_id);
+        }
+
+        // Feed asserted record to class stats collector (before writing to leaf).
+        if let Some(ref mut collector) = class_stats_collector {
+            collector.on_record(&record);
         }
 
         current_writer
@@ -707,6 +819,16 @@ pub fn build_spot_from_sorted_commits(
         }
     }
 
+    // Finalize class stats collector (flushes last subject).
+    let class_stats = class_stats_collector.map(|c| {
+        let stats = c.finish();
+        tracing::info!(
+            classes = stats.class_counts.len(),
+            "class stats collected during SPOT merge"
+        );
+        stats
+    });
+
     write_index_manifest(
         &config.index_dir,
         &graph_results,
@@ -725,12 +847,15 @@ pub fn build_spot_from_sorted_commits(
         "SPOT index build from sorted commits complete"
     );
 
-    Ok(IndexBuildResult {
-        graphs: graph_results,
-        total_rows,
-        index_dir: config.index_dir,
-        elapsed,
-    })
+    Ok((
+        IndexBuildResult {
+            graphs: graph_results,
+            total_rows,
+            index_dir: config.index_dir,
+            elapsed,
+        },
+        class_stats,
+    ))
 }
 
 // ============================================================================
@@ -886,6 +1011,7 @@ pub fn precompute_language_dict(base_run_dir: &Path) -> Result<(), IndexBuildErr
 ///
 /// The unified language dictionary is pre-computed from SPOT run files and
 /// written to `base_run_dir/languages.dict` before spawning threads.
+#[allow(clippy::too_many_arguments)]
 pub fn build_all_indexes(
     base_run_dir: &Path,
     index_dir: &Path,
@@ -1024,9 +1150,9 @@ mod tests {
         let (min_t, max_t) = if records.is_empty() {
             (0u32, 0u32)
         } else {
-            records
-                .iter()
-                .fold((u32::MAX, 0u32), |(min, max), r| (min.min(r.t), max.max(r.t)))
+            records.iter().fold((u32::MAX, 0u32), |(min, max), r| {
+                (min.min(r.t), max.max(r.t))
+            })
         };
         write_run_file(
             &path,
@@ -1108,18 +1234,12 @@ mod tests {
         write_sorted_run(
             &run_dir,
             "run_00000.frn",
-            vec![
-                make_record(0, 1, 1, 10, 1),
-                make_record(0, 2, 1, 20, 1),
-            ],
+            vec![make_record(0, 1, 1, 10, 1), make_record(0, 2, 1, 20, 1)],
         );
         write_sorted_run(
             &run_dir,
             "run_00001.frn",
-            vec![
-                make_record(0, 3, 1, 100, 1),
-                make_record(0, 4, 1, 200, 1),
-            ],
+            vec![make_record(0, 3, 1, 100, 1), make_record(0, 4, 1, 200, 1)],
         );
 
         let config = IndexBuildConfig {
@@ -1308,9 +1428,10 @@ mod tests {
             progress: None,
             skip_dedup: false,
             skip_region3: false,
+            rdf_type_p_id: None,
         };
 
-        let result = build_spot_from_sorted_commits(inputs, config).unwrap();
+        let (result, _class_stats) = build_spot_from_sorted_commits(inputs, config).unwrap();
 
         assert_eq!(result.total_rows, 4);
         assert_eq!(result.graphs.len(), 1);

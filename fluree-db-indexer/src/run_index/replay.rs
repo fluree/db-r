@@ -226,7 +226,11 @@ pub fn replay_leaflet(
             abs_t: abs_t as u32,
             is_assert: entry.is_assert(),
             key: FactKey::from_region3(entry),
-            r3_source: if entry.is_assert() { None } else { Some(*entry) },
+            r3_source: if entry.is_assert() {
+                None
+            } else {
+                Some(*entry)
+            },
         });
     }
 

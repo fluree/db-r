@@ -59,7 +59,7 @@ pub use global_dict::{
 pub use index_build::{
     build_all_indexes, build_index, build_spot_from_sorted_commits, build_spot_index,
     precompute_language_dict, IndexBuildConfig, IndexBuildResult, SortedCommitInput,
-    SpotFromCommitsConfig,
+    SpotClassStats, SpotFromCommitsConfig, DT_REF_ID,
 };
 pub use index_root::{
     BinaryGarbageRef, BinaryIndexRoot, BinaryPrevIndexRef, CasArtifactsConfig, DictRefs,

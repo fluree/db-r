@@ -23,8 +23,7 @@ fn init_tracing(cli: &Cli) {
         tracing_subscriber::EnvFilter::new("off")
     } else if cli.verbose {
         // --verbose: honour RUST_LOG if set, otherwise show info for fluree crates.
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "info".into())
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())
     } else {
         // Default: suppress all logs. RUST_LOG is intentionally ignored so that
         // developer env vars don't leak log lines into the user-facing CLI output

@@ -32,9 +32,9 @@ mod inner {
     use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
     use fluree_db_indexer::run_index::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
     use fluree_db_indexer::run_index::global_dict::{DictWorkerCache, SharedDictAllocator};
+    use fluree_db_indexer::run_index::run_record::LIST_INDEX_NONE;
     use fluree_db_indexer::run_index::shared_pool::{SharedNumBigPool, SharedVectorArenaPool};
     use fluree_db_indexer::run_index::spool::{SpoolFileInfo, SpoolWriter};
-    use fluree_db_indexer::run_index::run_record::LIST_INDEX_NONE;
     use fluree_db_indexer::run_index::RunRecord;
     use fluree_db_novelty::commit_v2::CommitV2Error;
     use fluree_graph_ir::{Datatype, GraphSink, LiteralValue, TermId};

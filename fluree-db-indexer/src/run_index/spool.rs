@@ -960,6 +960,7 @@ pub struct SortedCommitInfo {
 /// `sorted_local_id → global_id`.
 ///
 /// [`cmp_g_spot`]: super::run_record::cmp_g_spot
+#[allow(clippy::too_many_arguments)]
 pub fn sort_remap_and_write_sorted_commit(
     mut records: Vec<RunRecord>,
     subjects: super::chunk_dict::ChunkSubjectDict,
@@ -1038,8 +1039,8 @@ pub fn sort_remap_and_write_sorted_commit(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::run_record::LIST_INDEX_NONE;
+    use super::*;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
@@ -1586,7 +1587,7 @@ mod tests {
 
     #[test]
     fn test_sort_remap_and_write_sorted_commit() {
-        use super::super::chunk_dict::{ChunkSubjectDict, ChunkStringDict};
+        use super::super::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
 
         let dir = std::env::temp_dir().join("fluree_test_sorted_commit");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1597,9 +1598,9 @@ mod tests {
         // Canonical sort: (ns5:Alice=1) < (ns10:Alice=2) < (ns10:Bob=0)
         // So insertion→sorted remap: [2, 0, 1]
         let mut subj_dict = ChunkSubjectDict::new();
-        let s0 = subj_dict.get_or_insert(10, b"Bob");    // insertion 0 → sorted 2
-        let s1 = subj_dict.get_or_insert(5, b"Alice");   // insertion 1 → sorted 0
-        let s2 = subj_dict.get_or_insert(10, b"Alice");  // insertion 2 → sorted 1
+        let s0 = subj_dict.get_or_insert(10, b"Bob"); // insertion 0 → sorted 2
+        let s1 = subj_dict.get_or_insert(5, b"Alice"); // insertion 1 → sorted 0
+        let s2 = subj_dict.get_or_insert(10, b"Alice"); // insertion 2 → sorted 1
         assert_eq!(s0, 0);
         assert_eq!(s1, 1);
         assert_eq!(s2, 2);
@@ -1608,8 +1609,8 @@ mod tests {
         // Sorted: "apple"(1) < "zebra"(0)
         // insertion→sorted remap: [1, 0]
         let mut str_dict = ChunkStringDict::new();
-        let st0 = str_dict.get_or_insert(b"zebra");  // insertion 0 → sorted 1
-        let st1 = str_dict.get_or_insert(b"apple");  // insertion 1 → sorted 0
+        let st0 = str_dict.get_or_insert(b"zebra"); // insertion 0 → sorted 1
+        let st1 = str_dict.get_or_insert(b"apple"); // insertion 1 → sorted 0
         assert_eq!(st0, 0);
         assert_eq!(st1, 1);
 
@@ -1679,7 +1680,7 @@ mod tests {
 
     #[test]
     fn test_sorted_commit_multi_graph() {
-        use super::super::chunk_dict::{ChunkSubjectDict, ChunkStringDict};
+        use super::super::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
 
         let dir = std::env::temp_dir().join("fluree_test_sorted_commit_mg");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1735,7 +1736,7 @@ mod tests {
 
     #[test]
     fn test_remap_commit_to_runs() {
-        use super::super::chunk_dict::{ChunkSubjectDict, ChunkStringDict};
+        use super::super::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
         use super::super::global_dict::LanguageTagDict;
         use super::super::run_record::RunSortOrder;
         use super::super::run_writer::{MultiOrderConfig, MultiOrderRunWriter};
@@ -1804,7 +1805,11 @@ mod tests {
         let results = writer.finish(&mut lang_dict).unwrap();
         assert_eq!(results.len(), 3);
         for (order, result) in &results {
-            assert_eq!(result.total_records, 2, "order {:?} should have 2 records", order);
+            assert_eq!(
+                result.total_records, 2,
+                "order {:?} should have 2 records",
+                order
+            );
         }
 
         // Verify stats hook received records

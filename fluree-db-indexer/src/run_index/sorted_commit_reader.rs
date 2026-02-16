@@ -18,7 +18,7 @@
 
 use super::merge::MergeSource;
 use super::run_record::{RunRecord, SPOOL_RECORD_WIRE_SIZE};
-use super::spool::{remap_record, SubjectRemap, StringRemap};
+use super::spool::{remap_record, StringRemap, SubjectRemap};
 use std::io::{self, BufReader, Read};
 use std::path::Path;
 

@@ -245,7 +245,11 @@ impl RunWriter {
         Ok(RunWriterResult {
             run_files: self.run_files,
             total_records: self.total_records,
-            min_t: if self.min_t == u32::MAX { 0 } else { self.min_t },
+            min_t: if self.min_t == u32::MAX {
+                0
+            } else {
+                self.min_t
+            },
             max_t: self.max_t,
         })
     }

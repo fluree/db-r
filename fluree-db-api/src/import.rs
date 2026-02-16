@@ -987,6 +987,8 @@ struct IndexBuildInput<'a> {
     dt_width: u8,
     /// Datatype ID → ValueTypeTag mapping (for stats hook in Phase D).
     dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag>,
+    /// Predicate ID for rdf:type (for inline class stats during SPOT merge).
+    rdf_type_p_id: u32,
     /// Whether to collect ID-based stats during Phase D remap.
     collect_id_stats: bool,
 }
@@ -1044,6 +1046,7 @@ where
             p_width: import_result.p_width,
             dt_width: import_result.dt_width,
             dt_tags: import_result.dt_tags,
+            rdf_type_p_id: import_result.rdf_type_p_id,
             collect_id_stats: config.collect_id_stats,
         };
         let index_result = build_and_upload(
@@ -1115,6 +1118,8 @@ struct ChunkImportResult {
     dt_width: u8,
     /// Datatype ID → ValueTypeTag mapping (for stats hook in Phase D).
     dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag>,
+    /// Predicate ID for rdf:type (for inline class stats during SPOT merge).
+    rdf_type_p_id: u32,
 }
 
 /// Import all TTL chunks: parallel parse + serial commit + streaming runs.
@@ -1130,8 +1135,8 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Publisher,
 {
-    use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo};
     use fluree_db_indexer::run_index::spool::sort_remap_and_write_sorted_commit;
+    use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo};
     use fluree_db_transact::import::{
         finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk,
         parse_chunk_with_prelude, ImportState, ParsedChunk,
@@ -1191,11 +1196,9 @@ where
         chunk_mb,
         "background sort/write semaphore"
     );
-    let sort_write_semaphore =
-        std::sync::Arc::new(tokio::sync::Semaphore::new(sort_write_permits));
-    let mut sort_write_handles: Vec<
-        tokio::task::JoinHandle<std::io::Result<SortedCommitInfo>>,
-    > = Vec::new();
+    let sort_write_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(sort_write_permits));
+    let mut sort_write_handles: Vec<tokio::task::JoinHandle<std::io::Result<SortedCommitInfo>>> =
+        Vec::new();
     let vocab_dir = run_dir.join("vocab");
     std::fs::create_dir_all(&vocab_dir)?;
 
@@ -1399,7 +1402,10 @@ where
                             &vd.join(format!("chunk_{ci:05}.strings.voc")),
                             &sd.join(format!("commit_{ci:05}.fsc")),
                             ci,
-                            Some((&sr.languages, &vd.join(format!("chunk_{ci:05}.languages.voc")))),
+                            Some((
+                                &sr.languages,
+                                &vd.join(format!("chunk_{ci:05}.languages.voc")),
+                            )),
                         );
                         drop(permit);
                         r
@@ -1577,7 +1583,10 @@ where
                                 &vd.join(format!("chunk_{ci:05}.strings.voc")),
                                 &sd.join(format!("commit_{ci:05}.fsc")),
                                 ci,
-                                Some((&sr.languages, &vd.join(format!("chunk_{ci:05}.languages.voc")))),
+                                Some((
+                                    &sr.languages,
+                                    &vd.join(format!("chunk_{ci:05}.languages.voc")),
+                                )),
                             );
                             drop(permit);
                             r
@@ -1682,7 +1691,10 @@ where
                             &vd.join(format!("chunk_{ci:05}.strings.voc")),
                             &sd.join(format!("commit_{ci:05}.fsc")),
                             ci,
-                            Some((&sr.languages, &vd.join(format!("chunk_{ci:05}.languages.voc")))),
+                            Some((
+                                &sr.languages,
+                                &vd.join(format!("chunk_{ci:05}.languages.voc")),
+                            )),
                         );
                         drop(permit);
                         r
@@ -1729,7 +1741,7 @@ where
         let info = handle
             .await
             .map_err(|e| ImportError::RunGeneration(format!("sort/write task panicked: {}", e)))?
-            .map_err(|e| ImportError::Io(e))?;
+            .map_err(ImportError::Io)?;
         sorted_commit_infos.push(info);
     }
 
@@ -1752,7 +1764,10 @@ where
         "sorted commit files written"
     );
 
-    tracing::info!(chunks = sorted_commit_infos.len(), "starting dictionary merge");
+    tracing::info!(
+        chunks = sorted_commit_infos.len(),
+        "starting dictionary merge"
+    );
     let merge_start = Instant::now();
 
     // Get namespace codes for IRI reconstruction (subjects.fwd needs full IRIs).
@@ -1781,7 +1796,8 @@ where
         run_dir,
         &namespace_codes,
     )?;
-    let str_stats = vocab_merge::merge_string_vocabs(&string_vocab_paths, &chunk_ids, &remap_dir, run_dir)?;
+    let str_stats =
+        vocab_merge::merge_string_vocabs(&string_vocab_paths, &chunk_ids, &remap_dir, run_dir)?;
 
     let total_unique_subjects = subj_stats.total_unique;
     let needs_wide = subj_stats.needs_wide;
@@ -1936,10 +1952,9 @@ where
             .collect()
     };
 
-    // Pre-insert rdf:type into predicate allocator for stats class tracking.
-    // Class stats output is currently disabled (see `if true` guard in
-    // build_and_upload) so skip tracking to avoid wasted memory at scale.
-    let _rdf_type_p_id = spool_config
+    // Pre-insert rdf:type into predicate allocator for class stats tracking.
+    // Used by the SPOT merge to collect class→property→datatype stats inline.
+    let rdf_type_p_id = spool_config
         .predicate_alloc
         .get_or_insert(fluree_vocab::rdf::TYPE);
 
@@ -1951,12 +1966,12 @@ where
     let p_width = {
         use fluree_db_indexer::run_index::leaflet::p_width_for_max;
         let n = spool_config.predicate_alloc.len();
-        p_width_for_max(n.saturating_sub(1) as u32)
+        p_width_for_max(n.saturating_sub(1))
     };
     let dt_width = {
         use fluree_db_indexer::run_index::leaflet::dt_width_for_max;
         let n = spool_config.datatype_alloc.len();
-        dt_width_for_max(n.saturating_sub(1) as u32)
+        dt_width_for_max(n.saturating_sub(1))
     };
 
     Ok(ChunkImportResult {
@@ -1974,6 +1989,7 @@ where
         p_width,
         dt_width,
         dt_tags,
+        rdf_type_p_id,
     })
 }
 
@@ -2001,11 +2017,11 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Publisher,
 {
+    use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
     use fluree_db_indexer::run_index::{
         build_all_indexes, build_spot_from_sorted_commits, BinaryIndexRoot, CasArtifactsConfig,
         PrefixTrie, RunSortOrder, SortedCommitInput, SpotFromCommitsConfig,
     };
-    use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
 
     // ---- Phase C (SPOT) + Phase D (remap) + Phase E (secondary build) ----
@@ -2082,21 +2098,24 @@ where
     // Use pre-computed lang remaps (avoids re-reading per-chunk lang vocab files).
     let lang_remaps = input.lang_remaps;
 
-    let mut spot_inputs: Vec<SortedCommitInput> = Vec::with_capacity(input.sorted_commit_infos.len());
+    let mut spot_inputs: Vec<SortedCommitInput> =
+        Vec::with_capacity(input.sorted_commit_infos.len());
     for (pos, info) in input.sorted_commit_infos.iter().enumerate() {
         let ci = info.chunk_idx;
         let subj_path = remap_dir.join(format!("subjects_{ci:05}.rmp"));
         let str_path = remap_dir.join(format!("strings_{ci:05}.rmp"));
-        let s_remap = MmapSubjectRemap::open(&subj_path)
-            .map_err(|e| ImportError::Io(std::io::Error::new(
+        let s_remap = MmapSubjectRemap::open(&subj_path).map_err(|e| {
+            ImportError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("subject remap {}: {}", subj_path.display(), e),
-            )))?;
-        let str_remap = MmapStringRemap::open(&str_path)
-            .map_err(|e| ImportError::Io(std::io::Error::new(
+            ))
+        })?;
+        let str_remap = MmapStringRemap::open(&str_path).map_err(|e| {
+            ImportError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("string remap {}: {}", str_path.display(), e),
-            )))?;
+            ))
+        })?;
         // lang_remaps is indexed by position (same order as sorted_commit_infos).
         let lang_remap = lang_remaps.get(pos).cloned().unwrap_or_else(|| vec![0]);
         spot_inputs.push(SortedCommitInput {
@@ -2114,6 +2133,7 @@ where
 
     let spot_index_dir = input.index_dir.to_path_buf();
     let spot_counter = merge_counter.clone();
+    let spot_rdf_type_p_id = input.rdf_type_p_id;
     let spot_handle = tokio::task::spawn_blocking(move || {
         build_spot_from_sorted_commits(
             spot_inputs,
@@ -2125,8 +2145,9 @@ where
                 leaflets_per_leaf: spot_leaflets_per_leaf,
                 zstd_level: 1,
                 progress: Some(spot_counter),
-                skip_dedup: true, // Fresh import: unique asserts, no retractions.
+                skip_dedup: true,   // Fresh import: unique asserts, no retractions.
                 skip_region3: true, // Append-only: no history journal needed.
+                rdf_type_p_id: Some(spot_rdf_type_p_id),
             },
         )
     });
@@ -2140,6 +2161,7 @@ where
     let remap_remap_dir = remap_dir.clone();
     let sorted_commit_infos = input.sorted_commit_infos;
     let dt_tags = input.dt_tags;
+    let dt_tags_for_stats = dt_tags.clone();
     let collect_id_stats = input.collect_id_stats;
     let run_budget_mb = config.effective_run_budget_mb();
     let worker_cap = config.effective_heavy_workers();
@@ -2157,48 +2179,46 @@ where
         Option<fluree_db_indexer::stats::IdStatsHook>,
     );
 
-    let de_handle = tokio::task::spawn_blocking(move || -> std::result::Result<DeResult, ImportError> {
-        use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
-        use fluree_db_indexer::run_index::{
-            MultiOrderConfig, MultiOrderRunWriter, RunSortOrder as RSO,
-        };
+    let de_handle = tokio::task::spawn_blocking(
+        move || -> std::result::Result<DeResult, ImportError> {
+            use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
+            use fluree_db_indexer::run_index::{
+                MultiOrderConfig, MultiOrderRunWriter, RunSortOrder as RSO,
+            };
 
-        // ---- Phase D: Parallel remap sorted commits → run files (secondary orders only) ----
-        tracing::info!(
-            chunks = sorted_commit_infos.len(),
-            "starting parallel remap (secondary orders, concurrent with SPOT build)"
-        );
-        let remap_start = Instant::now();
+            // ---- Phase D: Parallel remap sorted commits → run files (secondary orders only) ----
+            tracing::info!(
+                chunks = sorted_commit_infos.len(),
+                "starting parallel remap (secondary orders, concurrent with SPOT build)"
+            );
+            let remap_start = Instant::now();
 
-        let worker_count = std::cmp::min(
-            worker_cap,
-            sorted_commit_infos.len().max(1),
-        );
-        tracing::info!(
-            heavy_worker_cap = worker_cap,
-            remap_workers = worker_count,
-            "derived remap worker count"
-        );
-        let per_thread_budget_bytes =
-            ((run_budget_mb * 1024 * 1024) / worker_count).max(64 * 1024 * 1024);
+            let worker_count = std::cmp::min(worker_cap, sorted_commit_infos.len().max(1));
+            tracing::info!(
+                heavy_worker_cap = worker_cap,
+                remap_workers = worker_count,
+                "derived remap worker count"
+            );
+            let per_thread_budget_bytes =
+                ((run_budget_mb * 1024 * 1024) / worker_count).max(64 * 1024 * 1024);
 
-        let mut stats_hooks: Vec<fluree_db_indexer::stats::IdStatsHook> = Vec::new();
-        let mut total_remap_records: u64 = 0;
+            let mut stats_hooks: Vec<fluree_db_indexer::stats::IdStatsHook> = Vec::new();
+            let mut total_remap_records: u64 = 0;
 
-        // Bounded remap parallelism: work distribution via atomic counter.
-        let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            // Bounded remap parallelism: work distribution via atomic counter.
+            let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-        std::thread::scope(|scope| -> std::result::Result<(), ImportError> {
-            let mut handles = Vec::with_capacity(worker_count);
-            for _ in 0..worker_count {
-                let commit_infos_ref = &sorted_commit_infos;
-                let dt_tags_ref = &dt_tags;
-                let lang_remaps_ref = &remap_lang_remaps;
-                let remap_run_dir = remap_run_dir.clone();
-                let remap_dir = remap_remap_dir.clone();
-                let next_chunk = std::sync::Arc::clone(&next_chunk);
+            std::thread::scope(|scope| -> std::result::Result<(), ImportError> {
+                let mut handles = Vec::with_capacity(worker_count);
+                for _ in 0..worker_count {
+                    let commit_infos_ref = &sorted_commit_infos;
+                    let dt_tags_ref = &dt_tags;
+                    let lang_remaps_ref = &remap_lang_remaps;
+                    let remap_run_dir = remap_run_dir.clone();
+                    let remap_dir = remap_remap_dir.clone();
+                    let next_chunk = std::sync::Arc::clone(&next_chunk);
 
-                handles.push(scope.spawn(move || -> std::result::Result<(u64, Vec<fluree_db_indexer::stats::IdStatsHook>), ImportError> {
+                    handles.push(scope.spawn(move || -> std::result::Result<(u64, Vec<fluree_db_indexer::stats::IdStatsHook>), ImportError> {
                     let mut local_total = 0u64;
                     let mut local_hooks = Vec::new();
 
@@ -2267,54 +2287,55 @@ where
 
                     Ok((local_total, local_hooks))
                 }));
-            }
+                }
 
-            for h in handles {
-                let (written, mut hooks) = h
-                    .join()
-                    .map_err(|_| ImportError::RunGeneration("remap thread panicked".into()))??;
-                total_remap_records += written;
-                stats_hooks.append(&mut hooks);
-            }
+                for h in handles {
+                    let (written, mut hooks) = h.join().map_err(|_| {
+                        ImportError::RunGeneration("remap thread panicked".into())
+                    })??;
+                    total_remap_records += written;
+                    stats_hooks.append(&mut hooks);
+                }
 
-            Ok(())
-        })?;
+                Ok(())
+            })?;
 
-        tracing::info!(
-            total_records = total_remap_records,
-            elapsed_ms = remap_start.elapsed().as_millis(),
-            "parallel remap complete"
-        );
+            tracing::info!(
+                total_records = total_remap_records,
+                elapsed_ms = remap_start.elapsed().as_millis(),
+                "parallel remap complete"
+            );
 
-        // Merge stats hooks from all remap threads.
-        let stats_hook = if collect_id_stats && !stats_hooks.is_empty() {
-            let mut merged = stats_hooks.remove(0);
-            for hook in stats_hooks {
-                merged.merge_from(hook);
-            }
-            Some(merged)
-        } else {
-            None
-        };
+            // Merge stats hooks from all remap threads.
+            let stats_hook = if collect_id_stats && !stats_hooks.is_empty() {
+                let mut merged = stats_hooks.remove(0);
+                for hook in stats_hooks {
+                    merged.merge_from(hook);
+                }
+                Some(merged)
+            } else {
+                None
+            };
 
-        // ---- Phase E: Build secondary indexes from run files (PSOT/POST/OPST) ----
-        // Chains after Phase D — needs the run files just written.
-        tracing::info!("starting secondary index build (PSOT/POST/OPST)");
-        let secondary_results = build_all_indexes(
-            &remap_run_dir,
-            &de_index_dir,
-            secondary_orders,
-            sec_leaflet_rows,
-            sec_leaflets_per_leaf,
-            1, // zstd_level
-            Some(secondary_counter),
-            true, // skip_dedup: fresh import, unique asserts only
-            true, // skip_region3: append-only, no history journal needed
-        )
-        .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
+            // ---- Phase E: Build secondary indexes from run files (PSOT/POST/OPST) ----
+            // Chains after Phase D — needs the run files just written.
+            tracing::info!("starting secondary index build (PSOT/POST/OPST)");
+            let secondary_results = build_all_indexes(
+                &remap_run_dir,
+                &de_index_dir,
+                secondary_orders,
+                sec_leaflet_rows,
+                sec_leaflets_per_leaf,
+                1, // zstd_level
+                Some(secondary_counter),
+                true, // skip_dedup: fresh import, unique asserts only
+                true, // skip_region3: append-only, no history journal needed
+            )
+            .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
 
-        Ok((secondary_results, stats_hook))
-    });
+            Ok((secondary_results, stats_hook))
+        },
+    );
 
     // Poll the merge counter every 250ms and emit progress events.
     let poll_progress = config.progress.clone();
@@ -2341,7 +2362,7 @@ where
     });
 
     // Wait for both concurrent pipelines to complete.
-    let spot_result = spot_handle
+    let (spot_result, spot_class_stats) = spot_handle
         .await
         .map_err(|e| ImportError::IndexBuild(format!("SPOT build task panicked: {}", e)))?
         .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
@@ -2443,8 +2464,12 @@ where
 
         // Finalize with proper HLL merge for aggregate properties.
         // When class tracking is enabled, this also returns class counts + class→property presence.
-        tracing::info!("post-upload: HLL sketch written, calling finalize_with_aggregate_properties");
-        let (id_result, agg_props, class_counts, class_properties, _class_ref_targets) =
+        tracing::info!(
+            "post-upload: HLL sketch written, calling finalize_with_aggregate_properties"
+        );
+        // Class counts + class→property presence from IdStatsHook are superseded
+        // by SpotClassStats (collected inline during SPOT merge). Discard them.
+        let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
             hook.finalize_with_aggregate_properties();
         tracing::info!("post-upload: finalize complete, building stats JSON");
 
@@ -2526,89 +2551,12 @@ where
             "stats collected from IdStatsHook"
         );
 
-        // Class stats: counts + class→property presence.
-        //
-        // IMPORTANT: This intentionally does not include per-class per-property counts or
-        // per-class datatype breakdowns. Those are available via aggregate property stats
-        // (ledger-wide) and per-graph property stats (authoritative), and can be joined
-        // by the UI using the property SID.
-        // TODO(perf): class stats disabled temporarily to isolate post-indexing stall.
-        let classes_json: Vec<serde_json::Value> = if true || class_counts.is_empty() {
-            Vec::new()
+        // Class stats from SPOT merge: class → count + property → datatype (count).
+        // Collected inline during the SPOT k-way merge (zero extra I/O).
+        let classes_json: Vec<serde_json::Value> = if let Some(ref cs) = spot_class_stats {
+            build_class_stats_json(cs, &predicate_sids, &dt_tags_for_stats, input.run_dir, input.namespace_codes)?
         } else {
-            // Resolve class sid64 → (ns_code, suffix) via targeted binary search
-            // into flat files. Avoids loading the entire BinaryIndexStore (which
-            // would allocate ~130 bytes × N_subjects of heap for ForwardEntry +
-            // ReverseEntry trees — tens of GB at scale).
-            use fluree_db_core::subject_id::SubjectId;
-            use fluree_db_indexer::run_index::dict_io;
-            use std::io::{Read as _, Seek as _, SeekFrom};
-
-            let sids_path = input.run_dir.join("subjects.sids");
-            let idx_path = input.run_dir.join("subjects.idx");
-            let fwd_path = input.run_dir.join("subjects.fwd");
-
-            // Read the sid64 array and forward index (offsets + lens).
-            // These are O(N) but only ~12 bytes/entry — much smaller than the
-            // full BinaryIndexStore which clones every suffix string twice.
-            let sids_vec = dict_io::read_subject_sid_map(&sids_path)
-                .map_err(ImportError::Io)?;
-            let (fwd_offsets, fwd_lens) = dict_io::read_forward_index(&idx_path)
-                .map_err(ImportError::Io)?;
-
-            // Open the forward file for targeted reads (no bulk load).
-            let mut fwd_file = std::fs::File::open(&fwd_path).map_err(ImportError::Io)?;
-
-            class_counts
-                .iter()
-                .filter_map(|&(class_sid64, count)| {
-                    let subj = SubjectId::from_u64(class_sid64);
-                    let ns_code = subj.ns_code();
-
-                    // Binary search for the sid64 in the sorted sids array.
-                    let pos = sids_vec.binary_search(&class_sid64).ok()?;
-
-                    // Read just this IRI from the forward file via seek+read.
-                    let off = fwd_offsets[pos];
-                    let len = fwd_lens[pos] as usize;
-                    let mut iri_buf = vec![0u8; len];
-                    fwd_file.seek(SeekFrom::Start(off)).ok()?;
-                    fwd_file.read_exact(&mut iri_buf).ok()?;
-                    let iri = std::str::from_utf8(&iri_buf).ok()?;
-
-                    // Strip namespace prefix to get the suffix.
-                    let prefix = input.namespace_codes
-                        .get(&ns_code)
-                        .map(|s| s.as_str())
-                        .unwrap_or("");
-                    let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
-                        &iri[prefix.len()..]
-                    } else {
-                        iri
-                    };
-
-                    // Properties used by instances of this class (presence only).
-                    let prop_usages: Vec<serde_json::Value> = class_properties
-                        .get(&class_sid64)
-                        .map(|props| {
-                            let mut sorted: Vec<u32> = props.iter().copied().collect();
-                            sorted.sort();
-                            sorted
-                                .iter()
-                                .filter_map(|&pid| {
-                                    let psid = predicate_sids.get(pid as usize)?;
-                                    Some(serde_json::json!([[psid.0, psid.1]]))
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    Some(serde_json::json!([
-                        [ns_code, suffix],
-                        [count, prop_usages],
-                    ]))
-                })
-                .collect()
+            Vec::new()
         };
 
         (
@@ -2681,7 +2629,10 @@ where
     let root_bytes = root
         .to_json_bytes()
         .map_err(|e| ImportError::Upload(format!("serialize V2 root: {}", e)))?;
-    tracing::info!(root_bytes = root_bytes.len(), "post-upload: root serialized, writing to CAS");
+    tracing::info!(
+        root_bytes = root_bytes.len(),
+        "post-upload: root serialized, writing to CAS"
+    );
 
     let write_result = storage
         .content_write_bytes(ContentKind::IndexRoot, alias, &root_bytes)
@@ -2715,6 +2666,114 @@ where
         root_id,
         index_t: input.final_t,
     })
+}
+
+/// Build JSON array for class→property→datatype stats from SPOT merge results.
+///
+/// Resolves class sid64 → (ns_code, suffix) via targeted binary search into
+/// flat dict files (avoids loading the full BinaryIndexStore).
+fn build_class_stats_json(
+    cs: &fluree_db_indexer::run_index::SpotClassStats,
+    predicate_sids: &[(u16, String)],
+    dt_tags: &[fluree_db_core::value_id::ValueTypeTag],
+    run_dir: &Path,
+    namespace_codes: &HashMap<u16, String>,
+) -> std::result::Result<Vec<serde_json::Value>, ImportError> {
+    use fluree_db_core::subject_id::SubjectId;
+    use fluree_db_indexer::run_index::dict_io;
+    use fluree_db_indexer::run_index::DT_REF_ID;
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    if cs.class_counts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let sids_path = run_dir.join("subjects.sids");
+    let idx_path = run_dir.join("subjects.idx");
+    let fwd_path = run_dir.join("subjects.fwd");
+
+    let sids_vec = dict_io::read_subject_sid_map(&sids_path).map_err(ImportError::Io)?;
+    let (fwd_offsets, fwd_lens) =
+        dict_io::read_forward_index(&idx_path).map_err(ImportError::Io)?;
+    let mut fwd_file = std::fs::File::open(&fwd_path).map_err(ImportError::Io)?;
+
+    // Sort class entries by sid64 for deterministic output.
+    let mut class_entries: Vec<(&u64, &u64)> = cs.class_counts.iter().collect();
+    class_entries.sort_by_key(|&(sid, _)| *sid);
+
+    let classes_json: Vec<serde_json::Value> = class_entries
+        .iter()
+        .filter_map(|&(&class_sid64, &count)| {
+            let subj = SubjectId::from_u64(class_sid64);
+            let ns_code = subj.ns_code();
+
+            // Binary search for the sid64 in the sorted sids array.
+            let pos = sids_vec.binary_search(&class_sid64).ok()?;
+
+            // Read just this IRI suffix from the forward file via seek+read.
+            let off = fwd_offsets[pos];
+            let len = fwd_lens[pos] as usize;
+            let mut iri_buf = vec![0u8; len];
+            fwd_file.seek(SeekFrom::Start(off)).ok()?;
+            fwd_file.read_exact(&mut iri_buf).ok()?;
+            let iri = std::str::from_utf8(&iri_buf).ok()?;
+
+            let prefix = namespace_codes
+                .get(&ns_code)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
+                &iri[prefix.len()..]
+            } else {
+                iri
+            };
+
+            // Build property → datatype breakdown for this class.
+            let prop_json: Vec<serde_json::Value> =
+                if let Some(prop_map) = cs.class_prop_dts.get(&class_sid64) {
+                    let mut props: Vec<_> = prop_map.iter().collect();
+                    props.sort_by_key(|&(pid, _)| *pid);
+
+                    props
+                        .iter()
+                        .filter_map(|&(&p_id, dt_map)| {
+                            let psid = predicate_sids.get(p_id as usize)?;
+
+                            // Build datatype counts: [[dt_name, count], ...]
+                            let mut dts: Vec<_> = dt_map.iter().collect();
+                            dts.sort_by_key(|&(dt, _)| *dt);
+                            let dt_json: Vec<serde_json::Value> = dts
+                                .iter()
+                                .map(|&(&dt, &count)| {
+                                    if dt == DT_REF_ID {
+                                        serde_json::json!(["@id", count])
+                                    } else if let Some(tag) = dt_tags.get(dt as usize) {
+                                        serde_json::json!([tag.as_u8(), count])
+                                    } else {
+                                        serde_json::json!([dt, count])
+                                    }
+                                })
+                                .collect();
+
+                            Some(serde_json::json!([[psid.0, &psid.1], dt_json]))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+            Some(serde_json::json!(
+                [[ns_code, suffix], [count, prop_json]]
+            ))
+        })
+        .collect();
+
+    tracing::info!(
+        classes = classes_json.len(),
+        "class stats resolved to JSON"
+    );
+
+    Ok(classes_json)
 }
 
 // ============================================================================

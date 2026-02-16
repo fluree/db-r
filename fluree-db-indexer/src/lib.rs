@@ -1284,10 +1284,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             let mut ns_codes: Vec<u16> = Vec::with_capacity(sids.len());
             let mut suf_offs: Vec<u64> = Vec::with_capacity(sids.len());
             let mut suf_lens: Vec<u32> = Vec::with_capacity(sids.len());
-            for (&sid, (&off, &len)) in sids
-                .iter()
-                .zip(subj_offsets.iter().zip(subj_lens.iter()))
-            {
+            for (&sid, (&off, &len)) in sids.iter().zip(subj_offsets.iter().zip(subj_lens.iter())) {
                 let ns_code = SubjectId::from_u64(sid).ns_code();
                 let iri = &subj_fwd_data[off as usize..(off as usize + len as usize)];
                 let prefix_bytes = namespace_codes
@@ -1310,9 +1307,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             // Fast path: when subjects were produced by vocab-merge, `subjects.sids` and
             // the forward file are already in ascending sid64 order (and in `(ns_code, suffix)`
             // key order). Avoid an O(n log n) sort of indices in that case.
-            let sids_sorted = sids
-                .windows(2)
-                .all(|w| w[0] <= w[1]);
+            let sids_sorted = sids.windows(2).all(|w| w[0] <= w[1]);
 
             let id_order: Option<Vec<usize>> = if sids_sorted {
                 None
@@ -1337,11 +1332,11 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 let mut leaf_count: u32 = 0;
 
                 let flush = |leaf_offsets: &mut Vec<u32>,
-                                 leaf_data: &mut Vec<u8>,
-                                 leaf_count: &mut u32,
-                                 data_offset: &mut u32,
-                                 leaf_first: &mut u64,
-                                 leaf_last: &mut u64|
+                             leaf_data: &mut Vec<u8>,
+                             leaf_count: &mut u32,
+                             data_offset: &mut u32,
+                             leaf_first: &mut u64,
+                             leaf_last: &mut u64|
                  -> Option<(Vec<u8>, u64, u64, u32)> {
                     if *leaf_count == 0 {
                         return None;
@@ -1481,7 +1476,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     });
                 }
 
-                let branch = DictBranch { leaves: branch_entries };
+                let branch = DictBranch {
+                    leaves: branch_entries,
+                };
                 let branch_bytes = branch.encode();
                 let branch_result = storage
                     .content_write_bytes(kind, ledger_id, &branch_bytes)
@@ -1512,8 +1509,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     }
                     let a = &subj_fwd_data[suf_offs[i - 1] as usize
                         ..(suf_offs[i - 1] as usize + suf_lens[i - 1] as usize)];
-                    let b = &subj_fwd_data[suf_offs[i] as usize
-                        ..(suf_offs[i] as usize + suf_lens[i] as usize)];
+                    let b = &subj_fwd_data
+                        [suf_offs[i] as usize..(suf_offs[i] as usize + suf_lens[i] as usize)];
                     if a > b {
                         ok = false;
                         break;
@@ -1566,12 +1563,12 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 let mut last_len: u32 = 0;
 
                 let flush = |leaf_offsets: &mut Vec<u32>,
-                                 leaf_data: &mut Vec<u8>,
-                                 first_key: &mut Option<Vec<u8>>,
-                                 last_ns: &mut u16,
-                                 last_off: &mut u64,
-                                 last_len: &mut u32,
-                                 chunk_bytes: &mut usize|
+                             leaf_data: &mut Vec<u8>,
+                             first_key: &mut Option<Vec<u8>>,
+                             last_ns: &mut u16,
+                             last_off: &mut u64,
+                             last_len: &mut u32,
+                             chunk_bytes: &mut usize|
                  -> Result<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
                     if leaf_offsets.is_empty() {
                         return Ok(None);
@@ -1589,7 +1586,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     buf.extend_from_slice(leaf_data);
                     debug_assert_eq!(buf.len(), total);
                     let fk = first_key.take().unwrap_or_default();
-                    let suffix = &subj_fwd_data[*last_off as usize..(*last_off as usize + *last_len as usize)];
+                    let suffix = &subj_fwd_data
+                        [*last_off as usize..(*last_off as usize + *last_len as usize)];
                     let mut lk = Vec::with_capacity(2 + suffix.len());
                     lk.extend_from_slice(&last_ns.to_be_bytes());
                     lk.extend_from_slice(suffix);
@@ -1708,9 +1706,15 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     }
                 }
 
-                if let Some((leaf_bytes, fk, lk)) =
-                    flush(&mut leaf_offsets, &mut leaf_data, &mut first_key, &mut last_ns, &mut last_off, &mut last_len, &mut chunk_bytes)?
-                {
+                if let Some((leaf_bytes, fk, lk)) = flush(
+                    &mut leaf_offsets,
+                    &mut leaf_data,
+                    &mut first_key,
+                    &mut last_ns,
+                    &mut last_off,
+                    &mut last_len,
+                    &mut chunk_bytes,
+                )? {
                     let cas_result = storage
                         .content_write_bytes(kind, ledger_id, &leaf_bytes)
                         .await
@@ -1724,7 +1728,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     });
                 }
 
-                let branch = DictBranch { leaves: branch_entries };
+                let branch = DictBranch {
+                    leaves: branch_entries,
+                };
                 let branch_bytes = branch.encode();
                 let branch_result = storage
                     .content_write_bytes(kind, ledger_id, &branch_bytes)
@@ -1779,11 +1785,11 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 use dict_tree::forward_leaf::FORWARD_LEAF_MAGIC;
 
                 let flush = |leaf_offsets: &mut Vec<u32>,
-                                 leaf_data: &mut Vec<u8>,
-                                 leaf_count: &mut u32,
-                                 data_offset: &mut u32,
-                                 leaf_first: &mut u64,
-                                 leaf_last: &mut u64|
+                             leaf_data: &mut Vec<u8>,
+                             leaf_count: &mut u32,
+                             data_offset: &mut u32,
+                             leaf_first: &mut u64,
+                             leaf_last: &mut u64|
                  -> Option<(Vec<u8>, u64, u64, u32)> {
                     if *leaf_count == 0 {
                         return None;
@@ -1825,7 +1831,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     data_offset += (12 + bytes.len()) as u32;
                     leaf_count += 1;
 
-                    if (leaf_data.len() + leaf_offsets.len() * 4 + 8) >= builder::DEFAULT_TARGET_LEAF_BYTES {
+                    if (leaf_data.len() + leaf_offsets.len() * 4 + 8)
+                        >= builder::DEFAULT_TARGET_LEAF_BYTES
+                    {
                         if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
                             &mut leaf_offsets,
                             &mut leaf_data,
@@ -1870,7 +1878,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     });
                 }
 
-                let branch = DictBranch { leaves: branch_entries };
+                let branch = DictBranch {
+                    leaves: branch_entries,
+                };
                 let branch_bytes = branch.encode();
                 let branch_result = storage
                     .content_write_bytes(kind, ledger_id, &branch_bytes)
@@ -1935,35 +1945,36 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     let mut last_off: usize = 0;
                     let mut last_len: usize = 0;
 
-                    let flush = |leaf_offsets: &mut Vec<u32>,
-                                     leaf_data: &mut Vec<u8>,
-                                     first_key: &mut Option<Vec<u8>>,
-                                     last_off: &mut usize,
-                                     last_len: &mut usize,
-                                     chunk_bytes: &mut usize|
-                     -> Result<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
-                        if leaf_offsets.is_empty() {
-                            return Ok(None);
-                        }
-                        let entry_count = leaf_offsets.len() as u32;
-                        let header_size = 8;
-                        let offset_table_size = leaf_offsets.len() * 4;
-                        let total = header_size + offset_table_size + leaf_data.len();
-                        let mut buf = Vec::with_capacity(total);
-                        buf.extend_from_slice(&REVERSE_LEAF_MAGIC);
-                        buf.extend_from_slice(&entry_count.to_le_bytes());
-                        for off in leaf_offsets.iter() {
-                            buf.extend_from_slice(&off.to_le_bytes());
-                        }
-                        buf.extend_from_slice(leaf_data);
-                        debug_assert_eq!(buf.len(), total);
-                        let fk = first_key.take().unwrap_or_default();
-                        let lk = str_fwd_data[*last_off..(*last_off + *last_len)].to_vec();
-                        leaf_offsets.clear();
-                        leaf_data.clear();
-                        *chunk_bytes = 0;
-                        Ok(Some((buf, fk, lk)))
-                    };
+                    let flush =
+                        |leaf_offsets: &mut Vec<u32>,
+                         leaf_data: &mut Vec<u8>,
+                         first_key: &mut Option<Vec<u8>>,
+                         last_off: &mut usize,
+                         last_len: &mut usize,
+                         chunk_bytes: &mut usize|
+                         -> Result<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
+                            if leaf_offsets.is_empty() {
+                                return Ok(None);
+                            }
+                            let entry_count = leaf_offsets.len() as u32;
+                            let header_size = 8;
+                            let offset_table_size = leaf_offsets.len() * 4;
+                            let total = header_size + offset_table_size + leaf_data.len();
+                            let mut buf = Vec::with_capacity(total);
+                            buf.extend_from_slice(&REVERSE_LEAF_MAGIC);
+                            buf.extend_from_slice(&entry_count.to_le_bytes());
+                            for off in leaf_offsets.iter() {
+                                buf.extend_from_slice(&off.to_le_bytes());
+                            }
+                            buf.extend_from_slice(leaf_data);
+                            debug_assert_eq!(buf.len(), total);
+                            let fk = first_key.take().unwrap_or_default();
+                            let lk = str_fwd_data[*last_off..(*last_off + *last_len)].to_vec();
+                            leaf_offsets.clear();
+                            leaf_data.clear();
+                            *chunk_bytes = 0;
+                            Ok(Some((buf, fk, lk)))
+                        };
 
                     match &rev_order {
                         None => {
@@ -2062,9 +2073,14 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         }
                     }
 
-                    if let Some((leaf_bytes, fk, lk)) =
-                        flush(&mut leaf_offsets, &mut leaf_data, &mut first_key, &mut last_off, &mut last_len, &mut chunk_bytes)?
-                    {
+                    if let Some((leaf_bytes, fk, lk)) = flush(
+                        &mut leaf_offsets,
+                        &mut leaf_data,
+                        &mut first_key,
+                        &mut last_off,
+                        &mut last_len,
+                        &mut chunk_bytes,
+                    )? {
                         let cas_result = storage
                             .content_write_bytes(kind, ledger_id, &leaf_bytes)
                             .await
@@ -2078,7 +2094,9 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         });
                     }
 
-                    let branch = DictBranch { leaves: branch_entries };
+                    let branch = DictBranch {
+                        leaves: branch_entries,
+                    };
                     let branch_bytes = branch.encode();
                     let branch_result = storage
                         .content_write_bytes(kind, ledger_id, &branch_bytes)

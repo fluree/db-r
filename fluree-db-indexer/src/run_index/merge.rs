@@ -386,9 +386,9 @@ mod tests {
         records.sort_unstable_by(cmp_spot);
         let path = dir.join(name);
         let lang_dict = LanguageTagDict::new();
-        let (min_t, max_t) = records
-            .iter()
-            .fold((u32::MAX, 0u32), |(min, max), r| (min.min(r.t), max.max(r.t)));
+        let (min_t, max_t) = records.iter().fold((u32::MAX, 0u32), |(min, max), r| {
+            (min.min(r.t), max.max(r.t))
+        });
         write_run_file(
             &path,
             &records,
@@ -687,19 +687,31 @@ mod tests {
 
         // First record: s=1
         history.clear();
-        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
         assert_eq!(rec.s_id, SubjectId::from_u64(1));
-        assert!(history.is_empty(), "single-version fact should have no history");
+        assert!(
+            history.is_empty(),
+            "single-version fact should have no history"
+        );
 
         // Second record: s=2
         history.clear();
-        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
         assert_eq!(rec.s_id, SubjectId::from_u64(2));
         assert!(history.is_empty());
 
         // Done
         history.clear();
-        assert!(merge.next_deduped_with_history(&mut history).unwrap().is_none());
+        assert!(merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -718,7 +730,10 @@ mod tests {
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
         let mut history = Vec::new();
 
-        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
         assert_eq!(rec.t, 2, "winner should be t=2");
         assert_eq!(history.len(), 1, "should have one history entry");
         assert_eq!(history[0].t, 1, "history entry should be t=1");
@@ -754,7 +769,10 @@ mod tests {
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
         let mut history = Vec::new();
 
-        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
         assert_eq!(rec.t, 3, "winner should be assert at t=3");
         assert_eq!(rec.op, 1, "winner should be assert");
         assert_eq!(history.len(), 2, "should have two history entries");
@@ -775,22 +793,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let p0 = write_sorted_run(
-            &dir,
-            "r0.frn",
-            vec![make_record_op(1, 1, 10, 1, true)],
-        );
-        let p1 = write_sorted_run(
-            &dir,
-            "r1.frn",
-            vec![make_record_op(1, 1, 10, 2, false)],
-        );
+        let p0 = write_sorted_run(&dir, "r0.frn", vec![make_record_op(1, 1, 10, 1, true)]);
+        let p1 = write_sorted_run(&dir, "r1.frn", vec![make_record_op(1, 1, 10, 2, false)]);
 
         let streams = open_streams(&[p0, p1]);
         let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
         let mut history = Vec::new();
 
-        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
         assert_eq!(rec.t, 2, "winner should be retract at t=2");
         assert_eq!(rec.op, 0, "winner should be retract");
         assert_eq!(history.len(), 1);
@@ -824,7 +837,10 @@ mod tests {
 
         // s=1: multi-version, winner t=5, history [t=1]
         history.clear();
-        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
         assert_eq!(rec.s_id, SubjectId::from_u64(1));
         assert_eq!(rec.t, 5);
         assert_eq!(history.len(), 1);
@@ -832,7 +848,10 @@ mod tests {
 
         // s=2: single-version, no history
         history.clear();
-        let rec = merge.next_deduped_with_history(&mut history).unwrap().unwrap();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
         assert_eq!(rec.s_id, SubjectId::from_u64(2));
         assert_eq!(rec.t, 1);
         assert!(history.is_empty());
