@@ -132,9 +132,12 @@ fn sparql_table_cell(
     let s = match b {
         Binding::Unbound | Binding::Poisoned => String::new(),
 
-        Binding::Sid(sid) => compact_bnode_strip(compactor.compact_sid(sid).ok()),
-        Binding::IriMatch { iri, .. } => compact_bnode_strip(compactor.compact_iri(iri).ok()),
-        Binding::Iri(iri) => compact_bnode_strip(compactor.compact_iri(iri).ok()),
+        // Use display compaction (includes auto-derived fallback prefixes)
+        Binding::Sid(sid) => compact_bnode_strip(compactor.compact_sid_for_display(sid).ok()),
+        Binding::IriMatch { iri, .. } => {
+            compact_bnode_strip(compactor.compact_iri_for_display(iri).ok())
+        }
+        Binding::Iri(iri) => compact_bnode_strip(compactor.compact_iri_for_display(iri).ok()),
 
         Binding::Lit { val, .. } => flake_value_to_table_cell(val, compactor),
 
@@ -143,7 +146,7 @@ fn sparql_table_cell(
                 return Ok(format!("{b:?}"));
             };
             match store.resolve_subject_iri(*s_id) {
-                Ok(iri) => compact_bnode_strip(compactor.compact_iri(&iri).ok()),
+                Ok(iri) => compact_bnode_strip(compactor.compact_iri_for_display(&iri).ok()),
                 Err(_) => format!("{b:?}"),
             }
         }
@@ -152,7 +155,7 @@ fn sparql_table_cell(
                 return Ok(format!("{b:?}"));
             };
             match store.resolve_predicate_iri(*p_id) {
-                Some(iri) => compact_bnode_strip(compactor.compact_iri(iri).ok()),
+                Some(iri) => compact_bnode_strip(compactor.compact_iri_for_display(iri).ok()),
                 None => format!("{b:?}"),
             }
         }
@@ -192,7 +195,7 @@ fn flake_value_to_table_cell(v: &FlakeValue, compactor: &IriCompactor) -> String
         FlakeValue::Boolean(b) => b.to_string(),
         FlakeValue::Vector(v) => serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()),
         FlakeValue::Json(s) => s.clone(),
-        FlakeValue::Ref(sid) => compact_bnode_strip(compactor.compact_sid(sid).ok()),
+        FlakeValue::Ref(sid) => compact_bnode_strip(compactor.compact_sid_for_display(sid).ok()),
         FlakeValue::Null => String::new(),
         other => other.to_string(),
     }

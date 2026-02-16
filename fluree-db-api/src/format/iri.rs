@@ -2,10 +2,14 @@
 //!
 //! This module provides `IriCompactor` for converting Sids to IRIs and
 //! compacting them using @context prefix mappings via the json-ld library.
+//!
+//! When a namespace exists in `Db.namespaces()` but has no prefix alias in
+//! the query's `@context`, a short prefix is auto-derived from the namespace
+//! URI so that every IRI in the database gets a compact display form.
 
 use fluree_db_core::Sid;
 use fluree_graph_json_ld::{ContextCompactor, ParsedContext};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{FormatError, Result};
 
@@ -14,6 +18,10 @@ use super::{FormatError, Result};
 /// The compactor performs two operations:
 /// 1. **Decode**: Convert a Sid (namespace_code + name) to a full IRI using Db.namespaces()
 /// 2. **Compact**: Use a precomputed [`ContextCompactor`] to replace IRI prefixes with @context aliases
+///
+/// When a namespace has no explicit prefix in the query context, a short prefix
+/// is auto-derived from the namespace URI (e.g., `https://dblp.org/rec/` → `rec:`).
+/// This ensures every IRI in the database gets a readable compact form.
 ///
 /// The reverse lookup table is built once at construction time and reused
 /// for every IRI compacted through this instance.
@@ -33,6 +41,10 @@ pub struct IriCompactor {
     /// @reverse term definitions: maps full IRI → compact term name.
     /// Built once at construction for reverse property compaction.
     reverse_terms: HashMap<String, String>,
+
+    /// Auto-derived prefixes for namespaces not covered by the @context.
+    /// Sorted longest-first for greedy matching (same strategy as ContextCompactor).
+    fallback_prefixes: Vec<(String, String)>,
 }
 
 impl IriCompactor {
@@ -40,20 +52,26 @@ impl IriCompactor {
     ///
     /// Precomputes the reverse lookup tables so that every subsequent
     /// `compact_vocab_iri` / `compact_id_iri` call is a pure lookup.
+    ///
+    /// For namespaces in `namespace_codes` that have no matching prefix in
+    /// the context, a short prefix is auto-derived from the namespace URI.
     pub fn new(namespace_codes: &HashMap<u16, String>, context: &ParsedContext) -> Self {
         let compactor = ContextCompactor::new(context);
         let reverse_terms = build_reverse_terms(context);
+        let fallback_prefixes = build_fallback_prefixes(namespace_codes, context);
         Self {
             namespace_codes: namespace_codes.clone(),
             context: context.clone(),
             compactor,
             reverse_terms,
+            fallback_prefixes,
         }
     }
 
     /// Build a compactor with just namespace codes (no @context compaction).
     ///
-    /// Useful when the query has no @context, or for testing.
+    /// No fallback prefixes are generated — IRIs come through uncompacted.
+    /// Use `new()` with a `ParsedContext` to enable compaction.
     pub fn from_namespaces(namespace_codes: &HashMap<u16, String>) -> Self {
         let default_ctx = ParsedContext::default();
         let compactor = ContextCompactor::new(&default_ctx);
@@ -62,6 +80,7 @@ impl IriCompactor {
             context: default_ctx,
             compactor,
             reverse_terms: HashMap::new(),
+            fallback_prefixes: Vec::new(),
         }
     }
 
@@ -102,6 +121,26 @@ impl IriCompactor {
         self.compactor.compact_id(iri)
     }
 
+    /// Compact an IRI for **display purposes** (CLI table/CSV output).
+    ///
+    /// Like `compact_vocab_iri`, but also tries auto-derived fallback prefixes
+    /// for namespaces that have no explicit context prefix. These synthetic
+    /// prefixes are suitable for human-readable output but should NOT be used
+    /// in structured formats (JSON-LD, SPARQL JSON) where consumers need to
+    /// know the prefix mappings.
+    pub fn compact_for_display(&self, iri: &str) -> String {
+        if let Some(term) = self.reverse_terms.get(iri) {
+            return term.clone();
+        }
+        let result = self.compactor.compact_vocab(iri);
+        if result == iri {
+            if let Some(compacted) = self.try_fallback(iri) {
+                return compacted;
+            }
+        }
+        result
+    }
+
     /// Decode a Sid and compact in one step.
     ///
     /// This is the most common operation for formatting.
@@ -117,6 +156,17 @@ impl IriCompactor {
         Ok(self.compact_vocab_iri(iri))
     }
 
+    /// Decode a Sid and compact for display (with fallback prefixes).
+    pub fn compact_sid_for_display(&self, sid: &Sid) -> Result<String> {
+        let iri = self.decode_sid(sid)?;
+        Ok(self.compact_for_display(&iri))
+    }
+
+    /// Compact an IRI string for display (with fallback prefixes).
+    pub fn compact_iri_for_display(&self, iri: &str) -> Result<String> {
+        Ok(self.compact_for_display(iri))
+    }
+
     /// Check if a namespace code is registered
     pub fn has_namespace(&self, code: u16) -> bool {
         self.namespace_codes.contains_key(&code)
@@ -130,6 +180,17 @@ impl IriCompactor {
     /// Get the precomputed compactor (for constructing closures)
     pub fn ctx_compactor(&self) -> &ContextCompactor {
         &self.compactor
+    }
+
+    /// Try to compact an IRI using the auto-derived fallback prefixes.
+    fn try_fallback(&self, iri: &str) -> Option<String> {
+        for (ns_iri, prefix_name) in &self.fallback_prefixes {
+            if iri.starts_with(ns_iri.as_str()) {
+                let suffix = &iri[ns_iri.len()..];
+                return Some(format!("{}:{}", prefix_name, suffix));
+            }
+        }
+        None
     }
 }
 
@@ -151,6 +212,144 @@ fn build_reverse_terms(context: &ParsedContext) -> HashMap<String, String> {
         }
     }
     map
+}
+
+/// Build auto-derived prefix names for namespaces in `namespace_codes` that
+/// have no matching prefix in the query context.
+///
+/// Only generates fallbacks when the context is non-empty (has terms, @vocab,
+/// or @base), indicating the user/query established some prefix context.
+/// For empty contexts (no @context at all), returns an empty vec so that
+/// IRIs come through uncompacted.
+///
+/// For each unmapped namespace URI, derives a short prefix from the URI's
+/// last meaningful path segment (e.g., `https://dblp.org/rec/` → `rec`).
+/// Conflicts with existing context prefixes are resolved by appending a
+/// numeric suffix (e.g., `rec2`).
+///
+/// Returns entries sorted longest-first for greedy matching.
+fn build_fallback_prefixes(
+    namespace_codes: &HashMap<u16, String>,
+    context: &ParsedContext,
+) -> Vec<(String, String)> {
+    // Only auto-derive when the context is non-empty — if the user/query
+    // didn't establish any prefix context, don't impose synthetic prefixes.
+    if context.terms.is_empty() && context.vocab.is_none() && context.base.is_none() {
+        return Vec::new();
+    }
+    // Collect all namespace URIs that already have a context prefix.
+    let covered_iris: HashSet<&str> = context
+        .terms
+        .values()
+        .filter_map(|e| e.id.as_deref())
+        .collect();
+
+    // Also treat @vocab and @base as covered.
+    let mut covered = covered_iris;
+    if let Some(ref vocab) = context.vocab {
+        covered.insert(vocab.as_str());
+    }
+    if let Some(ref base) = context.base {
+        covered.insert(base.as_str());
+    }
+
+    // Collect existing prefix names to avoid conflicts.
+    let mut used_names: HashSet<String> = context.terms.keys().cloned().collect();
+
+    let mut fallbacks: Vec<(String, String)> = Vec::new();
+
+    // Sort by namespace code for deterministic prefix generation.
+    let mut ns_entries: Vec<_> = namespace_codes.iter().collect();
+    ns_entries.sort_by_key(|(code, _)| *code);
+
+    for (_code, ns_iri) in ns_entries {
+        // Skip empty namespace (internal blank node namespace).
+        if ns_iri.is_empty() {
+            continue;
+        }
+        // Skip namespaces that end with neither `/` nor `#` — not standard prefixes.
+        if !ns_iri.ends_with('/') && !ns_iri.ends_with('#') {
+            continue;
+        }
+        // Skip if the context already covers this namespace.
+        if covered.contains(ns_iri.as_str()) {
+            continue;
+        }
+
+        let base_name = derive_prefix_name(ns_iri);
+        if base_name.is_empty() {
+            continue;
+        }
+
+        // Resolve conflicts with existing prefix names.
+        let name = if !used_names.contains(&base_name) {
+            base_name.clone()
+        } else {
+            let mut counter = 2u32;
+            loop {
+                let candidate = format!("{}{}", base_name, counter);
+                if !used_names.contains(&candidate) {
+                    break candidate;
+                }
+                counter += 1;
+            }
+        };
+
+        used_names.insert(name.clone());
+        fallbacks.push((ns_iri.clone(), name));
+    }
+
+    // Sort longest-first for greedy matching (most specific prefix wins).
+    fallbacks.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    fallbacks
+}
+
+/// Derive a short prefix name from a namespace URI.
+///
+/// Extracts the last meaningful path segment:
+/// - `https://dblp.org/rec/` → `rec`
+/// - `http://www.w3.org/2001/XMLSchema#` → `xmlschema`
+/// - `http://schema.org/` → `schema`
+/// - `https://example.org/ns/vocab/` → `vocab`
+///
+/// For domain-only URIs (e.g., `http://schema.org/`), uses the domain's
+/// first label (before the first dot, excluding `www`).
+///
+/// Filters to ASCII alphanumeric characters and lowercases the result.
+fn derive_prefix_name(ns_iri: &str) -> String {
+    // Strip trailing `/` or `#`
+    let trimmed = ns_iri.trim_end_matches(['/', '#']);
+
+    // Find the last path segment
+    let segment = trimmed
+        .rsplit(['/', '#', ':'])
+        .next()
+        .unwrap_or("");
+
+    // If the segment looks like a domain (contains dots), extract the meaningful part.
+    // e.g., "schema.org" → "schema", "www.w3.org" → "w3"
+    let effective = if segment.contains('.') {
+        segment
+            .split('.')
+            .find(|&part| !part.is_empty() && part != "www" && part != "com" && part != "org")
+            .unwrap_or(segment)
+    } else {
+        segment
+    };
+
+    // Filter to alphanumeric, lowercase
+    let name: String = effective
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+
+    // Avoid very short or numeric-only names
+    if name.len() < 2 || name.chars().all(|c| c.is_ascii_digit()) {
+        return String::new();
+    }
+
+    name
 }
 
 #[cfg(test)]
@@ -253,12 +452,91 @@ mod tests {
     fn test_compact_without_context() {
         let compactor = IriCompactor::from_namespaces(&make_test_namespaces());
 
-        // No @context, so IRIs come through uncompacted
+        // No @context and no fallback — IRIs come through uncompacted
         let sid = Sid::new(2, "string");
-        // json_ld::compact with empty context returns the IRI as-is
         assert_eq!(
             compactor.compact_sid(&sid).unwrap(),
             "http://www.w3.org/2001/XMLSchema#string"
         );
+    }
+
+    #[test]
+    fn test_fallback_prefixes_for_unmapped_namespaces() {
+        // Context only has "ex" for example.org, but DB also has schema.org
+        let mut namespaces = HashMap::new();
+        namespaces.insert(100, "http://example.org/".to_string());
+        namespaces.insert(101, "http://schema.org/".to_string());
+        namespaces.insert(102, "https://dblp.org/rec/".to_string());
+
+        let context = ParsedContext::parse(
+            None,
+            &json!({
+                "ex": "http://example.org/"
+            }),
+        )
+        .unwrap();
+
+        let compactor = IriCompactor::new(&namespaces, &context);
+
+        // Context prefix works via standard method
+        assert_eq!(
+            compactor.compact_vocab_iri("http://example.org/Person"),
+            "ex:Person"
+        );
+
+        // Standard method does NOT use fallback
+        assert_eq!(
+            compactor.compact_vocab_iri("http://schema.org/name"),
+            "http://schema.org/name"
+        );
+
+        // Display method DOES use fallback
+        assert_eq!(
+            compactor.compact_for_display("http://schema.org/name"),
+            "schema:name"
+        );
+        assert_eq!(
+            compactor.compact_for_display("https://dblp.org/rec/conf/sigir/123"),
+            "rec:conf/sigir/123"
+        );
+    }
+
+    #[test]
+    fn test_fallback_prefix_conflict_resolution() {
+        let mut namespaces = HashMap::new();
+        namespaces.insert(100, "http://a.org/foo/".to_string());
+        namespaces.insert(101, "http://b.org/foo/".to_string());
+        namespaces.insert(102, "http://example.org/".to_string());
+
+        // Need a non-empty context to trigger fallback generation
+        let context = ParsedContext::parse(
+            None,
+            &json!({"ex": "http://example.org/"}),
+        )
+        .unwrap();
+        let compactor = IriCompactor::new(&namespaces, &context);
+
+        // Both derive "foo", but one should get "foo" and the other "foo2"
+        let a = compactor.compact_for_display("http://a.org/foo/bar");
+        let b = compactor.compact_for_display("http://b.org/foo/bar");
+
+        assert!(a.ends_with(":bar"), "expected prefix:bar, got {}", a);
+        assert!(b.ends_with(":bar"), "expected prefix:bar, got {}", b);
+        assert_ne!(a, b, "should have different prefixes");
+    }
+
+    #[test]
+    fn test_derive_prefix_name() {
+        assert_eq!(derive_prefix_name("https://dblp.org/rec/"), "rec");
+        assert_eq!(
+            derive_prefix_name("http://www.w3.org/2001/XMLSchema#"),
+            "xmlschema"
+        );
+        assert_eq!(derive_prefix_name("http://schema.org/"), "schema");
+        assert_eq!(derive_prefix_name("http://example.org/ns/vocab/"), "vocab");
+        // Too short
+        assert_eq!(derive_prefix_name("http://example.org/a/"), "");
+        // Numeric only
+        assert_eq!(derive_prefix_name("http://example.org/2001/"), "");
     }
 }
