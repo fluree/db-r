@@ -1155,15 +1155,158 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Publisher,
 {
-    use fluree_db_indexer::run_index::spool::sort_remap_and_write_sorted_commit;
-    use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo, TypesMapConfig};
+    use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo};
     use fluree_db_transact::import::{
         finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk,
         parse_chunk_with_prelude, ImportState, ParsedChunk,
     };
-    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    async fn spawn_sorted_commit_write(
+        sort_write_handles: &mut Vec<
+            tokio::task::JoinHandle<
+                std::io::Result<fluree_db_indexer::run_index::SortedCommitInfo>,
+            >,
+        >,
+        sort_write_semaphore: &Arc<tokio::sync::Semaphore>,
+        vocab_dir: &Path,
+        spool_dir: &Path,
+        rdf_type_p_id: u32,
+        sr: fluree_db_transact::import_sink::BufferedSpoolResult,
+    ) {
+        let ci = sr.chunk_idx;
+        let vd = vocab_dir.to_path_buf();
+        let sd = spool_dir.to_path_buf();
+        let permit = sort_write_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore closed");
+        sort_write_handles.push(tokio::task::spawn_blocking(move || {
+            let r = fluree_db_indexer::run_index::spool::sort_remap_and_write_sorted_commit(
+                sr.records,
+                sr.subjects,
+                sr.strings,
+                &vd.join(format!("chunk_{ci:05}.subjects.voc")),
+                &vd.join(format!("chunk_{ci:05}.strings.voc")),
+                &sd.join(format!("commit_{ci:05}.fsc")),
+                ci,
+                Some((
+                    &sr.languages,
+                    &vd.join(format!("chunk_{ci:05}.languages.voc")),
+                )),
+                Some(fluree_db_indexer::run_index::TypesMapConfig {
+                    rdf_type_p_id,
+                    output_dir: &sd,
+                }),
+            );
+            drop(permit);
+            r
+        }));
+    }
+
+    async fn commit_parsed_chunks_in_order<S, N>(
+        result_rx: std::sync::mpsc::Receiver<std::result::Result<(usize, ParsedChunk), String>>,
+        estimated_total: usize,
+        run_start: Instant,
+        state: &mut ImportState,
+        published_codes: &mut rustc_hash::FxHashSet<u16>,
+        compute_ns_delta: impl Fn(
+            &rustc_hash::FxHashSet<u16>,
+            &mut rustc_hash::FxHashSet<u16>,
+        ) -> std::collections::HashMap<u16, String>,
+        storage: &S,
+        nameservice: &N,
+        alias: &str,
+        config: &ImportConfig,
+        sort_write_handles: &mut Vec<
+            tokio::task::JoinHandle<
+                std::io::Result<fluree_db_indexer::run_index::SortedCommitInfo>,
+            >,
+        >,
+        sort_write_semaphore: &Arc<tokio::sync::Semaphore>,
+        vocab_dir: &Path,
+        spool_dir: &Path,
+        rdf_type_p_id: u32,
+        total_commit_size: &mut u64,
+    ) -> std::result::Result<usize, ImportError>
+    where
+        S: Storage + Clone + Send + Sync + 'static,
+        N: NameService + Publisher,
+    {
+        // Serial commit loop: receive parsed chunks, reorder, finalize in order.
+        // Parsed chunks arrive out of order from parallel workers.
+        let mut next_expected: usize = 0;
+        let mut pending: std::collections::BTreeMap<usize, ParsedChunk> =
+            std::collections::BTreeMap::new();
+
+        for recv_result in result_rx.iter() {
+            let (idx, parsed) = recv_result.map_err(ImportError::Transact)?;
+            pending.insert(idx, parsed);
+
+            while let Some(parsed) = pending.remove(&next_expected) {
+                let ns_delta = compute_ns_delta(&parsed.new_codes, published_codes);
+
+                let result = finalize_parsed_chunk(state, parsed, ns_delta, storage, alias)
+                    .await
+                    .map_err(|e| ImportError::Transact(e.to_string()))?;
+
+                if let Some(sr) = result.spool_result {
+                    spawn_sorted_commit_write(
+                        sort_write_handles,
+                        sort_write_semaphore,
+                        vocab_dir,
+                        spool_dir,
+                        rdf_type_p_id,
+                        sr,
+                    )
+                    .await;
+                }
+
+                *total_commit_size += result.blob_bytes as u64;
+
+                let total_elapsed = run_start.elapsed().as_secs_f64();
+                tracing::info!(
+                    chunk = next_expected + 1,
+                    total = estimated_total,
+                    t = result.t,
+                    flakes = result.flake_count,
+                    cumulative_flakes = state.cumulative_flakes,
+                    flakes_per_sec = format!(
+                        "{:.2}M",
+                        state.cumulative_flakes as f64 / total_elapsed / 1_000_000.0
+                    ),
+                    "chunk committed"
+                );
+                config.emit_progress(ImportPhase::Committing {
+                    chunk: next_expected + 1,
+                    total: estimated_total,
+                    cumulative_flakes: state.cumulative_flakes,
+                    elapsed_secs: total_elapsed,
+                });
+
+                // Periodic nameservice checkpoint
+                if config.publish_every > 0
+                    && (next_expected + 1).is_multiple_of(config.publish_every)
+                {
+                    nameservice
+                        .publish_commit(alias, result.t, &result.commit_id)
+                        .await
+                        .map_err(|e| ImportError::Storage(e.to_string()))?;
+                    tracing::info!(
+                        t = result.t,
+                        chunk = next_expected + 1,
+                        "published nameservice checkpoint"
+                    );
+                }
+
+                next_expected += 1;
+            }
+        }
+
+        Ok(next_expected)
+    }
 
     let is_streaming = chunk_source.is_streaming();
     let estimated_total = chunk_source.estimated_len();
@@ -1301,6 +1444,44 @@ where
         delta
     };
 
+    fn parse_ttl_chunk(
+        ttl: &str,
+        shared_alloc: &Arc<SharedNamespaceAllocator>,
+        prelude: Option<&fluree_graph_turtle::splitter::TurtlePrelude>,
+        t: i64,
+        ledger: &str,
+        compress: bool,
+        spool_dir: &Path,
+        spool_config: &Arc<SpoolConfig>,
+        idx: usize,
+    ) -> std::result::Result<ParsedChunk, String> {
+        let parsed = if let Some(prelude) = prelude {
+            parse_chunk_with_prelude(
+                ttl,
+                shared_alloc,
+                prelude,
+                t,
+                ledger,
+                compress,
+                Some(spool_dir),
+                Some(spool_config),
+                idx,
+            )
+        } else {
+            parse_chunk(
+                ttl,
+                shared_alloc,
+                t,
+                ledger,
+                compress,
+                Some(spool_dir),
+                Some(spool_config),
+                idx,
+            )
+        };
+        parsed.map_err(|e| e.to_string())
+    }
+
     // ---- Parse all chunks in parallel, commit serially in order ----
     //
     // All chunks (including chunk 0) go through the parallel pipeline.
@@ -1359,15 +1540,15 @@ where
                             starts_with = &ttl[..ttl.len().min(200)],
                             "about to parse chunk"
                         );
-                        match parse_chunk_with_prelude(
+                        match parse_ttl_chunk(
                             &ttl,
                             &shared_alloc,
-                            &prelude,
+                            Some(&prelude),
                             t,
                             &ledger,
                             compress,
-                            Some(&spool_dir),
-                            Some(&spool_config),
+                            &spool_dir,
+                            &spool_config,
                             idx,
                         ) {
                             Ok(parsed) => {
@@ -1389,99 +1570,25 @@ where
         }
         drop(result_tx); // main thread's copy
 
-        // Serial commit loop: receive parsed chunks, reorder, finalize in order.
-        // Streaming chunks arrive out of order from parallel workers.
-        let mut next_expected: usize = 0;
-        let mut pending: BTreeMap<usize, ParsedChunk> = BTreeMap::new();
-
-        for recv_result in result_rx {
-            let (idx, parsed) = recv_result.map_err(ImportError::Transact)?;
-
-            pending.insert(idx, parsed);
-
-            while let Some(parsed) = pending.remove(&next_expected) {
-                // Commit-order publication: determine which codes from this chunk
-                // need to be introduced in this commit's namespace_delta.
-                let ns_delta = compute_ns_delta(&parsed.new_codes, &mut published_codes);
-
-                let result = finalize_parsed_chunk(&mut state, parsed, ns_delta, storage, alias)
-                    .await
-                    .map_err(|e| ImportError::Transact(e.to_string()))?;
-
-                // Hand off sort + remap + write to a background task.
-                // This decouples .fsc/.voc production from the serial commit loop,
-                // so the next chunk's finalization can overlap.
-                if let Some(sr) = result.spool_result {
-                    let ci = sr.chunk_idx;
-                    let vd = vocab_dir.clone();
-                    let sd = spool_dir.clone();
-                    let permit = sort_write_semaphore
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .expect("semaphore closed");
-                    sort_write_handles.push(tokio::task::spawn_blocking(move || {
-                        let r = sort_remap_and_write_sorted_commit(
-                            sr.records,
-                            sr.subjects,
-                            sr.strings,
-                            &vd.join(format!("chunk_{ci:05}.subjects.voc")),
-                            &vd.join(format!("chunk_{ci:05}.strings.voc")),
-                            &sd.join(format!("commit_{ci:05}.fsc")),
-                            ci,
-                            Some((
-                                &sr.languages,
-                                &vd.join(format!("chunk_{ci:05}.languages.voc")),
-                            )),
-                            Some(TypesMapConfig {
-                                rdf_type_p_id,
-                                output_dir: &sd,
-                            }),
-                        );
-                        drop(permit);
-                        r
-                    }));
-                }
-                total_commit_size += result.blob_bytes as u64;
-
-                let total_elapsed = run_start.elapsed().as_secs_f64();
-                tracing::info!(
-                    chunk = next_expected + 1,
-                    estimated_total,
-                    t = result.t,
-                    flakes = result.flake_count,
-                    cumulative_flakes = state.cumulative_flakes,
-                    flakes_per_sec = format!(
-                        "{:.2}M",
-                        state.cumulative_flakes as f64 / total_elapsed / 1_000_000.0
-                    ),
-                    "chunk committed"
-                );
-                config.emit_progress(ImportPhase::Committing {
-                    chunk: next_expected + 1,
-                    total: estimated_total,
-                    cumulative_flakes: state.cumulative_flakes,
-                    elapsed_secs: total_elapsed,
-                });
-
-                // Periodic nameservice checkpoint
-                if config.publish_every > 0
-                    && (next_expected + 1).is_multiple_of(config.publish_every)
-                {
-                    nameservice
-                        .publish_commit(alias, result.t, &result.commit_id)
-                        .await
-                        .map_err(|e| ImportError::Storage(e.to_string()))?;
-                    tracing::info!(
-                        t = result.t,
-                        chunk = next_expected + 1,
-                        "published nameservice checkpoint"
-                    );
-                }
-
-                next_expected += 1;
-            }
-        }
+        let next_expected = commit_parsed_chunks_in_order(
+            result_rx,
+            estimated_total,
+            run_start,
+            &mut state,
+            &mut published_codes,
+            compute_ns_delta,
+            storage,
+            nameservice,
+            alias,
+            config,
+            &mut sort_write_handles,
+            &sort_write_semaphore,
+            &vocab_dir,
+            &spool_dir,
+            rdf_type_p_id,
+            &mut total_commit_size,
+        )
+        .await?;
 
         // Wait for parse threads.
         for handle in parse_handles {
@@ -1548,14 +1655,15 @@ where
                         };
 
                         let t = (idx + 1) as i64;
-                        match parse_chunk(
+                        match parse_ttl_chunk(
                             &ttl,
                             &shared_alloc,
+                            None,
                             t,
                             &ledger,
                             compress,
-                            Some(&spool_dir),
-                            Some(&spool_config),
+                            &spool_dir,
+                            &spool_config,
                             idx,
                         ) {
                             Ok(parsed) => {
@@ -1578,96 +1686,25 @@ where
             }
             drop(result_tx); // main thread's copy
 
-            // Serial commit loop: receive parsed chunks, reorder, finalize in order
-            let mut next_expected: usize = 0;
-            let mut pending: BTreeMap<usize, ParsedChunk> = BTreeMap::new();
-
-            for recv_result in result_rx {
-                let (idx, parsed) = recv_result.map_err(ImportError::Transact)?;
-
-                pending.insert(idx, parsed);
-
-                while let Some(parsed) = pending.remove(&next_expected) {
-                    let ns_delta = compute_ns_delta(&parsed.new_codes, &mut published_codes);
-
-                    let result =
-                        finalize_parsed_chunk(&mut state, parsed, ns_delta, storage, alias)
-                            .await
-                            .map_err(|e| ImportError::Transact(e.to_string()))?;
-
-                    // Hand off sort + remap + write to a background task.
-                    if let Some(sr) = result.spool_result {
-                        let ci = sr.chunk_idx;
-                        let vd = vocab_dir.clone();
-                        let sd = spool_dir.clone();
-                        let permit = sort_write_semaphore
-                            .clone()
-                            .acquire_owned()
-                            .await
-                            .expect("semaphore closed");
-                        sort_write_handles.push(tokio::task::spawn_blocking(move || {
-                            let r = sort_remap_and_write_sorted_commit(
-                                sr.records,
-                                sr.subjects,
-                                sr.strings,
-                                &vd.join(format!("chunk_{ci:05}.subjects.voc")),
-                                &vd.join(format!("chunk_{ci:05}.strings.voc")),
-                                &sd.join(format!("commit_{ci:05}.fsc")),
-                                ci,
-                                Some((
-                                    &sr.languages,
-                                    &vd.join(format!("chunk_{ci:05}.languages.voc")),
-                                )),
-                                Some(TypesMapConfig {
-                                    rdf_type_p_id,
-                                    output_dir: &sd,
-                                }),
-                            );
-                            drop(permit);
-                            r
-                        }));
-                    }
-                    total_commit_size += result.blob_bytes as u64;
-
-                    let total_elapsed = run_start.elapsed().as_secs_f64();
-                    tracing::info!(
-                        chunk = next_expected + 1,
-                        total = estimated_total,
-                        t = result.t,
-                        flakes = result.flake_count,
-                        cumulative_flakes = state.cumulative_flakes,
-                        flakes_per_sec = format!(
-                            "{:.2}M",
-                            state.cumulative_flakes as f64 / total_elapsed / 1_000_000.0
-                        ),
-                        "chunk committed"
-                    );
-                    config.emit_progress(ImportPhase::Committing {
-                        chunk: next_expected + 1,
-                        total: estimated_total,
-                        cumulative_flakes: state.cumulative_flakes,
-                        elapsed_secs: total_elapsed,
-                    });
-
-                    // Periodic nameservice checkpoint
-                    if config.publish_every > 0
-                        && (next_expected + 1).is_multiple_of(config.publish_every)
-                    {
-                        nameservice
-                            .publish_commit(alias, result.t, &result.commit_id)
-                            .await
-                            .map_err(|e| ImportError::Storage(e.to_string()))?;
-                        tracing::info!(
-                            t = result.t,
-                            chunk = next_expected + 1,
-                            total = estimated_total,
-                            "published nameservice checkpoint"
-                        );
-                    }
-
-                    next_expected += 1;
-                }
-            }
+            let _committed_chunks = commit_parsed_chunks_in_order(
+                result_rx,
+                estimated_total,
+                run_start,
+                &mut state,
+                &mut published_codes,
+                compute_ns_delta,
+                storage,
+                nameservice,
+                alias,
+                config,
+                &mut sort_write_handles,
+                &sort_write_semaphore,
+                &vocab_dir,
+                &spool_dir,
+                rdf_type_p_id,
+                &mut total_commit_size,
+            )
+            .await?;
 
             // Wait for parse threads
             for handle in parse_handles {
@@ -1709,35 +1746,15 @@ where
 
                 // Hand off sort + remap + write to a background task.
                 if let Some(sr) = result.spool_result {
-                    let ci = sr.chunk_idx;
-                    let vd = vocab_dir.clone();
-                    let sd = spool_dir.clone();
-                    let permit = sort_write_semaphore
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .expect("semaphore closed");
-                    sort_write_handles.push(tokio::task::spawn_blocking(move || {
-                        let r = sort_remap_and_write_sorted_commit(
-                            sr.records,
-                            sr.subjects,
-                            sr.strings,
-                            &vd.join(format!("chunk_{ci:05}.subjects.voc")),
-                            &vd.join(format!("chunk_{ci:05}.strings.voc")),
-                            &sd.join(format!("commit_{ci:05}.fsc")),
-                            ci,
-                            Some((
-                                &sr.languages,
-                                &vd.join(format!("chunk_{ci:05}.languages.voc")),
-                            )),
-                            Some(TypesMapConfig {
-                                rdf_type_p_id,
-                                output_dir: &sd,
-                            }),
-                        );
-                        drop(permit);
-                        r
-                    }));
+                    spawn_sorted_commit_write(
+                        &mut sort_write_handles,
+                        &sort_write_semaphore,
+                        &vocab_dir,
+                        &spool_dir,
+                        rdf_type_p_id,
+                        sr,
+                    )
+                    .await;
                 }
                 total_commit_size += result.blob_bytes as u64;
 
@@ -1810,7 +1827,10 @@ where
     let merge_start = Instant::now();
 
     // Get namespace codes for IRI reconstruction (subjects.fwd needs full IRIs).
-    let namespace_codes: HashMap<u16, String> = shared_alloc.lookup_codes(&published_codes);
+    //
+    // Use Arc so Phase B parallel tasks can borrow without cloning the whole map.
+    let namespace_codes: Arc<HashMap<u16, String>> =
+        Arc::new(shared_alloc.lookup_codes(&published_codes));
 
     let remap_dir = run_dir.join("remap");
     std::fs::create_dir_all(&remap_dir)?;
@@ -1839,7 +1859,7 @@ where
 
     let subj_vocab_paths_for_task = subject_vocab_paths.clone();
     let chunk_ids_for_subj = chunk_ids.clone();
-    let namespace_codes_for_subj = namespace_codes.clone();
+    let namespace_codes_for_subj = Arc::clone(&namespace_codes);
     let run_dir_for_subj = run_dir_path.clone();
     let remap_dir_for_subj = remap_dir_path.clone();
     let subj_handle = tokio::task::spawn_blocking(move || {
@@ -1848,7 +1868,7 @@ where
             &chunk_ids_for_subj,
             &remap_dir_for_subj,
             &run_dir_for_subj,
-            &namespace_codes_for_subj,
+            namespace_codes_for_subj.as_ref(),
         )
     });
 
@@ -1934,7 +1954,7 @@ where
     }
 
     // Persist namespaces.json from shared allocator.
-    persist_namespaces(&namespace_codes, run_dir)?;
+    persist_namespaces(namespace_codes.as_ref(), run_dir)?;
 
     // Persist numbig arenas from shared pool.
     {
@@ -2046,7 +2066,9 @@ where
         final_t: state.t,
         cumulative_flakes: state.cumulative_flakes,
         commit_head_id,
-        namespace_codes,
+        // Phase B parallel tasks borrow `namespace_codes` via Arc. By this point
+        // they are complete, so we should be able to unwrap without cloning.
+        namespace_codes: Arc::try_unwrap(namespace_codes).unwrap_or_else(|arc| (*arc).clone()),
         total_commit_size,
         total_asserts,
         total_retracts,
@@ -2199,22 +2221,27 @@ where
     // Build subject→class bitset table from types-map sidecars (Phase B.5).
     // Each sidecar contains (g_id, s_sorted_local, class_sorted_local) tuples
     // written during Phase A. Subject remap converts sorted-local → global sid64.
-    let bitset_inputs: Vec<(&std::path::Path, &dyn fluree_db_indexer::run_index::spool::SubjectRemap)> =
-        input
-            .sorted_commit_infos
-            .iter()
-            .zip(subject_remaps.iter())
-            .filter_map(|(info, remap)| {
-                info.types_map_path
-                    .as_ref()
-                    .map(|p| (p.as_path(), remap as &dyn fluree_db_indexer::run_index::spool::SubjectRemap))
+    let bitset_inputs: Vec<(
+        &std::path::Path,
+        &dyn fluree_db_indexer::run_index::spool::SubjectRemap,
+    )> = input
+        .sorted_commit_infos
+        .iter()
+        .zip(subject_remaps.iter())
+        .filter_map(|(info, remap)| {
+            info.types_map_path.as_ref().map(|p| {
+                (
+                    p.as_path(),
+                    remap as &dyn fluree_db_indexer::run_index::spool::SubjectRemap,
+                )
             })
-            .collect();
+        })
+        .collect();
 
     let class_bitset = if !bitset_inputs.is_empty() {
         let bitset_start = Instant::now();
-        let table = ClassBitsetTable::build_from_type_maps(&bitset_inputs)
-            .map_err(ImportError::Io)?;
+        let table =
+            ClassBitsetTable::build_from_type_maps(&bitset_inputs).map_err(ImportError::Io)?;
         tracing::info!(
             classes = table.class_count(),
             elapsed_ms = bitset_start.elapsed().as_millis(),
@@ -2671,7 +2698,13 @@ where
         // Class stats from SPOT merge: class → count + property → datatype (count).
         // Collected inline during the SPOT k-way merge (zero extra I/O).
         let classes_json: Vec<serde_json::Value> = if let Some(ref cs) = spot_class_stats {
-            build_class_stats_json(cs, &predicate_sids, &dt_tags_for_stats, input.run_dir, input.namespace_codes)?
+            build_class_stats_json(
+                cs,
+                &predicate_sids,
+                &dt_tags_for_stats,
+                input.run_dir,
+                input.namespace_codes,
+            )?
         } else {
             Vec::new()
         };
@@ -2838,7 +2871,10 @@ fn build_class_stats_json(
         file.seek(SeekFrom::Start(off)).ok()?;
         file.read_exact(&mut iri_buf).ok()?;
         let iri = std::str::from_utf8(&iri_buf).ok()?;
-        let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+        let prefix = namespace_codes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
             &iri[prefix.len()..]
         } else {
@@ -2865,68 +2901,63 @@ fn build_class_stats_json(
             // Build property entries. Each property gets dt breakdown, and
             // optionally ref-target class info using the DB-R extended object
             // format: {"ref-classes": [[[ns, suffix], count], ...]}.
-            let prop_json: Vec<serde_json::Value> =
-                if let Some(prop_map) = cs.class_prop_dts.get(&class_sid64) {
-                    let mut props: Vec<_> = prop_map.iter().collect();
-                    props.sort_by_key(|&(pid, _)| *pid);
+            let prop_json: Vec<serde_json::Value> = if let Some(prop_map) =
+                cs.class_prop_dts.get(&class_sid64)
+            {
+                let mut props: Vec<_> = prop_map.iter().collect();
+                props.sort_by_key(|&(pid, _)| *pid);
 
-                    props
-                        .iter()
-                        .filter_map(|&(&p_id, dt_map)| {
-                            let psid = predicate_sids.get(p_id as usize)?;
+                props
+                    .iter()
+                    .filter_map(|&(&p_id, dt_map)| {
+                        let psid = predicate_sids.get(p_id as usize)?;
 
-                            // Check if this property has ref-target class data.
-                            let prop_refs = ref_map.and_then(|rm| rm.get(&p_id));
+                        // Check if this property has ref-target class data.
+                        let prop_refs = ref_map.and_then(|rm| rm.get(&p_id));
 
-                            if let Some(target_map) = prop_refs {
-                                // Emit DB-R extended object with ref-classes.
-                                let mut targets: Vec<_> = target_map.iter().collect();
-                                targets.sort_by_key(|&(sid, _)| *sid);
-                                let refs_json: Vec<serde_json::Value> = targets
-                                    .iter()
-                                    .filter_map(|&(&target_sid, &tcount)| {
-                                        let (tns, tsuffix) =
-                                            resolve_sid(target_sid, &mut fwd_file)?;
-                                        Some(serde_json::json!([[tns, tsuffix], tcount]))
-                                    })
-                                    .collect();
-                                Some(serde_json::json!(
-                                    [[psid.0, &psid.1], {"ref-classes": refs_json}]
-                                ))
-                            } else {
-                                // Standard format: property with datatype counts.
-                                let mut dts: Vec<_> = dt_map.iter().collect();
-                                dts.sort_by_key(|&(dt, _)| *dt);
-                                let dt_json: Vec<serde_json::Value> = dts
-                                    .iter()
-                                    .map(|&(&dt, &count)| {
-                                        if dt == DT_REF_ID {
-                                            serde_json::json!(["@id", count])
-                                        } else if let Some(tag) = dt_tags.get(dt as usize) {
-                                            serde_json::json!([tag.as_u8(), count])
-                                        } else {
-                                            serde_json::json!([dt, count])
-                                        }
-                                    })
-                                    .collect();
-                                Some(serde_json::json!([[psid.0, &psid.1], dt_json]))
-                            }
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                        if let Some(target_map) = prop_refs {
+                            // Emit DB-R extended object with ref-classes.
+                            let mut targets: Vec<_> = target_map.iter().collect();
+                            targets.sort_by_key(|&(sid, _)| *sid);
+                            let refs_json: Vec<serde_json::Value> = targets
+                                .iter()
+                                .filter_map(|&(&target_sid, &tcount)| {
+                                    let (tns, tsuffix) = resolve_sid(target_sid, &mut fwd_file)?;
+                                    Some(serde_json::json!([[tns, tsuffix], tcount]))
+                                })
+                                .collect();
+                            Some(serde_json::json!(
+                                [[psid.0, &psid.1], {"ref-classes": refs_json}]
+                            ))
+                        } else {
+                            // Standard format: property with datatype counts.
+                            let mut dts: Vec<_> = dt_map.iter().collect();
+                            dts.sort_by_key(|&(dt, _)| *dt);
+                            let dt_json: Vec<serde_json::Value> = dts
+                                .iter()
+                                .map(|&(&dt, &count)| {
+                                    if dt == DT_REF_ID {
+                                        serde_json::json!(["@id", count])
+                                    } else if let Some(tag) = dt_tags.get(dt as usize) {
+                                        serde_json::json!([tag.as_u8(), count])
+                                    } else {
+                                        serde_json::json!([dt, count])
+                                    }
+                                })
+                                .collect();
+                            Some(serde_json::json!([[psid.0, &psid.1], dt_json]))
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
-            Some(serde_json::json!(
-                [[ns_code, suffix], [count, prop_json]]
-            ))
+            Some(serde_json::json!([[ns_code, suffix], [count, prop_json]]))
         })
         .collect();
 
-    tracing::info!(
-        classes = classes_json.len(),
-        "class stats resolved to JSON"
-    );
+    tracing::info!(classes = classes_json.len(), "class stats resolved to JSON");
 
     Ok(classes_json)
 }
@@ -2981,7 +3012,10 @@ fn build_import_summary(
         .take(5)
         .filter_map(|p| {
             let (ns_code, suffix) = predicate_sids.get(p.p_id as usize)?;
-            let ns_iri = namespace_codes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
+            let ns_iri = namespace_codes
+                .get(ns_code)
+                .map(|s| s.as_str())
+                .unwrap_or("");
             Some((compact(&format!("{}{}", ns_iri, suffix)), p.count))
         })
         .collect();
@@ -3004,7 +3038,10 @@ fn build_import_summary(
     let resolve_sid_to_iri = |sid64: u64| -> Option<String> {
         let subj = SubjectId::from_u64(sid64);
         let ns_code = subj.ns_code();
-        let prefix = namespace_codes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
+        let prefix = namespace_codes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         // Try to resolve via dict files; fall back to numeric representation.
         let sids_path = run_dir.join("subjects.sids");
         let idx_path = run_dir.join("subjects.idx");
@@ -3064,8 +3101,16 @@ fn build_import_summary(
             let src_iri = compact(&resolve_cached(src)?);
             let tgt_iri = compact(&resolve_cached(tgt)?);
             let (ns_code, suffix) = predicate_sids.get(p_id as usize)?;
-            let ns_iri = namespace_codes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
-            Some((src_iri, compact(&format!("{}{}", ns_iri, suffix)), tgt_iri, count))
+            let ns_iri = namespace_codes
+                .get(ns_code)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            Some((
+                src_iri,
+                compact(&format!("{}{}", ns_iri, suffix)),
+                tgt_iri,
+                count,
+            ))
         })
         .collect();
 

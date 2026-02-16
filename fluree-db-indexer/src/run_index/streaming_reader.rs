@@ -45,7 +45,9 @@ pub struct StreamingRunReader {
     file: BufReader<std::fs::File>,
     header: RunFileHeader,
     /// Per-run language tag dict (kept for diagnostics).
-    #[allow(dead_code)]
+    // Kept for: diagnosing incorrect language-tag remaps during index builds.
+    // Use when: adding debug logging/metrics that prints local tag sets for a run.
+    #[expect(dead_code)]
     lang_dict: LanguageTagDict,
     /// Remap table: `remap[local_lang_id] = global_lang_id`.
     /// Empty means no remapping needed.

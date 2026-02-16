@@ -61,7 +61,6 @@ pub struct SubjectDict {
     /// Append-only file of IRI bytes (no length prefix — lengths in forward_lens).
     forward_file: Option<BufWriter<std::fs::File>>,
     /// Path to the forward file (for diagnostics/reopening).
-    #[allow(dead_code)]
     forward_path: PathBuf,
     /// Current write offset in the forward file.
     forward_write_offset: u64,

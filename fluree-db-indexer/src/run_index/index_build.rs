@@ -28,6 +28,81 @@ use std::time::{Duration, Instant};
 /// responsive progress reporting, large enough to amortize the atomic.
 const PROGRESS_BATCH_SIZE: u64 = 4096;
 
+#[inline]
+fn create_graph_dir(index_dir: &Path, g_id: u16, order_name: &str) -> io::Result<PathBuf> {
+    let graph_dir = index_dir.join(format!("graph_{}/{}", g_id, order_name));
+    std::fs::create_dir_all(&graph_dir)?;
+    Ok(graph_dir)
+}
+
+#[inline]
+fn new_leaf_writer_for_graph(
+    graph_dir: PathBuf,
+    leaflet_rows: usize,
+    leaflets_per_leaf: usize,
+    zstd_level: i32,
+    dt_width: u8,
+    p_width: u8,
+    order: RunSortOrder,
+    skip_region3: bool,
+) -> LeafWriter {
+    let mut writer = LeafWriter::with_widths(
+        graph_dir,
+        leaflet_rows,
+        leaflets_per_leaf,
+        zstd_level,
+        dt_width,
+        p_width,
+        order,
+    );
+    writer.set_skip_region3(skip_region3);
+    writer
+}
+
+#[inline]
+fn finish_open_graph(
+    current_g_id: &mut Option<u16>,
+    current_writer: &mut Option<LeafWriter>,
+    graph_results: &mut Vec<GraphIndexResult>,
+    index_dir: &Path,
+    order_name: &str,
+    mut on_writer_pre_finish: impl FnMut(&LeafWriter),
+    mut on_graph_finished: impl FnMut(&GraphIndexResult),
+) -> io::Result<()> {
+    let Some(writer) = current_writer.take() else {
+        return Ok(());
+    };
+
+    on_writer_pre_finish(&writer);
+    let leaf_infos = writer.finish()?;
+
+    let g_id = current_g_id
+        .take()
+        .ok_or_else(|| io::Error::other("writer finished but current_g_id was None"))?;
+
+    let result = finish_graph(g_id as u32, leaf_infos, index_dir, order_name)?;
+    on_graph_finished(&result);
+    graph_results.push(result);
+    Ok(())
+}
+
+#[inline]
+fn start_graph(
+    current_g_id: &mut Option<u16>,
+    current_writer: &mut Option<LeafWriter>,
+    g_id: u16,
+    index_dir: &Path,
+    order_name: &str,
+    make_writer: impl FnOnce(PathBuf) -> LeafWriter,
+    mut on_graph_started: impl FnMut(u16, &Path),
+) -> io::Result<()> {
+    let graph_dir = create_graph_dir(index_dir, g_id, order_name)?;
+    on_graph_started(g_id, &graph_dir);
+    *current_writer = Some(make_writer(graph_dir));
+    *current_g_id = Some(g_id);
+    Ok(())
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -334,61 +409,65 @@ fn build_index_from_run_paths_inner(
 
         // Detect g_id transition
         if current_g_id != Some(g_id) {
-            // Finish previous graph (if any)
-            if let Some(writer) = current_writer.take() {
-                if perf_enabled {
-                    if let Some(p) = writer.perf() {
-                        perf_leaflets_encoded += p.leaflets_encoded;
-                        perf_leaflet_records += p.leaflet_records;
-                        perf_region3_time += p.region3_build_time;
-                        perf_leaflet_encode_time += p.leaflet_encode_time;
-                        perf_leaves_flushed += p.leaves_flushed;
-                        perf_leaf_bytes_written += p.leaf_bytes_written;
-                        perf_leaf_flush_time += p.leaf_flush_time;
+            finish_open_graph(
+                &mut current_g_id,
+                &mut current_writer,
+                &mut graph_results,
+                &config.index_dir,
+                order_name,
+                |writer| {
+                    if perf_enabled {
+                        if let Some(p) = writer.perf() {
+                            perf_leaflets_encoded += p.leaflets_encoded;
+                            perf_leaflet_records += p.leaflet_records;
+                            perf_region3_time += p.region3_build_time;
+                            perf_leaflet_encode_time += p.leaflet_encode_time;
+                            perf_leaves_flushed += p.leaves_flushed;
+                            perf_leaf_bytes_written += p.leaf_bytes_written;
+                            perf_leaf_flush_time += p.leaf_flush_time;
+                        }
                     }
-                }
-                let leaf_infos = writer.finish()?;
-                if let Some(prev_g_id) = current_g_id {
-                    let result =
-                        finish_graph(prev_g_id as u32, leaf_infos, &config.index_dir, order_name)?;
+                },
+                |result| {
                     tracing::info!(
-                        g_id = prev_g_id,
+                        g_id = result.g_id,
                         leaves = result.leaf_count,
                         rows = result.total_rows,
                         order = order_name,
                         "graph index complete"
                     );
-                    graph_results.push(result);
-                }
-            }
+                },
+            )?;
 
-            // Start new graph
-            let graph_dir = config
-                .index_dir
-                .join(format!("graph_{}/{}", g_id, order_name));
-            std::fs::create_dir_all(&graph_dir)?;
-
-            tracing::info!(g_id, path = %graph_dir.display(), "starting graph index");
-
-            let mut writer = LeafWriter::with_widths(
-                graph_dir,
-                config.leaflet_rows,
-                config.leaflets_per_leaf,
-                config.zstd_level,
-                dt_width,
-                p_width,
-                order,
-            );
-            writer.set_skip_region3(config.skip_region3);
-            current_writer = Some(writer);
-            current_g_id = Some(g_id);
+            start_graph(
+                &mut current_g_id,
+                &mut current_writer,
+                g_id,
+                &config.index_dir,
+                order_name,
+                |graph_dir| {
+                    new_leaf_writer_for_graph(
+                        graph_dir,
+                        config.leaflet_rows,
+                        config.leaflets_per_leaf,
+                        config.zstd_level,
+                        dt_width,
+                        p_width,
+                        order,
+                        config.skip_region3,
+                    )
+                },
+                |g_id, graph_dir| {
+                    tracing::info!(g_id, path = %graph_dir.display(), "starting graph index");
+                },
+            )?;
         }
 
         // Push record (R1) with associated history entries (R3) to current writer.
-        current_writer
+        let writer = current_writer
             .as_mut()
-            .unwrap()
-            .push_record_with_history(record, &history_scratch)?;
+            .ok_or_else(|| io::Error::other("missing leaf writer for current graph"))?;
+        writer.push_record_with_history(record, &history_scratch)?;
         total_rows += 1;
         records_since_log += 1;
         progress_batch += 1;
@@ -418,31 +497,35 @@ fn build_index_from_run_paths_inner(
     }
 
     // Finish last graph
-    if let Some(writer) = current_writer.take() {
-        if perf_enabled {
-            if let Some(p) = writer.perf() {
-                perf_leaflets_encoded += p.leaflets_encoded;
-                perf_leaflet_records += p.leaflet_records;
-                perf_region3_time += p.region3_build_time;
-                perf_leaflet_encode_time += p.leaflet_encode_time;
-                perf_leaves_flushed += p.leaves_flushed;
-                perf_leaf_bytes_written += p.leaf_bytes_written;
-                perf_leaf_flush_time += p.leaf_flush_time;
+    finish_open_graph(
+        &mut current_g_id,
+        &mut current_writer,
+        &mut graph_results,
+        &config.index_dir,
+        order_name,
+        |writer| {
+            if perf_enabled {
+                if let Some(p) = writer.perf() {
+                    perf_leaflets_encoded += p.leaflets_encoded;
+                    perf_leaflet_records += p.leaflet_records;
+                    perf_region3_time += p.region3_build_time;
+                    perf_leaflet_encode_time += p.leaflet_encode_time;
+                    perf_leaves_flushed += p.leaves_flushed;
+                    perf_leaf_bytes_written += p.leaf_bytes_written;
+                    perf_leaf_flush_time += p.leaf_flush_time;
+                }
             }
-        }
-        let leaf_infos = writer.finish()?;
-        if let Some(g_id) = current_g_id {
-            let result = finish_graph(g_id as u32, leaf_infos, &config.index_dir, order_name)?;
+        },
+        |result| {
             tracing::info!(
-                g_id,
+                g_id = result.g_id,
                 leaves = result.leaf_count,
                 rows = result.total_rows,
                 order = order_name,
                 "graph index complete"
             );
-            graph_results.push(result);
-        }
-    }
+        },
+    )?;
 
     // ---- Step 7: Write per-order manifest ----
     write_index_manifest(
@@ -920,40 +1003,43 @@ pub fn build_spot_from_sorted_commits(
 
         // Detect g_id transition
         if current_g_id != Some(g_id) {
-            // Finish previous graph
-            if let Some(writer) = current_writer.take() {
-                let leaf_infos = writer.finish()?;
-                if let Some(prev_g_id) = current_g_id {
-                    let result =
-                        finish_graph(prev_g_id as u32, leaf_infos, &config.index_dir, order_name)?;
+            finish_open_graph(
+                &mut current_g_id,
+                &mut current_writer,
+                &mut graph_results,
+                &config.index_dir,
+                order_name,
+                |_writer| {},
+                |result| {
                     tracing::info!(
-                        g_id = prev_g_id,
+                        g_id = result.g_id,
                         leaves = result.leaf_count,
                         rows = result.total_rows,
                         "SPOT graph complete"
                     );
-                    graph_results.push(result);
-                }
-            }
+                },
+            )?;
 
-            // Start new graph
-            let graph_dir = config
-                .index_dir
-                .join(format!("graph_{}/{}", g_id, order_name));
-            std::fs::create_dir_all(&graph_dir)?;
-
-            let mut writer = LeafWriter::with_widths(
-                graph_dir,
-                config.leaflet_rows,
-                config.leaflets_per_leaf,
-                config.zstd_level,
-                config.dt_width,
-                config.p_width,
-                order,
-            );
-            writer.set_skip_region3(config.skip_region3);
-            current_writer = Some(writer);
-            current_g_id = Some(g_id);
+            start_graph(
+                &mut current_g_id,
+                &mut current_writer,
+                g_id,
+                &config.index_dir,
+                order_name,
+                |graph_dir| {
+                    new_leaf_writer_for_graph(
+                        graph_dir,
+                        config.leaflet_rows,
+                        config.leaflets_per_leaf,
+                        config.zstd_level,
+                        config.dt_width,
+                        config.p_width,
+                        order,
+                        config.skip_region3,
+                    )
+                },
+                |_g_id, _graph_dir| {},
+            )?;
         }
 
         // Feed asserted record to class stats collector (before writing to leaf).
@@ -961,10 +1047,10 @@ pub fn build_spot_from_sorted_commits(
             collector.on_record(&record);
         }
 
-        current_writer
+        let writer = current_writer
             .as_mut()
-            .unwrap()
-            .push_record_with_history(record, &history_scratch)?;
+            .ok_or_else(|| io::Error::other("missing leaf writer for current graph"))?;
+        writer.push_record_with_history(record, &history_scratch)?;
         total_rows += 1;
         progress_batch += 1;
         if progress_batch >= PROGRESS_BATCH_SIZE {
@@ -983,19 +1069,22 @@ pub fn build_spot_from_sorted_commits(
     }
 
     // Finish last graph
-    if let Some(writer) = current_writer.take() {
-        let leaf_infos = writer.finish()?;
-        if let Some(g_id) = current_g_id {
-            let result = finish_graph(g_id as u32, leaf_infos, &config.index_dir, order_name)?;
+    finish_open_graph(
+        &mut current_g_id,
+        &mut current_writer,
+        &mut graph_results,
+        &config.index_dir,
+        order_name,
+        |_writer| {},
+        |result| {
             tracing::info!(
-                g_id,
+                g_id = result.g_id,
                 leaves = result.leaf_count,
                 rows = result.total_rows,
                 "SPOT graph complete"
             );
-            graph_results.push(result);
-        }
-    }
+        },
+    )?;
 
     // Finalize class stats collector (flushes last subject).
     let class_stats = class_stats_collector.map(|c| {

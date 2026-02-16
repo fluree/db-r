@@ -61,6 +61,114 @@ fn cid_from_write(kind: ContentKind, result: &ContentWriteResult) -> ContentId {
         .expect("storage produced a valid SHA-256 hex digest")
 }
 
+/// Upload a single dict blob (already in memory) to CAS and return (cid, write_result).
+async fn upload_dict_blob<S: Storage>(
+    storage: &S,
+    ledger_id: &str,
+    dict: fluree_db_core::DictKind,
+    bytes: &[u8],
+    msg: &'static str,
+) -> Result<(ContentId, ContentWriteResult)> {
+    let kind = ContentKind::DictBlob { dict };
+    let result = storage
+        .content_write_bytes(kind, ledger_id, bytes)
+        .await
+        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+    tracing::debug!(
+        address = %result.address,
+        bytes = result.size_bytes,
+        "{msg}"
+    );
+    let cid = cid_from_write(kind, &result);
+    Ok((cid, result))
+}
+
+/// Read a dict artifact file from disk and upload it to CAS.
+async fn upload_dict_file<S: Storage>(
+    storage: &S,
+    ledger_id: &str,
+    path: &std::path::Path,
+    dict: fluree_db_core::DictKind,
+    msg: &'static str,
+) -> Result<(ContentId, ContentWriteResult)> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
+    let (cid, wr) = upload_dict_blob(storage, ledger_id, dict, &bytes, msg).await?;
+    tracing::debug!(path = %path.display(), "dict artifact source path");
+    Ok((cid, wr))
+}
+
+#[inline]
+fn flush_forward_leaf(
+    leaf_offsets: &mut Vec<u32>,
+    leaf_data: &mut Vec<u8>,
+    leaf_count: &mut u32,
+    data_offset: &mut u32,
+    leaf_first: &mut u64,
+    leaf_last: &mut u64,
+) -> Option<(Vec<u8>, u64, u64, u32)> {
+    if *leaf_count == 0 {
+        return None;
+    }
+    let entry_count = *leaf_count;
+    let header_size = 8;
+    let offset_table_size = leaf_offsets.len() * 4;
+    let total = header_size + offset_table_size + leaf_data.len();
+    let mut buf = Vec::with_capacity(total);
+    buf.extend_from_slice(&dict_tree::forward_leaf::FORWARD_LEAF_MAGIC);
+    buf.extend_from_slice(&entry_count.to_le_bytes());
+    for off in leaf_offsets.iter() {
+        buf.extend_from_slice(&off.to_le_bytes());
+    }
+    buf.extend_from_slice(leaf_data);
+    let out = (buf, *leaf_first, *leaf_last, entry_count);
+    leaf_offsets.clear();
+    leaf_data.clear();
+    *data_offset = 0;
+    *leaf_count = 0;
+    *leaf_first = 0;
+    *leaf_last = 0;
+    Some(out)
+}
+
+#[inline]
+fn flush_reverse_leaf<F>(
+    leaf_offsets: &mut Vec<u32>,
+    leaf_data: &mut Vec<u8>,
+    first_key: &mut Option<Vec<u8>>,
+    chunk_bytes: &mut usize,
+    mut last_key: F,
+) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)>
+where
+    F: FnMut() -> Vec<u8>,
+{
+    if leaf_offsets.is_empty() {
+        return None;
+    }
+    let entry_count = leaf_offsets.len() as u32;
+    let header_size = 8;
+    let offset_table_size = leaf_offsets.len() * 4;
+    let total = header_size + offset_table_size + leaf_data.len();
+    let mut buf = Vec::with_capacity(total);
+    buf.extend_from_slice(&dict_tree::reverse_leaf::REVERSE_LEAF_MAGIC);
+    buf.extend_from_slice(&entry_count.to_le_bytes());
+    for off in leaf_offsets.iter() {
+        buf.extend_from_slice(&off.to_le_bytes());
+    }
+    buf.extend_from_slice(leaf_data);
+    debug_assert_eq!(buf.len(), total);
+
+    let fk = first_key.take().unwrap_or_default();
+    let lk = last_key();
+
+    leaf_offsets.clear();
+    leaf_data.clear();
+    *chunk_bytes = 0;
+
+    Some((buf, fk, lk))
+}
+
 /// Normalize a ledger ID for comparison purposes
 ///
 /// Handles both canonical `name:branch` format and storage-path style `name/branch`.
@@ -729,30 +837,6 @@ async fn upload_dicts_to_cas<S: Storage>(
     use fluree_db_core::{ContentKind, DictKind};
     use std::collections::BTreeMap;
 
-    /// Read a file and upload to CAS, returning write result + derived CID.
-    async fn upload_flat<S: Storage>(
-        storage: &S,
-        ledger_id: &str,
-        path: &std::path::Path,
-        dict: DictKind,
-    ) -> Result<(ContentId, ContentWriteResult)> {
-        let kind = ContentKind::DictBlob { dict };
-        let bytes = std::fs::read(path)
-            .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
-        let result = storage
-            .content_write_bytes(kind, ledger_id, &bytes)
-            .await
-            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-        tracing::debug!(
-            path = %path.display(),
-            address = %result.address,
-            bytes = result.size_bytes,
-            "dict artifact uploaded to CAS"
-        );
-        let cid = cid_from_write(kind, &result);
-        Ok((cid, result))
-    }
-
     /// Upload a tree build result (branch + leaves) to CAS, returning CID refs.
     async fn upload_tree<S: Storage>(
         storage: &S,
@@ -762,7 +846,8 @@ async fn upload_dicts_to_cas<S: Storage>(
     ) -> Result<run_index::DictTreeRefs> {
         let kind = ContentKind::DictBlob { dict };
         let mut leaf_cids = Vec::with_capacity(result.leaves.len());
-        let mut hash_to_address = std::collections::HashMap::new();
+        let mut hash_to_address =
+            std::collections::HashMap::with_capacity(result.leaves.len().saturating_mul(2));
 
         for leaf in &result.leaves {
             let cas_result = storage
@@ -792,9 +877,27 @@ async fn upload_dicts_to_cas<S: Storage>(
     let datatypes_path = run_dir.join("datatypes.dict");
     let languages_path = run_dir.join("languages.dict");
     let (graphs_result, datatypes_result, languages_result) = tokio::try_join!(
-        upload_flat(storage, ledger_id, &graphs_path, DictKind::Graphs),
-        upload_flat(storage, ledger_id, &datatypes_path, DictKind::Datatypes),
-        upload_flat(storage, ledger_id, &languages_path, DictKind::Languages),
+        upload_dict_file(
+            storage,
+            ledger_id,
+            &graphs_path,
+            DictKind::Graphs,
+            "dict artifact uploaded to CAS"
+        ),
+        upload_dict_file(
+            storage,
+            ledger_id,
+            &datatypes_path,
+            DictKind::Datatypes,
+            "dict artifact uploaded to CAS"
+        ),
+        upload_dict_file(
+            storage,
+            ledger_id,
+            &languages_path,
+            DictKind::Languages,
+            "dict artifact uploaded to CAS"
+        ),
     )?;
     let graphs = graphs_result.0;
     let datatypes = datatypes_result.0;
@@ -807,14 +910,14 @@ async fn upload_dicts_to_cas<S: Storage>(
         .map_err(|e| IndexerError::StorageRead(format!("read subject entries: {}", e)))?;
 
     let subject_suffix = |sid: u64, iri: &[u8]| -> (u16, Vec<u8>) {
-        let iri_str = std::str::from_utf8(iri).unwrap_or("");
         let ns_code = SubjectId::from_u64(sid).ns_code();
         let prefix = namespace_codes
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
-        let suffix = if iri_str.starts_with(prefix) && !prefix.is_empty() {
-            &iri[prefix.len()..]
+        let prefix_bytes = prefix.as_bytes();
+        let suffix = if !prefix_bytes.is_empty() && iri.starts_with(prefix_bytes) {
+            &iri[prefix_bytes.len()..]
         } else {
             iri
         };
@@ -900,8 +1003,14 @@ async fn upload_dicts_to_cas<S: Storage>(
             for &p_id in numbig_p_ids {
                 let path = nb_dir.join(format!("p_{}.nba", p_id));
                 if path.exists() {
-                    let (cid, _) =
-                        upload_flat(storage, ledger_id, &path, DictKind::NumBig { p_id }).await?;
+                    let (cid, _) = upload_dict_file(
+                        storage,
+                        ledger_id,
+                        &path,
+                        DictKind::NumBig { p_id },
+                        "dict artifact uploaded to CAS",
+                    )
+                    .await?;
                     numbig.insert(p_id.to_string(), cid);
                 }
             }
@@ -924,11 +1033,12 @@ async fn upload_dicts_to_cas<S: Storage>(
 
                     for shard_idx in 0..num_shards {
                         let shard_path = vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                        let (shard_cid, shard_wr) = upload_flat(
+                        let (shard_cid, shard_wr) = upload_dict_file(
                             storage,
                             ledger_id,
                             &shard_path,
                             DictKind::VectorShard { p_id },
+                            "dict artifact uploaded to CAS",
                         )
                         .await?;
                         let start_vec = shard_idx * cap;
@@ -949,11 +1059,12 @@ async fn upload_dicts_to_cas<S: Storage>(
                     .map_err(|e| {
                         IndexerError::StorageWrite(format!("write vector manifest: {}", e))
                     })?;
-                    let (manifest_cid, _) = upload_flat(
+                    let (manifest_cid, _) = upload_dict_file(
                         storage,
                         ledger_id,
                         &manifest_path,
                         DictKind::VectorManifest { p_id },
+                        "dict artifact uploaded to CAS",
                     )
                     .await?;
 
@@ -1027,6 +1138,7 @@ pub async fn upload_indexes_to_cas<S: Storage>(
     let total_order_count = build_results.len();
     for (order_idx, (order, result)) in build_results.iter().enumerate() {
         let order_name = order.dir_name().to_string();
+        let order_name_for_tasks: Arc<str> = Arc::from(order_name.clone());
         let order_graphs = result.graphs.len();
         let order_total_leaves: usize = result.graphs.iter().map(|g| g.leaf_count as usize).sum();
         tracing::info!(
@@ -1080,7 +1192,7 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                 let completed = Arc::clone(&completed);
                 let path = leaf_entry.path.clone();
                 let content_hash = leaf_entry.content_hash.clone();
-                let order_name = order_name.clone();
+                let order_name = Arc::clone(&order_name_for_tasks);
 
                 futs.push(async move {
                     let _permit = sem.acquire_owned().await.map_err(|_| {
@@ -1103,7 +1215,7 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                     if total_leaves >= 100 && done.is_multiple_of(500) {
                         tracing::info!(
-                            order = %order_name,
+                            order = %order_name.as_ref(),
                             g_id,
                             leaf = done,
                             total_leaves,
@@ -1124,8 +1236,12 @@ pub async fn upload_indexes_to_cas<S: Storage>(
             let leaf_cids: Vec<ContentId> = leaf_cid_slots
                 .into_iter()
                 .enumerate()
-                .map(|(i, slot)| slot.unwrap_or_else(|| panic!("leaf {i} was not uploaded")))
-                .collect();
+                .map(|(i, slot)| {
+                    slot.ok_or_else(|| {
+                        IndexerError::StorageWrite(format!("leaf {i} was not uploaded"))
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
 
             let branch_cid = cid_from_write(ContentKind::IndexBranch, &branch_write);
 
@@ -1208,41 +1324,33 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     use fluree_db_core::{ContentKind, DictKind, SubjectIdEncoding};
     use std::collections::BTreeMap;
 
-    // ---- Inner helpers ----
-
-    async fn upload_flat<S: Storage>(
-        storage: &S,
-        ledger_id: &str,
-        path: &std::path::Path,
-        dict: DictKind,
-    ) -> Result<(ContentId, ContentWriteResult)> {
-        let kind = ContentKind::DictBlob { dict };
-        let bytes = tokio::fs::read(path)
-            .await
-            .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
-        let result = storage
-            .content_write_bytes(kind, ledger_id, &bytes)
-            .await
-            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-        tracing::debug!(
-            path = %path.display(),
-            address = %result.address,
-            bytes = result.size_bytes,
-            "dict artifact uploaded to CAS (from disk)"
-        );
-        let cid = cid_from_write(kind, &result);
-        Ok((cid, result))
-    }
-
     // ---- 1. Upload flat dicts in parallel ----
     tracing::info!("uploading flat dictionary artifacts (graphs, datatypes, languages)");
     let graphs_path = run_dir.join("graphs.dict");
     let datatypes_path = run_dir.join("datatypes.dict");
     let languages_path = run_dir.join("languages.dict");
     let (graphs_result, datatypes_result, languages_result) = tokio::try_join!(
-        upload_flat(storage, ledger_id, &graphs_path, DictKind::Graphs),
-        upload_flat(storage, ledger_id, &datatypes_path, DictKind::Datatypes),
-        upload_flat(storage, ledger_id, &languages_path, DictKind::Languages),
+        upload_dict_file(
+            storage,
+            ledger_id,
+            &graphs_path,
+            DictKind::Graphs,
+            "dict artifact uploaded to CAS (from disk)"
+        ),
+        upload_dict_file(
+            storage,
+            ledger_id,
+            &datatypes_path,
+            DictKind::Datatypes,
+            "dict artifact uploaded to CAS (from disk)"
+        ),
+        upload_dict_file(
+            storage,
+            ledger_id,
+            &languages_path,
+            DictKind::Languages,
+            "dict artifact uploaded to CAS (from disk)"
+        ),
     )?;
     let graphs = graphs_result.0;
     let datatypes = datatypes_result.0;
@@ -1317,7 +1425,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 Some(v)
             };
             let subject_forward = {
-                use dict_tree::forward_leaf::FORWARD_LEAF_MAGIC;
                 let kind = ContentKind::DictBlob {
                     dict: DictKind::SubjectForward,
                 };
@@ -1330,37 +1437,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 let mut leaf_first: u64 = 0;
                 let mut leaf_last: u64 = 0;
                 let mut leaf_count: u32 = 0;
-
-                let flush = |leaf_offsets: &mut Vec<u32>,
-                             leaf_data: &mut Vec<u8>,
-                             leaf_count: &mut u32,
-                             data_offset: &mut u32,
-                             leaf_first: &mut u64,
-                             leaf_last: &mut u64|
-                 -> Option<(Vec<u8>, u64, u64, u32)> {
-                    if *leaf_count == 0 {
-                        return None;
-                    }
-                    let entry_count = *leaf_count;
-                    let header_size = 8;
-                    let offset_table_size = leaf_offsets.len() * 4;
-                    let total = header_size + offset_table_size + leaf_data.len();
-                    let mut buf = Vec::with_capacity(total);
-                    buf.extend_from_slice(&FORWARD_LEAF_MAGIC);
-                    buf.extend_from_slice(&entry_count.to_le_bytes());
-                    for off in leaf_offsets.iter() {
-                        buf.extend_from_slice(&off.to_le_bytes());
-                    }
-                    buf.extend_from_slice(leaf_data);
-                    let out = (buf, *leaf_first, *leaf_last, entry_count);
-                    leaf_offsets.clear();
-                    leaf_data.clear();
-                    *data_offset = 0;
-                    *leaf_count = 0;
-                    *leaf_first = 0;
-                    *leaf_last = 0;
-                    Some(out)
-                };
 
                 match &id_order {
                     None => {
@@ -1385,14 +1461,16 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                             if (leaf_data.len() + leaf_offsets.len() * 4 + 8)
                                 >= builder::DEFAULT_TARGET_LEAF_BYTES
                             {
-                                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
-                                    &mut leaf_offsets,
-                                    &mut leaf_data,
-                                    &mut leaf_count,
-                                    &mut data_offset,
-                                    &mut leaf_first,
-                                    &mut leaf_last,
-                                ) {
+                                if let Some((leaf_bytes, first_id, last_id, cnt)) =
+                                    flush_forward_leaf(
+                                        &mut leaf_offsets,
+                                        &mut leaf_data,
+                                        &mut leaf_count,
+                                        &mut data_offset,
+                                        &mut leaf_first,
+                                        &mut leaf_last,
+                                    )
+                                {
                                     let cas_result = storage
                                         .content_write_bytes(kind, ledger_id, &leaf_bytes)
                                         .await
@@ -1430,14 +1508,16 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                             if (leaf_data.len() + leaf_offsets.len() * 4 + 8)
                                 >= builder::DEFAULT_TARGET_LEAF_BYTES
                             {
-                                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
-                                    &mut leaf_offsets,
-                                    &mut leaf_data,
-                                    &mut leaf_count,
-                                    &mut data_offset,
-                                    &mut leaf_first,
-                                    &mut leaf_last,
-                                ) {
+                                if let Some((leaf_bytes, first_id, last_id, cnt)) =
+                                    flush_forward_leaf(
+                                        &mut leaf_offsets,
+                                        &mut leaf_data,
+                                        &mut leaf_count,
+                                        &mut data_offset,
+                                        &mut leaf_first,
+                                        &mut leaf_last,
+                                    )
+                                {
                                     let cas_result = storage
                                         .content_write_bytes(kind, ledger_id, &leaf_bytes)
                                         .await
@@ -1455,7 +1535,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     }
                 }
 
-                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
+                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush_forward_leaf(
                     &mut leaf_offsets,
                     &mut leaf_data,
                     &mut leaf_count,
@@ -1546,7 +1626,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 Some(v)
             };
             let subject_reverse = {
-                use dict_tree::reverse_leaf::REVERSE_LEAF_MAGIC;
                 let kind = ContentKind::DictBlob {
                     dict: DictKind::SubjectReverse,
                 };
@@ -1561,41 +1640,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 let mut last_ns: u16 = 0;
                 let mut last_off: u64 = 0;
                 let mut last_len: u32 = 0;
-
-                let flush = |leaf_offsets: &mut Vec<u32>,
-                             leaf_data: &mut Vec<u8>,
-                             first_key: &mut Option<Vec<u8>>,
-                             last_ns: &mut u16,
-                             last_off: &mut u64,
-                             last_len: &mut u32,
-                             chunk_bytes: &mut usize|
-                 -> Result<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
-                    if leaf_offsets.is_empty() {
-                        return Ok(None);
-                    }
-                    let entry_count = leaf_offsets.len() as u32;
-                    let header_size = 8;
-                    let offset_table_size = leaf_offsets.len() * 4;
-                    let total = header_size + offset_table_size + leaf_data.len();
-                    let mut buf = Vec::with_capacity(total);
-                    buf.extend_from_slice(&REVERSE_LEAF_MAGIC);
-                    buf.extend_from_slice(&entry_count.to_le_bytes());
-                    for off in leaf_offsets.iter() {
-                        buf.extend_from_slice(&off.to_le_bytes());
-                    }
-                    buf.extend_from_slice(leaf_data);
-                    debug_assert_eq!(buf.len(), total);
-                    let fk = first_key.take().unwrap_or_default();
-                    let suffix = &subj_fwd_data
-                        [*last_off as usize..(*last_off as usize + *last_len as usize)];
-                    let mut lk = Vec::with_capacity(2 + suffix.len());
-                    lk.extend_from_slice(&last_ns.to_be_bytes());
-                    lk.extend_from_slice(suffix);
-                    leaf_offsets.clear();
-                    leaf_data.clear();
-                    *chunk_bytes = 0;
-                    Ok(Some((buf, fk, lk)))
-                };
 
                 match &rev_order {
                     None => {
@@ -1627,15 +1671,20 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                             last_len = suf_lens[i];
 
                             if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                if let Some((leaf_bytes, fk, lk)) = flush(
+                                if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
                                     &mut leaf_offsets,
                                     &mut leaf_data,
                                     &mut first_key,
-                                    &mut last_ns,
-                                    &mut last_off,
-                                    &mut last_len,
                                     &mut chunk_bytes,
-                                )? {
+                                    || {
+                                        let suffix = &subj_fwd_data[last_off as usize
+                                            ..(last_off as usize + last_len as usize)];
+                                        let mut lk = Vec::with_capacity(2 + suffix.len());
+                                        lk.extend_from_slice(&last_ns.to_be_bytes());
+                                        lk.extend_from_slice(suffix);
+                                        lk
+                                    },
+                                ) {
                                     let cas_result = storage
                                         .content_write_bytes(kind, ledger_id, &leaf_bytes)
                                         .await
@@ -1680,15 +1729,20 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                             last_len = suf_lens[i];
 
                             if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                if let Some((leaf_bytes, fk, lk)) = flush(
+                                if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
                                     &mut leaf_offsets,
                                     &mut leaf_data,
                                     &mut first_key,
-                                    &mut last_ns,
-                                    &mut last_off,
-                                    &mut last_len,
                                     &mut chunk_bytes,
-                                )? {
+                                    || {
+                                        let suffix = &subj_fwd_data[last_off as usize
+                                            ..(last_off as usize + last_len as usize)];
+                                        let mut lk = Vec::with_capacity(2 + suffix.len());
+                                        lk.extend_from_slice(&last_ns.to_be_bytes());
+                                        lk.extend_from_slice(suffix);
+                                        lk
+                                    },
+                                ) {
                                     let cas_result = storage
                                         .content_write_bytes(kind, ledger_id, &leaf_bytes)
                                         .await
@@ -1706,15 +1760,20 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     }
                 }
 
-                if let Some((leaf_bytes, fk, lk)) = flush(
+                if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
                     &mut leaf_offsets,
                     &mut leaf_data,
                     &mut first_key,
-                    &mut last_ns,
-                    &mut last_off,
-                    &mut last_len,
                     &mut chunk_bytes,
-                )? {
+                    || {
+                        let suffix = &subj_fwd_data
+                            [last_off as usize..(last_off as usize + last_len as usize)];
+                        let mut lk = Vec::with_capacity(2 + suffix.len());
+                        lk.extend_from_slice(&last_ns.to_be_bytes());
+                        lk.extend_from_slice(suffix);
+                        lk
+                    },
+                ) {
                     let cas_result = storage
                         .content_write_bytes(kind, ledger_id, &leaf_bytes)
                         .await
@@ -1782,38 +1841,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 };
                 let mut leaf_cids: Vec<ContentId> = Vec::new();
                 let mut branch_entries: Vec<BranchLeafEntry> = Vec::new();
-                use dict_tree::forward_leaf::FORWARD_LEAF_MAGIC;
-
-                let flush = |leaf_offsets: &mut Vec<u32>,
-                             leaf_data: &mut Vec<u8>,
-                             leaf_count: &mut u32,
-                             data_offset: &mut u32,
-                             leaf_first: &mut u64,
-                             leaf_last: &mut u64|
-                 -> Option<(Vec<u8>, u64, u64, u32)> {
-                    if *leaf_count == 0 {
-                        return None;
-                    }
-                    let entry_count = *leaf_count;
-                    let header_size = 8;
-                    let offset_table_size = leaf_offsets.len() * 4;
-                    let total = header_size + offset_table_size + leaf_data.len();
-                    let mut buf = Vec::with_capacity(total);
-                    buf.extend_from_slice(&FORWARD_LEAF_MAGIC);
-                    buf.extend_from_slice(&entry_count.to_le_bytes());
-                    for off in leaf_offsets.iter() {
-                        buf.extend_from_slice(&off.to_le_bytes());
-                    }
-                    buf.extend_from_slice(leaf_data);
-                    let out = (buf, *leaf_first, *leaf_last, entry_count);
-                    leaf_offsets.clear();
-                    leaf_data.clear();
-                    *data_offset = 0;
-                    *leaf_count = 0;
-                    *leaf_first = 0;
-                    *leaf_last = 0;
-                    Some(out)
-                };
 
                 for i in 0..count {
                     let off = str_offsets[i] as usize;
@@ -1834,7 +1861,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     if (leaf_data.len() + leaf_offsets.len() * 4 + 8)
                         >= builder::DEFAULT_TARGET_LEAF_BYTES
                     {
-                        if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
+                        if let Some((leaf_bytes, first_id, last_id, cnt)) = flush_forward_leaf(
                             &mut leaf_offsets,
                             &mut leaf_data,
                             &mut leaf_count,
@@ -1857,7 +1884,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     }
                 }
 
-                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush(
+                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush_forward_leaf(
                     &mut leaf_offsets,
                     &mut leaf_data,
                     &mut leaf_count,
@@ -1930,7 +1957,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 };
 
                 let sr = {
-                    use dict_tree::reverse_leaf::REVERSE_LEAF_MAGIC;
                     let kind = ContentKind::DictBlob {
                         dict: DictKind::StringReverse,
                     };
@@ -1944,37 +1970,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     // Track last key slice for boundary without cloning per entry.
                     let mut last_off: usize = 0;
                     let mut last_len: usize = 0;
-
-                    let flush =
-                        |leaf_offsets: &mut Vec<u32>,
-                         leaf_data: &mut Vec<u8>,
-                         first_key: &mut Option<Vec<u8>>,
-                         last_off: &mut usize,
-                         last_len: &mut usize,
-                         chunk_bytes: &mut usize|
-                         -> Result<Option<(Vec<u8>, Vec<u8>, Vec<u8>)>> {
-                            if leaf_offsets.is_empty() {
-                                return Ok(None);
-                            }
-                            let entry_count = leaf_offsets.len() as u32;
-                            let header_size = 8;
-                            let offset_table_size = leaf_offsets.len() * 4;
-                            let total = header_size + offset_table_size + leaf_data.len();
-                            let mut buf = Vec::with_capacity(total);
-                            buf.extend_from_slice(&REVERSE_LEAF_MAGIC);
-                            buf.extend_from_slice(&entry_count.to_le_bytes());
-                            for off in leaf_offsets.iter() {
-                                buf.extend_from_slice(&off.to_le_bytes());
-                            }
-                            buf.extend_from_slice(leaf_data);
-                            debug_assert_eq!(buf.len(), total);
-                            let fk = first_key.take().unwrap_or_default();
-                            let lk = str_fwd_data[*last_off..(*last_off + *last_len)].to_vec();
-                            leaf_offsets.clear();
-                            leaf_data.clear();
-                            *chunk_bytes = 0;
-                            Ok(Some((buf, fk, lk)))
-                        };
 
                     match &rev_order {
                         None => {
@@ -1999,14 +1994,13 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 last_len = len;
 
                                 if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                    if let Some((leaf_bytes, fk, lk)) = flush(
+                                    if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
                                         &mut leaf_offsets,
                                         &mut leaf_data,
                                         &mut first_key,
-                                        &mut last_off,
-                                        &mut last_len,
                                         &mut chunk_bytes,
-                                    )? {
+                                        || str_fwd_data[last_off..(last_off + last_len)].to_vec(),
+                                    ) {
                                         let cas_result = storage
                                             .content_write_bytes(kind, ledger_id, &leaf_bytes)
                                             .await
@@ -2046,14 +2040,13 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 last_len = len;
 
                                 if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                    if let Some((leaf_bytes, fk, lk)) = flush(
+                                    if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
                                         &mut leaf_offsets,
                                         &mut leaf_data,
                                         &mut first_key,
-                                        &mut last_off,
-                                        &mut last_len,
                                         &mut chunk_bytes,
-                                    )? {
+                                        || str_fwd_data[last_off..(last_off + last_len)].to_vec(),
+                                    ) {
                                         let cas_result = storage
                                             .content_write_bytes(kind, ledger_id, &leaf_bytes)
                                             .await
@@ -2073,14 +2066,13 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         }
                     }
 
-                    if let Some((leaf_bytes, fk, lk)) = flush(
+                    if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
                         &mut leaf_offsets,
                         &mut leaf_data,
                         &mut first_key,
-                        &mut last_off,
-                        &mut last_len,
                         &mut chunk_bytes,
-                    )? {
+                        || str_fwd_data[last_off..(last_off + last_len)].to_vec(),
+                    ) {
                         let cas_result = storage
                             .content_write_bytes(kind, ledger_id, &leaf_bytes)
                             .await
@@ -2159,11 +2151,12 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     if let Some(rest) = name_str.strip_prefix("p_") {
                         if let Some(id_str) = rest.strip_suffix(".nba") {
                             if let Ok(p_id) = id_str.parse::<u32>() {
-                                let (cid, _) = upload_flat(
+                                let (cid, _) = upload_dict_file(
                                     storage,
                                     ledger_id,
                                     &entry.path(),
                                     DictKind::NumBig { p_id },
+                                    "dict artifact uploaded to CAS (from disk)",
                                 )
                                 .await?;
                                 numbig.insert(p_id.to_string(), cid);
@@ -2211,11 +2204,12 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 for (shard_idx, shard_info) in manifest.shards.iter().enumerate() {
                                     let shard_path =
                                         vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                                    let (shard_cid, shard_wr) = upload_flat(
+                                    let (shard_cid, shard_wr) = upload_dict_file(
                                         storage,
                                         ledger_id,
                                         &shard_path,
                                         DictKind::VectorShard { p_id },
+                                        "dict artifact uploaded to CAS (from disk)",
                                     )
                                     .await?;
                                     shard_infos.push(run_index::vector_arena::ShardInfo {
@@ -2246,11 +2240,12 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                         ))
                                     },
                                 )?;
-                                let (manifest_cid, _) = upload_flat(
+                                let (manifest_cid, _) = upload_dict_file(
                                     storage,
                                     ledger_id,
                                     &final_manifest_path,
                                     DictKind::VectorManifest { p_id },
+                                    "dict artifact uploaded to CAS (from disk)",
                                 )
                                 .await?;
 

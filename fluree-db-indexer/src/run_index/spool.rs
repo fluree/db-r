@@ -773,6 +773,73 @@ pub fn remap_record(
     Ok(())
 }
 
+#[inline]
+fn stats_record_for_remapped_run_record(
+    record: &RunRecord,
+    dt_tags: Option<&[fluree_db_core::value_id::ValueTypeTag]>,
+) -> crate::stats::StatsRecord {
+    use fluree_db_core::value_id::ValueTypeTag;
+
+    let dt = dt_tags
+        .and_then(|t| t.get(record.dt as usize).copied())
+        .unwrap_or(ValueTypeTag::UNKNOWN);
+
+    crate::stats::StatsRecord {
+        g_id: record.g_id as u32,
+        p_id: record.p_id,
+        s_id: record.s_id.as_u64(),
+        dt,
+        o_hash: crate::stats::value_hash(record.o_kind, record.o_key),
+        o_kind: record.o_kind,
+        o_key: record.o_key,
+        t: record.t as i64,
+        op: record.op != 0,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn remap_records_to_runs<I>(
+    records: I,
+    subject_remap: &dyn SubjectRemap,
+    string_remap: &dyn StringRemap,
+    lang_remap: Option<&[u16]>,
+    writer: &mut super::run_writer::MultiOrderRunWriter,
+    lang_dict: &mut super::global_dict::LanguageTagDict,
+    mut stats_hook: Option<&mut crate::stats::IdStatsHook>,
+    dt_tags: Option<&[fluree_db_core::value_id::ValueTypeTag]>,
+) -> io::Result<u64>
+where
+    I: IntoIterator<Item = io::Result<RunRecord>>,
+{
+    let mut count = 0u64;
+
+    for result in records {
+        let mut record = result?;
+
+        remap_record(&mut record, subject_remap, string_remap)?;
+
+        // Optional language tag remap (chunk-local → global)
+        if let Some(lang_remap) = lang_remap {
+            if !lang_remap.is_empty() && record.lang_id != 0 {
+                if let Some(&global_id) = lang_remap.get(record.lang_id as usize) {
+                    record.lang_id = global_id;
+                }
+            }
+        }
+
+        // Feed remapped record to stats hook (global IDs are now valid)
+        if let Some(ref mut hook) = stats_hook {
+            let sr = stats_record_for_remapped_run_record(&record, dt_tags);
+            hook.on_record(&sr);
+        }
+
+        writer.push(record, lang_dict)?;
+        count += 1;
+    }
+
+    Ok(count)
+}
+
 // ============================================================================
 // Remap pass (Phase B)
 // ============================================================================
@@ -804,42 +871,20 @@ pub fn remap_spool_to_runs(
     string_remap: &dyn StringRemap,
     writer: &mut super::run_writer::MultiOrderRunWriter,
     lang_dict: &mut super::global_dict::LanguageTagDict,
-    mut stats_hook: Option<&mut crate::stats::IdStatsHook>,
+    stats_hook: Option<&mut crate::stats::IdStatsHook>,
     dt_tags: Option<&[fluree_db_core::value_id::ValueTypeTag]>,
 ) -> io::Result<u64> {
-    use fluree_db_core::value_id::ValueTypeTag;
-
     let reader = SpoolReader::open(&spool_info.path, spool_info.record_count)?;
-    let mut count = 0u64;
-
-    for result in reader {
-        let mut record = result?;
-
-        remap_record(&mut record, subject_remap, string_remap)?;
-
-        // Feed remapped record to stats hook (global IDs are now valid)
-        if let Some(ref mut hook) = stats_hook {
-            let dt = dt_tags
-                .and_then(|t| t.get(record.dt as usize).copied())
-                .unwrap_or(ValueTypeTag::UNKNOWN);
-            hook.on_record(&crate::stats::StatsRecord {
-                g_id: record.g_id as u32,
-                p_id: record.p_id,
-                s_id: record.s_id.as_u64(),
-                dt,
-                o_hash: crate::stats::value_hash(record.o_kind, record.o_key),
-                o_kind: record.o_kind,
-                o_key: record.o_key,
-                t: record.t as i64,
-                op: record.op != 0,
-            });
-        }
-
-        writer.push(record, lang_dict)?;
-        count += 1;
-    }
-
-    Ok(count)
+    remap_records_to_runs(
+        reader,
+        subject_remap,
+        string_remap,
+        None,
+        writer,
+        lang_dict,
+        stats_hook,
+        dt_tags,
+    )
 }
 
 // ============================================================================
@@ -873,49 +918,20 @@ pub fn remap_commit_to_runs(
     lang_remap: &[u16],
     writer: &mut super::run_writer::MultiOrderRunWriter,
     lang_dict: &mut super::global_dict::LanguageTagDict,
-    mut stats_hook: Option<&mut crate::stats::IdStatsHook>,
+    stats_hook: Option<&mut crate::stats::IdStatsHook>,
     dt_tags: Option<&[fluree_db_core::value_id::ValueTypeTag]>,
 ) -> io::Result<u64> {
-    use fluree_db_core::value_id::ValueTypeTag;
-
     let reader = SpoolReader::open(commit_path, record_count)?;
-    let mut count = 0u64;
-
-    for result in reader {
-        let mut record = result?;
-
-        remap_record(&mut record, subject_remap, string_remap)?;
-
-        // Remap language tag ID (chunk-local → global)
-        if !lang_remap.is_empty() && record.lang_id != 0 {
-            if let Some(&global_id) = lang_remap.get(record.lang_id as usize) {
-                record.lang_id = global_id;
-            }
-        }
-
-        // Feed remapped record to stats hook (global IDs are now valid)
-        if let Some(ref mut hook) = stats_hook {
-            let dt = dt_tags
-                .and_then(|t| t.get(record.dt as usize).copied())
-                .unwrap_or(ValueTypeTag::UNKNOWN);
-            hook.on_record(&crate::stats::StatsRecord {
-                g_id: record.g_id as u32,
-                p_id: record.p_id,
-                s_id: record.s_id.as_u64(),
-                dt,
-                o_hash: crate::stats::value_hash(record.o_kind, record.o_key),
-                o_kind: record.o_kind,
-                o_key: record.o_key,
-                t: record.t as i64,
-                op: record.op != 0,
-            });
-        }
-
-        writer.push(record, lang_dict)?;
-        count += 1;
-    }
-
-    Ok(count)
+    remap_records_to_runs(
+        reader,
+        subject_remap,
+        string_remap,
+        Some(lang_remap),
+        writer,
+        lang_dict,
+        stats_hook,
+        dt_tags,
+    )
 }
 
 // ============================================================================
@@ -1027,8 +1043,31 @@ pub fn sort_remap_and_write_sorted_commit(
 
     // A.2 step 3: Remap all records (insertion-order → sorted-order local IDs).
     // Reuses remap_record() — Vec<u64>/Vec<u32> implement SubjectRemap/StringRemap.
-    for record in &mut records {
-        remap_record(record, &subject_remap, &string_remap)?;
+    //
+    // This loop is hot for large chunks; do a simple 2-way split to utilize
+    // an extra core without oversubscribing the whole machine.
+    if records.len() >= 200_000 {
+        let mid = records.len() / 2;
+        let (left, right) = records.split_at_mut(mid);
+        std::thread::scope(|scope| -> io::Result<()> {
+            let handle = scope.spawn(|| -> io::Result<()> {
+                for record in left {
+                    remap_record(record, &subject_remap, &string_remap)?;
+                }
+                Ok(())
+            });
+            for record in right {
+                remap_record(record, &subject_remap, &string_remap)?;
+            }
+            handle
+                .join()
+                .map_err(|_| io::Error::other("record remap thread panicked"))??;
+            Ok(())
+        })?;
+    } else {
+        for record in &mut records {
+            remap_record(record, &subject_remap, &string_remap)?;
+        }
     }
 
     // A.2 step 4: Sort records by (g_id, SPOT).
@@ -1052,10 +1091,7 @@ pub fn sort_remap_and_write_sorted_commit(
         let mut bw = BufWriter::new(file);
         let mut count: u64 = 0;
         for record in &records {
-            if record.p_id == tm.rdf_type_p_id
-                && record.o_kind == ref_id
-                && record.op == 1
-            {
+            if record.p_id == tm.rdf_type_p_id && record.o_kind == ref_id && record.op == 1 {
                 bw.write_all(&record.g_id.to_le_bytes())?;
                 bw.write_all(&record.s_id.as_u64().to_le_bytes())?;
                 bw.write_all(&record.o_key.to_le_bytes())?;

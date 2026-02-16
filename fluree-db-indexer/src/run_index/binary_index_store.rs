@@ -46,11 +46,16 @@ use std::sync::Arc;
 #[derive(Debug, serde::Deserialize)]
 struct GraphManifestEntry {
     g_id: u32,
-    #[allow(dead_code)]
+    // Kept for: diagnostics and future manifest validation.
+    // Use when: verifying on-disk index completeness / sanity checks.
+    #[expect(dead_code)]
     leaf_count: u32,
-    #[allow(dead_code)]
+    // Kept for: diagnostics and future manifest validation.
+    // Use when: verifying row counts across graphs/orders.
+    #[expect(dead_code)]
     total_rows: u64,
-    #[allow(dead_code)]
+    // Kept for: diagnostics (some manifests may include it; not required today).
+    // Use when: validating branch integrity without loading the branch file.
     #[serde(default)]
     branch_hash: Option<String>,
     directory: String,
@@ -59,15 +64,21 @@ struct GraphManifestEntry {
 /// Top-level per-order index manifest.
 #[derive(Debug, serde::Deserialize)]
 struct IndexManifest {
-    #[allow(dead_code)]
+    // Kept for: compatibility with older/newer manifest formats.
+    // Use when: validating that the manifest's order matches the file we loaded.
+    #[expect(dead_code)]
     #[serde(default)]
     order: Option<String>,
-    #[allow(dead_code)]
+    // Kept for: diagnostics and future validation.
+    // Use when: validating that per-graph totals sum to the manifest total.
+    #[expect(dead_code)]
     total_rows: u64,
     /// Maximum transaction t across all indexed records.
     #[serde(default)]
     max_t: i64,
-    #[allow(dead_code)]
+    // Kept for: diagnostics (not needed for load).
+    // Use when: validating expected graph counts.
+    #[expect(dead_code)]
     graph_count: usize,
     graphs: Vec<GraphManifestEntry>,
 }
