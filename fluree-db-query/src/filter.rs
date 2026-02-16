@@ -26,6 +26,48 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use std::sync::Arc;
 
+/// Filter rows from a batch using two-valued logic.
+///
+/// Evaluates `expr` for each row in `batch`. Rows where the expression evaluates
+/// to `true` are kept; rows that evaluate to `false` or encounter an error
+/// (type mismatch, unbound variable) are filtered out.
+///
+/// Returns `None` if no rows pass the filter.
+pub fn filter_batch(
+    batch: &Batch,
+    expr: &Expression,
+    schema: &Arc<[VarId]>,
+    ctx: &ExecutionContext<'_>,
+) -> Result<Option<Batch>> {
+    let keep_indices: Vec<usize> = (0..batch.len())
+        .filter_map(|row_idx| {
+            let row = batch.row_view(row_idx)?;
+            expr.eval_to_bool(&row, Some(ctx))
+                .ok()
+                .filter(|&pass| pass)
+                .map(|_| row_idx)
+        })
+        .collect();
+
+    if keep_indices.is_empty() {
+        return Ok(None);
+    }
+
+    let columns: Vec<Vec<Binding>> = (0..schema.len())
+        .map(|col_idx| {
+            let src_col = batch
+                .column_by_idx(col_idx)
+                .expect("batch schema must match operator schema");
+            keep_indices
+                .iter()
+                .map(|&row_idx| src_col[row_idx].clone())
+                .collect()
+        })
+        .collect();
+
+    Ok(Some(Batch::new(schema.clone(), columns)?))
+}
+
 /// Filter operator - applies a predicate to each row from child
 ///
 /// Rows where the filter evaluates to `false` or encounters an error
@@ -89,37 +131,9 @@ impl Operator for FilterOperator {
                 continue;
             }
 
-            // Collect row indices where filter evaluates to true
-            let keep_indices: Vec<usize> = (0..batch.len())
-                .filter_map(|row_idx| {
-                    let row = batch.row_view(row_idx)?;
-                    self.expr
-                        .eval_to_bool(&row, Some(ctx))
-                        .ok()
-                        .filter(|&pass| pass)
-                        .map(|_| row_idx)
-                })
-                .collect();
-
-            if keep_indices.is_empty() {
-                continue;
+            if let Some(filtered) = filter_batch(&batch, &self.expr, &self.schema, ctx)? {
+                return Ok(Some(filtered));
             }
-
-            // Build filtered batch by selecting kept rows from each column
-            let num_cols = self.schema.len();
-            let columns: Vec<Vec<Binding>> = (0..num_cols)
-                .map(|col_idx| {
-                    let src_col = batch
-                        .column_by_idx(col_idx)
-                        .expect("child batch schema must match FilterOperator schema");
-                    keep_indices
-                        .iter()
-                        .map(|&row_idx| src_col[row_idx].clone())
-                        .collect()
-                })
-                .collect();
-
-            return Ok(Some(Batch::new(self.schema.clone(), columns)?));
         }
     }
 

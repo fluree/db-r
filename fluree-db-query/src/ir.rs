@@ -1571,18 +1571,27 @@ impl Expression {
     /// FILTER(?age > 18 AND ?age < 65)  -> range-safe (becomes scan bounds)
     /// FILTER(?age != 30)               -> NOT range-safe (post-scan filter)
     /// FILTER(?x > ?y)                  -> NOT range-safe (no constant bound)
+    /// (< 10 ?x 20)                     -> range-safe (sandwich: const var const)
+    /// (< ?x ?y 20)                     -> NOT range-safe (non-sandwich variadic)
     /// ```
     pub fn is_range_safe(&self) -> bool {
         match self {
             Expression::Call { func, args } => match func {
                 // Comparison operators (except Ne) are range-safe if var vs const
                 Function::Eq | Function::Lt | Function::Le | Function::Gt | Function::Ge => {
-                    args.len() == 2
+                    // 2-arg: var vs const (either order)
+                    (args.len() == 2
                         && matches!(
                             (&args[0], &args[1]),
                             (Expression::Var(_), Expression::Const(_))
                                 | (Expression::Const(_), Expression::Var(_))
-                        )
+                        ))
+                    // 3-arg sandwich: const var const
+                    || (args.len() == 3
+                        && matches!(
+                            (&args[0], &args[1], &args[2]),
+                            (Expression::Const(_), Expression::Var(_), Expression::Const(_))
+                        ))
                 }
                 // AND of range-safe expressions is range-safe
                 Function::And => args.iter().all(|e| e.is_range_safe()),
@@ -1642,6 +1651,26 @@ pub enum CompareOp {
     Ge,
 }
 
+impl CompareOp {
+    /// Return the operator symbol as a static string.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            CompareOp::Eq => "=",
+            CompareOp::Ne => "!=",
+            CompareOp::Lt => "<",
+            CompareOp::Le => "<=",
+            CompareOp::Gt => ">",
+            CompareOp::Ge => ">=",
+        }
+    }
+}
+
+impl std::fmt::Display for CompareOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.symbol())
+    }
+}
+
 /// Arithmetic operators
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArithmeticOp {
@@ -1649,6 +1678,17 @@ pub enum ArithmeticOp {
     Sub,
     Mul,
     Div,
+}
+
+impl std::fmt::Display for ArithmeticOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArithmeticOp::Add => write!(f, "+"),
+            ArithmeticOp::Sub => write!(f, "-"),
+            ArithmeticOp::Mul => write!(f, "*"),
+            ArithmeticOp::Div => write!(f, "/"),
+        }
+    }
 }
 
 /// Constant value in filter expressions
@@ -1665,32 +1705,6 @@ pub enum FilterValue {
 // =============================================================================
 // From implementations for lowering unresolved AST types
 // =============================================================================
-
-impl From<crate::parse::ast::UnresolvedCompareOp> for CompareOp {
-    fn from(op: crate::parse::ast::UnresolvedCompareOp) -> Self {
-        use crate::parse::ast::UnresolvedCompareOp;
-        match op {
-            UnresolvedCompareOp::Eq => CompareOp::Eq,
-            UnresolvedCompareOp::Ne => CompareOp::Ne,
-            UnresolvedCompareOp::Lt => CompareOp::Lt,
-            UnresolvedCompareOp::Le => CompareOp::Le,
-            UnresolvedCompareOp::Gt => CompareOp::Gt,
-            UnresolvedCompareOp::Ge => CompareOp::Ge,
-        }
-    }
-}
-
-impl From<crate::parse::ast::UnresolvedArithmeticOp> for ArithmeticOp {
-    fn from(op: crate::parse::ast::UnresolvedArithmeticOp) -> Self {
-        use crate::parse::ast::UnresolvedArithmeticOp;
-        match op {
-            UnresolvedArithmeticOp::Add => ArithmeticOp::Add,
-            UnresolvedArithmeticOp::Sub => ArithmeticOp::Sub,
-            UnresolvedArithmeticOp::Mul => ArithmeticOp::Mul,
-            UnresolvedArithmeticOp::Div => ArithmeticOp::Div,
-        }
-    }
-}
 
 impl From<CompareOp> for Function {
     fn from(op: CompareOp) -> Self {
@@ -1713,18 +1727,6 @@ impl From<ArithmeticOp> for Function {
             ArithmeticOp::Mul => Function::Mul,
             ArithmeticOp::Div => Function::Div,
         }
-    }
-}
-
-impl From<crate::parse::ast::UnresolvedCompareOp> for Function {
-    fn from(op: crate::parse::ast::UnresolvedCompareOp) -> Self {
-        CompareOp::from(op).into()
-    }
-}
-
-impl From<crate::parse::ast::UnresolvedArithmeticOp> for Function {
-    fn from(op: crate::parse::ast::UnresolvedArithmeticOp) -> Self {
-        ArithmeticOp::from(op).into()
     }
 }
 

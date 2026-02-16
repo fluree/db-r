@@ -4,6 +4,8 @@
 //! - Filters rows after GROUP BY and aggregation
 //! - Uses the same filter expression evaluation as WHERE FILTER
 //! - Operates on aggregate results (not Grouped values)
+//! - Rows where the expression evaluates to `false` or encounters an error
+//!   (type mismatch, unbound var) are filtered out (two-valued logic)
 //!
 //! # Example
 //!
@@ -16,9 +18,10 @@
 //!
 //! The HAVING clause filters out cities with 10 or fewer people.
 
-use crate::binding::{Batch, Binding};
+use crate::binding::Batch;
 use crate::context::ExecutionContext;
 use crate::error::Result;
+use crate::filter::filter_batch;
 use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
@@ -88,34 +91,9 @@ impl Operator for HavingOperator {
                 continue;
             }
 
-            // Filter rows that match the HAVING expression
-            let mut output_columns: Vec<Vec<Binding>> = (0..self.schema.len())
-                .map(|_| Vec::with_capacity(batch.len()))
-                .collect();
-            let mut rows_added = 0;
-
-            for row_idx in 0..batch.len() {
-                let row = match batch.row_view(row_idx) {
-                    Some(r) => r,
-                    None => continue,
-                };
-
-                // Evaluate the HAVING expression
-                let passes = self.expr.eval_to_bool(&row, Some(ctx))?;
-
-                if passes {
-                    // Copy this row to output
-                    for (col_idx, output_col) in output_columns.iter_mut().enumerate() {
-                        output_col.push(batch.get_by_col(row_idx, col_idx).clone());
-                    }
-                    rows_added += 1;
-                }
+            if let Some(filtered) = filter_batch(&batch, &self.expr, &self.schema, ctx)? {
+                return Ok(Some(filtered));
             }
-
-            if rows_added > 0 {
-                return Ok(Some(Batch::new(self.schema.clone(), output_columns)?));
-            }
-            // If no rows passed the filter, continue to next batch
         }
     }
 
@@ -133,6 +111,7 @@ impl Operator for HavingOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binding::Binding;
     use crate::seed::SeedOperator;
     use fluree_db_core::{Db, FlakeValue, Sid};
 
@@ -322,6 +301,82 @@ mod tests {
         assert_eq!(op.schema()[0], VarId(0));
         assert_eq!(op.schema()[1], VarId(1));
         assert_eq!(op.schema()[2], VarId(2));
+
+        op.close();
+    }
+
+    #[tokio::test]
+    async fn test_having_type_mismatch_filters_out_row() {
+        use crate::context::ExecutionContext;
+        use crate::ir::FilterValue;
+        use crate::var_registry::VarRegistry;
+
+        let db = make_test_db();
+        let vars = VarRegistry::new();
+        let ctx = ExecutionContext::new(&db, &vars);
+
+        // Batch: city=NYC count=15, city=LA count="not_a_number"
+        // HAVING ?count > 10 should keep NYC, filter out LA (type mismatch → filtered, not error)
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        let columns = vec![
+            vec![
+                Binding::lit(FlakeValue::String("NYC".into()), Sid::new(2, "string")),
+                Binding::lit(FlakeValue::String("LA".into()), Sid::new(2, "string")),
+            ],
+            vec![
+                Binding::lit(FlakeValue::Long(15), xsd_long()),
+                Binding::lit(
+                    FlakeValue::String("not_a_number".into()),
+                    Sid::new(2, "string"),
+                ),
+            ],
+        ];
+        let batch = Batch::new(schema.clone(), columns).unwrap();
+
+        struct BatchOperator {
+            schema: Arc<[VarId]>,
+            batch: Option<Batch>,
+        }
+        #[async_trait]
+        impl Operator for BatchOperator {
+            fn schema(&self) -> &[VarId] {
+                &self.schema
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
+                Ok(self.batch.take())
+            }
+            fn close(&mut self) {}
+        }
+
+        let child: BoxedOperator = Box::new(BatchOperator {
+            schema: schema.clone(),
+            batch: Some(batch),
+        });
+
+        // HAVING ?count > 10
+        let expr = Expression::gt(
+            Expression::Var(VarId(1)),
+            Expression::Const(FilterValue::Long(10)),
+        );
+
+        let mut op = HavingOperator::new(child, expr);
+        op.open(&ctx).await.unwrap();
+
+        // Should succeed (not error) and return only NYC
+        let result = op.next_batch(&ctx).await.unwrap();
+        assert!(result.is_some());
+
+        let result = result.unwrap();
+        assert_eq!(result.len(), 1);
+
+        if let Binding::Lit { val, .. } = result.get_by_col(0, 0) {
+            assert_eq!(*val, FlakeValue::String("NYC".into()));
+        } else {
+            panic!("Expected Lit binding");
+        }
 
         op.close();
     }
