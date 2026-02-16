@@ -15,7 +15,7 @@ use super::merge::KWayMerge;
 use super::run_record::{cmp_for_order, RunRecord, RunSortOrder};
 use super::streaming_reader::StreamingRunReader;
 use fluree_db_core::value_id::ObjKind;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -523,15 +523,15 @@ pub const DT_REF_ID: u16 = u16::MAX;
 #[derive(Debug, Default)]
 pub struct SpotClassStats {
     /// class sid64 → instance count (number of subjects with this rdf:type)
-    pub class_counts: HashMap<u64, u64>,
+    pub class_counts: FxHashMap<u64, u64>,
     /// class sid64 → p_id → dt → flake count
-    pub class_prop_dts: HashMap<u64, HashMap<u32, HashMap<u16, u64>>>,
+    pub class_prop_dts: FxHashMap<u64, FxHashMap<u32, FxHashMap<u16, u64>>>,
     /// class sid64 → p_id → target_class sid64 → count
     ///
     /// For each REF_ID property on a typed subject, records what classes the
     /// *target* subject belongs to. Built using the [`ClassBitsetTable`] which
     /// maps every subject to its class membership bitset.
-    pub class_prop_refs: HashMap<u64, HashMap<u32, HashMap<u64, u64>>>,
+    pub class_prop_refs: FxHashMap<u64, FxHashMap<u32, FxHashMap<u64, u64>>>,
 }
 
 /// Internal streaming collector for class stats during SPOT merge.
@@ -546,7 +546,7 @@ struct SpotClassStatsCollector {
     /// Classes the current subject belongs to (rdf:type REF_ID targets).
     classes: Vec<u64>,
     /// Per-property datatype counts for current subject: (p_id, dt) → count.
-    prop_dts: HashMap<(u32, u16), u64>,
+    prop_dts: FxHashMap<(u32, u16), u64>,
     /// REF_ID targets per property for the current subject: (p_id, target_sid).
     /// Collected so we can resolve target classes at flush time via the bitset.
     ref_targets: Vec<(u32, u64)>,
@@ -563,7 +563,7 @@ impl SpotClassStatsCollector {
             current_s_id: None,
             current_g_id: 0,
             classes: Vec::new(),
-            prop_dts: HashMap::new(),
+            prop_dts: FxHashMap::default(),
             ref_targets: Vec::new(),
             class_bitset,
             result: SpotClassStats::default(),
@@ -677,12 +677,12 @@ pub struct ClassBitsetTable {
     /// Used during `build_from_type_maps`; kept for potential future lookups
     /// (e.g., checking whether a specific class is tracked).
     #[expect(dead_code)]
-    class_to_bit: HashMap<u64, u8>,
+    class_to_bit: FxHashMap<u64, u8>,
     /// Bit index → class SID (for output formatting).
     pub bit_to_class: Vec<u64>,
     /// Per-graph, per-namespace bitset arrays.
     /// `graph_bitsets[g_id][ns_code][local_id]` → class membership bitset.
-    graph_bitsets: HashMap<u16, HashMap<u16, Vec<u64>>>,
+    graph_bitsets: FxHashMap<u16, FxHashMap<u16, Vec<u64>>>,
 }
 
 impl ClassBitsetTable {
@@ -718,9 +718,9 @@ impl ClassBitsetTable {
     ) -> io::Result<Self> {
         use std::io::{BufReader, Read};
 
-        let mut class_to_bit: HashMap<u64, u8> = HashMap::new();
+        let mut class_to_bit: FxHashMap<u64, u8> = FxHashMap::default();
         let mut bit_to_class: Vec<u64> = Vec::new();
-        let mut graph_bitsets: HashMap<u16, HashMap<u16, Vec<u64>>> = HashMap::new();
+        let mut graph_bitsets: FxHashMap<u16, FxHashMap<u16, Vec<u64>>> = FxHashMap::default();
 
         let mut buf = [0u8; 18];
         for &(path, remap) in inputs {

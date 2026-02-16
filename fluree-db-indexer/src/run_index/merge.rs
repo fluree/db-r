@@ -139,8 +139,9 @@ impl<T: MergeSource, F: Fn(&RunRecord, &RunRecord) -> Ordering> KWayMerge<T, F> 
             if right < len && self.heap_less(right, left) {
                 smallest = right;
             }
-            if self.heap_less(pos, smallest) || !self.heap_less(smallest, pos) {
-                // pos <= smallest (equal counts as "no swap needed")
+            // If `smallest` is not strictly less than `pos`, heap property holds.
+            // This single comparison also covers the equality case.
+            if !self.heap_less(smallest, pos) {
                 break;
             }
             self.heap.swap(pos, smallest);
@@ -148,59 +149,41 @@ impl<T: MergeSource, F: Fn(&RunRecord, &RunRecord) -> Ordering> KWayMerge<T, F> 
         }
     }
 
-    /// Sift an element up to its correct position (restore heap after push).
-    #[inline]
-    fn sift_up(&mut self, mut pos: usize) {
-        while pos > 0 {
-            let parent = (pos - 1) / 2;
-            if !self.heap_less(pos, parent) {
-                break;
-            }
-            self.heap.swap(pos, parent);
-            pos = parent;
-        }
-    }
-
-    /// Pop the minimum element from the heap.
-    fn heap_pop(&mut self) -> Option<HeapEntry> {
-        if self.heap.is_empty() {
-            return None;
-        }
-        let last = self.heap.len() - 1;
-        self.heap.swap(0, last);
-        let entry = self.heap.pop().unwrap();
-        if !self.heap.is_empty() {
-            self.sift_down(0);
-        }
-        Some(entry)
-    }
-
-    /// Push an element onto the heap.
-    fn heap_push(&mut self, entry: HeapEntry) {
-        self.heap.push(entry);
-        let pos = self.heap.len() - 1;
-        self.sift_up(pos);
-    }
-
     // ---- Public API ----
 
     /// Pop the next record in merge order (no deduplication).
     pub fn next_record(&mut self) -> io::Result<Option<RunRecord>> {
-        let entry = match self.heap_pop() {
-            Some(e) => e,
-            None => return Ok(None),
-        };
+        if self.heap.is_empty() {
+            return Ok(None);
+        }
 
-        let record = entry.record;
-        let idx = entry.stream_idx;
+        // Fast path: instead of heap_pop() + heap_push() (two heap fixups),
+        // return the root record and then replace the root with the next
+        // record from the same stream (if any), followed by a single sift_down.
+        let idx = self.heap[0].stream_idx;
+        let record = self.heap[0].record;
 
-        // Advance the stream and push its next record into the heap
+        // Advance the winning stream.
         self.streams[idx].advance()?;
+
         if let Some(next_rec) = self.streams[idx].peek() {
-            self.heap_push(HeapEntry {
-                record: *next_rec,
-                stream_idx: idx,
-            });
+            // Replace root record in-place (stream_idx unchanged).
+            self.heap[0].record = *next_rec;
+            if self.heap.len() > 1 {
+                self.sift_down(0);
+            }
+        } else {
+            // Stream exhausted: remove root entry.
+            let last = self.heap.len() - 1;
+            if last == 0 {
+                self.heap.pop();
+            } else {
+                self.heap.swap(0, last);
+                self.heap.pop();
+                if !self.heap.is_empty() {
+                    self.sift_down(0);
+                }
+            }
         }
 
         Ok(Some(record))
