@@ -25,6 +25,7 @@ use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
 use fluree_db_novelty::commit_v2::{load_commit_ops, CommitV2Error};
 use fluree_vocab::{db, fluree};
 use num_bigint::BigInt;
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::io;
 use xxhash_rust::xxh3::Xxh3;
@@ -856,6 +857,735 @@ impl CommitResolver {
 }
 
 impl Default for CommitResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// SharedResolverState + RebuildChunk (commit-based rebuild pipeline)
+// ============================================================================
+
+/// Shared state across all rebuild chunks.
+///
+/// Holds the global dictionaries (predicates, datatypes, graphs, languages)
+/// and namespace prefix mappings. Per-chunk local dicts for subjects/strings
+/// live in [`RebuildChunk`].
+pub struct SharedResolverState {
+    /// namespace_code -> prefix IRI (seeded from default_namespace_codes, updated by deltas).
+    pub ns_prefixes: HashMap<u16, String>,
+    /// Global predicate dict (small cardinality, shared across all chunks).
+    pub predicates: super::global_dict::PredicateDict,
+    /// Global datatype dict (pre-seeded with reserved entries).
+    pub datatypes: super::global_dict::PredicateDict,
+    /// Global graph dict (g_id = dict_id + 1; 0 = default graph, 1 = txn-meta).
+    pub graphs: super::global_dict::PredicateDict,
+    /// Global language tag dict (shared across all chunks — no per-chunk remap needed).
+    pub languages: super::global_dict::LanguageTagDict,
+    /// Per-predicate overflow numeric arenas (BigInt/BigDecimal). Key = p_id.
+    pub numbigs: FxHashMap<u32, super::numbig_dict::NumBigArena>,
+    /// Per-predicate vector arenas (packed f32). Key = p_id.
+    pub vectors: FxHashMap<u32, super::vector_arena::VectorArena>,
+    /// Datatype dict ID → ValueTypeTag mapping, populated at insertion time.
+    /// Indexed by dt_id (u32). Pre-seeded with reserved entries in `new()`.
+    pub dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag>,
+}
+
+impl Default for SharedResolverState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SharedResolverState {
+    /// Create a new shared state seeded with default namespace prefixes
+    /// and pre-reserved txn-meta graph (g_id=1).
+    pub fn new() -> Self {
+        use fluree_db_core::value_id::ValueTypeTag;
+
+        let mut graphs = super::global_dict::PredicateDict::new();
+        // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
+        graphs.get_or_insert_parts(fluree::DB, "txn-meta");
+
+        let datatypes = super::global_dict::new_datatype_dict();
+
+        // Pre-populate dt_tags for the 14 reserved datatype entries.
+        // Must match the insertion order in new_datatype_dict().
+        let dt_tags: Vec<ValueTypeTag> = (0..datatypes.len())
+            .map(|id| {
+                fluree_db_core::DatatypeDictId(id as u16)
+                    .to_value_type_tag()
+                    .unwrap_or(ValueTypeTag::UNKNOWN)
+            })
+            .collect();
+
+        Self {
+            ns_prefixes: fluree_db_core::default_namespace_codes(),
+            predicates: super::global_dict::PredicateDict::new(),
+            datatypes,
+            graphs,
+            languages: super::global_dict::LanguageTagDict::new(),
+            numbigs: FxHashMap::default(),
+            vectors: FxHashMap::default(),
+            dt_tags,
+        }
+    }
+
+    /// Insert or look up a datatype, recording its ValueTypeTag deterministically.
+    fn resolve_datatype(&mut self, ns_code: u16, name: &str) -> u32 {
+        let prefix = self
+            .ns_prefixes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let dt_id = self.datatypes.get_or_insert_parts(prefix, name);
+        // Grow dt_tags if this is a new entry.
+        if dt_id as usize >= self.dt_tags.len() {
+            let tag = fluree_db_core::value_id::ValueTypeTag::from_ns_name(ns_code, name);
+            self.dt_tags.resize(dt_id as usize + 1, tag);
+        }
+        dt_id
+    }
+
+    /// Apply a commit's namespace delta to update prefix mappings.
+    pub fn apply_namespace_delta(&mut self, delta: &HashMap<u16, String>) {
+        for (&code, prefix) in delta {
+            self.ns_prefixes
+                .entry(code)
+                .or_insert_with(|| prefix.clone());
+        }
+    }
+
+    /// Resolve a single commit's ops into chunk-local RunRecords, appending to
+    /// the active chunk. Caller decides when to flush the chunk.
+    ///
+    /// Subjects and strings use chunk-local dicts; predicates, datatypes, graphs,
+    /// and languages use the shared global dicts.
+    pub fn resolve_commit_into_chunk(
+        &mut self,
+        bytes: &[u8],
+        commit_hash_hex: &str,
+        chunk: &mut RebuildChunk,
+    ) -> Result<ResolvedCommit, ResolverError> {
+        let commit_size = bytes.len() as u64;
+        let commit_ops = load_commit_ops(bytes)?;
+
+        // Apply namespace delta (forward order guarantees correctness).
+        self.apply_namespace_delta(&commit_ops.envelope.namespace_delta);
+
+        let t = commit_ops.t as u32;
+        let mut asserts = 0u32;
+        let mut retracts = 0u32;
+
+        // Resolve user-data ops into chunk-local records.
+        commit_ops.for_each_op(|raw_op: RawOp<'_>| {
+            let record = self.resolve_op_chunk(&raw_op, t, chunk)?;
+            chunk.records.push(record);
+            chunk.flake_count += 1;
+            if record.op != 0 {
+                asserts += 1;
+            } else {
+                retracts += 1;
+            }
+            Ok(())
+        })?;
+
+        // Emit txn-meta records into the same chunk.
+        let meta_count = self.emit_txn_meta_chunk(
+            commit_hash_hex,
+            &commit_ops.envelope,
+            commit_size,
+            asserts,
+            retracts,
+            chunk,
+        )?;
+
+        Ok(ResolvedCommit {
+            total_records: asserts + retracts + meta_count,
+            t,
+            size: commit_size,
+            asserts,
+            retracts,
+        })
+    }
+
+    /// Resolve a single RawOp into a RunRecord using chunk-local subject/string dicts.
+    fn resolve_op_chunk(
+        &mut self,
+        op: &RawOp<'_>,
+        t: u32,
+        chunk: &mut RebuildChunk,
+    ) -> Result<RunRecord, CommitV2Error> {
+        // 1. Resolve graph (global)
+        let g_id = self
+            .resolve_graph(op.g_ns_code, op.g_name)
+            .map_err(|e| CommitV2Error::InvalidOp(format!("graph resolve: {}", e)))?;
+
+        // 2. Resolve subject (chunk-local)
+        let s_id = self.resolve_subject_chunk(op.s_ns_code, op.s_name, chunk);
+
+        // 3. Resolve predicate (global)
+        let p_id = self.resolve_predicate(op.p_ns_code, op.p_name);
+
+        // 4. Resolve datatype (global, with ValueTypeTag capture)
+        let dt_id = self.resolve_datatype(op.dt_ns_code, op.dt_name);
+        if dt_id > u8::MAX as u32 {
+            return Err(CommitV2Error::InvalidOp(format!(
+                "datatype dict overflow (dt_id={} exceeds u8 max)",
+                dt_id
+            )));
+        }
+        let dt_id = dt_id as u16;
+
+        // 5. Encode object (subjects/strings → chunk-local)
+        let (o_kind, o_key) = self
+            .resolve_object_chunk(&op.o, p_id, dt_id, chunk)
+            .map_err(|e| CommitV2Error::InvalidOp(format!("object resolve: {}", e)))?;
+
+        // 6. Language tag (global)
+        let lang_id = self.languages.get_or_insert(op.lang);
+
+        // 7. List index
+        let i = match op.i {
+            Some(idx) if idx >= 0 => idx as u32,
+            Some(idx) => {
+                return Err(CommitV2Error::InvalidOp(format!(
+                    "negative list index {idx} is invalid"
+                )));
+            }
+            None => LIST_INDEX_NONE,
+        };
+
+        Ok(RunRecord {
+            g_id,
+            s_id: SubjectId::from_u64(s_id),
+            p_id,
+            dt: dt_id,
+            o_kind: o_kind.as_u8(),
+            op: op.op as u8,
+            o_key: o_key.as_u64(),
+            t,
+            lang_id,
+            i,
+        })
+    }
+
+    /// Resolve subject to a chunk-local sequential u64 ID.
+    fn resolve_subject_chunk(&mut self, ns_code: u16, name: &str, chunk: &mut RebuildChunk) -> u64 {
+        chunk.subjects.get_or_insert(ns_code, name.as_bytes())
+    }
+
+    /// Resolve graph: default graph (ns=0, name="") -> g_id=0.
+    /// Named graphs -> g_id = graphs.get_or_insert(full_iri) + 1.
+    fn resolve_graph(&mut self, ns_code: u16, name: &str) -> io::Result<u16> {
+        if ns_code == 0 && name.is_empty() {
+            return Ok(0); // default graph
+        }
+        let prefix = self
+            .ns_prefixes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let raw = self.graphs.get_or_insert_parts(prefix, name) + 1;
+        if raw > u16::MAX as u32 {
+            return Err(io::Error::other(format!(
+                "graph count {} exceeds u16::MAX",
+                raw
+            )));
+        }
+        Ok(raw as u16)
+    }
+
+    /// Resolve predicate IRI -> global p_id.
+    fn resolve_predicate(&mut self, ns_code: u16, name: &str) -> u32 {
+        let prefix = self
+            .ns_prefixes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        self.predicates.get_or_insert_parts(prefix, name)
+    }
+
+    /// Encode object value using chunk-local dicts for subjects/strings.
+    fn resolve_object_chunk(
+        &mut self,
+        obj: &RawObject<'_>,
+        p_id: u32,
+        _dt_id: u16,
+        chunk: &mut RebuildChunk,
+    ) -> Result<(ObjKind, ObjKey), String> {
+        match obj {
+            RawObject::Long(v) => Ok((ObjKind::NUM_INT, ObjKey::encode_i64(*v))),
+            RawObject::Double(v) => {
+                if v.is_finite() && v.fract() == 0.0 {
+                    let as_i64 = *v as i64;
+                    if (as_i64 as f64) == *v {
+                        return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(as_i64)));
+                    }
+                }
+                let key = ObjKey::encode_f64(*v)
+                    .map_err(|e| format!("f64 encode for p_id={}: {}", p_id, e))?;
+                Ok((ObjKind::NUM_F64, key))
+            }
+            RawObject::Str(s) => {
+                let id = chunk.strings.get_or_insert(s.as_bytes());
+                Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
+            }
+            RawObject::Boolean(b) => Ok((ObjKind::BOOL, ObjKey::encode_bool(*b))),
+            RawObject::Ref { ns_code, name } => {
+                // Ref object → chunk-local subject ID
+                let sid = chunk.subjects.get_or_insert(*ns_code, name.as_bytes());
+                Ok((ObjKind::REF_ID, ObjKey::encode_sid64(sid)))
+            }
+            RawObject::DateTimeStr(s) => DateTime::parse(s)
+                .map_err(|e| format!("datetime parse: {}", e))
+                .map(|dt| {
+                    let micros = dt.epoch_micros();
+                    (ObjKind::DATE_TIME, ObjKey::encode_datetime(micros))
+                }),
+            RawObject::DateStr(s) => Date::parse(s)
+                .map(|d| (ObjKind::DATE, ObjKey::encode_date(d.days_since_epoch())))
+                .map_err(|e| format!("date parse: {}", e)),
+            RawObject::TimeStr(s) => Time::parse(s)
+                .map(|t| {
+                    (
+                        ObjKind::TIME,
+                        ObjKey::encode_time(t.micros_since_midnight()),
+                    )
+                })
+                .map_err(|e| format!("time parse: {}", e)),
+            RawObject::BigIntStr(s) => {
+                if let Ok(v) = s.parse::<i64>() {
+                    return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(v)));
+                }
+                match s.parse::<BigInt>() {
+                    Ok(bi) => {
+                        if let Some(v) = num_traits::ToPrimitive::to_i64(&bi) {
+                            return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(v)));
+                        }
+                        let handle = self
+                            .numbigs
+                            .entry(p_id)
+                            .or_default()
+                            .get_or_insert_bigint(&bi);
+                        Ok((ObjKind::NUM_BIG, ObjKey::encode_u32_id(handle)))
+                    }
+                    Err(_) => {
+                        let id = chunk.strings.get_or_insert(s.as_bytes());
+                        Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
+                    }
+                }
+            }
+            RawObject::DecimalStr(s) => match s.parse::<BigDecimal>() {
+                Ok(bd) => {
+                    let handle = self
+                        .numbigs
+                        .entry(p_id)
+                        .or_default()
+                        .get_or_insert_bigdec(&bd);
+                    Ok((ObjKind::NUM_BIG, ObjKey::encode_u32_id(handle)))
+                }
+                Err(_) => {
+                    let id = chunk.strings.get_or_insert(s.as_bytes());
+                    Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
+                }
+            },
+            RawObject::JsonStr(s) => {
+                let id = chunk.strings.get_or_insert(s.as_bytes());
+                Ok((ObjKind::JSON_ID, ObjKey::encode_u32_id(id)))
+            }
+            RawObject::Null => Ok((ObjKind::NULL, ObjKey::ZERO)),
+            RawObject::GYearStr(s) => GYear::parse(s)
+                .map(|g| (ObjKind::G_YEAR, ObjKey::encode_g_year(g.year())))
+                .map_err(|e| format!("gYear parse: {}", e)),
+            RawObject::GYearMonthStr(s) => GYearMonth::parse(s)
+                .map(|g| {
+                    (
+                        ObjKind::G_YEAR_MONTH,
+                        ObjKey::encode_g_year_month(g.year(), g.month()),
+                    )
+                })
+                .map_err(|e| format!("gYearMonth parse: {}", e)),
+            RawObject::GMonthStr(s) => GMonth::parse(s)
+                .map(|g| (ObjKind::G_MONTH, ObjKey::encode_g_month(g.month())))
+                .map_err(|e| format!("gMonth parse: {}", e)),
+            RawObject::GDayStr(s) => GDay::parse(s)
+                .map(|g| (ObjKind::G_DAY, ObjKey::encode_g_day(g.day())))
+                .map_err(|e| format!("gDay parse: {}", e)),
+            RawObject::GMonthDayStr(s) => GMonthDay::parse(s)
+                .map(|g| {
+                    (
+                        ObjKind::G_MONTH_DAY,
+                        ObjKey::encode_g_month_day(g.month(), g.day()),
+                    )
+                })
+                .map_err(|e| format!("gMonthDay parse: {}", e)),
+            RawObject::YearMonthDurationStr(s) => YearMonthDuration::parse(s)
+                .map(|d| {
+                    (
+                        ObjKind::YEAR_MONTH_DUR,
+                        ObjKey::encode_year_month_dur(d.months()),
+                    )
+                })
+                .map_err(|e| format!("yearMonthDuration parse: {}", e)),
+            RawObject::DayTimeDurationStr(s) => DayTimeDuration::parse(s)
+                .map(|d| {
+                    (
+                        ObjKind::DAY_TIME_DUR,
+                        ObjKey::encode_day_time_dur(d.micros()),
+                    )
+                })
+                .map_err(|e| format!("dayTimeDuration parse: {}", e)),
+            RawObject::DurationStr(s) => {
+                let d = XsdDuration::parse(s).map_err(|e| format!("duration parse: {}", e))?;
+                let canonical = d.to_canonical_string();
+                let id = chunk.strings.get_or_insert(canonical.as_bytes());
+                Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
+            }
+            RawObject::GeoPoint { lat, lng } => {
+                let key = ObjKey::encode_geo_point(*lat, *lng)
+                    .map_err(|e| format!("geo point encode: {}", e))?;
+                Ok((ObjKind::GEO_POINT, key))
+            }
+            RawObject::Vector(v) => {
+                let handle = self
+                    .vectors
+                    .entry(p_id)
+                    .or_default()
+                    .insert_f64(v)
+                    .map_err(|e| format!("vector arena insert: {}", e))?;
+                Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(handle)))
+            }
+        }
+    }
+
+    /// Emit txn-meta RunRecords into the chunk using chunk-local subject/string dicts.
+    fn emit_txn_meta_chunk(
+        &mut self,
+        commit_hash_hex: &str,
+        envelope: &CommitV2Envelope,
+        commit_size: u64,
+        asserts: u32,
+        retracts: u32,
+        chunk: &mut RebuildChunk,
+    ) -> Result<u32, ResolverError> {
+        // g_id=1 (pre-reserved)
+        let g_id_raw = self.graphs.get_or_insert_parts(fluree::DB, "txn-meta") + 1;
+        debug_assert_eq!(g_id_raw, 1, "txn-meta graph must be g_id=1");
+        let g_id = g_id_raw as u16;
+
+        let t = envelope.t as u32;
+
+        // Resolve commit subject using chunk-local subject dict.
+        let commit_ns_code = fluree_vocab::namespaces::FLUREE_COMMIT;
+        let commit_s_id = chunk
+            .subjects
+            .get_or_insert(commit_ns_code, commit_hash_hex.as_bytes());
+
+        // Resolve predicate p_ids (global)
+        let p_address = self.predicates.get_or_insert_parts(fluree::DB, db::ADDRESS);
+        let p_time = self.predicates.get_or_insert_parts(fluree::DB, db::TIME);
+        let p_previous = self
+            .predicates
+            .get_or_insert_parts(fluree::DB, db::PREVIOUS);
+        let p_t = self.predicates.get_or_insert_parts(fluree::DB, db::T);
+        let p_size = self.predicates.get_or_insert_parts(fluree::DB, db::SIZE);
+        let p_asserts = self.predicates.get_or_insert_parts(fluree::DB, db::ASSERTS);
+        let p_retracts = self
+            .predicates
+            .get_or_insert_parts(fluree::DB, db::RETRACTS);
+
+        let mut count = 0u32;
+
+        let mut push = |s_id: u64, p_id: u32, o_kind: ObjKind, o_key: ObjKey, dt: u16| {
+            let record = RunRecord {
+                g_id,
+                s_id: SubjectId::from_u64(s_id),
+                p_id,
+                dt,
+                o_kind: o_kind.as_u8(),
+                op: 1, // assert
+                o_key: o_key.as_u64(),
+                t,
+                lang_id: 0,
+                i: LIST_INDEX_NONE,
+            };
+            chunk.records.push(record);
+            chunk.flake_count += 1;
+            count += 1;
+        };
+
+        // ledger:address (STRING) — CID hex digest via chunk-local string dict
+        let addr_str_id = chunk.strings.get_or_insert(commit_hash_hex.as_bytes());
+        push(
+            commit_s_id,
+            p_address,
+            ObjKind::LEX_ID,
+            ObjKey::encode_u32_id(addr_str_id),
+            DatatypeDictId::STRING.as_u16(),
+        );
+
+        // ledger:time (LONG) -- epoch milliseconds
+        if let Some(time_str) = &envelope.time {
+            if let Some(epoch_ms) = iso_to_epoch_ms(time_str) {
+                push(
+                    commit_s_id,
+                    p_time,
+                    ObjKind::NUM_INT,
+                    ObjKey::encode_i64(epoch_ms),
+                    DatatypeDictId::LONG.as_u16(),
+                );
+            }
+        }
+
+        // ledger:t (INTEGER)
+        push(
+            commit_s_id,
+            p_t,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(t as i64),
+            DatatypeDictId::INTEGER.as_u16(),
+        );
+
+        // ledger:size (LONG)
+        push(
+            commit_s_id,
+            p_size,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(commit_size as i64),
+            DatatypeDictId::LONG.as_u16(),
+        );
+
+        // ledger:asserts (INTEGER)
+        push(
+            commit_s_id,
+            p_asserts,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(asserts as i64),
+            DatatypeDictId::INTEGER.as_u16(),
+        );
+
+        // ledger:retracts (INTEGER)
+        push(
+            commit_s_id,
+            p_retracts,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(retracts as i64),
+            DatatypeDictId::INTEGER.as_u16(),
+        );
+
+        // ledger:previous (ID) -- ref to previous commit (chunk-local subject)
+        if let Some(prev_ref) = &envelope.previous_ref {
+            let prev_digest = prev_ref.id.digest_hex();
+            let prev_s_id = chunk.subjects.get_or_insert(
+                fluree_vocab::namespaces::FLUREE_COMMIT,
+                prev_digest.as_bytes(),
+            );
+            push(
+                commit_s_id,
+                p_previous,
+                ObjKind::REF_ID,
+                ObjKey::encode_sid64(prev_s_id),
+                DatatypeDictId::ID.as_u16(),
+            );
+        }
+
+        // ledger:author (STRING) -- transaction signer DID
+        if let Some(txn_sig) = &envelope.txn_signature {
+            let p_author = self.predicates.get_or_insert_parts(fluree::DB, db::AUTHOR);
+            let author_str_id = chunk.strings.get_or_insert(txn_sig.signer.as_bytes());
+            push(
+                commit_s_id,
+                p_author,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(author_str_id),
+                DatatypeDictId::STRING.as_u16(),
+            );
+        }
+
+        // ledger:txn (STRING) -- transaction CID string
+        if let Some(txn_id) = &envelope.txn {
+            let p_txn = self.predicates.get_or_insert_parts(fluree::DB, db::TXN);
+            let txn_str = txn_id.to_string();
+            let txn_str_id = chunk.strings.get_or_insert(txn_str.as_bytes());
+            push(
+                commit_s_id,
+                p_txn,
+                ObjKind::LEX_ID,
+                ObjKey::encode_u32_id(txn_str_id),
+                DatatypeDictId::STRING.as_u16(),
+            );
+        }
+
+        // User-provided txn_meta entries
+        for entry in &envelope.txn_meta {
+            count += self.emit_txn_meta_entry_chunk(commit_s_id, g_id, t, entry, chunk)?;
+        }
+
+        Ok(count)
+    }
+
+    /// Emit a single user-provided txn_meta entry into the chunk.
+    fn emit_txn_meta_entry_chunk(
+        &mut self,
+        commit_s_id: u64,
+        g_id: u16,
+        t: u32,
+        entry: &fluree_db_novelty::TxnMetaEntry,
+        chunk: &mut RebuildChunk,
+    ) -> Result<u32, ResolverError> {
+        let p_prefix = self
+            .ns_prefixes
+            .get(&entry.predicate_ns)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let p_id = self
+            .predicates
+            .get_or_insert_parts(p_prefix, &entry.predicate_name);
+
+        let (o_kind, o_key, dt, lang_id) =
+            self.resolve_txn_meta_value_chunk(&entry.value, chunk)?;
+
+        let record = RunRecord {
+            g_id,
+            s_id: SubjectId::from_u64(commit_s_id),
+            p_id,
+            dt,
+            o_kind: o_kind.as_u8(),
+            op: 1,
+            o_key: o_key.as_u64(),
+            t,
+            lang_id,
+            i: LIST_INDEX_NONE,
+        };
+        chunk.records.push(record);
+        chunk.flake_count += 1;
+
+        Ok(1)
+    }
+
+    /// Resolve a TxnMetaValue to (ObjKind, ObjKey, dt_id, lang_id) using chunk-local dicts.
+    fn resolve_txn_meta_value_chunk(
+        &mut self,
+        value: &fluree_db_novelty::TxnMetaValue,
+        chunk: &mut RebuildChunk,
+    ) -> Result<(ObjKind, ObjKey, u16, u16), ResolverError> {
+        use fluree_db_novelty::TxnMetaValue;
+
+        match value {
+            TxnMetaValue::String(s) => {
+                let str_id = chunk.strings.get_or_insert(s.as_bytes());
+                Ok((
+                    ObjKind::LEX_ID,
+                    ObjKey::encode_u32_id(str_id),
+                    DatatypeDictId::STRING.as_u16(),
+                    0,
+                ))
+            }
+            TxnMetaValue::Long(n) => Ok((
+                ObjKind::NUM_INT,
+                ObjKey::encode_i64(*n),
+                DatatypeDictId::LONG.as_u16(),
+                0,
+            )),
+            TxnMetaValue::Double(n) => {
+                if !n.is_finite() {
+                    return Err(ResolverError::Resolve(
+                        "txn_meta does not support non-finite double values".into(),
+                    ));
+                }
+                let key = ObjKey::encode_f64(*n)
+                    .map_err(|e| ResolverError::Resolve(format!("txn_meta double: {}", e)))?;
+                Ok((ObjKind::NUM_F64, key, DatatypeDictId::DOUBLE.as_u16(), 0))
+            }
+            TxnMetaValue::Boolean(b) => Ok((
+                ObjKind::BOOL,
+                ObjKey::encode_bool(*b),
+                DatatypeDictId::BOOLEAN.as_u16(),
+                0,
+            )),
+            TxnMetaValue::Ref { ns, name } => {
+                // Resolve ref IRI → chunk-local subject ID
+                let sid = chunk.subjects.get_or_insert(*ns, name.as_bytes());
+                Ok((
+                    ObjKind::REF_ID,
+                    ObjKey::encode_sid64(sid),
+                    DatatypeDictId::ID.as_u16(),
+                    0,
+                ))
+            }
+            TxnMetaValue::LangString { value, lang } => {
+                let str_id = chunk.strings.get_or_insert(value.as_bytes());
+                let lang_id = self.languages.get_or_insert(Some(lang.as_str()));
+                Ok((
+                    ObjKind::LEX_ID,
+                    ObjKey::encode_u32_id(str_id),
+                    DatatypeDictId::LANG_STRING.as_u16(),
+                    lang_id,
+                ))
+            }
+            TxnMetaValue::TypedLiteral {
+                value,
+                dt_ns,
+                dt_name,
+            } => {
+                let str_id = chunk.strings.get_or_insert(value.as_bytes());
+                let dt_id = self.resolve_datatype(*dt_ns, dt_name);
+                if dt_id > u8::MAX as u32 {
+                    return Err(ResolverError::Resolve(format!(
+                        "txn_meta datatype dict overflow (dt_id={} exceeds u8 max)",
+                        dt_id
+                    )));
+                }
+                Ok((
+                    ObjKind::LEX_ID,
+                    ObjKey::encode_u32_id(str_id),
+                    dt_id as u16,
+                    0,
+                ))
+            }
+        }
+    }
+}
+
+/// Per-chunk accumulator for the rebuild pipeline.
+///
+/// Holds chunk-local subject and string dictionaries plus the buffered
+/// RunRecords. The caller flushes the chunk (via `sort_remap_and_write_sorted_commit`)
+/// when flake_count reaches the chunk budget.
+pub struct RebuildChunk {
+    /// Chunk-local subject dict: (ns_code, name) → sequential u64.
+    pub subjects: super::chunk_dict::ChunkSubjectDict,
+    /// Chunk-local string dict: string bytes → sequential u32.
+    pub strings: super::chunk_dict::ChunkStringDict,
+    /// Buffered RunRecords (with chunk-local subject/string IDs).
+    pub records: Vec<RunRecord>,
+    /// Running count of flakes (records) in this chunk.
+    pub flake_count: u64,
+}
+
+impl RebuildChunk {
+    pub fn new() -> Self {
+        Self {
+            subjects: super::chunk_dict::ChunkSubjectDict::new(),
+            strings: super::chunk_dict::ChunkStringDict::new(),
+            records: Vec::new(),
+            flake_count: 0,
+        }
+    }
+
+    /// Current flake count in this chunk.
+    pub fn flake_count(&self) -> u64 {
+        self.flake_count
+    }
+
+    /// Whether the chunk has no records.
+    pub fn is_empty(&self) -> bool {
+        self.flake_count == 0
+    }
+}
+
+impl Default for RebuildChunk {
     fn default() -> Self {
         Self::new()
     }

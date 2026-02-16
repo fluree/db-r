@@ -1244,9 +1244,14 @@ mod tests {
     }
 
     /// Helper: write JSON to a temp file and return a guard that cleans up.
+    ///
+    /// Includes PID in the filename so that nextest (which runs each test in
+    /// a separate process, each starting COUNTER at 0) doesn't collide.
     fn write_temp_json(json: &str) -> TempJsonFile {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("fluree_jsonld_split_test_{}.json", id));
+        let pid = std::process::id();
+        let path =
+            std::env::temp_dir().join(format!("fluree_jsonld_split_test_{}_{}.json", pid, id));
         let mut f = File::create(&path).unwrap();
         f.write_all(json.as_bytes()).unwrap();
         f.flush().unwrap();

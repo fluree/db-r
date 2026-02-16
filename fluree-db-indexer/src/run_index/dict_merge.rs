@@ -170,6 +170,81 @@ pub fn merge_string_dicts(chunks: &[ChunkStringDict]) -> (StringMergeResult, Vec
 }
 
 // ============================================================================
+// Persistence — write merge results to flat files
+// ============================================================================
+
+use std::collections::HashMap;
+use std::io::{self, Write};
+use std::path::Path;
+
+/// Write merged subject/string dictionaries to flat files on disk.
+///
+/// Produces the same file layout as `vocab_merge` / `GlobalDicts::persist()`:
+/// - `subjects.fwd` — concatenated full IRIs (prefix + suffix)
+/// - `subjects.idx` — forward index (offsets + lens)
+/// - `subjects.sids` — sid64 mapping
+/// - `strings.fwd` — concatenated string bytes
+/// - `strings.idx` — forward index
+pub fn persist_merge_artifacts(
+    run_dir: &Path,
+    subjects: &SubjectMergeResult,
+    strings: &StringMergeResult,
+    ns_prefixes: &HashMap<u16, String>,
+) -> io::Result<()> {
+    use super::dict_io::{write_subject_index, write_subject_sid_map};
+
+    // --- Subjects ---
+    // Build a permutation that sorts subjects by sid64. This ensures
+    // subjects.sids is monotonically increasing, which is required by
+    // binary_search in build_class_stats_json and BinaryIndexStore.
+    // (vocab_merge produces sorted output via its min-heap; dict_merge
+    // produces insertion-order, so we sort here.)
+    let n = subjects.forward_entries.len();
+    let mut perm: Vec<usize> = (0..n).collect();
+    perm.sort_unstable_by_key(|&i| subjects.forward_sids[i]);
+
+    let mut fwd = io::BufWriter::new(std::fs::File::create(run_dir.join("subjects.fwd"))?);
+    let mut offsets = Vec::with_capacity(n);
+    let mut lens = Vec::with_capacity(n);
+    let mut sorted_sids = Vec::with_capacity(n);
+    let mut offset: u64 = 0;
+
+    for &i in &perm {
+        let (ns_code, suffix) = &subjects.forward_entries[i];
+        let prefix = ns_prefixes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
+        let total_len = prefix.len() + suffix.len();
+        offsets.push(offset);
+        lens.push(total_len as u32);
+        fwd.write_all(prefix.as_bytes())?;
+        fwd.write_all(suffix)?;
+        offset += total_len as u64;
+        sorted_sids.push(subjects.forward_sids[i]);
+    }
+    fwd.flush()?;
+
+    write_subject_index(&run_dir.join("subjects.idx"), &offsets, &lens)?;
+    write_subject_sid_map(&run_dir.join("subjects.sids"), &sorted_sids)?;
+
+    // --- Strings ---
+    let mut str_fwd = io::BufWriter::new(std::fs::File::create(run_dir.join("strings.fwd"))?);
+    let mut str_offsets = Vec::with_capacity(strings.forward_entries.len());
+    let mut str_lens = Vec::with_capacity(strings.forward_entries.len());
+    let mut str_offset: u64 = 0;
+
+    for entry in &strings.forward_entries {
+        str_offsets.push(str_offset);
+        str_lens.push(entry.len() as u32);
+        str_fwd.write_all(entry)?;
+        str_offset += entry.len() as u64;
+    }
+    str_fwd.flush()?;
+
+    write_subject_index(&run_dir.join("strings.idx"), &str_offsets, &str_lens)?;
+
+    Ok(())
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

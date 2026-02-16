@@ -134,6 +134,32 @@ impl StringRemap for Vec<u32> {
     }
 }
 
+/// Identity subject remap — returns the input index as a u64.
+/// Used when records are already remapped to global IDs.
+pub struct IdentitySubjectRemap;
+
+impl SubjectRemap for IdentitySubjectRemap {
+    fn len(&self) -> usize {
+        usize::MAX
+    }
+    fn get(&self, idx: usize) -> io::Result<u64> {
+        Ok(idx as u64)
+    }
+}
+
+/// Identity string remap — returns the input index as a u32.
+/// Used when records are already remapped to global IDs.
+pub struct IdentityStringRemap;
+
+impl StringRemap for IdentityStringRemap {
+    fn len(&self) -> usize {
+        usize::MAX
+    }
+    fn get(&self, idx: usize) -> io::Result<u32> {
+        Ok(idx as u32)
+    }
+}
+
 /// Memory-mapped subject remap table (u64 little-endian entries).
 #[derive(Debug)]
 pub struct MmapSubjectRemap {
@@ -774,7 +800,7 @@ pub fn remap_record(
 }
 
 #[inline]
-fn stats_record_for_remapped_run_record(
+pub(crate) fn stats_record_for_remapped_run_record(
     record: &RunRecord,
     dt_tags: Option<&[fluree_db_core::value_id::ValueTypeTag]>,
 ) -> crate::stats::StatsRecord {

@@ -376,6 +376,31 @@ impl LeafWriter {
         Ok(())
     }
 
+    /// Write history entries (R3) for a retract-winner without a corresponding
+    /// R1 row. Used during rebuild when the merge winner is a retraction (op=0):
+    /// - The retract itself is always written to R3 (it's a real event the replay
+    ///   journal must record for time-travel).
+    /// - Any earlier asserts/retracts from dedup history are also written.
+    ///
+    /// Only meaningful when `skip_region3 == false`. Import (skip_region3 == true)
+    /// never calls this.
+    pub fn push_history_only(
+        &mut self,
+        winner: &RunRecord,
+        history: &[RunRecord],
+    ) -> io::Result<()> {
+        debug_assert!(
+            !self.skip_region3,
+            "push_history_only should not be called when skip_region3 is true"
+        );
+        // The retract winner is always a real event.
+        self.history_buf.push(Region3Entry::from_run_record(winner));
+        for h in history {
+            self.history_buf.push(Region3Entry::from_run_record(h));
+        }
+        Ok(())
+    }
+
     /// Flush the current record buffer as a leaflet.
     fn flush_leaflet(&mut self) -> io::Result<()> {
         if self.record_buf.is_empty() {

@@ -13,7 +13,7 @@ use crate::{error::ApiError, tx::IndexingMode, Result};
 use fluree_db_core::{
     address_path::ledger_id_to_path_prefix, format_ledger_id, Storage, DEFAULT_BRANCH,
 };
-use fluree_db_indexer::{build_binary_index, clean_garbage, CleanGarbageConfig};
+use fluree_db_indexer::{clean_garbage, rebuild_index_from_commits, CleanGarbageConfig};
 use fluree_db_nameservice::{AdminPublisher, GraphSourcePublisher, NameService, Publisher};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -614,7 +614,7 @@ where
         let gc_min_time_mins = indexer_config.gc_min_time_mins;
 
         let index_result =
-            build_binary_index(self.storage(), &ledger_id, &record, indexer_config).await?;
+            rebuild_index_from_commits(self.storage(), &ledger_id, &record, indexer_config).await?;
 
         info!(
             ledger_id = %ledger_id,

@@ -262,8 +262,8 @@ impl Db {
 
 /// Load a database from an index root content ID.
 ///
-/// The `"version"` field in the JSON root must be `3`; any other value is
-/// rejected.
+/// The `"version"` field in the JSON root must be `3` or `4`; any other
+/// value is rejected.
 ///
 /// The returned Db is metadata-only (`range_provider = None`). The caller
 /// (typically the API layer) must load a `BinaryIndexStore` and attach a
@@ -292,9 +292,9 @@ pub async fn load_db(
         .unwrap_or(0) as u32;
 
     match version {
-        3 => Db::from_root_json(&root_json),
+        3 | 4 => Db::from_root_json(&root_json),
         v => Err(Error::invalid_index(format!(
-            "unsupported index root version: {} (only v3 supported)",
+            "unsupported index root version: {} (only v3/v4 supported)",
             v
         ))),
     }

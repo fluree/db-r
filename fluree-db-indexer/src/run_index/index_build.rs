@@ -142,6 +142,12 @@ pub struct IndexBuildConfig {
     /// Skip Region 3 (history journal) in leaflets. Safe for append-only
     /// bulk import where all ops are asserts with unique `t` values.
     pub skip_region3: bool,
+    /// Override g_id for all records read from run files. Run files use a
+    /// 34-byte wire format that does not carry g_id (each graph's indexes
+    /// are in separate directories). When building per-graph indexes from
+    /// pre-partitioned run files, set this to the actual graph ID so that
+    /// the output directory is `graph_{g_id}/{order}/`.
+    pub g_id_override: Option<u16>,
 }
 
 impl Default for IndexBuildConfig {
@@ -158,6 +164,7 @@ impl Default for IndexBuildConfig {
             progress: None,
             skip_dedup: false,
             skip_region3: false,
+            g_id_override: None,
         }
     }
 }
@@ -391,7 +398,13 @@ fn build_index_from_run_paths_inner(
             history_scratch.clear();
             merge.next_deduped_with_history(&mut history_scratch)?
         };
-        let Some(record) = record else { break };
+        let Some(mut record) = record else { break };
+
+        // When building per-graph indexes from pre-partitioned run files,
+        // stamp the actual graph ID (run wire format sets g_id=0).
+        if let Some(override_id) = config.g_id_override {
+            record.g_id = override_id;
+        }
 
         // Track max t for manifest metadata (must happen before retraction
         // skip so that retraction-only commits are still reflected in max_t).
@@ -399,18 +412,10 @@ fn build_index_from_run_paths_inner(
             max_t = record.t;
         }
 
-        // Snapshot semantics: if dedup selected a retract (op=0), the fact is
-        // no longer asserted and must be excluded from the snapshot index.
-        // History for retracted facts is discarded — they have no R1 row to
-        // attach R3 history to. (The novelty merge path handles this case.)
-        if record.op == 0 {
-            retract_count += 1;
-            continue;
-        }
-
+        // Detect g_id transition BEFORE retract handling — ensures the correct
+        // graph's writer is active before any R3 history entries are written.
         let g_id = record.g_id;
 
-        // Detect g_id transition
         if current_g_id != Some(g_id) {
             finish_open_graph(
                 &mut current_g_id,
@@ -464,6 +469,18 @@ fn build_index_from_run_paths_inner(
                     tracing::info!(g_id, path = %graph_dir.display(), "starting graph index");
                 },
             )?;
+        }
+
+        // Retract-winner handling: no R1 row, but log the retract event + history to R3.
+        if record.op == 0 {
+            retract_count += 1;
+            if !config.skip_region3 {
+                let writer = current_writer
+                    .as_mut()
+                    .ok_or_else(|| io::Error::other("missing leaf writer for current graph"))?;
+                writer.push_history_only(&record, &history_scratch)?;
+            }
+            continue;
         }
 
         // Push record (R1) with associated history entries (R3) to current writer.
@@ -936,7 +953,7 @@ pub fn build_spot_from_sorted_commits(
     use super::sorted_commit_reader::StreamingSortedCommitReader;
 
     let order = RunSortOrder::Spot;
-    let order_name = order.dir_name();
+    let order_name = "spot";
     let start = Instant::now();
     let _span = tracing::info_span!("build_spot_from_commits").entered();
 
@@ -964,7 +981,7 @@ pub fn build_spot_from_sorted_commits(
         streams.push(reader);
     }
 
-    // K-way merge with (g_id, SPOT) comparator.
+    // K-way merge with graph-prefixed SPOT comparator.
     let mut merge = KWayMerge::new(streams, cmp_g_spot)?;
 
     // Optionally collect class→property→datatype stats during merge.
@@ -997,14 +1014,9 @@ pub fn build_spot_from_sorted_commits(
             max_t = record.t;
         }
 
-        if record.op == 0 {
-            retract_count += 1;
-            continue;
-        }
-
+        // Detect g_id transition BEFORE retract handling.
         let g_id = record.g_id;
 
-        // Detect g_id transition
         if current_g_id != Some(g_id) {
             finish_open_graph(
                 &mut current_g_id,
@@ -1018,7 +1030,7 @@ pub fn build_spot_from_sorted_commits(
                         g_id = result.g_id,
                         leaves = result.leaf_count,
                         rows = result.total_rows,
-                        "SPOT graph complete"
+                        "graph complete"
                     );
                 },
             )?;
@@ -1043,6 +1055,18 @@ pub fn build_spot_from_sorted_commits(
                 },
                 |_g_id, _graph_dir| {},
             )?;
+        }
+
+        // Retract-winner handling: no R1 row, but log the retract event + history to R3.
+        if record.op == 0 {
+            retract_count += 1;
+            if !config.skip_region3 {
+                let writer = current_writer
+                    .as_mut()
+                    .ok_or_else(|| io::Error::other("missing leaf writer for current graph"))?;
+                writer.push_history_only(&record, &history_scratch)?;
+            }
+            continue;
         }
 
         // Feed asserted record to class stats collector (before writing to leaf).
@@ -1084,7 +1108,7 @@ pub fn build_spot_from_sorted_commits(
                 g_id = result.g_id,
                 leaves = result.leaf_count,
                 rows = result.total_rows,
-                "SPOT graph complete"
+                "graph complete"
             );
         },
     )?;
@@ -1101,7 +1125,7 @@ pub fn build_spot_from_sorted_commits(
         tracing::info!(
             classes = stats.class_counts.len(),
             ref_target_classes = ref_classes,
-            "class stats collected during SPOT merge"
+            "class stats collected during merge"
         );
         stats
     });
@@ -1121,7 +1145,7 @@ pub fn build_spot_from_sorted_commits(
         retract_count,
         max_t,
         elapsed_s = elapsed.as_secs(),
-        "SPOT index build from sorted commits complete"
+        "index build from sorted commits complete"
     );
 
     Ok((
@@ -1368,6 +1392,7 @@ pub fn build_all_indexes(
                             progress: order_progress,
                             skip_dedup,
                             skip_region3,
+                            g_id_override: None,
                         };
                         build_index_from_run_paths(config, run_paths)
                     }),

@@ -399,7 +399,7 @@ fn create_from_file() {
         .args(["create", "seeddb", "--from", ttl_path.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Created ledger 'seeddb'"))
+        .stdout(predicate::str::contains("About ledger 'seeddb'"))
         .stdout(predicate::str::contains("flakes"));
 }
 

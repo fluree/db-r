@@ -45,7 +45,7 @@ pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 
 // Note: The following types/functions are defined in this module and are automatically public:
 // - build_index_for_ledger (nameservice-aware entry point)
-// - build_binary_index (direct entry point given an NsRecord)
+// - rebuild_index_from_commits (direct entry point given an NsRecord)
 // - CURRENT_INDEX_VERSION
 
 use fluree_db_core::{ContentId, ContentKind, ContentStore, ContentWriteResult, Storage};
@@ -252,7 +252,7 @@ pub const CURRENT_INDEX_VERSION: i32 = 2;
 /// 3. Creates a `BinaryIndexRoot` descriptor and writes it to storage
 ///
 /// Returns early if the index is already current (no work needed).
-/// Use `build_binary_index` directly to force a rebuild regardless.
+/// Use `rebuild_index_from_commits` directly to force a rebuild regardless.
 pub async fn build_index_for_ledger<S, N>(
     storage: &S,
     nameservice: &N,
@@ -285,7 +285,7 @@ where
         }
     }
 
-    build_binary_index(storage, ledger_id, &record, config).await
+    rebuild_index_from_commits(storage, ledger_id, &record, config).await
 }
 
 /// Build a binary index from an existing nameservice record.
@@ -299,12 +299,13 @@ where
 /// held across await points.
 ///
 /// Pipeline:
-/// 1. Walk commit chain backward to collect addresses
-/// 2. Resolve commits in forward order using `MultiOrderRunWriter` to produce
-///    per-order sorted run files (SPOT, PSOT, POST, OPST)
-/// 3. Build per-graph leaf/branch indexes from run files
-/// 4. Write `BinaryIndexRoot` descriptor to storage
-pub async fn build_binary_index<S>(
+/// 1. Walk commit chain backward → forward CID list
+/// 2. Resolve commits into batched chunks with per-chunk local dicts
+/// 3. Dict merge (subjects + strings) → global IDs + remap tables
+/// 4. Build SPOT from sorted commit files (k-way merge with g_id)
+/// 5. Remap + build secondary indexes (PSOT/POST/OPST)
+/// 6. Upload artifacts to CAS and write BinaryIndexRoot
+pub async fn rebuild_index_from_commits<S>(
     storage: &S,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
@@ -314,6 +315,8 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     use fluree_db_novelty::commit_v2::read_commit_envelope;
+    use run_index::resolver::{RebuildChunk, SharedResolverState};
+    use run_index::spool::SortedCommitInfo;
 
     let head_commit_id = record
         .commit_head_id
@@ -337,7 +340,7 @@ where
         %head_commit_id,
         ?run_dir,
         ?index_dir,
-        "starting binary index build"
+        "starting binary index rebuild from commits"
     );
 
     // Capture values for the blocking task
@@ -352,7 +355,8 @@ where
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
             // Build a content store bridge for CID → address resolution
-            let content_store = fluree_db_core::storage::content_store_for(storage.clone(), &ledger_id);
+            let content_store =
+                fluree_db_core::storage::content_store_for(storage.clone(), &ledger_id);
 
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
             let commit_cids = {
@@ -374,25 +378,16 @@ where
                 cids
             };
 
-            // ---- Phase B: Resolve commits with multi-order run writer ----
-            let mut dicts = run_index::GlobalDicts::new(&run_dir)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            let mut resolver = run_index::CommitResolver::new();
+            // ---- Phase B: Resolve commits into batched chunks ----
+            let mut shared = SharedResolverState::new();
 
             // Pre-insert rdf:type into predicate dictionary so class tracking
             // works from the very first commit.
-            let rdf_type_p_id = dicts.predicates.get_or_insert(fluree_vocab::rdf::TYPE);
-            let mut stats_hook = crate::stats::IdStatsHook::new();
-            stats_hook.set_rdf_type_p_id(rdf_type_p_id);
-            resolver.set_stats_hook(stats_hook);
+            let rdf_type_p_id = shared.predicates.get_or_insert(fluree_vocab::rdf::TYPE);
 
-            let multi_config = run_index::MultiOrderConfig {
-                total_budget_bytes: config.run_budget_bytes,
-                orders: run_index::RunSortOrder::all_build_orders().to_vec(),
-                base_run_dir: run_dir.clone(),
-            };
-            let mut writer = run_index::MultiOrderRunWriter::new(multi_config)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            let chunk_max_flakes: u64 = 5_000_000; // ~5M flakes per chunk
+            let mut chunk = RebuildChunk::new();
+            let mut chunks: Vec<RebuildChunk> = Vec::new();
 
             // Accumulate commit statistics for index root
             let mut total_commit_size = 0u64;
@@ -400,16 +395,21 @@ where
             let mut total_retracts = 0u64;
 
             for (i, cid) in commit_cids.iter().enumerate() {
+                // If chunk is non-empty and near budget, flush before processing
+                // the next commit to avoid memory bloat on large commits.
+                if !chunk.is_empty() && chunk.flake_count() >= chunk_max_flakes {
+                    chunks.push(std::mem::take(&mut chunk));
+                }
+
                 let bytes = content_store
                     .get(cid)
                     .await
                     .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
 
-                let resolved = resolver
-                    .resolve_blob(&bytes, &cid.digest_hex(), &mut dicts, &mut writer)
+                let resolved = shared
+                    .resolve_commit_into_chunk(&bytes, &cid.digest_hex(), &mut chunk)
                     .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
 
-                // Accumulate totals
                 total_commit_size += resolved.size;
                 total_asserts += resolved.asserts as u64;
                 total_retracts += resolved.retracts as u64;
@@ -418,290 +418,575 @@ where
                     commit = i + 1,
                     t = resolved.t,
                     ops = resolved.total_records,
-                    subjects = dicts.subjects.len(),
-                    predicates = dicts.predicates.len(),
-                    "commit resolved"
+                    chunk_flakes = chunk.flake_count(),
+                    "commit resolved into chunk"
                 );
+
+                // Post-commit flush check.
+                if chunk.flake_count() >= chunk_max_flakes {
+                    chunks.push(std::mem::take(&mut chunk));
+                }
             }
 
-            let id_stats_hook = resolver.take_stats_hook();
+            // Push final chunk if non-empty.
+            if !chunk.is_empty() {
+                chunks.push(chunk);
+            }
 
-            let total_records = writer.total_records();
-            let _writer_results = writer
-                .finish(&mut dicts.languages)
+            tracing::info!(
+                chunks = chunks.len(),
+                total_asserts,
+                total_retracts,
+                predicates = shared.predicates.len(),
+                graphs = shared.graphs.len(),
+                "Phase B complete: all commits resolved into chunks"
+            );
+
+            // ---- Phase C: Dict merge → global IDs + remap tables ----
+            // Separate dicts from records so merge can borrow owned dicts.
+            let mut subject_dicts = Vec::with_capacity(chunks.len());
+            let mut string_dicts = Vec::with_capacity(chunks.len());
+            let mut chunk_records: Vec<Vec<run_index::RunRecord>> =
+                Vec::with_capacity(chunks.len());
+
+            for chunk in chunks {
+                subject_dicts.push(chunk.subjects);
+                string_dicts.push(chunk.strings);
+                chunk_records.push(chunk.records);
+            }
+
+            let (subject_merge, subject_remaps) =
+                run_index::dict_merge::merge_subject_dicts(&subject_dicts);
+            let (string_merge, string_remaps) =
+                run_index::dict_merge::merge_string_dicts(&string_dicts);
+
+            // Remap records to global IDs in-place, sort by cmp_g_spot, write .fsc files.
+            let commits_dir = run_dir.join("sorted_commits");
+            std::fs::create_dir_all(&commits_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // Persist dictionaries for index build
-            dicts
-                .persist(&run_dir)
+            let mut sorted_commit_infos: Vec<SortedCommitInfo> = Vec::new();
+
+            for (ci, records) in chunk_records.iter_mut().enumerate() {
+                let s_remap = &subject_remaps[ci];
+                let str_remap = &string_remaps[ci];
+
+                // Remap chunk-local IDs → global IDs in-place.
+                for record in records.iter_mut() {
+                    // Subject: chunk-local u64 → global sid64
+                    let local_s = record.s_id.as_u64() as usize;
+                    let global_s = *s_remap.get(local_s).ok_or_else(|| {
+                        IndexerError::StorageWrite(format!(
+                            "subject remap miss: chunk {ci}, local_s={local_s}"
+                        ))
+                    })?;
+                    record.s_id = fluree_db_core::subject_id::SubjectId::from_u64(global_s);
+
+                    // Object: remap if REF_ID (subject) or LEX_ID/JSON_ID (string)
+                    let kind = fluree_db_core::value_id::ObjKind::from_u8(record.o_kind);
+                    if kind == fluree_db_core::value_id::ObjKind::REF_ID {
+                        let local_o = record.o_key as usize;
+                        record.o_key = *s_remap.get(local_o).ok_or_else(|| {
+                            IndexerError::StorageWrite(format!(
+                                "subject remap miss: chunk {ci}, local_o={local_o}"
+                            ))
+                        })?;
+                    } else if kind == fluree_db_core::value_id::ObjKind::LEX_ID
+                        || kind == fluree_db_core::value_id::ObjKind::JSON_ID
+                    {
+                        let local_str = fluree_db_core::value_id::ObjKey::from_u64(record.o_key)
+                            .decode_u32_id() as usize;
+                        let global_str = *str_remap.get(local_str).ok_or_else(|| {
+                            IndexerError::StorageWrite(format!(
+                                "string remap miss: chunk {ci}, local_str={local_str}"
+                            ))
+                        })?;
+                        record.o_key =
+                            fluree_db_core::value_id::ObjKey::encode_u32_id(global_str).as_u64();
+                    }
+                    // else: inline types, no remap needed
+                }
+
+                // Sort by (g_id, SPOT).
+                records.sort_unstable_by(run_index::run_record::cmp_g_spot);
+
+                // Write sorted commit file (.fsc) via SpoolWriter.
+                let fsc_path = commits_dir.join(format!("chunk_{ci:05}.fsc"));
+                let mut spool_writer = run_index::spool::SpoolWriter::new(&fsc_path, ci)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                for record in records.iter() {
+                    spool_writer
+                        .push(record)
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                }
+                let spool_info = spool_writer
+                    .finish()
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                // Extract rdf:type edges into .types sidecar (for ClassBitsetTable).
+                // Records are already global IDs, so sidecar entries are global too.
+                let ref_id = fluree_db_core::value_id::ObjKind::REF_ID.as_u8();
+                let types_path = commits_dir.join(format!("chunk_{ci:05}.types"));
+                {
+                    let file = std::fs::File::create(&types_path)
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    let mut bw = std::io::BufWriter::new(file);
+                    for record in records.iter() {
+                        if record.p_id == rdf_type_p_id && record.o_kind == ref_id && record.op == 1
+                        {
+                            std::io::Write::write_all(&mut bw, &record.g_id.to_le_bytes())
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                            std::io::Write::write_all(&mut bw, &record.s_id.as_u64().to_le_bytes())
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                            std::io::Write::write_all(&mut bw, &record.o_key.to_le_bytes())
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                        }
+                    }
+                    std::io::Write::flush(&mut bw)
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                }
+
+                sorted_commit_infos.push(SortedCommitInfo {
+                    path: fsc_path,
+                    record_count: spool_info.record_count,
+                    byte_len: spool_info.byte_len,
+                    chunk_idx: ci,
+                    subject_count: subject_dicts[ci].len(),
+                    string_count: string_dicts[ci].len() as u64,
+                    types_map_path: Some(types_path),
+                });
+            }
+
+            // Persist global dicts to disk for index-store loading + CAS upload.
+            {
+                use run_index::dict_io::{write_language_dict, write_predicate_dict};
+
+                let preds: Vec<&str> = (0..shared.predicates.len())
+                    .map(|p_id| shared.predicates.resolve(p_id).unwrap_or(""))
+                    .collect();
+                std::fs::write(
+                    run_dir.join("predicates.json"),
+                    serde_json::to_vec(&preds)
+                        .map_err(|e| IndexerError::Serialization(e.to_string()))?,
+                )
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // Persist namespace map for query-time IRI encoding
-            run_index::persist_namespaces(resolver.ns_prefixes(), &run_dir)
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                write_predicate_dict(&run_dir.join("graphs.dict"), &shared.graphs)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                write_predicate_dict(&run_dir.join("datatypes.dict"), &shared.datatypes)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // Persist reverse hash indexes
-            dicts
-                .subjects
-                .write_reverse_index(&run_dir.join("subjects.rev"))
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            dicts
-                .strings
-                .write_reverse_index(&run_dir.join("strings.rev"))
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                run_index::persist_namespaces(&shared.ns_prefixes, &run_dir)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // ---- Phase C: Build per-graph indexes for all sort orders ----
-            let build_results = run_index::build_all_indexes(
+                write_language_dict(&run_dir.join("languages.dict"), &shared.languages)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            }
+
+            // Write subject/string forward files + indexes from merge results.
+            run_index::dict_merge::persist_merge_artifacts(
                 &run_dir,
-                &index_dir,
-                run_index::RunSortOrder::all_build_orders(),
-                25_000, // leaflet_rows
-                10,     // leaflets_per_leaf
-                1,      // zstd_level
-                None,   // no progress counter
-                false,  // skip_dedup: regular index build needs dedup
-                false,  // skip_region3: regular build needs history journal
+                &subject_merge,
+                &string_merge,
+                &shared.ns_prefixes,
             )
-            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            .map_err(|e: std::io::Error| IndexerError::StorageWrite(e.to_string()))?;
 
-            // ---- Phase D: Upload artifacts to CAS and write v4 root ----
+            // Write numbig arenas
+            if !shared.numbigs.is_empty() {
+                let nb_dir = run_dir.join("numbig");
+                std::fs::create_dir_all(&nb_dir)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                for (&p_id, arena) in &shared.numbigs {
+                    run_index::numbig_dict::write_numbig_arena(
+                        &nb_dir.join(format!("p_{}.nba", p_id)),
+                        arena,
+                    )
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                }
+            }
 
-            // D.1: Load store for max_t / base_t / namespace_codes
+            // Write vector arenas (shards + manifests per predicate)
+            if !shared.vectors.is_empty() {
+                let vec_dir = run_dir.join("vectors");
+                std::fs::create_dir_all(&vec_dir)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                for (&p_id, arena) in &shared.vectors {
+                    if arena.is_empty() {
+                        continue;
+                    }
+                    let shard_paths =
+                        run_index::vector_arena::write_vector_shards(&vec_dir, p_id, arena)
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    let shard_infos: Vec<run_index::vector_arena::ShardInfo> = shard_paths
+                        .iter()
+                        .enumerate()
+                        .map(|(i, path)| {
+                            let cap = run_index::vector_arena::SHARD_CAPACITY;
+                            let start = i as u32 * cap;
+                            let count = (arena.len() - start).min(cap);
+                            run_index::vector_arena::ShardInfo {
+                                cas: path.display().to_string(),
+                                count,
+                            }
+                        })
+                        .collect();
+                    run_index::vector_arena::write_vector_manifest(
+                        &vec_dir.join(format!("p_{}.vam", p_id)),
+                        arena,
+                        &shard_infos,
+                    )
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                }
+            }
+
+            tracing::info!(
+                subjects = subject_merge.total_subjects,
+                strings = string_merge.total_strings,
+                "Phase C complete: dict merge done"
+            );
+
+            // ---- Phase D: Build SPOT from sorted commits ----
+            // Records are already remapped to global IDs, so use identity remaps.
+            let p_width =
+                run_index::leaflet::p_width_for_max(shared.predicates.len().saturating_sub(1));
+            if shared.datatypes.len() > 256 {
+                return Err(IndexerError::StorageWrite(format!(
+                    "datatype dictionary too large for u8 encoding ({} > 256)",
+                    shared.datatypes.len()
+                )));
+            }
+            let dt_width: u8 = 1; // datatypes u8-encoded (validated above)
+
+            // Build ClassBitsetTable from .types sidecars (IDs are already global).
+            let bitset_inputs: Vec<(&std::path::Path, &dyn run_index::spool::SubjectRemap)> =
+                sorted_commit_infos
+                    .iter()
+                    .filter_map(|info| {
+                        info.types_map_path.as_ref().map(|p| {
+                            (
+                                p.as_path(),
+                                &run_index::spool::IdentitySubjectRemap
+                                    as &dyn run_index::spool::SubjectRemap,
+                            )
+                        })
+                    })
+                    .collect();
+
+            let class_bitset = if !bitset_inputs.is_empty() {
+                let table = run_index::ClassBitsetTable::build_from_type_maps(&bitset_inputs)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                tracing::info!(
+                    classes = table.class_count(),
+                    "class bitset table built for SPOT merge"
+                );
+                Some(table)
+            } else {
+                None
+            };
+
+            let spot_inputs: Vec<run_index::SortedCommitInput> = sorted_commit_infos
+                .iter()
+                .map(|info| {
+                    run_index::SortedCommitInput {
+                        commit_path: info.path.clone(),
+                        subject_remap: Box::new(run_index::spool::IdentitySubjectRemap),
+                        string_remap: Box::new(run_index::spool::IdentityStringRemap),
+                        lang_remap: vec![], // language tags are global, no remap needed
+                    }
+                })
+                .collect();
+
+            let spot_config = run_index::SpotFromCommitsConfig {
+                index_dir: index_dir.clone(),
+                p_width,
+                dt_width,
+                leaflet_rows: 25_000,
+                leaflets_per_leaf: 10,
+                zstd_level: 1,
+                progress: None,
+                skip_dedup: false,   // rebuild needs dedup
+                skip_region3: false, // rebuild needs history journal
+                rdf_type_p_id: Some(rdf_type_p_id),
+                class_bitset,
+            };
+
+            let (spot_result, spot_class_stats) =
+                run_index::build_spot_from_sorted_commits(spot_inputs, spot_config)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+            tracing::info!(
+                graphs = spot_result.graphs.len(),
+                total_rows = spot_result.graphs.iter().map(|g| g.total_rows).sum::<u64>(),
+                "Phase D complete: SPOT built"
+            );
+
+            // ---- Phase E: Build secondary indexes (PSOT/POST/OPST) ----
+            // Read sorted commit files, partition records by graph, collect
+            // per-property HLL stats, then build per-graph secondary indexes.
+            //
+            // Each graph's indexes live in their own directory — the run wire
+            // format (34 bytes) does not carry g_id because it is implicit
+            // from the directory path. We use g_id_override in IndexBuildConfig
+            // so the index builder creates the correct graph_{g_id}/ output.
+
+            let dt_tags: &[fluree_db_core::value_id::ValueTypeTag] = &shared.dt_tags;
+
+            let mut stats_hook = crate::stats::IdStatsHook::new();
+            stats_hook.set_rdf_type_p_id(rdf_type_p_id);
+
+            let secondary_orders = run_index::RunSortOrder::secondary_orders();
+            let phase_e_start = std::time::Instant::now();
+
+            // E.1: Read sorted commit files, partition by g_id, collect stats,
+            //      and write per-graph run files via MultiOrderRunWriter.
+            let remap_dir = run_dir.join("remap");
+            std::fs::create_dir_all(&remap_dir)
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+            let mut graph_writers: std::collections::BTreeMap<u16, run_index::MultiOrderRunWriter> =
+                std::collections::BTreeMap::new();
+            let mut lang_dict = shared.languages.clone();
+
+            for info in &sorted_commit_infos {
+                let reader = run_index::SpoolReader::open(&info.path, info.record_count)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                for result in reader {
+                    let record = result.map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                    // Collect per-property HLL stats from globally-remapped records.
+                    let sr = run_index::spool::stats_record_for_remapped_run_record(
+                        &record,
+                        Some(dt_tags),
+                    );
+                    stats_hook.on_record(&sr);
+
+                    // Push to per-graph writer (creates lazily on first record).
+                    let g_id = record.g_id;
+                    let writer = match graph_writers.entry(g_id) {
+                        std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                        std::collections::btree_map::Entry::Vacant(e) => {
+                            let graph_run_dir = remap_dir.join(format!("graph_{g_id}"));
+                            let mo_config = run_index::MultiOrderConfig {
+                                orders: secondary_orders.to_vec(),
+                                base_run_dir: graph_run_dir,
+                                total_budget_bytes: config.run_budget_bytes,
+                            };
+                            let w = run_index::MultiOrderRunWriter::new(mo_config)
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                            e.insert(w)
+                        }
+                    };
+                    writer
+                        .push(record, &mut lang_dict)
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                }
+            }
+
+            // E.2: Flush per-graph writers → per-graph run files.
+            let mut graph_run_results: std::collections::BTreeMap<
+                u16,
+                Vec<(run_index::RunSortOrder, run_index::RunWriterResult)>,
+            > = std::collections::BTreeMap::new();
+
+            for (g_id, writer) in graph_writers {
+                let results = writer
+                    .finish(&mut lang_dict)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                graph_run_results.insert(g_id, results);
+            }
+
+            // E.3: Build per-graph secondary indexes from the run files.
+            let mut secondary_results: Vec<(run_index::RunSortOrder, run_index::IndexBuildResult)> =
+                Vec::new();
+
+            for &order in secondary_orders {
+                let mut all_graph_results: Vec<run_index::GraphIndexResult> = Vec::new();
+                let mut total_rows: u64 = 0;
+
+                for (&g_id, results) in &graph_run_results {
+                    let order_result = results.iter().find(|(o, _)| *o == order);
+                    let Some((_, writer_result)) = order_result else {
+                        continue;
+                    };
+                    if writer_result.run_files.is_empty() {
+                        continue;
+                    }
+
+                    let run_paths: Vec<std::path::PathBuf> = writer_result
+                        .run_files
+                        .iter()
+                        .map(|rf| rf.path.clone())
+                        .collect();
+
+                    let config = run_index::IndexBuildConfig {
+                        run_dir: remap_dir
+                            .join(format!("graph_{g_id}"))
+                            .join(order.dir_name()),
+                        dicts_dir: run_dir.clone(),
+                        index_dir: index_dir.clone(),
+                        sort_order: order,
+                        leaflet_rows: 25_000,
+                        leaflets_per_leaf: 10,
+                        zstd_level: 1,
+                        persist_lang_dict: false,
+                        progress: None,
+                        skip_dedup: false,
+                        skip_region3: false,
+                        g_id_override: Some(g_id),
+                    };
+
+                    let result = run_index::build_index_from_run_paths(config, run_paths)
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                    total_rows += result.total_rows;
+                    all_graph_results.extend(result.graphs);
+                }
+
+                secondary_results.push((
+                    order,
+                    run_index::IndexBuildResult {
+                        graphs: all_graph_results,
+                        total_rows,
+                        index_dir: index_dir.clone(),
+                        elapsed: phase_e_start.elapsed(),
+                    },
+                ));
+            }
+
+            // Combine SPOT + secondary results.
+            let mut build_results: Vec<(run_index::RunSortOrder, run_index::IndexBuildResult)> =
+                Vec::new();
+            build_results.push((run_index::RunSortOrder::Spot, spot_result));
+            build_results.extend(secondary_results);
+
+            let total_records: u64 = build_results
+                .iter()
+                .filter(|(o, _)| *o == run_index::RunSortOrder::Spot)
+                .flat_map(|(_, r)| r.graphs.iter())
+                .map(|g| g.total_rows)
+                .sum();
+
+            tracing::info!(
+                secondary_count = build_results.len() - 1,
+                "Phase E complete: secondary indexes built"
+            );
+
+            // ---- Phase F: Upload artifacts to CAS and write v4 root ----
+
+            // F.1: Load store for max_t / base_t / namespace_codes
             let store = run_index::BinaryIndexStore::load(&run_dir, &index_dir)
                 .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
 
             // Build predicate p_id -> (ns_code, suffix) mapping for the root (compact).
-            let predicate_sids: Vec<(u16, String)> = (0..dicts.predicates.len())
+            let predicate_sids: Vec<(u16, String)> = (0..shared.predicates.len())
                 .map(|p_id| {
-                    let iri = dicts.predicates.resolve(p_id).unwrap_or("");
+                    let iri = shared.predicates.resolve(p_id).unwrap_or("");
                     let sid = store.encode_iri(iri);
                     (sid.namespace_code, sid.name.as_ref().to_string())
                 })
                 .collect();
 
-            // D.2: Upload dictionary artifacts to CAS
-            let numbig_p_ids: Vec<u32> = dicts.numbigs.keys().copied().collect();
-            let dict_addresses = upload_dicts_to_cas(
-                &storage,
-                &ledger_id,
-                &run_dir,
-                &dicts,
-                &numbig_p_ids,
-                store.namespace_codes(),
-            )
-            .await?;
+            // F.2: Upload dictionary artifacts to CAS
+            // The rebuild pipeline uses SharedResolverState instead of GlobalDicts,
+            // so we use upload_dicts_from_disk which reads the flat files we already wrote.
+            let dict_addresses =
+                upload_dicts_from_disk(&storage, &ledger_id, &run_dir, store.namespace_codes())
+                    .await?;
 
-            // D.3: Upload index artifacts (branches + leaves) to CAS
+            // F.3: Upload index artifacts (branches + leaves) to CAS
             let graph_addresses =
                 upload_indexes_to_cas(&storage, &ledger_id, &build_results).await?;
 
-            // D.4: Build stats JSON + persist HLL sketches.
-            //
-            // Preferred: ID-based stats collected during commit resolution (per-graph property
-            // stats with datatype counts + HLL NDV). Fallback: SPOT build result for per-graph
-            // flake counts only.
-            //
-            // Sketch persistence must happen BEFORE finalize consumes the hook.
-            let (stats_json, sketch_ref) = {
-                if let Some(hook) = id_stats_hook {
-                    // D.4a: Persist HLL sketches to CAS before finalize consumes the hook.
-                    // Counts are clamped to ≥ 0 (snapshot state, not raw deltas).
-                    let sketch_blob = crate::stats::HllSketchBlob::from_properties(
-                        store.max_t(),
-                        hook.properties(),
-                    );
-                    let sketch_bytes = sketch_blob
-                        .to_json_bytes()
-                        .map_err(|e| IndexerError::Serialization(e.to_string()))?;
-                    let sketch_cid = content_store
-                        .put(fluree_db_core::ContentKind::StatsSketch, &sketch_bytes)
-                        .await
-                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            // F.4: Build stats JSON from IdStatsHook (per-property HLL + class tracking).
+            let (stats_json, sketch_ref): (serde_json::Value, Option<fluree_db_core::ContentId>) = {
+                let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
+                    stats_hook.finalize_with_aggregate_properties();
 
-                    tracing::debug!(
-                        %sketch_cid,
-                        entries = sketch_blob.entries.len(),
-                        "HLL sketch blob persisted"
-                    );
-
-                    // D.4b: Finalize stats (consumes hook).
-                    let (id_result, agg_props, class_counts, class_properties, class_ref_targets) =
-                        hook.finalize_with_aggregate_properties();
-
-                    let graphs_json: Vec<serde_json::Value> = id_result
-                        .graphs
-                        .iter()
-                        .map(|g| {
-                            let props_json: Vec<serde_json::Value> = g
-                                .properties
-                                .iter()
-                                .map(|p| {
-                                    serde_json::json!({
-                                        "p_id": p.p_id,
-                                        "count": p.count,
-                                        "ndv_values": p.ndv_values,
-                                        "ndv_subjects": p.ndv_subjects,
-                                        "last_modified_t": p.last_modified_t,
-                                        "datatypes": p.datatypes,
-                                    })
-                                })
-                                .collect();
-
-                            serde_json::json!({
-                                "g_id": g.g_id,
-                                "flakes": g.flakes,
-                                "size": g.size,
-                                "properties": props_json,
-                            })
-                        })
-                        .collect();
-
-                    // Build top-level properties array with SID keys (for the planner).
-                    // Each entry: [[ns_code, "suffix"], count, ndv_values, ndv_subjects, last_modified_t, datatypes]
-                    let properties_json: Vec<serde_json::Value> = agg_props
-                        .iter()
-                        .filter_map(|p| {
-                            let sid = predicate_sids.get(p.p_id as usize)?;
-                            Some(serde_json::json!({
-                                "sid": [sid.0, sid.1],
-                                "count": p.count,
-                                "ndv_values": p.ndv_values,
-                                "ndv_subjects": p.ndv_subjects,
-                                "last_modified_t": p.last_modified_t,
-                                "datatypes": p.datatypes,
-                            }))
-                        })
-                        .collect();
-
-                    // Build classes array with SID keys.
-                    // class sid64 -> (ns_code, suffix) via subject IRI resolution.
-                    // Format: [[ns_code, "suffix"], [count, [prop_usages...]]]
-                    let classes_json: Vec<serde_json::Value> = class_counts
-                        .iter()
-                        .filter_map(|&(class_sid64, count)| {
-                            let iri = store.resolve_subject_iri(class_sid64).ok()?;
-                            let sid = store.encode_iri(&iri);
-
-                            // Build property usages for this class
-                            let prop_usages: Vec<serde_json::Value> = class_properties
-                                .get(&class_sid64)
-                                .map(|props| {
-                                    let mut sorted: Vec<u32> = props.iter().copied().collect();
-                                    sorted.sort();
-                                    sorted
-                                        .iter()
-                                        .filter_map(|&pid| {
-                                            let psid = predicate_sids.get(pid as usize)?;
-                                            // Optional ref target class counts for this (class, property) pair.
-                                            //
-                                            // Raw format: `[[property_sid], {"ref-classes": [[[class_sid], count], ...]}]`
-                                            let refs_obj = class_ref_targets
-                                                .get(&class_sid64)
-                                                .and_then(|m| m.get(&pid))
-                                                .and_then(|targets| {
-                                                    let mut entries: Vec<(u64, i64)> =
-                                                        targets.iter().map(|(&c, &d)| (c, d)).collect();
-                                                    entries.sort_by_key(|(c, _)| *c);
-                                                    let ref_arr: Vec<serde_json::Value> = entries
-                                                        .into_iter()
-                                                        .filter_map(|(target_sid64, d)| {
-                                                            let c = d.max(0) as u64;
-                                                            if c == 0 {
-                                                                return None;
-                                                            }
-                                                            let iri =
-                                                                store.resolve_subject_iri(target_sid64).ok()?;
-                                                            let sid = store.encode_iri(&iri);
-                                                            Some(serde_json::json!([
-                                                                [sid.namespace_code, sid.name.as_ref()],
-                                                                c
-                                                            ]))
-                                                        })
-                                                        .collect();
-                                                    if ref_arr.is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(serde_json::json!({ "ref-classes": ref_arr }))
-                                                    }
-                                                });
-
-                                            match refs_obj {
-                                                Some(obj) => Some(serde_json::json!([[psid.0, psid.1], obj])),
-                                                None => Some(serde_json::json!([[psid.0, psid.1]])),
-                                            }
-                                        })
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-
-                            Some(serde_json::json!([
-                                [sid.namespace_code, sid.name.as_ref()],
-                                [count, prop_usages],
-                            ]))
-                        })
-                        .collect();
-
-                    (serde_json::json!({
-                        "flakes": id_result.total_flakes,
-                        "size": 0,
-                        "graphs": graphs_json,
-                        "properties": properties_json,
-                        "classes": classes_json,
-                    }), Some(sketch_cid))
+                // Class stats from SPOT merge (class → count + property → datatype).
+                let classes_json: Vec<serde_json::Value> = if let Some(ref cs) = spot_class_stats {
+                    crate::stats::build_class_stats_json(
+                        cs,
+                        &predicate_sids,
+                        dt_tags,
+                        &run_dir,
+                        store.namespace_codes(),
+                    )
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
                 } else {
-                    // Fallback: flake counts only (no per-property / datatype breakdown).
-                    let (_, spot_result) = build_results
-                        .iter()
-                        .find(|(order, _)| *order == run_index::RunSortOrder::Spot)
-                        .expect("SPOT index must always be present in build results");
+                    Vec::new()
+                };
 
-                    let graph_stats: Vec<serde_json::Value> = spot_result
-                        .graphs
-                        .iter()
-                        .map(|g| {
-                            serde_json::json!({
-                                "g_id": g.g_id,
-                                "flakes": g.total_rows,
-                                "size": 0
+                // Per-graph stats (p_id-keyed)
+                let graphs_json: Vec<serde_json::Value> = id_result
+                    .graphs
+                    .iter()
+                    .map(|g| {
+                        let props_json: Vec<serde_json::Value> = g
+                            .properties
+                            .iter()
+                            .map(|p| {
+                                serde_json::json!({
+                                    "p_id": p.p_id,
+                                    "count": p.count,
+                                    "ndv_values": p.ndv_values,
+                                    "ndv_subjects": p.ndv_subjects,
+                                    "last_modified_t": p.last_modified_t,
+                                    "datatypes": p.datatypes,
+                                })
                             })
+                            .collect();
+
+                        serde_json::json!({
+                            "g_id": g.g_id,
+                            "flakes": g.flakes,
+                            "size": g.size,
+                            "properties": props_json,
                         })
-                        .collect();
+                    })
+                    .collect();
 
-                    let total_flakes: u64 = spot_result.graphs.iter().map(|g| g.total_rows).sum();
+                // Top-level aggregate properties (HLL union across graphs)
+                let properties_json: Vec<serde_json::Value> = agg_props
+                    .iter()
+                    .filter_map(|p| {
+                        let sid = predicate_sids.get(p.p_id as usize)?;
+                        Some(serde_json::json!({
+                            "sid": [sid.0, &sid.1],
+                            "count": p.count,
+                            "ndv_values": p.ndv_values,
+                            "ndv_subjects": p.ndv_subjects,
+                            "last_modified_t": p.last_modified_t,
+                            "datatypes": p.datatypes,
+                        }))
+                    })
+                    .collect();
 
-                    (serde_json::json!({
-                        "flakes": total_flakes,
-                        "size": 0,
-                        "graphs": graph_stats
-                    }), None)
+                tracing::info!(
+                    property_stats = properties_json.len(),
+                    graph_count = graphs_json.len(),
+                    class_count = classes_json.len(),
+                    total_flakes = id_result.total_flakes,
+                    "stats collected from IdStatsHook"
+                );
+
+                let mut stats_obj = serde_json::json!({
+                    "flakes": id_result.total_flakes,
+                    "size": 0,
+                    "graphs": graphs_json,
+                    "properties": properties_json,
+                });
+                if !classes_json.is_empty() {
+                    stats_obj["classes"] = serde_json::Value::Array(classes_json);
                 }
+
+                (stats_obj, None)
             };
 
-            // D.5: Build v4 root with CAS addresses and stats (initially without GC fields)
-            let sid_encoding = if dicts.subjects.needs_wide() {
-                fluree_db_core::SubjectIdEncoding::Wide
-            } else {
-                fluree_db_core::SubjectIdEncoding::Narrow
-            };
-            let subject_watermarks = dicts.subjects.subject_watermarks();
-            let string_watermark = dicts.strings.len().saturating_sub(1);
-
-            // Inline tiny flat dicts into the root so CAS loads can skip
-            // fetching them (especially beneficial for S3 cold starts).
-            let graph_iris: Vec<String> = (0..dicts.graphs.len())
-                .map(|id| dicts.graphs.resolve(id).unwrap_or("").to_string())
-                .collect();
-            let datatype_iris: Vec<String> = (0..dicts.datatypes.len())
-                .map(|id| dicts.datatypes.resolve(id).unwrap_or("").to_string())
-                .collect();
-            let mut language_tags: Vec<(u16, String)> = dicts
-                .languages
-                .iter()
-                .map(|(id, tag)| (id, tag.to_string()))
-                .collect();
-            language_tags.sort_unstable_by_key(|(id, _)| *id);
-            let language_tags: Vec<String> = language_tags.into_iter().map(|(_, tag)| tag).collect();
-
+            // F.5: Build v4 root with CAS addresses and stats (initially without GC fields).
+            // UploadedDicts already computed watermarks, encoding, and inlined dicts
+            // from the flat files we wrote in Phase C.
             let mut root =
                 run_index::BinaryIndexRoot::from_cas_artifacts(run_index::CasArtifactsConfig {
                     ledger_id: &ledger_id,
@@ -709,19 +994,19 @@ where
                     base_t: store.base_t(),
                     predicate_sids,
                     namespace_codes: store.namespace_codes(),
-                    subject_id_encoding: sid_encoding,
-                    dict_refs: dict_addresses,
+                    subject_id_encoding: dict_addresses.subject_id_encoding,
+                    dict_refs: dict_addresses.dict_refs,
                     graph_refs: graph_addresses,
                     stats: Some(stats_json),
                     schema: None,     // schema: requires predicate definitions (future)
                     prev_index: None, // set below after garbage computation
                     garbage: None,    // set below after garbage computation
                     sketch_ref,
-                    subject_watermarks,
-                    string_watermark,
-                    graph_iris,
-                    datatype_iris,
-                    language_tags,
+                    subject_watermarks: dict_addresses.subject_watermarks,
+                    string_watermark: dict_addresses.string_watermark,
+                    graph_iris: dict_addresses.graph_iris,
+                    datatype_iris: dict_addresses.datatype_iris,
+                    language_tags: dict_addresses.language_tags,
                 });
 
             // Populate cumulative commit stats (kept out of CasArtifactsConfig for now).
@@ -759,11 +1044,15 @@ where
                     // Write garbage record with CID string representations.
                     let garbage_strings: Vec<String> =
                         garbage_cids.iter().map(|c| c.to_string()).collect();
-                    root.garbage =
-                        gc::write_garbage_record(&storage, &ledger_id, store.max_t(), garbage_strings)
-                            .await
-                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-                            .map(|id| run_index::BinaryGarbageRef { id });
+                    root.garbage = gc::write_garbage_record(
+                        &storage,
+                        &ledger_id,
+                        store.max_t(),
+                        garbage_strings,
+                    )
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
+                    .map(|id| run_index::BinaryGarbageRef { id });
 
                     root.prev_index = Some(run_index::BinaryPrevIndexRef {
                         t: prev.index_t,
@@ -790,7 +1079,11 @@ where
                 .to_json_bytes()
                 .map_err(|e| IndexerError::Serialization(e.to_string()))?;
             let write_result = storage
-                .content_write_bytes(fluree_db_core::ContentKind::IndexRoot, &ledger_id, &root_bytes)
+                .content_write_bytes(
+                    fluree_db_core::ContentKind::IndexRoot,
+                    &ledger_id,
+                    &root_bytes,
+                )
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
@@ -842,6 +1135,10 @@ where
 ///
 /// Small dictionaries (graphs, datatypes, languages) are embedded inline in the
 /// v4 index root and are not uploaded as separate dict blobs.
+// Kept for: reference implementation of in-memory dict → CAS upload.
+// Use when: a new pipeline needs to upload GlobalDicts without flat-file persistence.
+// Superseded by: upload_dicts_from_disk (reads flat files, computes watermarks).
+#[expect(dead_code)]
 async fn upload_dicts_to_cas<S: Storage>(
     storage: &S,
     ledger_id: &str,
@@ -1320,9 +1617,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     tracing::info!("reading small dictionaries for v4 root (graphs, datatypes, languages)");
 
     let graphs_path = run_dir.join("graphs.dict");
-    let graphs_dict = run_index::dict_io::read_predicate_dict(&graphs_path).map_err(|e| {
-        IndexerError::StorageRead(format!("read {}: {}", graphs_path.display(), e))
-    })?;
+    let graphs_dict = run_index::dict_io::read_predicate_dict(&graphs_path)
+        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", graphs_path.display(), e)))?;
     let graph_iris: Vec<String> = (0..graphs_dict.len())
         .filter_map(|id| graphs_dict.resolve(id).map(|iri| iri.to_string()))
         .collect();

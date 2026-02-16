@@ -57,9 +57,10 @@ pub use global_dict::{
     SharedDictAllocator, StringValueDict, SubjectDict,
 };
 pub use index_build::{
-    build_all_indexes, build_index, build_spot_from_sorted_commits, build_spot_index,
-    precompute_language_dict, ClassBitsetTable, IndexBuildConfig, IndexBuildResult,
-    SortedCommitInput, SpotClassStats, SpotFromCommitsConfig, DT_REF_ID,
+    build_all_indexes, build_index, build_index_from_run_paths, build_spot_from_sorted_commits,
+    build_spot_index, precompute_language_dict, ClassBitsetTable, GraphIndexResult,
+    IndexBuildConfig, IndexBuildResult, SortedCommitInput, SpotClassStats, SpotFromCommitsConfig,
+    DT_REF_ID,
 };
 pub use index_root::{
     BinaryGarbageRef, BinaryIndexRoot, BinaryPrevIndexRef, CasArtifactsConfig, DictRefs,

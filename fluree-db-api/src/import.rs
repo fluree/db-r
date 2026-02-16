@@ -1253,10 +1253,9 @@ where
             while let Some(parsed) = pending.remove(&next_expected) {
                 let ns_delta = compute_ns_delta(&parsed.new_codes, published_codes);
 
-                let result =
-                    finalize_parsed_chunk(state, parsed, ns_delta, env.storage, env.alias)
-                        .await
-                        .map_err(|e| ImportError::Transact(e.to_string()))?;
+                let result = finalize_parsed_chunk(state, parsed, ns_delta, env.storage, env.alias)
+                    .await
+                    .map_err(|e| ImportError::Transact(e.to_string()))?;
 
                 if let Some(sr) = result.spool_result {
                     spawn_sorted_commit_write(
@@ -2702,13 +2701,14 @@ where
         // Class stats from SPOT merge: class → count + property → datatype (count).
         // Collected inline during the SPOT k-way merge (zero extra I/O).
         let classes_json: Vec<serde_json::Value> = if let Some(ref cs) = spot_class_stats {
-            build_class_stats_json(
+            fluree_db_indexer::stats::build_class_stats_json(
                 cs,
                 &predicate_sids,
                 &dt_tags_for_stats,
                 input.run_dir,
                 input.namespace_codes,
-            )?
+            )
+            .map_err(ImportError::Io)?
         } else {
             Vec::new()
         };
@@ -2836,137 +2836,6 @@ where
         index_t: input.final_t,
         summary,
     })
-}
-
-/// Build JSON array for class→property→datatype stats from SPOT merge results.
-///
-/// Resolves class sid64 → (ns_code, suffix) via targeted binary search into
-/// flat dict files (avoids loading the full BinaryIndexStore).
-fn build_class_stats_json(
-    cs: &fluree_db_indexer::run_index::SpotClassStats,
-    predicate_sids: &[(u16, String)],
-    dt_tags: &[fluree_db_core::value_id::ValueTypeTag],
-    run_dir: &Path,
-    namespace_codes: &HashMap<u16, String>,
-) -> std::result::Result<Vec<serde_json::Value>, ImportError> {
-    use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_indexer::run_index::dict_io;
-    use fluree_db_indexer::run_index::DT_REF_ID;
-    use std::io::{Read as _, Seek as _, SeekFrom};
-
-    if cs.class_counts.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let sids_path = run_dir.join("subjects.sids");
-    let idx_path = run_dir.join("subjects.idx");
-    let fwd_path = run_dir.join("subjects.fwd");
-
-    let sids_vec = dict_io::read_subject_sid_map(&sids_path).map_err(ImportError::Io)?;
-    let (fwd_offsets, fwd_lens) =
-        dict_io::read_forward_index(&idx_path).map_err(ImportError::Io)?;
-    let mut fwd_file = std::fs::File::open(&fwd_path).map_err(ImportError::Io)?;
-
-    // Helper: resolve sid64 → (ns_code, suffix_string).
-    let resolve_sid = |sid64: u64, file: &mut std::fs::File| -> Option<(u16, String)> {
-        let subj = SubjectId::from_u64(sid64);
-        let ns_code = subj.ns_code();
-        let pos = sids_vec.binary_search(&sid64).ok()?;
-        let off = fwd_offsets[pos];
-        let len = fwd_lens[pos] as usize;
-        let mut iri_buf = vec![0u8; len];
-        file.seek(SeekFrom::Start(off)).ok()?;
-        file.read_exact(&mut iri_buf).ok()?;
-        let iri = std::str::from_utf8(&iri_buf).ok()?;
-        let prefix = namespace_codes
-            .get(&ns_code)
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
-            &iri[prefix.len()..]
-        } else {
-            iri
-        };
-        Some((ns_code, suffix.to_string()))
-    };
-
-    // Sort class entries by sid64 for deterministic output.
-    let mut class_entries: Vec<(&u64, &u64)> = cs.class_counts.iter().collect();
-    class_entries.sort_by_key(|&(sid, _)| *sid);
-
-    // Per-class ref-target data (if available).
-    let class_refs = &cs.class_prop_refs;
-
-    let classes_json: Vec<serde_json::Value> = class_entries
-        .iter()
-        .filter_map(|&(&class_sid64, &count)| {
-            let (ns_code, suffix) = resolve_sid(class_sid64, &mut fwd_file)?;
-
-            // Look up this class's ref-target map (if any).
-            let ref_map = class_refs.get(&class_sid64);
-
-            // Build property entries. Each property gets dt breakdown, and
-            // optionally ref-target class info using the DB-R extended object
-            // format: {"ref-classes": [[[ns, suffix], count], ...]}.
-            let prop_json: Vec<serde_json::Value> = if let Some(prop_map) =
-                cs.class_prop_dts.get(&class_sid64)
-            {
-                let mut props: Vec<_> = prop_map.iter().collect();
-                props.sort_by_key(|&(pid, _)| *pid);
-
-                props
-                    .iter()
-                    .filter_map(|&(&p_id, dt_map)| {
-                        let psid = predicate_sids.get(p_id as usize)?;
-
-                        // Check if this property has ref-target class data.
-                        let prop_refs = ref_map.and_then(|rm| rm.get(&p_id));
-
-                        if let Some(target_map) = prop_refs {
-                            // Emit DB-R extended object with ref-classes.
-                            let mut targets: Vec<_> = target_map.iter().collect();
-                            targets.sort_by_key(|&(sid, _)| *sid);
-                            let refs_json: Vec<serde_json::Value> = targets
-                                .iter()
-                                .filter_map(|&(&target_sid, &tcount)| {
-                                    let (tns, tsuffix) = resolve_sid(target_sid, &mut fwd_file)?;
-                                    Some(serde_json::json!([[tns, tsuffix], tcount]))
-                                })
-                                .collect();
-                            Some(serde_json::json!(
-                                [[psid.0, &psid.1], {"ref-classes": refs_json}]
-                            ))
-                        } else {
-                            // Standard format: property with datatype counts.
-                            let mut dts: Vec<_> = dt_map.iter().collect();
-                            dts.sort_by_key(|&(dt, _)| *dt);
-                            let dt_json: Vec<serde_json::Value> = dts
-                                .iter()
-                                .map(|&(&dt, &count)| {
-                                    if dt == DT_REF_ID {
-                                        serde_json::json!(["@id", count])
-                                    } else if let Some(tag) = dt_tags.get(dt as usize) {
-                                        serde_json::json!([tag.as_u8(), count])
-                                    } else {
-                                        serde_json::json!([dt, count])
-                                    }
-                                })
-                                .collect();
-                            Some(serde_json::json!([[psid.0, &psid.1], dt_json]))
-                        }
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-            Some(serde_json::json!([[ns_code, suffix], [count, prop_json]]))
-        })
-        .collect();
-
-    tracing::info!(classes = classes_json.len(), "class stats resolved to JSON");
-
-    Ok(classes_json)
 }
 
 /// Build a lightweight import summary for CLI display.

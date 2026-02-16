@@ -42,15 +42,27 @@ pub async fn resolve_ledger_mode(
 ) -> CliResult<LedgerMode> {
     let alias = resolve_ledger(explicit, dirs)?;
 
+    // Strip `#fragment` (e.g., `#txn-meta`) for ledger resolution.
+    // The fragment selects a named graph and is handled later by
+    // `fluree.view()` / `parse_graph_ref()`. Existence checks and
+    // tracked-config lookups must use just the ledger portion.
+    let (ledger_part, _graph_fragment) = match alias.split_once('#') {
+        Some((base, _frag)) => (base, Some(_frag)),
+        None => (alias.as_str(), None),
+    };
+
     // Try compound remote/ledger syntax (e.g., "origin/mydb")
-    if let Some(mode) = try_compound_remote_syntax(&alias, dirs).await? {
+    if let Some(mode) = try_compound_remote_syntax(ledger_part, dirs).await? {
+        // For remote mode, pass through the full alias (with fragment) so the
+        // server can resolve the graph. Currently remote doesn't support this,
+        // but it avoids silently dropping the fragment.
         return Ok(mode);
     }
 
     let fluree = build_fluree(dirs)?;
 
     // Check if local ledger exists (local wins)
-    let ledger_id = to_ledger_id(&alias);
+    let ledger_id = to_ledger_id(ledger_part);
     if fluree.ledger_exists(&ledger_id).await.unwrap_or(false) {
         return Ok(LedgerMode::Local {
             fluree: Box::new(fluree),
@@ -60,12 +72,12 @@ pub async fn resolve_ledger_mode(
 
     // Check tracked config
     let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
-    if let Some(tracked) = store.get_tracked(&alias) {
-        return build_tracked_mode(&store, &tracked, &alias).await;
+    if let Some(tracked) = store.get_tracked(ledger_part) {
+        return build_tracked_mode(&store, &tracked, ledger_part).await;
     }
 
     // Also try the normalized ledger_id (user might have typed "mydb" but tracked as "mydb:main")
-    if alias != ledger_id {
+    if ledger_part != ledger_id {
         if let Some(tracked) = store.get_tracked(&ledger_id) {
             return build_tracked_mode(&store, &tracked, &ledger_id).await;
         }
@@ -73,20 +85,21 @@ pub async fn resolve_ledger_mode(
 
     // Also try the base name without branch suffix (user typed "mydb:main" but tracked as "mydb").
     // This handles configs created before track-time normalization was added.
-    if let Some(base) = alias.split(':').next() {
-        if base != alias && base != ledger_id {
+    if let Some(base) = ledger_part.split(':').next() {
+        if base != ledger_part && base != ledger_id {
             if let Some(tracked) = store.get_tracked(base) {
-                return build_tracked_mode(&store, &tracked, &alias).await;
+                return build_tracked_mode(&store, &tracked, ledger_part).await;
             }
         }
     }
 
     // Not found locally or tracked
+    let display = ledger_part;
     Err(CliError::NotFound(format!(
         "ledger '{}' not found locally or in tracked config.\n  \
          Use `fluree create {}` to create locally, `fluree track add {}` to track a remote,\n  \
          or use remote/ledger syntax (e.g., origin/{}).",
-        alias, alias, alias, alias
+        display, display, display, display
     )))
 }
 
