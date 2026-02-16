@@ -231,7 +231,8 @@ where
         sparql: &str,
         policy: &PolicyContext,
     ) -> Result<QueryResult> {
-        let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
+        let (vars, parsed) =
+            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let source = DataSource {
@@ -274,7 +275,8 @@ where
 
     /// Execute a SPARQL query against a ledger
     pub async fn query_sparql(&self, ledger: &LedgerState, sparql: &str) -> Result<QueryResult> {
-        let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
+        let (vars, parsed) =
+            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
         let tracker = Tracker::disabled();
 
@@ -300,7 +302,8 @@ where
         options: TrackingOptions,
     ) -> Result<(QueryResult, Option<TrackingTally>)> {
         let tracker = Tracker::new(options);
-        let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
+        let (vars, parsed) =
+            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let batches = self

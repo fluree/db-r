@@ -321,10 +321,7 @@ fn derive_prefix_name(ns_iri: &str) -> String {
     let trimmed = ns_iri.trim_end_matches(['/', '#']);
 
     // Find the last path segment
-    let segment = trimmed
-        .rsplit(['/', '#', ':'])
-        .next()
-        .unwrap_or("");
+    let segment = trimmed.rsplit(['/', '#', ':']).next().unwrap_or("");
 
     // If the segment looks like a domain (contains dots), extract the meaningful part.
     // e.g., "schema.org" → "schema", "www.w3.org" → "w3"
@@ -509,11 +506,7 @@ mod tests {
         namespaces.insert(102, "http://example.org/".to_string());
 
         // Need a non-empty context to trigger fallback generation
-        let context = ParsedContext::parse(
-            None,
-            &json!({"ex": "http://example.org/"}),
-        )
-        .unwrap();
+        let context = ParsedContext::parse(None, &json!({"ex": "http://example.org/"})).unwrap();
         let compactor = IriCompactor::new(&namespaces, &context);
 
         // Both derive "foo", but one should get "foo" and the other "foo2"

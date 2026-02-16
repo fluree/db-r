@@ -135,9 +135,11 @@ where
                 self.validate_sparql_for_view(sparql).map_err(|e| {
                     crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                 })?;
-                parse_sparql_to_ir(sparql, &view.db, view.default_context.as_ref()).map_err(|e| {
-                    crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-                })?
+                parse_sparql_to_ir(sparql, &view.db, view.default_context.as_ref()).map_err(
+                    |e| {
+                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                    },
+                )?
             }
         };
 

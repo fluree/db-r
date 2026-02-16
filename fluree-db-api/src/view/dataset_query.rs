@@ -151,9 +151,13 @@ where
                     },
                 )?
             }
-            QueryInput::Sparql(sparql) => parse_sparql_to_ir(sparql, &primary.db, primary.default_context.as_ref()).map_err(|e| {
-                crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-            })?,
+            QueryInput::Sparql(sparql) => {
+                parse_sparql_to_ir(sparql, &primary.db, primary.default_context.as_ref()).map_err(
+                    |e| {
+                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                    },
+                )?
+            }
         };
 
         // Build executable

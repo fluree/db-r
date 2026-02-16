@@ -82,13 +82,13 @@ pub(crate) fn parse_sparql_to_ir(
         for (short, iri_val) in ctx_obj {
             if !declared.contains(short.as_str()) {
                 if let Some(iri) = iri_val.as_str() {
-                    ast.prologue.prefixes.push(
-                        fluree_db_sparql::ast::PrefixDecl::new(
+                    ast.prologue
+                        .prefixes
+                        .push(fluree_db_sparql::ast::PrefixDecl::new(
                             short.as_str(),
                             iri,
                             fluree_db_sparql::SourceSpan::new(0, 0),
-                        ),
-                    );
+                        ));
                 }
             }
         }
