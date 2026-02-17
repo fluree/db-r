@@ -290,7 +290,11 @@ impl BinaryScanOperator {
     /// (wildcard) to skip internal predicates.
     #[inline]
     fn is_internal_predicate(&self, p_id: u32) -> bool {
-        self.p_is_var
+        // Only filter internal predicates for the default graph (g_id=0).
+        // The txn-meta graph (g_id=1) is entirely composed of db: namespace
+        // predicates, so filtering them would return zero results.
+        self.g_id == 0
+            && self.p_is_var
             && self
                 .p_sids
                 .get(p_id as usize)
@@ -1509,6 +1513,9 @@ struct RangeScanOperator {
     /// internal fluree:ledger predicates (commit metadata) so wildcard
     /// patterns like `?s ?p ?o` don't surface internal rows.
     p_is_var: bool,
+    /// Graph ID — used to suppress internal predicate filtering for txn-meta
+    /// (g_id=1) and named graphs where db: namespace predicates are the data.
+    g_id: GraphId,
     state: OperatorState,
     batches: VecDeque<Batch>,
     /// Inline filter expressions to evaluate during batch building.
@@ -1532,6 +1539,7 @@ impl RangeScanOperator {
             p_var_pos,
             o_var_pos,
             p_is_var,
+            g_id: 0,
             state: OperatorState::Created,
             batches: VecDeque::new(),
             filters,
@@ -1741,6 +1749,8 @@ impl Operator for RangeScanOperator {
             return Err(QueryError::OperatorAlreadyOpened);
         }
 
+        self.g_id = ctx.binary_g_id;
+
         let mut index = IndexType::for_query(
             self.pattern.s_bound(),
             self.pattern.p_bound(),
@@ -1812,7 +1822,7 @@ impl Operator for RangeScanOperator {
 
         if ncols == 0 {
             // All terms bound (existence check): count matches, emit empty-schema batch.
-            let match_count = if self.p_is_var {
+            let match_count = if self.p_is_var && self.g_id == 0 {
                 flakes
                     .iter()
                     .filter(|f| f.p.namespace_code != FLUREE_DB)
@@ -1836,8 +1846,9 @@ impl Operator for RangeScanOperator {
 
             for f in &flakes {
                 // Filter internal predicates (commit metadata) for wildcard predicate patterns.
-                // Matches `BinaryScanOperator` behavior.
-                if self.p_is_var && f.p.namespace_code == FLUREE_DB {
+                // Only applies to default graph (g_id=0); txn-meta and named graphs
+                // need db: namespace predicates to be visible.
+                if self.g_id == 0 && self.p_is_var && f.p.namespace_code == FLUREE_DB {
                     continue;
                 }
 

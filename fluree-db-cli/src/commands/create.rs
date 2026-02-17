@@ -4,6 +4,7 @@ use crate::detect;
 use crate::error::{CliError, CliResult};
 use fluree_db_api::server_defaults::FlureeDir;
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Import tuning options passed from global + create-specific CLI flags.
 pub struct ImportOpts {
@@ -135,6 +136,8 @@ where
         println!("Importing from: {}", path.display());
     }
 
+    let ledger_owned = ledger.to_string();
+
     let mut builder = fluree.create(ledger).import(path);
     if import_opts.parallelism > 0 {
         builder = builder.parallelism(import_opts.parallelism);
@@ -167,6 +170,67 @@ where
             eprintln!("  Override with --memory-budget-mb and --parallelism");
         }
     }
+
+    // ------------------------------------------------------------------------
+    // Crash breadcrumb for customer support (survives SIGSEGV/OOM-kill).
+    //
+    // The CLI defaults to "no logs" for UX; when the process dies hard (e.g.
+    // SIGSEGV under memory pressure), there is no Rust panic message.
+    //
+    // We write a small JSON "breadcrumb" file periodically during import so
+    // users can attach it to bug reports. This is intentionally minimal and
+    // low-frequency (<= 1 write/sec).
+    // ------------------------------------------------------------------------
+    let breadcrumb_path: Option<std::path::PathBuf> = {
+        fn sanitize_for_filename(s: &str) -> String {
+            s.chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect()
+        }
+        let crash_dir = fluree_dir.join("crash");
+        if std::fs::create_dir_all(&crash_dir).is_ok() {
+            let pid = std::process::id();
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let name = format!(
+                "import_{}_{}_{}.json",
+                sanitize_for_filename(ledger),
+                ts,
+                pid
+            );
+            let p = crash_dir.join(name);
+            // Initial record (best-effort).
+            let started_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let init = serde_json::json!({
+                "kind": "bulk_import",
+                "ledger": ledger_owned,
+                "pid": pid,
+                "started_epoch_ms": started_ms,
+                "source_path": path.display().to_string(),
+                "settings": {
+                    "memory_budget_mb": settings.memory_budget_mb,
+                    "parallelism": settings.parallelism,
+                    "chunk_size_mb": settings.chunk_size_mb,
+                    "max_inflight_chunks": settings.max_inflight_chunks,
+                    "leaflet_rows": import_opts.leaflet_rows,
+                    "leaflets_per_leaf": import_opts.leaflets_per_leaf
+                },
+                "status": "running",
+                "last_phase": "starting"
+            });
+            let _ = std::fs::write(&p, serde_json::to_vec_pretty(&init).unwrap_or_default());
+            Some(p)
+        } else {
+            None
+        }
+    };
+    let breadcrumb_last_write: std::sync::Arc<std::sync::Mutex<std::time::Instant>> =
+        std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
     // Two progress bars shown simultaneously: Committing and Indexing.
     // The active phase advances while the other stays at 0% or 100%.
@@ -203,84 +267,149 @@ where
     // Track when the commit phase actually starts (first Committing event),
     // so M flakes/s reflects commit throughput, not reading/parsing time.
     let commit_start: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    builder = builder.on_progress(move |phase| match phase {
-        ImportPhase::Parsing {
-            chunk,
-            total,
-            chunk_bytes,
-        } => {
-            let mb = chunk_bytes as f64 / (1024.0 * 1024.0);
-            cb.set_length(total as u64);
-            cb.set_position(chunk.saturating_sub(1) as u64);
-            cb.set_message(format!("Parsing chunk {} ({:.0} MB)...", chunk, mb));
-        }
-        ImportPhase::Scanning {
-            bytes_read,
-            total_bytes,
-        } => {
-            sb.set_length(total_bytes);
-            sb.set_position(bytes_read);
-            let gb_read = bytes_read as f64 / (1024.0 * 1024.0 * 1024.0);
-            let gb_total = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-            sb.set_message(format!("{:.1} / {:.1} GB", gb_read, gb_total));
-            if bytes_read >= total_bytes {
-                sb.finish_with_message(format!("{:.1} GB", gb_total));
+    let breadcrumb_path_for_cb = breadcrumb_path.clone();
+    let breadcrumb_last_write_for_cb = std::sync::Arc::clone(&breadcrumb_last_write);
+    let breadcrumb_ledger_for_cb = ledger_owned.clone();
+    builder = builder.on_progress(move |phase| {
+        // Best-effort: update crash breadcrumb at most once per second.
+        // Avoid heavy work in the callback when the progress bars are active.
+        if let Some(ref p) = breadcrumb_path_for_cb {
+            if let Ok(mut last) = breadcrumb_last_write_for_cb.lock() {
+                if last.elapsed() >= Duration::from_secs(1) {
+                    *last = std::time::Instant::now();
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let phase_str = format!("{phase:?}");
+                    let doc = serde_json::json!({
+                        "kind": "bulk_import",
+                        "ledger": breadcrumb_ledger_for_cb,
+                        "pid": std::process::id(),
+                        "updated_epoch_ms": now_ms,
+                        "status": "running",
+                        "last_phase": phase_str
+                    });
+                    let _ = std::fs::write(p, serde_json::to_vec_pretty(&doc).unwrap_or_default());
+                }
             }
         }
-        ImportPhase::Committing {
-            chunk,
-            total,
-            cumulative_flakes,
-            ..
-        } => {
-            let t0 = *commit_start.get_or_init(std::time::Instant::now);
-            cb.set_length(total as u64);
-            cb.set_position(chunk as u64);
-            let secs = t0.elapsed().as_secs_f64();
-            let rate = if secs > 0.0 {
-                cumulative_flakes as f64 / secs / 1_000_000.0
-            } else {
-                0.0
-            };
-            cb.set_message(format!("{:.2} M flakes/s", rate));
-        }
-        ImportPhase::PreparingIndex { stage } => {
-            cb.finish();
-            // Show activity immediately (avoid "Indexing 0%" during merge/remap).
-            ib.set_length(100);
-            ib.set_position(1);
-            ib.set_message(stage.to_string());
-        }
-        ImportPhase::Indexing {
-            merged_flakes,
-            total_flakes,
-            elapsed_secs,
-        } => {
-            cb.finish();
-            ib.set_length(total_flakes);
-            // Start at 1% minimum so the bar shows activity immediately
-            let pos = if merged_flakes == 0 && total_flakes > 0 {
-                total_flakes / 100
-            } else {
-                merged_flakes
-            };
-            ib.set_position(pos);
-            // Rate in real flakes/s (total_flakes is 2× because SPOT +
-            // secondary pipelines both contribute to progress).
-            let rate = if elapsed_secs > 0.0 {
-                merged_flakes as f64 / 2.0 / 1_000_000.0 / elapsed_secs
-            } else {
-                0.0
-            };
-            ib.set_message(format!("{:.2} M flakes/s", rate));
-        }
-        ImportPhase::Done => {
-            ib.finish();
+        // Continue with normal progress handling below.
+        match phase {
+            ImportPhase::Parsing {
+                chunk,
+                total,
+                chunk_bytes,
+            } => {
+                let mb = chunk_bytes as f64 / (1024.0 * 1024.0);
+                cb.set_length(total as u64);
+                cb.set_position(chunk.saturating_sub(1) as u64);
+                cb.set_message(format!("Parsing chunk {} ({:.0} MB)...", chunk, mb));
+            }
+            ImportPhase::Scanning {
+                bytes_read,
+                total_bytes,
+            } => {
+                sb.set_length(total_bytes);
+                sb.set_position(bytes_read);
+                let gb_read = bytes_read as f64 / (1024.0 * 1024.0 * 1024.0);
+                let gb_total = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                sb.set_message(format!("{:.1} / {:.1} GB", gb_read, gb_total));
+                if bytes_read >= total_bytes {
+                    sb.finish_with_message(format!("{:.1} GB", gb_total));
+                }
+            }
+            ImportPhase::Committing {
+                chunk,
+                total,
+                cumulative_flakes,
+                ..
+            } => {
+                let t0 = *commit_start.get_or_init(std::time::Instant::now);
+                cb.set_length(total as u64);
+                cb.set_position(chunk as u64);
+                let secs = t0.elapsed().as_secs_f64();
+                let rate = if secs > 0.0 {
+                    cumulative_flakes as f64 / secs / 1_000_000.0
+                } else {
+                    0.0
+                };
+                cb.set_message(format!("{:.2} M flakes/s", rate));
+            }
+            ImportPhase::PreparingIndex { stage } => {
+                cb.finish();
+                // Show activity immediately (avoid "Indexing 0%" during merge/remap).
+                ib.set_length(100);
+                ib.set_position(1);
+                ib.set_message(stage.to_string());
+            }
+            ImportPhase::Indexing {
+                merged_flakes,
+                total_flakes,
+                elapsed_secs,
+            } => {
+                cb.finish();
+                ib.set_length(total_flakes);
+                // Start at 1% minimum so the bar shows activity immediately
+                let pos = if merged_flakes == 0 && total_flakes > 0 {
+                    total_flakes / 100
+                } else {
+                    merged_flakes
+                };
+                ib.set_position(pos);
+                // Rate in real flakes/s (total_flakes is 2× because SPOT +
+                // secondary pipelines both contribute to progress).
+                let rate = if elapsed_secs > 0.0 {
+                    merged_flakes as f64 / 2.0 / 1_000_000.0 / elapsed_secs
+                } else {
+                    0.0
+                };
+                ib.set_message(format!("{:.2} M flakes/s", rate));
+            }
+            ImportPhase::Done => {
+                ib.finish();
+                // Mark breadcrumb as complete (best-effort).
+                if let Some(ref p) = breadcrumb_path_for_cb {
+                    let now_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let doc = serde_json::json!({
+                        "kind": "bulk_import",
+                        "ledger": breadcrumb_ledger_for_cb,
+                        "pid": std::process::id(),
+                        "updated_epoch_ms": now_ms,
+                        "status": "done"
+                    });
+                    let _ = std::fs::write(p, serde_json::to_vec_pretty(&doc).unwrap_or_default());
+                }
+            }
         }
     });
 
     let start = std::time::Instant::now();
-    let result = builder.execute().await?;
+    let result = match builder.execute().await {
+        Ok(r) => r,
+        Err(e) => {
+            // Persist failure marker for customer bug reports (best-effort).
+            if let Some(ref p) = breadcrumb_path {
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let doc = serde_json::json!({
+                    "kind": "bulk_import",
+                    "ledger": ledger_owned,
+                    "pid": std::process::id(),
+                    "updated_epoch_ms": now_ms,
+                    "status": "error",
+                    "error": e.to_string()
+                });
+                let _ = std::fs::write(p, serde_json::to_vec_pretty(&doc).unwrap_or_default());
+            }
+            return Err(e.into());
+        }
+    };
     let elapsed = start.elapsed();
 
     config::write_active_ledger(fluree_dir, ledger)?;
@@ -319,6 +448,13 @@ where
             }
         }
         println!();
+    }
+
+    // Success: remove the crash breadcrumb so the presence of files in
+    // `<data_dir>/crash/` continues to be a strong signal of *failed/crashed*
+    // runs that need investigation.
+    if let Some(p) = breadcrumb_path {
+        let _ = std::fs::remove_file(p);
     }
 
     Ok(())

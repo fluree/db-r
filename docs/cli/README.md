@@ -75,6 +75,14 @@ fluree query --sparql -e 'SELECT ?name WHERE { ?s <http://example.org/name> ?nam
 
 **Clone and pull** transfer commits and, by default, **binary index data** from the remote (pack protocol), so the local ledger is query-ready without a separate reindex. Use `--no-indexes` to skip index transfer and reduce download size; run `fluree reindex` afterward if you need the index. Large transfers may prompt for confirmation before streaming.
 
+### Server Management
+
+| Command | Description |
+|---------|-------------|
+| [`server`](server.md) | Manage the Fluree HTTP server (run, start, stop, status, restart, logs) |
+
+Start a server directly from a project directory — it inherits the same `.fluree/` context (config, storage) as the CLI. See [`server`](server.md) for details.
+
 ### Implementers
 
 If you're building a custom server that must support the CLI end-to-end (for example, integrating into another app), see:

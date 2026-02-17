@@ -10,6 +10,10 @@ repository.workspace = true
 name = "fluree"
 path = "src/main.rs"
 
+[features]
+default = ["server"]
+server = ["dep:fluree-db-server"]
+
 [dependencies]
 fluree-db-api = { path = "../fluree-db-api" }
 fluree-db-novelty = { path = "../fluree-db-novelty" }
@@ -18,6 +22,9 @@ fluree-db-core = { path = "../fluree-db-core" }
 fluree-vocab = { path = "../fluree-vocab" }
 fluree-db-query = { path = "../fluree-db-query" }
 fluree-db-indexer = { path = "../fluree-db-indexer" }
+
+# Server embedding (optional — enables `fluree server` subcommands)
+fluree-db-server = { path = "../fluree-db-server", optional = true }
 
 clap = { workspace = true }
 tokio.workspace = true
@@ -32,6 +39,10 @@ colored = "2"
 clap_complete = "4"
 indicatif = "0.17"
 tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
+
+# Unix process management (server subcommand)
+libc = "0.2"
 
 # Token command dependencies
 fluree-db-credential = { path = "../fluree-db-credential" }
