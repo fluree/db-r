@@ -149,7 +149,9 @@ pub fn merge_string_dicts(chunks: &[ChunkStringDict]) -> (StringMergeResult, Vec
                 id
             } else {
                 let id = next_id;
-                next_id += 1;
+                next_id = next_id
+                    .checked_add(1)
+                    .expect("string id overflow (>4B unique strings)");
                 global_map.insert(hash, id);
                 forward_entries.push(string_bytes.clone());
                 id

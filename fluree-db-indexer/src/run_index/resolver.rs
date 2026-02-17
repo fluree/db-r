@@ -101,7 +101,9 @@ impl CommitResolver {
         dicts: &mut GlobalDicts,
         writer: &mut W,
     ) -> Result<(u32, u32), ResolverError> {
-        let t = commit_ops.t as u32;
+        let t = u32::try_from(commit_ops.t).map_err(|_| {
+            ResolverError::Resolve(format!("commit t={} does not fit in u32", commit_ops.t))
+        })?;
         let mut asserts = 0u32;
         let mut retracts = 0u32;
 
@@ -172,7 +174,12 @@ impl CommitResolver {
         )?;
         Ok(ResolvedCommit {
             total_records: asserts + retracts + meta_count,
-            t: commit_ops.t as u32,
+            t: u32::try_from(commit_ops.t).map_err(|_| {
+                ResolverError::Resolve(format!(
+                    "commit t={} does not fit in u32",
+                    commit_ops.t
+                ))
+            })?,
             size: commit_size,
             asserts,
             retracts,
@@ -214,7 +221,9 @@ impl CommitResolver {
         debug_assert_eq!(g_id_raw, 1, "txn-meta graph must be g_id=1");
         let g_id = g_id_raw as u16;
 
-        let t = envelope.t as u32;
+        let t = u32::try_from(envelope.t).map_err(|_| {
+            ResolverError::Resolve(format!("commit t={} does not fit in u32", envelope.t))
+        })?;
 
         // 3. Resolve commit subject: "fluree:commit:sha256:<hex>"
         let commit_iri = format!("{}{}", fluree::COMMIT, hex);
@@ -973,7 +982,9 @@ impl SharedResolverState {
         // Apply namespace delta (forward order guarantees correctness).
         self.apply_namespace_delta(&commit_ops.envelope.namespace_delta);
 
-        let t = commit_ops.t as u32;
+        let t = u32::try_from(commit_ops.t).map_err(|_| {
+            ResolverError::Resolve(format!("commit t={} does not fit in u32", commit_ops.t))
+        })?;
         let mut asserts = 0u32;
         let mut retracts = 0u32;
 
@@ -1274,7 +1285,9 @@ impl SharedResolverState {
         debug_assert_eq!(g_id_raw, 1, "txn-meta graph must be g_id=1");
         let g_id = g_id_raw as u16;
 
-        let t = envelope.t as u32;
+        let t = u32::try_from(envelope.t).map_err(|_| {
+            ResolverError::Resolve(format!("commit t={} does not fit in u32", envelope.t))
+        })?;
 
         // Resolve commit subject using chunk-local subject dict.
         let commit_ns_code = fluree_vocab::namespaces::FLUREE_COMMIT;

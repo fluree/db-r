@@ -858,6 +858,16 @@ impl ClassBitsetTable {
                 // Set bit in subject's per-graph bitset.
                 let ns_code = (s_global >> 48) as u16;
                 let local_id = (s_global & 0x0000_FFFF_FFFF_FFFF) as usize;
+                const MAX_LOCAL_ID: usize = 256 * 1024 * 1024; // 256M subjects per namespace
+                if local_id > MAX_LOCAL_ID {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "class bitset: local_id {} exceeds cap ({}) — corrupt remap?",
+                            local_id, MAX_LOCAL_ID
+                        ),
+                    ));
+                }
                 let ns_map = graph_bitsets.entry(g_id).or_default();
                 let vec = ns_map.entry(ns_code).or_default();
                 if local_id >= vec.len() {
