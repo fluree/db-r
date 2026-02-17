@@ -1111,6 +1111,23 @@ where
 // Phase 2: Import chunks
 // ============================================================================
 
+/// Lightweight per-commit metadata collected during the serial commit loop.
+/// Used to generate the txn-meta "meta chunk" without re-reading commit blobs.
+struct CommitMeta {
+    /// ContentId hex digest (64-char SHA-256 hex).
+    commit_hash_hex: String,
+    /// Transaction number.
+    t: i64,
+    /// Commit blob size in bytes.
+    blob_bytes: usize,
+    /// Number of flakes (= asserts for fresh import).
+    flake_count: u32,
+    /// Epoch milliseconds (parsed once at collection time). `None` if no timestamp.
+    time_epoch_ms: Option<i64>,
+    /// Previous commit's hex digest (for db:previous), `None` for first commit.
+    previous_commit_hex: Option<String>,
+}
+
 /// Internal result from the import phase (before index build).
 struct ChunkImportResult {
     final_t: i64,
@@ -1218,8 +1235,10 @@ where
         vocab_dir: &'a Path,
         spool_dir: &'a Path,
         rdf_type_p_id: u32,
+        import_time_epoch_ms: Option<i64>,
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn commit_parsed_chunks_in_order<S, N>(
         result_rx: std::sync::mpsc::Receiver<std::result::Result<(usize, ParsedChunk), String>>,
         env: &CommitPipelineEnv<'_, S, N>,
@@ -1235,6 +1254,7 @@ where
             >,
         >,
         total_commit_size: &mut u64,
+        commit_metas: &mut Vec<CommitMeta>,
     ) -> std::result::Result<usize, ImportError>
     where
         S: Storage + Clone + Send + Sync + 'static,
@@ -1253,9 +1273,22 @@ where
             while let Some(parsed) = pending.remove(&next_expected) {
                 let ns_delta = compute_ns_delta(&parsed.new_codes, published_codes);
 
+                // Capture previous commit hex BEFORE finalize advances state.
+                let previous_commit_hex = commit_metas.last().map(|m| m.commit_hash_hex.clone());
+
                 let result = finalize_parsed_chunk(state, parsed, ns_delta, env.storage, env.alias)
                     .await
                     .map_err(|e| ImportError::Transact(e.to_string()))?;
+
+                // Collect txn-meta for this commit (no I/O, just captures data already in scope).
+                commit_metas.push(CommitMeta {
+                    commit_hash_hex: result.commit_id.digest_hex(),
+                    t: result.t,
+                    blob_bytes: result.blob_bytes,
+                    flake_count: result.flake_count,
+                    time_epoch_ms: env.import_time_epoch_ms,
+                    previous_commit_hex,
+                });
 
                 if let Some(sr) = result.spool_result {
                     spawn_sorted_commit_write(
@@ -1372,6 +1405,12 @@ where
 
     // Track commit metadata across all chunks (previously tracked by resolver).
     let mut total_commit_size: u64 = 0;
+    let mut commit_metas: Vec<CommitMeta> = Vec::new();
+    // Parse import timestamp once (it's constant for the whole import).
+    let import_time_epoch_ms: Option<i64> =
+        chrono::DateTime::parse_from_rfc3339(&state.import_time)
+            .ok()
+            .map(|dt| dt.timestamp_millis());
     // In fresh import, all ops are assertions (no retractions).
     // total_asserts = state.cumulative_flakes at the end.
 
@@ -1430,6 +1469,26 @@ where
     let rdf_type_p_id = spool_config
         .predicate_alloc
         .get_or_insert(fluree_vocab::rdf::TYPE);
+
+    // Pre-insert txn-meta predicates so they get stable IDs in predicates.json
+    // and are included in p_width calculation. These match the predicates used
+    // by `CommitResolver::emit_txn_meta` in the non-import indexing path.
+    {
+        use fluree_vocab::{db, fluree};
+        for &(prefix, name) in &[
+            (fluree::DB, db::ADDRESS),
+            (fluree::DB, db::TIME),
+            (fluree::DB, db::T),
+            (fluree::DB, db::SIZE),
+            (fluree::DB, db::ASSERTS),
+            (fluree::DB, db::RETRACTS),
+            (fluree::DB, db::PREVIOUS),
+        ] {
+            spool_config
+                .predicate_alloc
+                .get_or_insert_parts(prefix, name);
+        }
+    }
 
     // Helper: compute ns_delta for a parsed chunk and advance published_codes.
     let compute_ns_delta = |new_codes: &FxHashSet<u16>,
@@ -1509,6 +1568,7 @@ where
         vocab_dir: &vocab_dir,
         spool_dir: &spool_dir,
         rdf_type_p_id,
+        import_time_epoch_ms,
     };
 
     if is_streaming {
@@ -1599,6 +1659,7 @@ where
             compute_ns_delta,
             &mut sort_write_handles,
             &mut total_commit_size,
+            &mut commit_metas,
         )
         .await?;
 
@@ -1706,6 +1767,7 @@ where
                 compute_ns_delta,
                 &mut sort_write_handles,
                 &mut total_commit_size,
+                &mut commit_metas,
             )
             .await?;
 
@@ -1746,6 +1808,20 @@ where
                     .await
                     .map_err(|e| ImportError::Transact(e.to_string()))?
                 };
+
+                // Collect txn-meta for this commit.
+                {
+                    let previous_commit_hex =
+                        commit_metas.last().map(|m| m.commit_hash_hex.clone());
+                    commit_metas.push(CommitMeta {
+                        commit_hash_hex: result.commit_id.digest_hex(),
+                        t: result.t,
+                        blob_bytes: result.blob_bytes,
+                        flake_count: result.flake_count,
+                        time_epoch_ms: import_time_epoch_ms,
+                        previous_commit_hex,
+                    });
+                }
 
                 // Hand off sort + remap + write to a background task.
                 if let Some(sr) = result.spool_result {
@@ -1791,17 +1867,214 @@ where
         .map_err(|e| ImportError::Storage(e.to_string()))?;
     tracing::info!(t = state.t, "published final commit head");
 
+    // ---- Spawn txn-meta "meta chunk" build in background ----
+    // Build a tiny extra chunk containing commit metadata records (g_id=1).
+    // Runs in spawn_blocking concurrently with the sort_write_handles await below,
+    // so it adds zero wall-clock time. The meta chunk participates in Phase B dict
+    // merge and Phase C/D/E index builds so `ledger#txn-meta` queries work after import.
+    let meta_chunk_handle = if !commit_metas.is_empty() {
+        use fluree_vocab::{db, fluree};
+
+        // Resolve predicate/graph IDs while spool_config is still accessible.
+        // These were pre-inserted in Phase 2a, so these are pure lookups.
+        let p_address = spool_config
+            .predicate_alloc
+            .get_or_insert_parts(fluree::DB, db::ADDRESS);
+        let p_time = spool_config
+            .predicate_alloc
+            .get_or_insert_parts(fluree::DB, db::TIME);
+        let p_t = spool_config
+            .predicate_alloc
+            .get_or_insert_parts(fluree::DB, db::T);
+        let p_size = spool_config
+            .predicate_alloc
+            .get_or_insert_parts(fluree::DB, db::SIZE);
+        let p_asserts = spool_config
+            .predicate_alloc
+            .get_or_insert_parts(fluree::DB, db::ASSERTS);
+        let p_retracts = spool_config
+            .predicate_alloc
+            .get_or_insert_parts(fluree::DB, db::RETRACTS);
+        let p_previous = spool_config
+            .predicate_alloc
+            .get_or_insert_parts(fluree::DB, db::PREVIOUS);
+
+        let g_id = (spool_config
+            .graph_alloc
+            .get_or_insert_parts(fluree::DB, "txn-meta")
+            + 1) as u16;
+        debug_assert_eq!(g_id, 1, "txn-meta graph must be g_id=1");
+
+        // meta_chunk_idx = number of data chunks (next sequential index).
+        let meta_chunk_idx = sort_write_handles.len();
+        let vocab_dir = vocab_dir.clone();
+        let spool_dir = spool_dir.clone();
+
+        Some(tokio::task::spawn_blocking(move || {
+            use fluree_db_core::value_id::{ObjKey, ObjKind};
+            use fluree_db_core::{DatatypeDictId, SubjectId};
+            use fluree_db_indexer::run_index::run_record::LIST_INDEX_NONE;
+            use fluree_db_indexer::run_index::{
+                sort_remap_and_write_sorted_commit, ChunkStringDict, ChunkSubjectDict, RunRecord,
+            };
+            use fluree_vocab::namespaces;
+
+            let mut meta_subjects = ChunkSubjectDict::new();
+            let mut meta_strings = ChunkStringDict::new();
+            let mut records: Vec<RunRecord> = Vec::with_capacity(commit_metas.len() * 8);
+
+            for cm in &commit_metas {
+                let commit_s = meta_subjects
+                    .get_or_insert(namespaces::FLUREE_COMMIT, cm.commit_hash_hex.as_bytes());
+                let t = cm.t as u32;
+
+                let mut push =
+                    |s_id: u64, p_id: u32, o_kind: ObjKind, o_key: ObjKey, dt: DatatypeDictId| {
+                        records.push(RunRecord {
+                            g_id,
+                            s_id: SubjectId::from_u64(s_id),
+                            p_id,
+                            dt: dt.as_u16(),
+                            o_kind: o_kind.as_u8(),
+                            op: 1, // assert
+                            o_key: o_key.as_u64(),
+                            t,
+                            lang_id: 0,
+                            i: LIST_INDEX_NONE,
+                        });
+                    };
+
+                // db:address — commit hash hex as LEX_ID string
+                let addr_str_id = meta_strings.get_or_insert(cm.commit_hash_hex.as_bytes());
+                push(
+                    commit_s,
+                    p_address,
+                    ObjKind::LEX_ID,
+                    ObjKey::encode_u32_id(addr_str_id),
+                    DatatypeDictId::STRING,
+                );
+
+                // db:time — epoch_ms as LONG (pre-parsed at collection time)
+                if let Some(epoch_ms) = cm.time_epoch_ms {
+                    push(
+                        commit_s,
+                        p_time,
+                        ObjKind::NUM_INT,
+                        ObjKey::encode_i64(epoch_ms),
+                        DatatypeDictId::LONG,
+                    );
+                }
+
+                // db:t — INTEGER
+                push(
+                    commit_s,
+                    p_t,
+                    ObjKind::NUM_INT,
+                    ObjKey::encode_i64(cm.t),
+                    DatatypeDictId::INTEGER,
+                );
+
+                // db:size — LONG (blob bytes)
+                push(
+                    commit_s,
+                    p_size,
+                    ObjKind::NUM_INT,
+                    ObjKey::encode_i64(cm.blob_bytes as i64),
+                    DatatypeDictId::LONG,
+                );
+
+                // db:asserts — INTEGER
+                push(
+                    commit_s,
+                    p_asserts,
+                    ObjKind::NUM_INT,
+                    ObjKey::encode_i64(cm.flake_count as i64),
+                    DatatypeDictId::INTEGER,
+                );
+
+                // db:retracts — INTEGER (always 0 for fresh import)
+                push(
+                    commit_s,
+                    p_retracts,
+                    ObjKind::NUM_INT,
+                    ObjKey::encode_i64(0),
+                    DatatypeDictId::INTEGER,
+                );
+
+                // db:previous — REF_ID (only if this commit has a predecessor)
+                if let Some(ref prev_hex) = cm.previous_commit_hex {
+                    let prev_s =
+                        meta_subjects.get_or_insert(namespaces::FLUREE_COMMIT, prev_hex.as_bytes());
+                    push(
+                        commit_s,
+                        p_previous,
+                        ObjKind::REF_ID,
+                        ObjKey::encode_sid64(prev_s),
+                        DatatypeDictId::ID,
+                    );
+                }
+            }
+
+            let meta_records_count = records.len();
+            let commit_count = commit_metas.len();
+
+            let subj_voc_path = vocab_dir.join(format!("chunk_{meta_chunk_idx:05}.subjects.voc"));
+            let str_voc_path = vocab_dir.join(format!("chunk_{meta_chunk_idx:05}.strings.voc"));
+            let commit_path = spool_dir.join(format!("commit_{meta_chunk_idx:05}.fsc"));
+
+            // Write empty language vocab for uniformity.
+            let lang_voc_path = vocab_dir.join(format!("chunk_{meta_chunk_idx:05}.languages.voc"));
+            let empty_lang = fluree_db_indexer::run_index::LanguageTagDict::new();
+            let lang_bytes =
+                fluree_db_indexer::run_index::run_file::serialize_lang_dict(&empty_lang);
+            std::fs::write(&lang_voc_path, &lang_bytes)?;
+
+            let meta_sorted_info = sort_remap_and_write_sorted_commit(
+                records,
+                meta_subjects,
+                meta_strings,
+                &subj_voc_path,
+                &str_voc_path,
+                &commit_path,
+                meta_chunk_idx,
+                None, // no language tags
+                None, // no types-map sidecar
+            )?;
+
+            tracing::info!(
+                meta_chunk_idx,
+                commit_count,
+                meta_records_count,
+                "txn-meta meta chunk built"
+            );
+
+            Ok::<_, std::io::Error>(meta_sorted_info)
+        }))
+    } else {
+        None
+    };
+
     // ---- Collect background sort/write results ----
     // Wait for all background sort_remap_and_write_sorted_commit tasks to complete.
     // Their .fsc and .voc files must exist before Phase B can merge dictionaries.
+    // The meta chunk build (above) runs concurrently with this await loop.
     let mut sorted_commit_infos: Vec<SortedCommitInfo> =
-        Vec::with_capacity(sort_write_handles.len());
+        Vec::with_capacity(sort_write_handles.len() + 1);
     for handle in sort_write_handles {
         let info = handle
             .await
             .map_err(|e| ImportError::RunGeneration(format!("sort/write task panicked: {}", e)))?
             .map_err(ImportError::Io)?;
         sorted_commit_infos.push(info);
+    }
+
+    // Await meta chunk (already running in background, likely finished by now).
+    if let Some(handle) = meta_chunk_handle {
+        let meta_sorted_info = handle
+            .await
+            .map_err(|e| ImportError::RunGeneration(format!("meta chunk task panicked: {}", e)))?
+            .map_err(ImportError::Io)?;
+        sorted_commit_infos.push(meta_sorted_info);
     }
 
     // ---- Phase 3: Merge chunk dictionaries via k-way sorted merge ----
