@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use fluree_db_core::geo::{geo_proximity_bounds, haversine_distance};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::{FlakeValue, GeoPointBits};
+use fluree_db_core::{FlakeValue, GeoPointBits, GraphId};
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, OverlayOp, RunRecord,
@@ -129,7 +129,7 @@ impl GeoSearchOperator {
     fn execute_search(
         &self,
         store: &Arc<BinaryIndexStore>,
-        g_id: u32,
+        g_id: GraphId,
         to_t: i64,
         center_lat: f64,
         center_lng: f64,
@@ -166,8 +166,8 @@ impl GeoSearchOperator {
                 o_kind: ObjKind::GEO_POINT.as_u8(),
                 op: 0,
                 o_key: min_o_key,
-                t: i64::MIN,
-                i: i32::MIN,
+                t: 0,
+                i: 0,
                 lang_id: 0,
             };
 
@@ -179,8 +179,8 @@ impl GeoSearchOperator {
                 o_kind: ObjKind::GEO_POINT.as_u8(),
                 op: 1, // Include both assert (1) and retract (0)
                 o_key: max_o_key,
-                t: i64::MAX,
-                i: i32::MAX,
+                t: u32::MAX,
+                i: u32::MAX,
                 lang_id: u16::MAX,
             };
 

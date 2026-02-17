@@ -52,6 +52,7 @@ pub mod schema_hierarchy;
 pub mod serde;
 pub mod sid;
 pub mod stats_view;
+pub mod stats_wire;
 pub mod storage;
 pub mod subject_id;
 pub mod temporal;

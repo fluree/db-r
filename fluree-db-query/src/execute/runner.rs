@@ -17,7 +17,7 @@ use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
 use crate::var_registry::VarRegistry;
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{Db, StatsView, Tracker};
+use fluree_db_core::{Db, GraphId, StatsView, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_reasoner::DerivedFactsOverlay;
 use std::sync::Arc;
@@ -402,7 +402,7 @@ pub struct ContextConfig<'a, 'b> {
     /// serves the transparent `range_with_overlay()` callers.
     pub binary_store: Option<Arc<BinaryIndexStore>>,
     /// Graph ID for binary index lookups (default 0 = default graph).
-    pub binary_g_id: u32,
+    pub binary_g_id: GraphId,
     /// Dictionary novelty layer for binary scan subject/string lookups.
     pub dict_novelty: Option<Arc<DictNovelty>>,
 }

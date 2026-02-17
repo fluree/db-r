@@ -21,6 +21,7 @@ use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
 use crate::var_registry::VarId;
+use crate::PropertyJoinCountAllOperator;
 use fluree_db_core::StatsView;
 use std::sync::Arc;
 
@@ -92,6 +93,91 @@ fn detect_stats_count_by_predicate(
     Some((*p_var, agg.output_var))
 }
 
+/// Detect a same-subject, N-predicate COUNT(*) query that can be answered without
+/// materializing the cartesian join rows.
+///
+/// Matches:
+/// - all patterns are triple patterns
+/// - all share the same subject var
+/// - all predicates are bound (Sid/Iri)
+/// - all objects are vars (and object vars are distinct)
+/// - SELECT is exactly the COUNT(*) output var
+/// - options: one CountAll aggregate, no GROUP BY / HAVING / post-binds
+///
+/// Returns `(subject_var, predicate/object pairs, count_var)`.
+#[allow(clippy::type_complexity)]
+fn detect_property_join_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(VarId, Vec<(crate::pattern::Term, VarId)>, VarId)> {
+    if query.select_mode == SelectMode::Construct {
+        return None;
+    }
+    if query.patterns.len() < 2 {
+        return None;
+    }
+
+    // Must have exactly one COUNT(*) aggregate and no grouping.
+    if !options.group_by.is_empty() || options.aggregates.len() != 1 {
+        return None;
+    }
+    let agg = &options.aggregates[0];
+    if !matches!(agg.function, AggregateFn::CountAll) || agg.input_var.is_some() {
+        return None;
+    }
+    if options.having.is_some() || !options.post_binds.is_empty() {
+        return None;
+    }
+
+    // SELECT must be exactly the aggregate output var (avoid surprising projections).
+    if query.select.len() != 1 || query.select[0] != agg.output_var {
+        return None;
+    }
+
+    let mut subject_var: Option<VarId> = None;
+    let mut preds: Vec<(crate::pattern::Term, VarId)> = Vec::with_capacity(query.patterns.len());
+    let mut seen_obj: std::collections::HashSet<VarId> = std::collections::HashSet::new();
+
+    for p in &query.patterns {
+        let Pattern::Triple(tp) = p else {
+            return None;
+        };
+
+        // Subject must be a variable, shared across all patterns.
+        let crate::pattern::Term::Var(s) = &tp.s else {
+            return None;
+        };
+        match subject_var {
+            None => subject_var = Some(*s),
+            Some(existing) if existing != *s => return None,
+            Some(_) => {}
+        }
+
+        // Predicates must be bound, objects must be vars, and no dt/lang constraints.
+        let pred = match &tp.p {
+            crate::pattern::Term::Sid(_) | crate::pattern::Term::Iri(_) => tp.p.clone(),
+            _ => return None,
+        };
+        let crate::pattern::Term::Var(o) = &tp.o else {
+            return None;
+        };
+        if tp.dt.is_some() || tp.lang.is_some() {
+            return None;
+        }
+        // Object vars must be distinct; otherwise join is not a cartesian product.
+        if !seen_obj.insert(*o) {
+            return None;
+        }
+        if subject_var == Some(*o) {
+            return None;
+        }
+
+        preds.push((pred, *o));
+    }
+
+    Some((subject_var?, preds, agg.output_var))
+}
+
 /// Build the complete operator tree for a query
 ///
 /// Constructs operators in the order:
@@ -140,6 +226,45 @@ pub fn build_operator_tree(
 
             return Ok(operator);
         }
+    }
+
+    // Fast-path: same-subject N-predicate COUNT(*) without join-row materialization.
+    //
+    // This is safe because it preserves SPARQL solution multiplicity semantics:
+    // COUNT(*) = sum_s Π_i count_pi(s)
+    if let Some((s, preds, count_var)) = detect_property_join_count_all(query, options) {
+        tracing::debug!("detected property-join COUNT(*) fast-path");
+        let mut operator: BoxedOperator =
+            Box::new(PropertyJoinCountAllOperator::new(s, preds, count_var));
+
+        // ORDER BY (on count)
+        if !options.order_by.is_empty() {
+            operator = Box::new(SortOperator::new(operator, options.order_by.clone()));
+        }
+
+        // PROJECT
+        if !query.select.is_empty() {
+            operator = Box::new(ProjectOperator::new(operator, query.select.clone()));
+        }
+
+        // DISTINCT
+        if options.distinct {
+            operator = Box::new(DistinctOperator::new(operator));
+        }
+
+        // OFFSET
+        if let Some(offset) = options.offset {
+            if offset > 0 {
+                operator = Box::new(OffsetOperator::new(operator, offset));
+            }
+        }
+
+        // LIMIT
+        if let Some(limit) = options.limit {
+            operator = Box::new(LimitOperator::new(operator, limit));
+        }
+
+        return Ok(operator);
     }
 
     // Build WHERE clause operators

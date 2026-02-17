@@ -45,6 +45,8 @@ num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
 bigdecimal = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
+parking_lot = "0.12"
+libc = "0.2"
 
 [dev-dependencies]
 # For HLL tests (proper hash distribution)

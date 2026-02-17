@@ -53,8 +53,11 @@ tempfile = "3"
 # Turtle/TriG parser (required for trig_meta, optional import mode)
 fluree-graph-turtle = { path = "../fluree-graph-turtle" }
 
-# Hash map for trig_meta parser
+# Hash map for trig_meta parser + FxHashSet for worker cache
 rustc-hash = "2"
+
+# Thread-safe namespace allocator for parallel import
+parking_lot = "0.12"
 
 [features]
 default = []

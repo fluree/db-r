@@ -9,7 +9,7 @@
 
 use super::leaflet::Region3Entry;
 use super::leaflet_cache::{SparseIColumn, SparseU16Column};
-use super::run_record::{FactKey, RunRecord, RunSortOrder};
+use super::run_record::{FactKey, RunRecord, RunSortOrder, LIST_INDEX_NONE};
 use fluree_db_core::subject_id::SubjectIdColumn;
 use fluree_db_core::ListIndex;
 use std::cmp::Ordering;
@@ -92,19 +92,23 @@ impl OutputCols {
 
     #[inline]
     fn push_novelty(&mut self, rec: &RunRecord) {
-        debug_assert!(
-            rec.t >= 0 && rec.t <= u32::MAX as i64,
-            "novelty merge: t={} out of u32 range",
-            rec.t
-        );
         self.s.push(rec.s_id.as_u64());
         self.p.push(rec.p_id);
         self.o_kind.push(rec.o_kind);
         self.o_key.push(rec.o_key);
         self.dt.push(rec.dt as u32);
-        self.t.push(rec.t as u32);
+        self.t.push(rec.t);
         self.lang.push(rec.lang_id);
-        self.i.push(rec.i);
+        self.i.push(if rec.i == LIST_INDEX_NONE {
+            ListIndex::none().as_i32()
+        } else {
+            debug_assert!(
+                rec.i <= i32::MAX as u32,
+                "list index {} exceeds i32::MAX, would wrap in novelty merge",
+                rec.i
+            );
+            rec.i as i32
+        });
     }
 
     fn row_count(&self) -> usize {
@@ -388,7 +392,7 @@ mod tests {
     use fluree_db_core::{DatatypeDictId, ListIndex};
 
     /// Helper: build a RunRecord for testing.
-    fn rec(s_id: u64, p_id: u32, val: i64, t: i64, assert: bool) -> RunRecord {
+    fn rec(s_id: u64, p_id: u32, val: i64, t: u32, assert: bool) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -442,17 +446,16 @@ mod tests {
             };
 
             // Build sparse i column from records
-            let sentinel = ListIndex::none().as_i32();
             let i_positions: Vec<u16> = records
                 .iter()
                 .enumerate()
-                .filter(|(_, r)| r.i != sentinel)
+                .filter(|(_, r)| r.i != LIST_INDEX_NONE)
                 .map(|(idx, _)| idx as u16)
                 .collect();
             let i_values: Vec<u32> = records
                 .iter()
-                .filter(|r| r.i != sentinel)
-                .map(|r| r.i as u32)
+                .filter(|r| r.i != LIST_INDEX_NONE)
+                .map(|r| r.i)
                 .collect();
             let i_col = if i_positions.is_empty() {
                 None
@@ -470,7 +473,7 @@ mod tests {
                 o_kinds: records.iter().map(|r| r.o_kind).collect(),
                 o_keys: records.iter().map(|r| r.o_key).collect(),
                 dt: records.iter().map(|r| r.dt as u32).collect(),
-                t: records.iter().map(|r| r.t as u32).collect(),
+                t: records.iter().map(|r| r.t).collect(),
                 lang,
                 i_col,
             }

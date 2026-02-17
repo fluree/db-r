@@ -256,7 +256,7 @@ pub async fn get_ns_record(
         commit_t: ns_record.commit_t,
         index_head_id: ns_record.index_head_id.as_ref().map(|id| id.to_string()),
         index_t: ns_record.index_t,
-        default_context: ns_record.default_context.clone(),
+        default_context: ns_record.default_context.as_ref().map(|c| c.to_string()),
         retracted: ns_record.retracted,
         config_id: ns_record.config_id.as_ref().map(|id| id.to_string()),
     }))

@@ -3,13 +3,14 @@
 //! Given a subject IRI or s_id, find all its facts from the SPOT index.
 //! This is a validation tool, not a production query engine.
 
-use super::branch::{find_branch_file, read_branch_manifest, BranchManifest};
+use super::branch::{read_branch_v2_from_bytes, BranchManifest};
 use super::dict_io::{read_forward_entry, read_forward_index};
 use super::global_dict::PredicateDict;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::run_record::RunSortOrder;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
+use fluree_db_core::GraphId;
 use fluree_db_core::ListIndex;
 use serde_json;
 use std::collections::HashMap;
@@ -43,7 +44,7 @@ pub struct FactRow {
 /// and project facts from the on-disk index.
 pub struct SpotQuery {
     /// Per-graph branch manifests.
-    pub branches: HashMap<u32, BranchManifest>,
+    pub branches: HashMap<GraphId, BranchManifest>,
     /// Predicate dictionary (small, fully in memory).
     pub predicates: PredicateDict,
     /// Memory-mapped strings.fwd.
@@ -118,21 +119,32 @@ impl SpotQuery {
             (None, Vec::new(), Vec::new())
         };
 
-        // Load per-graph branch manifests
+        // Load per-graph branch manifests from spot index manifest
         let mut branches = HashMap::new();
-        for entry in std::fs::read_dir(index_dir)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("graph_") {
-                if let Some(g_id_str) = name.strip_prefix("graph_") {
-                    if let Ok(g_id) = g_id_str.parse::<u32>() {
-                        let spot_dir = entry.path().join("spot");
-                        if spot_dir.exists() {
-                            if let Ok(branch_path) = find_branch_file(&spot_dir) {
-                                let manifest = read_branch_manifest(&branch_path)?;
-                                branches.insert(g_id, manifest);
-                            }
+        let spot_manifest_path = index_dir.join("index_manifest_spot.json");
+        if spot_manifest_path.exists() {
+            let manifest_json = std::fs::read_to_string(&spot_manifest_path)?;
+            let manifest: serde_json::Value = serde_json::from_str(&manifest_json)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if let Some(graphs) = manifest["graphs"].as_array() {
+                for g in graphs {
+                    let g_id = g["g_id"].as_u64().unwrap_or(0) as GraphId;
+                    let dir = g["directory"].as_str().unwrap_or("");
+                    let branch_cid_str = g["branch_cid"].as_str().unwrap_or("");
+                    if dir.is_empty() || branch_cid_str.is_empty() {
+                        continue;
+                    }
+                    let graph_dir = index_dir.join(dir);
+                    let branch_path = graph_dir.join(branch_cid_str);
+                    if branch_path.exists() {
+                        let branch_bytes = std::fs::read(&branch_path)?;
+                        let mut manifest = read_branch_v2_from_bytes(&branch_bytes)?;
+                        // Resolve leaf paths for disk access
+                        for leaf_entry in &mut manifest.leaves {
+                            leaf_entry.resolved_path =
+                                Some(graph_dir.join(leaf_entry.leaf_cid.to_string()));
                         }
+                        branches.insert(g_id, manifest);
                     }
                 }
             }
@@ -151,13 +163,13 @@ impl SpotQuery {
     }
 
     /// Look up all facts for a subject by s_id in a specific graph.
-    pub fn query_by_sid(&self, g_id: u32, s_id: u64) -> io::Result<Vec<FactRow>> {
+    pub fn query_by_sid(&self, g_id: GraphId, s_id: u64) -> io::Result<Vec<FactRow>> {
         let manifest = match self.branches.get(&g_id) {
             Some(m) => m,
             None => return Ok(Vec::new()),
         };
 
-        let range = manifest.find_leaves_for_subject(g_id, s_id);
+        let range = manifest.find_leaves_for_subject(s_id);
         if range.is_empty() {
             return Ok(Vec::new());
         }
@@ -166,7 +178,13 @@ impl SpotQuery {
 
         for leaf_idx in range {
             let leaf_entry = &manifest.leaves[leaf_idx];
-            let leaf_data = std::fs::read(&leaf_entry.path)?;
+            let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("leaf {} has no resolved path", leaf_entry.leaf_cid),
+                )
+            })?;
+            let leaf_data = std::fs::read(leaf_path)?;
             let header = read_leaf_header(&leaf_data)?;
 
             // Scan leaflets that might contain this s_id
@@ -224,7 +242,7 @@ impl SpotQuery {
     ///
     /// Iterates all entries in `subjects.idx` + `subjects.fwd` to find the
     /// IRI by string comparison. O(N) in subject count.
-    pub fn query_by_iri(&self, iri: &str, g_id: u32) -> io::Result<Vec<FactRow>> {
+    pub fn query_by_iri(&self, iri: &str, g_id: GraphId) -> io::Result<Vec<FactRow>> {
         let s_id = match self.find_subject_id(iri)? {
             Some(id) => id,
             None => return Ok(Vec::new()),

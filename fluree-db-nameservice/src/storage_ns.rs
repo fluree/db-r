@@ -19,10 +19,10 @@
 
 use crate::storage_traits::{StorageCas, StorageExtError, StorageList};
 use crate::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
-    NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult,
-    StatusPayload, StatusPublisher, StatusValue,
+    parse_default_context_value, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload,
+    ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
+    NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher,
+    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
@@ -94,8 +94,13 @@ struct NsFileV2 {
     #[serde(rename = "f:status")]
     status: String,
 
-    #[serde(rename = "f:defaultContext", skip_serializing_if = "Option::is_none")]
-    default_context: Option<AddressRef>,
+    /// Content identifier for the default JSON-LD context (new CID format).
+    #[serde(
+        rename = "f:defaultContextCid",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    default_context_cid: Option<String>,
 
     // V2 extension fields (optional for backward compatibility)
     /// Status watermark (v2 extension) - defaults to 1 if missing
@@ -127,12 +132,6 @@ struct NsIndexFileV2 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LedgerRef {
-    #[serde(rename = "@id")]
-    id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AddressRef {
     #[serde(rename = "@id")]
     id: String,
 }
@@ -244,7 +243,7 @@ impl<S> StorageNameService<S> {
             t: commit_t,
             index: None,
             status: "ready".to_string(),
-            default_context: None,
+            default_context_cid: None,
             // v2 extension fields
             status_v: Some(1),
             status_meta: None,
@@ -452,7 +451,10 @@ where
                 .and_then(|i| i.cid.as_deref())
                 .and_then(|s| s.parse::<ContentId>().ok()),
             index_t: main.index.as_ref().map(|i| i.t).unwrap_or(0),
-            default_context: main.default_context.map(|c| c.id),
+            default_context: main
+                .default_context_cid
+                .as_deref()
+                .and_then(parse_default_context_value),
             retracted: main.status == "retracted",
         };
 
@@ -728,7 +730,7 @@ where
             t: 0,
             index: None,
             status: "ready".to_string(),
-            default_context: None,
+            default_context_cid: None,
             // v2 extension fields
             status_v: Some(1),
             status_meta: None,
@@ -742,8 +744,27 @@ where
         match self.storage.write_if_absent(&key, &bytes).await {
             Ok(true) => Ok(()), // Successfully created
             Ok(false) => {
-                // File already exists (including retracted ledgers)
-                Err(NameServiceError::ledger_already_exists(normalized_address))
+                // Record exists — check if it's retracted (dropped) and allow re-creation
+                match self.storage.read_bytes(&key).await {
+                    Ok(existing_bytes) => {
+                        let existing: NsFileV2 = serde_json::from_slice(&existing_bytes)?;
+                        if existing.status == "retracted" {
+                            // Overwrite the retracted record with a fresh one
+                            self.storage.write_bytes(&key, &bytes).await.map_err(|e| {
+                                NameServiceError::storage(format!(
+                                    "Failed to re-create ledger {}: {}",
+                                    normalized_address, e
+                                ))
+                            })?;
+                            // Clean up stale index sidecar
+                            let idx_key = self.index_key(&ledger_name, &branch);
+                            let _ = self.storage.delete(&idx_key).await;
+                            return Ok(());
+                        }
+                        Err(NameServiceError::ledger_already_exists(normalized_address))
+                    }
+                    Err(_) => Err(NameServiceError::ledger_already_exists(normalized_address)),
+                }
             }
             Err(e) => Err(NameServiceError::storage(format!(
                 "Failed to create ledger {}: {}",
@@ -1519,23 +1540,28 @@ where
 
         let file: NsFileV2 = serde_json::from_slice(&data)?;
 
+        let has_default_ctx = file.default_context_cid.is_some();
+
         // config_v defaults based on whether default_context exists:
         // - If default_context exists but config_v is missing, treat as v=1 (legacy record)
         // - If neither exists, treat as v=0 (unborn)
         let v = file.config_v.unwrap_or_else(|| {
-            if file.default_context.is_some()
-                || file.config_meta.is_some()
-                || file.config_cid.is_some()
-            {
+            if has_default_ctx || file.config_meta.is_some() || file.config_cid.is_some() {
                 1 // Legacy record with config data
             } else {
                 0 // Unborn
             }
         });
 
+        // Resolve default_context CID (CID-only)
+        let resolved_ctx = file
+            .default_context_cid
+            .as_deref()
+            .and_then(parse_default_context_value);
+
         // Build ConfigPayload if we have any config data
         let payload = if v == 0
-            && file.default_context.is_none()
+            && resolved_ctx.is_none()
             && file.config_meta.is_none()
             && file.config_cid.is_none()
         {
@@ -1543,7 +1569,7 @@ where
         } else {
             let extra = file.config_meta.unwrap_or_default();
             Some(ConfigPayload {
-                default_context: file.default_context.map(|c| c.id),
+                default_context: resolved_ctx,
                 config_id: file
                     .config_cid
                     .as_deref()
@@ -1584,21 +1610,23 @@ where
 
             // Build current ConfigValue
             let current = {
-                // config_v defaults based on whether default_context exists:
-                // - If default_context exists but config_v is missing, treat as v=1 (legacy record)
-                // - If neither exists, treat as v=0 (unborn)
+                let has_default_ctx = file.default_context_cid.is_some();
+
                 let v = file.config_v.unwrap_or_else(|| {
-                    if file.default_context.is_some()
-                        || file.config_meta.is_some()
-                        || file.config_cid.is_some()
-                    {
+                    if has_default_ctx || file.config_meta.is_some() || file.config_cid.is_some() {
                         1 // Legacy record with config data
                     } else {
                         0 // Unborn
                     }
                 });
+
+                let resolved_ctx = file
+                    .default_context_cid
+                    .as_deref()
+                    .and_then(parse_default_context_value);
+
                 let payload = if v == 0
-                    && file.default_context.is_none()
+                    && resolved_ctx.is_none()
                     && file.config_meta.is_none()
                     && file.config_cid.is_none()
                 {
@@ -1606,7 +1634,7 @@ where
                 } else {
                     let extra = file.config_meta.clone().unwrap_or_default();
                     Some(ConfigPayload {
-                        default_context: file.default_context.as_ref().map(|c| c.id.clone()),
+                        default_context: resolved_ctx,
                         config_id: file
                             .config_cid
                             .as_deref()
@@ -1644,10 +1672,8 @@ where
             file.config_v = Some(new.v);
 
             if let Some(ref payload) = new.payload {
-                file.default_context = payload
-                    .default_context
-                    .as_ref()
-                    .map(|c| AddressRef { id: c.clone() });
+                // Write CID to field
+                file.default_context_cid = payload.default_context.as_ref().map(|c| c.to_string());
                 file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
                 file.config_meta = if payload.extra.is_empty() {
                     None
@@ -1655,7 +1681,7 @@ where
                     Some(payload.extra.clone())
                 };
             } else {
-                file.default_context = None;
+                file.default_context_cid = None;
                 file.config_cid = None;
                 file.config_meta = None;
             }
@@ -2053,9 +2079,10 @@ mod tests {
         assert_eq!(expected.v, 0);
         assert!(expected.payload.is_none());
 
+        let ctx_cid = ContentId::new(fluree_db_core::ContentKind::LedgerConfig, b"ctx-1");
         let new_cfg = ConfigValue::new(
             1,
-            Some(ConfigPayload::with_default_context("ctx-1".to_string())),
+            Some(ConfigPayload::with_default_context(ctx_cid.clone())),
         );
 
         let result = ns
@@ -2066,10 +2093,7 @@ mod tests {
 
         let current = ns.get_config("mydb:main").await.unwrap().unwrap();
         assert_eq!(current.v, 1);
-        assert_eq!(
-            current.payload.unwrap().default_context,
-            Some("ctx-1".to_string())
-        );
+        assert_eq!(current.payload.unwrap().default_context, Some(ctx_cid));
     }
 
     #[tokio::test]

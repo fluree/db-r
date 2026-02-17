@@ -68,9 +68,9 @@ pub struct RunWriter {
     /// Completed run file infos.
     run_files: Vec<RunFileInfo>,
     /// Min t seen across all records.
-    min_t: i64,
+    min_t: u32,
     /// Max t seen across all records.
-    max_t: i64,
+    max_t: u32,
     /// Whether to clear the language dict after each flush.
     /// True for standalone writers; false for sub-writers inside MultiOrderRunWriter
     /// (avoids lang_id mismatch when writers flush at different times).
@@ -97,8 +97,8 @@ impl RunWriter {
             run_count: 0,
             total_records: 0,
             run_files: Vec::new(),
-            min_t: i64::MAX,
-            max_t: i64::MIN,
+            min_t: u32::MAX,
+            max_t: 0,
             clear_lang_on_flush: true,
             pending_flush: None,
             spare_buffer: None,
@@ -144,6 +144,18 @@ impl RunWriter {
             return Ok(());
         }
 
+        // Capacity we allow for the returned spare buffer.
+        //
+        // IMPORTANT: The "full" buffer handed to the background thread can grow to the
+        // configured max_records (i.e., up to the byte budget). If we simply `clear()`
+        // and return it as the spare buffer, we permanently retain that large allocation,
+        // which can explode RSS (especially with MultiOrderRunWriter × N workers).
+        //
+        // Instead we drop the large allocation after each flush and return a smaller
+        // pre-sized buffer for reuse. This trades some re-allocation work for stable,
+        // predictable memory usage during large imports.
+        let reuse_capacity = self.config.max_records().min(1_000_000);
+
         // 1. Wait for any pending background flush
         self.join_pending_flush()?;
 
@@ -177,7 +189,7 @@ impl RunWriter {
                     let sort_elapsed = sort_start.elapsed();
 
                     let (run_min_t, run_max_t) =
-                        buf.iter().fold((i64::MAX, i64::MIN), |(min, max), r| {
+                        buf.iter().fold((u32::MAX, 0u32), |(min, max), r| {
                             (min.min(r.t), max.max(r.t))
                         });
 
@@ -203,8 +215,13 @@ impl RunWriter {
                         "run file flushed (background)"
                     );
 
-                    buf.clear();
-                    Ok(FlushResult { info, buffer: buf })
+                    // Drop the large buffer allocation after the flush to avoid retaining
+                    // multi-GB capacities across runs.
+                    drop(buf);
+                    Ok(FlushResult {
+                        info,
+                        buffer: Vec::with_capacity(reuse_capacity),
+                    })
                 })?,
         );
 
@@ -228,16 +245,12 @@ impl RunWriter {
         Ok(RunWriterResult {
             run_files: self.run_files,
             total_records: self.total_records,
-            min_t: if self.min_t == i64::MAX {
+            min_t: if self.min_t == u32::MAX {
                 0
             } else {
                 self.min_t
             },
-            max_t: if self.max_t == i64::MIN {
-                0
-            } else {
-                self.max_t
-            },
+            max_t: self.max_t,
         })
     }
 
@@ -268,8 +281,8 @@ impl RecordSink for RunWriter {
 pub struct RunWriterResult {
     pub run_files: Vec<RunFileInfo>,
     pub total_records: u64,
-    pub min_t: i64,
-    pub max_t: i64,
+    pub min_t: u32,
+    pub max_t: u32,
 }
 
 // ============================================================================
@@ -373,7 +386,7 @@ mod tests {
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
 
-    fn make_test_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_test_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -438,9 +451,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // Set budget to exactly 2 records (96 bytes at 48 bytes/record)
+        // Set budget to exactly 2 records (80 bytes at 40 bytes/record)
         let config = RunWriterConfig {
-            buffer_budget_bytes: 96,
+            buffer_budget_bytes: 80,
             sort_order: RunSortOrder::Spot,
             run_dir: dir.clone(),
         };

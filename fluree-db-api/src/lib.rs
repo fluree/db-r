@@ -104,7 +104,8 @@ pub use graph_source::{
 };
 pub use graph_transact_builder::{GraphTransactBuilder, StagedGraph};
 pub use import::{
-    CreateBuilder, EffectiveImportSettings, ImportBuilder, ImportConfig, ImportError, ImportResult,
+    CreateBuilder, EffectiveImportSettings, ImportBuilder, ImportConfig, ImportError, ImportPhase,
+    ImportResult, ImportSummary,
 };
 pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{
@@ -2273,7 +2274,6 @@ where
     /// let result = fluree.create("mydb")
     ///     .import("/data/chunks/")
     ///     .threads(8)
-    ///     .run_budget_mb(4096)
     ///     .execute()
     ///     .await?;
     ///

@@ -5,7 +5,7 @@ use crate::{
     TypeErasedStore,
 };
 use fluree_db_core::ContentStore;
-use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION};
+use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_nameservice::{NameServiceError, Publisher};
 use fluree_db_query::BinaryRangeProvider;
 
@@ -49,28 +49,17 @@ where
                     ))
                 })?;
 
-                let root = serde_json::from_slice::<BinaryIndexRoot>(&bytes).map_err(|e| {
-                    ApiError::internal(format!(
-                        "failed to parse binary index root for {}: {}",
-                        index_cid, e
-                    ))
-                })?;
-                if root.version != BINARY_INDEX_ROOT_VERSION {
-                    return Err(ApiError::internal(format!(
-                        "unsupported binary index root version {} for {} (expected {})",
-                        root.version, index_cid, BINARY_INDEX_ROOT_VERSION
-                    )));
-                }
-
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
-                let mut store = BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
-                    .await
-                    .map_err(|e| {
-                        ApiError::internal(format!(
-                            "failed to load binary index store for {}: {}",
-                            index_cid, e
-                        ))
-                    })?;
+                let cs = std::sync::Arc::new(cs);
+                let mut store =
+                    BinaryIndexStore::load_from_root_bytes_default(cs, &bytes, &cache_dir)
+                        .await
+                        .map_err(|e| {
+                            ApiError::internal(format!(
+                                "failed to load binary index store for {}: {}",
+                                index_cid, e
+                            ))
+                        })?;
 
                 // Augment namespace codes with entries from novelty commits.
                 // The index root only contains namespaces known at index time, but
@@ -88,6 +77,25 @@ where
                     state.db.range_provider = Some(Arc::new(provider));
                 }
                 state.binary_store = Some(TypeErasedStore(arc_store));
+            }
+        }
+
+        // Load default context from CAS if the nameservice record has one.
+        if let Some(ref ctx_id) = state
+            .ns_record
+            .as_ref()
+            .and_then(|r| r.default_context.as_ref())
+        {
+            let cs = fluree_db_core::content_store_for(
+                self.connection.storage().clone(),
+                state.db.ledger_id.as_str(),
+            );
+            match cs.get(ctx_id).await {
+                Ok(bytes) => match serde_json::from_slice(&bytes) {
+                    Ok(ctx) => state.default_context = Some(ctx),
+                    Err(e) => tracing::warn!(%e, "failed to parse default context JSON"),
+                },
+                Err(e) => tracing::debug!(%e, cid = %ctx_id, "could not load default context"),
             }
         }
 

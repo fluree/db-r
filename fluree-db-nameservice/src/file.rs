@@ -26,10 +26,11 @@
 //! Note: this file-locking approach provides mutual exclusion, not a distributed CAS.
 
 use crate::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
-    NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind, RefPublisher,
-    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue, Subscription,
+    parse_default_context_value, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload,
+    ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
+    NameService, NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication,
+    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPayload,
+    StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
@@ -102,8 +103,13 @@ struct NsFileV2 {
     #[serde(rename = "f:status")]
     status: String,
 
-    #[serde(rename = "f:defaultContext", skip_serializing_if = "Option::is_none")]
-    default_context: Option<AddressRef>,
+    /// Content identifier for the default JSON-LD context (new CID format).
+    #[serde(
+        rename = "f:defaultContextCid",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    default_context_cid: Option<String>,
 
     // V2 extension fields (optional for backward compatibility)
     /// Status watermark (v2 extension) - defaults to 1 if missing
@@ -144,12 +150,6 @@ struct NsIndexFileV2 {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct LedgerRef {
-    #[serde(rename = "@id")]
-    id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct AddressRef {
     #[serde(rename = "@id")]
     id: String,
 }
@@ -470,7 +470,10 @@ impl FileNameService {
                 .and_then(|i| i.cid.as_deref())
                 .and_then(|s| s.parse::<ContentId>().ok()),
             index_t: main.index.as_ref().map(|i| i.t).unwrap_or(0),
-            default_context: main.default_context.map(|c| c.id),
+            default_context: main
+                .default_context_cid
+                .as_deref()
+                .and_then(parse_default_context_value),
             retracted: main.status == "retracted",
             config_id: main
                 .config_cid
@@ -615,10 +618,7 @@ impl FileNameService {
             } else {
                 "ready".to_string()
             },
-            default_context: record
-                .default_context
-                .as_ref()
-                .map(|a| AddressRef { id: a.clone() }),
+            default_context_cid: record.default_context.as_ref().map(|cid| cid.to_string()),
             // v2 extension fields (not set by record_to_file - preserved by swap_json_locked)
             status_v: None,
             status_meta: None,
@@ -728,13 +728,14 @@ impl Publisher for FileNameService {
             return self
                 .swap_json_locked::<NsFileV2, _>(path, move |existing| {
                     if existing.is_some() {
-                        // Record already exists (including retracted) - return error
+                        // Record exists (active or retracted) — cannot overwrite.
+                        // A hard drop removes the file entirely; that is required to reuse the alias.
                         return Err(NameServiceError::ledger_already_exists(
                             normalized_address_for_error,
                         ));
                     }
 
-                    // Create minimal record with no commits
+                    // Create a fresh record with no commits
                     let file = NsFileV2 {
                         context: ns_context(),
                         id: format_ledger_id(&ledger_name_for_file, &branch_for_file),
@@ -748,7 +749,7 @@ impl Publisher for FileNameService {
                         t: 0,
                         index: None,
                         status: "ready".to_string(),
-                        default_context: None,
+                        default_context_cid: None,
                         // v2 extension fields - initialize with defaults
                         status_v: Some(1), // Initial status
                         status_meta: None,
@@ -762,7 +763,9 @@ impl Publisher for FileNameService {
 
         #[cfg(not(all(feature = "native", unix)))]
         {
-            // Non-locking fallback: check if file exists, then create
+            // Non-locking fallback: check if file exists, then create.
+            // Record exists (active or retracted) — cannot overwrite.
+            // A hard drop removes the file entirely; that is required to reuse the alias.
             if main_path.exists() {
                 return Err(NameServiceError::ledger_already_exists(normalized_address));
             }
@@ -776,10 +779,11 @@ impl Publisher for FileNameService {
                 },
                 branch: branch.clone(),
                 commit_cid: None,
+                config_cid: None,
                 t: 0,
                 index: None,
                 status: "ready".to_string(),
-                default_context: None,
+                default_context_cid: None,
                 // v2 extension fields - initialize with defaults
                 status_v: Some(1), // Initial status
                 status_meta: None,
@@ -787,6 +791,13 @@ impl Publisher for FileNameService {
                 config_meta: None,
             };
             self.write_json_atomic(&main_path, &file).await?;
+
+            // Clean up stale index sidecar from the previous incarnation
+            if was_retracted {
+                let idx_path = self.index_path(&ledger_name, &branch);
+                let _ = tokio::fs::remove_file(&idx_path).await;
+            }
+
             Ok(())
         }
     }
@@ -843,7 +854,7 @@ impl Publisher for FileNameService {
                                 t: commit_t,
                                 index: None,
                                 status: "ready".to_string(),
-                                default_context: None,
+                                default_context_cid: None,
                                 // v2 extension fields - initialize with defaults
                                 status_v: Some(1),
                                 status_meta: None,
@@ -1041,6 +1052,19 @@ impl Publisher for FileNameService {
             }
             Ok(())
         }
+    }
+
+    async fn purge(&self, ledger_id: &str) -> Result<()> {
+        // First retract (updates status, fires event)
+        self.retract(ledger_id).await?;
+        // Then remove the NS file so the alias can be reused
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let main_path = self.ns_path(&ledger_name, &branch);
+        let _ = tokio::fs::remove_file(&main_path).await;
+        // Also remove the index sidecar if present
+        let idx_path = self.index_path(&ledger_name, &branch);
+        let _ = tokio::fs::remove_file(&idx_path).await;
+        Ok(())
     }
 
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
@@ -1610,7 +1634,7 @@ impl RefPublisher for FileNameService {
                             t: 0,
                             index: None,
                             status: "ready".to_string(),
-                            default_context: None,
+                            default_context_cid: None,
                             // v2 extension fields
                             status_v: Some(1),
                             status_meta: None,
@@ -1866,20 +1890,27 @@ impl ConfigPublisher for FileNameService {
         match main_file {
             None => Ok(None),
             Some(f) => {
+                let has_default_ctx = f.default_context_cid.is_some();
+
                 // config_v defaults based on whether default_context exists:
                 // - If default_context exists but config_v is missing, treat as v=1 (legacy record with config)
                 // - If neither exists, treat as v=0 (unborn)
                 let v = f.config_v.unwrap_or_else(|| {
-                    if f.default_context.is_some() || f.config_meta.is_some() {
+                    if has_default_ctx || f.config_meta.is_some() {
                         1 // Legacy record with config data
                     } else {
                         0 // Unborn
                     }
                 });
 
+                let resolved_ctx = f
+                    .default_context_cid
+                    .as_deref()
+                    .and_then(parse_default_context_value);
+
                 // Build ConfigPayload if we have any config data
                 let payload = if v == 0
-                    && f.default_context.is_none()
+                    && resolved_ctx.is_none()
                     && f.config_meta.is_none()
                     && f.config_cid.is_none()
                 {
@@ -1887,7 +1918,7 @@ impl ConfigPublisher for FileNameService {
                 } else {
                     let extra = f.config_meta.unwrap_or_default();
                     Some(ConfigPayload {
-                        default_context: f.default_context.map(|c| c.id),
+                        default_context: resolved_ctx,
                         config_id: f
                             .config_cid
                             .as_deref()
@@ -1921,18 +1952,23 @@ impl ConfigPublisher for FileNameService {
             let current = match &existing {
                 None => None,
                 Some(f) => {
-                    // config_v defaults based on whether default_context exists:
-                    // - If default_context exists but config_v is missing, treat as v=1 (legacy record)
-                    // - If neither exists, treat as v=0 (unborn)
+                    let has_default_ctx = f.default_context_cid.is_some();
+
                     let v = f.config_v.unwrap_or_else(|| {
-                        if f.default_context.is_some() || f.config_meta.is_some() {
+                        if has_default_ctx || f.config_meta.is_some() {
                             1 // Legacy record with config data
                         } else {
                             0 // Unborn
                         }
                     });
+
+                    let resolved_ctx = f
+                        .default_context_cid
+                        .as_deref()
+                        .and_then(parse_default_context_value);
+
                     let payload = if v == 0
-                        && f.default_context.is_none()
+                        && resolved_ctx.is_none()
                         && f.config_meta.is_none()
                         && f.config_cid.is_none()
                     {
@@ -1940,7 +1976,7 @@ impl ConfigPublisher for FileNameService {
                     } else {
                         let extra = f.config_meta.clone().unwrap_or_default();
                         Some(ConfigPayload {
-                            default_context: f.default_context.as_ref().map(|c| c.id.clone()),
+                            default_context: resolved_ctx,
                             config_id: f
                                 .config_cid
                                 .as_deref()
@@ -1990,10 +2026,8 @@ impl ConfigPublisher for FileNameService {
             file.config_v = Some(new_clone.v);
 
             if let Some(ref payload) = new_clone.payload {
-                file.default_context = payload
-                    .default_context
-                    .as_ref()
-                    .map(|c| AddressRef { id: c.clone() });
+                // Write CID to field (CID-only)
+                file.default_context_cid = payload.default_context.as_ref().map(|c| c.to_string());
                 file.config_meta = if payload.extra.is_empty() {
                     None
                 } else {
@@ -2001,7 +2035,7 @@ impl ConfigPublisher for FileNameService {
                 };
                 file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
             } else {
-                file.default_context = None;
+                file.default_context_cid = None;
                 file.config_meta = None;
                 file.config_cid = None;
             }
@@ -2064,18 +2098,29 @@ impl ConfigPublisher for FileNameService {
         match main_file {
             None => Ok(None),
             Some(f) => {
-                // config_v defaults based on whether default_context exists:
-                // - If default_context exists but config_v is missing, treat as v=1 (legacy record)
-                // - If neither exists, treat as v=0 (unborn)
+                let has_default_ctx =
+                    f.default_context_cid.is_some() || f.default_context.is_some();
+
                 let v = f.config_v.unwrap_or_else(|| {
-                    if f.default_context.is_some() || f.config_meta.is_some() {
+                    if has_default_ctx || f.config_meta.is_some() {
                         1 // Legacy record with config data
                     } else {
                         0 // Unborn
                     }
                 });
+
+                let resolved_ctx = f
+                    .default_context_cid
+                    .as_deref()
+                    .and_then(parse_default_context_value)
+                    .or_else(|| {
+                        f.default_context
+                            .as_ref()
+                            .and_then(|c| parse_default_context_value(&c.id))
+                    });
+
                 let payload = if v == 0
-                    && f.default_context.is_none()
+                    && resolved_ctx.is_none()
                     && f.config_meta.is_none()
                     && f.config_cid.is_none()
                 {
@@ -2083,7 +2128,7 @@ impl ConfigPublisher for FileNameService {
                 } else {
                     let extra = f.config_meta.unwrap_or_default();
                     Some(ConfigPayload {
-                        default_context: f.default_context.map(|c| c.id),
+                        default_context: resolved_ctx,
                         config_id: f
                             .config_cid
                             .as_deref()
@@ -2877,9 +2922,10 @@ mod tests {
         assert!(unborn.is_unborn());
 
         // Push first config
+        let ctx_cid = ContentId::new(fluree_db_core::ContentKind::LedgerConfig, b"test-ctx-v1");
         let new_config = crate::ConfigValue::new(
             1,
-            Some(crate::ConfigPayload::with_default_context("fluree:ctx/v1")),
+            Some(crate::ConfigPayload::with_default_context(ctx_cid.clone())),
         );
         let result = ns
             .push_config("mydb:main", Some(&unborn), &new_config)
@@ -2893,7 +2939,7 @@ mod tests {
         assert_eq!(current.v, 1);
         assert_eq!(
             current.payload.as_ref().unwrap().default_context,
-            Some("fluree:ctx/v1".to_string())
+            Some(ctx_cid)
         );
     }
 

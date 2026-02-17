@@ -24,6 +24,7 @@ use super::replay::replay_leaflet;
 use super::run_record::{cmp_for_order, FactKey, RunRecord, RunSortOrder};
 use super::types::{OverlayOp, RowColumnSlice};
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
+use fluree_db_core::GraphId;
 use fluree_db_core::ListIndex;
 use memmap2::Mmap;
 use std::cmp::Ordering;
@@ -446,7 +447,7 @@ pub struct DecodedBatch {
 pub struct BinaryCursor {
     store: Arc<BinaryIndexStore>,
     order: RunSortOrder,
-    g_id: u32,
+    g_id: GraphId,
     /// Indices of leaves to visit.
     leaf_indices: Range<usize>,
     /// Current position within leaf_indices.
@@ -479,7 +480,7 @@ impl BinaryCursor {
     pub fn new(
         store: Arc<BinaryIndexStore>,
         order: RunSortOrder,
-        g_id: u32,
+        g_id: GraphId,
         min_key: &RunRecord,
         max_key: &RunRecord,
         filter: BinaryFilter,
@@ -541,7 +542,7 @@ impl BinaryCursor {
     /// immediately-exhausted cursor.
     pub fn for_subject(
         store: Arc<BinaryIndexStore>,
-        g_id: u32,
+        g_id: GraphId,
         s_id: u64,
         p_id: Option<u32>,
         need_region2: bool,
@@ -575,7 +576,7 @@ impl BinaryCursor {
             };
         };
 
-        let leaf_indices = branch.find_leaves_for_subject(g_id, s_id);
+        let leaf_indices = branch.find_leaves_for_subject(s_id);
 
         let current_idx = leaf_indices.start;
         // Don't set exhausted = true even when leaf_indices is empty.
@@ -747,8 +748,25 @@ impl BinaryCursor {
                 &[]
             };
 
-            // Memory-map leaf file (leaf_entry.path is fully resolved by branch reader)
-            let file = std::fs::File::open(&leaf_entry.path)?;
+            // Memory-map leaf file.
+            //
+            // For remote CAS stores (e.g., S3), leaf files may be downloaded lazily.
+            // If the file is missing, attempt to fetch it into the cache dir and retry.
+            let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("leaf {} has no resolved path", leaf_entry.leaf_cid),
+                )
+            })?;
+            let file = match std::fs::File::open(leaf_path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    self.store
+                        .ensure_index_leaf_cached(&leaf_entry.leaf_cid, leaf_path)?;
+                    std::fs::File::open(leaf_path)?
+                }
+                Err(e) => return Err(e),
+            };
             let leaf_mmap = unsafe { Mmap::map(&file)? };
             let header = read_leaf_header(&leaf_mmap)?;
 
@@ -764,8 +782,8 @@ impl BinaryCursor {
                 row_count: 0,
             };
 
-            // Compute leaf_id for cache key (xxh3_128 of content hash).
-            let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.content_hash.as_bytes());
+            // Compute leaf_id for cache key (xxh3_128 of CID binary).
+            let leaf_id = xxhash_rust::xxh3::xxh3_128(&leaf_entry.leaf_cid.to_bytes());
             let cache = self.store.leaflet_cache();
 
             let mut leaflets: u64 = 0;

@@ -16,3 +16,4 @@ tracing = { workspace = true }
 rustc-hash = "2"
 
 [dev-dependencies]
+tempfile = "3"

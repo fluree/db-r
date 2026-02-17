@@ -18,7 +18,7 @@ mod inner {
     use crate::error::{Result, TransactError};
     use crate::generate::{infer_datatype, DT_ID, DT_LANG_STRING};
     use crate::import_sink::ImportSink;
-    use crate::namespace::NamespaceRegistry;
+    use crate::namespace::{NamespaceRegistry, NsAllocator, SharedNamespaceAllocator, WorkerCache};
     use crate::parse::trig_meta::{parse_trig_phase1, resolve_trig_meta, RawObject, RawTerm};
     use crate::value_convert::convert_string_literal;
     use fluree_db_core::{
@@ -26,7 +26,10 @@ mod inner {
         CODEC_FLUREE_COMMIT,
     };
     use fluree_db_novelty::CommitRef;
+    use fluree_graph_turtle::splitter::TurtlePrelude;
+    use rustc_hash::FxHashSet;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     /// Mutable state carried across chunks during an import session.
     pub struct ImportState {
@@ -45,6 +48,9 @@ mod inner {
         pub graph_ids: HashMap<String, u16>,
         /// Next available g_id for user-defined named graphs.
         pub next_gid: u16,
+        /// Accumulated turtle @prefix short names: IRI → short prefix.
+        /// Captured from `on_prefix()` calls across all chunks.
+        pub prefix_map: HashMap<String, String>,
     }
 
     impl ImportState {
@@ -61,6 +67,7 @@ mod inner {
                 import_time: chrono::Utc::now().to_rfc3339(),
                 graph_ids: HashMap::new(),
                 next_gid: 2, // 0=default, 1=txn-meta
+                prefix_map: HashMap::new(),
             }
         }
     }
@@ -85,6 +92,10 @@ mod inner {
         /// Available for downstream consumers (e.g., run generation)
         /// without re-reading from storage.
         pub commit_blob: Vec<u8>,
+        /// Buffered spool result from this chunk's parse (if spool was enabled).
+        /// Contains buffered RunRecords with chunk-local IDs and chunk-local
+        /// dictionaries for the post-parse sort + sorted commit write pipeline.
+        pub spool_result: Option<crate::import_sink::BufferedSpoolResult>,
     }
 
     /// Import a single TTL chunk as a v2 commit blob.
@@ -98,12 +109,16 @@ mod inner {
     /// * `storage` — storage backend for writing commit blobs
     /// * `ledger_id` — ledger name for storage path construction
     /// * `compress` — whether to zstd-compress the ops stream
+    #[allow(clippy::too_many_arguments)]
     pub async fn import_commit<S>(
         state: &mut ImportState,
         ttl: &str,
         storage: &S,
         ledger_id: &str,
         compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
@@ -122,16 +137,27 @@ mod inner {
         .entered();
         let mut sink = ImportSink::new(&mut state.ns_registry, new_t, txn_id, compress)
             .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
         fluree_graph_turtle::parse(ttl, &mut sink)
             .map_err(|e| TransactError::Parse(e.to_string()))?;
         drop(_parse_span);
 
         // 2. Retrieve writer, get namespace delta, build envelope
-        let (writer, op_count, envelope) = {
+        let (writer, op_count, spool_result, envelope) = {
             let _span = tracing::info_span!("import_build_envelope", t = new_t).entered();
-            let writer = sink
+            let (writer, chunk_prefix_map, spool_ctx) = sink
                 .finish()
                 .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+            state.prefix_map.extend(chunk_prefix_map);
+
+            let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
             let op_count = writer.op_count();
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
@@ -158,7 +184,7 @@ mod inner {
                 graph_delta: HashMap::new(),
             };
 
-            (writer, op_count, envelope)
+            (writer, op_count, spool_result, envelope)
         };
 
         // 4. Finalize blob
@@ -201,6 +227,142 @@ mod inner {
             flake_count: op_count,
             blob_bytes,
             commit_blob: result.bytes,
+            spool_result,
+        })
+    }
+
+    /// Import a single Turtle chunk using a pre-extracted header prelude (prefixes/base).
+    ///
+    /// This avoids the need to prepend the raw prefix block text onto every chunk,
+    /// which would otherwise force an extra full-chunk string copy per parse.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn import_commit_with_prelude<S>(
+        state: &mut ImportState,
+        ttl: &str,
+        prelude: &TurtlePrelude,
+        storage: &S,
+        ledger_id: &str,
+        compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
+    ) -> Result<ImportCommitResult>
+    where
+        S: ContentAddressedWrite,
+    {
+        // Apply prelude once (equivalent to parsing the directive header).
+        if state.t == 0 {
+            for (short, ns_iri) in &prelude.prefixes {
+                state.ns_registry.get_or_allocate(ns_iri);
+                if !short.is_empty() {
+                    state.prefix_map.insert(ns_iri.clone(), short.clone());
+                }
+            }
+        }
+
+        let new_t = state.t + 1;
+        let txn_id = format!("{}-{}", ledger_id, new_t);
+
+        let ns_codes_before = state.ns_registry.code_count();
+        let _parse_span = tracing::info_span!(
+            "import_parse",
+            t = new_t,
+            ttl_bytes = ttl.len(),
+            ns_codes = ns_codes_before,
+        )
+        .entered();
+        let mut sink = ImportSink::new(&mut state.ns_registry, new_t, txn_id, compress)
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
+        fluree_graph_turtle::parse_with_prefixes_base(
+            ttl,
+            &mut sink,
+            &prelude.prefixes,
+            prelude.base.as_deref(),
+        )
+        .map_err(|e| TransactError::Parse(e.to_string()))?;
+        drop(_parse_span);
+
+        let (writer, op_count, spool_result, envelope) = {
+            let _span = tracing::info_span!("import_build_envelope", t = new_t).entered();
+            let (writer, _chunk_prefix_map, spool_ctx) = sink
+                .finish()
+                .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+
+            let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
+            let op_count = writer.op_count();
+            let ns_delta = state.ns_registry.take_delta();
+            let ns_codes_after = state.ns_registry.code_count();
+
+            tracing::info!(
+                op_count,
+                ns_delta_size = ns_delta.len(),
+                ns_codes = ns_codes_after,
+                "import sink finalized"
+            );
+
+            state.cumulative_flakes += op_count as u64;
+
+            let envelope = CommitV2Envelope {
+                t: new_t,
+                previous_ref: state.previous_ref.clone(),
+                namespace_delta: ns_delta,
+                txn: None,
+                time: Some(state.import_time.clone()),
+
+                txn_signature: None,
+                txn_meta: Vec::new(),
+                graph_delta: HashMap::new(),
+            };
+
+            (writer, op_count, spool_result, envelope)
+        };
+
+        let result = {
+            let _span = tracing::info_span!("import_finish_blob", t = new_t, op_count).entered();
+            writer.finish(&envelope)?
+        };
+        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
+            .expect("valid SHA-256 hex from commit writer");
+        let blob_bytes = result.bytes.len();
+
+        let write_res = {
+            let _span = tracing::info_span!("import_store", t = new_t, blob_bytes).entered();
+            storage
+                .content_write_bytes_with_hash(
+                    ContentKind::Commit,
+                    ledger_id,
+                    &result.content_hash_hex,
+                    &result.bytes,
+                )
+                .await?
+        };
+
+        tracing::info!(
+            t = new_t,
+            flakes = op_count,
+            blob_bytes,
+            address = %write_res.address,
+            "import commit stored"
+        );
+
+        state.t = new_t;
+        state.previous_ref = Some(CommitRef::new(commit_cid.clone()));
+
+        Ok(ImportCommitResult {
+            commit_id: commit_cid,
+            t: new_t,
+            flake_count: op_count,
+            blob_bytes,
+            commit_blob: result.bytes,
+            spool_result,
         })
     }
 
@@ -222,12 +384,16 @@ mod inner {
     /// * `storage` — storage backend for writing commit blobs
     /// * `ledger_id` — ledger name for storage path construction
     /// * `compress` — whether to zstd-compress the ops stream
+    #[allow(clippy::too_many_arguments)]
     pub async fn import_trig_commit<S>(
         state: &mut ImportState,
         trig: &str,
         storage: &S,
         ledger_id: &str,
         compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
     ) -> Result<ImportCommitResult>
     where
         S: ContentAddressedWrite,
@@ -240,7 +406,17 @@ mod inner {
 
         // If no named graphs and no txn-meta, use the faster pure-Turtle path
         if phase1.named_graphs.is_empty() && phase1.raw_meta.is_none() {
-            return import_commit(state, trig, storage, ledger_id, compress).await;
+            return import_commit(
+                state,
+                trig,
+                storage,
+                ledger_id,
+                compress,
+                spool_dir,
+                spool_config,
+                chunk_idx,
+            )
+            .await;
         }
 
         let _parse_span = tracing::info_span!(
@@ -254,13 +430,26 @@ mod inner {
         // 2. Create ImportSink and parse default graph Turtle
         let mut sink = ImportSink::new(&mut state.ns_registry, new_t, txn_id.clone(), compress)
             .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
         fluree_graph_turtle::parse(&phase1.turtle, &mut sink)
             .map_err(|e| TransactError::Parse(e.to_string()))?;
 
         // 3. Retrieve writer for named graph flakes
-        let mut writer = sink
+        // Note: spool only captures default-graph triples parsed above.
+        // Named graph flakes (pushed below) are NOT spooled — TriG import
+        // falls back to the serial resolver path for index generation.
+        let (mut writer, chunk_prefix_map, spool_ctx) = sink
             .finish()
             .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+        state.prefix_map.extend(chunk_prefix_map);
+        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
         let mut op_count = writer.op_count();
 
         // 4. Process named graphs
@@ -396,6 +585,7 @@ mod inner {
             flake_count: op_count,
             blob_bytes,
             commit_blob: result.bytes,
+            spool_result,
         })
     }
 
@@ -473,7 +663,11 @@ mod inner {
                 Some(lang.clone()),
             )),
             RawObject::TypedLiteral { value, datatype } => {
-                let (fv, dt) = convert_string_literal(value, datatype, ns_registry);
+                let (fv, dt) = convert_string_literal(
+                    value,
+                    datatype,
+                    &mut NsAllocator::Exclusive(ns_registry),
+                );
                 Ok((fv, dt, None))
             }
         }
@@ -486,52 +680,148 @@ mod inner {
     /// Result of parsing a single TTL chunk (parallelizable step).
     ///
     /// Contains the `StreamingCommitWriter` (tempfile-backed, Send) and the
-    /// namespace delta from the parser's cloned registry. Can be sent across
-    /// threads and finalized later on the commit thread.
+    /// set of namespace codes first observed by this worker after its snapshot.
+    /// Can be sent across threads and finalized later on the commit thread.
     pub struct ParsedChunk {
         /// The streaming writer with all encoded ops spooled to a tempfile.
         pub writer: StreamingCommitWriter,
         /// Number of flakes (ops) encoded.
         pub op_count: u32,
-        /// Namespace allocations from this chunk's cloned registry.
-        /// Usually empty after chunk 0 establishes all known namespaces.
-        pub ns_delta: HashMap<u16, String>,
+        /// Namespace codes first observed after this worker's snapshot
+        /// (code >= snapshot_next_code). Includes codes allocated by this
+        /// worker AND codes allocated by other workers that this chunk uses.
+        /// The serial finalizer uses this to determine which codes need to
+        /// be "published" in this commit's namespace_delta.
+        pub new_codes: FxHashSet<u16>,
+        /// Turtle @prefix short names from this chunk: IRI → short prefix.
+        pub prefix_map: HashMap<String, String>,
+        /// Buffered spool result from parallel import (if enabled). Contains
+        /// buffered RunRecords with chunk-local IDs and chunk-local
+        /// dictionaries for the post-parse sort + sorted commit write pipeline.
+        pub spool_result: Option<crate::import_sink::BufferedSpoolResult>,
     }
 
     /// Parse a TTL chunk into a `StreamingCommitWriter`. Thread-safe.
     ///
-    /// Takes an **owned** `NamespaceRegistry` (cloned per worker thread)
-    /// instead of `&mut ImportState`. This allows multiple chunks to be
-    /// parsed concurrently, each with an independent registry clone.
+    /// Uses a [`WorkerCache`] backed by the shared allocator for lock-free
+    /// namespace lookups. New prefix allocations are tracked in the worker's
+    /// `new_codes` set for commit-order publication by the serial finalizer.
     ///
     /// The `t` value is pre-assigned by the caller (chunk_index + 1).
+    ///
+    /// If `spool_dir` is `Some`, a spool file is written alongside the commit
+    /// blob for Phase A validation of the spool format.
+    #[allow(clippy::too_many_arguments)]
     pub fn parse_chunk(
         ttl: &str,
-        mut ns_registry: NamespaceRegistry,
+        alloc: &Arc<SharedNamespaceAllocator>,
         t: i64,
         ledger_id: &str,
         compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
     ) -> Result<ParsedChunk> {
         let txn_id = format!("{}-{}", ledger_id, t);
 
         let _parse_span = tracing::info_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
 
-        let mut sink = ImportSink::new(&mut ns_registry, t, txn_id, compress)
+        let mut worker_cache = WorkerCache::new(Arc::clone(alloc));
+        let mut sink = ImportSink::new_cached(&mut worker_cache, t, txn_id, compress)
             .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
         fluree_graph_turtle::parse(ttl, &mut sink)
             .map_err(|e| TransactError::Parse(e.to_string()))?;
         drop(_parse_span);
 
-        let writer = sink
+        let (writer, prefix_map, spool_ctx) = sink
             .finish()
             .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
         let op_count = writer.op_count();
-        let ns_delta = ns_registry.take_delta();
+        let new_codes = worker_cache.into_new_codes();
+
+        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
 
         Ok(ParsedChunk {
             writer,
             op_count,
-            ns_delta,
+            new_codes,
+            prefix_map,
+            spool_result,
+        })
+    }
+
+    /// Parse a TTL chunk using a pre-extracted header prelude (prefixes/base).
+    ///
+    /// Like `parse_chunk`, but does not require the prefix block text to be
+    /// prepended onto `ttl`. Uses a [`WorkerCache`] for lock-free lookups.
+    ///
+    /// If `spool_dir` is `Some`, a spool file is written alongside the commit
+    /// blob for Phase A validation of the spool format.
+    #[allow(clippy::too_many_arguments)]
+    pub fn parse_chunk_with_prelude(
+        ttl: &str,
+        alloc: &Arc<SharedNamespaceAllocator>,
+        prelude: &TurtlePrelude,
+        t: i64,
+        ledger_id: &str,
+        compress: bool,
+        spool_dir: Option<&std::path::Path>,
+        spool_config: Option<&crate::import_sink::SpoolConfig>,
+        chunk_idx: usize,
+    ) -> Result<ParsedChunk> {
+        let txn_id = format!("{}-{}", ledger_id, t);
+        let _parse_span = tracing::info_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
+
+        let mut worker_cache = WorkerCache::new(Arc::clone(alloc));
+
+        // Pre-register namespaces from the prelude for stable code assignment.
+        for (_short, ns_iri) in &prelude.prefixes {
+            worker_cache.get_or_allocate(ns_iri);
+        }
+
+        let mut sink = ImportSink::new_cached(&mut worker_cache, t, txn_id, compress)
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+
+        if let Some((dir, config)) = spool_dir.zip(spool_config) {
+            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
+                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+            sink.set_spool_context(spool_ctx);
+        }
+
+        fluree_graph_turtle::parse_with_prefixes_base(
+            ttl,
+            &mut sink,
+            &prelude.prefixes,
+            prelude.base.as_deref(),
+        )
+        .map_err(|e| TransactError::Parse(e.to_string()))?;
+        drop(_parse_span);
+
+        let (writer, _prefix_map, spool_ctx) = sink
+            .finish()
+            .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+        let op_count = writer.op_count();
+        let new_codes = worker_cache.into_new_codes();
+
+        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
+
+        Ok(ParsedChunk {
+            writer,
+            op_count,
+            new_codes,
+            // Prelude prefixes are applied at session start; chunks should not
+            // need to contribute additional prefix mappings.
+            prefix_map: HashMap::new(),
+            spool_result,
         })
     }
 
@@ -539,9 +829,14 @@ mod inner {
     ///
     /// Must be called **serially in chunk order** because each commit
     /// references the previous commit's address (hash chain).
+    ///
+    /// The `ns_delta` is computed by the caller via commit-order publication:
+    /// codes from `parsed.new_codes` that haven't been published by a prior
+    /// commit are looked up from the shared allocator and passed here.
     pub async fn finalize_parsed_chunk<S>(
         state: &mut ImportState,
         parsed: ParsedChunk,
+        ns_delta: HashMap<u16, String>,
         storage: &S,
         ledger_id: &str,
     ) -> Result<ImportCommitResult>
@@ -552,15 +847,13 @@ mod inner {
 
         let _span = tracing::info_span!("finalize_parsed_chunk", t = new_t).entered();
 
-        // Merge any new namespaces from clone into main registry
-        for (code, prefix) in &parsed.ns_delta {
+        // Merge published namespaces into serial registry to keep it in sync
+        // (needed for TriG serial paths and the final namespace snapshot).
+        for (code, prefix) in &ns_delta {
             state.ns_registry.ensure_code(*code, prefix);
         }
-        let ns_delta = if !parsed.ns_delta.is_empty() {
-            state.ns_registry.take_delta()
-        } else {
-            HashMap::new()
-        };
+        // Merge turtle prefix short names into session state
+        state.prefix_map.extend(parsed.prefix_map);
 
         state.cumulative_flakes += parsed.op_count as u64;
 
@@ -607,11 +900,12 @@ mod inner {
             flake_count: parsed.op_count,
             blob_bytes,
             commit_blob: result.bytes,
+            spool_result: parsed.spool_result,
         })
     }
 }
 
 pub use inner::{
-    finalize_parsed_chunk, import_commit, import_trig_commit, parse_chunk, ImportCommitResult,
-    ImportState, ParsedChunk,
+    finalize_parsed_chunk, import_commit, import_commit_with_prelude, import_trig_commit,
+    parse_chunk, parse_chunk_with_prelude, ImportCommitResult, ImportState, ParsedChunk,
 };

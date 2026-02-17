@@ -14,7 +14,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::{ObjectBounds, Sid, BATCHED_JOIN_SIZE};
+use fluree_db_core::{GraphId, ObjectBounds, Sid, BATCHED_JOIN_SIZE};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -891,12 +891,11 @@ impl NestedLoopJoinOperator {
     /// predicate partition even when subjects fall into a narrow range.
     fn find_psot_leaf_range(
         branch: &fluree_db_indexer::run_index::branch::BranchManifest,
-        g_id: u32,
+        g_id: GraphId,
         p_id: u32,
         min_s_id: u64,
         max_s_id: u64,
     ) -> std::ops::Range<usize> {
-        use fluree_db_core::ListIndex;
         use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord};
 
         let min_key = RunRecord {
@@ -907,9 +906,9 @@ impl NestedLoopJoinOperator {
             o_kind: 0,
             op: 0,
             o_key: 0,
-            t: i64::MIN,
+            t: 0,
             lang_id: 0,
-            i: ListIndex::none().as_i32(),
+            i: 0,
         };
         let max_key = RunRecord {
             g_id,
@@ -919,9 +918,9 @@ impl NestedLoopJoinOperator {
             o_kind: u8::MAX,
             op: u8::MAX,
             o_key: u64::MAX,
-            t: i64::MAX,
+            t: u32::MAX,
             lang_id: u16::MAX,
-            i: i32::MAX,
+            i: u32::MAX,
         };
         branch.find_leaves_in_range(&min_key, &max_key, cmp_psot)
     }
@@ -992,7 +991,10 @@ impl NestedLoopJoinOperator {
         for leaf_idx in leaf_range {
             let leaf_entry = &branch.leaves[leaf_idx];
             let t_open = Instant::now();
-            let file = std::fs::File::open(&leaf_entry.path)
+            let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
+                QueryError::Internal(format!("leaf {} has no resolved path", leaf_entry.leaf_cid))
+            })?;
+            let file = std::fs::File::open(leaf_path)
                 .map_err(|e| QueryError::Internal(format!("open leaf: {}", e)))?;
             let leaf_mmap = unsafe { Mmap::map(&file) }
                 .map_err(|e| QueryError::Internal(format!("mmap leaf: {}", e)))?;
@@ -1002,7 +1004,7 @@ impl NestedLoopJoinOperator {
             let header = read_leaf_header(&leaf_mmap)
                 .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
             us_read_leaf_header += t_hdr.elapsed().as_micros() as u64;
-            let leaf_id = xxh3_128(leaf_entry.content_hash.as_bytes());
+            let leaf_id = xxh3_128(&leaf_entry.leaf_cid.to_bytes());
 
             for (leaflet_idx, dir_entry) in header.leaflet_dir.iter().enumerate() {
                 leaflets_scanned += 1;
@@ -1908,8 +1910,8 @@ mod tests {
         // score1 hasScore 0.5 ; score1 refersInstance concept1
         // score2 hasScore 0.3 ; score2 refersInstance concept2
         // Filter (>0.4) should keep only score1 → concept1.
-        let g_id = 0u32;
-        let t = 1i64;
+        let g_id: u16 = 0;
+        let t: u32 = 1;
         let records = vec![
             // score1 hasScore 0.5
             RunRecord::new(
@@ -2033,6 +2035,9 @@ mod tests {
             64, // leaflet_rows
             2,  // leaflets_per_leaf
             0,  // zstd_level
+            None,
+            false,
+            false,
         )
         .unwrap();
 

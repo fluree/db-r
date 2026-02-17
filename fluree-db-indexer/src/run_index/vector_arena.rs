@@ -64,6 +64,7 @@ const VAS_HEADER_SIZE: usize = 16;
 
 /// Per-predicate vector arena storing packed f32 arrays.
 /// Vectors are appended sequentially; each gets a u32 handle.
+#[derive(Debug)]
 pub struct VectorArena {
     /// Fixed dimensionality per property; 0 until first insert.
     dims: u16,

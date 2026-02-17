@@ -18,21 +18,82 @@ use super::QueryResult;
 
 /// Parse a JSON-LD query and prepare it for execution.
 ///
+/// If the query has no `@context` (or `context`) key and a `default_context`
+/// is provided, the default is injected so that prefix resolution succeeds
+/// without requiring the caller to repeat prefixes on every query.
+///
 /// Returns the variable registry and parsed query.
 pub(crate) fn parse_jsonld_query(
     query_json: &JsonValue,
     db: &Db,
+    default_context: Option<&JsonValue>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
+    let has_context = query_json.get("@context").is_some() || query_json.get("context").is_some();
+
+    let effective_query;
+    let query_ref = if !has_context {
+        if let Some(ctx) = default_context {
+            effective_query = {
+                let mut q = query_json.clone();
+                if let Some(obj) = q.as_object_mut() {
+                    obj.insert("@context".to_string(), ctx.clone());
+                }
+                q
+            };
+            &effective_query
+        } else {
+            query_json
+        }
+    } else {
+        query_json
+    };
+
     let mut vars = VarRegistry::new();
-    let parsed = parse_query(query_json, db, &mut vars)?;
+    let parsed = parse_query(query_ref, db, &mut vars)?;
     Ok((vars, parsed))
 }
 
 /// Parse a SPARQL query and prepare it for execution.
 ///
+/// If `default_context` is provided (a JSON-LD `@context` object mapping
+/// short prefix → namespace IRI), any prefixes not explicitly declared in
+/// the SPARQL prologue are injected as defaults. This lets queries omit
+/// `PREFIX` declarations for prefixes that were established during import.
+///
 /// Returns the variable registry and parsed query.
-pub(crate) fn parse_sparql_to_ir(sparql: &str, db: &Db) -> Result<(VarRegistry, ParsedQuery)> {
-    let ast = parse_and_validate_sparql(sparql)?;
+pub(crate) fn parse_sparql_to_ir(
+    sparql: &str,
+    db: &Db,
+    default_context: Option<&JsonValue>,
+) -> Result<(VarRegistry, ParsedQuery)> {
+    let mut ast = parse_and_validate_sparql(sparql)?;
+
+    // Inject default prefixes from the ledger's stored @context.
+    // Only add prefixes not already declared in the query prologue so that
+    // explicit PREFIX declarations always take precedence.
+    if let Some(ctx_obj) = default_context.and_then(|v| v.as_object()) {
+        let declared: std::collections::HashSet<String> = ast
+            .prologue
+            .prefixes
+            .iter()
+            .map(|p| p.prefix.to_string())
+            .collect();
+
+        for (short, iri_val) in ctx_obj {
+            if !declared.contains(short.as_str()) {
+                if let Some(iri) = iri_val.as_str() {
+                    ast.prologue
+                        .prefixes
+                        .push(fluree_db_sparql::ast::PrefixDecl::new(
+                            short.as_str(),
+                            iri,
+                            fluree_db_sparql::SourceSpan::new(0, 0),
+                        ));
+                }
+            }
+        }
+    }
+
     let mut vars = VarRegistry::new();
     let parsed = fluree_db_sparql::lower_sparql(&ast, db, &mut vars)?;
     Ok((vars, parsed))

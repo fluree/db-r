@@ -174,7 +174,7 @@ These predicates appear on ledger nameservice records (the metadata Fluree store
 | `f:ledgerCommit` | `https://ns.flur.ee/db#ledgerCommit` | Pointer to latest commit ContentId |
 | `f:ledgerIndex` | `https://ns.flur.ee/db#ledgerIndex` | Pointer to latest index root |
 | `f:status` | `https://ns.flur.ee/db#status` | Record status (`ready`, etc.) |
-| `f:defaultContext` | `https://ns.flur.ee/db#defaultContext` | Default JSON-LD context ContentId |
+| `f:defaultContextCid` | `https://ns.flur.ee/db#defaultContextCid` | Default JSON-LD context ContentId |
 
 ### Graph source record fields
 

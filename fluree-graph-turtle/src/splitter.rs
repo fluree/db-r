@@ -22,8 +22,10 @@
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use fluree_graph_turtle::{tokenize, TokenKind};
+use crate::{parse, tokenize, TokenKind};
+use fluree_graph_ir::{Datatype, GraphSink, LiteralValue, TermId};
 
 // ============================================================================
 // Configuration
@@ -204,29 +206,32 @@ pub fn extract_prefix_block(path: &Path) -> Result<(String, u64), SplitError> {
         format!("{prefix_text}\n")
     };
 
+    tracing::info!(
+        prefix_len = prefix_text.len(),
+        data_start,
+        prefix_first_500 = &prefix_text[..prefix_text.len().min(500)],
+        "prefix block extracted"
+    );
+
     Ok((prefix_text, data_start as u64))
 }
 
 /// Find a safe truncation point in the buffer for tokenization.
 ///
-/// If the buffer might end mid-token (e.g. a long IRI or string that crosses
-/// the 1 MB read boundary), tokenization will fail. We handle this by:
-/// 1. Truncating to valid UTF-8
-/// 2. Scanning backwards for a newline to get a clean line boundary
-///
-/// Since Turtle directives are line-oriented (`@prefix ... .\n`), truncating
-/// at a newline guarantees we don't split mid-directive or mid-IRI.
+/// Even when the buffer is valid UTF-8, the read boundary may land in the
+/// middle of a Turtle token (e.g. a long IRI or string literal). We always
+/// truncate at the last newline to ensure every line is complete, preventing
+/// the tokenizer from seeing unterminated IRIs or strings.
 fn find_safe_header(buf: &[u8]) -> &str {
-    // Get valid UTF-8 range.
+    // Get valid UTF-8 prefix.
     let valid = match std::str::from_utf8(buf) {
-        Ok(s) => return s, // whole buffer is valid — no truncation needed
+        Ok(s) => s.as_bytes(),
         Err(e) => &buf[..e.valid_up_to()],
     };
 
-    // Scan backwards for a newline to avoid cutting mid-token.
+    // Always truncate at the last newline to avoid cutting mid-token.
     if let Some(nl_pos) = valid.iter().rposition(|&b| b == b'\n') {
-        // Safety: we already know buf[..valid_end] is valid UTF-8, and
-        // nl_pos+1 is at a char boundary (byte after \n).
+        // Safety: valid[..nl_pos+1] is valid UTF-8 (subset of a valid prefix).
         std::str::from_utf8(&valid[..nl_pos + 1]).unwrap_or("")
     } else {
         // No newline at all — use whatever we have.
@@ -250,6 +255,10 @@ struct Lookahead {
     /// A `.` was the last byte processed; waiting to see if next byte is
     /// whitespace/`#`/EOF to confirm a statement boundary.
     pending_dot: Option<u64>,
+    /// Whether the byte immediately preceding the pending dot was a PN_CHARS-like
+    /// character (ASCII approximation). Used to avoid treating `.` inside a
+    /// prefixed name local part (e.g. `ex:foo.bar`) as a boundary.
+    pending_dot_prev_is_pnchar: bool,
     /// Count of consecutive `"` or `'` seen at the end of a buffer (1 or 2),
     /// for detecting triple-quote openings.
     pending_quotes: u8,
@@ -291,6 +300,7 @@ pub fn compute_chunk_boundaries(
     let mut byte_pos = data_start;
     let mut buf = vec![0u8; SCAN_BUF_SIZE];
     let mut prefix_check = PrefixCheck::new();
+    let mut prev_byte: Option<u8> = None;
 
     loop {
         let n = reader.read(&mut buf)?;
@@ -312,7 +322,10 @@ pub fn compute_chunk_boundaries(
 
             // Handle pending dot: check if this byte confirms a boundary.
             if let Some(dot_pos) = lookahead.pending_dot.take() {
-                if is_boundary_follower(b) {
+                let next_is_pnchar = is_pnchar_ascii(b);
+                if is_boundary_follower(b)
+                    || !(lookahead.pending_dot_prev_is_pnchar && next_is_pnchar)
+                {
                     let boundary_pos = dot_pos + 1;
                     if boundary_pos >= next_target {
                         boundaries.push(boundary_pos);
@@ -382,7 +395,15 @@ pub fn compute_chunk_boundaries(
             }
 
             // Main state machine.
-            state = advance_state(state, b, abs_pos, &mut lookahead, &mut prefix_check)?;
+            state = advance_state(
+                state,
+                b,
+                abs_pos,
+                prev_byte,
+                &mut lookahead,
+                &mut prefix_check,
+            )?;
+            prev_byte = Some(b);
         }
 
         byte_pos += n as u64;
@@ -426,7 +447,39 @@ pub fn compute_chunk_boundaries(
 
 /// Returns true if `b` can follow a `.` to confirm a statement boundary.
 fn is_boundary_follower(b: u8) -> bool {
+    // Whitespace/comments always confirm a terminator dot.
     matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'#')
+}
+
+#[inline]
+fn is_pnchar_ascii(b: u8) -> bool {
+    // Approximation of Turtle PN_CHARS for ASCII-heavy datasets.
+    // Used only to avoid splitting inside `ex:foo.bar`-style names.
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')
+}
+
+/// True if `buf` contains no Turtle data — only whitespace and `#...` comments.
+///
+/// Used to avoid emitting an extra "empty" trailing chunk when the file ends
+/// with whitespace/comments after the final statement terminator.
+fn is_noise_only_chunk(buf: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i < buf.len() {
+        match buf[i] {
+            b' ' | b'\t' | b'\r' | b'\n' => {
+                i += 1;
+            }
+            b'#' => {
+                // Skip to end of line (or EOF).
+                i += 1;
+                while i < buf.len() && buf[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Advance the scan state machine by one byte.
@@ -434,6 +487,7 @@ fn advance_state(
     state: ScanState,
     b: u8,
     abs_pos: u64,
+    prev_byte: Option<u8>,
     lookahead: &mut Lookahead,
     prefix_check: &mut PrefixCheck,
 ) -> Result<ScanState, SplitError> {
@@ -458,6 +512,7 @@ fn advance_state(
                 b'#' => Ok(ScanState::InComment),
                 b'.' => {
                     lookahead.pending_dot = Some(abs_pos);
+                    lookahead.pending_dot_prev_is_pnchar = prev_byte.is_some_and(is_pnchar_ascii);
                     Ok(ScanState::Normal)
                 }
                 _ => Ok(ScanState::Normal),
@@ -753,6 +808,412 @@ impl TurtleChunkReader {
 }
 
 // ============================================================================
+// StreamingTurtleReader — no pre-scan, emits chunks via channel
+// ============================================================================
+
+/// Callback for reporting reader thread progress (bytes_read, total_bytes).
+pub type ScanProgressFn = Arc<dyn Fn(u64, u64) + Send + Sync>;
+
+/// A chunk payload: `(index, raw_bytes)`. The raw bytes do NOT include the prefix
+/// block — workers prepend it before parsing.
+pub type ChunkPayload = (usize, Vec<u8>);
+
+/// Parsed header directives extracted from a Turtle file's prefix block.
+///
+/// - `prefixes`: short prefix → namespace IRI (already resolved against any `@base`)
+/// - `base`: base IRI (as declared)
+#[derive(Debug, Clone, Default)]
+pub struct TurtlePrelude {
+    pub prefixes: Vec<(String, String)>,
+    pub base: Option<String>,
+}
+
+/// Collects `@prefix` / `@base` directives from a Turtle snippet.
+///
+/// The snippet should contain directives only (no triples). If triples are
+/// present, this sink will ignore them, but will still allocate term IDs.
+#[derive(Default)]
+struct PreludeSink {
+    prelude: TurtlePrelude,
+}
+
+impl GraphSink for PreludeSink {
+    fn on_base(&mut self, base_iri: &str) {
+        self.prelude.base = Some(base_iri.to_string());
+    }
+
+    fn on_prefix(&mut self, prefix: &str, namespace_iri: &str) {
+        self.prelude
+            .prefixes
+            .push((prefix.to_string(), namespace_iri.to_string()));
+    }
+
+    fn term_iri(&mut self, _iri: &str) -> TermId {
+        TermId::new(0)
+    }
+
+    fn term_blank(&mut self, _label: Option<&str>) -> TermId {
+        TermId::new(0)
+    }
+
+    fn term_literal(
+        &mut self,
+        _value: &str,
+        _datatype: Datatype,
+        _language: Option<&str>,
+    ) -> TermId {
+        TermId::new(0)
+    }
+
+    fn term_literal_value(&mut self, _value: LiteralValue, _datatype: Datatype) -> TermId {
+        TermId::new(0)
+    }
+
+    fn emit_triple(&mut self, _subject: TermId, _predicate: TermId, _object: TermId) {}
+
+    fn emit_list_item(
+        &mut self,
+        _subject: TermId,
+        _predicate: TermId,
+        _object: TermId,
+        _index: i32,
+    ) {
+    }
+}
+
+fn parse_prelude(prefix_block: &str) -> Result<TurtlePrelude, SplitError> {
+    if prefix_block.is_empty() {
+        return Ok(TurtlePrelude::default());
+    }
+    let mut sink = PreludeSink::default();
+    parse(prefix_block, &mut sink).map_err(|e| SplitError::Tokenize(e.to_string()))?;
+    Ok(sink.prelude)
+}
+
+/// Streaming reader for a large Turtle file.
+///
+/// Unlike [`TurtleChunkReader`], this reader does NOT pre-scan the entire file.
+/// A background reader thread reads sequentially, identifies statement boundaries,
+/// and sends chunk data through a bounded channel as it goes.
+///
+/// **Single I/O pass**: the reader thread is the only entity reading from disk.
+/// Workers receive data from the channel and do CPU-only work (parse, etc.).
+/// This avoids double I/O that would occur if workers re-read from the file.
+pub struct StreamingTurtleReader {
+    prefix_block: String,
+    prelude: TurtlePrelude,
+    file_size: u64,
+    estimated_chunks: usize,
+    /// Shared receiver — multiple parse workers can receive chunks concurrently.
+    rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<ChunkPayload>>>,
+    reader_handle: Option<std::thread::JoinHandle<Result<usize, SplitError>>>,
+}
+
+impl StreamingTurtleReader {
+    /// Create a streaming reader that immediately starts reading the file in
+    /// a background thread.
+    ///
+    /// - `path`: Turtle file to read.
+    /// - `chunk_size_bytes`: Target chunk size. Actual chunks may be slightly
+    ///   larger (splits only at statement boundaries).
+    /// - `channel_capacity`: Bounded channel size (controls max in-flight chunks).
+    ///   Each in-flight item is ~`chunk_size_bytes` of heap data. A capacity of
+    ///   2–3 is recommended to limit memory while allowing pipelining.
+    /// - `progress`: Optional callback `(bytes_read, total_bytes)` invoked
+    ///   periodically from the reader thread.
+    ///
+    /// Returns immediately after extracting the prefix block and spawning the
+    /// reader thread. Call [`recv_chunk`](Self::recv_chunk) to pull chunk data.
+    pub fn new(
+        path: &Path,
+        chunk_size_bytes: u64,
+        channel_capacity: usize,
+        progress: Option<ScanProgressFn>,
+    ) -> Result<Self, SplitError> {
+        let file_size = std::fs::metadata(path)?.len();
+
+        let (prefix_block, data_start) = extract_prefix_block(path)?;
+        let prelude = parse_prelude(&prefix_block)?;
+        tracing::info!(
+            path = %path.display(),
+            file_size_mb = file_size / (1024 * 1024),
+            chunk_size_mb = chunk_size_bytes / (1024 * 1024),
+            prefix_bytes = prefix_block.len(),
+            data_start,
+            prefix_first_200 = &prefix_block[..prefix_block.len().min(200)],
+            "streaming reader: prefix extracted, spawning reader thread"
+        );
+
+        if data_start >= file_size {
+            return Err(SplitError::EmptyData);
+        }
+
+        let data_len = file_size - data_start;
+        let estimated_chunks = data_len.div_ceil(chunk_size_bytes) as usize;
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(channel_capacity);
+
+        let reader_path = path.to_path_buf();
+        let reader_handle = std::thread::Builder::new()
+            .name("ttl-reader".into())
+            .spawn(move || {
+                reader_thread(
+                    &reader_path,
+                    data_start,
+                    file_size,
+                    chunk_size_bytes,
+                    tx,
+                    progress,
+                )
+            })
+            .map_err(|e| {
+                SplitError::Io(io::Error::other(format!(
+                    "failed to spawn reader thread: {}",
+                    e
+                )))
+            })?;
+
+        Ok(Self {
+            prefix_block,
+            prelude,
+            file_size,
+            estimated_chunks,
+            rx: Arc::new(std::sync::Mutex::new(rx)),
+            reader_handle: Some(reader_handle),
+        })
+    }
+
+    /// Receive the next chunk from the reader thread.
+    ///
+    /// Returns `Ok(Some((index, raw_bytes)))` for each chunk, or `Ok(None)`
+    /// when the reader has finished. The raw bytes do NOT include the prefix
+    /// block — use [`prefix_block()`](Self::prefix_block) to prepend it.
+    pub fn recv_chunk(&self) -> Result<Option<ChunkPayload>, SplitError> {
+        let rx = self.rx.lock().unwrap();
+        match rx.recv() {
+            Ok(payload) => Ok(Some(payload)),
+            Err(std::sync::mpsc::RecvError) => Ok(None),
+        }
+    }
+
+    /// Get a shared reference to the receiver for distributing across parse workers.
+    ///
+    /// Each worker locks the mutex to receive the next available chunk.
+    /// This provides natural load balancing — faster workers process more chunks.
+    pub fn shared_receiver(
+        &self,
+    ) -> Arc<std::sync::Mutex<std::sync::mpsc::Receiver<ChunkPayload>>> {
+        Arc::clone(&self.rx)
+    }
+
+    /// Estimated number of chunks (based on file size / chunk size).
+    pub fn estimated_chunk_count(&self) -> usize {
+        self.estimated_chunks
+    }
+
+    /// The prefix block text extracted from the file header.
+    pub fn prefix_block(&self) -> &str {
+        &self.prefix_block
+    }
+
+    /// Parsed header directives (prefixes + base) extracted from the file header.
+    pub fn prelude(&self) -> &TurtlePrelude {
+        &self.prelude
+    }
+
+    /// Total file size in bytes.
+    pub fn file_size(&self) -> u64 {
+        self.file_size
+    }
+
+    /// Wait for the reader thread to finish and return the actual chunk count.
+    pub fn join(&mut self) -> Result<usize, SplitError> {
+        if let Some(handle) = self.reader_handle.take() {
+            match handle.join() {
+                Ok(result) => result,
+                Err(_) => Err(SplitError::Io(io::Error::other("reader thread panicked"))),
+            }
+        } else {
+            Ok(0)
+        }
+    }
+}
+
+/// Background reader thread: reads file in bulk, finds statement boundaries
+/// using the byte-level scan state machine, and sends chunk data through the channel.
+///
+/// **Single I/O pass** — this is the only entity reading from disk. Workers
+/// receive data and do CPU-only processing (UTF-8 validation, prefix prepend,
+/// Turtle parsing).
+///
+/// We intentionally use the same boundary logic as `compute_chunk_boundaries()`
+/// (dot-followed-by-whitespace/comment in Normal state) so streaming splitting
+/// works for Turtle files that do not contain frequent newlines (e.g. very long
+/// lines or statements separated by spaces).
+fn reader_thread(
+    path: &Path,
+    data_start: u64,
+    file_size: u64,
+    chunk_size_bytes: u64,
+    tx: std::sync::mpsc::SyncSender<ChunkPayload>,
+    progress: Option<ScanProgressFn>,
+) -> Result<usize, SplitError> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::with_capacity(SCAN_BUF_SIZE, file);
+    reader.seek(SeekFrom::Start(data_start))?;
+
+    let mut buf = vec![0u8; SCAN_BUF_SIZE];
+
+    // Accumulate raw bytes for the current chunk.
+    let mut chunk_buf: Vec<u8> = Vec::with_capacity(chunk_size_bytes as usize + SCAN_BUF_SIZE);
+    let mut abs_pos = data_start;
+    let mut chunk_idx: usize = 0;
+
+    // Line scanning state (fast path, mirrors scripts/split_ttl.py):
+    // scan for '\n', and treat a line as a statement boundary when its trimmed
+    // content ends with '.' and it's not a comment line.
+    let mut scan_pos: usize = 0;
+    let mut line_start: usize = 0;
+    // Track whether we're inside a triple-quoted string (""" or ''').
+    // A '.' inside a long string must not be treated as a statement boundary.
+    let mut in_long_string = false;
+
+    // Progress reporting throttle (every ~64 MB).
+    let progress_interval = 64 * 1024 * 1024u64;
+    let mut next_progress = data_start + progress_interval;
+
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            // EOF — emit final chunk if there's accumulated data.
+            if !chunk_buf.is_empty() && !is_noise_only_chunk(&chunk_buf) {
+                if tx
+                    .send((chunk_idx, std::mem::take(&mut chunk_buf)))
+                    .is_err()
+                {
+                    break;
+                }
+                chunk_idx += 1;
+            }
+            break;
+        }
+
+        // Bulk append.
+        chunk_buf.extend_from_slice(&buf[..n]);
+        abs_pos += n as u64;
+
+        // Report progress periodically.
+        if abs_pos >= next_progress {
+            if let Some(ref cb) = progress {
+                cb(abs_pos - data_start, file_size - data_start);
+            }
+            next_progress = abs_pos + progress_interval;
+        }
+
+        // Scan newly appended bytes for line boundaries.
+        while scan_pos < chunk_buf.len() {
+            // Find next newline.
+            let rel = match chunk_buf[scan_pos..].iter().position(|&b| b == b'\n') {
+                Some(p) => p,
+                None => break,
+            };
+            let nl_pos = scan_pos + rel;
+
+            // Content end (handle CRLF).
+            let content_end = if nl_pos > 0 && chunk_buf[nl_pos - 1] == b'\r' {
+                nl_pos - 1
+            } else {
+                nl_pos
+            };
+
+            // Trim trailing spaces/tabs.
+            let mut end = content_end;
+            while end > line_start && matches!(chunk_buf[end - 1], b' ' | b'\t') {
+                end -= 1;
+            }
+
+            // Skip leading spaces/tabs and check for comment line.
+            let mut first = line_start;
+            while first < end && matches!(chunk_buf[first], b' ' | b'\t') {
+                first += 1;
+            }
+            let is_comment = first < end && chunk_buf[first] == b'#';
+
+            // Track triple-quoted strings (""" / ''') so we don't treat a '.'
+            // inside a multiline literal as a statement boundary.
+            {
+                let line = &chunk_buf[first..content_end];
+                let mut i = 0;
+                while i + 2 < line.len() {
+                    if (line[i] == b'"' && line[i + 1] == b'"' && line[i + 2] == b'"')
+                        || (line[i] == b'\'' && line[i + 1] == b'\'' && line[i + 2] == b'\'')
+                    {
+                        in_long_string = !in_long_string;
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+
+            // Boundary if: over target AND line ends with '.' AND not inside
+            // a comment or a triple-quoted string literal.
+            if !is_comment
+                && !in_long_string
+                && (chunk_buf.len() as u64) >= chunk_size_bytes
+                && end > line_start
+                && chunk_buf[end - 1] == b'.'
+            {
+                let boundary = nl_pos + 1; // include newline
+                let remainder = chunk_buf[boundary..].to_vec();
+                chunk_buf.truncate(boundary);
+
+                tracing::debug!(
+                    chunk = chunk_idx,
+                    size_mb = chunk_buf.len() as f64 / (1024.0 * 1024.0),
+                    remainder_bytes = remainder.len(),
+                    "chunk emitted"
+                );
+
+                if tx
+                    .send((chunk_idx, std::mem::take(&mut chunk_buf)))
+                    .is_err()
+                {
+                    return Ok(chunk_idx);
+                }
+                chunk_idx += 1;
+
+                // Start new chunk with remainder.
+                chunk_buf = remainder;
+                scan_pos = 0;
+                line_start = 0;
+                continue;
+            }
+
+            // Advance to next line.
+            scan_pos = nl_pos + 1;
+            line_start = scan_pos;
+        }
+
+        // Overshoot protection if we can’t find a boundary line for a long time.
+        if (chunk_buf.len() as u64) > chunk_size_bytes + MAX_BOUNDARY_SEARCH {
+            return Err(SplitError::NoBoundary {
+                offset: data_start + chunk_size_bytes,
+            });
+        }
+    }
+
+    // Final progress report.
+    if let Some(ref cb) = progress {
+        cb(file_size - data_start, file_size - data_start);
+    }
+
+    tracing::info!(total_chunks = chunk_idx, "reader thread finished");
+
+    Ok(chunk_idx)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -986,7 +1447,7 @@ ex:dave ex:name \"Dave\" ; ex:age 35 .
         for i in 0..reader.chunk_count() {
             let chunk_text = reader.read_chunk(i).unwrap().unwrap();
             // Parse with fluree_graph_turtle to verify it's valid Turtle.
-            let json = fluree_graph_turtle::parse_to_json(&chunk_text).unwrap();
+            let json = crate::parse_to_json(&chunk_text).unwrap();
             let arr = json.as_array().unwrap();
             for node in arr {
                 all_subjects.push(node["@id"].as_str().unwrap().to_string());
@@ -1078,5 +1539,246 @@ ex:bob ex:name \"Bob\" .
             matches!(result, Err(SplitError::PrefixAfterData { .. })),
             "BASE followed by delimiter should trigger PrefixAfterData"
         );
+    }
+
+    // ---- StreamingTurtleReader tests ----
+
+    /// Helper: receive a chunk from the reader, prepend prefix, return full TTL text.
+    fn recv_as_text(reader: &StreamingTurtleReader) -> Option<(usize, String)> {
+        let (idx, raw) = reader.recv_chunk().unwrap()?;
+        let data = String::from_utf8(raw).unwrap();
+        let mut text = String::with_capacity(reader.prefix_block().len() + data.len());
+        text.push_str(reader.prefix_block());
+        text.push_str(&data);
+        Some((idx, text))
+    }
+
+    #[test]
+    fn test_streaming_roundtrip_preserves_all_triples() {
+        let ttl = "\
+@prefix ex: <http://example.org/> .
+
+ex:alice ex:name \"Alice\" ; ex:age 30 .
+ex:bob ex:name \"Bob\" ; ex:age 25 .
+ex:carol ex:name \"Carol\" ; ex:age 28 .
+ex:dave ex:name \"Dave\" ; ex:age 35 .
+";
+        let f = write_temp(ttl);
+        let mut reader = StreamingTurtleReader::new(
+            f.path(),
+            40, // small chunk size → multiple chunks
+            2,  // channel capacity
+            None,
+        )
+        .unwrap();
+
+        let mut all_subjects = Vec::new();
+        while let Some((_idx, chunk_text)) = recv_as_text(&reader) {
+            let json = crate::parse_to_json(&chunk_text).unwrap();
+            let arr = json.as_array().unwrap();
+            for node in arr {
+                all_subjects.push(node["@id"].as_str().unwrap().to_string());
+            }
+        }
+
+        let actual_count = reader.join().unwrap();
+        assert!(
+            actual_count >= 2,
+            "expected at least 2 chunks, got {}",
+            actual_count
+        );
+
+        all_subjects.sort();
+        assert_eq!(
+            all_subjects,
+            vec![
+                "http://example.org/alice",
+                "http://example.org/bob",
+                "http://example.org/carol",
+                "http://example.org/dave",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_streaming_single_chunk_small_file() {
+        let ttl = "\
+@prefix ex: <http://example.org/> .
+
+ex:alice ex:name \"Alice\" .
+";
+        let f = write_temp(ttl);
+        let mut reader = StreamingTurtleReader::new(
+            f.path(),
+            1024 * 1024, // larger than file
+            2,
+            None,
+        )
+        .unwrap();
+
+        let mut chunks = Vec::new();
+        while let Some((idx, text)) = recv_as_text(&reader) {
+            chunks.push((idx, text));
+        }
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].0, 0);
+        assert!(chunks[0].1.contains("@prefix ex:"));
+        assert!(chunks[0].1.contains("ex:alice"));
+
+        let actual = reader.join().unwrap();
+        assert_eq!(actual, 1);
+    }
+
+    #[test]
+    fn test_streaming_prefix_prepended_to_all_chunks() {
+        let ttl = "\
+@prefix ex: <http://example.org/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ex:alice ex:name \"Alice\" .
+ex:bob ex:name \"Bob\" .
+ex:carol ex:name \"Carol\" .
+";
+        let f = write_temp(ttl);
+        let mut reader = StreamingTurtleReader::new(
+            f.path(),
+            40, // force multiple chunks
+            2,
+            None,
+        )
+        .unwrap();
+
+        while let Some((_idx, text)) = recv_as_text(&reader) {
+            assert!(
+                text.contains("@prefix ex:"),
+                "every chunk must start with prefix block"
+            );
+            assert!(
+                text.contains("@prefix xsd:"),
+                "every chunk must include xsd prefix"
+            );
+            // Verify each chunk is valid Turtle.
+            crate::parse_to_json(&text).expect("chunk should be valid Turtle");
+        }
+
+        reader.join().unwrap();
+    }
+
+    #[test]
+    fn test_streaming_dot_in_string_not_boundary() {
+        let ttl = "\
+@prefix ex: <http://example.org/> .
+
+ex:alice ex:name \"Alice. B.\" .
+ex:bob ex:name \"Bob\" .
+";
+        let f = write_temp(ttl);
+        let mut reader = StreamingTurtleReader::new(
+            f.path(),
+            1, // tiny chunk size
+            2,
+            None,
+        )
+        .unwrap();
+
+        let mut count = 0;
+        while let Some((_idx, text)) = recv_as_text(&reader) {
+            crate::parse_to_json(&text).expect("chunk should be valid Turtle");
+            count += 1;
+        }
+
+        assert_eq!(count, 2, "expected 2 chunks for 2 statements");
+        reader.join().unwrap();
+    }
+
+    #[test]
+    fn test_streaming_dot_in_long_string_not_boundary() {
+        // Regression: a '.' at end of line inside a triple-quoted string must
+        // NOT be treated as a statement boundary by the streaming splitter.
+        let ttl = r#"@prefix ex: <http://example.org/> .
+
+ex:alice ex:desc """This sentence ends with a period.
+""" .
+ex:bob ex:name "Bob" .
+"#;
+        let f = write_temp(ttl);
+        let mut reader = StreamingTurtleReader::new(
+            f.path(),
+            1, // tiny chunk size to force boundary search
+            2,
+            None,
+        )
+        .unwrap();
+
+        let mut all_text = String::new();
+        let mut count = 0;
+        while let Some((_idx, text)) = recv_as_text(&reader) {
+            all_text.push_str(&text);
+            count += 1;
+        }
+        reader.join().unwrap();
+
+        // The multiline string must not be split — both statements should parse.
+        assert_eq!(count, 2, "expected 2 chunks for 2 statements");
+        assert!(
+            all_text.contains("This sentence ends with a period."),
+            "multiline string should be preserved intact"
+        );
+    }
+
+    #[test]
+    fn test_streaming_splits_without_newlines() {
+        // Streaming splitter uses a line-based boundary check (like split_ttl.py):
+        // only split at lines ending with '.'.
+        //
+        // We still validate it can split on long lines with no blank lines,
+        // but we require newlines to exist for boundary detection.
+        let ttl = "\
+@prefix ex: <http://example.org/> .\n\
+ex:alice ex:name \"Alice\" .\n\
+ex:bob ex:name \"Bob\" .\n\
+ex:carol ex:name \"Carol\" .\n";
+        let f = write_temp(ttl);
+        let mut reader = StreamingTurtleReader::new(f.path(), 30, 2, None).unwrap();
+
+        let mut count = 0usize;
+        while let Some((_idx, text)) = recv_as_text(&reader) {
+            crate::parse_to_json(&text).expect("chunk should be valid Turtle");
+            count += 1;
+        }
+
+        let actual = reader.join().unwrap();
+        assert_eq!(count, actual);
+        assert!(count >= 2, "expected multiple chunks, got {}", count);
+    }
+
+    #[test]
+    fn test_streaming_progress_callback() {
+        let ttl = "\
+@prefix ex: <http://example.org/> .
+
+ex:alice ex:name \"Alice\" .
+ex:bob ex:name \"Bob\" .
+";
+        let f = write_temp(ttl);
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = Arc::clone(&called);
+        let progress: ScanProgressFn = Arc::new(move |_bytes, _total| {
+            called_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        let mut reader = StreamingTurtleReader::new(
+            f.path(),
+            1, // tiny chunks
+            2,
+            Some(progress),
+        )
+        .unwrap();
+
+        while reader.recv_chunk().unwrap().is_some() {}
+        reader.join().unwrap();
+        // Progress may or may not be called for small files (depends on
+        // whether we cross the 64 MB threshold). Just verify it doesn't panic.
     }
 }

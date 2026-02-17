@@ -60,6 +60,26 @@ pub enum Commands {
         /// Only used when --from points to a .ttl file.
         #[arg(long, default_value_t = 0)]
         chunk_size_mb: usize,
+
+        /// Memory budget in MB for bulk import (0 = auto: 75% of system RAM).
+        /// Derives chunk size, concurrency limits, and run budget when not set explicitly.
+        #[arg(long, default_value_t = 0)]
+        memory_budget_mb: usize,
+
+        /// Number of parallel parse threads for bulk import.
+        /// 0 = auto (system cores, default cap 6). Explicit values are not capped.
+        #[arg(long, default_value_t = 0)]
+        parallelism: usize,
+
+        /// Records per leaflet in index files. Default: 25000.
+        /// Larger values produce fewer, bigger leaflets (less I/O, more memory per read).
+        #[arg(long, default_value_t = 25_000)]
+        leaflet_rows: usize,
+
+        /// Leaflets per leaf file. Default: 10.
+        /// Larger values produce fewer leaf files (shallower tree, bigger reads).
+        #[arg(long, default_value_t = 10)]
+        leaflets_per_leaf: usize,
     },
 
     /// Set the active ledger
@@ -191,8 +211,12 @@ pub enum Commands {
         expr: Option<String>,
 
         /// Output format (json, table, or csv)
-        #[arg(long, default_value = "json")]
+        #[arg(long, default_value = "table")]
         format: String,
+
+        /// Benchmark mode: time execution only and print first 5 rows as a table (no full-result JSON formatting)
+        #[arg(long)]
+        bench: bool,
 
         /// Force SPARQL query format
         #[arg(long, conflicts_with = "jsonld")]

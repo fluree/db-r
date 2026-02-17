@@ -13,7 +13,7 @@ use crate::{error::ApiError, tx::IndexingMode, Result};
 use fluree_db_core::{
     address_path::ledger_id_to_path_prefix, format_ledger_id, Storage, DEFAULT_BRANCH,
 };
-use fluree_db_indexer::{build_binary_index, clean_garbage, CleanGarbageConfig};
+use fluree_db_indexer::{clean_garbage, rebuild_index_from_commits, CleanGarbageConfig};
 use fluree_db_nameservice::{AdminPublisher, GraphSourcePublisher, NameService, Publisher};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -287,12 +287,16 @@ where
             );
         }
 
-        // 5. Retract from nameservice
-        // Always attempt retract on normalized ledger_id - safe to call even if already
-        // retracted (idempotent) or NotFound (no-op). This handles cases where
-        // lookup used non-canonical ledger_id but retract needs the normalized form.
-        if let Err(e) = self.nameservice.retract(&ledger_id).await {
-            // Log but don't fail - retract may fail if truly not found
+        // 5. Retract or purge from nameservice
+        // Soft drop: retract (mark as retracted, alias cannot be reused)
+        // Hard drop: purge (remove record entirely, alias can be reused)
+        let ns_result = if matches!(mode, DropMode::Hard) {
+            self.nameservice.purge(&ledger_id).await
+        } else {
+            self.nameservice.retract(&ledger_id).await
+        };
+        if let Err(e) = ns_result {
+            // Log but don't fail - retract/purge may fail if truly not found
             warn!(ledger_id = %ledger_id, error = %e, "Nameservice retract warning");
             report.warnings.push(format!("Nameservice retract: {}", e));
         }
@@ -610,7 +614,7 @@ where
         let gc_min_time_mins = indexer_config.gc_min_time_mins;
 
         let index_result =
-            build_binary_index(self.storage(), &ledger_id, &record, indexer_config).await?;
+            rebuild_index_from_commits(self.storage(), &ledger_id, &record, indexer_config).await?;
 
         info!(
             ledger_id = %ledger_id,

@@ -3,6 +3,7 @@
 //! `StatsView` provides O(1) lookups of property and class statistics,
 //! built from `IndexStats` at query time.
 
+use crate::ids::GraphId;
 use crate::index_stats::IndexStats;
 use crate::sid::Sid;
 use crate::value_id::ValueTypeTag;
@@ -33,7 +34,7 @@ pub struct StatsView {
     /// Populated from `IndexStats.graphs` when present. Provides per-graph
     /// property lookups with datatype breakdown. The aggregate Sid-keyed
     /// `properties` map remains the primary source for the query planner.
-    pub graph_properties: HashMap<u32, HashMap<u32, GraphPropertyStatData>>,
+    pub graph_properties: HashMap<GraphId, HashMap<u32, GraphPropertyStatData>>,
 }
 
 /// Per-property statistics within a graph, keyed by numeric IDs.
@@ -176,17 +177,20 @@ impl StatsView {
     }
 
     /// Get property stats within a specific graph by numeric IDs.
-    pub fn get_graph_property(&self, g_id: u32, p_id: u32) -> Option<&GraphPropertyStatData> {
+    pub fn get_graph_property(&self, g_id: GraphId, p_id: u32) -> Option<&GraphPropertyStatData> {
         self.graph_properties.get(&g_id)?.get(&p_id)
     }
 
     /// Get all property stats for a specific graph.
-    pub fn get_graph_properties(&self, g_id: u32) -> Option<&HashMap<u32, GraphPropertyStatData>> {
+    pub fn get_graph_properties(
+        &self,
+        g_id: GraphId,
+    ) -> Option<&HashMap<u32, GraphPropertyStatData>> {
         self.graph_properties.get(&g_id)
     }
 
     /// Return the set of graph IDs that have stats.
-    pub fn graph_ids(&self) -> impl Iterator<Item = u32> + '_ {
+    pub fn graph_ids(&self) -> impl Iterator<Item = GraphId> + '_ {
         self.graph_properties.keys().copied()
     }
 

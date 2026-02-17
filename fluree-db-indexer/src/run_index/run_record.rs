@@ -1,127 +1,189 @@
-//! 48-byte fixed-width run record for external sort.
+//! 40-byte fixed-width run record for external sort.
 //!
 //! Each record represents a single resolved op with global IDs.
 //! The format is `#[repr(C)]` for direct binary I/O.
+//!
+//! `g_id` is NOT stored in the run wire format (34 bytes) because each graph
+//! gets its own set of run files and indexes. The spool wire format (36 bytes)
+//! still includes `g_id` as `u16` because spool files are pre-partition.
 
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::{DatatypeDictId, LangId, ListIndex, ObjPair, PredicateId};
 use std::cmp::Ordering;
 
-/// Wire format size of a single RunRecord, in bytes.
+/// Wire format size of a single RunRecord in **run files**, in bytes.
 ///
-/// The wire format (44 bytes) is compact — no alignment padding between fields.
-/// The in-memory struct is 48 bytes due to `#[repr(C)]` alignment requirements.
-pub const RECORD_WIRE_SIZE: usize = 44;
+/// Does NOT include `g_id` (graph is implicit from the file path).
+/// The in-memory struct is 40 bytes due to `#[repr(C)]` alignment.
+pub const RECORD_WIRE_SIZE: usize = 34;
 
-/// 48-byte fixed-width record for external sort.
+/// Wire format size of a single record in **spool files**, in bytes.
 ///
-/// Sort key: `(g_id, …, o_kind, o_key, dt, t, op)` where the prefix depends on
-/// the index order (SPOT, PSOT, POST, OPST).
+/// Includes `g_id` as `u16` (spool records are pre-graph-partition).
+pub const SPOOL_RECORD_WIRE_SIZE: usize = 36;
+
+/// Sentinel value for "not a list member" in the `u32` `i` field.
+pub const LIST_INDEX_NONE: u32 = u32::MAX;
+
+/// 40-byte fixed-width record for external sort.
+///
+/// Sort key: `(s_id, p_id, o_kind, o_key, dt, t, op)` where the prefix depends
+/// on the index order (SPOT, PSOT, POST, OPST). `g_id` is NOT part of the sort
+/// key — each graph is indexed independently.
 ///
 /// `dt` is included in the sort key so that values with the same `(ObjKind,
 /// ObjKey)` but different XSD types (e.g., `xsd:integer 3` vs `xsd:long 3`)
 /// remain distinguishable.
 ///
-/// ## Wire layout (44 bytes, little-endian)
+/// ## Run wire layout (34 bytes, little-endian, no g_id)
 ///
 /// ```text
-/// g_id:    u32   [0..4]
-/// s_id:    u64   [4..12]    subject ID (sid64: ns_code << 48 | local_id)
-/// p_id:    u32   [12..16]
-/// dt:      u16   [16..18]   datatype dict index (tie-breaker)
-/// o_kind:  u8    [18]       object kind discriminant
-/// op:      u8    [19]       assert (1) / retract (0)
-/// o_key:   u64   [20..28]   object key payload
-/// t:       i64   [28..36]
-/// lang_id: u16   [36..38]   language tag id (0 = none)
-/// i:       i32   [38..42]
-/// _pad:    [u8;2][42..44]   reserved
+/// s_id:    u64   [0..8]     subject ID (sid64: ns_code << 48 | local_id)
+/// o_key:   u64   [8..16]    object key payload
+/// p_id:    u32   [16..20]
+/// t:       u32   [20..24]
+/// i:       u32   [24..28]   list index (u32::MAX = none)
+/// dt:      u16   [28..30]   datatype dict index (tie-breaker)
+/// lang_id: u16   [30..32]   language tag id (0 = none)
+/// o_kind:  u8    [32]       object kind discriminant
+/// op:      u8    [33]       assert (1) / retract (0)
+/// ```
+///
+/// ## Spool wire layout (36 bytes, little-endian, includes g_id)
+///
+/// ```text
+/// g_id:    u16   [0..2]     graph ID
+/// s_id:    u64   [2..10]    (NB: unaligned)
+/// o_key:   u64   [10..18]
+/// p_id:    u32   [18..22]
+/// t:       u32   [22..26]
+/// i:       u32   [26..30]
+/// dt:      u16   [30..32]
+/// lang_id: u16   [32..34]
+/// o_kind:  u8    [34]
+/// op:      u8    [35]
 /// ```
 #[derive(Copy, Clone, Eq, PartialEq)]
 #[repr(C)]
 pub struct RunRecord {
-    /// Graph ID (0 = default graph).
-    pub g_id: u32,
     /// Subject ID (sid64: ns_code << 48 | local_id).
     pub s_id: SubjectId,
+    /// Object key payload (interpretation depends on `o_kind`).
+    pub o_key: u64,
     /// Predicate ID (global dictionary).
     pub p_id: u32,
+    /// Transaction number (non-negative, fits in u32).
+    pub t: u32,
+    /// List index (u32::MAX = none).
+    pub i: u32,
+    /// Graph ID (0 = default graph). In-memory only; not in run wire format.
+    pub g_id: u16,
     /// Datatype dict index (for sort-key tie-breaking).
     pub dt: u16,
+    /// Language tag id (per-run assignment, 0 = none).
+    pub lang_id: u16,
     /// Object kind discriminant (see `ObjKind`).
     pub o_kind: u8,
     /// Assert (1) or retract (0).
     pub op: u8,
-    /// Object key payload (interpretation depends on `o_kind`).
-    pub o_key: u64,
-    /// Transaction number.
-    pub t: i64,
-    /// Language tag id (per-run assignment, 0 = none).
-    pub lang_id: u16,
-    /// List index (i32::MIN = none).
-    pub i: i32,
 }
 
-const _: () = assert!(std::mem::size_of::<RunRecord>() == 48);
+const _: () = assert!(std::mem::size_of::<RunRecord>() == 40);
 
 impl RunRecord {
     /// Create a new RunRecord with all fields.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        g_id: u32,
+        g_id: u16,
         s_id: SubjectId,
         p_id: u32,
         o_kind: ObjKind,
         o_key: ObjKey,
-        t: i64,
+        t: u32,
         op: bool,
         dt: u16,
         lang_id: u16,
-        i: Option<i32>,
+        i: Option<u32>,
     ) -> Self {
         Self {
-            g_id,
             s_id,
+            o_key: o_key.as_u64(),
             p_id,
+            t,
+            i: i.unwrap_or(LIST_INDEX_NONE),
+            g_id,
             dt,
+            lang_id,
             o_kind: o_kind.as_u8(),
             op: op as u8,
-            o_key: o_key.as_u64(),
-            t,
-            lang_id,
-            i: i.unwrap_or(ListIndex::none().as_i32()),
         }
     }
 
-    /// Serialize to [`RECORD_WIRE_SIZE`] (44) bytes, little-endian.
+    /// Serialize to [`RECORD_WIRE_SIZE`] (34) bytes, little-endian.
+    ///
+    /// Does NOT include `g_id` — run files are graph-scoped.
     pub fn write_le(&self, buf: &mut [u8; RECORD_WIRE_SIZE]) {
-        buf[0..4].copy_from_slice(&self.g_id.to_le_bytes());
-        buf[4..12].copy_from_slice(&self.s_id.as_u64().to_le_bytes());
-        buf[12..16].copy_from_slice(&self.p_id.to_le_bytes());
-        buf[16..18].copy_from_slice(&self.dt.to_le_bytes());
-        buf[18] = self.o_kind;
-        buf[19] = self.op;
-        buf[20..28].copy_from_slice(&self.o_key.to_le_bytes());
-        buf[28..36].copy_from_slice(&self.t.to_le_bytes());
-        buf[36..38].copy_from_slice(&self.lang_id.to_le_bytes());
-        buf[38..42].copy_from_slice(&self.i.to_le_bytes());
-        buf[42..44].fill(0); // reserved
+        buf[0..8].copy_from_slice(&self.s_id.as_u64().to_le_bytes());
+        buf[8..16].copy_from_slice(&self.o_key.to_le_bytes());
+        buf[16..20].copy_from_slice(&self.p_id.to_le_bytes());
+        buf[20..24].copy_from_slice(&self.t.to_le_bytes());
+        buf[24..28].copy_from_slice(&self.i.to_le_bytes());
+        buf[28..30].copy_from_slice(&self.dt.to_le_bytes());
+        buf[30..32].copy_from_slice(&self.lang_id.to_le_bytes());
+        buf[32] = self.o_kind;
+        buf[33] = self.op;
     }
 
-    /// Deserialize from [`RECORD_WIRE_SIZE`] (44) bytes, little-endian.
+    /// Deserialize from [`RECORD_WIRE_SIZE`] (34) bytes, little-endian.
+    ///
+    /// `g_id` is set to 0; caller should set it from run file header context.
     pub fn read_le(buf: &[u8; RECORD_WIRE_SIZE]) -> Self {
         Self {
-            g_id: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
-            s_id: SubjectId::from_u64(u64::from_le_bytes(buf[4..12].try_into().unwrap())),
-            p_id: u32::from_le_bytes(buf[12..16].try_into().unwrap()),
-            dt: u16::from_le_bytes(buf[16..18].try_into().unwrap()),
-            o_kind: buf[18],
-            op: buf[19],
-            o_key: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
-            t: i64::from_le_bytes(buf[28..36].try_into().unwrap()),
-            lang_id: u16::from_le_bytes(buf[36..38].try_into().unwrap()),
-            i: i32::from_le_bytes(buf[38..42].try_into().unwrap()),
+            s_id: SubjectId::from_u64(u64::from_le_bytes(buf[0..8].try_into().unwrap())),
+            o_key: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
+            p_id: u32::from_le_bytes(buf[16..20].try_into().unwrap()),
+            t: u32::from_le_bytes(buf[20..24].try_into().unwrap()),
+            i: u32::from_le_bytes(buf[24..28].try_into().unwrap()),
+            g_id: 0,
+            dt: u16::from_le_bytes(buf[28..30].try_into().unwrap()),
+            lang_id: u16::from_le_bytes(buf[30..32].try_into().unwrap()),
+            o_kind: buf[32],
+            op: buf[33],
+        }
+    }
+
+    /// Serialize to [`SPOOL_RECORD_WIRE_SIZE`] (36) bytes, little-endian.
+    ///
+    /// Includes `g_id` as `u16` — spool records are pre-graph-partition.
+    pub fn write_spool_le(&self, buf: &mut [u8; SPOOL_RECORD_WIRE_SIZE]) {
+        buf[0..2].copy_from_slice(&self.g_id.to_le_bytes());
+        buf[2..10].copy_from_slice(&self.s_id.as_u64().to_le_bytes());
+        buf[10..18].copy_from_slice(&self.o_key.to_le_bytes());
+        buf[18..22].copy_from_slice(&self.p_id.to_le_bytes());
+        buf[22..26].copy_from_slice(&self.t.to_le_bytes());
+        buf[26..30].copy_from_slice(&self.i.to_le_bytes());
+        buf[30..32].copy_from_slice(&self.dt.to_le_bytes());
+        buf[32..34].copy_from_slice(&self.lang_id.to_le_bytes());
+        buf[34] = self.o_kind;
+        buf[35] = self.op;
+    }
+
+    /// Deserialize from [`SPOOL_RECORD_WIRE_SIZE`] (36) bytes, little-endian.
+    ///
+    /// Includes `g_id` as `u16`.
+    pub fn read_spool_le(buf: &[u8; SPOOL_RECORD_WIRE_SIZE]) -> Self {
+        Self {
+            g_id: u16::from_le_bytes(buf[0..2].try_into().unwrap()),
+            s_id: SubjectId::from_u64(u64::from_le_bytes(buf[2..10].try_into().unwrap())),
+            o_key: u64::from_le_bytes(buf[10..18].try_into().unwrap()),
+            p_id: u32::from_le_bytes(buf[18..22].try_into().unwrap()),
+            t: u32::from_le_bytes(buf[22..26].try_into().unwrap()),
+            i: u32::from_le_bytes(buf[26..30].try_into().unwrap()),
+            dt: u16::from_le_bytes(buf[30..32].try_into().unwrap()),
+            lang_id: u16::from_le_bytes(buf[32..34].try_into().unwrap()),
+            o_kind: buf[34],
+            op: buf[35],
         }
     }
 
@@ -140,7 +202,7 @@ impl RunRecord {
 
 impl std::fmt::Debug for RunRecord {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let i_display = if self.i == ListIndex::none().as_i32() {
+        let i_display = if self.i == LIST_INDEX_NONE {
             "None".to_string()
         } else {
             self.i.to_string()
@@ -164,12 +226,13 @@ impl std::fmt::Debug for RunRecord {
 // Comparators
 // ============================================================================
 
-/// SPOT comparator: `(g_id, s_id, p_id, o_kind, o_key, dt, t, op)`.
+/// SPOT comparator: `(s_id, p_id, o_kind, o_key, dt, t, op)`.
+///
+/// `g_id` is NOT part of the sort key — each graph is indexed independently.
 #[inline]
 pub fn cmp_spot(a: &RunRecord, b: &RunRecord) -> Ordering {
-    a.g_id
-        .cmp(&b.g_id)
-        .then(a.s_id.cmp(&b.s_id))
+    a.s_id
+        .cmp(&b.s_id)
         .then(a.p_id.cmp(&b.p_id))
         .then(a.o_kind.cmp(&b.o_kind))
         .then(a.o_key.cmp(&b.o_key))
@@ -178,12 +241,11 @@ pub fn cmp_spot(a: &RunRecord, b: &RunRecord) -> Ordering {
         .then(a.op.cmp(&b.op))
 }
 
-/// PSOT comparator: `(g_id, p_id, s_id, o_kind, o_key, dt, t, op)`.
+/// PSOT comparator: `(p_id, s_id, o_kind, o_key, dt, t, op)`.
 #[inline]
 pub fn cmp_psot(a: &RunRecord, b: &RunRecord) -> Ordering {
-    a.g_id
-        .cmp(&b.g_id)
-        .then(a.p_id.cmp(&b.p_id))
+    a.p_id
+        .cmp(&b.p_id)
         .then(a.s_id.cmp(&b.s_id))
         .then(a.o_kind.cmp(&b.o_kind))
         .then(a.o_key.cmp(&b.o_key))
@@ -192,12 +254,11 @@ pub fn cmp_psot(a: &RunRecord, b: &RunRecord) -> Ordering {
         .then(a.op.cmp(&b.op))
 }
 
-/// POST comparator: `(g_id, p_id, o_kind, o_key, dt, s_id, t, op)`.
+/// POST comparator: `(p_id, o_kind, o_key, dt, s_id, t, op)`.
 #[inline]
 pub fn cmp_post(a: &RunRecord, b: &RunRecord) -> Ordering {
-    a.g_id
-        .cmp(&b.g_id)
-        .then(a.p_id.cmp(&b.p_id))
+    a.p_id
+        .cmp(&b.p_id)
         .then(a.o_kind.cmp(&b.o_kind))
         .then(a.o_key.cmp(&b.o_key))
         .then(a.dt.cmp(&b.dt))
@@ -206,18 +267,24 @@ pub fn cmp_post(a: &RunRecord, b: &RunRecord) -> Ordering {
         .then(a.op.cmp(&b.op))
 }
 
-/// OPST comparator: `(g_id, o_kind, o_key, dt, p_id, s_id, t, op)`.
+/// OPST comparator: `(o_kind, o_key, dt, p_id, s_id, t, op)`.
 #[inline]
 pub fn cmp_opst(a: &RunRecord, b: &RunRecord) -> Ordering {
-    a.g_id
-        .cmp(&b.g_id)
-        .then(a.o_kind.cmp(&b.o_kind))
+    a.o_kind
+        .cmp(&b.o_kind)
         .then(a.o_key.cmp(&b.o_key))
         .then(a.dt.cmp(&b.dt))
         .then(a.p_id.cmp(&b.p_id))
         .then(a.s_id.cmp(&b.s_id))
         .then(a.t.cmp(&b.t))
         .then(a.op.cmp(&b.op))
+}
+
+/// Comparator: `(g_id, SPOT)`. Used for sorted commit files where records
+/// from multiple graphs need to be partitioned then SPOT-sorted within each.
+#[inline]
+pub fn cmp_g_spot(a: &RunRecord, b: &RunRecord) -> Ordering {
+    a.g_id.cmp(&b.g_id).then_with(|| cmp_spot(a, b))
 }
 
 /// Return the comparator function for a given sort order.
@@ -251,6 +318,21 @@ impl RunSortOrder {
         }
     }
 
+    /// Canonical wire ID for binary index formats (branch headers, root routing).
+    ///
+    /// Single source of truth: 0=SPOT, 1=PSOT, 2=POST, 3=OPST.
+    /// All encoders/decoders in FBR2 and IRB1 must use this mapping.
+    #[inline]
+    pub fn to_wire_id(self) -> u8 {
+        self as u8
+    }
+
+    /// Parse from canonical wire ID. Returns `None` for unknown IDs.
+    #[inline]
+    pub fn from_wire_id(v: u8) -> Option<Self> {
+        Self::from_u8(v)
+    }
+
     /// Directory name for this sort order (e.g., `"spot"`, `"psot"`).
     pub fn dir_name(self) -> &'static str {
         match self {
@@ -275,6 +357,12 @@ impl RunSortOrder {
     /// All orders that should be built during index generation.
     pub fn all_build_orders() -> &'static [RunSortOrder] {
         &[Self::Spot, Self::Psot, Self::Post, Self::Opst]
+    }
+
+    /// Secondary orders (all except SPOT). Used when SPOT is built separately
+    /// from sorted commit files via streaming k-way merge.
+    pub fn secondary_orders() -> &'static [RunSortOrder] {
+        &[Self::Psot, Self::Post, Self::Opst]
     }
 }
 
@@ -356,13 +444,18 @@ impl FactKey {
         } else {
             LangId::none()
         };
+        let i = if r.i == LIST_INDEX_NONE {
+            ListIndex::none()
+        } else {
+            ListIndex::from_i32(r.i as i32)
+        };
         Self {
             s_id: r.s_id,
             p_id: PredicateId::from_u32(r.p_id),
             o: ObjPair::new(ObjKind::from_u8(r.o_kind), ObjKey::from_u64(r.o_key)),
             dt,
             lang_id: effective_lang_id,
-            i: ListIndex::from_i32(r.i),
+            i,
         }
     }
 }
@@ -375,7 +468,7 @@ impl FactKey {
 mod tests {
     use super::*;
 
-    fn make_record(s_id: u64, p_id: u32, o_int: i64, dt: u16, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, o_int: i64, dt: u16, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -392,7 +485,7 @@ mod tests {
 
     #[test]
     fn test_record_size() {
-        assert_eq!(std::mem::size_of::<RunRecord>(), 48);
+        assert_eq!(std::mem::size_of::<RunRecord>(), 40);
     }
 
     #[test]
@@ -410,11 +503,12 @@ mod tests {
             Some(2),
         );
 
+        // Run wire format (34 bytes) — does NOT include g_id
         let mut buf = [0u8; RECORD_WIRE_SIZE];
         rec.write_le(&mut buf);
         let restored = RunRecord::read_le(&buf);
 
-        assert_eq!(rec.g_id, restored.g_id);
+        assert_eq!(restored.g_id, 0); // g_id not in run wire; defaults to 0
         assert_eq!(rec.s_id, restored.s_id);
         assert_eq!(rec.p_id, restored.p_id);
         assert_eq!(rec.o_kind, restored.o_kind);
@@ -424,6 +518,22 @@ mod tests {
         assert_eq!(rec.dt, restored.dt);
         assert_eq!(rec.lang_id, restored.lang_id);
         assert_eq!(rec.i, restored.i);
+
+        // Spool wire format (36 bytes) — includes g_id
+        let mut sbuf = [0u8; SPOOL_RECORD_WIRE_SIZE];
+        rec.write_spool_le(&mut sbuf);
+        let spool_restored = RunRecord::read_spool_le(&sbuf);
+
+        assert_eq!(rec.g_id, spool_restored.g_id);
+        assert_eq!(rec.s_id, spool_restored.s_id);
+        assert_eq!(rec.p_id, spool_restored.p_id);
+        assert_eq!(rec.o_kind, spool_restored.o_kind);
+        assert_eq!(rec.o_key, spool_restored.o_key);
+        assert_eq!(rec.t, spool_restored.t);
+        assert_eq!(rec.op, spool_restored.op);
+        assert_eq!(rec.dt, spool_restored.dt);
+        assert_eq!(rec.lang_id, spool_restored.lang_id);
+        assert_eq!(rec.i, spool_restored.i);
     }
 
     #[test]
@@ -514,7 +624,8 @@ mod tests {
     }
 
     #[test]
-    fn test_spot_ordering_by_graph() {
+    fn test_spot_ordering_ignores_graph() {
+        // g_id is NOT part of the sort key (each graph is indexed independently).
         let a = RunRecord::new(
             0,
             SubjectId::from_u64(1),
@@ -539,7 +650,7 @@ mod tests {
             0,
             None,
         );
-        assert_eq!(cmp_spot(&a, &b), Ordering::Less);
+        assert_eq!(cmp_spot(&a, &b), Ordering::Equal);
     }
 
     #[test]
@@ -579,7 +690,7 @@ mod tests {
             0,
             None,
         );
-        assert_eq!(rec.i, ListIndex::none().as_i32());
+        assert_eq!(rec.i, LIST_INDEX_NONE);
 
         let rec2 = RunRecord::new(
             0,
