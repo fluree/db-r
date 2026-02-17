@@ -691,7 +691,11 @@ pub fn build_where_operators_seeded(
             Pattern::Subquery(sq) => {
                 // Subquery - execute nested query and merge results
                 let child = require_child(operator, "SUBQUERY pattern")?;
-                operator = Some(Box::new(SubqueryOperator::new(child, sq.clone())));
+                operator = Some(Box::new(SubqueryOperator::new(
+                    child,
+                    sq.clone(),
+                    stats.clone(),
+                )));
                 i += 1;
             }
 
