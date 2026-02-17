@@ -270,7 +270,12 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             // Extension functions
             FunctionName::Extension(iri) => {
                 let full_iri = self.expand_iri(iri)?;
-                Function::Custom(full_iri)
+                match full_iri.as_str() {
+                    "http://www.opengis.net/def/function/geosparql/distance" => {
+                        Function::GeofDistance
+                    }
+                    _ => Function::Custom(full_iri),
+                }
             }
 
             // Not yet implemented

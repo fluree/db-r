@@ -433,7 +433,7 @@ pub async fn execute_with_dataset_and_policy_tracked<'a>(
 /// Execute a query against a dataset with BM25 provider (for graph source BM25 queries)
 ///
 /// This combines dataset execution (multiple default/named graphs) with BM25 index
-/// provider support, enabling `idx:*` patterns in queries to resolve against
+/// provider support, enabling `f:searchText` patterns in queries to resolve against
 /// graph source BM25 indexes.
 pub async fn execute_with_dataset_and_bm25<'a>(
     source: DataSource<'a>,
@@ -451,7 +451,7 @@ pub async fn execute_with_dataset_and_bm25<'a>(
 /// Execute a query against a dataset with policy enforcement and BM25 provider
 ///
 /// This combines dataset execution (multiple default/named graphs) with policy
-/// enforcement and BM25 index provider support, enabling `idx:*` patterns in
+/// enforcement and BM25 index provider support, enabling `f:searchText` patterns in
 /// queries with policy controls.
 pub async fn execute_with_dataset_and_policy_and_bm25<'a>(
     source: DataSource<'a>,
@@ -478,7 +478,7 @@ pub async fn execute_with_dataset_and_policy_and_bm25<'a>(
 /// Execute a query against a dataset with both BM25 and vector providers (for graph source queries)
 ///
 /// This combines dataset execution (multiple default/named graphs) with both BM25 and
-/// vector index provider support, enabling both `idx:search` and `idx:vector` patterns
+/// vector index provider support, enabling both `f:searchText` and `f:queryVector` patterns
 /// in queries.
 pub async fn execute_with_dataset_and_providers<'a, 'b>(
     source: DataSource<'a>,

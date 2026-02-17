@@ -141,6 +141,7 @@ impl LedgerSnapshot {
             head_index_id: self.head_index_id,
             ns_record: self.ns_record,
             binary_store: self.binary_store.map(|store| TypeErasedStore(store)),
+            spatial_indexes: None,
         }
     }
 }
@@ -592,6 +593,14 @@ pub struct LedgerManager<S, N> {
     config: LedgerManagerConfig,
     /// Shutdown flag — prevents load/reload leaders from re-inserting after disconnect_all
     shutdown: AtomicBool,
+}
+
+// Unconstrained accessors (no trait bounds needed — just field access).
+impl<S, N> LedgerManager<S, N> {
+    /// Get the shared leaflet cache (if configured).
+    pub fn leaflet_cache(&self) -> Option<&Arc<LeafletCache>> {
+        self.config.leaflet_cache.as_ref()
+    }
 }
 
 impl<S, N> LedgerManager<S, N>

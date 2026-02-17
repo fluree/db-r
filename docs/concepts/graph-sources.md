@@ -29,16 +29,24 @@ A **graph source** is anything you can address by a graph name/IRI in Fluree que
 
 **Example:**
 
-```sparql
-# Query BM25 index graph source for full-text search
-SELECT ?product ?score
-FROM <products-search:main>
-WHERE {
-  ?product bm25:matches "laptop" .
-  ?product bm25:score ?score .
+```json
+{
+  "@context": {
+    "f": "https://ns.flur.ee/db#"
+  },
+  "from": "products:main",
+  "select": ["?product", "?score"],
+  "where": [
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 10,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?score" }
+    }
+  ],
+  "orderBy": [["desc", "?score"]],
+  "limit": 10
 }
-ORDER BY DESC(?score)
-LIMIT 10
 ```
 
 **Key Features:**
@@ -182,11 +190,16 @@ Some graph sources support historical queries using the `@t:` syntax in the ledg
 
 ```json
 {
-  "@context": { "bm25": "http://ns.flur.ee/bm25#" },
-  "from": "products-search:main@t:1000",
+  "@context": { "f": "https://ns.flur.ee/db#" },
+  "from": "products:main@t:1000",
   "select": ["?product"],
   "where": [
-    { "@id": "?product", "bm25:matches": "laptop" }
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "laptop",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product" }
+    }
   ]
 }
 ```
@@ -239,34 +252,13 @@ Each graph source type has different performance characteristics:
 
 Combine full-text search, vector similarity, and graph queries:
 
-```sparql
-SELECT ?product ?textScore ?vectorScore
-FROM <products:main>
-FROM <products-search:main>  # BM25 graph source
-WHERE {
-  # Graph query
-  ?product ex:category "electronics" .
-  
-  # BM25 search
-  GRAPH <products-search:main> {
-    ?product bm25:matches "wireless" .
-    ?product bm25:score ?textScore .
-  }
-}
-ORDER BY DESC(?textScore + ?vectorScore)
-```
-
-Vector/HNSW graph sources are currently queried via JSON-LD Query using `f:*` patterns (e.g. `f:graphSource`, `f:queryVector`, `f:searchResult`). SPARQL query syntax for HNSW vector indexes is not currently available.
-
-Example (JSON-LD Query):
-
 ```json
 {
   "@context": {
     "ex": "http://example.org/",
     "f": "https://ns.flur.ee/db#"
   },
-  "from": ["products:main", "products-search:main"],
+  "from": "products:main",
   "select": ["?product", "?textScore", "?vectorScore"],
   "values": [
     ["?queryVec"],
@@ -274,8 +266,12 @@ Example (JSON-LD Query):
   ],
   "where": [
     { "@id": "?product", "ex:category": "electronics" },
-    { "@id": "?product", "bm25:matches": "wireless" },
-    { "@id": "?product", "bm25:score": "?textScore" },
+    {
+      "f:graphSource": "products-search:main",
+      "f:searchText": "wireless",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?product", "f:resultScore": "?textScore" }
+    },
     {
       "f:graphSource": "products-vector:main",
       "f:queryVector": "?queryVec",
@@ -286,6 +282,8 @@ Example (JSON-LD Query):
   "orderBy": [["desc", "(?textScore + ?vectorScore)"]]
 }
 ```
+
+Vector/HNSW graph sources are currently queried via JSON-LD Query using `f:*` patterns (e.g. `f:graphSource`, `f:queryVector`, `f:searchResult`). SPARQL query syntax for HNSW vector indexes is not currently available.
 
 ### Data Lake Integration
 
@@ -311,20 +309,25 @@ WHERE {
 
 Combine semantic and keyword search:
 
-```sparql
-SELECT ?document
-FROM <documents-search:main>     # BM25 graph source
-WHERE {
-  {
-    # Keyword match
-    GRAPH <documents-search:main> {
-      ?document bm25:matches "machine learning" .
+```json
+{
+  "@context": {
+    "f": "https://ns.flur.ee/db#"
+  },
+  "from": "documents:main",
+  "select": ["?document"],
+  "where": [
+    {
+      "f:graphSource": "documents-search:main",
+      "f:searchText": "machine learning",
+      "f:searchLimit": 20,
+      "f:searchResult": { "f:resultId": "?document" }
     }
-  }
+  ]
 }
 ```
 
-Semantic similarity via HNSW vector indexes is currently queried via JSON-LD Query using `f:*` patterns. SPARQL syntax for vector index search is not currently available.
+Semantic similarity via HNSW vector indexes is also queried via JSON-LD Query using `f:*` patterns. SPARQL syntax for BM25 and vector index search is not currently available.
 
 ## Best Practices
 

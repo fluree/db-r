@@ -102,8 +102,6 @@ where
         sync: bool,
         timeout_ms: Option<u64>,
     ) -> QueryResult<Arc<Bm25Index>> {
-        use fluree_db_query::bm25::deserialize;
-
         // Load BM25 manifest from CAS
         let manifest = self
             .fluree
@@ -130,7 +128,10 @@ where
                 .await
                 .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
 
-            let index = deserialize(&bytes)
+            let index = self
+                .fluree
+                .load_bm25_from_bytes(graph_source_id, &bytes)
+                .await
                 .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
 
             info!(
@@ -172,7 +173,10 @@ where
                     .await
                     .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
 
-                let index = deserialize(&bytes)
+                let index = self
+                    .fluree
+                    .load_bm25_from_bytes(graph_source_id, &bytes)
+                    .await
                     .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
 
                 info!(
@@ -248,6 +252,16 @@ where
         let deployment_config = self.get_deployment_config(graph_source_id).await?;
 
         match deployment_config.mode {
+            DeploymentMode::Embedded if self.fluree.should_use_chunked_format() => {
+                debug!(
+                    graph_source_id = %graph_source_id,
+                    "Using selective chunked search mode"
+                );
+                self.search_bm25_selective(
+                    graph_source_id, query_text, limit, as_of_t, sync, timeout_ms,
+                )
+                .await
+            }
             DeploymentMode::Embedded => {
                 debug!(graph_source_id = %graph_source_id, "Using embedded search mode");
                 let adapter = EmbeddedBm25SearchProvider::new(self);
@@ -308,6 +322,82 @@ where
 
         // Try to parse deployment config from the graph source's JSON config
         parse_deployment_from_gs_config(&record.config)
+    }
+}
+
+impl<S, N> FlureeIndexProvider<'_, S, N>
+where
+    S: Storage + StorageWrite + Clone + 'static,
+    N: NameService + Publisher + GraphSourcePublisher,
+{
+    /// Selective search for v4 chunked snapshots.
+    ///
+    /// Handles the full lifecycle (manifest, snapshot selection, sync, selective
+    /// leaflet loading, scoring) — same contract as `EmbeddedBm25SearchProvider`
+    /// but fetches only the posting leaflets needed for the query terms.
+    async fn search_bm25_selective(
+        &self,
+        graph_source_id: &str,
+        query_text: &str,
+        limit: usize,
+        as_of_t: Option<i64>,
+        sync: bool,
+        timeout_ms: Option<u64>,
+    ) -> QueryResult<Bm25SearchResult> {
+        // Load manifest
+        let manifest = self
+            .fluree
+            .load_or_create_bm25_manifest(graph_source_id)
+            .await
+            .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
+
+        let effective_as_of_t = as_of_t.unwrap_or(i64::MAX);
+        let selection = manifest.select_snapshot(effective_as_of_t);
+
+        // Load snapshot bytes
+        let snapshot_bytes = if let Some(entry) = selection {
+            let cs =
+                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            cs.get(&entry.snapshot_id)
+                .await
+                .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?
+        } else if sync {
+            let _ = timeout_ms;
+            self.fluree
+                .sync_bm25_index(graph_source_id)
+                .await
+                .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
+
+            let manifest = self
+                .fluree
+                .load_or_create_bm25_manifest(graph_source_id)
+                .await
+                .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
+
+            let entry = manifest.select_snapshot(effective_as_of_t).ok_or_else(|| {
+                QueryError::InvalidQuery(format!(
+                    "No BM25 snapshot available for {} after sync",
+                    graph_source_id
+                ))
+            })?;
+
+            let cs =
+                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            cs.get(&entry.snapshot_id)
+                .await
+                .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?
+        } else {
+            return Err(QueryError::InvalidQuery(format!(
+                "No BM25 snapshot available for {}",
+                graph_source_id
+            )));
+        };
+
+        // Delegate to selective search (handles v4 detection internally)
+        self.fluree
+            .search_bm25_selective(graph_source_id, &snapshot_bytes, query_text, limit)
+            .await
+            .map_err(|e| QueryError::Internal(format!("Selective search error: {}", e)))
     }
 }
 

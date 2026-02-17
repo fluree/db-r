@@ -21,7 +21,7 @@
 //! # Example
 //!
 //! ```ignore
-//! // Parse dataset from FQL query
+//! // Parse dataset from JSON-LD query
 //! let spec = DatasetSpec::from_json(&query)?;
 //!
 //! // Resolve via nameservice
@@ -73,7 +73,7 @@ fn iri_value_to_string(iri: &IriValue) -> String {
 ///
 /// # Examples
 ///
-/// FQL:
+/// JSON-LD query:
 /// ```json
 /// {
 ///   "from": "ledger:main",
@@ -491,7 +491,7 @@ impl HistoryTimeRange {
 }
 
 // =============================================================================
-// FQL Parsing
+// JSON-LD Query Parsing
 // =============================================================================
 
 use serde_json::Value as JsonValue;
@@ -538,7 +538,7 @@ impl std::fmt::Display for DatasetParseError {
 impl std::error::Error for DatasetParseError {}
 
 impl DatasetSpec {
-    /// Parse a DatasetSpec from FQL JSON query options
+    /// Parse a DatasetSpec from JSON-LD query options
     ///
     /// Extracts "from" and "from-named" keys from the query object.
     ///
@@ -1239,7 +1239,7 @@ mod tests {
         assert!(matches!(time, TimeSpec::AtTime(ref s) if s == "2024-01-01T00:00:00Z"));
     }
 
-    // FQL Parsing Tests
+    // JSON-LD Query Parsing Tests
 
     use serde_json::json;
 

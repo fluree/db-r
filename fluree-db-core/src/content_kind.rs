@@ -24,7 +24,7 @@ pub const CODEC_FLUREE_INDEX_ROOT: u64 = FLUREE_CODEC_BASE + 3;
 /// Multicodec for Fluree index branch manifests (FBR1).
 pub const CODEC_FLUREE_INDEX_BRANCH: u64 = FLUREE_CODEC_BASE + 4;
 
-/// Multicodec for Fluree index leaf files (FLI1).
+/// Multicodec for Fluree index leaf files (FLI2).
 pub const CODEC_FLUREE_INDEX_LEAF: u64 = FLUREE_CODEC_BASE + 5;
 
 /// Multicodec for Fluree dictionary blobs (all sub-kinds).
@@ -45,6 +45,9 @@ pub const CODEC_FLUREE_STATS_SKETCH: u64 = FLUREE_CODEC_BASE + 9;
 
 /// Multicodec for Fluree graph source snapshot blobs (BM25, vector, etc.).
 pub const CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT: u64 = FLUREE_CODEC_BASE + 10;
+
+/// Multicodec for Fluree spatial index artifacts (S2 cell index, geometry arena, root manifest).
+pub const CODEC_FLUREE_SPATIAL_INDEX: u64 = FLUREE_CODEC_BASE + 11;
 
 // ============================================================================
 // DictKind
@@ -107,7 +110,7 @@ pub enum ContentKind {
     DictBlob { dict: DictKind },
     /// Index branch manifest (FBR1 format)
     IndexBranch,
-    /// Index leaf file (FLI1 format)
+    /// Index leaf file (FLI2 format)
     IndexLeaf,
     /// Ledger configuration object (origin discovery, replication defaults)
     LedgerConfig,
@@ -115,6 +118,8 @@ pub enum ContentKind {
     StatsSketch,
     /// Graph source snapshot blob (serialized BM25/vector index)
     GraphSourceSnapshot,
+    /// Spatial index artifact (S2 cell index, geometry arena, root manifest)
+    SpatialIndex,
 }
 
 // ============================================================================
@@ -137,6 +142,7 @@ impl ContentKind {
             ContentKind::LedgerConfig => CODEC_FLUREE_LEDGER_CONFIG,
             ContentKind::StatsSketch => CODEC_FLUREE_STATS_SKETCH,
             ContentKind::GraphSourceSnapshot => CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT,
+            ContentKind::SpatialIndex => CODEC_FLUREE_SPATIAL_INDEX,
         }
     }
 
@@ -159,6 +165,7 @@ impl ContentKind {
             CODEC_FLUREE_LEDGER_CONFIG => Some(ContentKind::LedgerConfig),
             CODEC_FLUREE_STATS_SKETCH => Some(ContentKind::StatsSketch),
             CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT => Some(ContentKind::GraphSourceSnapshot),
+            CODEC_FLUREE_SPATIAL_INDEX => Some(ContentKind::SpatialIndex),
             _ => None,
         }
     }
@@ -176,6 +183,7 @@ impl ContentKind {
             ContentKind::LedgerConfig => "config",
             ContentKind::StatsSketch => "stats-sketch",
             ContentKind::GraphSourceSnapshot => "graph-source-snapshot",
+            ContentKind::SpatialIndex => "spatial-index",
         }
     }
 }

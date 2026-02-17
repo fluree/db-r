@@ -105,7 +105,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 | Pattern::VectorSearch(_)
                 | Pattern::Graph { .. }
                 | Pattern::Service(_)
-                | Pattern::R2rml(_) => {}
+                | Pattern::R2rml(_)
+                | Pattern::GeoSearch(_)
+                | Pattern::S2Search(_) => {}
             }
         }
     }

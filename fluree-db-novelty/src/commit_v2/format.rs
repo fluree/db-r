@@ -17,8 +17,8 @@ use super::error::CommitV2Error;
 pub const MAGIC: [u8; 4] = *b"FCV2";
 
 /// Current format version.
-/// Version 2: binary envelope (replaces JSON envelope of version 1).
-pub const VERSION: u8 = 2;
+/// Version 3: t narrowed to u32, graph_delta keys to u16, list index unsigned.
+pub const VERSION: u8 = 3;
 
 /// Header size in bytes (fixed).
 pub const HEADER_LEN: usize = 32;
@@ -311,20 +311,35 @@ pub struct CommitV2Header {
 
 impl CommitV2Header {
     /// Write the header into the first 32 bytes of `buf`.
+    ///
+    /// Wire layout (v3):
+    /// `[0..4] magic, [4] version, [5] flags, [6..10] t: u32 LE,
+    ///  [10..14] op_count: u32, [14..18] envelope_len: u32,
+    ///  [18..20] sig_block_len: u16, [20..32] reserved (12 bytes)`
     pub fn write_to(&self, buf: &mut [u8]) {
         debug_assert!(buf.len() >= HEADER_LEN);
+        debug_assert!(
+            self.t >= 0 && self.t <= u32::MAX as i64,
+            "t value {} out of u32 range for wire format",
+            self.t
+        );
         buf[0..4].copy_from_slice(&MAGIC);
         buf[4] = self.version;
         buf[5] = self.flags;
-        buf[6..14].copy_from_slice(&self.t.to_le_bytes());
-        buf[14..18].copy_from_slice(&self.op_count.to_le_bytes());
-        buf[18..22].copy_from_slice(&self.envelope_len.to_le_bytes());
-        buf[22..24].copy_from_slice(&self.sig_block_len.to_le_bytes());
-        // reserved bytes 24..32
-        buf[24..32].fill(0);
+        buf[6..10].copy_from_slice(&(self.t as u32).to_le_bytes());
+        buf[10..14].copy_from_slice(&self.op_count.to_le_bytes());
+        buf[14..18].copy_from_slice(&self.envelope_len.to_le_bytes());
+        buf[18..20].copy_from_slice(&self.sig_block_len.to_le_bytes());
+        // reserved bytes 20..32
+        buf[20..32].fill(0);
     }
 
     /// Read the header from the first 32 bytes of `buf`.
+    ///
+    /// Wire layout (v3):
+    /// `[0..4] magic, [4] version, [5] flags, [6..10] t: u32 LE,
+    ///  [10..14] op_count: u32, [14..18] envelope_len: u32,
+    ///  [18..20] sig_block_len: u16, [20..32] reserved (12 bytes)`
     pub fn read_from(buf: &[u8]) -> Result<Self, CommitV2Error> {
         if buf.len() < HEADER_LEN {
             return Err(CommitV2Error::TooSmall {
@@ -340,10 +355,11 @@ impl CommitV2Header {
             return Err(CommitV2Error::UnsupportedVersion(version));
         }
         let flags = buf[5];
-        let t = i64::from_le_bytes(buf[6..14].try_into().unwrap());
-        let op_count = u32::from_le_bytes(buf[14..18].try_into().unwrap());
-        let envelope_len = u32::from_le_bytes(buf[18..22].try_into().unwrap());
-        let sig_block_len = u16::from_le_bytes(buf[22..24].try_into().unwrap());
+        let raw_t = u32::from_le_bytes(buf[6..10].try_into().unwrap());
+        let t = raw_t as i64;
+        let op_count = u32::from_le_bytes(buf[10..14].try_into().unwrap());
+        let envelope_len = u32::from_le_bytes(buf[14..18].try_into().unwrap());
+        let sig_block_len = u16::from_le_bytes(buf[18..20].try_into().unwrap());
 
         Ok(Self {
             version,
@@ -475,8 +491,16 @@ mod tests {
 
     #[test]
     fn test_header_bad_version() {
+        // Reject old version 2
         let mut buf = [0u8; HEADER_LEN];
         buf[0..4].copy_from_slice(&MAGIC);
+        buf[4] = 2;
+        assert!(matches!(
+            CommitV2Header::read_from(&buf),
+            Err(CommitV2Error::UnsupportedVersion(2))
+        ));
+
+        // Reject future version 99
         buf[4] = 99;
         assert!(matches!(
             CommitV2Header::read_from(&buf),

@@ -81,9 +81,9 @@ pub async fn run(
             // Execute query via remote HTTP
             let result = match query_format {
                 detect::QueryFormat::Sparql => client.query_sparql(&remote_alias, &content).await?,
-                detect::QueryFormat::Fql => {
+                detect::QueryFormat::JsonLd => {
                     let json_query: serde_json::Value = serde_json::from_str(&content)?;
-                    client.query_fql(&remote_alias, &json_query).await?
+                    client.query_jsonld(&remote_alias, &json_query).await?
                 }
             };
 
@@ -112,7 +112,7 @@ pub async fn run(
                     let json = result.to_sparql_json(&ledger.db)?;
                     (query_format, json)
                 }
-                detect::QueryFormat::Fql => {
+                detect::QueryFormat::JsonLd => {
                     let json_query: serde_json::Value = serde_json::from_str(&content)?;
                     let result = graph.query().jsonld(&json_query).execute().await?;
                     let json = result.to_jsonld_async(&ledger.db).await?;

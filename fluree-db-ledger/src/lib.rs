@@ -107,6 +107,11 @@ pub struct LedgerState {
     /// Set by `Fluree::ledger()` when a binary index is available. Used by
     /// the query engine to enable `BinaryScanOperator` for IRI resolution.
     pub binary_store: Option<TypeErasedStore>,
+    /// Type-erased spatial index providers, keyed by predicate IRI.
+    ///
+    /// Each entry is `Arc<dyn SpatialIndexProvider>`. Set by `Fluree::ledger()`
+    /// when spatial indexes are available in the binary index root.
+    pub spatial_indexes: Option<TypeErasedStore>,
 }
 
 impl LedgerState {
@@ -134,7 +139,7 @@ impl LedgerState {
                     serde_json::from_slice(&root_bytes).map_err(|e| {
                         fluree_db_core::Error::invalid_index(format!("invalid root JSON: {}", e))
                     })?;
-                let loaded = Db::from_v2_json(&root_json)?;
+                let loaded = Db::from_root_json(&root_json)?;
                 let dn = DictNovelty::with_watermarks(
                     loaded.subject_watermarks.clone(),
                     loaded.string_watermark,
@@ -164,6 +169,7 @@ impl LedgerState {
                     head_index_id,
                     ns_record: Some(record),
                     binary_store: None,
+                    spatial_indexes: None,
                 });
             }
             _ => record.commit_head_id.clone(),
@@ -179,6 +185,7 @@ impl LedgerState {
             head_index_id,
             ns_record: Some(record),
             binary_store: None,
+            spatial_indexes: None,
         })
     }
 
@@ -249,6 +256,7 @@ impl LedgerState {
             head_index_id: None,
             ns_record: None,
             binary_store: None,
+            spatial_indexes: None,
         }
     }
 
@@ -329,7 +337,7 @@ impl LedgerState {
         let root_json: serde_json::Value = serde_json::from_slice(&root_bytes).map_err(|e| {
             fluree_db_core::Error::invalid_index(format!("invalid root JSON: {}", e))
         })?;
-        let new_db = Db::from_v2_json(&root_json)?;
+        let new_db = Db::from_root_json(&root_json)?;
 
         // Verify ledger ID matches
         if new_db.ledger_id != self.db.ledger_id {
@@ -702,7 +710,7 @@ mod tests {
         let store = content_store_for(storage.clone(), "test:main");
         let root_bytes = store.get(&index_cid_t2).await.unwrap();
         let root: serde_json::Value = serde_json::from_slice(&root_bytes).unwrap();
-        let db = Db::from_v2_json(&root).unwrap();
+        let db = Db::from_root_json(&root).unwrap();
         let novelty = Novelty::new(2);
         let mut state = LedgerState::new(db, novelty);
         assert_eq!(state.index_t(), 2);
@@ -743,7 +751,7 @@ mod tests {
         let store = content_store_for(storage.clone(), "test:main");
         let root_bytes = store.get(&index_cid).await.unwrap();
         let root: serde_json::Value = serde_json::from_slice(&root_bytes).unwrap();
-        let db = Db::from_v2_json(&root).unwrap();
+        let db = Db::from_root_json(&root).unwrap();
         let novelty = Novelty::new(1);
         let mut state = LedgerState::new(db, novelty);
 

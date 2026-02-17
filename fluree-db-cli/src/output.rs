@@ -28,14 +28,14 @@ pub fn format_result(
 fn format_as_table(json: &serde_json::Value, query_format: QueryFormat) -> CliResult<String> {
     match query_format {
         QueryFormat::Sparql => format_sparql_table(json),
-        QueryFormat::Fql => format_fql_table(json),
+        QueryFormat::JsonLd => format_jsonld_table(json),
     }
 }
 
 fn format_as_csv(json: &serde_json::Value, query_format: QueryFormat) -> CliResult<String> {
     match query_format {
         QueryFormat::Sparql => format_sparql_csv(json),
-        QueryFormat::Fql => format_fql_csv(json),
+        QueryFormat::JsonLd => format_jsonld_csv(json),
     }
 }
 
@@ -91,8 +91,8 @@ fn format_sparql_table(json: &serde_json::Value) -> CliResult<String> {
     Ok(table.to_string())
 }
 
-fn format_fql_table(json: &serde_json::Value) -> CliResult<String> {
-    // FQL JSON-LD results: array of objects
+fn format_jsonld_table(json: &serde_json::Value) -> CliResult<String> {
+    // JSON-LD query results: array of objects
     let arr = match json.as_array() {
         Some(a) => a,
         None => return Ok(serde_json::to_string_pretty(json).unwrap_or_default()),
@@ -181,7 +181,7 @@ fn format_sparql_csv(json: &serde_json::Value) -> CliResult<String> {
     Ok(lines.join("\n"))
 }
 
-fn format_fql_csv(json: &serde_json::Value) -> CliResult<String> {
+fn format_jsonld_csv(json: &serde_json::Value) -> CliResult<String> {
     let arr = match json.as_array() {
         Some(a) => a,
         None => return Ok(serde_json::to_string_pretty(json).unwrap_or_default()),

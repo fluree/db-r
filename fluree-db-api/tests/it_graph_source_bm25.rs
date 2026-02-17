@@ -605,11 +605,11 @@ async fn bm25_file_backed_storage() {
     // tmp directory will be cleaned up when `tmp` goes out of scope
 }
 
-/// Test BM25 query_connection_with_bm25 with idx:* pattern syntax
+/// Test BM25 query_connection_with_bm25 with f:* pattern syntax
 ///
 /// This test verifies the full end-to-end integration:
 /// - `query_connection_with_bm25` correctly wires the FlureeIndexProvider
-/// - `idx:*` patterns in where clauses resolve against BM25 graph source indexes
+/// - `f:*` patterns in where clauses resolve against BM25 graph source indexes
 /// - Search results include document IRIs and scores
 /// - Results can be joined with ledger data (via IriMatch bindings)
 #[tokio::test]
@@ -658,9 +658,9 @@ async fn bm25_query_connection_with_idx_pattern() {
     let total_results: usize = result.batches.iter().map(|b| b.len()).sum();
     assert_eq!(total_results, 3, "expected 3 results from regular query");
 
-    // Test 2: Execute idx:* pattern through query_connection_with_bm25
+    // Test 2: Execute f:* pattern through query_connection_with_bm25
     // This tests the full end-to-end flow:
-    // - Pattern parsing (idx:target, idx:result, idx:limit)
+    // - Pattern parsing (f:searchText, f:searchResult, f:searchLimit)
     // - BM25 operator execution
     // - IriMatch binding for cross-ledger joins
     // - Join with ledger data to get author
@@ -684,13 +684,13 @@ async fn bm25_query_connection_with_idx_pattern() {
     let idx_result = fluree
         .query_connection_with_bm25(&idx_query)
         .await
-        .expect("query_connection_with_bm25 failed for idx:* query");
+        .expect("query_connection_with_bm25 failed for f:* query");
 
     // Should have results (2 rust docs)
     let idx_total: usize = idx_result.batches.iter().map(|b| b.len()).sum();
     assert!(
         idx_total >= 2,
-        "expected at least 2 rust docs in idx:* query results, got {}",
+        "expected at least 2 rust docs in f:* query results, got {}",
         idx_total
     );
 

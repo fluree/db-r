@@ -35,6 +35,18 @@ pub enum ArithmeticError {
     TypeMismatch,
 }
 
+/// Errors that can occur during comparison operations
+#[derive(Error, Debug, Clone, PartialEq)]
+pub enum ComparisonError {
+    /// Ordering comparison between incompatible types
+    #[error("type mismatch: cannot compare {left_type} with {right_type} using '{operator}'")]
+    TypeMismatch {
+        operator: &'static str,
+        left_type: &'static str,
+        right_type: &'static str,
+    },
+}
+
 /// Error when converting a FlakeValue that has no ComparableValue equivalent
 #[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 #[error("cannot convert null value")]
@@ -236,6 +248,26 @@ impl From<ComparableValue> for bool {
 }
 
 impl ComparableValue {
+    /// Return a human-readable type name for error messages.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            ComparableValue::Long(_) => "long",
+            ComparableValue::Double(_) => "double",
+            ComparableValue::String(_) => "string",
+            ComparableValue::Bool(_) => "boolean",
+            ComparableValue::Sid(_) => "sid",
+            ComparableValue::Vector(_) => "vector",
+            ComparableValue::BigInt(_) => "bigint",
+            ComparableValue::Decimal(_) => "decimal",
+            ComparableValue::DateTime(_) => "dateTime",
+            ComparableValue::Date(_) => "date",
+            ComparableValue::Time(_) => "time",
+            ComparableValue::GeoPoint(_) => "geoPoint",
+            ComparableValue::Iri(_) => "iri",
+            ComparableValue::TypedLiteral { .. } => "typedLiteral",
+        }
+    }
+
     /// Get a string slice if this value is a String, Iri, or TypedLiteral containing a string.
     pub fn as_str(&self) -> Option<&str> {
         match self {

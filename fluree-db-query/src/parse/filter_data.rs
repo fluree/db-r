@@ -1,6 +1,6 @@
 //! Data expression (JSON array) filter parsing
 //!
-//! Parses JSON array-based filter expressions used in FQL queries.
+//! Parses JSON array-based filter expressions used in JSON-LD queries.
 //!
 //! # Syntax
 //!
@@ -20,7 +20,7 @@
 //! - **Membership**: `in`, `not-in`, `notin`
 //! - **Functions**: any other operator treated as function call
 
-use super::ast::{UnresolvedArithmeticOp, UnresolvedCompareOp, UnresolvedExpression};
+use super::ast::UnresolvedExpression;
 use super::error::{ParseError, Result};
 use super::filter_common;
 use serde_json::Value as JsonValue;
@@ -111,12 +111,11 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
     // Handle based on operator type
     match op_lower.as_str() {
         // Comparison operators
-        "=" | "eq" => parse_binary_compare(args, UnresolvedCompareOp::Eq),
-        "!=" | "<>" | "ne" => parse_binary_compare(args, UnresolvedCompareOp::Ne),
-        "<" | "lt" => parse_binary_compare(args, UnresolvedCompareOp::Lt),
-        "<=" | "le" => parse_binary_compare(args, UnresolvedCompareOp::Le),
-        ">" | "gt" => parse_binary_compare(args, UnresolvedCompareOp::Gt),
-        ">=" | "ge" => parse_binary_compare(args, UnresolvedCompareOp::Ge),
+        op @ ("=" | "eq" | "!=" | "<>" | "ne" | "<" | "lt" | "<=" | "le" | ">" | "gt" | ">="
+        | "ge") => {
+            let canonical = filter_common::normalize_op(op);
+            filter_common::build_call(args, canonical, parse_filter_expr, 1, "comparison operator")
+        }
 
         // Logical operators
         "and" => filter_common::build_and(args, parse_filter_expr),
@@ -148,17 +147,18 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
         }
 
         // Arithmetic operators
-        "+" | "add" => parse_binary_arithmetic(args, UnresolvedArithmeticOp::Add),
+        op @ ("+" | "add" | "*" | "mul" | "/" | "div") => {
+            let canonical = filter_common::normalize_op(op);
+            filter_common::build_call(args, canonical, parse_filter_expr, 1, "arithmetic operator")
+        }
         "-" | "sub" => {
             if args.len() == 1 {
                 // Unary negation
-                filter_common::build_negate(args, parse_filter_expr)
+                filter_common::build_call(args, "negate", parse_filter_expr, 1, "unary negation")
             } else {
-                parse_binary_arithmetic(args, UnresolvedArithmeticOp::Sub)
+                filter_common::build_call(args, "-", parse_filter_expr, 1, "arithmetic operator")
             }
         }
-        "*" | "mul" => parse_binary_arithmetic(args, UnresolvedArithmeticOp::Mul),
-        "/" | "div" => parse_binary_arithmetic(args, UnresolvedArithmeticOp::Div),
 
         // Everything else is a function call
         _ => {
@@ -169,22 +169,6 @@ pub fn parse_filter_array(arr: &[JsonValue]) -> Result<UnresolvedExpression> {
             })
         }
     }
-}
-
-/// Parse a binary comparison operation
-fn parse_binary_compare(
-    args: &[JsonValue],
-    op: UnresolvedCompareOp,
-) -> Result<UnresolvedExpression> {
-    filter_common::build_binary_compare(args, op, parse_filter_expr, "comparison operator")
-}
-
-/// Parse a binary arithmetic operation
-fn parse_binary_arithmetic(
-    args: &[JsonValue],
-    op: UnresolvedArithmeticOp,
-) -> Result<UnresolvedExpression> {
-    filter_common::build_binary_arithmetic(args, op, parse_filter_expr, "arithmetic operator")
 }
 
 #[cfg(test)]
@@ -239,10 +223,10 @@ mod tests {
         let json_val = json!([">", "?age", 18]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedExpression::Compare { op, .. } => {
-                assert_eq!(op, UnresolvedCompareOp::Gt);
+            UnresolvedExpression::Call { func, .. } => {
+                assert_eq!(func.as_ref(), ">");
             }
-            _ => panic!("Expected comparison"),
+            _ => panic!("Expected Call"),
         }
     }
 
@@ -290,10 +274,10 @@ mod tests {
         let json_val = json!(["+", "?x", 5]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedExpression::Arithmetic { op, .. } => {
-                assert_eq!(op, UnresolvedArithmeticOp::Add);
+            UnresolvedExpression::Call { func, .. } => {
+                assert_eq!(func.as_ref(), "+");
             }
-            _ => panic!("Expected arithmetic"),
+            _ => panic!("Expected Call"),
         }
     }
 
@@ -302,8 +286,11 @@ mod tests {
         let json_val = json!(["-", "?x"]);
         let expr = parse_filter_expr(&json_val).unwrap();
         match expr {
-            UnresolvedExpression::Negate(_) => {}
-            _ => panic!("Expected negation"),
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "negate");
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("Expected Call with negate"),
         }
     }
 
@@ -327,16 +314,8 @@ mod tests {
         match expr {
             UnresolvedExpression::And(exprs) => {
                 assert_eq!(exprs.len(), 2);
-                // Verify first is comparison
-                match &exprs[0] {
-                    UnresolvedExpression::Compare { .. } => {}
-                    _ => panic!("Expected first to be comparison"),
-                }
-                // Verify second is comparison
-                match &exprs[1] {
-                    UnresolvedExpression::Compare { .. } => {}
-                    _ => panic!("Expected second to be comparison"),
-                }
+                assert!(matches!(&exprs[0], UnresolvedExpression::Call { .. }));
+                assert!(matches!(&exprs[1], UnresolvedExpression::Call { .. }));
             }
             _ => panic!("Expected AND"),
         }
@@ -352,5 +331,73 @@ mod tests {
     fn test_null_not_supported() {
         let json_val = json!(null);
         assert!(parse_filter_expr(&json_val).is_err());
+    }
+
+    #[test]
+    fn test_parse_variadic_comparison() {
+        let json_val = json!(["<", "?a", "?b", "?c"]);
+        let expr = parse_filter_expr(&json_val).unwrap();
+        match expr {
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "<");
+                assert_eq!(args.len(), 3);
+            }
+            _ => panic!("Expected Call"),
+        }
+    }
+
+    #[test]
+    fn test_parse_variadic_arithmetic() {
+        let json_val = json!(["+", "?x", 5, 10]);
+        let expr = parse_filter_expr(&json_val).unwrap();
+        match expr {
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "+");
+                assert_eq!(args.len(), 3);
+            }
+            _ => panic!("Expected Call"),
+        }
+    }
+
+    #[test]
+    fn test_parse_single_arg_arithmetic() {
+        let json_val = json!(["+", "?x"]);
+        let expr = parse_filter_expr(&json_val).unwrap();
+        match expr {
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "+");
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("Expected Call"),
+        }
+    }
+
+    #[test]
+    fn test_parse_single_arg_comparison() {
+        let json_val = json!(["=", "?x"]);
+        let expr = parse_filter_expr(&json_val).unwrap();
+        match expr {
+            UnresolvedExpression::Call { func, args } => {
+                assert_eq!(func.as_ref(), "=");
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("Expected Call"),
+        }
+    }
+
+    #[test]
+    fn test_parse_word_aliases_normalize() {
+        // Word aliases should normalize to symbol form
+        let expr = parse_filter_expr(&json!(["eq", "?x", 1])).unwrap();
+        match expr {
+            UnresolvedExpression::Call { func, .. } => assert_eq!(func.as_ref(), "="),
+            _ => panic!("Expected Call"),
+        }
+
+        let expr = parse_filter_expr(&json!(["add", "?x", 1])).unwrap();
+        match expr {
+            UnresolvedExpression::Call { func, .. } => assert_eq!(func.as_ref(), "+"),
+            _ => panic!("Expected Call"),
+        }
     }
 }

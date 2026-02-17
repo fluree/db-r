@@ -26,7 +26,7 @@ where
 {
     /// Execute a query against a composed view.
     ///
-    /// Accepts JSON-LD/FQL or SPARQL via `QueryInput`. Wrapper settings
+    /// Accepts JSON-LD or SPARQL via `QueryInput`. Wrapper settings
     /// (policy, reasoning) are applied automatically.
     ///
     /// # Example

@@ -611,10 +611,10 @@ async fn vector_collection_exists() {
     assert!(!after_drop, "dropped collection should not exist");
 }
 
-/// End-to-end test for idx:vector query syntax through the query pipeline.
+/// End-to-end test for f:queryVector query syntax through the query pipeline.
 ///
 /// This test verifies that vector search patterns in queries work correctly:
-/// - Query parsing recognizes idx:vector patterns
+/// - Query parsing recognizes f:queryVector patterns
 /// - VectorSearchOperator executes against the vector index
 /// - Results include IDs and scores
 #[tokio::test]
@@ -670,7 +670,7 @@ async fn vector_idx_query_syntax_e2e() {
     let created = fluree.create_vector_index(cfg).await.unwrap();
     assert_eq!(created.vector_count, 3, "expected 3 vectors indexed");
 
-    // Execute a query using idx:vector syntax
+    // Execute a query using f:queryVector syntax
     // Query for vectors similar to [0.85, 0.1, 0.05] - should match doc1 and doc3 best
     let search_query = json!({
         "@context": { "ex": "http://example.org/", "f": "https://ns.flur.ee/db#" },

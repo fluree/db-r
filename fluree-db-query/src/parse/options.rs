@@ -1,6 +1,6 @@
 //! Query options parsing
 //!
-//! Parses FQL query modifiers:
+//! Parses JSON-LD query modifiers:
 //! - `limit` - maximum number of results
 //! - `offset` - skip first N results
 //! - `distinct` / `selectDistinct` - remove duplicate rows
@@ -354,22 +354,6 @@ fn rewrite_having_aggregates(
 
     match expr {
         E::Var(_) | E::Const(_) => Ok(expr),
-
-        E::Compare { op, left, right } => Ok(E::Compare {
-            op,
-            left: Box::new(rewrite_child(*left, aggregates, counter)?),
-            right: Box::new(rewrite_child(*right, aggregates, counter)?),
-        }),
-
-        E::Arithmetic { op, left, right } => Ok(E::Arithmetic {
-            op,
-            left: Box::new(rewrite_child(*left, aggregates, counter)?),
-            right: Box::new(rewrite_child(*right, aggregates, counter)?),
-        }),
-
-        E::Negate(inner) => Ok(E::Negate(Box::new(rewrite_child(
-            *inner, aggregates, counter,
-        )?))),
 
         E::And(exprs) => Ok(E::And(
             exprs
