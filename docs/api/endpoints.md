@@ -634,7 +634,7 @@ All replication-relevant content kinds are served:
 | `commit` | Commit chain blobs |
 | `txn` | Transaction data blobs |
 | `config` | LedgerConfig origin discovery objects |
-| `index-root` | Binary index root JSON |
+| `index-root` | Binary index root (IRB1) |
 | `index-branch` | Index branch manifests |
 | `index-leaf` | Index leaf files |
 | `dict` | Dictionary artifacts (predicates, subjects, strings, etc.) |

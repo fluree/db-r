@@ -7,14 +7,11 @@
 //! branch manifests. Dictionaries (subjects, strings, predicates, datatypes) are shared
 //! across all orders.
 
-use super::branch::{
-    find_branch_file, read_branch_manifest, read_branch_manifest_from_bytes, BranchManifest,
-};
+use super::branch::{read_branch_v2_from_bytes, BranchManifest};
 use super::dict_io::{
     read_forward_index, read_language_dict, read_predicate_dict, read_subject_sid_map,
 };
 use super::global_dict::{LanguageTagDict, PredicateDict};
-use super::index_root::BinaryIndexRoot;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::leaflet_cache::LeafletCache;
@@ -28,6 +25,7 @@ use crate::dict_tree::{DictBranch, DictTreeReader};
 use fluree_db_core::address::parse_fluree_address;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
+use fluree_db_core::GraphId;
 use fluree_db_core::ListIndex;
 use fluree_db_core::{ContentId, ContentStore};
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, PrefixTrie, Sid};
@@ -44,7 +42,7 @@ use std::sync::Arc;
 /// Entry from index_manifest_{order}.json.
 #[derive(Debug, serde::Deserialize)]
 struct GraphManifestEntry {
-    g_id: u32,
+    g_id: u16,
     // Kept for: diagnostics and future manifest validation.
     // Use when: verifying on-disk index completeness / sanity checks.
     #[expect(dead_code)]
@@ -53,10 +51,8 @@ struct GraphManifestEntry {
     // Use when: verifying row counts across graphs/orders.
     #[expect(dead_code)]
     total_rows: u64,
-    // Kept for: diagnostics (some manifests may include it; not required today).
-    // Use when: validating branch integrity without loading the branch file.
-    #[serde(default)]
-    branch_hash: Option<String>,
+    /// CID string of the branch manifest file (FBR2, no extension).
+    branch_cid: String,
     directory: String,
 }
 
@@ -108,7 +104,7 @@ struct DictionarySet {
     predicates: PredicateDict,
     predicate_reverse: HashMap<String, u32>,
     /// Graph IRI → dict_index (0-based). g_id = dict_index + 1.
-    graphs_reverse: HashMap<String, u32>,
+    graphs_reverse: HashMap<String, GraphId>,
     subject_forward_tree: Option<DictTreeReader>,
     subject_reverse_tree: Option<DictTreeReader>,
     string_forward_tree: Option<DictTreeReader>,
@@ -125,7 +121,7 @@ struct DictionarySet {
 
 /// Per-graph, per-order branch manifests and leaf directories.
 struct GraphIndexes {
-    graphs: HashMap<u32, GraphIndex>,
+    graphs: HashMap<GraphId, GraphIndex>,
 }
 
 /// Read-only store for querying Phase C binary columnar indexes.
@@ -142,10 +138,6 @@ pub struct BinaryIndexStore {
     /// When present, the store may lazily fetch dict leaves and index leaf files
     /// as they are accessed, rather than pre-downloading everything at startup.
     cas: Option<Arc<dyn ContentStore>>,
-    /// Mapping from leaf content hash (sha256 hex) → CID for index leaf files (`.fli`).
-    ///
-    /// Populated for CAS-backed stores to support on-demand leaf downloads.
-    index_leaf_cids: HashMap<String, ContentId>,
     /// Maximum t seen (from manifest or branch).
     max_t: i64,
     /// Base t from the initial full index build.
@@ -163,7 +155,7 @@ impl BinaryIndexStore {
         let _span = tracing::info_span!("BinaryIndexStore::load", ?run_dir, ?index_dir).entered();
 
         // ---- Load per-order index manifests ----
-        let mut graphs: HashMap<u32, GraphIndex> = HashMap::new();
+        let mut graphs: HashMap<GraphId, GraphIndex> = HashMap::new();
         let mut max_t: i64 = 0;
 
         let all_orders = [
@@ -190,14 +182,18 @@ impl BinaryIndexStore {
 
             for entry in &manifest.graphs {
                 let graph_dir = index_dir.join(&entry.directory);
-                let branch_path = if let Some(ref hash) = entry.branch_hash {
-                    graph_dir.join(format!("{}.fbr", hash))
-                } else {
-                    find_branch_file(&graph_dir).unwrap_or_else(|_| graph_dir.join("branch.fbr"))
-                };
+                let branch_path = graph_dir.join(&entry.branch_cid);
 
                 if branch_path.exists() {
-                    let branch = read_branch_manifest(&branch_path)?;
+                    let branch_bytes = std::fs::read(&branch_path)?;
+                    let mut branch = read_branch_v2_from_bytes(&branch_bytes)?;
+
+                    // Resolve leaf paths: leaf files are in graph_dir, named by CID string.
+                    for leaf_entry in &mut branch.leaves {
+                        leaf_entry.resolved_path =
+                            Some(graph_dir.join(leaf_entry.leaf_cid.to_string()));
+                    }
+
                     tracing::info!(
                         g_id = entry.g_id,
                         order = order.dir_name(),
@@ -386,10 +382,14 @@ impl BinaryIndexStore {
         // ---- Load graphs dict ----
         // Build reverse map: IRI → dict_index (0-based). g_id = dict_index + 1.
         let graphs_path = run_dir.join("graphs.dict");
-        let graphs_reverse: HashMap<String, u32> = if graphs_path.exists() {
+        let graphs_reverse: HashMap<String, GraphId> = if graphs_path.exists() {
             let graphs_dict = read_predicate_dict(&graphs_path)?;
-            let rev: HashMap<String, u32> = (0..graphs_dict.len())
-                .filter_map(|id| graphs_dict.resolve(id).map(|iri| (iri.to_string(), id)))
+            let rev: HashMap<String, GraphId> = (0..graphs_dict.len())
+                .filter_map(|id| {
+                    graphs_dict
+                        .resolve(id)
+                        .map(|iri| (iri.to_string(), id as GraphId))
+                })
                 .collect();
             tracing::info!(graphs = graphs_dict.len(), "loaded graphs dict");
             rev
@@ -516,7 +516,6 @@ impl BinaryIndexStore {
             },
             graph_indexes: GraphIndexes { graphs },
             cas: None,
-            index_leaf_cids: HashMap::new(),
             max_t,
             // Fresh bulk builds populate R3 for all records, so time-travel
             // is supported from t=1. Legacy behavior was `base_t: max_t` which
@@ -543,35 +542,73 @@ impl BinaryIndexStore {
         Ok(store)
     }
 
-    /// Load a BinaryIndexStore from CAS (content-addressed storage) using
-    /// a v3 index root with CID references.
-    ///
-    /// Fetches dictionary and index artifacts via `ContentStore::get()`,
-    /// materializes mmap-required files to `cache_dir`, and eagerly
-    /// downloads all leaf files for sync cursor compatibility.
-    ///
-    /// # Arguments
-    ///
-    /// * `cs` - Content store for reading CAS artifacts by CID
-    /// * `root` - V3 index root with CID references for all artifacts
-    /// * `cache_dir` - Local directory for cached files (mmap'd dicts + leaves)
-    /// * `leaflet_cache` - Optional shared LRU cache for decoded leaflets
-    pub async fn load_from_root(
+    /// Load from a v5 binary root (`IRB1`) with default leaflet cache.
+    pub async fn load_from_root_v5_default(
         cs: Arc<dyn ContentStore>,
-        root: &BinaryIndexRoot,
+        root: &super::index_root::IndexRootV5,
+        cache_dir: &Path,
+    ) -> io::Result<Self> {
+        let leaflet_cache_bytes: u64 = std::env::var("FLUREE_LEAFLET_CACHE_BYTES")
+            .ok()
+            .and_then(|s| u64::from_str(&s).ok())
+            .unwrap_or(8 * 1024 * 1024 * 1024);
+        let cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
+        Self::load_from_root_v5(cs, root, cache_dir, cache).await
+    }
+
+    /// Load from raw root bytes in IRB1 binary format.
+    ///
+    /// Decodes an `IndexRootV5` from the given bytes and loads the store.
+    /// Returns an error if the bytes are not valid IRB1 format.
+    pub async fn load_from_root_bytes(
+        cs: Arc<dyn ContentStore>,
+        bytes: &[u8],
         cache_dir: &Path,
         leaflet_cache: Option<Arc<LeafletCache>>,
     ) -> io::Result<Self> {
-        tracing::info!("BinaryIndexStore::load_from_root starting");
+        let v5 = super::index_root::IndexRootV5::decode(bytes).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("index root: expected IRB1 format: {e}"),
+            )
+        })?;
+        Self::load_from_root_v5(cs, &v5, cache_dir, leaflet_cache).await
+    }
+
+    /// Load from raw root bytes with default leaflet cache.
+    pub async fn load_from_root_bytes_default(
+        cs: Arc<dyn ContentStore>,
+        bytes: &[u8],
+        cache_dir: &Path,
+    ) -> io::Result<Self> {
+        let leaflet_cache_bytes: u64 = std::env::var("FLUREE_LEAFLET_CACHE_BYTES")
+            .ok()
+            .and_then(|s| u64::from_str(&s).ok())
+            .unwrap_or(8 * 1024 * 1024 * 1024);
+        let cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
+        Self::load_from_root_bytes(cs, bytes, cache_dir, cache).await
+    }
+
+    /// Load from a v5 binary root (`IRB1`).
+    ///
+    /// Default graph (g_id=0) routing is inline — leaf entries are embedded in
+    /// the root, saving a branch fetch. Named graphs still require a branch
+    /// CID fetch.
+    pub async fn load_from_root_v5(
+        cs: Arc<dyn ContentStore>,
+        root: &super::index_root::IndexRootV5,
+        cache_dir: &Path,
+        leaflet_cache: Option<Arc<LeafletCache>>,
+    ) -> io::Result<Self> {
+        tracing::info!("BinaryIndexStore::load_from_root_v5 starting");
 
         std::fs::create_dir_all(cache_dir)?;
 
-        // ---- Load predicate ids (inline in root; avoid redundant dict download) ----
+        // ---- Load predicate ids (inline in root) ----
         let (predicates, predicate_reverse) = {
             let mut dict = PredicateDict::new();
             let mut rev = HashMap::with_capacity(root.predicate_sids.len());
 
-            // Precompute prefix lookups (ns_code -> prefix)
             for (p_id, (ns_code, suffix)) in root.predicate_sids.iter().enumerate() {
                 let prefix = root.namespace_codes.get(ns_code).ok_or_else(|| {
                     io::Error::new(
@@ -645,7 +682,7 @@ impl BinaryIndexStore {
             "loaded string dict trees"
         );
 
-        // ---- Namespace codes (from root, not from storage) ----
+        // ---- Namespace codes ----
         let namespace_codes: HashMap<u16, String> = root
             .namespace_codes
             .iter()
@@ -662,19 +699,18 @@ impl BinaryIndexStore {
             "loaded namespace codes + built prefix trie"
         );
 
-        // ---- Load language tag dict (inline in v4 root) ----
-        // NOTE: `root.language_tags` may be empty (no tags). This is valid.
+        // ---- Language tags (inline) ----
         let mut language_tags = LanguageTagDict::new();
         for tag in &root.language_tags {
             language_tags.get_or_insert(Some(tag));
         }
         tracing::info!(tags = language_tags.len(), "loaded language dict");
 
-        // ---- Load datatype dict → pre-compute dt_sids (inline in v4 root) ----
+        // ---- Datatype dict → dt_sids (inline) ----
         if root.datatype_iris.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "index root missing datatype_iris (required in v4)",
+                "index root missing datatype_iris",
             ));
         }
         let dt_sids: Vec<Sid> = root
@@ -687,30 +723,27 @@ impl BinaryIndexStore {
             .collect();
         tracing::info!(datatypes = dt_sids.len(), "loaded datatype dict → dt_sids");
 
-        // ---- Load graphs dict (inline in v4 root) ----
-        // graphs_reverse stores dict_index (0-based). g_id = dict_index + 1.
+        // ---- Graphs dict (inline) ----
         if root.graph_iris.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "index root missing graph_iris (required in v4)",
+                "index root missing graph_iris",
             ));
         }
-        let graphs_reverse: HashMap<String, u32> = root
+        let graphs_reverse: HashMap<String, GraphId> = root
             .graph_iris
             .iter()
             .enumerate()
-            .map(|(id, iri)| (iri.to_string(), id as u32))
+            .map(|(id, iri)| (iri.to_string(), id as GraphId))
             .collect();
         tracing::info!(graphs = graphs_reverse.len(), "loaded graphs dict");
 
-        // ---- Load numbig arenas (cache-aware) ----
+        // ---- Numbig arenas (u32 keys, no string parsing) ----
         let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> = HashMap::new();
-        for (p_id_str, cid) in &root.dict_refs.numbig {
-            if let Ok(p_id) = p_id_str.parse::<u32>() {
-                let bytes = fetch_cached_bytes(cs.as_ref(), cid, cache_dir, "nba").await?;
-                let arena = super::numbig_dict::read_numbig_arena_from_bytes(&bytes)?;
-                numbig_forward.insert(p_id, arena);
-            }
+        for (p_id, cid) in &root.dict_refs.numbig {
+            let bytes = fetch_cached_bytes(cs.as_ref(), cid, cache_dir, "nba").await?;
+            let arena = super::numbig_dict::read_numbig_arena_from_bytes(&bytes)?;
+            numbig_forward.insert(*p_id, arena);
         }
         if !numbig_forward.is_empty() {
             tracing::info!(
@@ -720,27 +753,23 @@ impl BinaryIndexStore {
             );
         }
 
-        // ---- Load vector arenas (cache-aware) ----
+        // ---- Vector arenas (u32 keys, no string parsing) ----
         let mut vector_forward: HashMap<u32, super::vector_arena::VectorArena> = HashMap::new();
-        for (p_id_str, entry) in &root.dict_refs.vectors {
-            if let Ok(p_id) = p_id_str.parse::<u32>() {
-                // Fetch and parse manifest (small JSON)
-                let manifest_bytes =
-                    fetch_cached_bytes(cs.as_ref(), &entry.manifest, cache_dir, "vam").await?;
-                let manifest = super::vector_arena::read_vector_manifest(&manifest_bytes)?;
+        for entry in &root.dict_refs.vectors {
+            let manifest_bytes =
+                fetch_cached_bytes(cs.as_ref(), &entry.manifest, cache_dir, "vam").await?;
+            let manifest = super::vector_arena::read_vector_manifest(&manifest_bytes)?;
 
-                // Eagerly load all shards (like NumBig does)
-                let mut shards = Vec::with_capacity(entry.shards.len());
-                for shard_cid in &entry.shards {
-                    let shard_bytes =
-                        fetch_cached_bytes(cs.as_ref(), shard_cid, cache_dir, "vas").await?;
-                    let shard = super::vector_arena::read_vector_shard_from_bytes(&shard_bytes)?;
-                    shards.push(shard);
-                }
-
-                let arena = super::vector_arena::load_arena_from_shards(&manifest, shards)?;
-                vector_forward.insert(p_id, arena);
+            let mut shards = Vec::with_capacity(entry.shards.len());
+            for shard_cid in &entry.shards {
+                let shard_bytes =
+                    fetch_cached_bytes(cs.as_ref(), shard_cid, cache_dir, "vas").await?;
+                let shard = super::vector_arena::read_vector_shard_from_bytes(&shard_bytes)?;
+                shards.push(shard);
             }
+
+            let arena = super::vector_arena::load_arena_from_shards(&manifest, shards)?;
+            vector_forward.insert(entry.p_id, arena);
         }
         if !vector_forward.is_empty() {
             tracing::info!(
@@ -753,60 +782,93 @@ impl BinaryIndexStore {
             );
         }
 
-        // ---- Load per-graph, per-order branch manifests + leaves ----
-        let mut graphs: HashMap<u32, GraphIndex> = HashMap::new();
+        // ---- Build graph indexes ----
+        let mut graphs: HashMap<GraphId, GraphIndex> = HashMap::new();
 
-        for graph_entry in &root.graphs {
+        // Default graph (g_id=0): leaf entries are inline in root.
+        // No branch fetch required.
+        {
             let mut order_indexes = HashMap::new();
+            for inline_order in &root.default_graph_orders {
+                let mut branch = BranchManifest {
+                    leaves: inline_order.leaves.clone(),
+                };
 
-            for (order_name, order_refs) in &graph_entry.orders {
-                let order = RunSortOrder::from_dir_name(order_name).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("unknown sort order: {}", order_name),
-                    )
-                })?;
-
-                // Load branch manifest, initially resolving leaf paths against cache_dir.
-                let branch_bytes =
-                    fetch_cached_bytes(cs.as_ref(), &order_refs.branch, cache_dir, "fbr").await?;
-                let mut branch = read_branch_manifest_from_bytes(&branch_bytes, Some(cache_dir))?;
-
-                // Build content_hash → CID map for local path resolution.
-                let mut hash_to_cas: HashMap<String, &ContentId> =
-                    HashMap::with_capacity(order_refs.leaves.len());
-                for leaf_cid in &order_refs.leaves {
-                    hash_to_cas.insert(leaf_cid.digest_hex(), leaf_cid);
-                }
-
-                // Resolve leaf paths: for file storage, point directly at CAS files
-                // (no download needed). For remote storage, leave paths pointing at the cache
-                // location and download on demand at leaf-open time.
+                // Resolve leaf paths
                 let mut local_resolved = 0usize;
                 let mut remote_mapped = 0usize;
                 for leaf_entry in &mut branch.leaves {
-                    if let Some(cas_cid) = hash_to_cas.get(&leaf_entry.content_hash) {
-                        if let Some(local_path) = cs.resolve_local_path(cas_cid) {
-                            leaf_entry.path = local_path;
-                            local_resolved += 1;
-                            continue;
-                        }
+                    if let Some(local_path) = cs.resolve_local_path(&leaf_entry.leaf_cid) {
+                        leaf_entry.resolved_path = Some(local_path);
+                        local_resolved += 1;
+                    } else {
+                        leaf_entry.resolved_path =
+                            Some(cache_dir.join(leaf_entry.leaf_cid.to_string()));
+                        remote_mapped += 1;
                     }
-                    // Remote leaf: keep cache path (may not exist yet).
-                    remote_mapped += 1;
                 }
 
                 tracing::info!(
-                    g_id = graph_entry.g_id,
-                    order = order_name,
+                    g_id = 0u16,
+                    order = inline_order.order.dir_name(),
                     leaves = branch.leaves.len(),
                     local_resolved,
                     remote_mapped,
-                    "loaded branch manifest"
+                    "default graph: inline routing"
                 );
 
                 order_indexes.insert(
-                    order,
+                    inline_order.order,
+                    OrderIndex {
+                        branch,
+                        leaf_dir: cache_dir.to_path_buf(),
+                    },
+                );
+            }
+            if !order_indexes.is_empty() {
+                graphs.insert(
+                    0,
+                    GraphIndex {
+                        orders: order_indexes,
+                    },
+                );
+            }
+        }
+
+        // Named graphs: fetch branch CID → parse → leaf entries.
+        for ng in &root.named_graphs {
+            let mut order_indexes = HashMap::new();
+
+            for (order, branch_cid) in &ng.orders {
+                let branch_bytes =
+                    fetch_cached_bytes_cid(cs.as_ref(), branch_cid, cache_dir).await?;
+                let mut branch = read_branch_v2_from_bytes(&branch_bytes)?;
+
+                // Resolve leaf paths
+                let mut local_resolved = 0usize;
+                let mut remote_mapped = 0usize;
+                for leaf_entry in &mut branch.leaves {
+                    if let Some(local_path) = cs.resolve_local_path(&leaf_entry.leaf_cid) {
+                        leaf_entry.resolved_path = Some(local_path);
+                        local_resolved += 1;
+                    } else {
+                        leaf_entry.resolved_path =
+                            Some(cache_dir.join(leaf_entry.leaf_cid.to_string()));
+                        remote_mapped += 1;
+                    }
+                }
+
+                tracing::info!(
+                    g_id = ng.g_id,
+                    order = order.dir_name(),
+                    leaves = branch.leaves.len(),
+                    local_resolved,
+                    remote_mapped,
+                    "named graph: loaded branch manifest"
+                );
+
+                order_indexes.insert(
+                    *order,
                     OrderIndex {
                         branch,
                         leaf_dir: cache_dir.to_path_buf(),
@@ -815,14 +877,14 @@ impl BinaryIndexStore {
             }
 
             graphs.insert(
-                graph_entry.g_id,
+                ng.g_id,
                 GraphIndex {
                     orders: order_indexes,
                 },
             );
         }
 
-        // Log summary of loaded orders
+        // Log summary
         let all_orders = [
             RunSortOrder::Spot,
             RunSortOrder::Psot,
@@ -844,7 +906,7 @@ impl BinaryIndexStore {
             graphs = graphs.len(),
             max_t = root.index_t,
             base_t = root.base_t,
-            "BinaryIndexStore loaded from CAS root"
+            "BinaryIndexStore loaded from IRB1 root"
         );
 
         Ok(Self {
@@ -866,32 +928,10 @@ impl BinaryIndexStore {
             },
             graph_indexes: GraphIndexes { graphs },
             cas: Some(Arc::clone(&cs)),
-            index_leaf_cids: root
-                .graphs
-                .iter()
-                .flat_map(|g| g.orders.values().flat_map(|o| o.leaves.iter()))
-                .map(|cid| (cid.digest_hex(), cid.clone()))
-                .collect(),
             max_t: root.index_t,
             base_t: root.base_t,
             leaflet_cache,
         })
-    }
-
-    /// Load from a v3 index root with default leaflet cache.
-    ///
-    /// Uses 8 GiB cache (or `FLUREE_LEAFLET_CACHE_BYTES` env var).
-    pub async fn load_from_root_default(
-        cs: Arc<dyn ContentStore>,
-        root: &BinaryIndexRoot,
-        cache_dir: &Path,
-    ) -> io::Result<Self> {
-        let leaflet_cache_bytes: u64 = std::env::var("FLUREE_LEAFLET_CACHE_BYTES")
-            .ok()
-            .and_then(|s| u64::from_str(&s).ok())
-            .unwrap_or(8 * 1024 * 1024 * 1024);
-        let cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
-        Self::load_from_root(cs, root, cache_dir, cache).await
     }
 
     /// Log dictionary tree I/O stats (disk reads vs cache hits).
@@ -948,17 +988,20 @@ impl BinaryIndexStore {
         self.leaflet_cache = cache;
     }
 
-    /// Ensure an index leaf file (`.fli`) exists on local disk for this store.
+    /// Ensure an index leaf file exists on local disk for this store.
     ///
     /// For file-backed content stores, leaf paths resolve directly and no fetch is needed.
     /// For remote stores (e.g., S3), this lazily downloads the leaf by CID the first time
     /// a cursor attempts to open it.
-    pub fn ensure_index_leaf_cached(&self, content_hash: &str, leaf_path: &Path) -> io::Result<()> {
+    pub fn ensure_index_leaf_cached(
+        &self,
+        leaf_cid: &ContentId,
+        leaf_path: &Path,
+    ) -> io::Result<()> {
         if leaf_path.exists() {
             return Ok(());
         }
         let Some(cs) = &self.cas else {
-            // No CAS handle available (non-root load path). Treat as missing.
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
@@ -967,17 +1010,12 @@ impl BinaryIndexStore {
                 ),
             ));
         };
-        let cid = self.index_leaf_cids.get(content_hash).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("no CID for index leaf {}", content_hash),
-            )
-        })?;
 
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| io::Error::other("index leaf download requires a Tokio runtime"))?;
         let cs = Arc::clone(cs);
-        let cid = cid.clone();
+        let cid = leaf_cid.clone();
+        let leaf_path = leaf_path.to_path_buf();
         let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
         std::thread::spawn(move || {
             let res = handle
@@ -993,7 +1031,8 @@ impl BinaryIndexStore {
         let cache_dir = leaf_path
             .parent()
             .ok_or_else(|| io::Error::other("leaf path has no parent dir"))?;
-        cache_bytes_to_file(cache_dir, content_hash, "fli", &bytes)?;
+        std::fs::create_dir_all(cache_dir)?;
+        std::fs::write(&leaf_path, &bytes)?;
         Ok(())
     }
 
@@ -1186,7 +1225,7 @@ impl BinaryIndexStore {
         p: Option<&Sid>,
         o: Option<&FlakeValue>,
         _order: RunSortOrder,
-        g_id: u32,
+        g_id: GraphId,
     ) -> io::Result<Option<(RunRecord, RunRecord)>> {
         // Translate bound components to integer IDs
         let s_id = match s {
@@ -1222,7 +1261,7 @@ impl BinaryIndexStore {
             .unwrap_or((ObjKind::MAX.as_u8(), u64::MAX));
 
         let min_key = RunRecord {
-            g_id: g_id as u16,
+            g_id,
             s_id: SubjectId::from_u64(s_id.unwrap_or(0)),
             p_id: p_id.unwrap_or(0),
             dt: 0,
@@ -1235,7 +1274,7 @@ impl BinaryIndexStore {
         };
 
         let max_key = RunRecord {
-            g_id: g_id as u16,
+            g_id,
             s_id: SubjectId::from_u64(s_id.unwrap_or(u64::MAX)),
             p_id: p_id.unwrap_or(u32::MAX),
             dt: u16::MAX,
@@ -1353,12 +1392,12 @@ impl BinaryIndexStore {
     // ========================================================================
 
     /// Get the SPOT branch manifest for a graph (backward-compatible shorthand).
-    pub fn branch(&self, g_id: u32) -> Option<&BranchManifest> {
+    pub fn branch(&self, g_id: GraphId) -> Option<&BranchManifest> {
         self.branch_for_order(g_id, RunSortOrder::Spot)
     }
 
     /// Get the branch manifest for a graph and sort order.
-    pub fn branch_for_order(&self, g_id: u32, order: RunSortOrder) -> Option<&BranchManifest> {
+    pub fn branch_for_order(&self, g_id: GraphId, order: RunSortOrder) -> Option<&BranchManifest> {
         self.graph_indexes
             .graphs
             .get(&g_id)
@@ -1367,12 +1406,12 @@ impl BinaryIndexStore {
     }
 
     /// Get the SPOT leaf directory for a graph (backward-compatible shorthand).
-    pub fn leaf_dir(&self, g_id: u32) -> Option<&Path> {
+    pub fn leaf_dir(&self, g_id: GraphId) -> Option<&Path> {
         self.leaf_dir_for_order(g_id, RunSortOrder::Spot)
     }
 
     /// Get the leaf directory for a graph and sort order.
-    pub fn leaf_dir_for_order(&self, g_id: u32, order: RunSortOrder) -> Option<&Path> {
+    pub fn leaf_dir_for_order(&self, g_id: GraphId, order: RunSortOrder) -> Option<&Path> {
         self.graph_indexes
             .graphs
             .get(&g_id)
@@ -1381,7 +1420,7 @@ impl BinaryIndexStore {
     }
 
     /// Check if a given sort order is available for a graph.
-    pub fn has_order(&self, g_id: u32, order: RunSortOrder) -> bool {
+    pub fn has_order(&self, g_id: GraphId, order: RunSortOrder) -> bool {
         self.graph_indexes
             .graphs
             .get(&g_id)
@@ -1389,7 +1428,7 @@ impl BinaryIndexStore {
     }
 
     /// Get the available sort orders for a graph.
-    pub fn available_orders(&self, g_id: u32) -> Vec<RunSortOrder> {
+    pub fn available_orders(&self, g_id: GraphId) -> Vec<RunSortOrder> {
         self.graph_indexes
             .graphs
             .get(&g_id)
@@ -1402,7 +1441,7 @@ impl BinaryIndexStore {
     }
 
     /// Get the set of graph IDs available.
-    pub fn graph_ids(&self) -> Vec<u32> {
+    pub fn graph_ids(&self) -> Vec<GraphId> {
         let mut ids: Vec<_> = self.graph_indexes.graphs.keys().copied().collect();
         ids.sort();
         ids
@@ -1412,7 +1451,7 @@ impl BinaryIndexStore {
     ///
     /// Graph IDs: 0 = default graph, 1 = txn-meta, 2+ = user-defined.
     /// Returns `None` if the graph IRI is not in the dictionary.
-    pub fn graph_id_for_iri(&self, iri: &str) -> Option<u32> {
+    pub fn graph_id_for_iri(&self, iri: &str) -> Option<GraphId> {
         // graphs_reverse stores dict_index (0-based), g_id = dict_index + 1
         self.dicts.graphs_reverse.get(iri).map(|&idx| idx + 1)
     }
@@ -1908,7 +1947,7 @@ impl BinaryIndexStore {
     /// Query all flakes for a subject in a graph (using SPOT index).
     ///
     /// Returns Flakes in SPOT order.
-    pub fn query_subject_flakes(&self, g_id: u32, s_id: u64) -> io::Result<Vec<Flake>> {
+    pub fn query_subject_flakes(&self, g_id: GraphId, s_id: u64) -> io::Result<Vec<Flake>> {
         self.query_subject_predicate_flakes(g_id, s_id, None)
     }
 
@@ -1916,7 +1955,7 @@ impl BinaryIndexStore {
     /// Uses the SPOT index.
     pub fn query_subject_predicate_flakes(
         &self,
-        g_id: u32,
+        g_id: GraphId,
         s_id: u64,
         p_id: Option<u32>,
     ) -> io::Result<Vec<Flake>> {
@@ -1936,8 +1975,13 @@ impl BinaryIndexStore {
 
         for leaf_idx in leaf_range {
             let leaf_entry = &branch.leaves[leaf_idx];
-            // leaf_entry.path is already fully resolved by the branch reader
-            let leaf_data = std::fs::read(&leaf_entry.path)?;
+            let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("leaf {} has no resolved path", leaf_entry.leaf_cid),
+                )
+            })?;
+            let leaf_data = std::fs::read(leaf_path)?;
             let header = read_leaf_header(&leaf_data)?;
 
             for dir_entry in &header.leaflet_dir {
@@ -2158,6 +2202,28 @@ async fn fetch_cached_bytes(
     }
     let bytes = cs.get(id).await.map_err(storage_to_io_error)?;
     cache_bytes_to_file(cache_dir, &hash, ext, &bytes)?;
+    Ok(bytes)
+}
+
+/// Fetch artifact bytes by CID using CID-string filenames (no extension).
+///
+/// Like `fetch_cached_bytes` but uses `cid.to_string()` as the cache filename
+/// instead of `{hash}.{ext}`. Preferred for CID-native artifacts (branches, leaves).
+async fn fetch_cached_bytes_cid(
+    cs: &dyn ContentStore,
+    id: &ContentId,
+    cache_dir: &Path,
+) -> io::Result<Vec<u8>> {
+    if let Some(local_path) = cs.resolve_local_path(id) {
+        return std::fs::read(&local_path);
+    }
+    let cached = cache_dir.join(id.to_string());
+    if cached.exists() {
+        return std::fs::read(&cached);
+    }
+    let bytes = cs.get(id).await.map_err(storage_to_io_error)?;
+    std::fs::create_dir_all(cache_dir)?;
+    std::fs::write(&cached, &bytes)?;
     Ok(bytes)
 }
 

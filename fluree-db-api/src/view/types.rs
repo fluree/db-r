@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use fluree_db_core::dict_novelty::DictNovelty;
+use fluree_db_core::ids::GraphId;
 use fluree_db_core::{Db, NoOverlay, OverlayProvider};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
@@ -89,7 +90,7 @@ pub struct FlureeView {
     ///
     /// Note: This is *not* the same thing as a SPARQL "named graph IRI" — it is
     /// the internal numeric graph selector used by the binary indexes.
-    pub graph_id: u32,
+    pub graph_id: GraphId,
 
     // ========================================================================
     // Novelty (for policy stats and time resolution)
@@ -367,7 +368,7 @@ impl FlureeView {
     /// internal graph selector used by binary scans. Callers that rely on
     /// `range_with_overlay()` must ensure the underlying `Db.range_provider`
     /// is scoped appropriately for the chosen graph.
-    pub fn with_graph_id(mut self, graph_id: u32) -> Self {
+    pub fn with_graph_id(mut self, graph_id: GraphId) -> Self {
         self.graph_id = graph_id;
         self
     }

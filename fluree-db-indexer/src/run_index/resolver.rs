@@ -118,7 +118,7 @@ impl CommitResolver {
                     raw_op.dt_name,
                 );
                 hook.on_record(&crate::stats::StatsRecord {
-                    g_id: record.g_id as u32,
+                    g_id: record.g_id,
                     p_id: record.p_id,
                     s_id: record.s_id.as_u64(),
                     dt,

@@ -24,6 +24,7 @@ use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::vec_bi_dict::VecBiDict;
+use fluree_db_core::GraphId;
 use fluree_db_core::ListIndex;
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::HashMap;
@@ -47,7 +48,7 @@ pub struct DictOverlay {
     ext_predicates: VecBiDict<u32>,
 
     // -- Ephemeral graph extensions --
-    ext_graphs: VecBiDict<u32>,
+    ext_graphs: VecBiDict<GraphId>,
 
     // -- Ephemeral language tag extensions --
     ext_lang_tags: VecBiDict<u16>,
@@ -97,7 +98,7 @@ impl DictOverlay {
     /// Create a new overlay wrapping the given store and DictNovelty.
     pub fn new(store: Arc<BinaryIndexStore>, dict_novelty: Arc<DictNovelty>) -> Self {
         let base_p_count = store.predicate_count();
-        let base_g_count = store.graph_ids().len() as u32;
+        let base_g_count = store.graph_ids().len() as GraphId;
         let base_lang_count = store.language_tag_count();
         let base_str_count = store.string_count();
 
@@ -384,12 +385,12 @@ impl DictOverlay {
     // ========================================================================
 
     /// Look up or assign a graph ID.
-    pub fn assign_graph_id(&mut self, iri: &str) -> u32 {
+    pub fn assign_graph_id(&mut self, iri: &str) -> GraphId {
         self.ext_graphs.assign_or_lookup(iri)
     }
 
     /// Resolve a graph ID back to an IRI.
-    pub fn resolve_graph_iri(&self, id: u32) -> Option<&str> {
+    pub fn resolve_graph_iri(&self, id: GraphId) -> Option<&str> {
         if id < self.ext_graphs.base_id() {
             None // Persisted graph IRIs not stored on BinaryIndexStore currently
         } else {

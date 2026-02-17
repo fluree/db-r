@@ -14,7 +14,7 @@
 //!    write sorted run files
 //! 5. **Build indexes** — `build_all_indexes()` from completed run files
 //! 6. **CAS upload** — dicts + indexes uploaded to content-addressed storage
-//! 7. **V4 root** — `BinaryIndexRoot::from_cas_artifacts()` written to CAS
+//! 7. **IRB1 root** — `IndexRootV5` encoded and written to CAS
 //! 8. **Publish** — `nameservice.publish_index_allow_equal()`
 //! 9. **Cleanup** — remove tmp session directory (only on full success)
 //!
@@ -2113,8 +2113,8 @@ where
 {
     use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
     use fluree_db_indexer::run_index::{
-        build_all_indexes, build_spot_from_sorted_commits, BinaryIndexRoot, CasArtifactsConfig,
-        ClassBitsetTable, PrefixTrie, RunSortOrder, SortedCommitInput, SpotFromCommitsConfig,
+        build_all_indexes, build_spot_from_sorted_commits, ClassBitsetTable, IndexRootV5,
+        PrefixTrie, RunSortOrder, SortedCommitInput, SpotFromCommitsConfig,
     };
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
 
@@ -2308,7 +2308,6 @@ where
     let remap_remap_dir = remap_dir.clone();
     let sorted_commit_infos = input.sorted_commit_infos;
     let dt_tags = input.dt_tags;
-    let dt_tags_for_stats = dt_tags.clone();
     let collect_id_stats = input.collect_id_stats;
     let run_budget_mb = config.effective_run_budget_mb();
     let worker_cap = config.effective_heavy_workers();
@@ -2549,7 +2548,7 @@ where
 
     // Upload index segments to CAS (needs build_results).
     // Dict upload may still be running — we overlap with it.
-    let graph_refs = upload_indexes_to_cas(storage, alias, &build_results)
+    let uploaded_indexes = upload_indexes_to_cas(storage, alias, &build_results)
         .await
         .map_err(|e| ImportError::Upload(e.to_string()))?;
 
@@ -2561,7 +2560,8 @@ where
 
     tracing::info!(
         elapsed = ?build_start.elapsed(),
-        graphs = graph_refs.len(),
+        default_orders = uploaded_indexes.default_graph_orders.len(),
+        named_graphs = uploaded_indexes.named_graphs.len(),
         "index build + CAS upload complete (overlapped)"
     );
 
@@ -2585,13 +2585,13 @@ where
         Vec::new()
     };
 
-    // ---- Build stats JSON ----
+    // ---- Build IndexStats directly ----
     // Preferred: ID-based stats collected during commit resolution (per-graph property
     // stats with datatype counts + HLL NDV). Includes HLL sketch persistence so
     // incremental index refresh can merge registers. Fallback: SPOT build result for
     // per-graph flake counts only.
     tracing::info!("post-upload: predicate SIDs built, starting stats");
-    let (stats_json, sketch_ref, summary) = if let Some(hook) = stats_hook {
+    let (index_stats, sketch_ref, summary) = if let Some(hook) = stats_hook {
         // Persist HLL sketches BEFORE finalize consumes the hook.
         tracing::info!("post-upload: serializing HLL sketch blob");
         let sketch_blob = fluree_db_indexer::stats::HllSketchBlob::from_properties(
@@ -2609,109 +2609,58 @@ where
             ContentId::from_hex_digest(CODEC_FLUREE_STATS_SKETCH, &sketch_write.content_hash)
                 .expect("valid SHA-256 hash from storage write");
 
-        // Finalize with proper HLL merge for aggregate properties.
-        // When class tracking is enabled, this also returns class counts + class→property presence.
         tracing::info!(
             "post-upload: HLL sketch written, calling finalize_with_aggregate_properties"
         );
-        // Class counts + class→property presence from IdStatsHook are superseded
-        // by SpotClassStats (collected inline during SPOT merge). Discard them.
         let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
             hook.finalize_with_aggregate_properties();
-        tracing::info!("post-upload: finalize complete, building stats JSON");
+        tracing::info!("post-upload: finalize complete, building IndexStats");
 
-        // Per-graph stats (p_id-keyed, for StatsView.graph_properties)
-        let graphs_json: Vec<serde_json::Value> = id_result
-            .graphs
-            .iter()
-            .map(|g| {
-                let props_json: Vec<serde_json::Value> = g
-                    .properties
-                    .iter()
-                    .map(|p| {
-                        serde_json::json!({
-                            "p_id": p.p_id,
-                            "count": p.count,
-                            "ndv_values": p.ndv_values,
-                            "ndv_subjects": p.ndv_subjects,
-                            "last_modified_t": p.last_modified_t,
-                            "datatypes": p.datatypes,
-                        })
-                    })
-                    .collect();
+        // Per-graph stats (already the correct type).
+        let graphs = id_result.graphs;
 
-                serde_json::json!({
-                    "g_id": g.g_id,
-                    "flakes": g.flakes,
-                    "size": g.size,
-                    "properties": props_json,
-                })
-            })
-            .collect();
-
-        // Top-level aggregate properties: use agg_props directly (proper HLL union).
-        // Replaces incorrect max()-based manual aggregation.
-        let mut properties_json: Vec<serde_json::Value> = agg_props
+        // Aggregate properties: convert from p_id-keyed to SID-keyed.
+        let mut properties: Vec<fluree_db_core::index_stats::PropertyStatEntry> = agg_props
             .iter()
             .filter_map(|p| {
                 let sid = predicate_sids.get(p.p_id as usize)?;
-                Some(serde_json::json!({
-                    "sid": [sid.0, &sid.1],
-                    "count": p.count,
-                    "ndv_values": p.ndv_values,
-                    "ndv_subjects": p.ndv_subjects,
-                    "last_modified_t": p.last_modified_t,
-                    "datatypes": p.datatypes,
-                }))
+                Some(fluree_db_core::index_stats::PropertyStatEntry {
+                    sid: (sid.0, sid.1.clone()),
+                    count: p.count,
+                    ndv_values: p.ndv_values,
+                    ndv_subjects: p.ndv_subjects,
+                    last_modified_t: p.last_modified_t,
+                    datatypes: p.datatypes.clone(),
+                })
             })
             .collect();
-        properties_json.sort_by(|a, b| {
-            let a_code = a
-                .get("sid")
-                .and_then(|v| v.get(0))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let b_code = b
-                .get("sid")
-                .and_then(|v| v.get(0))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            a_code.cmp(&b_code).then_with(|| {
-                let a_name = a
-                    .get("sid")
-                    .and_then(|v| v.get(1))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let b_name = b
-                    .get("sid")
-                    .and_then(|v| v.get(1))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                a_name.cmp(b_name)
-            })
-        });
+        properties.sort_by(|a, b| a.sid.0.cmp(&b.sid.0).then_with(|| a.sid.1.cmp(&b.sid.1)));
 
-        tracing::info!(
-            property_stats = properties_json.len(),
-            graph_count = graphs_json.len(),
-            total_flakes = id_result.total_flakes,
-            "stats collected from IdStatsHook"
-        );
-
-        // Class stats from SPOT merge: class → count + property → datatype (count).
-        // Collected inline during the SPOT k-way merge (zero extra I/O).
-        let classes_json: Vec<serde_json::Value> = if let Some(ref cs) = spot_class_stats {
-            fluree_db_indexer::stats::build_class_stats_json(
+        // Class stats from SPOT merge.
+        let classes = if let Some(ref cs) = spot_class_stats {
+            let entries = fluree_db_indexer::stats::build_class_stat_entries(
                 cs,
                 &predicate_sids,
-                &dt_tags_for_stats,
                 input.run_dir,
                 input.namespace_codes,
             )
-            .map_err(ImportError::Io)?
+            .map_err(ImportError::Io)?;
+            if entries.is_empty() {
+                None
+            } else {
+                Some(entries)
+            }
         } else {
-            Vec::new()
+            None
         };
+
+        tracing::info!(
+            property_stats = properties.len(),
+            graph_count = graphs.len(),
+            class_count = classes.as_ref().map_or(0, |c| c.len()),
+            total_flakes = id_result.total_flakes,
+            "stats collected from IdStatsHook"
+        );
 
         // Build CLI display summary from already-computed stats.
         let summary = build_import_summary(
@@ -2723,17 +2672,19 @@ where
             input.prefix_map,
         );
 
-        (
-            serde_json::json!({
-                "flakes": id_result.total_flakes,
-                "size": 0,
-                "properties": properties_json,
-                "graphs": graphs_json,
-                "classes": classes_json,
-            }),
-            Some(sketch_cid),
-            Some(summary),
-        )
+        let stats = fluree_db_core::index_stats::IndexStats {
+            flakes: id_result.total_flakes,
+            size: 0,
+            properties: if properties.is_empty() {
+                None
+            } else {
+                Some(properties)
+            },
+            classes,
+            graphs: Some(graphs),
+        };
+
+        (stats, Some(sketch_cid), Some(summary))
     } else {
         // Fallback: flake counts only (no per-property / datatype breakdown).
         let (_, spot_result) = build_results
@@ -2741,72 +2692,103 @@ where
             .find(|(order, _)| *order == RunSortOrder::Spot)
             .expect("SPOT index must always be present in build results");
 
-        let graph_stats: Vec<serde_json::Value> = spot_result
+        let graphs: Vec<fluree_db_core::index_stats::GraphStatsEntry> = spot_result
             .graphs
             .iter()
-            .map(|g| {
-                serde_json::json!({
-                    "g_id": g.g_id,
-                    "flakes": g.total_rows,
-                    "size": 0
-                })
+            .map(|g| fluree_db_core::index_stats::GraphStatsEntry {
+                g_id: g.g_id,
+                flakes: g.total_rows,
+                size: 0,
+                properties: Vec::new(),
             })
             .collect();
 
         let total_flakes: u64 = spot_result.graphs.iter().map(|g| g.total_rows).sum();
 
-        (
-            serde_json::json!({
-                "flakes": total_flakes,
-                "size": 0,
-                "graphs": graph_stats
-            }),
-            None,
-            None,
-        )
+        let stats = fluree_db_core::index_stats::IndexStats {
+            flakes: total_flakes,
+            size: 0,
+            properties: None,
+            classes: None,
+            graphs: Some(graphs),
+        };
+
+        (stats, None, None)
     };
 
-    // ---- Phase 5: Build V4 root ----
-    tracing::info!("post-upload: stats JSON built, constructing V4 root");
-    let mut root = BinaryIndexRoot::from_cas_artifacts(CasArtifactsConfig {
-        ledger_id: alias,
+    // ---- Phase 5: Build IndexRootV5 (binary IRB1) ----
+    tracing::info!("post-upload: stats built, constructing IRB1 root");
+
+    // Convert DictRefs (v4, string-keyed maps) → DictRefsV5 (u32 vecs).
+    let dict_refs_v5 = {
+        let dr = uploaded_dicts.dict_refs;
+        use fluree_db_indexer::run_index::{DictRefsV5, VectorDictRefV5};
+        let numbig: Vec<(u32, ContentId)> = dr
+            .numbig
+            .iter()
+            .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
+            .collect();
+        let vectors: Vec<VectorDictRefV5> = dr
+            .vectors
+            .iter()
+            .map(|(k, v)| VectorDictRefV5 {
+                p_id: k.parse::<u32>().unwrap_or(0),
+                manifest: v.manifest.clone(),
+                shards: v.shards.clone(),
+            })
+            .collect();
+        DictRefsV5 {
+            subject_forward: dr.subject_forward,
+            subject_reverse: dr.subject_reverse,
+            string_forward: dr.string_forward,
+            string_reverse: dr.string_reverse,
+            numbig,
+            vectors,
+        }
+    };
+
+    let ns_codes: std::collections::BTreeMap<u16, String> = input
+        .namespace_codes
+        .iter()
+        .map(|(&k, v)| (k, v.clone()))
+        .collect();
+
+    let root = IndexRootV5 {
+        ledger_id: alias.to_string(),
         index_t: input.final_t,
         base_t: 0, // fresh import
-        predicate_sids,
-        namespace_codes: input.namespace_codes,
         subject_id_encoding: uploaded_dicts.subject_id_encoding,
-        dict_refs: uploaded_dicts.dict_refs,
-        graph_refs,
-        stats: Some(stats_json),
-        schema: None,
-        prev_index: None, // fresh import
-        garbage: None,    // fresh import
-        sketch_ref,       // persisted HLL sketch (or None if stats disabled)
-        subject_watermarks: uploaded_dicts.subject_watermarks,
-        string_watermark: uploaded_dicts.string_watermark,
+        namespace_codes: ns_codes,
+        predicate_sids,
         graph_iris: uploaded_dicts.graph_iris,
         datatype_iris: uploaded_dicts.datatype_iris,
         language_tags: uploaded_dicts.language_tags,
-    });
+        dict_refs: dict_refs_v5,
+        subject_watermarks: uploaded_dicts.subject_watermarks,
+        string_watermark: uploaded_dicts.string_watermark,
+        total_commit_size,
+        total_asserts,
+        total_retracts,
+        default_graph_orders: uploaded_indexes.default_graph_orders,
+        named_graphs: uploaded_indexes.named_graphs,
+        stats: Some(index_stats),
+        schema: None,
+        prev_index: None, // fresh import
+        garbage: None,    // fresh import
+        sketch_ref,
+    };
 
-    // Populate cumulative commit statistics (optional planner telemetry).
-    root.total_commit_size = total_commit_size;
-    root.total_asserts = total_asserts;
-    root.total_retracts = total_retracts;
-
-    tracing::info!("post-upload: V4 root constructed, serializing to JSON");
-    let root_bytes = root
-        .to_json_bytes()
-        .map_err(|e| ImportError::Upload(format!("serialize V4 root: {}", e)))?;
+    tracing::info!("post-upload: IRB1 root constructed, encoding binary");
+    let root_bytes = root.encode();
     tracing::info!(
         root_bytes = root_bytes.len(),
-        "post-upload: root serialized, writing to CAS"
+        "post-upload: root encoded, writing to CAS"
     );
 
     let write_result = storage
         .content_write_bytes(ContentKind::IndexRoot, alias, &root_bytes)
         .await
-        .map_err(|e| ImportError::Upload(format!("write V4 root: {}", e)))?;
+        .map_err(|e| ImportError::Upload(format!("write IRB1 root: {}", e)))?;
 
     // Derive ContentId from the root's content hash
     let root_id = ContentId::from_hex_digest(CODEC_FLUREE_INDEX_ROOT, &write_result.content_hash)
@@ -2815,7 +2797,7 @@ where
     tracing::info!(
         root_id = %root_id,
         index_t = input.final_t,
-        "V4 index root written to CAS"
+        "IRB1 index root written to CAS"
     );
 
     // ---- Phase 6: Publish ----

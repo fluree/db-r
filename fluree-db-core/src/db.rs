@@ -11,9 +11,6 @@ use crate::index_stats::IndexStats;
 use crate::namespaces::default_namespace_codes;
 use crate::range_provider::RangeProvider;
 use crate::schema_hierarchy::SchemaHierarchy;
-use crate::serde::json::{
-    raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
-};
 use crate::sid::Sid;
 use crate::storage::StorageRead;
 use once_cell::sync::OnceCell;
@@ -156,48 +153,243 @@ impl Db {
         }
     }
 
-    /// Extract metadata from a v3 BinaryIndexRoot JSON blob.
-    pub fn from_root_json(root: &serde_json::Value) -> Result<Self> {
-        let ledger_id = root["ledger_id"]
-            .as_str()
-            .ok_or_else(|| Error::invalid_index("root missing ledger_id"))?
-            .to_string();
-        let t = root["index_t"]
-            .as_i64()
-            .ok_or_else(|| Error::invalid_index("root missing index_t"))?;
+    /// Extract metadata from raw index root bytes (IRB1 binary format).
+    pub fn from_root_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 4 || &bytes[0..4] != b"IRB1" {
+            return Err(Error::invalid_index(
+                "index root: expected IRB1 magic bytes",
+            ));
+        }
+        if bytes.len() < 24 {
+            return Err(Error::invalid_index("IRB1: truncated root (< 24 bytes)"));
+        }
+        Self::from_irb1_header(bytes)
+    }
 
-        let mut namespace_codes = HashMap::new();
-        if let Some(obj) = root["namespace_codes"].as_object() {
-            for (k, val) in obj {
-                if let (Ok(code), Some(prefix)) = (k.parse::<u16>(), val.as_str()) {
-                    namespace_codes.insert(code, prefix.to_string());
+    /// Parse an IRB1 binary root to extract all metadata fields.
+    ///
+    /// Skips graph routing sections (leaf entries, branch CIDs) and decodes
+    /// the optional stats/schema sections using `stats_wire` decoders.
+    fn from_irb1_header(data: &[u8]) -> Result<Self> {
+        fn read_u8(data: &[u8], pos: &mut usize) -> Result<u8> {
+            if *pos >= data.len() {
+                return Err(Error::invalid_index("IRB1: unexpected EOF (u8)"));
+            }
+            let v = data[*pos];
+            *pos += 1;
+            Ok(v)
+        }
+        fn read_u16(data: &[u8], pos: &mut usize) -> Result<u16> {
+            if *pos + 2 > data.len() {
+                return Err(Error::invalid_index("IRB1: unexpected EOF (u16)"));
+            }
+            let v = u16::from_le_bytes([data[*pos], data[*pos + 1]]);
+            *pos += 2;
+            Ok(v)
+        }
+        fn read_u32(data: &[u8], pos: &mut usize) -> Result<u32> {
+            if *pos + 4 > data.len() {
+                return Err(Error::invalid_index("IRB1: unexpected EOF (u32)"));
+            }
+            let v = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap());
+            *pos += 4;
+            Ok(v)
+        }
+        fn read_u64(data: &[u8], pos: &mut usize) -> Result<u64> {
+            if *pos + 8 > data.len() {
+                return Err(Error::invalid_index("IRB1: unexpected EOF (u64)"));
+            }
+            let v = u64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
+            *pos += 8;
+            Ok(v)
+        }
+        fn read_i64(data: &[u8], pos: &mut usize) -> Result<i64> {
+            if *pos + 8 > data.len() {
+                return Err(Error::invalid_index("IRB1: unexpected EOF (i64)"));
+            }
+            let v = i64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
+            *pos += 8;
+            Ok(v)
+        }
+        fn read_str(data: &[u8], pos: &mut usize) -> Result<String> {
+            let len = read_u16(data, pos)? as usize;
+            if *pos + len > data.len() {
+                return Err(Error::invalid_index("IRB1: string overflow"));
+            }
+            let s = std::str::from_utf8(&data[*pos..*pos + len])
+                .map_err(|e| Error::invalid_index(format!("IRB1: invalid UTF-8: {e}")))?;
+            *pos += len;
+            Ok(s.to_string())
+        }
+        fn skip_cid(data: &[u8], pos: &mut usize) -> Result<()> {
+            let len = read_u16(data, pos)? as usize;
+            if *pos + len > data.len() {
+                return Err(Error::invalid_index("IRB1: CID overflow"));
+            }
+            *pos += len;
+            Ok(())
+        }
+        fn skip_dict_tree_refs(data: &[u8], pos: &mut usize) -> Result<()> {
+            // branch CID + leaf_count:u32 + leaf CIDs
+            skip_cid(data, pos)?;
+            let leaf_count = read_u32(data, pos)? as usize;
+            for _ in 0..leaf_count {
+                skip_cid(data, pos)?;
+            }
+            Ok(())
+        }
+        fn skip_string_array(data: &[u8], pos: &mut usize) -> Result<()> {
+            let count = read_u16(data, pos)? as usize;
+            for _ in 0..count {
+                let len = read_u16(data, pos)? as usize;
+                if *pos + len > data.len() {
+                    return Err(Error::invalid_index("IRB1: string array overflow"));
                 }
+                *pos += len;
+            }
+            Ok(())
+        }
+
+        // RunRecord wire size: s_id(8)+o_key(8)+p_id(4)+t(4)+i(4)+dt(2)+lang(2)+o_kind(1)+op(1) = 34
+        const RECORD_WIRE_SIZE: usize = 34;
+        const FLAG_HAS_STATS: u8 = 1 << 0;
+        const FLAG_HAS_SCHEMA: u8 = 1 << 1;
+
+        // Validate version (caller already checked len >= 24 and magic)
+        let version = data[4];
+        if version != 1 {
+            return Err(Error::invalid_index(format!(
+                "IRB1: unsupported version {version}"
+            )));
+        }
+
+        let flags = data[5];
+        let mut pos = 8; // skip magic(4) + version(1) + flags(1) + pad(2)
+        let index_t = read_i64(data, &mut pos)?;
+        let _base_t = read_i64(data, &mut pos)?;
+
+        // Ledger ID
+        let ledger_id = read_str(data, &mut pos)?;
+
+        // Subject ID encoding (1 byte, skip)
+        pos += 1;
+
+        // Namespace codes
+        let ns_count = read_u16(data, &mut pos)? as usize;
+        let mut namespace_codes = HashMap::with_capacity(ns_count);
+        for _ in 0..ns_count {
+            let ns_code = read_u16(data, &mut pos)?;
+            let prefix = read_str(data, &mut pos)?;
+            namespace_codes.insert(ns_code, prefix);
+        }
+
+        // Predicate SIDs (skip)
+        let pred_count = read_u32(data, &mut pos)? as usize;
+        for _ in 0..pred_count {
+            let _ns = read_u16(data, &mut pos)?;
+            let _suffix = read_str(data, &mut pos)?;
+        }
+
+        // Small dict inlines: graph_iris, datatype_iris, language_tags (skip all)
+        skip_string_array(data, &mut pos)?;
+        skip_string_array(data, &mut pos)?;
+        skip_string_array(data, &mut pos)?;
+
+        // Dict refs: 4 trees + numbig + vectors (skip all)
+        skip_dict_tree_refs(data, &mut pos)?; // subject_forward
+        skip_dict_tree_refs(data, &mut pos)?; // subject_reverse
+        skip_dict_tree_refs(data, &mut pos)?; // string_forward
+        skip_dict_tree_refs(data, &mut pos)?; // string_reverse
+        let numbig_count = read_u16(data, &mut pos)? as usize;
+        for _ in 0..numbig_count {
+            let _p_id = read_u32(data, &mut pos)?;
+            skip_cid(data, &mut pos)?;
+        }
+        let vector_count = read_u16(data, &mut pos)? as usize;
+        for _ in 0..vector_count {
+            let _p_id = read_u32(data, &mut pos)?;
+            skip_cid(data, &mut pos)?; // manifest
+            let shard_count = read_u16(data, &mut pos)? as usize;
+            for _ in 0..shard_count {
+                skip_cid(data, &mut pos)?;
             }
         }
 
-        let stats = root
-            .get("stats")
-            .and_then(|s| serde_json::from_value::<RawDbRootStats>(s.clone()).ok())
-            .and_then(|ref raw| raw_stats_to_index_stats(raw));
-        let schema = root
-            .get("schema")
-            .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
-            .map(|ref raw| raw_schema_to_index_schema(raw));
+        // Watermarks
+        let wm_count = read_u16(data, &mut pos)? as usize;
+        let mut subject_watermarks = Vec::with_capacity(wm_count);
+        for _ in 0..wm_count {
+            subject_watermarks.push(read_u64(data, &mut pos)?);
+        }
+        let string_watermark = read_u32(data, &mut pos)?;
 
-        // Dictionary watermarks (forwards-safe: missing fields default to empty/0)
-        let subject_watermarks = root
-            .get("subject_watermarks")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect())
-            .unwrap_or_default();
-        let string_watermark = root
-            .get("string_watermark")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        // Cumulative commit stats (3x u64, skip)
+        let _total_commit_size = read_u64(data, &mut pos)?;
+        let _total_asserts = read_u64(data, &mut pos)?;
+        let _total_retracts = read_u64(data, &mut pos)?;
+
+        // Default graph routing (inline leaf entries, skip)
+        let default_order_count = read_u8(data, &mut pos)? as usize;
+        for _ in 0..default_order_count {
+            let _order_id = read_u8(data, &mut pos)?;
+            let leaf_count = read_u32(data, &mut pos)? as usize;
+            for _ in 0..leaf_count {
+                // first_key + last_key (each RECORD_WIRE_SIZE) + row_count(u64) + leaf_cid
+                let skip = RECORD_WIRE_SIZE * 2 + 8;
+                if pos + skip > data.len() {
+                    return Err(Error::invalid_index("IRB1: leaf entry overflow"));
+                }
+                pos += skip;
+                skip_cid(data, &mut pos)?;
+            }
+        }
+
+        // Named graph routing (branch CIDs, skip)
+        let named_count = read_u16(data, &mut pos)? as usize;
+        for _ in 0..named_count {
+            let _g_id = read_u16(data, &mut pos)?;
+            let order_count = read_u8(data, &mut pos)? as usize;
+            for _ in 0..order_count {
+                let _order_id = read_u8(data, &mut pos)?;
+                skip_cid(data, &mut pos)?;
+            }
+        }
+
+        // Optional: stats
+        let stats = if flags & FLAG_HAS_STATS != 0 {
+            let stats_len = read_u32(data, &mut pos)? as usize;
+            if pos + stats_len > data.len() {
+                return Err(Error::invalid_index("IRB1: stats section overflow"));
+            }
+            let (stats, _consumed) =
+                crate::stats_wire::decode_stats(&data[pos..pos + stats_len])
+                    .map_err(|e| Error::invalid_index(format!("IRB1: stats decode: {e}")))?;
+            pos += stats_len;
+            Some(stats)
+        } else {
+            None
+        };
+
+        // Optional: schema
+        let schema = if flags & FLAG_HAS_SCHEMA != 0 {
+            let schema_len = read_u32(data, &mut pos)? as usize;
+            if pos + schema_len > data.len() {
+                return Err(Error::invalid_index("IRB1: schema section overflow"));
+            }
+            let (schema, _consumed) =
+                crate::stats_wire::decode_schema(&data[pos..pos + schema_len])
+                    .map_err(|e| Error::invalid_index(format!("IRB1: schema decode: {e}")))?;
+            pos += schema_len;
+            Some(schema)
+        } else {
+            None
+        };
+
+        let _ = pos; // remaining optional sections (prev_index, garbage, sketch) not needed
 
         let meta = DbMetadata {
             ledger_id,
-            t,
+            t: index_t,
             namespace_codes,
             stats,
             schema,
@@ -262,9 +454,6 @@ impl Db {
 
 /// Load a database from an index root content ID.
 ///
-/// The `"version"` field in the JSON root must be `3` or `4`; any other
-/// value is rejected.
-///
 /// The returned Db is metadata-only (`range_provider = None`). The caller
 /// (typically the API layer) must load a `BinaryIndexStore` and attach a
 /// `BinaryRangeProvider` before serving range queries.
@@ -283,110 +472,40 @@ pub async fn load_db(
         &root_id.digest_hex(),
     );
     let bytes = storage.read_bytes(&root_address).await?;
-    let root_json: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| Error::invalid_index(format!("invalid root JSON: {}", e)))?;
-
-    let version = root_json
-        .get("version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-
-    match version {
-        3 | 4 => Db::from_root_json(&root_json),
-        v => Err(Error::invalid_index(format!(
-            "unsupported index root version: {} (only v3/v4 supported)",
-            v
-        ))),
-    }
+    Db::from_root_bytes(&bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{MemoryStorage, StorageMethod};
 
-    /// Helper: serialize JSON, create a ContentId for it, store at the derived
-    /// address, and return the ContentId.
-    fn store_root(
-        storage: &MemoryStorage,
-        ledger_id: &str,
-        root_json: &serde_json::Value,
-    ) -> ContentId {
-        let root_bytes = serde_json::to_vec(root_json).unwrap();
-        let root_id = ContentId::new(ContentKind::IndexRoot, &root_bytes);
-        let root_address = crate::content_address(
-            storage.storage_method(),
-            ContentKind::IndexRoot,
-            ledger_id,
-            &root_id.digest_hex(),
-        );
-        storage.insert(&root_address, root_bytes);
-        root_id
+    #[test]
+    fn test_from_root_bytes_rejects_non_irb1() {
+        let json = b"{\"ledger_id\": \"test:main\"}";
+        let err = Db::from_root_bytes(json).unwrap_err();
+        assert!(err.to_string().contains("IRB1"));
     }
 
-    #[tokio::test]
-    async fn test_db_load_v3() {
-        let root_json = serde_json::json!({
-            "version": 3,
-            "ledger_id": "test:main",
-            "index_t": 42,
-            "base_t": 0,
-            "namespace_codes": {
-                "0": "",
-                "1": "@",
-                "100": "http://example.org/"
-            },
-            "dicts": {},
-            "graphs": [],
-            "stats": {
-                "flakes": 1000,
-                "size": 0,
-                "graphs": [{"g_id": 1, "flakes": 1000, "size": 0}]
-            }
-        });
-
-        let storage = MemoryStorage::new();
-        let root_id = store_root(&storage, "test:main", &root_json);
-
-        let db = load_db(&storage, &root_id, "test:main").await.unwrap();
-        assert_eq!(db.ledger_id, "test:main");
-        assert_eq!(db.t, 42);
-        assert_eq!(db.version, 3);
-        assert!(db.range_provider.is_none());
-        assert!(db.stats.is_some());
+    #[test]
+    fn test_from_root_bytes_rejects_truncated() {
+        let err = Db::from_root_bytes(b"IRB1").unwrap_err();
+        assert!(err.to_string().contains("truncated"));
     }
 
-    #[tokio::test]
-    async fn test_db_load_unsupported_version() {
-        let root_json = serde_json::json!({
-            "version": 99
+    #[test]
+    fn test_encode_decode_sid() {
+        let mut ns = HashMap::new();
+        ns.insert(0u16, String::new());
+        ns.insert(100u16, "http://example.org/".to_string());
+        let db = Db::new_meta(DbMetadata {
+            ledger_id: "test:main".into(),
+            t: 1,
+            namespace_codes: ns,
+            stats: None,
+            schema: None,
+            subject_watermarks: vec![],
+            string_watermark: 0,
         });
-
-        let storage = MemoryStorage::new();
-        let root_id = store_root(&storage, "test:main", &root_json);
-
-        let err = load_db(&storage, &root_id, "test:main").await.unwrap_err();
-        assert!(err.to_string().contains("unsupported"));
-    }
-
-    #[tokio::test]
-    async fn test_db_encode_decode_sid() {
-        let root_json = serde_json::json!({
-            "version": 3,
-            "ledger_id": "test:main",
-            "index_t": 1,
-            "base_t": 0,
-            "namespace_codes": {
-                "0": "",
-                "100": "http://example.org/"
-            },
-            "dicts": {},
-            "graphs": []
-        });
-
-        let storage = MemoryStorage::new();
-        let root_id = store_root(&storage, "test:main", &root_json);
-        let db = load_db(&storage, &root_id, "test:main").await.unwrap();
 
         let sid = db.encode_iri("http://example.org/Alice").unwrap();
         assert_eq!(sid.namespace_code, 100);

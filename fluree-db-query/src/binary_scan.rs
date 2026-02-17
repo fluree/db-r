@@ -35,7 +35,7 @@ use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::ListIndex;
 use fluree_db_core::{
-    dt_compatible, range_with_overlay, Db, Flake, FlakeValue, IndexType, ObjectBounds,
+    dt_compatible, range_with_overlay, Db, Flake, FlakeValue, GraphId, IndexType, ObjectBounds,
     OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
 };
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
@@ -139,7 +139,7 @@ pub struct BinaryScanOperator {
     /// The binary index store (shared, immutable).
     store: Arc<BinaryIndexStore>,
     /// Graph ID to query.
-    g_id: u32,
+    g_id: GraphId,
     /// Cursor for leaf iteration (created during open).
     cursor: Option<BinaryCursor>,
     /// Pre-computed p_id → Sid (all predicates, done once at open).
@@ -179,7 +179,7 @@ impl BinaryScanOperator {
     pub fn new(
         pattern: TriplePattern,
         store: Arc<BinaryIndexStore>,
-        g_id: u32,
+        g_id: GraphId,
         object_bounds: Option<ObjectBounds>,
         filters: Vec<crate::ir::Expression>,
     ) -> Self {
@@ -226,7 +226,7 @@ impl BinaryScanOperator {
     pub fn with_index(
         pattern: TriplePattern,
         store: Arc<BinaryIndexStore>,
-        g_id: u32,
+        g_id: GraphId,
         index: IndexType,
         filters: Vec<crate::ir::Expression>,
     ) -> Self {
@@ -855,7 +855,7 @@ impl Operator for BinaryScanOperator {
                                     };
 
                                 let min_key = RunRecord {
-                                    g_id: self.g_id as u16,
+                                    g_id: self.g_id,
                                     s_id: SubjectId::from_u64(s_id),
                                     p_id: p_id.unwrap_or(0),
                                     dt: 0,
@@ -867,7 +867,7 @@ impl Operator for BinaryScanOperator {
                                     i: 0,
                                 };
                                 let max_key = RunRecord {
-                                    g_id: self.g_id as u16,
+                                    g_id: self.g_id,
                                     s_id: SubjectId::from_u64(s_id),
                                     p_id: p_id.unwrap_or(u32::MAX),
                                     dt: u16::MAX,
@@ -1191,7 +1191,7 @@ pub(crate) fn translate_overlay_flakes(
     overlay: &dyn OverlayProvider,
     dict_overlay: &mut crate::dict_overlay::DictOverlay,
     to_t: i64,
-    g_id: u32,
+    g_id: GraphId,
 ) -> Vec<OverlayOp> {
     let mut ops = Vec::new();
     let mut io_error: Option<std::io::Error> = None;
@@ -1207,7 +1207,7 @@ pub(crate) fn translate_overlay_flakes(
     // partitions per-leaf internally via find_overlay_for_leaf).
     overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, to_t, &mut |flake| {
         // Filter by graph ID
-        let flake_g_id = match &flake.g {
+        let flake_g_id: GraphId = match &flake.g {
             None => 0, // default graph
             Some(g_sid) => {
                 // Reconstruct the graph IRI from Sid and look up the g_id
@@ -1215,7 +1215,7 @@ pub(crate) fn translate_overlay_flakes(
                 dict_overlay
                     .store()
                     .graph_id_for_iri(&graph_iri)
-                    .unwrap_or(u32::MAX) // Unknown graph → never match
+                    .unwrap_or(GraphId::MAX) // Unknown graph → never match
             }
         };
         if flake_g_id != g_id {

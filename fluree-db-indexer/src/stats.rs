@@ -8,7 +8,7 @@
 //!
 //! Per-property HLL sketches are serialized into a single `HllSketchBlob` and
 //! stored in content-addressed storage (CAS) via `ContentKind::StatsSketch`.
-//! The blob's `ContentId` is stored in `BinaryIndexRoot.sketch_ref`.
+//! The blob's `ContentId` is stored in `IndexRootV5.sketch_ref`.
 //!
 //! GC is automatic: `all_cas_ids()` includes the sketch CID, so the existing
 //! set-difference garbage collection handles superseded blobs.
@@ -16,6 +16,7 @@
 //! For incremental refresh, use `load_sketch_blob()` + `IdStatsHook::with_prior_properties()`.
 
 use fluree_db_core::Flake;
+use fluree_db_core::GraphId;
 use fluree_db_core::Sid;
 use fluree_vocab::namespaces::RDF;
 use std::collections::HashSet;
@@ -273,7 +274,7 @@ impl IndexStatsHook for HllStatsHook {
 /// Key for graph-scoped property stats (numeric IDs only)
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct GraphPropertyKey {
-    pub g_id: u32,
+    pub g_id: GraphId,
     pub p_id: u32,
 }
 
@@ -345,7 +346,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Contains all per-(graph, property) HLL sketches produced by `IdStatsHook`.
 /// Written to CAS as a single JSON blob; its `ContentId` is stored in
-/// `BinaryIndexRoot.sketch_ref`. Counts are clamped to ≥ 0 (snapshot state,
+/// `IndexRootV5.sketch_ref`. Counts are clamped to ≥ 0 (snapshot state,
 /// not raw signed deltas).
 ///
 /// Entries are sorted by `(g_id, p_id)` for deterministic serialization and
@@ -364,7 +365,7 @@ pub struct HllSketchBlob {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HllPropertyEntry {
     /// Graph dictionary ID (0 = default graph).
-    pub g_id: u32,
+    pub g_id: GraphId,
     /// Predicate dictionary ID.
     pub p_id: u32,
     /// Flake count (clamped to ≥ 0; snapshot state, not raw delta).
@@ -489,7 +490,7 @@ impl HllSketchBlob {
 }
 
 /// Decode hex-decoded bytes into an `HllSketch256`, validating 256-byte length.
-fn decode_hll_registers(bytes: &[u8], g_id: u32, p_id: u32) -> Result<HllSketch256> {
+fn decode_hll_registers(bytes: &[u8], g_id: GraphId, p_id: u32) -> Result<HllSketch256> {
     if bytes.len() != 256 {
         return Err(IndexerError::Serialization(format!(
             "HLL registers must be 256 bytes for g{}:p{}, got {}",
@@ -562,7 +563,7 @@ pub fn subject_hash(s_id: u64) -> u64 {
 #[derive(Debug, Clone, Copy)]
 pub struct StatsRecord {
     /// Graph dictionary ID (0 = default)
-    pub g_id: u32,
+    pub g_id: GraphId,
     /// Predicate dictionary ID
     pub p_id: u32,
     /// Subject dictionary ID
@@ -609,7 +610,7 @@ pub struct IdStatsHook {
     flake_count: usize,
     properties: HashMap<GraphPropertyKey, IdPropertyHll>,
     /// Per-graph flake count (signed delta)
-    graph_flakes: HashMap<u32, i64>,
+    graph_flakes: HashMap<GraphId, i64>,
     /// p_id for rdf:type (when set, enables class tracking)
     rdf_type_p_id: Option<u32>,
     /// Whether to track reference target-class edges (class→property→ref-class).
@@ -810,7 +811,8 @@ impl IdStatsHook {
     /// `properties`. Clamps all signed deltas to 0.
     pub fn finalize(self) -> IdStatsResult {
         // Group by g_id, then by p_id
-        let mut graph_map: HashMap<u32, Vec<(&GraphPropertyKey, &IdPropertyHll)>> = HashMap::new();
+        let mut graph_map: HashMap<GraphId, Vec<(&GraphPropertyKey, &IdPropertyHll)>> =
+            HashMap::new();
         for (key, hll) in &self.properties {
             graph_map.entry(key.g_id).or_default().push((key, hll));
         }
@@ -1403,7 +1405,7 @@ mod tests {
             }
 
             let blob = HllSketchBlob::from_properties(1, &map);
-            let keys: Vec<(u32, u32)> = blob.entries.iter().map(|e| (e.g_id, e.p_id)).collect();
+            let keys: Vec<(GraphId, u32)> = blob.entries.iter().map(|e| (e.g_id, e.p_id)).collect();
             assert_eq!(
                 keys,
                 vec![(0, 1), (0, 5), (0, 10), (1, 2), (1, 10)],
@@ -2365,4 +2367,117 @@ pub fn build_class_stats_json(
     tracing::info!(classes = classes_json.len(), "class stats resolved to JSON");
 
     Ok(classes_json)
+}
+
+/// Build `ClassStatEntry` structs from SPOT class stats (struct-based, no JSON).
+///
+/// Parallel to `build_class_stats_json` but returns typed structs suitable for
+/// binary stats encoding in `IndexRootV5`.
+pub fn build_class_stat_entries(
+    cs: &crate::run_index::SpotClassStats,
+    predicate_sids: &[(u16, String)],
+    run_dir: &std::path::Path,
+    namespace_codes: &HashMap<u16, String>,
+) -> std::io::Result<Vec<fluree_db_core::ClassStatEntry>> {
+    use crate::run_index::dict_io;
+    use fluree_db_core::sid::Sid;
+    use fluree_db_core::subject_id::SubjectId;
+    use fluree_db_core::{ClassPropertyUsage, ClassRefCount, ClassStatEntry};
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    if cs.class_counts.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let sids_path = run_dir.join("subjects.sids");
+    let idx_path = run_dir.join("subjects.idx");
+    let fwd_path = run_dir.join("subjects.fwd");
+
+    let sids_vec = dict_io::read_subject_sid_map(&sids_path)?;
+    let (fwd_offsets, fwd_lens) = dict_io::read_forward_index(&idx_path)?;
+    let mut fwd_file = std::fs::File::open(&fwd_path)?;
+
+    let resolve_sid = |sid64: u64, file: &mut std::fs::File| -> Option<Sid> {
+        let subj = SubjectId::from_u64(sid64);
+        let ns_code = subj.ns_code();
+        let pos = sids_vec.binary_search(&sid64).ok()?;
+        let off = fwd_offsets[pos];
+        let len = fwd_lens[pos] as usize;
+        let mut iri_buf = vec![0u8; len];
+        file.seek(SeekFrom::Start(off)).ok()?;
+        file.read_exact(&mut iri_buf).ok()?;
+        let iri = std::str::from_utf8(&iri_buf).ok()?;
+        let prefix = namespace_codes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
+            &iri[prefix.len()..]
+        } else {
+            iri
+        };
+        Some(Sid::new(ns_code, suffix))
+    };
+
+    let mut class_entries: Vec<(&u64, &u64)> = cs.class_counts.iter().collect();
+    class_entries.sort_by_key(|&(sid, _)| *sid);
+
+    let class_refs = &cs.class_prop_refs;
+
+    let entries: Vec<ClassStatEntry> = class_entries
+        .iter()
+        .filter_map(|&(&class_sid64, &count)| {
+            let class_sid = resolve_sid(class_sid64, &mut fwd_file)?;
+            let ref_map = class_refs.get(&class_sid64);
+
+            let properties: Vec<ClassPropertyUsage> =
+                if let Some(prop_map) = cs.class_prop_dts.get(&class_sid64) {
+                    let mut props: Vec<_> = prop_map.iter().collect();
+                    props.sort_by_key(|&(pid, _)| *pid);
+
+                    props
+                        .iter()
+                        .filter_map(|&(&p_id, _dt_map)| {
+                            let psid_pair = predicate_sids.get(p_id as usize)?;
+                            let property_sid = Sid::new(psid_pair.0, &psid_pair.1);
+
+                            // Ref-class targets for this property (if any).
+                            let ref_classes: Vec<ClassRefCount> =
+                                if let Some(target_map) = ref_map.and_then(|rm| rm.get(&p_id)) {
+                                    let mut targets: Vec<_> = target_map.iter().collect();
+                                    targets.sort_by_key(|&(sid, _)| *sid);
+                                    targets
+                                        .iter()
+                                        .filter_map(|&(&target_sid, &tcount)| {
+                                            let tsid = resolve_sid(target_sid, &mut fwd_file)?;
+                                            Some(ClassRefCount {
+                                                class_sid: tsid,
+                                                count: tcount,
+                                            })
+                                        })
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                };
+
+                            Some(ClassPropertyUsage {
+                                property_sid,
+                                ref_classes,
+                            })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+            Some(ClassStatEntry {
+                class_sid,
+                count,
+                properties,
+            })
+        })
+        .collect();
+
+    tracing::info!(classes = entries.len(), "class stats resolved to entries");
+    Ok(entries)
 }

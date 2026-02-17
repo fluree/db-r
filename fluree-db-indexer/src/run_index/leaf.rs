@@ -119,8 +119,8 @@ struct EncodedLeaflet {
 /// Metadata about a written leaf file, used for branch manifest construction.
 #[derive(Debug, Clone)]
 pub struct LeafInfo {
-    pub path: PathBuf,
-    pub content_hash: String,
+    /// Content identifier for the leaf blob (CID-native, no path or hash string).
+    pub leaf_cid: fluree_db_core::ContentId,
     pub leaf_index: u32,
     pub total_rows: u64,
     pub first_key: RunRecord,
@@ -535,12 +535,17 @@ impl LeafWriter {
             self.perf.leaf_bytes_written += bytes_written;
         }
 
-        let hash = hex::encode(hasher.finalize());
-        let leaf_path = self.output_dir.join(format!("{}.fli", hash));
+        let digest_hex = hex::encode(hasher.finalize());
+        let leaf_cid = fluree_db_core::ContentId::from_hex_digest(
+            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_LEAF,
+            &digest_hex,
+        )
+        .expect("valid SHA-256 hex digest");
+        let leaf_path = self.output_dir.join(leaf_cid.to_string());
 
         match fs::rename(&tmp_path, &leaf_path) {
             Ok(()) => {}
-            Err(e) if leaf_path.exists() => {
+            Err(_e) if leaf_path.exists() => {
                 // Content-addressed: if destination exists, it should be identical.
                 let _ = fs::remove_file(&tmp_path);
             }
@@ -555,13 +560,12 @@ impl LeafWriter {
             leaf = leaf_index,
             leaflets = self.current_leaflets.len(),
             rows = total_rows,
-            hash = %hash,
+            cid = %leaf_cid,
             "leaf file written"
         );
 
         self.leaf_infos.push(LeafInfo {
-            path: leaf_path,
-            content_hash: hash,
+            leaf_cid,
             leaf_index,
             total_rows,
             first_key,
@@ -741,8 +745,9 @@ mod tests {
         assert_eq!(infos[0].first_key.s_id.as_u64(), 0);
         assert_eq!(infos[0].last_key.s_id.as_u64(), 14);
 
-        // Read back and verify header
-        let data = std::fs::read(&infos[0].path).unwrap();
+        // Read back and verify header (path derived from CID)
+        let leaf_path = dir.join(infos[0].leaf_cid.to_string());
+        let data = std::fs::read(&leaf_path).unwrap();
         let header = read_leaf_header(&data).unwrap();
         assert_eq!(header.leaflet_count, 3);
         assert_eq!(header.total_rows, 15);
@@ -807,8 +812,9 @@ mod tests {
 
         assert_eq!(infos.len(), 1);
 
-        // Read leaf and decode all leaflets
-        let data = std::fs::read(&infos[0].path).unwrap();
+        // Read leaf and decode all leaflets (path derived from CID)
+        let leaf_path = dir.join(infos[0].leaf_cid.to_string());
+        let data = std::fs::read(&leaf_path).unwrap();
         let header = read_leaf_header(&data).unwrap();
 
         assert_eq!(header.leaflet_count, 3);

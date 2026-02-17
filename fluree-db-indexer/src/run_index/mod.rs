@@ -40,6 +40,7 @@ pub mod replay;
 pub mod shared_pool;
 pub mod sorted_commit_reader;
 pub mod spot_cursor;
+pub mod stats_wire;
 pub mod streaming_reader;
 pub mod types;
 pub mod vector_arena;
@@ -63,8 +64,11 @@ pub use index_build::{
     DT_REF_ID,
 };
 pub use index_root::{
-    BinaryGarbageRef, BinaryIndexRoot, BinaryPrevIndexRef, CasArtifactsConfig, DictRefs,
-    DictTreeRefs, GraphEntry, GraphOrderRefs, GraphRefs, VectorDictRef, BINARY_INDEX_ROOT_VERSION,
+    BinaryGarbageRef, BinaryPrevIndexRef, DictRefs, DictTreeRefs, GraphOrderRefs, GraphRefs,
+    VectorDictRef,
+};
+pub use index_root::{
+    DictRefsV5, IndexRootV5, InlineOrderRouting, NamedGraphRouting, VectorDictRefV5,
 };
 pub use lang_remap::{build_lang_remap, build_lang_remap_from_vocabs};
 pub use leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCache, LeafletCacheKey};

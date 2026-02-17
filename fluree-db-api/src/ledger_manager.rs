@@ -348,28 +348,22 @@ impl LedgerHandle {
         cache_dir: &std::path::Path,
         leaflet_cache: Option<Arc<LeafletCache>>,
     ) -> Result<()> {
-        use fluree_db_core::serde::json::{
-            raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
-        };
-
         // Load index root by CID via content store
         let ledger_id = {
             let state = self.inner.state.lock().await;
             state.db.ledger_id.clone()
         };
-        let store = fluree_db_core::content_store_for(storage.clone(), &ledger_id);
-        let bytes = store
+        let content_store = fluree_db_core::content_store_for(storage.clone(), &ledger_id);
+        let bytes = content_store
             .get(index_id)
             .await
             .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
-        let root: BinaryIndexRoot = serde_json::from_slice(&bytes)
-            .map_err(|e| ApiError::internal(format!("failed to parse v2 root: {}", e)))?;
 
         let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
             storage.clone(),
-            &root.ledger_id,
+            &ledger_id,
         ));
-        let store = BinaryIndexStore::load_from_root(cs, &root, cache_dir, leaflet_cache)
+        let store = BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, leaflet_cache)
             .await
             .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
         let arc_store = Arc::new(store);
@@ -378,26 +372,17 @@ impl LedgerHandle {
         let dn = Arc::new(DictNovelty::new_uninitialized());
         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
 
-        // Build metadata-only Db from root
-        let ns_codes = root.namespace_codes.into_iter().collect();
-        let stats = root
-            .stats
-            .as_ref()
-            .and_then(|s| serde_json::from_value::<RawDbRootStats>(s.clone()).ok())
-            .and_then(|raw| raw_stats_to_index_stats(&raw));
-        let schema = root
-            .schema
-            .as_ref()
-            .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
-            .map(|raw| raw_schema_to_index_schema(&raw));
+        // Build metadata-only Db from IRB1 root.
+        let v5 = fluree_db_indexer::run_index::IndexRootV5::decode(&bytes)
+            .map_err(|e| ApiError::internal(format!("failed to decode IRB1 root: {}", e)))?;
         let meta = DbMetadata {
-            ledger_id: root.ledger_id,
-            t: root.index_t,
-            namespace_codes: ns_codes,
-            stats,
-            schema,
-            subject_watermarks: root.subject_watermarks,
-            string_watermark: root.string_watermark,
+            ledger_id: v5.ledger_id,
+            t: v5.index_t,
+            namespace_codes: v5.namespace_codes.into_iter().collect(),
+            stats: v5.stats,
+            schema: v5.schema,
+            subject_watermarks: v5.subject_watermarks,
+            string_watermark: v5.string_watermark,
         };
         let mut db = Db::new_meta(meta);
         db.range_provider = Some(Arc::new(provider));
@@ -508,7 +493,7 @@ impl std::fmt::Debug for LedgerManagerConfig {
 
 impl Default for LedgerManagerConfig {
     fn default() -> Self {
-        // Match `BinaryIndexStore::load_from_root_default()`:
+        // Match `BinaryIndexStore::load_from_root_v5_default()`:
         // - enable a shared leaflet cache by default
         // - allow override via `FLUREE_LEAFLET_CACHE_BYTES`
         //
@@ -533,7 +518,6 @@ impl Default for LedgerManagerConfig {
 // Binary Index Loading Helper
 // ============================================================================
 
-use fluree_db_indexer::run_index::{BinaryIndexRoot, BINARY_INDEX_ROOT_VERSION};
 use fluree_db_query::BinaryRangeProvider;
 
 /// Load BinaryIndexStore from a v2 index root, attach range_provider
@@ -561,22 +545,11 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         .await
         .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
 
-    let root: BinaryIndexRoot = match serde_json::from_slice(&bytes) {
-        Ok(r) => r,
-        Err(_) => return Ok(None), // Not a v2 root (could be v1 or malformed)
-    };
-
-    // BinaryIndexRoot's custom Deserialize already validates version == 2,
-    // but belt-and-suspenders:
-    if root.version != BINARY_INDEX_ROOT_VERSION {
-        return Ok(None);
-    }
-
     let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
         storage.clone(),
-        &root.ledger_id,
+        &state.db.ledger_id,
     ));
-    let mut store = BinaryIndexStore::load_from_root(cs, &root, cache_dir, leaflet_cache)
+    let mut store = BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, leaflet_cache)
         .await
         .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
