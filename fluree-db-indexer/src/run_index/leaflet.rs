@@ -10,7 +10,7 @@
 //! Each region is independently zstd-compressed.
 
 use super::leaflet_cache::{SparseIColumn, SparseU16Column};
-use super::run_record::{RunRecord, RunSortOrder};
+use super::run_record::{RunRecord, RunSortOrder, LIST_INDEX_NONE};
 use fluree_db_core::ListIndex;
 use std::io;
 use std::sync::Arc;
@@ -569,13 +569,11 @@ fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
             lang_positions.push(idx as u16);
             lang_values.push(r.lang_id);
         }
-        if r.i != ListIndex::none().as_i32() {
-            debug_assert!(r.i >= 0, "negative list index {} at row {}", r.i, idx);
-            let i_u32 = r.i as u32;
+        if r.i != LIST_INDEX_NONE {
             i_positions.push(idx as u16);
-            i_values_raw.push(i_u32);
-            if i_u32 > max_i {
-                max_i = i_u32;
+            i_values_raw.push(r.i);
+            if r.i > max_i {
+                max_i = r.i;
             }
         }
     }
@@ -635,14 +633,9 @@ fn encode_region2(records: &[RunRecord], dt_width: u8) -> Vec<u8> {
         _ => unreachable!("invalid dt_width: {}", dt_width),
     }
 
-    // t array (u32 per row, narrowed from RunRecord.t which is i64)
+    // t array (u32 per row)
     for r in records {
-        debug_assert!(
-            r.t >= 0 && r.t <= u32::MAX as i64,
-            "t={} out of u32 range",
-            r.t
-        );
-        buf.extend_from_slice(&(r.t as u32).to_le_bytes());
+        buf.extend_from_slice(&r.t.to_le_bytes());
     }
 
     // lang: counted sparse (positions + values)
@@ -713,24 +706,28 @@ pub struct Region3Entry {
 impl Region3Entry {
     /// Build from a `RunRecord`.
     ///
-    /// Narrows `t` from i64 to u32 at the encode boundary. Panics if t is
-    /// negative or exceeds u32::MAX (should never happen for valid data).
+    /// Converts `i` from u32 sentinel (LIST_INDEX_NONE) to i32 sentinel
+    /// (ListIndex::none()) at the leaflet boundary.
     pub fn from_run_record(r: &RunRecord) -> Self {
-        debug_assert!(
-            r.t >= 0 && r.t <= u32::MAX as i64,
-            "Region3Entry::from_run_record: t={} out of u32 range",
-            r.t
-        );
         Self {
             s_id: r.s_id.as_u64(),
             p_id: r.p_id,
             o_kind: r.o_kind,
             o_key: r.o_key,
-            t: r.t as u32,
+            t: r.t,
             op: r.op,
             dt: r.dt,
             lang_id: r.lang_id,
-            i: r.i,
+            i: if r.i == LIST_INDEX_NONE {
+                ListIndex::none().as_i32()
+            } else {
+                debug_assert!(
+                    r.i <= i32::MAX as u32,
+                    "list index {} exceeds i32::MAX, would wrap in Region3Entry",
+                    r.i
+                );
+                r.i as i32
+            },
         }
     }
 
@@ -1506,7 +1503,7 @@ mod tests {
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
 
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -1733,7 +1730,7 @@ mod tests {
             assert_eq!(decoded.p_ids[i], r.p_id, "p_id mismatch at row {}", i);
             assert_eq!(decoded.o_kinds[i], r.o_kind, "o_kind mismatch at row {}", i);
             assert_eq!(decoded.o_keys[i], r.o_key, "o_key mismatch at row {}", i);
-            assert_eq!(decoded.t_values[i], r.t as u32, "t mismatch at row {}", i);
+            assert_eq!(decoded.t_values[i], r.t, "t mismatch at row {}", i);
             assert_eq!(
                 decoded.dt_values[i], r.dt as u32,
                 "dt mismatch at row {}",

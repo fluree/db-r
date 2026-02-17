@@ -52,7 +52,7 @@ impl SpotCursor {
     ) -> Self {
         let leaf_range = store
             .branch(g_id)
-            .map(|b| b.find_leaves_for_subject(g_id, s_id))
+            .map(|b| b.find_leaves_for_subject(s_id))
             .unwrap_or(0..0);
 
         let current_idx = leaf_range.start;

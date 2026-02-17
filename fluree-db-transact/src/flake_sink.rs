@@ -4,7 +4,7 @@
 //! Turtle INSERT, converting parsed triples directly into assertion flakes.
 
 use crate::generate::infer_datatype;
-use crate::namespace::NamespaceRegistry;
+use crate::namespace::{NamespaceRegistry, NsAllocator};
 use crate::value_convert::{convert_native_literal, convert_string_literal};
 use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 use fluree_graph_ir::{Datatype, GraphSink, LiteralValue, TermId};
@@ -202,7 +202,8 @@ impl<'a> GraphSink for FlakeSink<'a> {
 
         // Determine dt Sid and FlakeValue from the datatype IRI
         let dt_iri = datatype.as_iri();
-        let (flake_value, dt_sid) = convert_string_literal(value, dt_iri, self.ns_registry);
+        let (flake_value, dt_sid) =
+            convert_string_literal(value, dt_iri, &mut NsAllocator::Exclusive(self.ns_registry));
 
         // Language-tagged literals override dt to rdf:langString
         let dt_sid = if lang.is_some() {

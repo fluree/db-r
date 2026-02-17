@@ -48,8 +48,11 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         .expect("read index root");
     let root: BinaryIndexRoot = serde_json::from_slice(&bytes).expect("parse v2 root");
 
-    let cs = fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
-    let store = BinaryIndexStore::load_from_root(&cs, &root, cache_dir, None)
+    let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
+        storage.clone(),
+        &root.ledger_id,
+    ));
+    let store = BinaryIndexStore::load_from_root(cs, &root, cache_dir, None)
         .await
         .expect("load binary index");
     let arc_store = Arc::new(store);

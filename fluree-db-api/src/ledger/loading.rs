@@ -63,7 +63,8 @@ where
                 }
 
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
-                let mut store = BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
+                let cs = std::sync::Arc::new(cs);
+                let mut store = BinaryIndexStore::load_from_root_default(cs, &root, &cache_dir)
                     .await
                     .map_err(|e| {
                         ApiError::internal(format!(
@@ -88,6 +89,25 @@ where
                     state.db.range_provider = Some(Arc::new(provider));
                 }
                 state.binary_store = Some(TypeErasedStore(arc_store));
+            }
+        }
+
+        // Load default context from CAS if the nameservice record has one.
+        if let Some(ref ctx_id) = state
+            .ns_record
+            .as_ref()
+            .and_then(|r| r.default_context.as_ref())
+        {
+            let cs = fluree_db_core::content_store_for(
+                self.connection.storage().clone(),
+                state.db.ledger_id.as_str(),
+            );
+            match cs.get(ctx_id).await {
+                Ok(bytes) => match serde_json::from_slice(&bytes) {
+                    Ok(ctx) => state.default_context = Some(ctx),
+                    Err(e) => tracing::warn!(%e, "failed to parse default context JSON"),
+                },
+                Err(e) => tracing::debug!(%e, cid = %ctx_id, "could not load default context"),
             }
         }
 

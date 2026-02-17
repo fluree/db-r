@@ -283,10 +283,12 @@ where
                 if let Ok(root) = serde_json::from_slice::<BinaryIndexRoot>(&bytes) {
                     if root.version == BINARY_INDEX_ROOT_VERSION {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        let cs =
-                            fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
+                        let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
+                            storage.clone(),
+                            &root.ledger_id,
+                        ));
                         let mut store =
-                            BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
+                            BinaryIndexStore::load_from_root_default(cs, &root, &cache_dir)
                                 .await
                                 .map_err(|e| {
                                     ApiError::internal(format!("load binary index: {}", e))
@@ -300,6 +302,25 @@ where
                         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
                         snapshot.db.range_provider = Some(Arc::new(provider));
                         snapshot.binary_store = Some(arc_store);
+                    }
+                }
+            }
+        }
+
+        // Load default context from CAS if not already loaded.
+        if snapshot.default_context.is_none() {
+            if let Some(ctx_id) = snapshot
+                .ns_record
+                .as_ref()
+                .and_then(|r| r.default_context.as_ref())
+            {
+                let cs = fluree_db_core::content_store_for(
+                    self.storage().clone(),
+                    &snapshot.db.ledger_id,
+                );
+                if let Ok(bytes) = cs.get(ctx_id).await {
+                    if let Ok(ctx) = serde_json::from_slice(&bytes) {
+                        snapshot.default_context = Some(ctx);
                     }
                 }
             }
@@ -356,10 +377,12 @@ where
                     })?;
                     if root.version == BINARY_INDEX_ROOT_VERSION {
                         let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        let cs =
-                            fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
+                        let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
+                            storage.clone(),
+                            &root.ledger_id,
+                        ));
                         let mut store =
-                            BinaryIndexStore::load_from_root_default(&cs, &root, &cache_dir)
+                            BinaryIndexStore::load_from_root_default(cs, &root, &cache_dir)
                                 .await
                                 .map_err(|e| {
                                     ApiError::internal(format!(

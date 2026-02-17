@@ -191,7 +191,7 @@ impl DynamoDbNameService {
         let default_context = config
             .and_then(|c| c.get(ATTR_DEFAULT_CONTEXT_ADDRESS))
             .and_then(|v| v.as_s().ok())
-            .cloned();
+            .and_then(|s| fluree_db_nameservice::parse_default_context_value(s));
 
         Some(NsRecord {
             ledger_id: pk.to_string(),
@@ -1588,7 +1588,7 @@ impl ConfigPublisher for DynamoDbNameService {
                 let default_context = item
                     .get(ATTR_DEFAULT_CONTEXT_ADDRESS)
                     .and_then(|v| v.as_s().ok())
-                    .cloned();
+                    .and_then(|s| fluree_db_nameservice::parse_default_context_value(s));
                 let config_meta = item.get(ATTR_CONFIG_META).and_then(|v| v.as_m().ok());
 
                 let v: i64 = item
@@ -1680,8 +1680,8 @@ impl ConfigPublisher for DynamoDbNameService {
         if let Some(ref payload) = new.payload {
             if let Some(ref ctx) = payload.default_context {
                 update_parts.push("#dc = :new_dc");
-                request =
-                    request.expression_attribute_values(":new_dc", AttributeValue::S(ctx.clone()));
+                request = request
+                    .expression_attribute_values(":new_dc", AttributeValue::S(ctx.to_string()));
             } else {
                 remove_parts.push("#dc");
             }
@@ -1954,11 +1954,12 @@ mod tests {
         let pk = "mydb:main";
         let commit_id = ContentId::new(ContentKind::Commit, b"commit-abc");
         let index_id = ContentId::new(ContentKind::IndexRoot, b"index-xyz");
+        let ctx_id = ContentId::new(ContentKind::LedgerConfig, b"ctx-data");
         let items = vec![
             make_meta_ledger(pk, "mydb", "main"),
             make_head(pk, Some(&commit_id.to_string()), 10),
             make_index(pk, Some(&index_id.to_string()), 5),
-            make_config_ledger(pk, Some("ctx-addr")),
+            make_config_ledger(pk, Some(&ctx_id.to_string())),
         ];
 
         let record = DynamoDbNameService::items_to_ns_record(pk, &items).unwrap();
@@ -1969,7 +1970,7 @@ mod tests {
         assert_eq!(record.commit_t, 10);
         assert_eq!(record.index_head_id, Some(index_id));
         assert_eq!(record.index_t, 5);
-        assert_eq!(record.default_context, Some("ctx-addr".to_string()));
+        assert_eq!(record.default_context, Some(ctx_id));
         assert!(!record.retracted);
     }
 

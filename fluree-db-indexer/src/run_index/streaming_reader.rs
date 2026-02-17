@@ -12,8 +12,25 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-/// Number of records to buffer per read. 8192 × 44 bytes ≈ 352 KB.
-const BUFFER_SIZE: usize = 8192;
+/// Number of records to buffer per read.
+///
+/// Default 32k records:
+/// - 32_768 × 34 bytes ≈ 1.06 MB raw bytes per stream
+/// - 32_768 × 40 bytes ≈ 1.25 MB decoded `RunRecord`s per stream
+///
+/// This reduces refill frequency and amortizes per-fill overhead (syscalls,
+/// decode loop, optional lang remap) vs the previous 8k (~272 KB) setting.
+const BUFFER_SIZE: usize = 32_768;
+
+/// Underlying file read buffer size (in bytes).
+///
+/// `BufReader`'s default is small (8 KB). Because we frequently `read_exact()`
+/// hundreds of KB to MB at a time, using a larger internal buffer reduces the
+/// number of underlying read() calls and improves throughput on fast SSDs.
+const FILE_BUF_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Run file flags (must match `run_file.rs`).
+const RUN_FLAG_ZSTD_BLOCKS: u8 = 1 << 0;
 
 static PERF_READ_BYTES: AtomicU64 = AtomicU64::new(0);
 static PERF_FILL_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -28,7 +45,9 @@ pub struct StreamingRunReader {
     file: BufReader<std::fs::File>,
     header: RunFileHeader,
     /// Per-run language tag dict (kept for diagnostics).
-    #[allow(dead_code)]
+    // Kept for: diagnosing incorrect language-tag remaps during index builds.
+    // Use when: adding debug logging/metrics that prints local tag sets for a run.
+    #[expect(dead_code)]
     lang_dict: LanguageTagDict,
     /// Remap table: `remap[local_lang_id] = global_lang_id`.
     /// Empty means no remapping needed.
@@ -37,10 +56,18 @@ pub struct StreamingRunReader {
     buffer: Vec<RunRecord>,
     /// Raw byte buffer reused across reads.
     raw_buf: Vec<u8>,
+    /// Temporary buffer for compressed blocks.
+    zstd_buf: Vec<u8>,
+    /// Decompressed bytes of the current block (compressed run files).
+    block_raw: Vec<u8>,
+    /// Current position within `block_raw` (in bytes).
+    block_pos: usize,
     /// Current position within buffer.
     buf_pos: usize,
     /// Number of records still in the file (not yet read into buffer).
     remaining: u64,
+    /// Cached perf flag (avoid env var lookup per refill).
+    perf_enabled: bool,
 }
 
 impl StreamingRunReader {
@@ -49,7 +76,11 @@ impl StreamingRunReader {
     /// `lang_remap` maps per-run lang_id → global lang_id. Pass empty
     /// vec if no remapping is needed. Must have `remap[0] = 0`.
     pub fn open(path: &Path, lang_remap: Vec<u16>) -> io::Result<Self> {
-        let mut file = BufReader::new(std::fs::File::open(path)?);
+        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let mut file = BufReader::with_capacity(FILE_BUF_BYTES, std::fs::File::open(path)?);
 
         // Read header
         let mut header_buf = [0u8; RUN_HEADER_LEN];
@@ -73,8 +104,12 @@ impl StreamingRunReader {
             lang_remap,
             buffer: Vec::with_capacity(BUFFER_SIZE),
             raw_buf: Vec::with_capacity(BUFFER_SIZE * RECORD_WIRE_SIZE),
+            zstd_buf: Vec::new(),
+            block_raw: Vec::new(),
+            block_pos: 0,
             buf_pos: 0,
             remaining: 0,
+            perf_enabled,
         };
         reader.remaining = reader.header.record_count;
 
@@ -122,10 +157,7 @@ impl StreamingRunReader {
 
     /// Fill the buffer with the next batch of records from disk.
     fn fill_buffer(&mut self) -> io::Result<()> {
-        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let t0 = perf_enabled.then(Instant::now);
+        let t0 = self.perf_enabled.then(Instant::now);
 
         let to_read = (self.remaining as usize).min(BUFFER_SIZE);
         if to_read == 0 {
@@ -134,30 +166,87 @@ impl StreamingRunReader {
             return Ok(());
         }
 
-        // Read raw bytes
-        let byte_count = to_read * RECORD_WIRE_SIZE;
-        self.raw_buf.resize(byte_count, 0u8);
-        self.file.read_exact(&mut self.raw_buf)?;
+        if (self.header.flags & RUN_FLAG_ZSTD_BLOCKS) == 0 {
+            // Read raw bytes
+            let byte_count = to_read * RECORD_WIRE_SIZE;
+            self.raw_buf.resize(byte_count, 0u8);
+            self.file.read_exact(&mut self.raw_buf)?;
 
-        // Decode records
-        self.buffer.clear();
-        self.buffer.reserve(to_read);
-        for i in 0..to_read {
-            let offset = i * RECORD_WIRE_SIZE;
-            let buf: &[u8; RECORD_WIRE_SIZE] = self.raw_buf[offset..offset + RECORD_WIRE_SIZE]
-                .try_into()
-                .unwrap();
-            let mut rec = RunRecord::read_le(buf);
+            // Decode records
+            self.buffer.clear();
+            self.buffer.reserve(to_read);
+            for i in 0..to_read {
+                let offset = i * RECORD_WIRE_SIZE;
+                let buf: &[u8; RECORD_WIRE_SIZE] = self.raw_buf[offset..offset + RECORD_WIRE_SIZE]
+                    .try_into()
+                    .unwrap();
+                let mut rec = RunRecord::read_le(buf);
 
-            // Apply lang_id remapping
-            if !self.lang_remap.is_empty() && rec.lang_id != 0 {
-                if let Some(&global_id) = self.lang_remap.get(rec.lang_id as usize) {
-                    rec.lang_id = global_id;
+                // Apply lang_id remapping
+                if !self.lang_remap.is_empty() && rec.lang_id != 0 {
+                    if let Some(&global_id) = self.lang_remap.get(rec.lang_id as usize) {
+                        rec.lang_id = global_id;
+                    }
+                    // If lang_id exceeds remap table, leave as-is (shouldn't happen)
                 }
-                // If lang_id exceeds remap table, leave as-is (shouldn't happen)
-            }
 
-            self.buffer.push(rec);
+                self.buffer.push(rec);
+            }
+        } else {
+            // Compressed block stream. Maintain an internal decompressed block buffer.
+            self.buffer.clear();
+            self.buffer.reserve(to_read);
+
+            while self.buffer.len() < to_read {
+                // If current block is exhausted, read next block.
+                if self.block_pos >= self.block_raw.len() {
+                    self.block_raw.clear();
+                    self.block_pos = 0;
+
+                    let mut hdr = [0u8; 12];
+                    self.file.read_exact(&mut hdr)?;
+                    let n_records = u32::from_le_bytes(hdr[0..4].try_into().unwrap()) as usize;
+                    let raw_len = u32::from_le_bytes(hdr[4..8].try_into().unwrap()) as usize;
+                    let z_len = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
+
+                    if raw_len != n_records * RECORD_WIRE_SIZE {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "run file: invalid compressed block raw_len",
+                        ));
+                    }
+
+                    self.zstd_buf.resize(z_len, 0u8);
+                    self.file.read_exact(&mut self.zstd_buf)?;
+                    self.block_raw = zstd::bulk::decompress(&self.zstd_buf, raw_len)?;
+                    if self.block_raw.len() != raw_len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "run file: decompressed length mismatch",
+                        ));
+                    }
+                }
+
+                // Decode as many records as we can from the current block.
+                while self.buffer.len() < to_read
+                    && self.block_pos + RECORD_WIRE_SIZE <= self.block_raw.len()
+                {
+                    let buf: &[u8; RECORD_WIRE_SIZE] = self.block_raw
+                        [self.block_pos..self.block_pos + RECORD_WIRE_SIZE]
+                        .try_into()
+                        .unwrap();
+                    self.block_pos += RECORD_WIRE_SIZE;
+                    let mut rec = RunRecord::read_le(buf);
+
+                    // Apply lang_id remapping
+                    if !self.lang_remap.is_empty() && rec.lang_id != 0 {
+                        if let Some(&global_id) = self.lang_remap.get(rec.lang_id as usize) {
+                            rec.lang_id = global_id;
+                        }
+                    }
+                    self.buffer.push(rec);
+                }
+            }
         }
 
         self.remaining -= to_read as u64;
@@ -165,7 +254,9 @@ impl StreamingRunReader {
 
         if let Some(t) = t0 {
             PERF_FILL_CALLS.fetch_add(1, Ordering::Relaxed);
-            PERF_READ_BYTES.fetch_add(byte_count as u64, Ordering::Relaxed);
+            // We don't track compressed bytes here; this is best-effort perf logging.
+            let approx_bytes = (to_read * RECORD_WIRE_SIZE) as u64;
+            PERF_READ_BYTES.fetch_add(approx_bytes, Ordering::Relaxed);
             PERF_FILL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         Ok(())
@@ -174,10 +265,7 @@ impl StreamingRunReader {
 
 impl Drop for StreamingRunReader {
     fn drop(&mut self) {
-        let perf_enabled = std::env::var("FLUREE_INDEX_BUILD_PERF")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        if !perf_enabled {
+        if !self.perf_enabled {
             return;
         }
         // Aggregate across all reader instances; only emit once when the last one drops
@@ -208,7 +296,7 @@ mod tests {
     use fluree_db_core::DatatypeDictId;
     use std::cmp::Ordering;
 
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),

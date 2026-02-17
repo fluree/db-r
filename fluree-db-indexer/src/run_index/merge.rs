@@ -1,98 +1,189 @@
-//! K-way merge of N sorted run file streams.
+//! K-way merge of N sorted streams.
 //!
-//! Uses a min-heap (`BinaryHeap<Reverse<…>>`) to merge N
-//! `StreamingRunReader` streams into a single globally-sorted sequence.
-//! Provides both raw (`next`) and deduplicating (`next_deduped`) iteration.
+//! Uses a manual min-heap to merge N streams into a single globally-sorted
+//! sequence. Provides both raw (`next_record`) and deduplicating
+//! (`next_deduped`) iteration.
+//!
+//! Generic over [`MergeSource`] — works with both [`StreamingRunReader`]
+//! (34-byte run files) and [`StreamingSortedCommitReader`] (36-byte sorted
+//! commit files with on-the-fly remap).
+//!
+//! The comparator `F` is a generic type parameter, enabling the compiler to
+//! monomorphize each instantiation and inline the comparator in heap
+//! operations. This eliminates indirect function-pointer calls on the hot
+//! path (~2.7 billion comparisons for 543M records).
 
-use super::run_record::RunRecord;
+use super::run_record::{RunRecord, LIST_INDEX_NONE};
 use super::streaming_reader::StreamingRunReader;
-use fluree_db_core::{DatatypeDictId, ListIndex};
-use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
+use fluree_db_core::DatatypeDictId;
+use std::cmp::Ordering;
 use std::io;
 
-/// Comparator function type for RunRecord ordering.
-type CmpFn = fn(&RunRecord, &RunRecord) -> Ordering;
+// ============================================================================
+// MergeSource trait
+// ============================================================================
+
+/// Trait for buffered, forward-only record streams that can be k-way merged.
+///
+/// Implemented by [`StreamingRunReader`] (run files) and
+/// [`StreamingSortedCommitReader`] (sorted commit files with remap).
+pub trait MergeSource {
+    /// Peek at the current record without advancing. Returns `None` if exhausted.
+    fn peek(&self) -> Option<&RunRecord>;
+
+    /// Advance to the next record, refilling the internal buffer from disk
+    /// if needed.
+    fn advance(&mut self) -> io::Result<()>;
+
+    /// True when all records have been consumed.
+    fn is_exhausted(&self) -> bool;
+}
+
+impl MergeSource for StreamingRunReader {
+    #[inline]
+    fn peek(&self) -> Option<&RunRecord> {
+        StreamingRunReader::peek(self)
+    }
+
+    fn advance(&mut self) -> io::Result<()> {
+        StreamingRunReader::advance(self)
+    }
+
+    fn is_exhausted(&self) -> bool {
+        StreamingRunReader::is_exhausted(self)
+    }
+}
+
+/// Comparator function type for RunRecord ordering (backward-compat alias).
+pub type CmpFn = fn(&RunRecord, &RunRecord) -> Ordering;
+
+// ============================================================================
+// HeapEntry (no comparator — comparator lives on KWayMerge)
+// ============================================================================
 
 /// Entry in the min-heap: a record + which stream it came from.
+///
+/// 48 bytes: RunRecord (40) + stream_idx (8). No comparator stored per-entry.
 struct HeapEntry {
     record: RunRecord,
     stream_idx: usize,
-    cmp_fn: CmpFn,
 }
 
-impl PartialEq for HeapEntry {
-    fn eq(&self, other: &Self) -> bool {
-        (self.cmp_fn)(&self.record, &other.record) == Ordering::Equal
-            && self.stream_idx == other.stream_idx
-    }
-}
+// ============================================================================
+// KWayMerge — manual min-heap with generic comparator
+// ============================================================================
 
-impl Eq for HeapEntry {}
-
-impl PartialOrd for HeapEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for HeapEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.cmp_fn)(&self.record, &other.record).then(self.stream_idx.cmp(&other.stream_idx))
-    }
-}
-
-/// K-way merge iterator over sorted run file streams.
+/// K-way merge iterator over sorted streams.
 ///
-/// Merges N `StreamingRunReader` streams using a min-heap.
-/// Records emerge in the order defined by the provided comparator.
-pub struct KWayMerge {
-    heap: BinaryHeap<Reverse<HeapEntry>>,
-    streams: Vec<StreamingRunReader>,
-    cmp_fn: CmpFn,
+/// Merges N [`MergeSource`] streams using a manual min-heap with a
+/// monomorphized comparator. Records emerge in the order defined by `F`.
+pub struct KWayMerge<T: MergeSource, F: Fn(&RunRecord, &RunRecord) -> Ordering> {
+    heap: Vec<HeapEntry>,
+    streams: Vec<T>,
+    cmp: F,
 }
 
-impl KWayMerge {
+impl<T: MergeSource, F: Fn(&RunRecord, &RunRecord) -> Ordering> KWayMerge<T, F> {
     /// Create a merge from opened streams. Seeds the heap with the first
     /// record from each non-empty stream.
-    pub fn new(streams: Vec<StreamingRunReader>, cmp_fn: CmpFn) -> io::Result<Self> {
-        let mut heap = BinaryHeap::with_capacity(streams.len());
+    pub fn new(streams: Vec<T>, cmp: F) -> io::Result<Self> {
+        let cap = streams.len();
+        let mut heap = Vec::with_capacity(cap);
 
         for (idx, stream) in streams.iter().enumerate() {
             if let Some(rec) = stream.peek() {
-                heap.push(Reverse(HeapEntry {
+                heap.push(HeapEntry {
                     record: *rec,
                     stream_idx: idx,
-                    cmp_fn,
-                }));
+                });
             }
         }
 
-        Ok(Self {
-            heap,
-            streams,
-            cmp_fn,
-        })
+        let mut me = Self { heap, streams, cmp };
+
+        // Build-heap: heapify from the last internal node down to root.
+        if me.heap.len() > 1 {
+            let last_internal = (me.heap.len() / 2).saturating_sub(1);
+            for i in (0..=last_internal).rev() {
+                me.sift_down(i);
+            }
+        }
+
+        Ok(me)
     }
 
-    /// Pop the next record in global SPOT order (no deduplication).
+    // ---- Manual min-heap operations ----
+
+    /// Compare two heap entries: first by record comparator, then stream_idx.
+    #[inline]
+    fn heap_less(&self, i: usize, j: usize) -> bool {
+        let ord = (self.cmp)(&self.heap[i].record, &self.heap[j].record);
+        match ord {
+            Ordering::Less => true,
+            Ordering::Greater => false,
+            Ordering::Equal => self.heap[i].stream_idx < self.heap[j].stream_idx,
+        }
+    }
+
+    /// Sift an element down to its correct position (restore heap after root replacement).
+    #[inline]
+    fn sift_down(&mut self, mut pos: usize) {
+        let len = self.heap.len();
+        loop {
+            let left = 2 * pos + 1;
+            if left >= len {
+                break;
+            }
+            let right = left + 1;
+            let mut smallest = left;
+            if right < len && self.heap_less(right, left) {
+                smallest = right;
+            }
+            // If `smallest` is not strictly less than `pos`, heap property holds.
+            // This single comparison also covers the equality case.
+            if !self.heap_less(smallest, pos) {
+                break;
+            }
+            self.heap.swap(pos, smallest);
+            pos = smallest;
+        }
+    }
+
+    // ---- Public API ----
+
+    /// Pop the next record in merge order (no deduplication).
     pub fn next_record(&mut self) -> io::Result<Option<RunRecord>> {
-        let entry = match self.heap.pop() {
-            Some(Reverse(e)) => e,
-            None => return Ok(None),
-        };
+        if self.heap.is_empty() {
+            return Ok(None);
+        }
 
-        let record = entry.record;
-        let idx = entry.stream_idx;
+        // Fast path: instead of heap_pop() + heap_push() (two heap fixups),
+        // return the root record and then replace the root with the next
+        // record from the same stream (if any), followed by a single sift_down.
+        let idx = self.heap[0].stream_idx;
+        let record = self.heap[0].record;
 
-        // Advance the stream and push its next record into the heap
+        // Advance the winning stream.
         self.streams[idx].advance()?;
+
         if let Some(next_rec) = self.streams[idx].peek() {
-            self.heap.push(Reverse(HeapEntry {
-                record: *next_rec,
-                stream_idx: idx,
-                cmp_fn: self.cmp_fn,
-            }));
+            // Replace root record in-place (stream_idx unchanged).
+            self.heap[0].record = *next_rec;
+            if self.heap.len() > 1 {
+                self.sift_down(0);
+            }
+        } else {
+            // Stream exhausted: remove root entry.
+            let last = self.heap.len() - 1;
+            if last == 0 {
+                self.heap.pop();
+            } else {
+                self.heap.swap(0, last);
+                self.heap.pop();
+                if !self.heap.is_empty() {
+                    self.sift_down(0);
+                }
+            }
         }
 
         Ok(Some(record))
@@ -101,9 +192,9 @@ impl KWayMerge {
     /// Pop the next deduplicated record.
     ///
     /// Conditional identity for dedup:
-    /// - Base: `(g_id, s_id, p_id, o, dt)`
+    /// - Base: `(s_id, p_id, o, dt)`
     /// - If `dt == LANG_STRING`: also compare `lang_id`
-    /// - If `i != ListIndex::none()`: also compare `i`
+    /// - If `i != LIST_INDEX_NONE`: also compare `i`
     ///
     /// Among records with the same identity, keeps the one with the highest `t`.
     /// Records are consumed in SPOT order (ascending `t` for same base key),
@@ -116,12 +207,50 @@ impl KWayMerge {
 
         // Consume all consecutive duplicates with the same identity
         loop {
-            match self.heap.peek() {
-                Some(Reverse(entry)) if same_identity(&best, &entry.record) => {
+            match self.heap.first() {
+                Some(entry) if same_identity(&best, &entry.record) => {
                     let dup = self.next_record()?.unwrap();
                     // Keep the record with higher t (for same identity, later t wins)
                     if dup.t > best.t || (dup.t == best.t && dup.op >= best.op) {
                         best = dup;
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        Ok(Some(best))
+    }
+
+    /// Pop the next deduplicated record, collecting non-winning duplicates.
+    ///
+    /// Works like [`next_deduped`] but also captures all consumed non-winning
+    /// records into `history`. The caller must clear `history` before each
+    /// call (the method does NOT clear it, allowing pre-allocated reuse).
+    ///
+    /// For single-version facts (no duplicates), `history` remains empty.
+    /// For multi-version facts, `history` contains the older/losing records
+    /// (intermediate asserts, retractions) — everything except the winner.
+    pub fn next_deduped_with_history(
+        &mut self,
+        history: &mut Vec<RunRecord>,
+    ) -> io::Result<Option<RunRecord>> {
+        let mut best = match self.next_record()? {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        // Consume all consecutive duplicates with the same identity
+        loop {
+            match self.heap.first() {
+                Some(entry) if same_identity(&best, &entry.record) => {
+                    let dup = self.next_record()?.unwrap();
+                    // Keep the record with higher t (for same identity, later t wins)
+                    if dup.t > best.t || (dup.t == best.t && dup.op >= best.op) {
+                        history.push(best); // old best becomes history
+                        best = dup;
+                    } else {
+                        history.push(dup); // dup is older, goes to history
                     }
                 }
                 _ => break,
@@ -139,16 +268,18 @@ impl KWayMerge {
 
 /// Check if two records have the same identity for dedup purposes.
 ///
-/// Base identity: `(g_id, s_id, p_id, o, dt)`.
+/// Base identity: `(s_id, p_id, o, dt)`. `g_id` is NOT part of identity —
+/// each graph is indexed independently, so all records in a merge stream
+/// share the same graph.
+///
 /// Extended with `lang_id` when `dt == LANG_STRING` (because "Alice"@en
 /// and "Alice"@fr are distinct RDF literals).
-/// Extended with `i` when `i != ListIndex::none()` (because list entries
+/// Extended with `i` when `i != LIST_INDEX_NONE` (because list entries
 /// at different positions are distinct facts).
 #[inline]
 fn same_identity(a: &RunRecord, b: &RunRecord) -> bool {
-    // Base identity
-    if a.g_id != b.g_id
-        || a.s_id != b.s_id
+    // Base identity (no g_id — graph is implicit)
+    if a.s_id != b.s_id
         || a.p_id != b.p_id
         || a.o_kind != b.o_kind
         || a.o_key != b.o_key
@@ -163,7 +294,7 @@ fn same_identity(a: &RunRecord, b: &RunRecord) -> bool {
     }
 
     // Conditional: list index — if either record has an index, require equality
-    if (a.i != ListIndex::none().as_i32() || b.i != ListIndex::none().as_i32()) && a.i != b.i {
+    if (a.i != LIST_INDEX_NONE || b.i != LIST_INDEX_NONE) && a.i != b.i {
         return false;
     }
 
@@ -184,7 +315,7 @@ mod tests {
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
 
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -199,7 +330,7 @@ mod tests {
         )
     }
 
-    fn make_lang_record(s_id: u64, p_id: u32, lex_id: u32, t: i64, lang_id: u16) -> RunRecord {
+    fn make_lang_record(s_id: u64, p_id: u32, lex_id: u32, t: u32, lang_id: u16) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -214,7 +345,7 @@ mod tests {
         )
     }
 
-    fn make_list_record(s_id: u64, p_id: u32, val: i64, t: i64, i: i32) -> RunRecord {
+    fn make_list_record(s_id: u64, p_id: u32, val: i64, t: u32, i: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -238,7 +369,7 @@ mod tests {
         records.sort_unstable_by(cmp_spot);
         let path = dir.join(name);
         let lang_dict = LanguageTagDict::new();
-        let (min_t, max_t) = records.iter().fold((i64::MAX, i64::MIN), |(min, max), r| {
+        let (min_t, max_t) = records.iter().fold((u32::MAX, 0u32), |(min, max), r| {
             (min.min(r.t), max.max(r.t))
         });
         write_run_file(
@@ -498,6 +629,215 @@ mod tests {
             (results[5].s_id, results[5].p_id),
             (SubjectId::from_u64(5), 1)
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- Tests for next_deduped_with_history ----
+
+    /// Make a record with explicit assert/retract flag.
+    fn make_record_op(s_id: u64, p_id: u32, val: i64, t: u32, assert: bool) -> RunRecord {
+        RunRecord::new(
+            0,
+            SubjectId::from_u64(s_id),
+            p_id,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(val),
+            t,
+            assert,
+            DatatypeDictId::INTEGER.as_u16(),
+            0,
+            None,
+        )
+    }
+
+    #[test]
+    fn test_dedup_with_history_single_version() {
+        // Single version of each fact — history should be empty.
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_single");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![make_record(1, 1, 10, 1), make_record(2, 1, 20, 1)],
+        );
+
+        let streams = open_streams(&[p0]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        // First record: s=1
+        history.clear();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.s_id, SubjectId::from_u64(1));
+        assert!(
+            history.is_empty(),
+            "single-version fact should have no history"
+        );
+
+        // Second record: s=2
+        history.clear();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.s_id, SubjectId::from_u64(2));
+        assert!(history.is_empty());
+
+        // Done
+        history.clear();
+        assert!(merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dedup_with_history_two_versions() {
+        // Same fact at t=1 and t=2 — winner is t=2, history is t=1.
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_two");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(&dir, "r0.frn", vec![make_record(1, 1, 10, 1)]);
+        let p1 = write_sorted_run(&dir, "r1.frn", vec![make_record(1, 1, 10, 2)]);
+
+        let streams = open_streams(&[p0, p1]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.t, 2, "winner should be t=2");
+        assert_eq!(history.len(), 1, "should have one history entry");
+        assert_eq!(history[0].t, 1, "history entry should be t=1");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dedup_with_history_assert_retract_reassert() {
+        // Same fact: assert t=1, retract t=2, assert t=3
+        // Winner: assert at t=3. History: [assert t=1, retract t=2]
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_ara");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![make_record_op(1, 1, 10, 1, true)], // assert t=1
+        );
+        let p1 = write_sorted_run(
+            &dir,
+            "r1.frn",
+            vec![make_record_op(1, 1, 10, 2, false)], // retract t=2
+        );
+        let p2 = write_sorted_run(
+            &dir,
+            "r2.frn",
+            vec![make_record_op(1, 1, 10, 3, true)], // assert t=3
+        );
+
+        let streams = open_streams(&[p0, p1, p2]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.t, 3, "winner should be assert at t=3");
+        assert_eq!(rec.op, 1, "winner should be assert");
+        assert_eq!(history.len(), 2, "should have two history entries");
+
+        // History contains both the t=1 assert and t=2 retract
+        let hist_ts: Vec<u32> = history.iter().map(|r| r.t).collect();
+        assert!(hist_ts.contains(&1), "history should contain t=1");
+        assert!(hist_ts.contains(&2), "history should contain t=2");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dedup_with_history_retract_wins() {
+        // Same fact: assert t=1, retract t=2
+        // Winner: retract at t=2. History: [assert t=1]
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_retract_wins");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(&dir, "r0.frn", vec![make_record_op(1, 1, 10, 1, true)]);
+        let p1 = write_sorted_run(&dir, "r1.frn", vec![make_record_op(1, 1, 10, 2, false)]);
+
+        let streams = open_streams(&[p0, p1]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.t, 2, "winner should be retract at t=2");
+        assert_eq!(rec.op, 0, "winner should be retract");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].t, 1);
+        assert_eq!(history[0].op, 1, "history should contain the assert");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dedup_with_history_mixed_facts() {
+        // Two different facts: s=1 (multi-version) and s=2 (single-version)
+        let dir = std::env::temp_dir().join("fluree_test_dedup_hist_mixed");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let p0 = write_sorted_run(
+            &dir,
+            "r0.frn",
+            vec![make_record(1, 1, 10, 1), make_record(2, 1, 20, 1)],
+        );
+        let p1 = write_sorted_run(
+            &dir,
+            "r1.frn",
+            vec![make_record(1, 1, 10, 5)], // s=1 updated at t=5
+        );
+
+        let streams = open_streams(&[p0, p1]);
+        let mut merge = KWayMerge::new(streams, cmp_spot).unwrap();
+        let mut history = Vec::new();
+
+        // s=1: multi-version, winner t=5, history [t=1]
+        history.clear();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.s_id, SubjectId::from_u64(1));
+        assert_eq!(rec.t, 5);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].t, 1);
+
+        // s=2: single-version, no history
+        history.clear();
+        let rec = merge
+            .next_deduped_with_history(&mut history)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.s_id, SubjectId::from_u64(2));
+        assert_eq!(rec.t, 1);
+        assert!(history.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

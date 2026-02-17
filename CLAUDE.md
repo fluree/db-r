@@ -26,7 +26,7 @@ The `docs/` directory is the canonical source of truth. **Before inventing an ap
 ## Workspace Architecture (concise)
 
 ```
-Layer 5  fluree-db-server (HTTP binary), fluree-db-ingest (bulk import CLI), fluree-db-cli
+Layer 5  fluree-db-server (HTTP binary), fluree-db-cli
 Layer 4  fluree-db-api (orchestration, builder, import pipeline)
 Layer 3  fluree-db-query, fluree-db-sparql, fluree-db-transact, fluree-db-policy
 Layer 2  fluree-db-ledger, fluree-db-indexer, fluree-db-novelty, fluree-db-connection
@@ -47,7 +47,7 @@ Generic over `S: Storage + 'static` and `N: NameService`. See `docs/reference/cr
 | `iceberg` | Iceberg REST catalog graph sources | api |
 | `vector` | Embedded HNSW vector search (usearch) | api, query |
 | `import` | Turtle bulk import support | transact |
-| `otel` | OpenTelemetry tracing export | server, ingest |
+| `otel` | OpenTelemetry tracing export | server |
 | `aws-testcontainers` | LocalStack Docker integration tests | api, connection |
 
 **CI runs:** `cargo fmt --all -- --check`, `cargo clippy --all --all-features --all-targets`, and `cargo nextest run --workspace --all-features --no-fail-fast`.

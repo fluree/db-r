@@ -102,7 +102,6 @@ async fn main() -> Result<()> {
         .create("dblp:main")
         .import("./chunks_dir")
         .threads(8)          // parallel TTL parsing; commits remain serial
-        .run_budget_mb(4096) // run writer total memory budget (split across 4 orders)
         .build_index(true)   // write a V2 index root and publish it
         .publish_every(50)   // nameservice checkpoints during long imports (0 disables)
         .cleanup(true)       // delete tmp import files on success

@@ -62,11 +62,11 @@ let result = fluree.reindex("mydb:main", ReindexOptions::default()
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `indexer_config` | `IndexerConfig::default()` | Controls output index structure (leaf/branch sizes, GC settings) |
+| `indexer_config` | `IndexerConfig::default()` | Controls output index structure (leaf/branch sizes, GC settings, memory budget) |
 
 ### `indexer_config`
 
-Controls the output index structure:
+Controls the output index structure and rebuild resources:
 
 ```rust
 use fluree_db_indexer::IndexerConfig;
@@ -81,12 +81,27 @@ ReindexOptions::default()
 
 // Custom configuration
 let config = IndexerConfig::default()
-    .with_gc_max_old_indexes(10)  // Keep more old index versions
-    .with_gc_min_time_mins(60);   // Retain for at least 60 minutes
+    .with_gc_max_old_indexes(10)       // Keep more old index versions
+    .with_gc_min_time_mins(60)         // Retain for at least 60 minutes
+    .with_run_budget_bytes(1 << 30)    // 1 GB memory budget for sort buffers
+    .with_data_dir("/data/fluree");    // Directory for index artifacts
 
 ReindexOptions::default()
     .with_indexer_config(config)
 ```
+
+Key `IndexerConfig` fields:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `leaf_target_bytes` | 187,500 | Target bytes per leaf node |
+| `leaf_max_bytes` | 375,000 | Maximum bytes per leaf node (triggers split) |
+| `branch_target_children` | 100 | Target children per branch node |
+| `branch_max_children` | 200 | Maximum children per branch node |
+| `gc_max_old_indexes` | 5 | Old index versions to retain before GC |
+| `gc_min_time_mins` | 30 | Minimum age (minutes) before an index can be GC'd |
+| `run_budget_bytes` | 256 MB | Memory budget for sort buffers (split across all sort orders) |
+| `data_dir` | System temp dir | Base directory for index artifacts |
 
 ## ReindexResult
 
@@ -135,10 +150,18 @@ The reindex operation:
 
 1. **Looks up** the current ledger state and captures `commit_t` for conflict detection
 2. **Cancels** any active background indexing for the ledger
-3. **Builds** a fresh binary columnar index from the full commit chain using `build_binary_index`
+3. **Rebuilds** a fresh binary columnar index from the full commit chain using `rebuild_index_from_commits`:
+   - **Phase A**: Walks the commit chain backward to collect all commit CIDs, then reverses to chronological order
+   - **Phase B**: Resolves commits into batched chunks with chunk-local dictionaries (subjects, strings) and shared global dictionaries (predicates, datatypes, graphs, languages, numbigs, vectors)
+   - **Phase C**: Merges per-chunk dictionaries into global dictionaries with remap tables
+   - **Phase D**: Builds SPOT indexes from sorted commit files via k-way merge with graph-aware partitioning
+   - **Phase E**: Builds secondary indexes (PSOT, POST, OPST) per-graph from partitioned run files
+   - **Phase F**: Uploads dictionaries and index artifacts to CAS, creates `BinaryIndexRoot`
 4. **Validates** that no new commits arrived during the build (conflict detection)
 5. **Publishes** the new index root via `publish_index_allow_equal`
 6. **Spawns** async garbage collection to clean up old index versions
+
+The rebuilt index preserves full time-travel history: retract-winner events and their preceding asserts are stored in Region 3 (history) of leaf nodes, enabling `as-of` queries at any past transaction time.
 
 ## Best Practices
 
@@ -146,7 +169,16 @@ The reindex operation:
 
 While queries continue to work during reindex, performance may be impacted. Schedule large reindex operations during maintenance windows when possible.
 
-### 2. Verify After Reindex
+### 2. Tune Memory Budget for Large Ledgers
+
+For ledgers with millions of flakes, increasing `run_budget_bytes` reduces the number of spill files and speeds up the merge phase:
+
+```rust
+let config = IndexerConfig::default()
+    .with_run_budget_bytes(2 * 1024 * 1024 * 1024); // 2 GB
+```
+
+### 3. Verify After Reindex
 
 After reindex, verify the results:
 
@@ -159,7 +191,7 @@ println!("Index rebuilt to t={}", info["index"]["t"]);
 let query_result = fluree.query(&ledger, &sample_query).await?;
 ```
 
-### 3. Concurrent Operations
+### 4. Concurrent Operations
 
 During reindex:
 - Queries continue to work (using old index + novelty)

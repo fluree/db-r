@@ -159,28 +159,28 @@ impl GeoSearchOperator {
             // POST sort order: p_id, o_kind, o_key, s_id, dt, t, op, lang_id, i
             // We set dt to span full range since GeoPoints may have any datatype ID
             let min_key = RunRecord {
-                g_id,
+                g_id: g_id as u16,
                 s_id: SubjectId::from_u64(0),
                 p_id,
                 dt: 0,
                 o_kind: ObjKind::GEO_POINT.as_u8(),
                 op: 0,
                 o_key: min_o_key,
-                t: i64::MIN,
-                i: i32::MIN,
+                t: 0,
+                i: 0,
                 lang_id: 0,
             };
 
             let max_key = RunRecord {
-                g_id,
+                g_id: g_id as u16,
                 s_id: SubjectId::from_u64(u64::MAX),
                 p_id,
                 dt: u16::MAX, // Span all datatype IDs
                 o_kind: ObjKind::GEO_POINT.as_u8(),
                 op: 1, // Include both assert (1) and retract (0)
                 o_key: max_o_key,
-                t: i64::MAX,
-                i: i32::MAX,
+                t: u32::MAX,
+                i: u32::MAX,
                 lang_id: u16::MAX,
             };
 

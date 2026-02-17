@@ -21,7 +21,8 @@ where
 {
     /// Execute a JSON-LD query against a ledger
     pub async fn query(&self, ledger: &LedgerState, query_json: &JsonValue) -> Result<QueryResult> {
-        let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db)?;
+        let (vars, parsed) =
+            parse_jsonld_query(query_json, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
         let tracker = tracker_for_limits(query_json);
 
@@ -129,9 +130,10 @@ where
     {
         let tracker = tracker_from_query_json(query_json);
 
-        let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db).map_err(|e| {
-            crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-        })?;
+        let (vars, parsed) =
+            parse_jsonld_query(query_json, &ledger.db, ledger.default_context.as_ref()).map_err(
+                |e| crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally()),
+            )?;
 
         let executable = prepare_for_execution(&parsed);
         let r2rml_provider = NoOpR2rmlProvider::new();
@@ -199,7 +201,8 @@ where
         query_json: &JsonValue,
         policy: &PolicyContext,
     ) -> Result<QueryResult> {
-        let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db)?;
+        let (vars, parsed) =
+            parse_jsonld_query(query_json, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let source = DataSource {
@@ -228,7 +231,8 @@ where
         sparql: &str,
         policy: &PolicyContext,
     ) -> Result<QueryResult> {
-        let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;
+        let (vars, parsed) =
+            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let source = DataSource {
@@ -271,7 +275,8 @@ where
 
     /// Execute a SPARQL query against a ledger
     pub async fn query_sparql(&self, ledger: &LedgerState, sparql: &str) -> Result<QueryResult> {
-        let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;
+        let (vars, parsed) =
+            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
         let tracker = Tracker::disabled();
 
@@ -297,7 +302,8 @@ where
         options: TrackingOptions,
     ) -> Result<(QueryResult, Option<TrackingTally>)> {
         let tracker = Tracker::new(options);
-        let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;
+        let (vars, parsed) =
+            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let batches = self
@@ -325,7 +331,7 @@ where
         view: &HistoricalLedgerView,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
-        let (vars, parsed) = parse_jsonld_query(query_json, &view.db)?;
+        let (vars, parsed) = parse_jsonld_query(query_json, &view.db, None)?;
         let executable = ExecutableQuery::simple(parsed.clone());
         let r2rml_provider = NoOpR2rmlProvider::new();
         let tracker = Tracker::disabled();

@@ -13,10 +13,10 @@
 //!   _pad: [u8; 3]
 //!   leaf_count: u32
 //!   _reserved: u32
-//! [LeafEntries: leaf_count × 104 bytes]
+//! [LeafEntries: leaf_count × 84 bytes]
 //!   For each leaf:
-//!     first_key: RunRecord (44 bytes)
-//!     last_key:  RunRecord (44 bytes)
+//!     first_key: RunRecord (34 bytes)
+//!     last_key:  RunRecord (34 bytes)
 //!     row_count: u64
 //!     path_offset: u32
 //!     path_len: u16
@@ -43,7 +43,8 @@ const BRANCH_VERSION: u8 = 1;
 const BRANCH_HEADER_LEN: usize = 16;
 
 /// Size of each leaf entry in the manifest (excluding path).
-const LEAF_ENTRY_LEN: usize = 104;
+/// 2 × RECORD_WIRE_SIZE (34) + row_count(8) + path_offset(4) + path_len(2) + pad(2) = 84.
+const LEAF_ENTRY_LEN: usize = 2 * RECORD_WIRE_SIZE + 8 + 4 + 2 + 2;
 
 // ============================================================================
 // BranchManifest (in-memory)
@@ -143,24 +144,25 @@ impl BranchManifest {
     ///
     /// Returns a range of leaf indices. A subject's facts may span multiple
     /// leaves if the subject has many predicates/objects.
-    pub fn find_leaves_for_subject(&self, g_id: u32, s_id: u64) -> Range<usize> {
+    ///
+    /// Note: g_id is not checked because each graph has its own branch
+    /// manifest — all entries in a branch share the same g_id.
+    pub fn find_leaves_for_subject(&self, s_id: u64) -> Range<usize> {
         if self.leaves.is_empty() {
             return 0..0;
         }
 
-        // Find first leaf that could contain (g_id, s_id):
-        // We want the first leaf whose last_key >= (g_id, s_id, 0, MIN, ...)
-        let start = self.leaves.partition_point(|entry| {
-            entry.last_key.g_id < g_id
-                || (entry.last_key.g_id == g_id && entry.last_key.s_id.as_u64() < s_id)
-        });
+        // Find first leaf that could contain s_id:
+        // We want the first leaf whose last_key.s_id >= s_id
+        let start = self
+            .leaves
+            .partition_point(|entry| entry.last_key.s_id.as_u64() < s_id);
 
-        // Find last leaf that could contain (g_id, s_id):
-        // We want the first leaf whose first_key > (g_id, s_id, MAX, MAX, ...)
-        let end = self.leaves.partition_point(|entry| {
-            entry.first_key.g_id < g_id
-                || (entry.first_key.g_id == g_id && entry.first_key.s_id.as_u64() <= s_id)
-        });
+        // Find last leaf that could contain s_id:
+        // We want the first leaf whose first_key.s_id > s_id
+        let end = self
+            .leaves
+            .partition_point(|entry| entry.first_key.s_id.as_u64() <= s_id);
 
         start..end
     }
@@ -364,7 +366,7 @@ mod tests {
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
 
-    fn make_record(g_id: u32, s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(g_id: u16, s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             g_id,
             SubjectId::from_u64(s_id),
@@ -529,19 +531,19 @@ mod tests {
         let manifest = read_branch_manifest(&manifest_path).unwrap();
 
         // Subject 100 spans leaves 0-1
-        let range = manifest.find_leaves_for_subject(0, 100);
+        let range = manifest.find_leaves_for_subject(100);
         assert_eq!(range, 0..2);
 
         // Subject 50 is only in leaf 0
-        let range = manifest.find_leaves_for_subject(0, 50);
+        let range = manifest.find_leaves_for_subject(50);
         assert_eq!(range, 0..1);
 
         // Subject 250 is only in leaf 2
-        let range = manifest.find_leaves_for_subject(0, 250);
+        let range = manifest.find_leaves_for_subject(250);
         assert_eq!(range, 2..3);
 
         // Subject 999 is not in any leaf
-        let range = manifest.find_leaves_for_subject(0, 999);
+        let range = manifest.find_leaves_for_subject(999);
         assert_eq!(range, 3..3);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -558,7 +560,7 @@ mod tests {
         let manifest = read_branch_manifest(&manifest_path).unwrap();
 
         assert!(manifest.leaves.is_empty());
-        assert_eq!(manifest.find_leaves_for_subject(0, 1), 0..0);
+        assert_eq!(manifest.find_leaves_for_subject(1), 0..0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

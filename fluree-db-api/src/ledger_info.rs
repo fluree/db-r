@@ -570,8 +570,8 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
         index_obj.insert("f:t".to_string(), json!(record.index_t));
         obj["f:ledgerIndex"] = JsonValue::Object(index_obj);
     }
-    if let Some(ref ctx_addr) = record.default_context {
-        obj["f:defaultContext"] = json!({ "@id": ctx_addr });
+    if let Some(ref ctx_cid) = record.default_context {
+        obj["f:defaultContextCid"] = json!(ctx_cid.to_string());
     }
 
     obj

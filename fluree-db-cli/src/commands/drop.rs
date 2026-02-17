@@ -13,7 +13,7 @@ pub async fn run(name: &str, force: bool, dirs: &FlureeDir) -> CliResult<()> {
 
     let fluree = context::build_fluree(dirs)?;
     let report = fluree
-        .drop_ledger(name, fluree_db_api::DropMode::Soft)
+        .drop_ledger(name, fluree_db_api::DropMode::Hard)
         .await?;
 
     match report.status {
@@ -23,7 +23,18 @@ pub async fn run(name: &str, force: bool, dirs: &FlureeDir) -> CliResult<()> {
             if active.as_deref() == Some(name) {
                 config::clear_active_ledger(dirs.data_dir())?;
             }
-            println!("Dropped ledger '{name}'");
+            let total = report.commit_files_deleted + report.index_files_deleted;
+            if total > 0 {
+                println!(
+                    "Dropped ledger '{name}' (deleted {} commit + {} index files)",
+                    report.commit_files_deleted, report.index_files_deleted
+                );
+            } else {
+                println!("Dropped ledger '{name}'");
+            }
+            for w in &report.warnings {
+                eprintln!("  warning: {w}");
+            }
         }
         DropStatus::AlreadyRetracted => {
             println!("Ledger '{name}' was already dropped");

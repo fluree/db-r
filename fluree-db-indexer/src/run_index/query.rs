@@ -157,7 +157,7 @@ impl SpotQuery {
             None => return Ok(Vec::new()),
         };
 
-        let range = manifest.find_leaves_for_subject(g_id, s_id);
+        let range = manifest.find_leaves_for_subject(s_id);
         if range.is_empty() {
             return Ok(Vec::new());
         }

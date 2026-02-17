@@ -22,10 +22,12 @@
 //! NUM_FLOAT dictionaries with midpoint-splitting ranks are a later optimization.
 
 use fluree_db_core::vec_bi_dict::VecBiDict;
+use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use serde_json;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 // ============================================================================
 // SubjectDict (xxh3_128 reverse map, file-backed forward map)
@@ -59,7 +61,6 @@ pub struct SubjectDict {
     /// Append-only file of IRI bytes (no length prefix — lengths in forward_lens).
     forward_file: Option<BufWriter<std::fs::File>>,
     /// Path to the forward file (for diagnostics/reopening).
-    #[allow(dead_code)]
     forward_path: PathBuf,
     /// Current write offset in the forward file.
     forward_write_offset: u64,
@@ -420,6 +421,294 @@ impl PredicateDict {
 impl Default for PredicateDict {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================================
+// SharedDictAllocator (thread-safe, for parallel import)
+// ============================================================================
+
+/// Thread-safe dictionary allocator for small-cardinality domains
+/// (predicates, datatypes, graphs).
+///
+/// Backed by a `RwLock`-protected `VecBiDict<u32>`. Read-lock fast path
+/// for hits; write-lock only for novel entries. Pre-seeded with domain
+/// defaults (e.g., reserved datatype IDs, txn-meta graph).
+///
+/// Used alongside [`DictWorkerCache`] for per-worker lock-free lookups
+/// in the parallel import pipeline.
+pub struct SharedDictAllocator {
+    inner: RwLock<VecBiDict<u32>>,
+}
+
+impl SharedDictAllocator {
+    /// Create from an existing `PredicateDict` by cloning its inner state.
+    ///
+    /// The allocator inherits all pre-seeded entries (e.g., reserved
+    /// datatypes, txn-meta graph) and continues ID allocation from
+    /// where the dict left off.
+    pub fn from_predicate_dict(dict: &PredicateDict) -> Self {
+        Self {
+            inner: RwLock::new(dict.inner.clone()),
+        }
+    }
+
+    /// Thread-safe get-or-insert with read-lock fast path.
+    ///
+    /// Hot path (>99% of lookups): read lock + HashMap lookup.
+    /// Cold path (novel entry): upgrades to write lock, double-checks,
+    /// then inserts.
+    pub fn get_or_insert(&self, s: &str) -> u32 {
+        {
+            let inner = self.inner.read();
+            if let Some(id) = inner.find(s) {
+                return id;
+            }
+        }
+        // Write lock with double-check (another thread may have inserted)
+        let mut inner = self.inner.write();
+        inner.assign_or_lookup(s)
+    }
+
+    /// Thread-safe get-or-insert by prefix + name parts.
+    ///
+    /// Uses a stack buffer for short IRIs (< 256 bytes) to avoid heap
+    /// allocation on hits. Only allocates on miss (novel entry).
+    pub fn get_or_insert_parts(&self, prefix: &str, name: &str) -> u32 {
+        let total_len = prefix.len() + name.len();
+
+        // Stack-based lookup for short IRIs (avoids heap allocation on hits)
+        if total_len <= 256 {
+            let mut buf = [0u8; 256];
+            buf[..prefix.len()].copy_from_slice(prefix.as_bytes());
+            buf[prefix.len()..total_len].copy_from_slice(name.as_bytes());
+            // SAFETY: buf[..total_len] is copied from two valid UTF-8 &str slices.
+            let iri = unsafe { std::str::from_utf8_unchecked(&buf[..total_len]) };
+
+            {
+                let inner = self.inner.read();
+                if let Some(id) = inner.find(iri) {
+                    return id;
+                }
+            }
+        }
+
+        // Miss or rare long IRI: heap allocate + write lock
+        let mut full_iri = String::with_capacity(total_len);
+        full_iri.push_str(prefix);
+        full_iri.push_str(name);
+        let mut inner = self.inner.write();
+        inner.assign_or_lookup(&full_iri)
+    }
+
+    /// Take a snapshot for [`DictWorkerCache`] initialization.
+    ///
+    /// Returns `(reverse_map, snapshot_next_id)` where `snapshot_next_id`
+    /// is the current next-to-be-assigned ID. Workers use `snapshot_next_id`
+    /// to identify which IDs were allocated after the snapshot.
+    pub fn snapshot(&self) -> (FxHashMap<String, u32>, u32) {
+        let inner = self.inner.read();
+        let map: FxHashMap<String, u32> = inner.iter().map(|(id, s)| (s.to_string(), id)).collect();
+        let next_id = inner.base_id() + inner.len() as u32;
+        (map, next_id)
+    }
+
+    /// Number of entries.
+    pub fn len(&self) -> u32 {
+        self.inner.read().len() as u32
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.inner.read().is_empty()
+    }
+
+    /// Forward resolve: id → IRI string.
+    pub fn resolve(&self, id: u32) -> Option<String> {
+        self.inner.read().resolve(id).map(|s| s.to_string())
+    }
+
+    /// Return all entries as `(id, value_bytes)` pairs.
+    ///
+    /// Used for dict persistence / CAS upload after import completes.
+    pub fn all_entries(&self) -> Vec<(u64, Vec<u8>)> {
+        self.inner
+            .read()
+            .iter()
+            .map(|(id, s)| (id as u64, s.as_bytes().to_vec()))
+            .collect()
+    }
+
+    /// Write a reverse hash index (same format as `PredicateDict::write_reverse_index`).
+    pub fn write_reverse_index(&self, path: &Path) -> io::Result<()> {
+        let inner = self.inner.read();
+        let mut entries: Vec<(u64, u64, u32)> = Vec::with_capacity(inner.len());
+
+        for (str_id, s) in inner.iter() {
+            let hash = xxhash_rust::xxh3::xxh3_128(s.as_bytes());
+            let hi = (hash >> 64) as u64;
+            let lo = hash as u64;
+            entries.push((hi, lo, str_id));
+        }
+
+        entries.sort_unstable();
+
+        let mut file = BufWriter::new(std::fs::File::create(path)?);
+        file.write_all(b"LRV1")?;
+        file.write_all(&(entries.len() as u32).to_le_bytes())?;
+
+        for &(hi, lo, str_id) in &entries {
+            file.write_all(&hi.to_le_bytes())?;
+            file.write_all(&lo.to_le_bytes())?;
+            file.write_all(&str_id.to_le_bytes())?;
+        }
+
+        file.flush()?;
+        Ok(())
+    }
+
+    /// Create a shared allocator pre-seeded with the reserved datatype IDs.
+    ///
+    /// Matches the seeding in `new_datatype_dict()`: @id(0), xsd:string(1),
+    /// xsd:boolean(2), ... @vector(13). 14 entries total.
+    pub fn new_datatype() -> Self {
+        Self::from_predicate_dict(&new_datatype_dict())
+    }
+
+    /// Create a shared allocator pre-seeded for graph IDs.
+    ///
+    /// Matches `GlobalDicts::new()`: txn-meta graph at ID 0.
+    /// (Callers add +1 for the g_id convention: g_id 0 = default, g_id 1 = txn-meta.)
+    pub fn new_graph() -> Self {
+        let mut d = PredicateDict::new();
+        d.get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
+        Self::from_predicate_dict(&d)
+    }
+
+    /// Create an empty shared allocator for predicates (no pre-seeded entries).
+    pub fn new_predicate() -> Self {
+        Self::from_predicate_dict(&PredicateDict::new())
+    }
+
+    /// Extract a snapshot as a `PredicateDict` (for persistence via `write_predicate_dict`).
+    ///
+    /// This clones the inner `VecBiDict` — safe to call after all workers are done.
+    pub fn to_predicate_dict(&self) -> PredicateDict {
+        PredicateDict {
+            inner: self.inner.read().clone(),
+        }
+    }
+}
+
+// ============================================================================
+// DictWorkerCache (per-worker, lock-free hot path)
+// ============================================================================
+
+/// Per-worker dictionary cache for lock-free lookups.
+///
+/// Created at worker spawn time from a snapshot of [`SharedDictAllocator`].
+/// All lookups hit the local `FxHashMap` first (no lock). Only genuinely
+/// new entries touch the shared allocator.
+///
+/// Follows the same pattern as [`WorkerCache`] in
+/// `fluree-db-transact/src/namespace.rs`.
+pub struct DictWorkerCache {
+    alloc: Arc<SharedDictAllocator>,
+    /// Local reverse map: IRI string → id. Populated from snapshot,
+    /// extended incrementally on shared allocator misses.
+    local_map: FxHashMap<String, u32>,
+    /// The allocator's next-to-be-assigned ID at snapshot time.
+    /// Any id >= this was allocated after the snapshot.
+    snapshot_next_id: u32,
+}
+
+impl DictWorkerCache {
+    /// Create a new worker cache from a snapshot of the shared allocator.
+    pub fn new(alloc: Arc<SharedDictAllocator>) -> Self {
+        let (local_map, snapshot_next_id) = alloc.snapshot();
+        Self {
+            alloc,
+            local_map,
+            snapshot_next_id,
+        }
+    }
+
+    /// Look up or insert a string. Local cache hit path is lock-free.
+    pub fn get_or_insert(&mut self, s: &str) -> u32 {
+        // Local fast path — no lock
+        if let Some(&id) = self.local_map.get(s) {
+            return id;
+        }
+        // Shared allocator (may lock)
+        let id = self.alloc.get_or_insert(s);
+        self.local_map.insert(s.to_string(), id);
+        id
+    }
+
+    /// Look up or insert by prefix + name parts.
+    ///
+    /// Uses a stack buffer to avoid heap allocation on local cache hits.
+    pub fn get_or_insert_parts(&mut self, prefix: &str, name: &str) -> u32 {
+        let total_len = prefix.len() + name.len();
+
+        // Stack-based lookup for short IRIs
+        if total_len <= 256 {
+            let mut buf = [0u8; 256];
+            buf[..prefix.len()].copy_from_slice(prefix.as_bytes());
+            buf[prefix.len()..total_len].copy_from_slice(name.as_bytes());
+            // SAFETY: buf[..total_len] is copied from two valid UTF-8 &str slices.
+            let iri = unsafe { std::str::from_utf8_unchecked(&buf[..total_len]) };
+
+            if let Some(&id) = self.local_map.get(iri) {
+                return id;
+            }
+        }
+
+        // Miss: heap allocate full IRI, go through shared allocator
+        let mut full_iri = String::with_capacity(total_len);
+        full_iri.push_str(prefix);
+        full_iri.push_str(name);
+        let id = self.alloc.get_or_insert(&full_iri);
+        self.local_map.insert(full_iri, id);
+        id
+    }
+
+    /// The snapshot watermark. IDs >= this value were allocated after
+    /// this worker's snapshot (by this or other workers).
+    pub fn snapshot_next_id(&self) -> u32 {
+        self.snapshot_next_id
+    }
+}
+
+// ============================================================================
+// DictAllocator (enum wrapper abstracting over serial / parallel modes)
+// ============================================================================
+
+/// Abstraction over dictionary allocation for both serial and parallel paths.
+///
+/// - `Exclusive`: wraps `&mut PredicateDict` for serial paths (transact,
+///   chunk 0, TriG).
+/// - `Cached`: wraps `&mut DictWorkerCache` for parallel import workers.
+pub enum DictAllocator<'a> {
+    Exclusive(&'a mut PredicateDict),
+    Cached(&'a mut DictWorkerCache),
+}
+
+impl DictAllocator<'_> {
+    /// Look up or insert a string, returning its u32 ID.
+    pub fn get_or_insert(&mut self, s: &str) -> u32 {
+        match self {
+            DictAllocator::Exclusive(dict) => dict.get_or_insert(s),
+            DictAllocator::Cached(cache) => cache.get_or_insert(s),
+        }
+    }
+
+    /// Look up or insert by prefix + name parts.
+    pub fn get_or_insert_parts(&mut self, prefix: &str, name: &str) -> u32 {
+        match self {
+            DictAllocator::Exclusive(dict) => dict.get_or_insert_parts(prefix, name),
+            DictAllocator::Cached(cache) => cache.get_or_insert_parts(prefix, name),
+        }
     }
 }
 
@@ -811,7 +1100,7 @@ impl GlobalDicts {
         )?;
 
         // Write predicate id → IRI table (JSON array by id).
-        // This is not a CAS artifact; the canonical query-time mapping is in the v2 root.
+        // This is not a CAS artifact; the canonical query-time mapping is in the v4 root.
         let preds: Vec<&str> = (0..self.predicates.len())
             .map(|p_id| self.predicates.resolve(p_id).unwrap_or(""))
             .collect();
@@ -1332,5 +1621,254 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- SharedDictAllocator tests ----
+
+    #[test]
+    fn test_shared_dict_from_predicate_dict() {
+        let mut dict = PredicateDict::new();
+        dict.get_or_insert("http://example.org/name");
+        dict.get_or_insert("http://example.org/age");
+
+        let alloc = SharedDictAllocator::from_predicate_dict(&dict);
+        assert_eq!(alloc.len(), 2);
+
+        // Pre-seeded entries are found via read-lock fast path
+        assert_eq!(alloc.get_or_insert("http://example.org/name"), 0);
+        assert_eq!(alloc.get_or_insert("http://example.org/age"), 1);
+        assert_eq!(alloc.len(), 2); // no new entries
+
+        // Novel entry gets next sequential ID
+        assert_eq!(alloc.get_or_insert("http://example.org/email"), 2);
+        assert_eq!(alloc.len(), 3);
+    }
+
+    #[test]
+    fn test_shared_dict_from_datatype_dict() {
+        let dt_dict = new_datatype_dict();
+        let alloc = SharedDictAllocator::from_predicate_dict(&dt_dict);
+        assert_eq!(alloc.len(), 14);
+
+        // Reserved datatypes are found
+        assert_eq!(
+            alloc.get_or_insert(fluree_vocab::xsd::STRING),
+            DatatypeDictId::STRING.as_u16() as u32
+        );
+
+        // Novel datatype gets ID 14
+        assert_eq!(alloc.get_or_insert(fluree_vocab::xsd::G_YEAR), 14);
+    }
+
+    #[test]
+    fn test_shared_dict_get_or_insert_parts() {
+        let alloc = SharedDictAllocator::from_predicate_dict(&PredicateDict::new());
+
+        let id1 = alloc.get_or_insert_parts("http://example.org/", "name");
+        let id2 = alloc.get_or_insert_parts("http://example.org/", "age");
+        let id1_again = alloc.get_or_insert_parts("http://example.org/", "name");
+
+        assert_eq!(id1, 0);
+        assert_eq!(id2, 1);
+        assert_eq!(id1, id1_again);
+        assert_eq!(alloc.len(), 2);
+
+        // Verify consistency with full-string insert
+        assert_eq!(alloc.get_or_insert("http://example.org/name"), 0);
+    }
+
+    #[test]
+    fn test_shared_dict_resolve_and_all_entries() {
+        let alloc = SharedDictAllocator::from_predicate_dict(&PredicateDict::new());
+        alloc.get_or_insert("alpha");
+        alloc.get_or_insert("beta");
+
+        assert_eq!(alloc.resolve(0), Some("alpha".to_string()));
+        assert_eq!(alloc.resolve(1), Some("beta".to_string()));
+        assert_eq!(alloc.resolve(2), None);
+
+        let entries = alloc.all_entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(&entries[0], &(0u64, b"alpha".to_vec()));
+        assert_eq!(&entries[1], &(1u64, b"beta".to_vec()));
+    }
+
+    #[test]
+    fn test_shared_dict_concurrent_access() {
+        let alloc = Arc::new(SharedDictAllocator::from_predicate_dict(
+            &PredicateDict::new(),
+        ));
+
+        // Pre-seed some entries
+        alloc.get_or_insert("http://example.org/name");
+        alloc.get_or_insert("http://example.org/age");
+
+        // Spawn threads that concurrently look up and insert
+        let handles: Vec<_> = (0..4)
+            .map(|thread_id| {
+                let alloc = Arc::clone(&alloc);
+                std::thread::spawn(move || {
+                    let mut ids = Vec::new();
+                    // All threads look up the same pre-seeded entries
+                    ids.push(alloc.get_or_insert("http://example.org/name"));
+                    ids.push(alloc.get_or_insert("http://example.org/age"));
+                    // Each thread inserts a unique entry
+                    ids.push(
+                        alloc.get_or_insert(&format!("http://example.org/prop_{}", thread_id)),
+                    );
+                    ids
+                })
+            })
+            .collect();
+
+        let results: Vec<Vec<u32>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // All threads agree on pre-seeded IDs
+        for r in &results {
+            assert_eq!(r[0], 0, "name should be ID 0");
+            assert_eq!(r[1], 1, "age should be ID 1");
+        }
+
+        // Each thread's unique entry got a distinct ID >= 2
+        let unique_ids: std::collections::HashSet<u32> = results.iter().map(|r| r[2]).collect();
+        assert_eq!(
+            unique_ids.len(),
+            4,
+            "4 unique props should get 4 distinct IDs"
+        );
+        for &id in &unique_ids {
+            assert!(id >= 2, "unique IDs should start at 2, got {}", id);
+        }
+
+        assert_eq!(alloc.len(), 6); // 2 pre-seeded + 4 unique
+    }
+
+    // ---- DictWorkerCache tests ----
+
+    #[test]
+    fn test_worker_cache_local_hit() {
+        let mut dict = PredicateDict::new();
+        dict.get_or_insert("http://example.org/name");
+        dict.get_or_insert("http://example.org/age");
+
+        let alloc = Arc::new(SharedDictAllocator::from_predicate_dict(&dict));
+        let mut cache = DictWorkerCache::new(Arc::clone(&alloc));
+
+        // Local hit — no lock needed
+        assert_eq!(cache.get_or_insert("http://example.org/name"), 0);
+        assert_eq!(cache.get_or_insert("http://example.org/age"), 1);
+
+        // Miss → goes to shared allocator
+        assert_eq!(cache.get_or_insert("http://example.org/email"), 2);
+
+        // Subsequent lookup is now a local hit
+        assert_eq!(cache.get_or_insert("http://example.org/email"), 2);
+    }
+
+    #[test]
+    fn test_worker_cache_parts_lookup() {
+        let mut dict = PredicateDict::new();
+        dict.get_or_insert("http://example.org/name");
+
+        let alloc = Arc::new(SharedDictAllocator::from_predicate_dict(&dict));
+        let mut cache = DictWorkerCache::new(Arc::clone(&alloc));
+
+        // Parts lookup hits local cache
+        assert_eq!(cache.get_or_insert_parts("http://example.org/", "name"), 0);
+
+        // Parts lookup for novel entry
+        assert_eq!(cache.get_or_insert_parts("http://example.org/", "email"), 1);
+
+        // Consistent with full-string lookup
+        assert_eq!(cache.get_or_insert("http://example.org/email"), 1);
+    }
+
+    #[test]
+    fn test_worker_cache_snapshot_watermark() {
+        let mut dict = PredicateDict::new();
+        dict.get_or_insert("alpha");
+        dict.get_or_insert("beta");
+
+        let alloc = Arc::new(SharedDictAllocator::from_predicate_dict(&dict));
+        let cache = DictWorkerCache::new(Arc::clone(&alloc));
+
+        // Snapshot watermark reflects pre-seeded entries
+        assert_eq!(cache.snapshot_next_id(), 2);
+    }
+
+    #[test]
+    fn test_worker_cache_sees_other_workers_inserts() {
+        let alloc = Arc::new(SharedDictAllocator::from_predicate_dict(
+            &PredicateDict::new(),
+        ));
+
+        let mut cache_a = DictWorkerCache::new(Arc::clone(&alloc));
+        let mut cache_b = DictWorkerCache::new(Arc::clone(&alloc));
+
+        // Worker A inserts
+        let id_a = cache_a.get_or_insert("http://example.org/foo");
+        assert_eq!(id_a, 0);
+
+        // Worker B inserts the same string — gets same ID (from shared allocator)
+        let id_b = cache_b.get_or_insert("http://example.org/foo");
+        assert_eq!(id_b, 0);
+
+        // Worker B inserts a new string
+        let id_b2 = cache_b.get_or_insert("http://example.org/bar");
+        assert_eq!(id_b2, 1);
+
+        assert_eq!(alloc.len(), 2);
+    }
+
+    // ---- DictAllocator tests ----
+
+    #[test]
+    fn test_dict_allocator_exclusive_mode() {
+        let mut dict = PredicateDict::new();
+        let mut alloc = DictAllocator::Exclusive(&mut dict);
+
+        assert_eq!(alloc.get_or_insert("alpha"), 0);
+        assert_eq!(alloc.get_or_insert("beta"), 1);
+        assert_eq!(alloc.get_or_insert_parts("http://", "gamma"), 2);
+        assert_eq!(alloc.get_or_insert("alpha"), 0); // dedup
+    }
+
+    #[test]
+    fn test_dict_allocator_cached_mode() {
+        let dict = PredicateDict::new();
+        let shared = Arc::new(SharedDictAllocator::from_predicate_dict(&dict));
+        let mut cache = DictWorkerCache::new(shared);
+        let mut alloc = DictAllocator::Cached(&mut cache);
+
+        assert_eq!(alloc.get_or_insert("alpha"), 0);
+        assert_eq!(alloc.get_or_insert("beta"), 1);
+        assert_eq!(alloc.get_or_insert_parts("http://", "gamma"), 2);
+        assert_eq!(alloc.get_or_insert("alpha"), 0); // dedup
+    }
+
+    #[test]
+    fn test_graph_allocator_convention() {
+        // Verify the graph allocator convention: dict_id + 1 = g_id.
+        // Default graph (g_id=0) is NOT in the dict.
+        // txn-meta is dict_id=0, so g_id=0+1=1.
+        let mut graph_dict = PredicateDict::new();
+        let txn_meta_dict_id = graph_dict.get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
+        assert_eq!(txn_meta_dict_id, 0);
+        assert_eq!(txn_meta_dict_id + 1, 1); // g_id = 1 for txn-meta
+
+        // Promote to shared allocator
+        let alloc = Arc::new(SharedDictAllocator::from_predicate_dict(&graph_dict));
+        let mut cache = DictWorkerCache::new(alloc);
+
+        // txn-meta lookup returns same dict_id
+        assert_eq!(
+            cache.get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta"),
+            0
+        );
+
+        // Custom named graph gets dict_id=1 → g_id=2
+        let custom_dict_id = cache.get_or_insert("http://example.org/graph/custom");
+        assert_eq!(custom_dict_id, 1);
+        assert_eq!(custom_dict_id + 1, 2); // g_id = 2
     }
 }

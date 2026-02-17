@@ -34,8 +34,8 @@ const LEAF_MAGIC: [u8; 4] = *b"FLI2";
 /// Current leaf file format version.
 const LEAF_VERSION: u8 = 2;
 
-/// Fixed part of the leaf header: magic(4) + version(1) + leaflet_count(1) + pad(2) + total_rows(8) + first_key(28) + last_key(28) = 72.
-const LEAF_HEADER_FIXED: usize = 72;
+/// Fixed part of the leaf header: magic(4) + version(1) + leaflet_count(1) + pad(2) + total_rows(8) + first_key(26) + last_key(26) = 68.
+const LEAF_HEADER_FIXED: usize = 68;
 
 /// Per-leaflet directory entry: offset(8) + compressed_len(4) + row_count(4) + first_s_id(8) + first_p_id(4) = 28.
 const LEAFLET_DIR_ENTRY: usize = 28;
@@ -45,13 +45,13 @@ const LEAFLET_DIR_ENTRY: usize = 28;
 // ============================================================================
 
 /// Compact sort key stored in leaf headers and branch entries.
-/// 28 bytes: g_id(4) + s_id(8) + p_id(4) + dt(2) + o_kind(1) + _pad(1) + o_key(8) = 28.
+/// 26 bytes: g_id(2) + s_id(8) + p_id(4) + dt(2) + o_kind(1) + _pad(1) + o_key(8) = 26.
 ///
-/// Note: For branch routing we use full RunRecord keys (40 bytes). This
+/// Note: For branch routing we use full RunRecord keys (34 bytes). This
 /// compact form is only used inside leaf file headers for space efficiency.
 #[derive(Debug, Clone, Copy)]
 pub struct SortKey {
-    pub g_id: u32,
+    pub g_id: u16,
     pub s_id: u64,
     pub p_id: u32,
     pub dt: u16,
@@ -59,7 +59,7 @@ pub struct SortKey {
     pub _pad: u8,
     pub o_key: u64,
 }
-// Serialized size is SORT_KEY_BYTES (28); in-memory layout may differ.
+// Serialized size is SORT_KEY_BYTES (26); in-memory layout may differ.
 
 impl SortKey {
     fn from_record(r: &RunRecord) -> Self {
@@ -75,30 +75,30 @@ impl SortKey {
     }
 
     fn write_to(&self, buf: &mut [u8]) {
-        buf[0..4].copy_from_slice(&self.g_id.to_le_bytes());
-        buf[4..12].copy_from_slice(&self.s_id.to_le_bytes());
-        buf[12..16].copy_from_slice(&self.p_id.to_le_bytes());
-        buf[16..18].copy_from_slice(&self.dt.to_le_bytes());
-        buf[18] = self.o_kind;
-        buf[19] = 0;
-        buf[20..28].copy_from_slice(&self.o_key.to_le_bytes());
+        buf[0..2].copy_from_slice(&self.g_id.to_le_bytes());
+        buf[2..10].copy_from_slice(&self.s_id.to_le_bytes());
+        buf[10..14].copy_from_slice(&self.p_id.to_le_bytes());
+        buf[14..16].copy_from_slice(&self.dt.to_le_bytes());
+        buf[16] = self.o_kind;
+        buf[17] = 0;
+        buf[18..26].copy_from_slice(&self.o_key.to_le_bytes());
     }
 
     fn read_from(buf: &[u8]) -> Self {
         Self {
-            g_id: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
-            s_id: u64::from_le_bytes(buf[4..12].try_into().unwrap()),
-            p_id: u32::from_le_bytes(buf[12..16].try_into().unwrap()),
-            dt: u16::from_le_bytes(buf[16..18].try_into().unwrap()),
-            o_kind: buf[18],
+            g_id: u16::from_le_bytes(buf[0..2].try_into().unwrap()),
+            s_id: u64::from_le_bytes(buf[2..10].try_into().unwrap()),
+            p_id: u32::from_le_bytes(buf[10..14].try_into().unwrap()),
+            dt: u16::from_le_bytes(buf[14..16].try_into().unwrap()),
+            o_kind: buf[16],
             _pad: 0,
-            o_key: u64::from_le_bytes(buf[20..28].try_into().unwrap()),
+            o_key: u64::from_le_bytes(buf[18..26].try_into().unwrap()),
         }
     }
 }
 
-/// Sort key written size in bytes (exactly 28 bytes in leaf headers).
-const SORT_KEY_BYTES: usize = 28;
+/// Sort key written size in bytes (exactly 26 bytes in leaf headers).
+const SORT_KEY_BYTES: usize = 26;
 
 // ============================================================================
 // Encoded leaflet (intermediate)
@@ -247,8 +247,12 @@ pub struct LeafWriter {
     dt_width: u8,
     /// Width of p_id encoding in bytes (2 = u16, 4 = u32).
     p_width: u8,
-    /// Buffer of records for the current leaflet.
+    /// Buffer of records for the current leaflet (Region 1 + 2).
     record_buf: Vec<RunRecord>,
+    /// Buffer of history entries for the current leaflet (Region 3).
+    /// Contains only non-winning duplicates from merge dedup — NOT a copy
+    /// of record_buf. Empty for single-version facts.
+    history_buf: Vec<Region3Entry>,
     /// Scratch buffer reused for Region 3 sorting.
     r3_tmp: Vec<Region3Entry>,
     /// Encoded leaflets for the current leaf file.
@@ -263,6 +267,9 @@ pub struct LeafWriter {
     leaf_infos: Vec<LeafInfo>,
     perf: LeafWriterPerf,
     perf_enabled: bool,
+    /// When true, skip Region 3 (history journal) entirely. Safe for
+    /// append-only bulk import where all ops are asserts with unique `t`.
+    skip_region3: bool,
 }
 
 impl LeafWriter {
@@ -310,6 +317,7 @@ impl LeafWriter {
             dt_width,
             p_width,
             record_buf: Vec::with_capacity(leaflet_rows),
+            history_buf: Vec::new(),
             r3_tmp: Vec::with_capacity(leaflet_rows),
             current_leaflets: Vec::with_capacity(leaflets_per_leaf),
             leaf_first_record: None,
@@ -318,21 +326,78 @@ impl LeafWriter {
             leaf_infos: Vec::new(),
             perf: LeafWriterPerf::default(),
             perf_enabled,
+            skip_region3: false,
         }
     }
 
-    /// Push a single record. Flushes leaflet/leaf as thresholds are hit.
+    /// Enable or disable Region 3 (history journal) generation.
+    ///
+    /// When `true`, leaflets are encoded without Region 3 — skipping the
+    /// per-leaflet allocation, radix sort, and zstd compression of history
+    /// entries. Safe for append-only bulk import where all ops are asserts.
+    pub fn set_skip_region3(&mut self, skip: bool) {
+        self.skip_region3 = skip;
+    }
+
+    /// Push a single record (no history). Flushes leaflet/leaf as thresholds are hit.
     pub fn push_record(&mut self, record: RunRecord) -> io::Result<()> {
+        self.push_record_with_history(record, &[])
+    }
+
+    /// Push a record for Region 1 along with its associated history entries
+    /// for Region 3. The history entries are non-winning duplicates from the
+    /// merge dedup — they represent intermediate asserts and retractions for
+    /// the same fact identity.
+    ///
+    /// Record and history are pushed atomically (before the flush threshold
+    /// check) so that history entries are always flushed with the correct
+    /// leaflet.
+    pub fn push_record_with_history(
+        &mut self,
+        record: RunRecord,
+        history: &[RunRecord],
+    ) -> io::Result<()> {
         if self.leaf_first_record.is_none() {
             self.leaf_first_record = Some(record);
         }
         self.last_record = Some(record);
         self.record_buf.push(record);
 
+        if !self.skip_region3 {
+            for h in history {
+                self.history_buf.push(Region3Entry::from_run_record(h));
+            }
+        }
+
         if self.record_buf.len() >= self.leaflet_rows {
             self.flush_leaflet()?;
         }
 
+        Ok(())
+    }
+
+    /// Write history entries (R3) for a retract-winner without a corresponding
+    /// R1 row. Used during rebuild when the merge winner is a retraction (op=0):
+    /// - The retract itself is always written to R3 (it's a real event the replay
+    ///   journal must record for time-travel).
+    /// - Any earlier asserts/retracts from dedup history are also written.
+    ///
+    /// Only meaningful when `skip_region3 == false`. Import (skip_region3 == true)
+    /// never calls this.
+    pub fn push_history_only(
+        &mut self,
+        winner: &RunRecord,
+        history: &[RunRecord],
+    ) -> io::Result<()> {
+        debug_assert!(
+            !self.skip_region3,
+            "push_history_only should not be called when skip_region3 is true"
+        );
+        // The retract winner is always a real event.
+        self.history_buf.push(Region3Entry::from_run_record(winner));
+        for h in history {
+            self.history_buf.push(Region3Entry::from_run_record(h));
+        }
         Ok(())
     }
 
@@ -347,22 +412,22 @@ impl LeafWriter {
         let first_s_id = self.record_buf[0].s_id.as_u64();
         let first_p_id = self.record_buf[0].p_id;
 
-        // Build R3 entries for time-travel support in bulk builds.
-        // Must be sorted in reverse chronological order (newest first) for replay.
-        let r3_t0 = self.perf_enabled.then(std::time::Instant::now);
-        let mut r3_entries: Vec<Region3Entry> = self
-            .record_buf
-            .iter()
-            .map(Region3Entry::from_run_record)
-            .collect();
-        radix_sort_r3_abs_t_desc(&mut r3_entries, &mut self.r3_tmp);
-        if let Some(t) = r3_t0 {
-            self.perf.region3_build_time += t.elapsed();
-        }
-        let data = self
-            .leaflet_encoder
-            .encode_leaflet_with_r3(&self.record_buf, &r3_entries);
+        // Build R3 from externally-provided history entries (non-winning
+        // duplicates from merge dedup). Only facts with multi-version history
+        // contribute entries; single-version facts produce empty R3.
+        let data = if self.skip_region3 || self.history_buf.is_empty() {
+            self.leaflet_encoder.encode_leaflet(&self.record_buf)
+        } else {
+            let r3_t0 = self.perf_enabled.then(std::time::Instant::now);
+            radix_sort_r3_abs_t_desc(&mut self.history_buf, &mut self.r3_tmp);
+            if let Some(t) = r3_t0 {
+                self.perf.region3_build_time += t.elapsed();
+            }
+            self.leaflet_encoder
+                .encode_leaflet_with_r3(&self.record_buf, &self.history_buf)
+        };
         self.record_buf.clear();
+        self.history_buf.clear();
         if let Some(t) = t0 {
             self.perf.leaflet_encode_time += t.elapsed();
         }
@@ -643,7 +708,7 @@ mod tests {
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
 
-    fn make_record(s_id: u64, p_id: u32, val: i64, t: i64) -> RunRecord {
+    fn make_record(s_id: u64, p_id: u32, val: i64, t: u32) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),

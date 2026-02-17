@@ -57,6 +57,14 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use tokio::sync::broadcast;
 
+/// Parse a default_context value.
+///
+/// **CID-only**: default context identities are always CID multibase strings
+/// (e.g., `"bafy..."`). Legacy storage address strings are not supported.
+pub fn parse_default_context_value(s: &str) -> Option<ContentId> {
+    s.parse::<ContentId>().ok()
+}
+
 /// Nameservice record containing ledger metadata
 ///
 /// This struct preserves the distinction between the ledger_id (canonical ledger:branch)
@@ -92,8 +100,9 @@ pub struct NsRecord {
     /// Transaction time of latest index
     pub index_t: i64,
 
-    /// Default context address for JSON-LD
-    pub default_context: Option<String>,
+    /// Content identifier for the default JSON-LD context blob.
+    #[serde(default)]
+    pub default_context: Option<ContentId>,
 
     /// Whether this ledger has been retracted
     pub retracted: bool,
@@ -306,6 +315,7 @@ impl GraphSourceRecord {
 ///
 /// Can be either a ledger record or a graph source record.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum NsLookupResult {
     /// A ledger record
     Ledger(NsRecord),
@@ -377,11 +387,21 @@ pub trait Publisher: Debug + Send + Sync {
         index_id: &ContentId,
     ) -> Result<()>;
 
-    /// Retract a ledger
+    /// Retract a ledger (soft drop)
     ///
     /// Marks the ledger as retracted. Future lookups will return the record
-    /// with `retracted: true`.
+    /// with `retracted: true`. The record is preserved so the alias cannot
+    /// be reused until `purge` is called.
     async fn retract(&self, ledger_id: &str) -> Result<()>;
+
+    /// Purge a ledger record entirely (hard drop)
+    ///
+    /// Removes the nameservice record so the alias can be reused.
+    /// Default implementation falls back to `retract` for backends
+    /// that don't support full removal.
+    async fn purge(&self, ledger_id: &str) -> Result<()> {
+        self.retract(ledger_id).await
+    }
 
     /// Get the publishing ledger ID for a ledger.
     ///
@@ -795,9 +815,9 @@ impl Default for StatusPayload {
 /// settings stored in `extra`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ConfigPayload {
-    /// Default JSON-LD context address
+    /// Content identifier for the default JSON-LD context blob.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default_context: Option<String>,
+    pub default_context: Option<ContentId>,
 
     /// Content ID of the LedgerConfig blob (origin discovery).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -814,10 +834,10 @@ impl ConfigPayload {
         Self::default()
     }
 
-    /// Create a config payload with a default context
-    pub fn with_default_context(context: impl Into<String>) -> Self {
+    /// Create a config payload with a default context CID
+    pub fn with_default_context(cid: ContentId) -> Self {
         Self {
-            default_context: Some(context.into()),
+            default_context: Some(cid),
             config_id: None,
             extra: std::collections::HashMap::new(),
         }
@@ -903,6 +923,7 @@ pub enum StatusCasResult {
 /// the current value. The caller should handle conflicts by examining `actual`
 /// and deciding whether to retry or report divergence.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ConfigCasResult {
     /// CAS succeeded — config was updated to the new value
     Updated,
@@ -1163,11 +1184,9 @@ mod tests {
 
     #[test]
     fn test_config_payload_with_default_context() {
-        let config = ConfigPayload::with_default_context("fluree:file://contexts/v1.json");
-        assert_eq!(
-            config.default_context,
-            Some("fluree:file://contexts/v1.json".to_string())
-        );
+        let cid = ContentId::new(ContentKind::LedgerConfig, b"test-context-data");
+        let config = ConfigPayload::with_default_context(cid.clone());
+        assert_eq!(config.default_context, Some(cid));
     }
 
     #[test]
@@ -1186,7 +1205,8 @@ mod tests {
 
     #[test]
     fn test_config_value_new() {
-        let config = ConfigValue::new(5, Some(ConfigPayload::with_default_context("ctx")));
+        let ctx_cid = ContentId::new(ContentKind::LedgerConfig, b"ctx");
+        let config = ConfigValue::new(5, Some(ConfigPayload::with_default_context(ctx_cid)));
         assert_eq!(config.v, 5);
         assert!(config.payload.is_some());
         assert!(!config.is_unborn());

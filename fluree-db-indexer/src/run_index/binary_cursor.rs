@@ -575,7 +575,7 @@ impl BinaryCursor {
             };
         };
 
-        let leaf_indices = branch.find_leaves_for_subject(g_id, s_id);
+        let leaf_indices = branch.find_leaves_for_subject(s_id);
 
         let current_idx = leaf_indices.start;
         // Don't set exhausted = true even when leaf_indices is empty.
@@ -747,8 +747,19 @@ impl BinaryCursor {
                 &[]
             };
 
-            // Memory-map leaf file (leaf_entry.path is fully resolved by branch reader)
-            let file = std::fs::File::open(&leaf_entry.path)?;
+            // Memory-map leaf file.
+            //
+            // For remote CAS stores (e.g., S3), leaf files may be downloaded lazily.
+            // If the file is missing, attempt to fetch it into the cache dir and retry.
+            let file = match std::fs::File::open(&leaf_entry.path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    self.store
+                        .ensure_index_leaf_cached(&leaf_entry.content_hash, &leaf_entry.path)?;
+                    std::fs::File::open(&leaf_entry.path)?
+                }
+                Err(e) => return Err(e),
+            };
             let leaf_mmap = unsafe { Mmap::map(&file)? };
             let header = read_leaf_header(&leaf_mmap)?;
 

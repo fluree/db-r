@@ -41,6 +41,9 @@ pub mod normalize;
 // GraphSink adapter for emitting triples to fluree-graph-ir
 pub mod adapter;
 
+// JSON-LD file splitter for bulk import
+pub mod splitter;
+
 pub use compact::ContextCompactor;
 pub use context::{Container, ContextEntry, ParsedContext, TypeValue};
 pub use error::{JsonLdError, Result};
