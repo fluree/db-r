@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use fluree_db_core::geo::{geo_proximity_bounds, haversine_distance};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::{FlakeValue, GeoPointBits};
+use fluree_db_core::{FlakeValue, GeoPointBits, GraphId};
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, OverlayOp, RunRecord,
@@ -129,7 +129,7 @@ impl GeoSearchOperator {
     fn execute_search(
         &self,
         store: &Arc<BinaryIndexStore>,
-        g_id: u32,
+        g_id: GraphId,
         to_t: i64,
         center_lat: f64,
         center_lng: f64,
@@ -159,7 +159,7 @@ impl GeoSearchOperator {
             // POST sort order: p_id, o_kind, o_key, s_id, dt, t, op, lang_id, i
             // We set dt to span full range since GeoPoints may have any datatype ID
             let min_key = RunRecord {
-                g_id: g_id as u16,
+                g_id,
                 s_id: SubjectId::from_u64(0),
                 p_id,
                 dt: 0,
@@ -172,7 +172,7 @@ impl GeoSearchOperator {
             };
 
             let max_key = RunRecord {
-                g_id: g_id as u16,
+                g_id,
                 s_id: SubjectId::from_u64(u64::MAX),
                 p_id,
                 dt: u16::MAX, // Span all datatype IDs

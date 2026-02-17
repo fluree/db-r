@@ -4,6 +4,7 @@
 //! collected during indexing. They are used by the query planner for
 //! selectivity estimation and by the index root for metadata.
 
+use crate::ids::GraphId;
 use crate::sid::Sid;
 
 // === Per-Property Statistics ===
@@ -142,7 +143,7 @@ pub struct GraphPropertyStatEntry {
 #[derive(Debug, Clone)]
 pub struct GraphStatsEntry {
     /// Graph dictionary ID (0 = default graph).
-    pub g_id: u32,
+    pub g_id: GraphId,
     /// Total number of flakes in this graph (after dedup).
     pub flakes: u64,
     /// Byte size of flakes in this graph in the binary index.

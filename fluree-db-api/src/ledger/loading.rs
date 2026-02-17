@@ -5,7 +5,7 @@ use crate::{
     TypeErasedStore,
 };
 use fluree_db_core::ContentStore;
-use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION};
+use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_nameservice::{NameServiceError, Publisher};
 use fluree_db_query::BinaryRangeProvider;
 
@@ -49,29 +49,17 @@ where
                     ))
                 })?;
 
-                let root = serde_json::from_slice::<BinaryIndexRoot>(&bytes).map_err(|e| {
-                    ApiError::internal(format!(
-                        "failed to parse binary index root for {}: {}",
-                        index_cid, e
-                    ))
-                })?;
-                if root.version != BINARY_INDEX_ROOT_VERSION {
-                    return Err(ApiError::internal(format!(
-                        "unsupported binary index root version {} for {} (expected {})",
-                        root.version, index_cid, BINARY_INDEX_ROOT_VERSION
-                    )));
-                }
-
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
                 let cs = std::sync::Arc::new(cs);
-                let mut store = BinaryIndexStore::load_from_root_default(cs, &root, &cache_dir)
-                    .await
-                    .map_err(|e| {
-                        ApiError::internal(format!(
-                            "failed to load binary index store for {}: {}",
-                            index_cid, e
-                        ))
-                    })?;
+                let mut store =
+                    BinaryIndexStore::load_from_root_bytes_default(cs, &bytes, &cache_dir)
+                        .await
+                        .map_err(|e| {
+                            ApiError::internal(format!(
+                                "failed to load binary index store for {}: {}",
+                                index_cid, e
+                            ))
+                        })?;
 
                 // Augment namespace codes with entries from novelty commits.
                 // The index root only contains namespaces known at index time, but

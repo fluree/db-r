@@ -10,8 +10,9 @@ use crate::view::{FlureeView, ReasoningModePrecedence};
 use crate::{
     time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
 };
+use fluree_db_core::ids::GraphId;
 use fluree_db_core::{ContentStore, DictNovelty, Flake, IndexType, OverlayProvider, Sid};
-use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore, BINARY_INDEX_ROOT_VERSION};
+use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_query::rewrite::ReasoningModes;
 use fluree_db_query::BinaryRangeProvider;
 
@@ -170,7 +171,7 @@ where
     /// For `Named` graphs, the IRI must be an exact match in the binary index.
     /// No prefix expansion or guessing is performed - use the structured
     /// `graph` field in dataset specs for cleaner IRI handling.
-    fn resolve_graph_ref(view: &FlureeView, graph_ref: GraphRef) -> Result<u32> {
+    fn resolve_graph_ref(view: &FlureeView, graph_ref: GraphRef) -> Result<GraphId> {
         match graph_ref {
             GraphRef::Default => Ok(0),
             GraphRef::TxnMeta => Ok(1),
@@ -280,30 +281,24 @@ where
                     .get(&index_cid)
                     .await
                     .map_err(|e| ApiError::internal(format!("read index root: {}", e)))?;
-                if let Ok(root) = serde_json::from_slice::<BinaryIndexRoot>(&bytes) {
-                    if root.version == BINARY_INDEX_ROOT_VERSION {
-                        let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
-                            storage.clone(),
-                            &root.ledger_id,
-                        ));
-                        let mut store =
-                            BinaryIndexStore::load_from_root_default(cs, &root, &cache_dir)
-                                .await
-                                .map_err(|e| {
-                                    ApiError::internal(format!("load binary index: {}", e))
-                                })?;
+                let cache_dir = std::env::temp_dir().join("fluree-cache");
+                let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
+                    storage.clone(),
+                    &snapshot.db.ledger_id,
+                ));
+                let mut store =
+                    BinaryIndexStore::load_from_root_bytes_default(cs, &bytes, &cache_dir)
+                        .await
+                        .map_err(|e| ApiError::internal(format!("load binary index: {}", e)))?;
 
-                        // Augment namespace codes with entries from novelty commits.
-                        store.augment_namespace_codes(&snapshot.db.namespace_codes);
+                // Augment namespace codes with entries from novelty commits.
+                store.augment_namespace_codes(&snapshot.db.namespace_codes);
 
-                        let arc_store = Arc::new(store);
-                        let dn = snapshot.dict_novelty.clone();
-                        let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
-                        snapshot.db.range_provider = Some(Arc::new(provider));
-                        snapshot.binary_store = Some(arc_store);
-                    }
-                }
+                let arc_store = Arc::new(store);
+                let dn = snapshot.dict_novelty.clone();
+                let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
+                snapshot.db.range_provider = Some(Arc::new(provider));
+                snapshot.binary_store = Some(arc_store);
             }
         }
 
@@ -372,30 +367,25 @@ where
                             index_cid, e
                         ))
                     })?;
-                    let root: BinaryIndexRoot = serde_json::from_slice(&bytes).map_err(|e| {
-                        ApiError::internal(format!("failed to parse v2 root {}: {}", index_cid, e))
-                    })?;
-                    if root.version == BINARY_INDEX_ROOT_VERSION {
-                        let cache_dir = std::env::temp_dir().join("fluree-cache");
-                        let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
-                            storage.clone(),
-                            &root.ledger_id,
-                        ));
-                        let mut store =
-                            BinaryIndexStore::load_from_root_default(cs, &root, &cache_dir)
-                                .await
-                                .map_err(|e| {
-                                    ApiError::internal(format!(
-                                        "load binary index store from {}: {}",
-                                        index_cid, e
-                                    ))
-                                })?;
+                    let cache_dir = std::env::temp_dir().join("fluree-cache");
+                    let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
+                        storage.clone(),
+                        &record.ledger_id,
+                    ));
+                    let mut store =
+                        BinaryIndexStore::load_from_root_bytes_default(cs, &bytes, &cache_dir)
+                            .await
+                            .map_err(|e| {
+                                ApiError::internal(format!(
+                                    "load binary index store from {}: {}",
+                                    index_cid, e
+                                ))
+                            })?;
 
-                        // Augment namespace codes with entries from novelty commits.
-                        store.augment_namespace_codes(&view.db.namespace_codes);
+                    // Augment namespace codes with entries from novelty commits.
+                    store.augment_namespace_codes(&view.db.namespace_codes);
 
-                        view.binary_store = Some(Arc::new(store));
-                    }
+                    view.binary_store = Some(Arc::new(store));
                 }
             }
         }

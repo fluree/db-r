@@ -6,7 +6,7 @@
 //! - K-way merge with dedup
 //! - Per-graph LeafWriter + BranchManifest
 
-use super::branch::write_branch_manifest;
+use super::branch::{write_branch_v2, LeafEntry};
 use super::dict_io::{read_predicate_dict, write_language_dict};
 use super::lang_remap::build_lang_remap;
 use super::leaf::{LeafInfo, LeafWriter};
@@ -15,6 +15,7 @@ use super::merge::KWayMerge;
 use super::run_record::{cmp_for_order, RunRecord, RunSortOrder};
 use super::streaming_reader::StreamingRunReader;
 use fluree_db_core::value_id::ObjKind;
+use fluree_db_core::GraphId;
 use rustc_hash::FxHashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -63,11 +64,13 @@ fn new_leaf_writer_for_graph(params: LeafWriterParams) -> LeafWriter {
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn finish_open_graph(
     current_g_id: &mut Option<u16>,
     current_writer: &mut Option<LeafWriter>,
     graph_results: &mut Vec<GraphIndexResult>,
     index_dir: &Path,
+    order: RunSortOrder,
     order_name: &str,
     mut on_writer_pre_finish: impl FnMut(&LeafWriter),
     mut on_graph_finished: impl FnMut(&GraphIndexResult),
@@ -83,7 +86,7 @@ fn finish_open_graph(
         .take()
         .ok_or_else(|| io::Error::other("writer finished but current_g_id was None"))?;
 
-    let result = finish_graph(g_id as u32, leaf_infos, index_dir, order_name)?;
+    let result = finish_graph(g_id, order, leaf_infos, index_dir, order_name)?;
     on_graph_finished(&result);
     graph_results.push(result);
     Ok(())
@@ -176,11 +179,14 @@ impl Default for IndexBuildConfig {
 /// Result for a single graph's index build.
 #[derive(Debug)]
 pub struct GraphIndexResult {
-    pub g_id: u32,
+    pub g_id: GraphId,
     pub leaf_count: u32,
     pub total_rows: u64,
-    /// Content hash (SHA-256 hex) of the branch manifest file.
-    pub branch_hash: String,
+    /// Content identifier for the branch manifest (FBR2).
+    pub branch_cid: fluree_db_core::ContentId,
+    /// Leaf entries for this graph/order (used for default graph inline routing
+    /// in `IndexRootV5` and for CAS upload discovery).
+    pub leaf_entries: Vec<LeafEntry>,
     pub graph_dir: PathBuf,
 }
 
@@ -422,6 +428,7 @@ fn build_index_from_run_paths_inner(
                 &mut current_writer,
                 &mut graph_results,
                 &config.index_dir,
+                order,
                 order_name,
                 |writer| {
                     if perf_enabled {
@@ -522,6 +529,7 @@ fn build_index_from_run_paths_inner(
         &mut current_writer,
         &mut graph_results,
         &config.index_dir,
+        order,
         order_name,
         |writer| {
             if perf_enabled {
@@ -1036,6 +1044,7 @@ pub fn build_spot_from_sorted_commits<
                 &mut current_writer,
                 &mut graph_results,
                 &config.index_dir,
+                order,
                 order_name,
                 |_writer| {},
                 |result| {
@@ -1114,6 +1123,7 @@ pub fn build_spot_from_sorted_commits<
         &mut current_writer,
         &mut graph_results,
         &config.index_dir,
+        order,
         order_name,
         |_writer| {},
         |result| {
@@ -1226,9 +1236,10 @@ fn discover_chunked_run_files(
     Ok(out)
 }
 
-/// Finish a graph: write content-addressed branch manifest, return result.
+/// Finish a graph: write content-addressed branch manifest (FBR2), return result.
 fn finish_graph(
-    g_id: u32,
+    g_id: GraphId,
+    order: RunSortOrder,
     leaf_infos: Vec<LeafInfo>,
     index_dir: &Path,
     order_dir: &str,
@@ -1238,13 +1249,26 @@ fn finish_graph(
     let total_rows: u64 = leaf_infos.iter().map(|l| l.total_rows).sum();
     let leaf_count = leaf_infos.len() as u32;
 
-    let branch_hash = write_branch_manifest(&graph_dir, &leaf_infos)?;
+    // Convert LeafInfo (build output) → LeafEntry (branch manifest entry)
+    let leaf_entries: Vec<LeafEntry> = leaf_infos
+        .iter()
+        .map(|info| LeafEntry {
+            first_key: info.first_key,
+            last_key: info.last_key,
+            row_count: info.total_rows,
+            leaf_cid: info.leaf_cid.clone(),
+            resolved_path: None,
+        })
+        .collect();
+
+    let branch_cid = write_branch_v2(&graph_dir, order, g_id, &leaf_entries)?;
 
     Ok(GraphIndexResult {
         g_id,
         leaf_count,
         total_rows,
-        branch_hash,
+        branch_cid,
+        leaf_entries,
         graph_dir,
     })
 }
@@ -1269,7 +1293,7 @@ fn write_index_manifest(
         json.push_str(&format!("      \"g_id\": {},\n", g.g_id));
         json.push_str(&format!("      \"leaf_count\": {},\n", g.leaf_count));
         json.push_str(&format!("      \"total_rows\": {},\n", g.total_rows));
-        json.push_str(&format!("      \"branch_hash\": \"{}\",\n", g.branch_hash));
+        json.push_str(&format!("      \"branch_cid\": \"{}\",\n", g.branch_cid));
         json.push_str(&format!(
             "      \"directory\": \"graph_{}/{}\"\n",
             g.g_id, order_name
@@ -1522,10 +1546,10 @@ mod tests {
         assert_eq!(result.graphs[0].total_rows, 5);
         assert!(result.graphs[0].leaf_count >= 1);
 
-        // Verify files exist
+        // Verify branch file exists (CID-named, no extension)
         let branch_path = result.graphs[0]
             .graph_dir
-            .join(format!("{}.fbr", result.graphs[0].branch_hash));
+            .join(result.graphs[0].branch_cid.to_string());
         assert!(branch_path.exists());
         assert!(index_dir.join("index_manifest_spot.json").exists());
 
@@ -1574,10 +1598,10 @@ mod tests {
         assert_eq!(result.graphs[0].g_id, 0);
         assert_eq!(result.graphs[0].total_rows, 4);
 
-        // Verify branch file exists
+        // Verify branch file exists (CID-named, no extension)
         let g0_branch = result.graphs[0]
             .graph_dir
-            .join(format!("{}.fbr", result.graphs[0].branch_hash));
+            .join(result.graphs[0].branch_cid.to_string());
         assert!(g0_branch.exists());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1756,10 +1780,10 @@ mod tests {
         assert_eq!(result.graphs[0].g_id, 0);
         assert_eq!(result.graphs[0].total_rows, 4);
 
-        // Verify branch file exists
+        // Verify branch file exists (CID-named, no extension)
         let branch_path = result.graphs[0]
             .graph_dir
-            .join(format!("{}.fbr", result.graphs[0].branch_hash));
+            .join(result.graphs[0].branch_cid.to_string());
         assert!(branch_path.exists());
         assert!(index_dir.join("index_manifest_spot.json").exists());
 

@@ -24,7 +24,7 @@ use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::range::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::{Flake, IndexType, OverlayProvider, RangeProvider, Sid};
+use fluree_db_core::{Flake, GraphId, IndexType, OverlayProvider, RangeProvider, Sid};
 use fluree_db_indexer::run_index::run_record::{RunRecord, RunSortOrder};
 use fluree_db_indexer::run_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch,
@@ -59,7 +59,7 @@ use std::sync::Arc;
 /// translated to integer IDs (e.g., unknown subject/predicate).
 pub fn binary_range(
     store: &Arc<BinaryIndexStore>,
-    g_id: u32,
+    g_id: GraphId,
     index: IndexType,
     test: RangeTest,
     match_val: &RangeMatch,
@@ -86,7 +86,7 @@ pub fn binary_range(
 #[allow(clippy::too_many_arguments)]
 fn binary_lookup_subject_predicate_refs_batched(
     store: &Arc<BinaryIndexStore>,
-    g_id: u32,
+    g_id: GraphId,
     index: IndexType,
     predicate: &Sid,
     subjects: &[Sid],
@@ -131,7 +131,7 @@ fn binary_lookup_subject_predicate_refs_batched(
 
     // Cursor bounds: PSOT key interval restricted to [min_s_id, max_s_id] within this predicate.
     let min_key = RunRecord {
-        g_id: g_id as u16,
+        g_id,
         s_id: SubjectId::from_u64(min_s_id),
         p_id,
         dt: 0,
@@ -143,7 +143,7 @@ fn binary_lookup_subject_predicate_refs_batched(
         i: 0,
     };
     let max_key = RunRecord {
-        g_id: g_id as u16,
+        g_id,
         s_id: SubjectId::from_u64(max_s_id),
         p_id,
         dt: u16::MAX,
@@ -230,7 +230,7 @@ fn binary_lookup_subject_predicate_refs_batched(
 /// Equality range query: all flakes matching the bound components exactly.
 fn binary_range_eq(
     store: &Arc<BinaryIndexStore>,
-    g_id: u32,
+    g_id: GraphId,
     index: IndexType,
     match_val: &RangeMatch,
     opts: &RangeOptions,
@@ -420,12 +420,16 @@ fn decode_batch_to_flakes_filtered(
 pub struct BinaryRangeProvider {
     store: Arc<BinaryIndexStore>,
     dict_novelty: Arc<DictNovelty>,
-    g_id: u32,
+    g_id: GraphId,
 }
 
 impl BinaryRangeProvider {
     /// Create a new provider for the given store, dict novelty, and default graph.
-    pub fn new(store: Arc<BinaryIndexStore>, dict_novelty: Arc<DictNovelty>, g_id: u32) -> Self {
+    pub fn new(
+        store: Arc<BinaryIndexStore>,
+        dict_novelty: Arc<DictNovelty>,
+        g_id: GraphId,
+    ) -> Self {
         Self {
             store,
             dict_novelty,

@@ -815,7 +815,7 @@ pub(crate) fn stats_record_for_remapped_run_record(
         .unwrap_or(ValueTypeTag::UNKNOWN);
 
     crate::stats::StatsRecord {
-        g_id: record.g_id as u32,
+        g_id: record.g_id,
         p_id: record.p_id,
         s_id: record.s_id.as_u64(),
         dt,

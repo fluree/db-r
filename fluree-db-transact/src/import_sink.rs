@@ -29,7 +29,7 @@ mod inner {
     use crate::value_convert::{convert_native_literal, convert_string_literal};
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
-    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
+    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, GraphId, Sid};
     use fluree_db_indexer::run_index::chunk_dict::{ChunkStringDict, ChunkSubjectDict};
     use fluree_db_indexer::run_index::global_dict::{DictWorkerCache, SharedDictAllocator};
     use fluree_db_indexer::run_index::run_record::LIST_INDEX_NONE;
@@ -144,7 +144,7 @@ mod inner {
         languages: FxHashMap<String, u16>,
         next_lang_id: u16,
         /// Graph ID for all records in this chunk (0 = default).
-        g_id: u32,
+        g_id: GraphId,
     }
 
     impl SpoolContext {
@@ -155,7 +155,7 @@ mod inner {
         pub fn new(
             spool_path: impl Into<std::path::PathBuf>,
             chunk_idx: usize,
-            g_id: u32,
+            g_id: GraphId,
             config: &SpoolConfig,
         ) -> std::io::Result<Self> {
             Ok(Self {
@@ -426,7 +426,7 @@ mod inner {
                 .unwrap_or(LIST_INDEX_NONE);
 
             let record = RunRecord {
-                g_id: self.g_id as u16,
+                g_id: self.g_id,
                 s_id: SubjectId::from_u64(s_id),
                 p_id,
                 dt: dt_id,

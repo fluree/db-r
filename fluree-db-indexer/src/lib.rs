@@ -48,7 +48,7 @@ pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 // - rebuild_index_from_commits (direct entry point given an NsRecord)
 // - CURRENT_INDEX_VERSION
 
-use fluree_db_core::{ContentId, ContentKind, ContentStore, ContentWriteResult, Storage};
+use fluree_db_core::{ContentId, ContentKind, ContentStore, ContentWriteResult, GraphId, Storage};
 use fluree_db_nameservice::{NameService, Publisher};
 
 /// Derive a `ContentId` from a `ContentWriteResult`.
@@ -249,7 +249,7 @@ pub const CURRENT_INDEX_VERSION: i32 = 2;
 /// Builds a binary columnar index from the commit chain. The pipeline:
 /// 1. Walks the commit chain and generates sorted run files
 /// 2. Builds per-graph leaf/branch indexes for all sort orders
-/// 3. Creates a `BinaryIndexRoot` descriptor and writes it to storage
+/// 3. Creates an `IndexRootV5` (IRB1) descriptor and writes it to storage
 ///
 /// Returns early if the index is already current (no work needed).
 /// Use `rebuild_index_from_commits` directly to force a rebuild regardless.
@@ -895,145 +895,153 @@ where
                 upload_dicts_from_disk(&storage, &ledger_id, &run_dir, store.namespace_codes())
                     .await?;
 
-            // F.3: Upload index artifacts (branches + leaves) to CAS
-            let graph_addresses =
+            // F.3: Upload index artifacts (branches + leaves) to CAS.
+            // Default graph (g_id=0): leaves uploaded, branch NOT (inline in root).
+            // Named graphs: both branches and leaves uploaded.
+            let uploaded_indexes =
                 upload_indexes_to_cas(&storage, &ledger_id, &build_results).await?;
 
-            // F.4: Build stats JSON from IdStatsHook (per-property HLL + class tracking).
-            let (stats_json, sketch_ref): (serde_json::Value, Option<fluree_db_core::ContentId>) = {
+            // F.4: Build IndexStats directly from IdStatsHook + class stats.
+            let index_stats: fluree_db_core::index_stats::IndexStats = {
                 let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
                     stats_hook.finalize_with_aggregate_properties();
 
-                // Class stats from SPOT merge (class → count + property → datatype).
-                let classes_json: Vec<serde_json::Value> = if let Some(ref cs) = spot_class_stats {
-                    crate::stats::build_class_stats_json(
-                        cs,
-                        &predicate_sids,
-                        dt_tags,
-                        &run_dir,
-                        store.namespace_codes(),
-                    )
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-                } else {
-                    Vec::new()
-                };
+                // Per-graph stats (already the correct type).
+                let graphs = id_result.graphs;
 
-                // Per-graph stats (p_id-keyed)
-                let graphs_json: Vec<serde_json::Value> = id_result
-                    .graphs
+                // Aggregate properties: convert from p_id-keyed to SID-keyed.
+                let properties: Vec<fluree_db_core::index_stats::PropertyStatEntry> = agg_props
                     .iter()
-                    .map(|g| {
-                        let props_json: Vec<serde_json::Value> = g
-                            .properties
-                            .iter()
-                            .map(|p| {
-                                serde_json::json!({
-                                    "p_id": p.p_id,
-                                    "count": p.count,
-                                    "ndv_values": p.ndv_values,
-                                    "ndv_subjects": p.ndv_subjects,
-                                    "last_modified_t": p.last_modified_t,
-                                    "datatypes": p.datatypes,
-                                })
-                            })
-                            .collect();
-
-                        serde_json::json!({
-                            "g_id": g.g_id,
-                            "flakes": g.flakes,
-                            "size": g.size,
-                            "properties": props_json,
+                    .filter_map(|p| {
+                        let sid = predicate_sids.get(p.p_id as usize)?;
+                        Some(fluree_db_core::index_stats::PropertyStatEntry {
+                            sid: (sid.0, sid.1.clone()),
+                            count: p.count,
+                            ndv_values: p.ndv_values,
+                            ndv_subjects: p.ndv_subjects,
+                            last_modified_t: p.last_modified_t,
+                            datatypes: p.datatypes.clone(),
                         })
                     })
                     .collect();
 
-                // Top-level aggregate properties (HLL union across graphs)
-                let properties_json: Vec<serde_json::Value> = agg_props
-                    .iter()
-                    .filter_map(|p| {
-                        let sid = predicate_sids.get(p.p_id as usize)?;
-                        Some(serde_json::json!({
-                            "sid": [sid.0, &sid.1],
-                            "count": p.count,
-                            "ndv_values": p.ndv_values,
-                            "ndv_subjects": p.ndv_subjects,
-                            "last_modified_t": p.last_modified_t,
-                            "datatypes": p.datatypes,
-                        }))
-                    })
-                    .collect();
+                // Class stats from SPOT merge.
+                let classes = if let Some(ref cs) = spot_class_stats {
+                    let entries = crate::stats::build_class_stat_entries(
+                        cs,
+                        &predicate_sids,
+                        &run_dir,
+                        store.namespace_codes(),
+                    )
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    if entries.is_empty() {
+                        None
+                    } else {
+                        Some(entries)
+                    }
+                } else {
+                    None
+                };
 
                 tracing::info!(
-                    property_stats = properties_json.len(),
-                    graph_count = graphs_json.len(),
-                    class_count = classes_json.len(),
+                    property_stats = properties.len(),
+                    graph_count = graphs.len(),
+                    class_count = classes.as_ref().map_or(0, |c| c.len()),
                     total_flakes = id_result.total_flakes,
                     "stats collected from IdStatsHook"
                 );
 
-                let mut stats_obj = serde_json::json!({
-                    "flakes": id_result.total_flakes,
-                    "size": 0,
-                    "graphs": graphs_json,
-                    "properties": properties_json,
-                });
-                if !classes_json.is_empty() {
-                    stats_obj["classes"] = serde_json::Value::Array(classes_json);
+                fluree_db_core::index_stats::IndexStats {
+                    flakes: id_result.total_flakes,
+                    size: 0,
+                    properties: if properties.is_empty() {
+                        None
+                    } else {
+                        Some(properties)
+                    },
+                    classes,
+                    graphs: Some(graphs),
                 }
-
-                (stats_obj, None)
             };
 
-            // F.5: Build v4 root with CAS addresses and stats (initially without GC fields).
-            // UploadedDicts already computed watermarks, encoding, and inlined dicts
-            // from the flat files we wrote in Phase C.
-            let mut root =
-                run_index::BinaryIndexRoot::from_cas_artifacts(run_index::CasArtifactsConfig {
-                    ledger_id: &ledger_id,
-                    index_t: store.max_t(),
-                    base_t: store.base_t(),
-                    predicate_sids,
-                    namespace_codes: store.namespace_codes(),
-                    subject_id_encoding: dict_addresses.subject_id_encoding,
-                    dict_refs: dict_addresses.dict_refs,
-                    graph_refs: graph_addresses,
-                    stats: Some(stats_json),
-                    schema: None,     // schema: requires predicate definitions (future)
-                    prev_index: None, // set below after garbage computation
-                    garbage: None,    // set below after garbage computation
-                    sketch_ref,
-                    subject_watermarks: dict_addresses.subject_watermarks,
-                    string_watermark: dict_addresses.string_watermark,
-                    graph_iris: dict_addresses.graph_iris,
-                    datatype_iris: dict_addresses.datatype_iris,
-                    language_tags: dict_addresses.language_tags,
-                });
+            // F.5: Convert DictRefs (v4, string-keyed maps) → DictRefsV5 (u32 vecs).
+            let dict_refs_v5 = {
+                let dr = dict_addresses.dict_refs;
+                let numbig: Vec<(u32, ContentId)> = dr
+                    .numbig
+                    .iter()
+                    .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
+                    .collect();
+                let vectors: Vec<run_index::VectorDictRefV5> = dr
+                    .vectors
+                    .iter()
+                    .map(|(k, v)| run_index::VectorDictRefV5 {
+                        p_id: k.parse::<u32>().unwrap_or(0),
+                        manifest: v.manifest.clone(),
+                        shards: v.shards.clone(),
+                    })
+                    .collect();
+                run_index::DictRefsV5 {
+                    subject_forward: dr.subject_forward,
+                    subject_reverse: dr.subject_reverse,
+                    string_forward: dr.string_forward,
+                    string_reverse: dr.string_reverse,
+                    numbig,
+                    vectors,
+                }
+            };
 
-            // Populate cumulative commit stats (kept out of CasArtifactsConfig for now).
-            root.total_commit_size = total_commit_size;
-            root.total_asserts = total_asserts;
-            root.total_retracts = total_retracts;
+            // F.6: Build IndexRootV5 (binary IRB1) from upload results.
+            let ns_codes: std::collections::BTreeMap<u16, String> = store
+                .namespace_codes()
+                .iter()
+                .map(|(&k, v)| (k, v.clone()))
+                .collect();
 
-            // D.5.1: Compute garbage and link prev_index for GC chain.
+            let mut root = run_index::IndexRootV5 {
+                ledger_id: ledger_id.clone(),
+                index_t: store.max_t(),
+                base_t: store.base_t(),
+                subject_id_encoding: dict_addresses.subject_id_encoding,
+                namespace_codes: ns_codes,
+                predicate_sids,
+                graph_iris: dict_addresses.graph_iris,
+                datatype_iris: dict_addresses.datatype_iris,
+                language_tags: dict_addresses.language_tags,
+                dict_refs: dict_refs_v5,
+                subject_watermarks: dict_addresses.subject_watermarks,
+                string_watermark: dict_addresses.string_watermark,
+                total_commit_size,
+                total_asserts,
+                total_retracts,
+                default_graph_orders: uploaded_indexes.default_graph_orders,
+                named_graphs: uploaded_indexes.named_graphs,
+                stats: Some(index_stats),
+                schema: None, // schema: requires predicate definitions (future)
+                prev_index: None,
+                garbage: None,
+                sketch_ref: None,
+            };
+
+            // F.7: Compute garbage and link prev_index for GC chain.
             //
             // Strategy: use all_cas_ids() on both old and new roots to
-            // compute the set difference. This guarantees both sides use the
-            // same enumeration method, eliminating divergence risk.
+            // compute the set difference. Both sides use the same enumeration.
             //
-            // Note: The GC chain breaks across root schema version boundaries
-            // because older roots won't parse via `from_json_bytes` (version check).
-            // Mixed-format chains start fresh at the newest supported version.
+            // IRB1-only: decode the previous root to compute garbage set difference.
+            // If the previous root cannot be decoded, GC chain starts fresh here.
             if let Some(prev_id) = prev_root_id.as_ref() {
-                // Try to load the previous root as a binary root at our supported version.
-                // If it's legacy, skip GC linking — mixed-format chains start fresh here.
                 let prev_bytes = content_store.get(prev_id).await.ok();
-                let prev_root = prev_bytes
-                    .as_deref()
-                    .and_then(|b| run_index::BinaryIndexRoot::from_json_bytes(b).ok());
+                let prev_cas_ids: Option<(i64, Vec<ContentId>)> =
+                    prev_bytes.as_deref().and_then(|b| {
+                        run_index::IndexRootV5::decode(b)
+                            .ok()
+                            .map(|v5| (v5.index_t, v5.all_cas_ids()))
+                    });
 
-                if let Some(prev) = prev_root {
+                if let Some((prev_t, old_ids_vec)) = prev_cas_ids {
                     let old_ids: std::collections::HashSet<ContentId> =
-                        prev.all_cas_ids().into_iter().collect();
+                        old_ids_vec.into_iter().collect();
                     let new_ids: std::collections::HashSet<ContentId> =
                         root.all_cas_ids().into_iter().collect();
                     let garbage_cids: Vec<ContentId> =
@@ -1041,7 +1049,6 @@ where
 
                     let garbage_count = garbage_cids.len();
 
-                    // Write garbage record with CID string representations.
                     let garbage_strings: Vec<String> =
                         garbage_cids.iter().map(|c| c.to_string()).collect();
                     root.garbage = gc::write_garbage_record(
@@ -1055,14 +1062,14 @@ where
                     .map(|id| run_index::BinaryGarbageRef { id });
 
                     root.prev_index = Some(run_index::BinaryPrevIndexRef {
-                        t: prev.index_t,
+                        t: prev_t,
                         id: prev_id.clone(),
                     });
 
                     tracing::info!(
-                        prev_t = prev.index_t,
+                        prev_t,
                         garbage_count,
-                        "GC chain linked to previous binary index root"
+                        "GC chain linked to previous index root"
                     );
                 }
             }
@@ -1070,14 +1077,13 @@ where
             tracing::info!(
                 index_t = root.index_t,
                 base_t = root.base_t,
-                graphs = root.graphs.len(),
-                "binary index built (v4), writing CAS root"
+                default_orders = root.default_graph_orders.len(),
+                named_graphs = root.named_graphs.len(),
+                "binary index built (IRB1), writing CAS root"
             );
 
-            // D.6: Write root to CAS (auto-hash of canonical compact JSON)
-            let root_bytes = root
-                .to_json_bytes()
-                .map_err(|e| IndexerError::Serialization(e.to_string()))?;
+            // F.8: Encode IRB1 root and write to CAS.
+            let root_bytes = root.encode();
             let write_result = storage
                 .content_write_bytes(
                     fluree_db_core::ContentKind::IndexRoot,
@@ -1388,16 +1394,30 @@ async fn upload_dicts_to_cas<S: Storage>(
     })
 }
 
+/// Result of uploading index artifacts to CAS.
+///
+/// Separates default graph (g_id=0) from named graphs because the root format
+/// inlines leaf routing for the default graph (no branch fetch needed) while
+/// named graphs use branch CID pointers.
+pub struct UploadedIndexes {
+    /// Default graph (g_id=0): inline leaf routing per sort order.
+    /// Leaves are uploaded to CAS; branch is NOT uploaded (routing is inline in root).
+    pub default_graph_orders: Vec<run_index::InlineOrderRouting>,
+    /// Named graphs (g_id!=0): branch CID per sort order per graph.
+    /// Both branches and leaves are uploaded to CAS.
+    pub named_graphs: Vec<run_index::NamedGraphRouting>,
+}
+
 /// Upload all index artifacts (branches + leaves) to CAS.
 ///
-/// Reads each `.fbr` and `.fli` file from the index directory, uploads via
-/// `content_write_bytes_with_hash` (reusing the existing SHA-256 hashes from
-/// the build), and returns per-graph CAS addresses.
+/// For the default graph (g_id=0), leaves are uploaded but the branch is NOT —
+/// leaf routing is embedded inline in the root. For named graphs, both branches
+/// and leaves are uploaded.
 pub async fn upload_indexes_to_cas<S: Storage>(
     storage: &S,
     ledger_id: &str,
     build_results: &[(run_index::RunSortOrder, run_index::IndexBuildResult)],
-) -> Result<Vec<run_index::GraphRefs>> {
+) -> Result<UploadedIndexes> {
     use fluree_db_core::ContentKind;
     use futures::StreamExt;
     use std::collections::BTreeMap;
@@ -1405,12 +1425,12 @@ pub async fn upload_indexes_to_cas<S: Storage>(
     use std::sync::Arc;
     use tokio::sync::Semaphore;
 
-    let mut graph_map: BTreeMap<u32, BTreeMap<String, run_index::GraphOrderRefs>> = BTreeMap::new();
+    // Accumulators for default graph inline routing and named graph branch pointers.
+    let mut default_orders: Vec<run_index::InlineOrderRouting> = Vec::new();
+    let mut named_map: BTreeMap<GraphId, Vec<(run_index::RunSortOrder, ContentId)>> =
+        BTreeMap::new();
 
     // Bounded parallelism for leaf uploads.
-    //
-    // This phase often becomes I/O bound on remote CAS writes; allowing a controlled
-    // number of concurrent uploads improves throughput without blowing up memory.
     let leaf_upload_concurrency: usize = std::env::var("FLUREE_CAS_UPLOAD_CONCURRENCY")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -1435,46 +1455,45 @@ pub async fn upload_indexes_to_cas<S: Storage>(
         for graph_result in &result.graphs {
             let g_id = graph_result.g_id;
             let graph_dir = &graph_result.graph_dir;
+            let is_default_graph = g_id == 0;
 
-            // Upload branch manifest
-            let branch_path = graph_dir.join(format!("{}.fbr", graph_result.branch_hash));
-            let branch_bytes = tokio::fs::read(&branch_path).await.map_err(|e| {
-                IndexerError::StorageRead(format!("read branch {}: {}", branch_path.display(), e))
-            })?;
-            let branch_write = storage
-                .content_write_bytes_with_hash(
-                    ContentKind::IndexBranch,
-                    ledger_id,
-                    &graph_result.branch_hash,
-                    &branch_bytes,
-                )
-                .await
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            // Named graphs: upload branch manifest to CAS.
+            // Default graph: skip branch upload (routing is inline in root).
+            let uploaded_branch_cid = if !is_default_graph {
+                let branch_cid = &graph_result.branch_cid;
+                let branch_path = graph_dir.join(branch_cid.to_string());
+                let branch_bytes = tokio::fs::read(&branch_path).await.map_err(|e| {
+                    IndexerError::StorageRead(format!(
+                        "read branch {}: {}",
+                        branch_path.display(),
+                        e
+                    ))
+                })?;
+                let branch_write = storage
+                    .content_write_bytes_with_hash(
+                        ContentKind::IndexBranch,
+                        ledger_id,
+                        &branch_cid.digest_hex(),
+                        &branch_bytes,
+                    )
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                Some(cid_from_write(ContentKind::IndexBranch, &branch_write))
+            } else {
+                None
+            };
 
-            // Parse branch manifest to discover leaf files (avoid a second disk read)
-            let branch_manifest = run_index::branch::read_branch_manifest_from_bytes(
-                &branch_bytes,
-                branch_path.parent(),
-            )
-            .map_err(|e| {
-                IndexerError::StorageRead(format!(
-                    "read branch manifest {}: {}",
-                    branch_path.display(),
-                    e
-                ))
-            })?;
-
-            // Upload each leaf file (bounded parallelism)
-            let total_leaves = branch_manifest.leaves.len();
-            let mut leaf_cid_slots: Vec<Option<ContentId>> = vec![None; total_leaves];
+            // Upload leaf files (all graphs, bounded parallelism).
+            // Use leaf_entries from build results instead of re-parsing the branch.
+            let total_leaves = graph_result.leaf_entries.len();
             let completed = Arc::new(AtomicUsize::new(0));
 
             let mut futs = futures::stream::FuturesUnordered::new();
-            for (leaf_idx, leaf_entry) in branch_manifest.leaves.iter().enumerate() {
+            for (leaf_idx, leaf_entry) in graph_result.leaf_entries.iter().enumerate() {
                 let sem = Arc::clone(&leaf_sem);
                 let completed = Arc::clone(&completed);
-                let path = leaf_entry.path.clone();
-                let content_hash = leaf_entry.content_hash.clone();
+                let path = graph_dir.join(leaf_entry.leaf_cid.to_string());
+                let content_hash = leaf_entry.leaf_cid.digest_hex();
                 let order_name = Arc::clone(&order_name_for_tasks);
 
                 futs.push(async move {
@@ -1485,7 +1504,7 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                     let leaf_bytes = tokio::fs::read(&path).await.map_err(|e| {
                         IndexerError::StorageRead(format!("read leaf {}: {}", path.display(), e))
                     })?;
-                    let leaf_write = storage
+                    storage
                         .content_write_bytes_with_hash(
                             ContentKind::IndexLeaf,
                             ledger_id,
@@ -1506,69 +1525,69 @@ pub async fn upload_indexes_to_cas<S: Storage>(
                         );
                     }
 
-                    let cid = cid_from_write(ContentKind::IndexLeaf, &leaf_write);
-                    Ok::<(usize, ContentId), IndexerError>((leaf_idx, cid))
+                    Ok::<usize, IndexerError>(leaf_idx)
                 });
             }
 
             while let Some(res) = futs.next().await {
-                let (idx, cid) = res?;
-                leaf_cid_slots[idx] = Some(cid);
+                res?;
             }
 
-            let leaf_cids: Vec<ContentId> = leaf_cid_slots
-                .into_iter()
-                .enumerate()
-                .map(|(i, slot)| {
-                    slot.ok_or_else(|| {
-                        IndexerError::StorageWrite(format!("leaf {i} was not uploaded"))
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-
-            let branch_cid = cid_from_write(ContentKind::IndexBranch, &branch_write);
-
-            tracing::info!(
-                g_id,
-                order = %order_name,
-                leaves = leaf_cids.len(),
-                branch = %branch_cid,
-                "graph/order index uploaded to CAS"
-            );
-
-            graph_map.entry(g_id).or_default().insert(
-                order_name.clone(),
-                run_index::GraphOrderRefs {
-                    branch: branch_cid,
-                    leaves: leaf_cids,
-                },
-            );
+            if is_default_graph {
+                // Default graph: collect inline leaf entries for root embedding.
+                tracing::info!(
+                    g_id = 0,
+                    order = %order_name,
+                    leaves = total_leaves,
+                    "default graph leaves uploaded (inline routing)"
+                );
+                default_orders.push(run_index::InlineOrderRouting {
+                    order: *order,
+                    leaves: graph_result.leaf_entries.clone(),
+                });
+            } else {
+                // Named graph: record branch CID.
+                let branch_cid = uploaded_branch_cid.expect("named graph must have branch CID");
+                tracing::info!(
+                    g_id,
+                    order = %order_name,
+                    leaves = total_leaves,
+                    branch = %branch_cid,
+                    "named graph index uploaded to CAS"
+                );
+                named_map
+                    .entry(g_id)
+                    .or_default()
+                    .push((*order, branch_cid));
+            }
         }
     }
 
-    let graph_addresses: Vec<run_index::GraphRefs> = graph_map
+    let named_graphs: Vec<run_index::NamedGraphRouting> = named_map
         .into_iter()
-        .map(|(g_id, orders)| run_index::GraphRefs { g_id, orders })
+        .map(|(g_id, orders)| run_index::NamedGraphRouting { g_id, orders })
         .collect();
 
-    let total_artifacts: usize = graph_addresses
-        .iter()
-        .flat_map(|ga| ga.orders.values())
-        .map(|oa| 1 + oa.leaves.len())
-        .sum();
+    let total_default_leaves: usize = default_orders.iter().map(|o| o.leaves.len()).sum();
+    let total_named_branches: usize = named_graphs.iter().map(|ng| ng.orders.len()).sum();
     tracing::info!(
-        graphs = graph_addresses.len(),
-        total_artifacts,
+        default_graph_orders = default_orders.len(),
+        default_graph_leaves = total_default_leaves,
+        named_graphs = named_graphs.len(),
+        named_branches = total_named_branches,
         "index artifacts uploaded to CAS"
     );
 
-    Ok(graph_addresses)
+    Ok(UploadedIndexes {
+        default_graph_orders: default_orders,
+        named_graphs,
+    })
 }
 
 /// Result of uploading persisted dict flat files to CAS.
 ///
 /// Contains the CAS addresses for all dictionary artifacts plus derived metadata
-/// needed for `BinaryIndexRoot::from_cas_artifacts`.
+/// needed for building the `IndexRootV5` (IRB1) root.
 #[derive(Debug)]
 pub struct UploadedDicts {
     pub dict_refs: run_index::DictRefs,

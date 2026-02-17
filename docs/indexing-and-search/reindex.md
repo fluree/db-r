@@ -156,7 +156,7 @@ The reindex operation:
    - **Phase C**: Merges per-chunk dictionaries into global dictionaries with remap tables
    - **Phase D**: Builds SPOT indexes from sorted commit files via k-way merge with graph-aware partitioning
    - **Phase E**: Builds secondary indexes (PSOT, POST, OPST) per-graph from partitioned run files
-   - **Phase F**: Uploads dictionaries and index artifacts to CAS, creates `BinaryIndexRoot`
+   - **Phase F**: Uploads dictionaries and index artifacts to CAS, creates `IndexRootV5` (IRB1)
 4. **Validates** that no new commits arrived during the build (conflict detection)
 5. **Publishes** the new index root via `publish_index_allow_equal`
 6. **Spawns** async garbage collection to clean up old index versions

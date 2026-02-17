@@ -14,6 +14,7 @@
 use crate::format::iri::IriCompactor;
 use fluree_db_core::address_path::ledger_id_to_path_prefix;
 use fluree_db_core::comparator::IndexType;
+use fluree_db_core::ids::GraphId;
 use fluree_db_core::ledger_id::{format_ledger_id, split_ledger_id};
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{
@@ -866,7 +867,7 @@ pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphSt
         let g_id = g
             .get("g_id")
             .and_then(|v| v.as_u64())
-            .ok_or_else(|| "missing g_id".to_string())? as u32;
+            .ok_or_else(|| "missing g_id".to_string())? as GraphId;
         let flakes = g.get("flakes").and_then(|v| v.as_u64()).unwrap_or(0);
         let size = g.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
 

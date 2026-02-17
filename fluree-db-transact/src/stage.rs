@@ -14,6 +14,7 @@ use crate::generate::{apply_cancellation, infer_datatype, FlakeGenerator};
 use crate::ir::InlineValues;
 use crate::ir::{TemplateTerm, Txn, TxnType};
 use crate::namespace::NamespaceRegistry;
+use fluree_db_core::ids::GraphId;
 use fluree_db_core::OverlayProvider;
 use fluree_db_core::Tracker;
 use fluree_db_core::{Flake, FlakeValue, Sid};
@@ -733,13 +734,13 @@ async fn generate_upsert_deletions(
 ///
 /// Returns None if no binary store is attached (genesis / not yet indexed) or if
 /// the attached store isn't a `BinaryIndexStore`.
-fn db_with_graph_range_provider(ledger: &LedgerState, g_id: u16) -> Option<fluree_db_core::Db> {
+fn db_with_graph_range_provider(ledger: &LedgerState, g_id: GraphId) -> Option<fluree_db_core::Db> {
     let store: Arc<BinaryIndexStore> = ledger
         .binary_store
         .as_ref()
         .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok())?;
 
-    let provider = BinaryRangeProvider::new(store, Arc::clone(&ledger.dict_novelty), g_id as u32);
+    let provider = BinaryRangeProvider::new(store, Arc::clone(&ledger.dict_novelty), g_id);
     Some(ledger.db.clone().with_range_provider(Arc::new(provider)))
 }
 

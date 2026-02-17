@@ -24,7 +24,7 @@ use fluree_db_core::pack::{
 };
 use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentId, ContentStore, Storage};
-use fluree_db_indexer::run_index::index_root::BinaryIndexRoot;
+use fluree_db_indexer::run_index::IndexRootV5;
 use fluree_db_nameservice::{NameService, RefPublisher};
 use fluree_db_novelty::commit_v2::envelope::decode_envelope;
 use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};
@@ -149,7 +149,7 @@ pub async fn compute_missing_index_artifacts<C: ContentStore>(
     let want_bytes = store.get(want_root_id).await.map_err(|e| {
         ApiError::internal(format!("failed to read index root {}: {}", want_root_id, e))
     })?;
-    let want_root = BinaryIndexRoot::from_json_bytes(&want_bytes).map_err(|e| {
+    let want_root = IndexRootV5::decode(&want_bytes).map_err(|e| {
         ApiError::internal(format!(
             "failed to parse index root {}: {}",
             want_root_id, e
@@ -163,7 +163,7 @@ pub async fn compute_missing_index_artifacts<C: ContentStore>(
     // If the client has an existing index root, subtract its artifacts.
     if let Some(have_id) = have_root_id {
         if let Ok(have_bytes) = store.get(have_id).await {
-            if let Ok(have_root) = BinaryIndexRoot::from_json_bytes(&have_bytes) {
+            if let Ok(have_root) = IndexRootV5::decode(&have_bytes) {
                 for cid in have_root.all_cas_ids() {
                     want_set.remove(&cid);
                 }

@@ -318,6 +318,21 @@ impl RunSortOrder {
         }
     }
 
+    /// Canonical wire ID for binary index formats (branch headers, root routing).
+    ///
+    /// Single source of truth: 0=SPOT, 1=PSOT, 2=POST, 3=OPST.
+    /// All encoders/decoders in FBR2 and IRB1 must use this mapping.
+    #[inline]
+    pub fn to_wire_id(self) -> u8 {
+        self as u8
+    }
+
+    /// Parse from canonical wire ID. Returns `None` for unknown IDs.
+    #[inline]
+    pub fn from_wire_id(v: u8) -> Option<Self> {
+        Self::from_u8(v)
+    }
+
     /// Directory name for this sort order (e.g., `"spot"`, `"psot"`).
     pub fn dir_name(self) -> &'static str {
         match self {

@@ -15,11 +15,8 @@ mod support;
 use std::sync::Arc;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState};
-use fluree_db_core::serde::json::{
-    raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
-};
 use fluree_db_core::{load_db, Db, DbMetadata, DictNovelty, Storage};
-use fluree_db_indexer::run_index::{BinaryIndexRoot, BinaryIndexStore};
+use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_query::BinaryRangeProvider;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
@@ -27,8 +24,9 @@ use support::{
     genesis_ledger_for_fluree, start_background_indexer_local, trigger_index_and_wait_outcome,
 };
 
-/// Apply a v2 binary index root to a ledger, loading the full BinaryIndexStore
+/// Apply a binary index root to a ledger, loading the full BinaryIndexStore
 /// and attaching a BinaryRangeProvider so subsequent queries work correctly.
+/// Auto-detects IRB1 (v5) vs v4 JSON format.
 async fn apply_index_v2<S: Storage + Clone + 'static>(
     ledger: &mut LedgerState,
     root_id: &fluree_db_core::ContentId,
@@ -46,38 +44,28 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         .read_bytes(&root_address)
         .await
         .expect("read index root");
-    let root: BinaryIndexRoot = serde_json::from_slice(&bytes).expect("parse v2 root");
 
     let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
         storage.clone(),
-        &root.ledger_id,
+        ledger_id,
     ));
-    let store = BinaryIndexStore::load_from_root(cs, &root, cache_dir, None)
+    let store = BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, None)
         .await
         .expect("load binary index");
     let arc_store = Arc::new(store);
     let dn = Arc::new(DictNovelty::new_uninitialized());
     let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
 
-    let ns_codes = root.namespace_codes.into_iter().collect();
-    let stats = root
-        .stats
-        .as_ref()
-        .and_then(|s| serde_json::from_value::<RawDbRootStats>(s.clone()).ok())
-        .and_then(|raw| raw_stats_to_index_stats(&raw));
-    let schema = root
-        .schema
-        .as_ref()
-        .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
-        .map(|raw| raw_schema_to_index_schema(&raw));
+    // Extract metadata from IRB1 root
+    let v5 = fluree_db_indexer::run_index::IndexRootV5::decode(&bytes).expect("decode IRB1 root");
     let meta = DbMetadata {
-        ledger_id: root.ledger_id,
-        t: root.index_t,
-        namespace_codes: ns_codes,
-        stats,
-        schema,
-        subject_watermarks: root.subject_watermarks,
-        string_watermark: root.string_watermark,
+        ledger_id: v5.ledger_id,
+        t: v5.index_t,
+        namespace_codes: v5.namespace_codes.into_iter().collect(),
+        stats: v5.stats,
+        schema: v5.schema,
+        subject_watermarks: v5.subject_watermarks,
+        string_watermark: v5.string_watermark,
     };
     let mut db = Db::new_meta(meta);
     db.range_provider = Some(Arc::new(provider));
