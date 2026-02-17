@@ -1074,6 +1074,9 @@ fn reader_thread(
     // content ends with '.' and it's not a comment line.
     let mut scan_pos: usize = 0;
     let mut line_start: usize = 0;
+    // Track whether we're inside a triple-quoted string (""" or ''').
+    // A '.' inside a long string must not be treated as a statement boundary.
+    let mut in_long_string = false;
 
     // Progress reporting throttle (every ~64 MB).
     let progress_interval = 64 * 1024 * 1024u64;
@@ -1136,8 +1139,27 @@ fn reader_thread(
             }
             let is_comment = first < end && chunk_buf[first] == b'#';
 
-            // Boundary if: over target AND line ends with '.' AND not a comment line.
+            // Track triple-quoted strings (""" / ''') so we don't treat a '.'
+            // inside a multiline literal as a statement boundary.
+            {
+                let line = &chunk_buf[first..content_end];
+                let mut i = 0;
+                while i + 2 < line.len() {
+                    if (line[i] == b'"' && line[i + 1] == b'"' && line[i + 2] == b'"')
+                        || (line[i] == b'\'' && line[i + 1] == b'\'' && line[i + 2] == b'\'')
+                    {
+                        in_long_string = !in_long_string;
+                        i += 3;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+
+            // Boundary if: over target AND line ends with '.' AND not inside
+            // a comment or a triple-quoted string literal.
             if !is_comment
+                && !in_long_string
                 && (chunk_buf.len() as u64) >= chunk_size_bytes
                 && end > line_start
                 && chunk_buf[end - 1] == b'.'
@@ -1668,6 +1690,41 @@ ex:bob ex:name \"Bob\" .
 
         assert_eq!(count, 2, "expected 2 chunks for 2 statements");
         reader.join().unwrap();
+    }
+
+    #[test]
+    fn test_streaming_dot_in_long_string_not_boundary() {
+        // Regression: a '.' at end of line inside a triple-quoted string must
+        // NOT be treated as a statement boundary by the streaming splitter.
+        let ttl = r#"@prefix ex: <http://example.org/> .
+
+ex:alice ex:desc """This sentence ends with a period.
+""" .
+ex:bob ex:name "Bob" .
+"#;
+        let f = write_temp(ttl);
+        let mut reader = StreamingTurtleReader::new(
+            f.path(),
+            1, // tiny chunk size to force boundary search
+            2,
+            None,
+        )
+        .unwrap();
+
+        let mut all_text = String::new();
+        let mut count = 0;
+        while let Some((_idx, text)) = recv_as_text(&reader) {
+            all_text.push_str(&text);
+            count += 1;
+        }
+        reader.join().unwrap();
+
+        // The multiline string must not be split — both statements should parse.
+        assert_eq!(count, 2, "expected 2 chunks for 2 statements");
+        assert!(
+            all_text.contains("This sentence ends with a period."),
+            "multiline string should be preserved intact"
+        );
     }
 
     #[test]

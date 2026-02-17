@@ -175,10 +175,7 @@ impl CommitResolver {
         Ok(ResolvedCommit {
             total_records: asserts + retracts + meta_count,
             t: u32::try_from(commit_ops.t).map_err(|_| {
-                ResolverError::Resolve(format!(
-                    "commit t={} does not fit in u32",
-                    commit_ops.t
-                ))
+                ResolverError::Resolve(format!("commit t={} does not fit in u32", commit_ops.t))
             })?,
             size: commit_size,
             asserts,
