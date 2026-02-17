@@ -645,7 +645,11 @@ pub fn build_where_operators_seeded(
                     ));
                 }
                 // Correlated UNION: execute each branch per input row (seeded from child).
-                operator = Some(Box::new(UnionOperator::new(child, branches.clone())));
+                operator = Some(Box::new(UnionOperator::new(
+                    child,
+                    branches.clone(),
+                    stats.clone(),
+                )));
                 i += 1;
             }
 

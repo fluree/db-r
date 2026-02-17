@@ -17,6 +17,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_core::StatsView;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -37,6 +38,8 @@ pub struct UnionOperator {
     current_input_batch: Option<Batch>,
     /// Current row index in the input batch
     current_input_row: usize,
+    /// Optional stats for selectivity-based pattern reordering in branches
+    stats: Option<Arc<StatsView>>,
 }
 
 impl UnionOperator {
@@ -46,8 +49,12 @@ impl UnionOperator {
     ///
     /// * `child` - Input solutions operator
     /// * `branches` - Branch pattern lists (at least one required)
-    ///
-    pub fn new(child: BoxedOperator, branches: Vec<Vec<Pattern>>) -> Self {
+    /// * `stats` - Optional stats for selectivity-based pattern reordering in branches
+    pub fn new(
+        child: BoxedOperator,
+        branches: Vec<Vec<Pattern>>,
+        stats: Option<Arc<StatsView>>,
+    ) -> Self {
         assert!(!branches.is_empty(), "UNION requires at least one branch");
 
         // Build unified schema: start with child schema (preserve order),
@@ -67,6 +74,7 @@ impl UnionOperator {
             output_buffer: VecDeque::new(),
             current_input_batch: None,
             current_input_row: 0,
+            stats,
         }
     }
 
@@ -150,8 +158,11 @@ impl Operator for UnionOperator {
 
             for branch_patterns in &self.branches {
                 let seed = SeedOperator::from_batch_row(&input_batch, row_idx);
-                let mut branch_op =
-                    build_where_operators_seeded(Some(Box::new(seed)), branch_patterns, None)?;
+                let mut branch_op = build_where_operators_seeded(
+                    Some(Box::new(seed)),
+                    branch_patterns,
+                    self.stats.clone(),
+                )?;
 
                 branch_op.open(ctx).await?;
                 while let Some(batch) = branch_op.next_batch(ctx).await? {
@@ -321,7 +332,7 @@ mod tests {
             ))],
         ];
 
-        let op = UnionOperator::new(child, branches);
+        let op = UnionOperator::new(child, branches, None);
         assert_eq!(op.schema(), &[VarId(0), VarId(1), VarId(2)]);
     }
 
@@ -332,7 +343,7 @@ mod tests {
         let empty = EmptyOperator::new();
         let child: BoxedOperator = Box::new(empty);
         let branches = vec![vec![], vec![]];
-        let op = UnionOperator::new(child, branches);
+        let op = UnionOperator::new(child, branches, None);
         assert_eq!(op.schema().len(), 0);
     }
 
