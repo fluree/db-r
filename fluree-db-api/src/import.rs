@@ -1235,6 +1235,7 @@ where
         vocab_dir: &'a Path,
         spool_dir: &'a Path,
         rdf_type_p_id: u32,
+        import_time_epoch_ms: Option<i64>,
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1285,9 +1286,7 @@ where
                     t: result.t,
                     blob_bytes: result.blob_bytes,
                     flake_count: result.flake_count,
-                    time_epoch_ms: chrono::DateTime::parse_from_rfc3339(&state.import_time)
-                        .ok()
-                        .map(|dt| dt.timestamp_millis()),
+                    time_epoch_ms: env.import_time_epoch_ms,
                     previous_commit_hex,
                 });
 
@@ -1407,6 +1406,11 @@ where
     // Track commit metadata across all chunks (previously tracked by resolver).
     let mut total_commit_size: u64 = 0;
     let mut commit_metas: Vec<CommitMeta> = Vec::new();
+    // Parse import timestamp once (it's constant for the whole import).
+    let import_time_epoch_ms: Option<i64> =
+        chrono::DateTime::parse_from_rfc3339(&state.import_time)
+            .ok()
+            .map(|dt| dt.timestamp_millis());
     // In fresh import, all ops are assertions (no retractions).
     // total_asserts = state.cumulative_flakes at the end.
 
@@ -1564,6 +1568,7 @@ where
         vocab_dir: &vocab_dir,
         spool_dir: &spool_dir,
         rdf_type_p_id,
+        import_time_epoch_ms,
     };
 
     if is_streaming {
@@ -1813,9 +1818,7 @@ where
                         t: result.t,
                         blob_bytes: result.blob_bytes,
                         flake_count: result.flake_count,
-                        time_epoch_ms: chrono::DateTime::parse_from_rfc3339(&state.import_time)
-                            .ok()
-                            .map(|dt| dt.timestamp_millis()),
+                        time_epoch_ms: import_time_epoch_ms,
                         previous_commit_hex,
                     });
                 }
