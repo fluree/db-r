@@ -442,15 +442,15 @@ mod tests {
         // Chunk 1: sorted 0 (B) → 200, sorted 1 (D) → 400
         let r0 = StreamingSortedCommitReader::open(
             &dir.join("commit_0.fsc"),
-            Box::new(vec![100u64, 300]),
-            Box::new(Vec::<u32>::new()),
+            vec![100u64, 300],
+            Vec::<u32>::new(),
             vec![],
         )
         .unwrap();
         let r1 = StreamingSortedCommitReader::open(
             &dir.join("commit_1.fsc"),
-            Box::new(vec![200u64, 400]),
-            Box::new(Vec::<u32>::new()),
+            vec![200u64, 400],
+            Vec::<u32>::new(),
             vec![],
         )
         .unwrap();
