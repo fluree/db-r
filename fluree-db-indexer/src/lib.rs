@@ -659,17 +659,14 @@ where
             let dt_width: u8 = 1; // datatypes u8-encoded (validated above)
 
             // Build ClassBitsetTable from .types sidecars (IDs are already global).
-            let bitset_inputs: Vec<(&std::path::Path, &dyn run_index::spool::SubjectRemap)> =
+            let identity_remap = run_index::spool::IdentitySubjectRemap;
+            let bitset_inputs: Vec<(&std::path::Path, &run_index::spool::IdentitySubjectRemap)> =
                 sorted_commit_infos
                     .iter()
                     .filter_map(|info| {
-                        info.types_map_path.as_ref().map(|p| {
-                            (
-                                p.as_path(),
-                                &run_index::spool::IdentitySubjectRemap
-                                    as &dyn run_index::spool::SubjectRemap,
-                            )
-                        })
+                        info.types_map_path
+                            .as_ref()
+                            .map(|p| (p.as_path(), &identity_remap))
                     })
                     .collect();
 
@@ -685,15 +682,18 @@ where
                 None
             };
 
-            let spot_inputs: Vec<run_index::SortedCommitInput> = sorted_commit_infos
+            let spot_inputs: Vec<
+                run_index::SortedCommitInput<
+                    run_index::spool::IdentitySubjectRemap,
+                    run_index::spool::IdentityStringRemap,
+                >,
+            > = sorted_commit_infos
                 .iter()
-                .map(|info| {
-                    run_index::SortedCommitInput {
-                        commit_path: info.path.clone(),
-                        subject_remap: Box::new(run_index::spool::IdentitySubjectRemap),
-                        string_remap: Box::new(run_index::spool::IdentityStringRemap),
-                        lang_remap: vec![], // language tags are global, no remap needed
-                    }
+                .map(|info| run_index::SortedCommitInput {
+                    commit_path: info.path.clone(),
+                    subject_remap: run_index::spool::IdentitySubjectRemap,
+                    string_remap: run_index::spool::IdentityStringRemap,
+                    lang_remap: vec![], // language tags are global, no remap needed
                 })
                 .collect();
 

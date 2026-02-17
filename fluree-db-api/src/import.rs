@@ -2497,21 +2497,11 @@ where
     // Build subject→class bitset table from types-map sidecars (Phase B.5).
     // Each sidecar contains (g_id, s_sorted_local, class_sorted_local) tuples
     // written during Phase A. Subject remap converts sorted-local → global sid64.
-    let bitset_inputs: Vec<(
-        &std::path::Path,
-        &dyn fluree_db_indexer::run_index::spool::SubjectRemap,
-    )> = input
+    let bitset_inputs: Vec<(&std::path::Path, &MmapSubjectRemap)> = input
         .sorted_commit_infos
         .iter()
         .zip(subject_remaps.iter())
-        .filter_map(|(info, remap)| {
-            info.types_map_path.as_ref().map(|p| {
-                (
-                    p.as_path(),
-                    remap as &dyn fluree_db_indexer::run_index::spool::SubjectRemap,
-                )
-            })
-        })
+        .filter_map(|(info, remap)| info.types_map_path.as_ref().map(|p| (p.as_path(), remap)))
         .collect();
 
     let class_bitset = if !bitset_inputs.is_empty() {
@@ -2528,8 +2518,9 @@ where
         None
     };
 
-    // Assemble SPOT inputs (move remaps into boxed trait objects).
-    let mut spot_inputs: Vec<SortedCommitInput> = Vec::with_capacity(n_chunks);
+    // Assemble SPOT inputs (move remaps directly, no boxing needed).
+    let mut spot_inputs: Vec<SortedCommitInput<MmapSubjectRemap, MmapStringRemap>> =
+        Vec::with_capacity(n_chunks);
     for (i, ((s_remap, str_remap), lang_remap)) in subject_remaps
         .into_iter()
         .zip(string_remaps)
@@ -2538,8 +2529,8 @@ where
     {
         spot_inputs.push(SortedCommitInput {
             commit_path: input.sorted_commit_infos[i].path.clone(),
-            subject_remap: Box::new(s_remap),
-            string_remap: Box::new(str_remap),
+            subject_remap: s_remap,
+            string_remap: str_remap,
             lang_remap,
         });
     }

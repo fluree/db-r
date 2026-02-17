@@ -816,8 +816,8 @@ impl ClassBitsetTable {
     /// Class bits are assigned dynamically (first-come, first-served), capped at 64.
     /// Subjects with classes beyond the 64th are partially tracked (only the first
     /// 64 class assignments produce bits).
-    pub fn build_from_type_maps(
-        inputs: &[(&Path, &dyn super::spool::SubjectRemap)],
+    pub fn build_from_type_maps<S: super::spool::SubjectRemap>(
+        inputs: &[(&Path, &S)],
     ) -> io::Result<Self> {
         use std::io::{BufReader, Read};
 
@@ -897,13 +897,13 @@ impl ClassBitsetTable {
 }
 
 /// Input for one sorted commit file in `build_spot_from_sorted_commits`.
-pub struct SortedCommitInput {
+pub struct SortedCommitInput<S: super::spool::SubjectRemap, R: super::spool::StringRemap> {
     /// Path to the sorted commit file (.fsc).
     pub commit_path: PathBuf,
     /// Subject remap: sorted-local → global sid64.
-    pub subject_remap: Box<dyn super::spool::SubjectRemap + Send>,
+    pub subject_remap: S,
     /// String remap: sorted-local → global string ID.
-    pub string_remap: Box<dyn super::spool::StringRemap + Send>,
+    pub string_remap: R,
     /// Language tag remap: chunk-local lang_id → global lang_id.
     /// `remap[0] = 0` (sentinel). Empty means no remap needed.
     pub lang_remap: Vec<u16>,
@@ -955,8 +955,11 @@ pub struct SpotFromCommitsConfig {
 ///
 /// Graph transitions (`g_id` changes) create per-graph index segments,
 /// each with its own leaf files and branch manifest.
-pub fn build_spot_from_sorted_commits(
-    inputs: Vec<SortedCommitInput>,
+pub fn build_spot_from_sorted_commits<
+    S: super::spool::SubjectRemap,
+    R: super::spool::StringRemap,
+>(
+    inputs: Vec<SortedCommitInput<S, R>>,
     config: SpotFromCommitsConfig,
 ) -> Result<(IndexBuildResult, Option<SpotClassStats>), IndexBuildError> {
     use super::run_record::cmp_g_spot;
@@ -1720,14 +1723,14 @@ mod tests {
         let inputs = vec![
             SortedCommitInput {
                 commit_path: dir.join("commit_0.fsc"),
-                subject_remap: Box::new(vec![100u64, 300]),
-                string_remap: Box::new(Vec::<u32>::new()),
+                subject_remap: vec![100u64, 300],
+                string_remap: Vec::<u32>::new(),
                 lang_remap: vec![],
             },
             SortedCommitInput {
                 commit_path: dir.join("commit_1.fsc"),
-                subject_remap: Box::new(vec![200u64, 400]),
-                string_remap: Box::new(Vec::<u32>::new()),
+                subject_remap: vec![200u64, 400],
+                string_remap: Vec::<u32>::new(),
                 lang_remap: vec![],
             },
         ];

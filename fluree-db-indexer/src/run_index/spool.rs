@@ -772,10 +772,10 @@ pub fn spool_to_runs(
 /// (p_id, dt, g_id, lang_id) are passed through unchanged — they already have
 /// global IDs from shared allocators.
 #[inline]
-pub fn remap_record(
+pub fn remap_record<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
     record: &mut RunRecord,
-    subject_remap: &dyn SubjectRemap,
-    string_remap: &dyn StringRemap,
+    subject_remap: &S,
+    string_remap: &R,
 ) -> io::Result<()> {
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
@@ -828,10 +828,10 @@ pub(crate) fn stats_record_for_remapped_run_record(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn remap_records_to_runs<I>(
+fn remap_records_to_runs<I, S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
     records: I,
-    subject_remap: &dyn SubjectRemap,
-    string_remap: &dyn StringRemap,
+    subject_remap: &S,
+    string_remap: &R,
     lang_remap: Option<&[u16]>,
     writer: &mut super::run_writer::MultiOrderRunWriter,
     lang_dict: &mut super::global_dict::LanguageTagDict,
@@ -895,10 +895,10 @@ where
 ///
 /// Returns the number of records written.
 #[allow(clippy::too_many_arguments)]
-pub fn remap_spool_to_runs(
+pub fn remap_spool_to_runs<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
     spool_info: &SpoolFileInfo,
-    subject_remap: &dyn SubjectRemap,
-    string_remap: &dyn StringRemap,
+    subject_remap: &S,
+    string_remap: &R,
     writer: &mut super::run_writer::MultiOrderRunWriter,
     lang_dict: &mut super::global_dict::LanguageTagDict,
     stats_hook: Option<&mut crate::stats::IdStatsHook>,
@@ -940,11 +940,11 @@ pub fn remap_spool_to_runs(
 ///
 /// Returns the number of records written.
 #[allow(clippy::too_many_arguments)]
-pub fn remap_commit_to_runs(
+pub fn remap_commit_to_runs<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
     commit_path: &std::path::Path,
     record_count: u64,
-    subject_remap: &dyn SubjectRemap,
-    string_remap: &dyn StringRemap,
+    subject_remap: &S,
+    string_remap: &R,
     lang_remap: &[u16],
     writer: &mut super::run_writer::MultiOrderRunWriter,
     lang_dict: &mut super::global_dict::LanguageTagDict,

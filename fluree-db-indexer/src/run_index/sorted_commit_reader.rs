@@ -41,7 +41,7 @@ const SPOOL_FLAG_ZSTD: u8 = 1 << 0;
 ///
 /// Reads 36-byte spool-wire-format records in batches and applies
 /// subject + string + language remap during buffer refills.
-pub struct StreamingSortedCommitReader {
+pub struct StreamingSortedCommitReader<S: SubjectRemap, R: StringRemap> {
     file: BufReaderVariant,
     record_count: u64,
     /// Read buffer (post-remap records).
@@ -53,9 +53,9 @@ pub struct StreamingSortedCommitReader {
     /// Number of records still in the file (not yet read into buffer).
     remaining: u64,
     /// Subject remap: sorted-local → global sid64.
-    subject_remap: Box<dyn SubjectRemap>,
+    subject_remap: S,
     /// String remap: sorted-local → global string ID.
-    string_remap: Box<dyn StringRemap>,
+    string_remap: R,
     /// Language tag remap: chunk-local lang_id → global lang_id.
     /// `remap[0] = 0` (sentinel for "no tag"). Empty means no remap.
     lang_remap: Vec<u16>,
@@ -75,7 +75,7 @@ impl Read for BufReaderVariant {
     }
 }
 
-impl StreamingSortedCommitReader {
+impl<S: SubjectRemap, R: StringRemap> StreamingSortedCommitReader<S, R> {
     /// Open a sorted commit file for streaming with on-the-fly remap.
     ///
     /// The file must have been written by [`sort_remap_and_write_sorted_commit()`]
@@ -86,8 +86,8 @@ impl StreamingSortedCommitReader {
     /// `lang_remap` maps chunk-local lang_id → global lang_id (empty = no remap).
     pub fn open(
         path: &Path,
-        subject_remap: Box<dyn SubjectRemap>,
-        string_remap: Box<dyn StringRemap>,
+        subject_remap: S,
+        string_remap: R,
         lang_remap: Vec<u16>,
     ) -> io::Result<Self> {
         let mut file = std::fs::File::open(path)?;
@@ -171,11 +171,7 @@ impl StreamingSortedCommitReader {
             let mut rec = RunRecord::read_spool_le(buf);
 
             // Apply subject + string remap (sorted-local → global)
-            remap_record(
-                &mut rec,
-                self.subject_remap.as_ref(),
-                self.string_remap.as_ref(),
-            )?;
+            remap_record(&mut rec, &self.subject_remap, &self.string_remap)?;
 
             // Apply language tag remap (chunk-local → global)
             if !self.lang_remap.is_empty() && rec.lang_id != 0 {
@@ -194,7 +190,7 @@ impl StreamingSortedCommitReader {
     }
 }
 
-impl MergeSource for StreamingSortedCommitReader {
+impl<S: SubjectRemap, R: StringRemap> MergeSource for StreamingSortedCommitReader<S, R> {
     #[inline]
     fn peek(&self) -> Option<&RunRecord> {
         if self.buf_pos < self.buffer.len() {
@@ -302,8 +298,8 @@ mod tests {
 
         let mut reader = StreamingSortedCommitReader::open(
             &commit_path,
-            Box::new(global_subj_remap),
-            Box::new(global_str_remap),
+            global_subj_remap,
+            global_str_remap,
             vec![],
         )
         .unwrap();
@@ -371,8 +367,8 @@ mod tests {
 
         let mut reader = StreamingSortedCommitReader::open(
             &commit_path,
-            Box::new(global_subj_remap),
-            Box::new(global_str_remap),
+            global_subj_remap,
+            global_str_remap,
             vec![],
         )
         .unwrap();
