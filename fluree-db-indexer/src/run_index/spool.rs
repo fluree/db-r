@@ -169,6 +169,8 @@ pub struct MmapSubjectRemap {
 impl MmapSubjectRemap {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let file = std::fs::File::open(path.as_ref())?;
+        // SAFETY: The file is opened read-only and is not concurrently modified.
+        // These are ephemeral index-build artifacts owned exclusively by this process.
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
         if mmap.len() % 8 != 0 {
             return Err(io::Error::new(
@@ -217,6 +219,8 @@ pub struct MmapStringRemap {
 impl MmapStringRemap {
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         let file = std::fs::File::open(path.as_ref())?;
+        // SAFETY: The file is opened read-only and is not concurrently modified.
+        // These are ephemeral index-build artifacts owned exclusively by this process.
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
         if mmap.len() % 4 != 0 {
             return Err(io::Error::new(

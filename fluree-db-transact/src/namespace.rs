@@ -413,6 +413,7 @@ impl SharedNamespaceAllocator {
                 result.insert(code, prefix.clone());
             } else {
                 debug_assert!(false, "code {} not found in shared allocator", code);
+                tracing::warn!(code, "namespace code not found in shared allocator");
             }
         }
         result

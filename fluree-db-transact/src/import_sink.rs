@@ -281,8 +281,8 @@ mod inner {
         /// types. For subjects and strings, assigns chunk-local IDs (remapped
         /// during merge). For BigInt/Decimal/Vector, uses shared global pools.
         #[allow(clippy::too_many_arguments)]
-        fn resolve_object_value(&mut self, value: &FlakeValue, p_id: u32) -> (u8, u64) {
-            match value {
+        fn resolve_object_value(&mut self, value: &FlakeValue, p_id: u32) -> Option<(u8, u64)> {
+            Some(match value {
                 FlakeValue::Ref(sid) => {
                     let local_id = self.assign_subject_id(sid);
                     (ObjKind::REF_ID.as_u8(), local_id)
@@ -296,10 +296,10 @@ mod inner {
                     if v.is_finite() && v.fract() == 0.0 {
                         let int_val = *v as i64;
                         if int_val as f64 == *v {
-                            return (
+                            return Some((
                                 ObjKind::NUM_INT.as_u8(),
                                 ObjKey::encode_i64(int_val).as_u64(),
-                            );
+                            ));
                         }
                     }
                     match ObjKey::encode_f64(*v) {
@@ -392,11 +392,11 @@ mod inner {
                         ),
                         Err(e) => {
                             tracing::error!("SpoolContext: vector insert failed: {}", e);
-                            (ObjKind::NULL.as_u8(), 0)
+                            return None;
                         }
                     }
                 }
-            }
+            })
         }
 
         /// Write a spool record for one flake.
@@ -414,7 +414,9 @@ mod inner {
             let s_id = self.assign_subject_id(s);
             let p_id = self.assign_predicate_id(p);
             let dt_id = self.assign_datatype_id(dt);
-            let (o_kind, o_key) = self.resolve_object_value(o, p_id);
+            let Some((o_kind, o_key)) = self.resolve_object_value(o, p_id) else {
+                return; // skip spool record on unresolvable value (e.g. bad vector)
+            };
             let lang_id = lang.map(|l| self.assign_lang_id(l)).unwrap_or(0);
             let i = list_index
                 .map(|idx| {

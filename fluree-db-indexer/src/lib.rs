@@ -1668,6 +1668,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
             let subj_fwd_file = std::fs::File::open(&subj_fwd_path).map_err(|e| {
                 IndexerError::StorageRead(format!("open {}: {}", subj_fwd_path.display(), e))
             })?;
+            // SAFETY: The file is opened read-only and is not concurrently modified.
+            // The forward-dict file is an immutable index artifact written before this point.
             let subj_fwd_data = unsafe { memmap2::Mmap::map(&subj_fwd_file) }.map_err(|e| {
                 IndexerError::StorageRead(format!("mmap {}: {}", subj_fwd_path.display(), e))
             })?;
@@ -2106,6 +2108,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 let str_fwd_file = std::fs::File::open(&str_fwd_path).map_err(|e| {
                     IndexerError::StorageRead(format!("open {}: {}", str_fwd_path.display(), e))
                 })?;
+                // SAFETY: The file is opened read-only and is not concurrently modified.
+                // The forward-dict file is an immutable index artifact written before this point.
                 let str_fwd_data = unsafe { memmap2::Mmap::map(&str_fwd_file) }.map_err(|e| {
                     IndexerError::StorageRead(format!("mmap {}: {}", str_fwd_path.display(), e))
                 })?;
