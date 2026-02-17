@@ -1,2 +1,2 @@
-server.log
-server.pid
+# Generated at runtime — storage, TTL data, PID files
+_data/

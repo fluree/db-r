@@ -1,107 +1,200 @@
-# OTEL Deep Tracing — Test Harness
-#
-# Usage:
-#   make all     — Full setup: Jaeger + build + server + smoke tests
-#   make fresh   — Clean slate: stop everything, then full setup
-#   make smoke   — Seed ledger + run queries + transactions
-#   make stress  — Sustained load (batch inserts + expensive queries)
-#   make ui      — Open Jaeger in browser
-#   make down    — Stop everything
+# OTEL Testing & Validation Infrastructure
+# See README.md for usage docs.
 
-.PHONY: all fresh up down build server server-stop smoke stress ui seed query transact clean
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
 
-# ── Configuration ──────────────────────────────────────────────
-PORT          ?= 8090
-LEDGER        ?= otel-test:main
-ENTITIES      ?= 100000
-RUST_LOG      ?= info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug
+# ── Paths ────────────────────────────────────────────────────────────────────
+ROOT_DIR   := $(shell cd .. && pwd)
+DATA_DIR   := $(CURDIR)/_data
+STORAGE    := $(DATA_DIR)/storage
+GEN_DIR    := $(DATA_DIR)/generated
+PID_FILE   := $(DATA_DIR)/server.pid
+LOG_FILE   := $(DATA_DIR)/server.log
+SERVER_BIN := $(ROOT_DIR)/target/release/fluree-server
+INGEST_BIN := $(ROOT_DIR)/target/release/fluree-ingest
 
-ROOT_DIR      := $(shell cd .. && pwd)
-SERVER_BIN    := $(ROOT_DIR)/target/debug/fluree-server
-STORAGE       := $(ROOT_DIR)/target/otel-data
-LOG_FILE      := server.log
-PID_FILE      := server.pid
+# ── Configurable ─────────────────────────────────────────────────────────────
+PORT       ?= 8090
+BASE_URL   ?= http://localhost:$(PORT)
+LEDGER     ?= otel-test:main
+ENTITIES   ?= 100000
+PROPS      ?= 6
+INDEXING   ?= true
+PARSE_THREADS ?= 4
 
-OTEL_SERVICE_NAME             := fluree-server
-OTEL_EXPORTER_OTLP_ENDPOINT   := http://localhost:4317
-OTEL_EXPORTER_OTLP_PROTOCOL   := grpc
+STRESS_PRODUCTS ?= 50000
+STRESS_BATCH    ?= 500
 
-export PORT LEDGER ENTITIES
+INGEST_ENTITIES ?= 10000
+INGEST_LEDGER   ?= ingest-test:main
 
-# ── Composite targets ─────────────────────────────────────────
-all: up build server smoke
-	@echo "\n=== All done. Run 'make ui' to inspect traces in Jaeger ==="
+RUST_LOG   ?= info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug
 
-fresh: server-stop down clean all
+# ── Infrastructure lifecycle ─────────────────────────────────────────────────
 
-# ── Infrastructure ─────────────────────────────────────────────
-up:
-	@echo "=== Starting Jaeger ==="
+.PHONY: up down reset ui
+
+up: ## Start Jaeger via docker compose
 	docker compose up -d
 	@echo "Jaeger UI: http://localhost:16686"
 
-down:
-	@echo "=== Stopping Jaeger ==="
+down: ## Stop and remove Jaeger container
 	docker compose down
 
-# ── Build ──────────────────────────────────────────────────────
-build:
-	@echo "=== Building fluree-server with otel feature ==="
-	cd $(ROOT_DIR) && cargo build -p fluree-db-server --features otel
+reset: ## Restart Jaeger (clears all trace data)
+	docker compose down
+	docker compose up -d
+	@echo "Jaeger restarted — trace data cleared"
 
-# ── Server lifecycle ───────────────────────────────────────────
-server: server-stop
-	@mkdir -p $(STORAGE)
-	@echo "=== Starting fluree-server (port=$(PORT), log=$(LOG_FILE)) ==="
-	OTEL_SERVICE_NAME=$(OTEL_SERVICE_NAME) \
-	OTEL_EXPORTER_OTLP_ENDPOINT=$(OTEL_EXPORTER_OTLP_ENDPOINT) \
-	OTEL_EXPORTER_OTLP_PROTOCOL=$(OTEL_EXPORTER_OTLP_PROTOCOL) \
+ui: ## Open Jaeger UI in browser
+	@open http://localhost:16686 2>/dev/null || xdg-open http://localhost:16686 2>/dev/null || echo "Open http://localhost:16686"
+
+# ── Build ────────────────────────────────────────────────────────────────────
+
+.PHONY: build
+
+build: ## Build server and ingest binaries with otel feature (release)
+	cargo build -p fluree-db-server --features otel --release
+	cargo build -p fluree-db-ingest --features otel --release
+	@echo "Built: $(SERVER_BIN)"
+	@echo "Built: $(INGEST_BIN)"
+
+# ── Server lifecycle ─────────────────────────────────────────────────────────
+
+.PHONY: server server-stop server-logs
+
+server: ## Start fluree-server in background with OTEL export
+	@if [ ! -x $(SERVER_BIN) ]; then echo "Binary not found: $(SERVER_BIN)"; echo "Run 'make build' first."; exit 1; fi
+	@mkdir -p $(STORAGE) $(DATA_DIR)
+	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
+		echo "Server already running (PID $$(cat $(PID_FILE)))"; \
+		exit 0; \
+	fi
+	@OTEL_SERVICE_NAME=fluree-server \
+	OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
 	RUST_LOG=$(RUST_LOG) \
 	$(SERVER_BIN) \
 		--storage-path $(STORAGE) \
 		--listen-addr 0.0.0.0:$(PORT) \
-		> $(LOG_FILE) 2>&1 & echo $$! > $(PID_FILE)
-	@./scripts/wait-for-server.sh $(PORT)
+		$(if $(filter true,$(INDEXING)),--indexing-enabled) \
+		> $(LOG_FILE) 2>&1 & \
+	echo $$! > $(PID_FILE) && \
+	echo "Server starting (PID $$(cat $(PID_FILE))), logs: $(LOG_FILE)" && \
+	./scripts/wait-for-server.sh $(BASE_URL) 30
 
-server-stop:
+server-stop: ## Stop the background server
 	@if [ -f $(PID_FILE) ]; then \
 		PID=$$(cat $(PID_FILE)); \
 		if kill -0 $$PID 2>/dev/null; then \
-			echo "=== Stopping fluree-server (pid=$$PID) ==="; \
-			kill $$PID && sleep 1; \
-			kill -0 $$PID 2>/dev/null && kill -9 $$PID; \
+			kill $$PID; \
+			echo "Server stopped (PID $$PID)"; \
+		else \
+			echo "Server not running (stale PID $$PID)"; \
 		fi; \
 		rm -f $(PID_FILE); \
+	else \
+		echo "No PID file found"; \
 	fi
 
-# ── Test scenarios ─────────────────────────────────────────────
-smoke: seed query transact
-	@echo "\n=== Smoke tests complete. Check Jaeger: http://localhost:16686 ==="
+server-logs: ## Tail server stdout/stderr
+	@if [ -f $(LOG_FILE) ]; then \
+		tail -f $(LOG_FILE); \
+	else \
+		echo "No log file found at $(LOG_FILE)"; \
+	fi
 
-seed:
-	@echo "=== Seeding ledger ==="
-	./scripts/seed-ledger.sh
+# ── Scenarios ────────────────────────────────────────────────────────────────
 
-query:
-	@echo "=== Running query smoke tests ==="
-	./scripts/query-smoke.sh
+.PHONY: transact query index firehose ingest smoke cycle stress stress-query
 
-transact:
-	@echo "=== Running transact smoke tests ==="
-	./scripts/transact-smoke.sh
+transact: ## Minimal transaction scenarios (insert, upsert, update, turtle, SPARQL UPDATE)
+	./scripts/transact-smoke.sh $(BASE_URL) $(LEDGER)
 
-stress:
-	@echo "=== Running stress test ==="
-	./scripts/stress-test.sh
+query: ## Seed data + query via FQL and SPARQL
+	./scripts/query-smoke.sh $(BASE_URL) $(LEDGER)
 
-# ── Utilities ──────────────────────────────────────────────────
-ui:
-	@echo "Opening Jaeger UI..."
-	@open http://localhost:16686 2>/dev/null || xdg-open http://localhost:16686 2>/dev/null || echo "Visit http://localhost:16686"
+index: ## Insert enough data to trigger indexing, then query indexed data
+	./scripts/index-smoke.sh $(BASE_URL) $(LEDGER)
 
-clean:
-	@echo "=== Cleaning storage + logs ==="
-	rm -rf $(STORAGE) $(LOG_FILE) $(PID_FILE)
+firehose: generate ## Generate large dataset, bulk import via fluree-ingest
+	@if [ ! -x $(INGEST_BIN) ]; then echo "Binary not found: $(INGEST_BIN)"; echo "Run 'make build' first."; exit 1; fi
+	./scripts/firehose.sh $(INGEST_BIN) $(GEN_DIR) $(DATA_DIR)/storage-firehose $(ENTITIES) $(PARSE_THREADS)
 
-logs:
-	@tail -f $(LOG_FILE)
+ingest: generate ## Bulk-import via fluree-ingest with OTEL tracing (no server needed)
+	@if [ ! -x $(INGEST_BIN) ]; then echo "Binary not found: $(INGEST_BIN)"; echo "Run 'make build' first."; exit 1; fi
+	./scripts/ingest-smoke.sh $(INGEST_BIN) $(GEN_DIR) $(DATA_DIR)/storage-ingest $(INGEST_ENTITIES) $(PARSE_THREADS) $(INGEST_LEDGER)
+
+smoke: ## Full cycle: seed, transact, query, index — end-to-end span waterfall
+	./scripts/seed-ledger.sh $(BASE_URL) $(LEDGER)
+	./scripts/full-cycle.sh $(BASE_URL) $(LEDGER)
+
+stress: ## High-volume stress test: 50K inserts with backpressure + expensive queries
+	SERVER_BIN=$(SERVER_BIN) STORAGE=$(STORAGE) PID_FILE=$(PID_FILE) LOG_FILE=$(LOG_FILE) \
+	PORT=$(PORT) RUST_LOG='$(RUST_LOG)' INDEXING=$(INDEXING) \
+	./scripts/stress-test.sh $(BASE_URL) $(LEDGER) $(STRESS_PRODUCTS) $(STRESS_BATCH)
+
+stress-query: ## Re-run only the expensive query battery (assumes stress data already loaded)
+	./scripts/stress-query.sh $(BASE_URL) $(LEDGER)
+
+cycle: ## Sustained transact + query workload triggering multiple index cycles
+	@echo "Running 3 full cycles to trigger multiple index rebuilds..."
+	@for i in 1 2 3; do \
+		echo ""; \
+		echo "=== Cycle $$i/3 ==="; \
+		./scripts/full-cycle.sh $(BASE_URL) $(LEDGER); \
+		sleep 2; \
+	done
+	@echo ""
+	@echo "Done. Check Jaeger for multi-cycle trace patterns: http://localhost:16686"
+
+# ── Data generation & cleanup ────────────────────────────────────────────────
+
+.PHONY: generate clean clean-all nuke
+
+generate: ## Generate TTL data files (configurable: ENTITIES, PROPS)
+	./scripts/generate-data.sh $(ENTITIES) $(PROPS) $(GEN_DIR)
+
+clean: server-stop ## Remove _data/ (generated storage, TTL, PIDs)
+	rm -rf $(DATA_DIR)
+	@echo "Cleaned: $(DATA_DIR)"
+
+clean-all: clean down ## clean + stop Docker
+
+nuke: clean-all ## clean-all + remove compiled binaries
+	rm -f $(SERVER_BIN) $(INGEST_BIN)
+	@echo "Removed compiled binaries"
+
+# ── Convenience combos ───────────────────────────────────────────────────────
+
+.PHONY: all fresh
+
+all: up build server smoke ## Full setup: Jaeger + build + server + smoke test
+	@echo ""
+	@echo "All done. Open Jaeger: http://localhost:16686"
+	@echo "Search for service: fluree-server"
+
+fresh: reset clean build server smoke ## Clean-slate re-run: reset Jaeger + rebuild + smoke
+	@echo ""
+	@echo "Fresh run complete. Open Jaeger: http://localhost:16686"
+
+# ── Help ─────────────────────────────────────────────────────────────────────
+
+.PHONY: help
+help: ## Show this help
+	@echo "OTEL Testing Infrastructure"
+	@echo ""
+	@echo "Usage: make [target] [VAR=value ...]"
+	@echo ""
+	@echo "Configurable variables:"
+	@echo "  PORT=$(PORT)            Server listen port"
+	@echo "  LEDGER=$(LEDGER)    Ledger alias"
+	@echo "  ENTITIES=$(ENTITIES)       Entity count for data generation"
+	@echo "  INDEXING=$(INDEXING)         Enable background indexing"
+	@echo "  PARSE_THREADS=$(PARSE_THREADS)      Parallel parse threads for firehose/ingest"
+	@echo "  INGEST_ENTITIES=$(INGEST_ENTITIES)    Entity count for ingest smoke test"
+	@echo "  INGEST_LEDGER=$(INGEST_LEDGER)  Ledger alias for ingest smoke test"
+	@echo "  RUST_LOG=...            Log filter (see README.md)"
+	@echo ""
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  %-15s %s\n", $$1, $$2}'

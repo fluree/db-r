@@ -1,49 +1,96 @@
 #!/usr/bin/env bash
-# Run representative transactions (insert, update, upsert) to generate trace data.
+# Exercise all transaction API paths with minimal data.
+# Usage: transact-smoke.sh [BASE_URL] [LEDGER]
+
 set -euo pipefail
 
-PORT="${PORT:-8090}"
-LEDGER="${LEDGER:-otel-test:main}"
-BASE="http://localhost:${PORT}/v1/fluree"
+BASE_URL="${1:-http://localhost:8090}"
+LEDGER="${2:-otel-test:main}"
 
-echo "--- Insert: Add new person"
-curl -sf -X POST "${BASE}/${LEDGER}/insert" \
+echo "=== Transaction Smoke Test ==="
+echo "Server: ${BASE_URL}"
+echo "Ledger: ${LEDGER}"
+echo ""
+
+# Helper: run a curl and report status
+run_tx() {
+    local label="$1"; shift
+    local resp
+    resp=$(curl -s -w "\n%{http_code}" "$@")
+    local code
+    code=$(echo "$resp" | tail -n1)
+    local body
+    body=$(echo "$resp" | sed '$d')
+    if [ "$code" = "200" ] || [ "$code" = "201" ]; then
+        echo "  [PASS] ${label} (HTTP ${code})"
+    else
+        echo "  [FAIL] ${label} (HTTP ${code})"
+        echo "         ${body}" | head -3
+    fi
+    sleep 0.5
+}
+
+# 1. JSON-LD insert
+echo "1. JSON-LD insert..."
+run_tx "JSON-LD insert" \
+    -X POST "${BASE_URL}/v1/fluree/insert/${LEDGER}" \
     -H "Content-Type: application/json" \
-    -d '{
-        "@context": {"ex": "http://example.org/ns/"},
-        "@graph": [
-            {"@id": "ex:frank", "@type": "ex:Person", "ex:name": "Frank", "ex:age": 55, "ex:email": "frank@example.org"}
-        ]
-    }' -o /dev/null -w "  insert: HTTP %{http_code}\n"
+    --data-raw '{
+  "@context": {"ex": "http://example.org/ns/"},
+  "@id": "ex:smoke-item-1",
+  "@type": "ex:SmokeTest",
+  "ex:label": "Insert test",
+  "ex:value": 42
+}'
 
-echo "--- Transact: Update person age (WHERE + DELETE + INSERT)"
-curl -sf -X POST "${BASE}/${LEDGER}/transact" \
+# 2. JSON-LD upsert
+echo "2. JSON-LD upsert..."
+run_tx "JSON-LD upsert" \
+    -X POST "${BASE_URL}/v1/fluree/upsert/${LEDGER}" \
     -H "Content-Type: application/json" \
-    -d '{
-        "@context": {"ex": "http://example.org/ns/"},
-        "where": [{"@id": "ex:alice", "ex:age": "?oldAge"}],
-        "delete": [{"@id": "ex:alice", "ex:age": "?oldAge"}],
-        "insert": [{"@id": "ex:alice", "ex:age": 31}]
-    }' -o /dev/null -w "  update: HTTP %{http_code}\n"
+    --data-raw '{
+  "@context": {"ex": "http://example.org/ns/"},
+  "@id": "ex:smoke-item-1",
+  "@type": "ex:SmokeTest",
+  "ex:label": "Upserted label",
+  "ex:value": 99
+}'
 
-echo "--- Upsert: Upsert product"
-curl -sf -X POST "${BASE}/${LEDGER}/upsert" \
+# 3. JSON-LD update (WHERE / DELETE / INSERT)
+echo "3. JSON-LD update (WHERE/DELETE/INSERT)..."
+run_tx "JSON-LD update" \
+    -X POST "${BASE_URL}/v1/fluree/transact/${LEDGER}" \
     -H "Content-Type: application/json" \
-    -d '{
-        "@context": {"ex": "http://example.org/ns/"},
-        "@graph": [
-            {"@id": "ex:prod1", "@type": "ex:Product", "ex:name": "Widget A v2", "ex:price": 12.99, "ex:category": "widgets", "ex:inStock": true}
-        ]
-    }' -o /dev/null -w "  upsert: HTTP %{http_code}\n"
+    --data-raw '{
+  "@context": {"ex": "http://example.org/ns/"},
+  "where": [{"@id": "ex:smoke-item-1", "ex:value": "?oldVal"}],
+  "delete": [{"@id": "ex:smoke-item-1", "ex:value": "?oldVal"}],
+  "insert": [{"@id": "ex:smoke-item-1", "ex:value": 100}]
+}'
 
-echo "--- Insert via Turtle"
-curl -sf -X POST "${BASE}/${LEDGER}/insert" \
+# 4. Turtle insert
+echo "4. Turtle insert..."
+run_tx "Turtle insert" \
+    -X POST "${BASE_URL}/v1/fluree/insert/${LEDGER}" \
     -H "Content-Type: text/turtle" \
-    -d '@prefix ex: <http://example.org/ns/> .
-ex:grace a ex:Person ;
-    ex:name "Grace" ;
-    ex:age 33 ;
-    ex:email "grace@example.org" .
-' -o /dev/null -w "  turtle insert: HTTP %{http_code}\n"
+    --data-raw '@prefix ex: <http://example.org/ns/> .
+ex:smoke-item-2 a ex:SmokeTest ;
+    ex:label "Turtle insert test" ;
+    ex:value 77 .
+'
 
-echo "--- Transact smoke tests complete"
+# 5. SPARQL UPDATE
+echo "5. SPARQL UPDATE..."
+run_tx "SPARQL UPDATE" \
+    -X POST "${BASE_URL}/v1/fluree/transact/${LEDGER}" \
+    -H "Content-Type: application/sparql-update" \
+    --data-raw 'PREFIX ex: <http://example.org/ns/>
+INSERT DATA {
+    ex:smoke-item-3 a ex:SmokeTest ;
+        ex:label "SPARQL insert test" ;
+        ex:value 55 .
+}'
+
+echo ""
+echo "Transaction smoke test complete."
+echo "Check Jaeger for transact_execute > txn_stage > txn_commit spans."

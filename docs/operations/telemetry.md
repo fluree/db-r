@@ -199,50 +199,220 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-## Tracing
+## Distributed Tracing (OpenTelemetry)
 
-### Distributed Tracing
+Fluree supports OpenTelemetry (OTEL) distributed tracing, providing deep visibility into query, transaction, and indexing performance. Traces are exported to any OTLP-compatible backend (Jaeger, Grafana Tempo, AWS X-Ray, Datadog, etc.).
 
-Enable OpenTelemetry tracing:
+### Enabling OTEL
 
-```bash
-./fluree-db-server \
-  --tracing-enabled true \
-  --tracing-endpoint http://localhost:4317
-```
-
-```toml
-[tracing]
-enabled = true
-endpoint = "http://localhost:4317"
-service_name = "fluree-db-server"
-```
-
-### Trace Context
-
-Fluree propagates trace context:
+Build the server with the `otel` feature flag:
 
 ```bash
-curl -X POST http://localhost:8090/query \
-  -H "traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" \
-  -d '{...}'
+cargo build -p fluree-db-server --features otel --release
 ```
 
-### Jaeger Integration
-
-Export traces to Jaeger:
+Then set environment variables to configure the OTLP exporter:
 
 ```bash
-# Run Jaeger
-docker run -d -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one
-
-# Configure Fluree
-./fluree-db-server \
-  --tracing-enabled true \
-  --tracing-endpoint http://localhost:4317
+OTEL_SERVICE_NAME=fluree-server \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc \
+RUST_LOG=info,fluree_db_query=debug,fluree_db_transact=debug \
+./target/release/fluree-db-server --data-dir ./data
 ```
 
-View traces: http://localhost:16686
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `OTEL_SERVICE_NAME` | `fluree-db-server` | Service name in traces |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP receiver endpoint |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Protocol: `grpc` or `http/protobuf` |
+
+### Quick Start with Jaeger
+
+The repository includes a self-contained test harness in the `otel/` directory:
+
+```bash
+cd otel/
+make all    # starts Jaeger, builds with --features otel, starts server, runs tests
+make ui     # opens Jaeger UI at http://localhost:16686
+```
+
+See [Performance Investigation with Distributed Tracing](../troubleshooting/performance-tracing.md) for detailed usage.
+
+### Dual-Layer Subscriber Architecture
+
+The OTEL exporter uses its own `Targets` filter **independent of `RUST_LOG`**. This is a critical design choice: without it, enabling `RUST_LOG=debug` causes third-party crate spans (hyper, tonic, h2, tower-http) to flood the OTEL batch processor, which overwhelms the exporter and causes parent spans to be dropped.
+
+```
+┌──────────────────────────────────────────────────┐
+│              tracing-subscriber registry          │
+│                                                   │
+│  ┌─────────────────────┐  ┌────────────────────┐ │
+│  │   Console fmt layer  │  │   OTEL trace layer │ │
+│  │   (EnvFilter from    │  │   (Targets filter: │ │
+│  │    RUST_LOG)          │  │    fluree_* only)  │ │
+│  └─────────────────────┘  └────────────────────┘ │
+└──────────────────────────────────────────────────┘
+```
+
+- **Console layer:** Respects `RUST_LOG` as-is (all crates)
+- **OTEL layer:** Exports only `fluree_*` crate targets at DEBUG level. Per-leaf-node TRACE spans (`binary_cursor_next_leaf`, `scan`) are excluded to prevent flooding the batch processor queue on large queries
+
+This means `RUST_LOG=debug` produces verbose console output, but the OTEL exporter only receives Fluree spans -- no hyper/tonic/tower noise.
+
+### Shutdown
+
+On server shutdown, the OTEL `SdkTracerProvider` is flushed and shut down to ensure all pending spans are exported. This is handled automatically by the server's shutdown hook.
+
+### Dynamic Span Naming (otel.name)
+
+Each HTTP request span is named dynamically via the `otel.name` field so that traces in Jaeger/Tempo show descriptive names instead of a generic `request`:
+
+| Operation | otel.name examples |
+|-----------|-------------------|
+| Query | `query:fql`, `query:sparql`, `query:explain` |
+| Transact | `transact:fql`, `transact:sparql-update`, `transact:turtle` |
+| Insert | `insert:fql`, `insert:turtle` |
+| Upsert | `upsert:fql`, `upsert:turtle`, `upsert:trig` |
+| Ledger mgmt | `ledger:create`, `ledger:drop`, `ledger:info`, `ledger:exists` |
+
+The `operation` span attribute retains the handler-specific name (e.g. `query` vs `query_ledger`) for precise filtering when needed.
+
+### Span Hierarchy
+
+Fluree instruments queries, transactions, and indexing with structured tracing spans at three tiers. All debug/trace spans are opt-in via `RUST_LOG` -- at default `info` level, only top-level operation spans appear.
+
+#### Tier 1: INFO (always visible)
+
+Production-level spans. Shows top-level operations and timing:
+
+```bash
+RUST_LOG=info  # default
+```
+
+Spans: `query_run`, `txn_stage`, `txn_commit`, `commit_*` sub-spans, `index_build`, `build_all_indexes`, `build_index`, `sort_blocking`, `groupby_blocking`, `join_flush_*`
+
+#### Tier 2: DEBUG (opt-in investigation)
+
+Phase-level decomposition. Use to identify which phase is the bottleneck:
+
+```bash
+RUST_LOG=info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug
+```
+
+Additional spans:
+- **Query:** `query_prepare` > [`reasoning_prep`, `pattern_rewrite`, `plan`], `parse`, `format`, `policy_eval`, core operators: `scan`, `join`, `join_next_batch`, `filter`, `project`, `sort`
+- **Transaction:** `txn_stage` > [`where_exec`, `delete_gen`, `insert_gen`, `cancellation`, `policy_enforce`]
+- **Indexer:** `resolve_commit`, `index_gc` > [`gc_walk_chain`, `gc_delete_entries`]
+
+#### Tier 3: TRACE (maximum detail)
+
+Per-operator detail for deep performance analysis:
+
+```bash
+RUST_LOG=info,fluree_db_query=trace
+```
+
+Additional spans: `binary_cursor_next_leaf`, `property_join`, `group_by`, `aggregate`, `group_aggregate`, `distinct`, `limit`, `offset`, `union`, `optional`, `subquery`, `having`
+
+#### Span Tree (Query)
+
+```
+query_prepare (debug)
+├── reasoning_prep (debug)
+├── pattern_rewrite (debug)
+└── plan (debug)
+query_run (info)
+├── scan (debug)
+├── join (debug, open)
+├── join_next_batch (debug, per iteration)
+│   └── join_flush_batched_binary (info)
+├── filter (debug)
+├── project (debug)
+├── sort (debug)
+├── sort_blocking (info)
+└── ...
+format (debug)
+```
+
+#### Span Tree (Transaction)
+
+```
+txn_stage (info)
+├── where_exec (debug)
+├── delete_gen (debug)
+├── insert_gen (debug)
+├── cancellation (debug)
+└── policy_enforce (debug)
+txn_commit (info)
+├── commit_nameservice_lookup (info)
+├── commit_verify_sequencing (info)
+├── commit_namespace_delta (info)
+├── commit_write_raw_txn (info)
+├── commit_build_record (info)
+├── commit_write_commit_blob (info)
+├── commit_publish_nameservice (info)
+├── commit_generate_metadata_flakes (info)
+├── commit_clone_novelty (info)
+└── commit_apply_to_novelty (info)
+```
+
+#### Span Tree (Indexing)
+
+Indexing runs as a **separate top-level trace** (not nested under an HTTP request). Each index refresh cycle starts its own trace root:
+
+```
+index_build (info)
+├── build_all_indexes (info)
+│   └── build_index (info, per order: SPOT, PSOT, POST, OPST, TSOP)
+├── generate_runs (info)
+├── walk_commit_chain (info)
+│   └── resolve_commit (debug)
+└── index_gc (debug)
+    ├── gc_walk_chain (debug)
+    └── gc_delete_entries (debug)
+```
+
+#### Span Tree (Bulk Import / fluree-ingest)
+
+Bulk import runs as a **standalone top-level trace** under the `fluree-ingest` service (no HTTP server involved). The import pipeline instruments all major phases:
+
+```
+bulk_import (info, alias)
+├── import_chunks (info, total_chunks, parse_threads)
+│   ├── [resolver thread: inherits parent context]
+│   ├── [ttl-parser-N threads: inherit parent context]
+│   └── commit + run generation log events
+├── import_index_build (info)
+│   ├── build_all_indexes (info)
+│   │   └── build_index (info, per order: SPOT, PSOT, POST, OPST)
+│   ├── import_cas_upload (debug)
+│   └── import_publish (debug)
+└── cleanup log events
+```
+
+The `import_chunks` span covers the parse+commit loop. Spawned threads (resolver, parse workers) and async tasks (dict upload, index build) inherit the parent span context so their work appears nested in the trace waterfall.
+
+### Tracker-to-Span Bridge
+
+When tracked queries or transactions are executed (via the `/query` or `/transact` endpoints with tracking enabled), the `tracker_time` and `tracker_fuel` fields are recorded as deferred attributes on the `query_execute` and `transact_execute` spans. These values appear as span attributes in OTEL backends (Jaeger, Tempo, etc.), enabling correlation between the Tracker's fuel accounting and the span waterfall.
+
+### RUST_LOG Quick Reference
+
+| Goal | Pattern |
+|------|---------|
+| Production default | `info` |
+| Debug slow queries | `info,fluree_db_query=debug` |
+| Debug slow transactions | `info,fluree_db_transact=debug` |
+| Full phase decomposition | `info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug` |
+| Per-operator detail | `info,fluree_db_query=trace` |
+| Console firehose | `debug` (OTEL still filters to fluree_*) |
+
+### Further Reading
+
+- [Performance Investigation with Distributed Tracing](../troubleshooting/performance-tracing.md) -- How to use tracing to find bottlenecks, including AWS deployment patterns (ECS, Lambda, X-Ray, Tempo)
+- [Adding Tracing Spans](../contributing/tracing-guide.md) -- How contributors should instrument new code
+- [otel/ README](../../otel/README.md) -- OTEL validation harness reference
 
 ## Monitoring Integration
 
