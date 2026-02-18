@@ -115,8 +115,8 @@ struct DictionarySet {
     language_tags: LanguageTagDict,
     dt_sids: Vec<Sid>,
     numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena>,
-    /// Per-predicate vector arenas (packed f32). Key = p_id.
-    vector_forward: HashMap<u32, super::vector_arena::VectorArena>,
+    /// Per-predicate lazy vector arenas (on-demand shard loading). Key = p_id.
+    vector_forward: HashMap<u32, super::vector_arena::LazyVectorArena>,
 }
 
 /// Per-graph, per-order branch manifests and leaf directories.
@@ -423,9 +423,17 @@ impl BinaryIndexStore {
             }
         }
 
-        // ---- Load vector arenas ----
+        // ---- Load vector arena metadata (lazy — shards loaded on demand) ----
         let vec_dir = run_dir.join("vectors");
-        let mut vector_forward: HashMap<u32, super::vector_arena::VectorArena> = HashMap::new();
+        let mut vector_forward: HashMap<u32, super::vector_arena::LazyVectorArena> = HashMap::new();
+        // Leaflet cache is created below; we build arenas after that.
+        // Collect manifest + shard sources first.
+        struct PendingArena {
+            p_id: u32,
+            manifest: super::vector_arena::VectorManifest,
+            shard_sources: Vec<super::vector_arena::ShardSource>,
+        }
+        let mut pending_arenas: Vec<PendingArena> = Vec::new();
         if vec_dir.exists() && vec_dir.is_dir() {
             for entry in std::fs::read_dir(&vec_dir)? {
                 let entry = entry?;
@@ -438,31 +446,30 @@ impl BinaryIndexStore {
                             let manifest =
                                 super::vector_arena::read_vector_manifest(&manifest_bytes)?;
 
-                            // Load all shards from disk (local reads are fast)
-                            let mut shards = Vec::with_capacity(manifest.shards.len());
-                            for (shard_idx, _) in manifest.shards.iter().enumerate() {
+                            let mut shard_sources = Vec::with_capacity(manifest.shards.len());
+                            for (shard_idx, shard_info) in manifest.shards.iter().enumerate() {
                                 let shard_path =
                                     vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                                let shard = super::vector_arena::read_vector_shard(&shard_path)?;
-                                shards.push(shard);
+                                // Local builds don't have CIDs — use the manifest's
+                                // CAS address as a stable identity for cache keying.
+                                let cid_hash =
+                                    LeafletCache::cid_cache_key(shard_info.cas.as_bytes());
+                                let exists = shard_path.exists();
+                                shard_sources.push(super::vector_arena::ShardSource {
+                                    cid_hash,
+                                    cid: None, // local FileStorage
+                                    path: shard_path,
+                                    on_disk: std::sync::atomic::AtomicBool::new(exists),
+                                });
                             }
-
-                            let arena =
-                                super::vector_arena::load_arena_from_shards(&manifest, shards)?;
-                            vector_forward.insert(p_id, arena);
+                            pending_arenas.push(PendingArena {
+                                p_id,
+                                manifest,
+                                shard_sources,
+                            });
                         }
                     }
                 }
-            }
-            if !vector_forward.is_empty() {
-                tracing::info!(
-                    predicates = vector_forward.len(),
-                    total_vectors = vector_forward
-                        .values()
-                        .map(|a| a.len() as usize)
-                        .sum::<usize>(),
-                    "loaded vector arenas"
-                );
             }
         }
 
@@ -496,6 +503,30 @@ impl BinaryIndexStore {
             "initializing leaflet cache"
         );
         let leaflet_cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
+
+        // ---- Finalize lazy vector arenas (need cache handle) ----
+        for pa in pending_arenas {
+            let total = pa.manifest.total_count;
+            let dims = pa.manifest.dims;
+            let arena = super::vector_arena::LazyVectorArena::new(
+                pa.manifest,
+                pa.shard_sources,
+                Arc::clone(leaflet_cache.as_ref().unwrap()),
+                None, // FileStorage: all shards already on disk
+            );
+            vector_forward.insert(pa.p_id, arena);
+            tracing::debug!(p_id = pa.p_id, total, dims, "registered lazy vector arena");
+        }
+        if !vector_forward.is_empty() {
+            tracing::info!(
+                predicates = vector_forward.len(),
+                total_vectors = vector_forward
+                    .values()
+                    .map(|a| a.len() as usize)
+                    .sum::<usize>(),
+                "registered lazy vector arenas"
+            );
+        }
 
         Ok(Self {
             dicts: DictionarySet {
@@ -753,22 +784,43 @@ impl BinaryIndexStore {
             );
         }
 
-        // ---- Vector arenas (u32 keys, no string parsing) ----
-        let mut vector_forward: HashMap<u32, super::vector_arena::VectorArena> = HashMap::new();
+        // ---- Vector arenas (lazy — only manifest loaded, shards on demand) ----
+        let mut vector_forward: HashMap<u32, super::vector_arena::LazyVectorArena> = HashMap::new();
         for entry in &root.dict_refs.vectors {
             let manifest_bytes =
                 fetch_cached_bytes(cs.as_ref(), &entry.manifest, cache_dir, "vam").await?;
             let manifest = super::vector_arena::read_vector_manifest(&manifest_bytes)?;
 
-            let mut shards = Vec::with_capacity(entry.shards.len());
+            let mut shard_sources = Vec::with_capacity(entry.shards.len());
             for shard_cid in &entry.shards {
-                let shard_bytes =
-                    fetch_cached_bytes(cs.as_ref(), shard_cid, cache_dir, "vas").await?;
-                let shard = super::vector_arena::read_vector_shard_from_bytes(&shard_bytes)?;
-                shards.push(shard);
+                let cid_hash = LeafletCache::cid_cache_key(&shard_cid.to_bytes());
+                if let Some(local) = cs.resolve_local_path(shard_cid) {
+                    // FileStorage: direct path, on disk
+                    shard_sources.push(super::vector_arena::ShardSource {
+                        cid_hash,
+                        cid: None,
+                        path: local,
+                        on_disk: std::sync::atomic::AtomicBool::new(true),
+                    });
+                } else {
+                    // Remote: derive cache path, check if already cached
+                    let cache_path = cache_dir.join(format!("{}.vas", shard_cid));
+                    let exists = cache_path.exists();
+                    shard_sources.push(super::vector_arena::ShardSource {
+                        cid_hash,
+                        cid: Some(shard_cid.clone()),
+                        path: cache_path,
+                        on_disk: std::sync::atomic::AtomicBool::new(exists),
+                    });
+                }
             }
 
-            let arena = super::vector_arena::load_arena_from_shards(&manifest, shards)?;
+            let arena = super::vector_arena::LazyVectorArena::new(
+                manifest,
+                shard_sources,
+                Arc::clone(leaflet_cache.as_ref().unwrap()),
+                Some(Arc::clone(&cs)),
+            );
             vector_forward.insert(entry.p_id, arena);
         }
         if !vector_forward.is_empty() {
@@ -778,7 +830,7 @@ impl BinaryIndexStore {
                     .values()
                     .map(|a| a.len() as usize)
                     .sum::<usize>(),
-                "loaded vector arenas"
+                "registered lazy vector arenas"
             );
         }
 
@@ -1703,16 +1755,23 @@ impl BinaryIndexStore {
     }
 
     /// Get the vector arena for a predicate (for arena-direct f32 scoring).
-    pub fn vector_arena(&self, p_id: u32) -> Option<&super::vector_arena::VectorArena> {
+    pub fn vector_arena(&self, p_id: u32) -> Option<&super::vector_arena::LazyVectorArena> {
         self.dicts.vector_forward.get(&p_id)
     }
 
-    /// Get an f32 vector slice directly from the arena (zero-copy hot path).
-    pub fn get_vector_f32(&self, p_id: u32, handle: u32) -> Option<&[f32]> {
-        self.dicts
-            .vector_forward
-            .get(&p_id)
-            .and_then(|arena| arena.get_f32(handle))
+    /// Look up a single vector by predicate and handle.
+    ///
+    /// Returns a `VectorSlice` that borrows the shard through the cache.
+    /// The shard is loaded on demand if not already cached.
+    pub fn get_vector_f32(
+        &self,
+        p_id: u32,
+        handle: u32,
+    ) -> io::Result<Option<super::vector_arena::VectorSlice>> {
+        match self.dicts.vector_forward.get(&p_id) {
+            Some(arena) => arena.lookup_vector(handle),
+            None => Ok(None),
+        }
     }
 
     /// Check whether vectors for a predicate are all unit-normalized.
@@ -1848,7 +1907,7 @@ impl BinaryIndexStore {
                     format!("no vector arena for p_id={}", p_id),
                 )
             })?;
-            let f32_slice = arena.get_f32(handle).ok_or_else(|| {
+            let vs = arena.lookup_vector(handle)?.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("VECTOR_ID handle {} not found for p_id={}", handle, p_id),
@@ -1856,7 +1915,7 @@ impl BinaryIndexStore {
             })?;
             // Upcast f32→f64 for FlakeValue::Vector. Because f:vector values are
             // quantized to f32 at ingest, this upcast is lossless.
-            let f64_vec: Vec<f64> = f32_slice.iter().map(|&x| x as f64).collect();
+            let f64_vec: Vec<f64> = vs.as_f32().iter().map(|&x| x as f64).collect();
             return Ok(FlakeValue::Vector(f64_vec));
         }
         if o_kind == ObjKind::G_YEAR.as_u8() {
