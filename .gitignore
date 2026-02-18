@@ -20,6 +20,10 @@
 # Fluree data
 .fluree/
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Test database (generated data)
 /test-database/
 

@@ -29,7 +29,7 @@ if [ ! -f "${TTL_ABS}" ]; then
 fi
 
 FILE_SIZE=$(wc -c < "${TTL_ABS}" | tr -d ' ')
-FILE_MB=$(echo "scale=1; ${FILE_SIZE} / 1048576" | bc)
+FILE_MB=$(python3 -c "print(f'{${FILE_SIZE}/1048576:.1f}')")
 echo "Input file: ${FILE_MB} MB"
 echo ""
 

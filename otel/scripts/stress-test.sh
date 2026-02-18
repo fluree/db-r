@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+# Portable millisecond timestamp (macOS date doesn't support %N)
+epoch_ms() { python3 -c "import time; print(int(time.time()*1000))"; }
+
 BASE_URL="${1:-http://localhost:8090}"
 LEDGER="${2:-otel-test:main}"
 TOTAL_PRODUCTS="${3:-50000}"
@@ -81,7 +84,7 @@ start_server() {
     mkdir -p "$(dirname "$PID_FILE")"
 
     # Server reads .fluree/config.toml automatically (cwd walk-up discovery).
-    # Config is pre-applied by 'make stress-config' (1GB reindex_max_bytes, etc.)
+    # Config is pre-applied by 'make init' / 'make config' (1GB reindex_max_bytes, etc.)
     OTEL_SERVICE_NAME=fluree-server \
     OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
     RUST_LOG="$RUST_LOG" \
@@ -191,14 +194,14 @@ run_query() {
 
     echo "  Query: ${label}"
     for ((iter = 1; iter <= iterations; iter++)); do
-        local start_ms=$(($(date +%s%N) / 1000000))
+        local start_ms=$(epoch_ms)
 
         RESP=$(curl -s -w "\n%{http_code}" \
             -X POST "${BASE_URL}/v1/fluree/query/${LEDGER}" \
             -H "Content-Type: application/sparql-query" \
             -d "$sparql")
 
-        local end_ms=$(($(date +%s%N) / 1000000))
+        local end_ms=$(epoch_ms)
         local duration=$((end_ms - start_ms))
         HTTP_CODE=$(echo "$RESP" | tail -n1)
 
@@ -254,7 +257,7 @@ echo "--- Phase 2: Insert ${TOTAL_PRODUCTS} products (${TOTAL_BATCHES} batches o
 
 TOTAL_RETRIES=0
 TOTAL_INSERTED=0
-PHASE2_START=$(($(date +%s%N) / 1000000))
+PHASE2_START=$(epoch_ms)
 
 for ((batch = 0; batch < TOTAL_BATCHES; batch++)); do
     start_id=$((batch * BATCH_SIZE + 1))
@@ -273,7 +276,7 @@ for ((batch = 0; batch < TOTAL_BATCHES; batch++)); do
 
     # Progress every 10 batches
     if (( (batch + 1) % 10 == 0 )) || (( batch + 1 == TOTAL_BATCHES )); then
-        local_now=$(($(date +%s%N) / 1000000))
+        local_now=$(epoch_ms)
         elapsed=$(( (local_now - PHASE2_START) / 1000 ))
         if [ "$elapsed" -gt 0 ]; then
             rate=$((TOTAL_INSERTED / elapsed))
@@ -284,7 +287,7 @@ for ((batch = 0; batch < TOTAL_BATCHES; batch++)); do
     fi
 done
 
-PHASE2_END=$(($(date +%s%N) / 1000000))
+PHASE2_END=$(epoch_ms)
 PHASE2_SECS=$(( (PHASE2_END - PHASE2_START) / 1000 ))
 echo ""
 echo "  Phase 2 complete: ${TOTAL_INSERTED} products in ${PHASE2_SECS}s (${TOTAL_BOUNCES} server bounces)"
@@ -446,7 +449,7 @@ echo "============================================="
 echo "Products inserted:  ${TOTAL_INSERTED} (phase 2) + ~10000 (phase 3 bursts)"
 echo "Phase 2 duration:   ${PHASE2_SECS}s"
 echo "Server bounces:     ${TOTAL_BOUNCES}"
-echo "Query battery:      6 queries x 3 iterations"
+echo "Query battery:      5 queries x 3 iterations"
 echo ""
 echo "Open Jaeger at http://localhost:16686"
 echo "Look for:"

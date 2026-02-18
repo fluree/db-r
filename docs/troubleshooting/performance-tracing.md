@@ -457,7 +457,7 @@ make fresh
 | All transaction types | `make transact` | 5 traces, each with `txn_stage` + `txn_commit` |
 | All query types | `make query` | 7 traces with `query_prepare` + `query_run` |
 | Background indexing | `make index` | Separate `index_build` trace (not under a request) |
-| Bulk import | `make firehose` | Many commit traces, possibly indexing traces |
+| Bulk import | `make import` | Many commit traces, possibly indexing traces |
 | Full end-to-end | `make smoke` | All of the above |
 | Multi-cycle stress | `make cycle` | 3 full cycles, multiple `index_build` traces |
 

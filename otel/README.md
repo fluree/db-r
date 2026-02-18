@@ -116,7 +116,7 @@ make stress STRESS_PRODUCTS=10000 STRESS_BATCH=200  # Smaller stress test
 
 | Level | Pattern | When to use |
 |-------|---------|-------------|
-| Default | `info` | Production; top-level operation timing |
+| Default | `info` | Production; request logging only (operation spans are at debug) |
 | Query debug | `info,fluree_db_query=debug` | Investigate slow queries |
 | Txn debug | `info,fluree_db_transact=debug` | Investigate slow transactions |
 | Full debug | `info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug` | Full phase decomposition (default for `make server`) |
@@ -235,7 +235,11 @@ The stress target automatically pre-configures the server with a 1GB `reindex_ma
 1. **Seeds 20 categories** via a single insert
 2. **Inserts 50,000 products** (configurable) in batches of 500, with exponential backoff on novelty-at-max backpressure (HTTP 400 with "Novelty at maximum size")
 3. **Waits for indexing to settle**, then fires 2 additional bursts of 5,000 products each
-4. **Runs 6 expensive SPARQL queries** (3 iterations each) exercising sort, join, filter, GROUP BY, OPTIONAL, and subqueries
+4. **Runs 5 expensive SPARQL queries** (3 iterations each) exercising sort, join, filter, GROUP BY, and OPTIONAL (subquery Q5 is commented out pending parser support)
+
+### Trace retention
+
+The Jaeger instance defaults to `MEMORY_MAX_TRACES=5000`. During stress tests with 50K+ inserts, each producing a trace, older traces will be evicted. For large runs, override this in `docker-compose.yml` (e.g., `MEMORY_MAX_TRACES=50000`).
 
 ### Backpressure behavior
 

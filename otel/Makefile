@@ -25,7 +25,7 @@ INDEXING   ?= true
 STRESS_PRODUCTS ?= 50000
 STRESS_BATCH    ?= 500
 
-RUST_LOG   ?= debug
+RUST_LOG   ?= info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug,fluree_db_api=debug
 
 # ── Infrastructure lifecycle ─────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ build: ## Build server and CLI binaries with otel feature (release)
 
 # ── Project initialization ───────────────────────────────────────────────────
 
-.PHONY: init config
+.PHONY: init config stress-config
 
 init: ## Initialize .fluree/ project directory with config
 	@if [ ! -x $(CLI_BIN) ]; then echo "Binary not found: $(CLI_BIN)"; echo "Run 'make build' first."; exit 1; fi
@@ -86,6 +86,8 @@ config: ## Apply OTEL-specific server configuration via CLI
 	@$(CLI_BIN) config set server.indexing.enabled $(INDEXING)
 	@$(CLI_BIN) config set server.indexing.reindex_min_bytes 100000
 	@$(CLI_BIN) config set server.indexing.reindex_max_bytes 1000000000
+
+stress-config: config ## Alias: pre-configure high novelty limits (1GB) for stress testing
 
 # ── Server lifecycle ─────────────────────────────────────────────────────────
 

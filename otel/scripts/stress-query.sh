@@ -6,6 +6,9 @@
 
 set -euo pipefail
 
+# Portable millisecond timestamp (macOS date doesn't support %N)
+epoch_ms() { python3 -c "import time; print(int(time.time()*1000))"; }
+
 BASE_URL="${1:-http://localhost:8090}"
 LEDGER="${2:-otel-test:main}"
 
@@ -18,14 +21,14 @@ run_query() {
 
     echo "  Query: ${label}"
     for ((iter = 1; iter <= iterations; iter++)); do
-        local start_ms=$(($(date +%s%N) / 1000000))
+        local start_ms=$(epoch_ms)
 
         RESP=$(curl -s -w "\n%{http_code}" \
             -X POST "${BASE_URL}/v1/fluree/query/${LEDGER}" \
             -H "Content-Type: application/sparql-query" \
             -d "$sparql")
 
-        local end_ms=$(($(date +%s%N) / 1000000))
+        local end_ms=$(epoch_ms)
         local duration=$((end_ms - start_ms))
         HTTP_CODE=$(echo "$RESP" | tail -n1)
 
