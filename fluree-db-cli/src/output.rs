@@ -215,14 +215,13 @@ pub fn format_result(
     match format {
         OutputFormatKind::Json => format_json(json, query_format, limit),
         OutputFormatKind::Table => format_as_table(json, query_format, limit),
-        OutputFormatKind::Csv => format_as_csv(json, query_format, limit),
-        OutputFormatKind::Tsv => {
-            // TSV should be handled before reaching this function (via QueryResult::to_tsv_bytes).
+        OutputFormatKind::Csv | OutputFormatKind::Tsv => {
+            // TSV/CSV should be handled before reaching this function (via QueryResult methods).
             // If we get here, the caller didn't have access to the raw QueryResult.
-            Err(crate::error::CliError::Usage(
-                "TSV format requires direct access to query results (not available for remote queries)"
-                    .to_string(),
-            ))
+            Err(crate::error::CliError::Usage(format!(
+                "{} format requires direct access to query results (not available for remote queries)",
+                if matches!(format, OutputFormatKind::Csv) { "CSV" } else { "TSV" }
+            )))
         }
     }
 }
@@ -279,26 +278,6 @@ fn format_as_table(
     match query_format {
         QueryFormat::Sparql => format_sparql_table(json, limit),
         QueryFormat::JsonLd => format_jsonld_table(json, limit),
-    }
-}
-
-fn format_as_csv(
-    json: &serde_json::Value,
-    query_format: QueryFormat,
-    limit: Option<usize>,
-) -> CliResult<FormatOutput> {
-    match query_format {
-        QueryFormat::Sparql => format_sparql_csv(json, limit),
-        QueryFormat::JsonLd => format_jsonld_csv(json, limit),
-    }
-}
-
-/// Escape a value for CSV output.
-fn csv_escape(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
     }
 }
 
@@ -421,129 +400,6 @@ fn format_jsonld_table(json: &serde_json::Value, limit: Option<usize>) -> CliRes
 
     Ok(FormatOutput {
         text: table.to_string(),
-        total_rows,
-    })
-}
-
-fn format_sparql_csv(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
-    let vars = json
-        .pointer("/head/vars")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    if vars.is_empty() {
-        return Ok(FormatOutput {
-            text: serde_json::to_string_pretty(json).unwrap_or_default(),
-            total_rows: 0,
-        });
-    }
-
-    let mut lines = Vec::new();
-    lines.push(
-        vars.iter()
-            .map(|v| csv_escape(v))
-            .collect::<Vec<_>>()
-            .join(","),
-    );
-
-    let bindings = json.pointer("/results/bindings").and_then(|v| v.as_array());
-    let total_rows = bindings.map(|b| b.len()).unwrap_or(0);
-
-    if let Some(rows) = bindings {
-        let display_rows: &[serde_json::Value] = match limit {
-            Some(n) if n < rows.len() => &rows[..n],
-            _ => rows,
-        };
-        for row in display_rows {
-            let cells: Vec<String> = vars
-                .iter()
-                .map(|var| {
-                    let val = row
-                        .get(var)
-                        .and_then(|b| b.get("value"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    csv_escape(val)
-                })
-                .collect();
-            lines.push(cells.join(","));
-        }
-    }
-
-    Ok(FormatOutput {
-        text: lines.join("\n"),
-        total_rows,
-    })
-}
-
-fn format_jsonld_csv(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
-    let arr = match json.as_array() {
-        Some(a) => a,
-        None => {
-            return Ok(FormatOutput {
-                text: serde_json::to_string_pretty(json).unwrap_or_default(),
-                total_rows: 0,
-            })
-        }
-    };
-
-    let total_rows = arr.len();
-    if arr.is_empty() {
-        return Ok(FormatOutput {
-            text: String::new(),
-            total_rows: 0,
-        });
-    }
-
-    // Collect all keys
-    let mut columns: Vec<String> = Vec::new();
-    for obj in arr {
-        if let Some(map) = obj.as_object() {
-            for key in map.keys() {
-                if !columns.contains(key) {
-                    columns.push(key.clone());
-                }
-            }
-        }
-    }
-
-    let mut lines = Vec::new();
-    lines.push(
-        columns
-            .iter()
-            .map(|c| csv_escape(c))
-            .collect::<Vec<_>>()
-            .join(","),
-    );
-
-    let display_rows: &[serde_json::Value] = match limit {
-        Some(n) if n < arr.len() => &arr[..n],
-        _ => arr,
-    };
-    for obj in display_rows {
-        let cells: Vec<String> = columns
-            .iter()
-            .map(|col| {
-                let val = obj
-                    .get(col)
-                    .map(|v| match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        other => other.to_string(),
-                    })
-                    .unwrap_or_default();
-                csv_escape(&val)
-            })
-            .collect();
-        lines.push(cells.join(","));
-    }
-
-    Ok(FormatOutput {
-        text: lines.join("\n"),
         total_rows,
     })
 }
