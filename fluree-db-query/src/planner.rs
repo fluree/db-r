@@ -14,70 +14,11 @@
 //! estimates to compute selectivity scores for each pattern. Lower scores
 //! indicate more selective patterns that should be executed first.
 
-use crate::ir::{CompareOp, Function, Pattern, Query};
+use crate::ir::{CompareOp, Function, Pattern};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
-use fluree_db_core::{FlakeValue, StatsView};
+use fluree_db_core::{FlakeValue, PropertyStatData, StatsView};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
-/// Three binding states for var tracking
-///
-/// Used during planning to track which variables are:
-/// - Unbound: Not yet bound, can be bound by future patterns
-/// - Bound: Guaranteed bound from a pattern or VALUES
-/// - Poisoned: From failed OPTIONAL, blocks future matching
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BindingState {
-    /// Not yet bound, can be bound
-    Unbound,
-    /// Guaranteed bound
-    Bound,
-    /// From failed OPTIONAL, blocks future matching
-    Poisoned,
-}
-
-impl BindingState {
-    /// Check if this state is poisoned
-    pub fn is_poisoned(&self) -> bool {
-        matches!(self, BindingState::Poisoned)
-    }
-
-    /// Check if this state represents a bound variable
-    pub fn is_bound(&self) -> bool {
-        matches!(self, BindingState::Bound)
-    }
-}
-
-/// Result of planning a query
-///
-/// Contains the planned execution information and metadata.
-/// Note: Planner functions are generic over S, C to produce typed operators.
-/// PlanResult stores the operator but otherwise stays small and local.
-#[derive(Debug)]
-pub struct PlanResult {
-    /// Output schema (variables in output order)
-    pub schema: Arc<[VarId]>,
-    /// Full state tracking for all variables
-    pub var_states: HashMap<VarId, BindingState>,
-    /// Estimated row count (if available)
-    pub estimated_rows: Option<usize>,
-    /// Ordered triple patterns after reordering
-    pub ordered_patterns: Vec<TriplePattern>,
-}
-
-impl PlanResult {
-    /// Vars guaranteed bound (not Unbound, not Poisoned)
-    ///
-    /// Note: this is "guaranteed bound", not "present in schema"
-    pub fn bound_vars(&self) -> HashSet<VarId> {
-        self.var_states
-            .iter()
-            .filter(|(_, s)| **s == BindingState::Bound)
-            .map(|(v, _)| *v)
-            .collect()
-    }
-}
 
 // =============================================================================
 // Statistics-Based Selectivity Estimation
@@ -100,31 +41,39 @@ pub enum PatternType {
     FullScan,
 }
 
-// Selectivity score constants (matching Clojure behavior)
-/// Most selective - exact match
-const HIGHLY_SELECTIVE: i64 = 0;
+// Row count estimate constants used by estimate_triple_row_count
+/// Highest selectivity - exact match or minimum row estimate
+const HIGHLY_SELECTIVE: f64 = 1.0;
 /// Medium selectivity - fallback for bound-subject patterns
-const MODERATELY_SELECTIVE: i64 = 10;
+const MODERATELY_SELECTIVE: f64 = 10.0;
 /// Fallback for bound-object and property-scan patterns
-const DEFAULT_SELECTIVITY: i64 = 1000;
+const DEFAULT_SELECTIVITY: f64 = 1000.0;
 /// Full scan - all variables unbound
-const FULL_SCAN: i64 = 1_000_000_000_000; // 1e12
+const FULL_SCAN: f64 = 1e12;
 
 // Clojure fallback caps differ by pattern type:
 // - bound-subject (s p ?o): min count 10
 // - bound-object (?s p o): min count 1000
-const BOUND_SUBJECT_FALLBACK_CAP: i64 = 10;
-const BOUND_OBJECT_FALLBACK_CAP: i64 = 1000;
+const BOUND_SUBJECT_FALLBACK_CAP: f64 = 10.0;
+const BOUND_OBJECT_FALLBACK_CAP: f64 = 1000.0;
 
-/// Classify a triple pattern for selectivity scoring
-pub(crate) fn classify_pattern(pattern: &TriplePattern) -> PatternType {
-    let s_bound = pattern.s_bound();
-    let p_bound = pattern.p_bound();
-    let o_bound = pattern.o_bound();
+/// Classify a triple pattern for selectivity scoring, considering which
+/// variables are already bound from previous patterns in the execution pipeline.
+///
+/// Treats variables present in `bound_vars` as effectively bound, producing
+/// a more accurate pattern type for cardinality estimation during join ordering.
+pub(crate) fn classify_pattern(
+    pattern: &TriplePattern,
+    bound_vars: &HashSet<VarId>,
+) -> PatternType {
+    let s_bound = pattern.s_bound() || pattern.s.as_var().is_some_and(|v| bound_vars.contains(&v));
+    let p_bound = pattern.p_bound() || pattern.p.as_var().is_some_and(|v| bound_vars.contains(&v));
+    let o_bound = pattern.o_bound() || pattern.o.as_var().is_some_and(|v| bound_vars.contains(&v));
 
-    // Check for rdf:type predicate with bound object → Class pattern
-    // Use Term::is_rdf_type() to handle both Term::Sid and Term::Iri predicates
-    if p_bound && o_bound && !s_bound && pattern.p.is_rdf_type() {
+    // rdf:type with a literal class object → ClassPattern (can look up specific class count).
+    // If the object is a runtime-bound variable, we can't look up the class, so fall through
+    // to BoundObject which uses the generic ndv_values-based estimate.
+    if p_bound && o_bound && !s_bound && pattern.p.is_rdf_type() && pattern.o_bound() {
         return PatternType::ClassPattern;
     }
 
@@ -140,381 +89,96 @@ pub(crate) fn classify_pattern(pattern: &TriplePattern) -> PatternType {
     }
 }
 
-/// Calculate selectivity score for a pattern using statistics
+/// Look up property statistics by predicate term (SID or IRI).
+fn property_stats<'a>(stats: &'a StatsView, pred: &Term) -> Option<&'a PropertyStatData> {
+    if let Some(sid) = pred.as_sid() {
+        return stats.get_property(sid);
+    }
+    if let Some(iri) = pred.as_iri() {
+        return stats.get_property_by_iri(iri);
+    }
+    None
+}
+
+/// Look up class instance count by class term (SID or IRI).
+fn class_count(stats: &StatsView, class: &Term) -> Option<u64> {
+    if let Some(sid) = class.as_sid() {
+        return stats.get_class_count(sid);
+    }
+    if let Some(iri) = class.as_iri() {
+        return stats.get_class_count_by_iri(iri);
+    }
+    None
+}
+
+/// Estimate the number of result rows a triple pattern adds to the pipeline.
 ///
-/// Lower score = more selective = should be executed first.
-/// When stats are not available, uses conservative fallback values.
-pub(crate) fn calculate_selectivity(pattern: &TriplePattern, stats: Option<&StatsView>) -> i64 {
-    let pattern_type = classify_pattern(pattern);
-
-    // Helper: get property stats for a predicate represented as Sid or IRI.
-    fn get_prop<'a>(
-        stats: &'a StatsView,
-        pred: &Term,
-    ) -> Option<&'a fluree_db_core::PropertyStatData> {
-        if let Some(sid) = pred.as_sid() {
-            return stats.get_property(sid);
-        }
-        if let Some(iri) = pred.as_iri() {
-            return stats.get_property_by_iri(iri);
-        }
-        None
-    }
-
-    // Helper: get class count for a class represented as Sid or IRI.
-    fn get_class(stats: &StatsView, class: &Term) -> Option<u64> {
-        if let Some(sid) = class.as_sid() {
-            return stats.get_class_count(sid);
-        }
-        if let Some(iri) = class.as_iri() {
-            return stats.get_class_count_by_iri(iri);
-        }
-        None
-    }
-
-    match pattern_type {
+/// This is context-aware: it considers which variables are already bound from
+/// previous patterns. A triple `?s :name ?name` is a full PropertyScan (count rows)
+/// when `?s` is unbound, but only ~ceil(count/ndv_subjects) rows per incoming row
+/// when `?s` is already bound from an earlier pattern.
+pub(crate) fn estimate_triple_row_count(
+    pattern: &TriplePattern,
+    bound_vars: &HashSet<VarId>,
+    stats: Option<&StatsView>,
+) -> f64 {
+    match classify_pattern(pattern, bound_vars) {
         PatternType::ExactMatch => HIGHLY_SELECTIVE,
 
         PatternType::ClassPattern => {
-            // Use class count from stats
             if let Some(s) = stats {
-                if let Some(count) = get_class(s, &pattern.o) {
-                    return count as i64;
+                if let Some(count) = class_count(s, &pattern.o) {
+                    return count as f64;
                 }
-            }
-            // If class counts are not available, approximate using rdf:type property stats:
-            // expected per-class count ~= ceil(type_count / ndv_classes).
-            if let Some(s) = stats {
-                if let Some(prop) = get_prop(s, &pattern.p) {
+                if let Some(prop) = property_stats(s, &pattern.p) {
                     if prop.ndv_values > 0 {
-                        let sel = (prop.count as f64 / prop.ndv_values as f64).ceil() as i64;
-                        return sel.max(1);
+                        return (prop.count as f64 / prop.ndv_values as f64)
+                            .ceil()
+                            .max(HIGHLY_SELECTIVE);
                     }
                 }
             }
-            // Fallback: distinguish class-pattern fallback from other default-selectivity
-            // fallbacks so ties don't arbitrarily prefer class scans.
-            DEFAULT_SELECTIVITY + 1
+            DEFAULT_SELECTIVITY
         }
 
         PatternType::BoundSubject => {
-            // Subject + predicate bound: selectivity = ceil(count / ndv_subjects)
-            // This estimates "how many values per subject" for this property
             if let Some(s) = stats {
-                if let Some(prop) = get_prop(s, &pattern.p) {
+                if let Some(prop) = property_stats(s, &pattern.p) {
                     if prop.ndv_subjects > 0 {
-                        let sel = (prop.count as f64 / prop.ndv_subjects as f64).ceil() as i64;
-                        return sel.max(1);
+                        return (prop.count as f64 / prop.ndv_subjects as f64)
+                            .ceil()
+                            .max(HIGHLY_SELECTIVE);
                     }
-                    // Have count but no NDV - use count capped (Clojure: min count 10)
-                    return (prop.count as i64).min(BOUND_SUBJECT_FALLBACK_CAP);
+                    return (prop.count as f64).min(BOUND_SUBJECT_FALLBACK_CAP);
                 }
             }
-            // Fallback: subject-bound patterns are usually selective
             MODERATELY_SELECTIVE
         }
 
         PatternType::BoundObject => {
-            // Object + predicate bound: selectivity = ceil(count / ndv_values)
-            // This estimates "how many subjects have this value" for this property
             if let Some(s) = stats {
-                if let Some(prop) = get_prop(s, &pattern.p) {
+                if let Some(prop) = property_stats(s, &pattern.p) {
                     if prop.ndv_values > 0 {
-                        let sel = (prop.count as f64 / prop.ndv_values as f64).ceil() as i64;
-                        return sel.max(1);
+                        return (prop.count as f64 / prop.ndv_values as f64)
+                            .ceil()
+                            .max(HIGHLY_SELECTIVE);
                     }
-                    // Have count but no NDV - use count capped (Clojure: min count 1000)
-                    return (prop.count as i64).min(BOUND_OBJECT_FALLBACK_CAP);
+                    return (prop.count as f64).min(BOUND_OBJECT_FALLBACK_CAP);
                 }
             }
-            // Fallback: object-bound can vary widely
             DEFAULT_SELECTIVITY
         }
 
         PatternType::PropertyScan => {
-            // Only predicate bound: use property count
             if let Some(s) = stats {
-                if let Some(prop) = get_prop(s, &pattern.p) {
-                    return prop.count as i64;
+                if let Some(prop) = property_stats(s, &pattern.p) {
+                    return prop.count as f64;
                 }
             }
             DEFAULT_SELECTIVITY
         }
 
         PatternType::FullScan => FULL_SCAN,
-    }
-}
-
-/// Score a pattern based purely on selectivity
-///
-/// Lower score = more selective = better.
-/// The join-preferring behavior is handled by the "filter joinable candidates first"
-/// logic in `reorder_patterns`, not by score adjustments.
-fn score_pattern_selectivity(pattern: &TriplePattern, stats: Option<&StatsView>) -> i64 {
-    calculate_selectivity(pattern, stats)
-}
-
-/// Compare two Terms for deterministic ordering (tie-breaker)
-///
-/// Provides stable ordering: Var < Sid < Iri < Value, then by inner value.
-pub(crate) fn compare_term(a: &Term, b: &Term) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a, b) {
-        // Variables sort before non-variables, then by VarId
-        (Term::Var(va), Term::Var(vb)) => va.cmp(vb),
-        (Term::Var(_), _) => Ordering::Less,
-        (_, Term::Var(_)) => Ordering::Greater,
-        // SIDs sort by namespace then name
-        (Term::Sid(sa), Term::Sid(sb)) => sa.cmp(sb),
-        (Term::Sid(_), _) => Ordering::Less,
-        // IRIs sort after SIDs but before Values
-        (Term::Iri(ia), Term::Iri(ib)) => ia.cmp(ib),
-        (Term::Iri(_), Term::Value(_)) => Ordering::Less,
-        (Term::Iri(_), Term::Sid(_)) => Ordering::Greater,
-        // Values sort last
-        (Term::Value(_), Term::Sid(_) | Term::Iri(_)) => Ordering::Greater,
-        // Values: compare debug representation for determinism
-        // A cleaner solution would use canonical_hash() if available
-        (Term::Value(va), Term::Value(vb)) => format!("{:?}", va).cmp(&format!("{:?}", vb)),
-    }
-}
-
-/// Deterministic tie-breaker for equal selectivity scores
-///
-/// Clojure parity priority, then lexicographic (p, s, o) for reproducibility.
-pub(crate) fn compare_patterns_tiebreaker(
-    a: &TriplePattern,
-    b: &TriplePattern,
-) -> std::cmp::Ordering {
-    // Prefer patterns that are "cheaper" even when stats tie.
-    //
-    // This matters in cases where selectivity scores collide (e.g. missing NDV),
-    // but we still want consistent improvements:
-    // - bound-object lookups should precede class scans
-    // - class scans should precede property scans when scores tie
-    //
-    // This also prevents meaningless reorders for equal-selectivity class vs property
-    // patterns when class is already first (Clojure explain-no-optimization-test).
-    fn rank(p: &TriplePattern) -> u8 {
-        match classify_pattern(p) {
-            PatternType::ExactMatch => 0,
-            PatternType::BoundObject => 1,
-            PatternType::BoundSubject => 2,
-            PatternType::ClassPattern => 3,
-            PatternType::PropertyScan => 4,
-            PatternType::FullScan => 5,
-        }
-    }
-
-    let ra = rank(a);
-    let rb = rank(b);
-    match ra.cmp(&rb) {
-        std::cmp::Ordering::Equal => {}
-        other => return other,
-    }
-
-    let pred_cmp = compare_term(&a.p, &b.p);
-    if pred_cmp != std::cmp::Ordering::Equal {
-        return pred_cmp;
-    }
-    let subj_cmp = compare_term(&a.s, &b.s);
-    if subj_cmp != std::cmp::Ordering::Equal {
-        return subj_cmp;
-    }
-    compare_term(&a.o, &b.o)
-}
-
-/// Check if a pattern shares any variables with the bound set
-pub(crate) fn shares_variables(pattern: &TriplePattern, bound_vars: &HashSet<VarId>) -> bool {
-    pattern.variables().iter().any(|v| bound_vars.contains(v))
-}
-
-/// Reorder patterns for optimal join order using statistics-based selectivity
-///
-/// Uses a greedy algorithm that:
-/// 1. First filters for patterns sharing variables with already-bound set (join candidates)
-/// 2. Within candidates, picks the lowest selectivity score (most selective)
-/// 3. Uses deterministic tie-breaker for equal scores
-/// 4. Falls back to all remaining if no joining patterns (Cartesian fallback)
-///
-/// When `stats` is `None`, falls back to conservative selectivity estimates.
-pub fn reorder_patterns(
-    patterns: Vec<TriplePattern>,
-    stats: Option<&StatsView>,
-) -> Vec<TriplePattern> {
-    reorder_patterns_seeded(patterns, stats, &HashSet::new())
-}
-
-/// Reorder patterns for optimal join order using statistics-based selectivity,
-/// seeded with an initial set of already-bound variables.
-///
-/// This matches the Clojure optimizer behavior more closely: when some variables
-/// are already bound from a prior operator (VALUES/BIND/previous clause), prefer
-/// patterns that *join* with those bindings rather than starting with a pattern
-/// that would create a cartesian explosion.
-///
-/// The algorithm is the same as `reorder_patterns`, except `bound_vars` starts from
-/// `initial_bound_vars` rather than empty.
-pub fn reorder_patterns_seeded(
-    patterns: Vec<TriplePattern>,
-    stats: Option<&StatsView>,
-    initial_bound_vars: &HashSet<VarId>,
-) -> Vec<TriplePattern> {
-    if patterns.len() <= 1 {
-        return patterns;
-    }
-
-    tracing::debug!(
-        pattern_count = patterns.len(),
-        has_stats = stats.is_some(),
-        initial_bound = initial_bound_vars.len(),
-        "reordering patterns for optimal join order"
-    );
-
-    let mut remaining: Vec<_> = patterns.into_iter().collect();
-    let mut ordered = Vec::with_capacity(remaining.len());
-    let mut bound_vars: HashSet<VarId> = initial_bound_vars.clone();
-
-    while !remaining.is_empty() {
-        // Find candidates that share variables with bound set (join-friendly)
-        let has_bound = !bound_vars.is_empty();
-        let candidates: Vec<usize> = remaining
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                if !has_bound {
-                    true // First pattern: all candidates
-                } else {
-                    shares_variables(p, &bound_vars)
-                }
-            })
-            .map(|(i, _)| i)
-            .collect();
-
-        // If no joining candidates, use all remaining (Cartesian fallback)
-        let pool: Vec<usize> = if candidates.is_empty() {
-            if tracing::enabled!(tracing::Level::TRACE) {
-                tracing::trace!(
-                    step = ordered.len() + 1,
-                    "no joining candidates, using Cartesian fallback"
-                );
-            }
-            (0..remaining.len()).collect()
-        } else {
-            candidates
-        };
-
-        // Pick best (lowest score) from pool with tie-breaker
-        let best_idx = pool
-            .into_iter()
-            .min_by(|&i, &j| {
-                let score_i = score_pattern_selectivity(&remaining[i], stats);
-                let score_j = score_pattern_selectivity(&remaining[j], stats);
-                match score_i.cmp(&score_j) {
-                    std::cmp::Ordering::Equal => {
-                        compare_patterns_tiebreaker(&remaining[i], &remaining[j])
-                    }
-                    other => other,
-                }
-            })
-            .unwrap();
-
-        let chosen = remaining.remove(best_idx);
-        let selectivity = score_pattern_selectivity(&chosen, stats);
-
-        if tracing::enabled!(tracing::Level::TRACE) {
-            let pattern_type = classify_pattern(&chosen);
-            tracing::trace!(
-                step = ordered.len() + 1,
-                selectivity = selectivity,
-                pattern_type = ?pattern_type,
-                bound_vars = bound_vars.len(),
-                "selected pattern"
-            );
-        }
-
-        // Update bound variables
-        for var in chosen.variables() {
-            bound_vars.insert(var);
-        }
-        ordered.push(chosen);
-    }
-
-    tracing::debug!(
-        reordered_count = ordered.len(),
-        "pattern reordering completed"
-    );
-
-    ordered
-}
-
-/// Check if a pattern can be matched given current binding states
-///
-/// If any pattern var is in Poisoned state, this pattern cannot match.
-pub fn can_match_pattern(
-    pattern: &TriplePattern,
-    var_states: &HashMap<VarId, BindingState>,
-) -> bool {
-    pattern.variables().iter().all(|v| {
-        var_states.get(v).map(|s| !s.is_poisoned()).unwrap_or(true) // Unknown vars are fine
-    })
-}
-
-/// Plan a query for execution
-///
-/// Currently performs pattern reordering for triple patterns only.
-/// Full operator tree generation will be added in Phase 2 (Join) and beyond.
-///
-/// # Limitations (Phase 1)
-///
-/// - Only extracts top-level triple patterns from where clause
-/// - Does not handle nested Optional/Union patterns (they are skipped)
-/// - Does not generate physical operators (returns ordered patterns)
-///
-/// # Var State Semantics
-///
-/// - Missing vars become `Bound` after pattern execution
-/// - `Unbound` vars are upgraded to `Bound`
-/// - `Poisoned` vars stay `Poisoned` (never upgraded)
-pub fn plan(query: &Query, input_states: &HashMap<VarId, BindingState>) -> PlanResult {
-    // Extract triple patterns from where clause
-    let triple_patterns: Vec<TriplePattern> = query
-        .where_
-        .iter()
-        .filter_map(|p| match p {
-            Pattern::Triple(tp) => Some(tp.clone()),
-            _ => None,
-        })
-        .collect();
-
-    // Reorder for optimal join order (plan() doesn't have stats access yet)
-    let ordered_patterns = reorder_patterns(triple_patterns, None);
-
-    // Compute output schema from select
-    let schema: Arc<[VarId]> = Arc::from(query.select.clone().into_boxed_slice());
-
-    // Compute var states after executing all patterns
-    // Triple patterns upgrade: Missing/Unbound -> Bound, but Poisoned stays Poisoned
-    let mut var_states = input_states.clone();
-    for pattern in &ordered_patterns {
-        for var in pattern.variables() {
-            var_states
-                .entry(var)
-                .and_modify(|state| {
-                    // Upgrade Unbound to Bound; Poisoned stays Poisoned
-                    if *state == BindingState::Unbound {
-                        *state = BindingState::Bound;
-                    }
-                })
-                .or_insert(BindingState::Bound);
-        }
-    }
-
-    PlanResult {
-        schema,
-        var_states,
-        estimated_rows: None,
-        ordered_patterns,
     }
 }
 

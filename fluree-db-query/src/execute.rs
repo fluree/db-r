@@ -518,6 +518,7 @@ mod tests {
     use crate::var_registry::VarId;
     use fluree_db_core::{Db, FlakeValue, PropertyStatData, Sid, StatsView};
     use fluree_graph_json_ld::ParsedContext;
+    use std::collections::HashSet;
     use where_plan::collect_inner_join_block;
 
     fn make_test_db() -> Db {
@@ -708,8 +709,13 @@ mod tests {
             },
         );
 
-        let ordered = reorder_patterns(block.triples, Some(&stats));
-        let first_pred = ordered[0].p.as_sid().expect("predicate should be Sid");
+        let patterns: Vec<Pattern> = block.triples.into_iter().map(Pattern::Triple).collect();
+        let reordered = reorder_patterns(&patterns, Some(&stats), &HashSet::new());
+        let first_triple = match &reordered[0] {
+            Pattern::Triple(tp) => tp,
+            _ => panic!("expected Triple pattern"),
+        };
+        let first_pred = first_triple.p.as_sid().expect("predicate should be Sid");
         assert_eq!(
             &*first_pred.name, "notation",
             "expected optimizer to start from the most selective triple"

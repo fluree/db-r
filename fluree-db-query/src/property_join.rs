@@ -442,6 +442,7 @@ impl Operator for PropertyJoinOperator {
                                 left_schema,
                                 right_pattern,
                                 None, // bounds already applied in driver; keep probe unconstrained
+                                Vec::new(),
                             );
                             join.open(ctx).await?;
 
