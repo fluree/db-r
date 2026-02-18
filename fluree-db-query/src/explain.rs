@@ -576,9 +576,6 @@ impl fmt::Display for GeneralPatternDisplay {
             PatternEstimate::Deferred => {
                 write!(f, " | category=Deferred")?;
             }
-            PatternEstimate::Barrier => {
-                write!(f, " | category=Barrier")?;
-            }
         }
 
         if let Some(detail) = &self.triple_detail {

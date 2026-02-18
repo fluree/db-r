@@ -50,6 +50,14 @@ const FULL_SCAN: f64 = 1e12;
 const BOUND_SUBJECT_FALLBACK_CAP: f64 = 10.0;
 const BOUND_OBJECT_FALLBACK_CAP: f64 = 1000.0;
 
+/// Default row estimate for search patterns (IndexSearch, VectorSearch,
+/// GeoSearch, S2Search) when no explicit limit is provided.
+const DEFAULT_SEARCH_LIMIT: f64 = 100.0;
+
+/// Default row estimate for Service patterns — high to place them late
+/// since they involve network calls to remote endpoints.
+const DEFAULT_SERVICE_ROW_COUNT: f64 = FULL_SCAN;
+
 /// Classify a triple pattern for selectivity scoring, considering which
 /// variables are already bound from previous patterns in the execution pipeline.
 ///
@@ -620,10 +628,12 @@ pub fn extract_object_bounds_for_var(
 /// - `Source`: estimated row count
 /// - `Reducer`: fraction of rows surviving (< 1.0)
 /// - `Expander`: expansion factor (>= 1.0)
-/// - `Deferred` / `Barrier`: no numeric payload
+/// - `Deferred`: no numeric payload
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternEstimate {
-    /// Produces rows — estimated row count (Triple, VALUES, UNION, Subquery)
+    /// Produces rows — estimated row count (Triple, VALUES, UNION, Subquery,
+    /// IndexSearch, VectorSearch, GeoSearch, S2Search, Graph, PropertyPath,
+    /// R2rml, Service)
     Source { row_count: f64 },
     /// Shrinks the stream — fraction of rows surviving (< 1.0) (MINUS, EXISTS, NOT EXISTS)
     Reducer { multiplier: f64 },
@@ -631,8 +641,6 @@ pub enum PatternEstimate {
     Expander { multiplier: f64 },
     /// FILTER/BIND — deferred, no cardinality effect
     Deferred,
-    /// Not reorderable (Graph, Service, PropertyPath, IndexSearch, VectorSearch, etc.)
-    Barrier,
 }
 
 impl PatternEstimate {
@@ -653,21 +661,6 @@ impl PatternEstimate {
             _ => 1.0,
         }
     }
-}
-
-/// Check if a pattern is a barrier (not reorderable).
-fn is_barrier(pattern: &Pattern) -> bool {
-    matches!(
-        pattern,
-        Pattern::Graph { .. }
-            | Pattern::Service(_)
-            | Pattern::PropertyPath(_)
-            | Pattern::IndexSearch(_)
-            | Pattern::VectorSearch(_)
-            | Pattern::R2rml(_)
-            | Pattern::GeoSearch(_)
-            | Pattern::S2Search(_)
-    )
 }
 
 /// Default multiplier for MINUS (assumes 10% of rows removed).
@@ -727,7 +720,37 @@ pub fn estimate_pattern(
 
         Pattern::Filter(_) | Pattern::Bind { .. } => PatternEstimate::Deferred,
 
-        _ => PatternEstimate::Barrier,
+        Pattern::IndexSearch(isp) => PatternEstimate::Source {
+            row_count: isp.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as f64),
+        },
+
+        Pattern::VectorSearch(vsp) => PatternEstimate::Source {
+            row_count: vsp.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as f64),
+        },
+
+        Pattern::GeoSearch(gsp) => PatternEstimate::Source {
+            row_count: gsp.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as f64),
+        },
+
+        Pattern::S2Search(s2p) => PatternEstimate::Source {
+            row_count: s2p.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as f64),
+        },
+
+        Pattern::Graph { patterns, .. } => PatternEstimate::Source {
+            row_count: estimate_branch_cardinality(patterns, stats),
+        },
+
+        Pattern::PropertyPath(_) => PatternEstimate::Source {
+            row_count: DEFAULT_SELECTIVITY,
+        },
+
+        Pattern::R2rml(_) => PatternEstimate::Source {
+            row_count: DEFAULT_SELECTIVITY,
+        },
+
+        Pattern::Service(_) => PatternEstimate::Source {
+            row_count: DEFAULT_SERVICE_ROW_COUNT,
+        },
     }
 }
 
@@ -818,15 +841,13 @@ pub fn pattern_shares_variables(pattern: &Pattern, bound_vars: &HashSet<VarId>) 
 /// Reorder all pattern types for optimal join order.
 ///
 /// Handles all pattern types including triples, compound patterns (UNION,
-/// OPTIONAL, MINUS, EXISTS, etc.), VALUES, FILTER, and BIND. Uses a
-/// priority-based greedy algorithm:
+/// OPTIONAL, MINUS, EXISTS, etc.), VALUES, FILTER, BIND, and source patterns
+/// (IndexSearch, VectorSearch, GeoSearch, S2Search, Graph, PropertyPath,
+/// R2rml, Service). Uses a priority-based greedy algorithm:
 ///
 /// 1. **Eligible reducers** first (lowest multiplier) — shrink the stream ASAP
 /// 2. **Sources** next (lowest estimate) — same greedy logic as triple reorder
 /// 3. **Eligible expanders** last (lowest multiplier) — defer row expansion
-///
-/// Barrier patterns stay at their original positions and split the pattern
-/// list into independently reorderable zones.
 pub fn reorder_patterns(
     patterns: &[Pattern],
     stats: Option<&StatsView>,
@@ -836,48 +857,8 @@ pub fn reorder_patterns(
         return patterns.to_vec();
     }
 
-    // Partition into zones at barrier positions
-    let mut zones: Vec<(Vec<Pattern>, Option<Pattern>)> = Vec::new();
-    let mut current_zone: Vec<Pattern> = Vec::new();
-
-    for pattern in patterns {
-        if is_barrier(pattern) {
-            zones.push((std::mem::take(&mut current_zone), Some(pattern.clone())));
-        } else {
-            current_zone.push(pattern.clone());
-        }
-    }
-    // Push final zone (no trailing barrier)
-    if !current_zone.is_empty() {
-        zones.push((current_zone, None));
-    }
-
-    let mut result = Vec::with_capacity(patterns.len());
     let mut bound_vars = initial_bound_vars.clone();
-
-    for (zone_patterns, barrier) in zones {
-        if zone_patterns.is_empty() {
-            if let Some(b) = barrier {
-                for v in b.variables() {
-                    bound_vars.insert(v);
-                }
-                result.push(b);
-            }
-            continue;
-        }
-
-        let reordered = reorder_zone(&zone_patterns, stats, &mut bound_vars);
-        result.extend(reordered);
-
-        if let Some(b) = barrier {
-            for v in b.variables() {
-                bound_vars.insert(v);
-            }
-            result.push(b);
-        }
-    }
-
-    result
+    reorder_zone(patterns, stats, &mut bound_vars)
 }
 
 /// Reorder patterns within a single zone (no barriers).
@@ -897,7 +878,6 @@ fn reorder_zone(
             PatternEstimate::Reducer { .. } => reducers.push((i, pattern.clone())),
             PatternEstimate::Expander { .. } => expanders.push((i, pattern.clone())),
             PatternEstimate::Deferred => deferred.push((i, pattern.clone())),
-            PatternEstimate::Barrier => unreachable!("barriers filtered before reorder_zone"),
         }
     }
 
