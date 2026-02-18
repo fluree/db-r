@@ -20,7 +20,7 @@ use crate::minus::MinusOperator;
 use crate::operator::BoxedOperator;
 use crate::optional::{OptionalOperator, PlanTreeOptionalBuilder};
 use crate::pattern::TriplePattern;
-use crate::planner::{is_property_join, reorder_patterns_seeded};
+use crate::planner::{is_property_join, reorder_patterns};
 use crate::property_join::PropertyJoinOperator;
 use crate::property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 use crate::seed::EmptyOperator;
@@ -294,6 +294,19 @@ pub fn build_where_operators_seeded(
         return Ok(seed.unwrap_or_else(|| Box::new(EmptyOperator::new())));
     }
 
+    // Apply generalized pattern reordering upfront for all pattern lists.
+    //
+    // reorder_patterns determines optimal placement of all patterns
+    // (triples, compound patterns like UNION/OPTIONAL/MINUS/EXISTS/Subquery)
+    // using selectivity-based cost estimation. This subsumes the per-block
+    // reorder_patterns_seeded calls that previously handled triple-only blocks.
+    let initial_bound = seed
+        .as_ref()
+        .map(|op| op.schema().iter().copied().collect::<HashSet<_>>())
+        .unwrap_or_default();
+    let reordered_storage = reorder_patterns(patterns, stats.as_deref(), &initial_bound);
+    let patterns = &reordered_storage;
+
     // If no explicit seed, determine if we need an empty seed.
     //
     // We only need a synthetic empty seed when the first pattern *requires* an upstream
@@ -394,8 +407,7 @@ pub fn build_where_operators_seeded(
                             operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
                         }
                     }
-                    let bound = bound_vars_from_operator(&operator);
-                    let reordered = reorder_patterns_seeded(triples, stats.as_deref(), &bound);
+                    let reordered = triples;
                     operator = Some(build_triple_operators(
                         operator,
                         &reordered,
@@ -435,12 +447,8 @@ pub fn build_where_operators_seeded(
                 // Compute bound vars from whatever upstream exists (may be None if VALUES deferred).
                 let mut bound = bound_vars_from_operator(&operator);
 
-                // Reorder triples using stats-based selectivity when available.
-                //
-                // IMPORTANT: Seed the optimizer with the variables already bound by the current
-                // upstream operator. This avoids starting the block with a pattern that doesn't
-                // join with existing bindings (cartesian explosion), matching the Clojure optimizer.
-                let reordered = reorder_patterns_seeded(triples, stats.as_deref(), &bound);
+                // Triples are already in optimal order from the upfront reorder_patterns call.
+                let reordered = triples;
 
                 // If this block contains only BIND/FILTER (no triples) and we have no upstream
                 // operator yet, we still need a concrete seed to attach those operators to.
@@ -512,42 +520,36 @@ pub fn build_where_operators_seeded(
                     }
 
                     for tp in &reordered {
-                        // For the first scan (operator is None), extract filters that will
-                        // be ready after this triple and inline them into the scan operator.
-                        // This avoids FilterOperator overhead for these filters.
-                        let inline_filters = if operator.is_none() {
-                            // Calculate vars that will be bound after this triple
-                            let mut vars_after: HashSet<VarId> = bound.clone();
-                            for v in tp.variables() {
-                                vars_after.insert(v);
-                            }
+                        // Extract filters whose required vars will all be bound
+                        // after this triple. These are inlined into the operator
+                        // (ScanOperator for first scan, NestedLoopJoinOperator
+                        // for subsequent joins) to avoid separate FilterOperator
+                        // overhead.
+                        let mut vars_after: HashSet<VarId> = bound.clone();
+                        for v in tp.variables() {
+                            vars_after.insert(v);
+                        }
 
-                            // Extract filters that will be ready (not consumed by pushdown)
-                            let mut inlined = Vec::new();
-                            let mut remaining = Vec::new();
-                            for pf in pending_filters {
-                                if filter_idxs_consumed.contains(&pf.original_idx) {
-                                    // Skip consumed filters entirely
-                                    continue;
-                                }
-                                if pf.required_vars.is_subset(&vars_after) {
-                                    inlined.push(pf.expr);
-                                } else {
-                                    remaining.push(pf);
-                                }
+                        let mut inlined = Vec::new();
+                        let mut remaining = Vec::new();
+                        for pf in pending_filters {
+                            if filter_idxs_consumed.contains(&pf.original_idx) {
+                                continue;
                             }
-                            pending_filters = remaining;
-                            inlined
-                        } else {
-                            Vec::new()
-                        };
+                            if pf.required_vars.is_subset(&vars_after) {
+                                inlined.push(pf.expr);
+                            } else {
+                                remaining.push(pf);
+                            }
+                        }
+                        pending_filters = remaining;
 
-                        // Build scan/join for this triple with bounds (if any)
+                        // Build scan/join for this triple with inline filters
                         operator = Some(build_scan_or_join(
                             operator,
                             tp,
                             &object_bounds,
-                            inline_filters,
+                            inlined,
                         ));
 
                         // Update bound vars after this triple
@@ -555,7 +557,9 @@ pub fn build_where_operators_seeded(
                             bound.insert(v);
                         }
 
-                        // Apply any pending binds/filters that are now safe (all vars bound).
+                        // Apply any pending binds that are now safe (all vars bound).
+                        // Filters have already been extracted above, so only binds
+                        // remain to be applied here.
                         if let Some(child) = operator.take() {
                             let (child, new_binds, new_filters) = apply_ready_binds_and_filters(
                                 child,
@@ -804,8 +808,8 @@ fn make_first_scan(
 /// - If `left` is Some, creates a NestedLoopJoinOperator joining to the existing operator
 /// - Applies object bounds from filters when available
 ///
-/// The `inline_filters` parameter is only used when `left` is None (first scan).
-/// For joins, filters are applied via `FilterOperator` after the join.
+/// The `inline_filters` are evaluated inline on the operator: baked into `ScanOperator`
+/// for the first scan, or evaluated per combined row in `NestedLoopJoinOperator` for joins.
 pub fn build_scan_or_join(
     left: Option<BoxedOperator>,
     tp: &TriplePattern,
@@ -816,7 +820,6 @@ pub fn build_scan_or_join(
         None => make_first_scan(tp, object_bounds, inline_filters),
         Some(left) => {
             // Subsequent patterns: use NestedLoopJoinOperator with optional bounds pushdown
-            // Note: inline_filters are ignored for joins; use FilterOperator after join
             let left_schema = Arc::from(left.schema().to_vec().into_boxed_slice());
 
             // Extract object bounds if available for this pattern's object variable
@@ -827,6 +830,7 @@ pub fn build_scan_or_join(
                 left_schema,
                 tp.clone(),
                 bounds,
+                inline_filters,
             ))
         }
     }
@@ -1031,8 +1035,12 @@ mod tests {
             },
         );
 
-        let ordered = reorder_patterns_seeded(block.triples, Some(&stats), &HashSet::new());
-        let first_pred = ordered[0].p.as_sid().expect("predicate should be Sid");
+        let as_patterns: Vec<Pattern> = block.triples.into_iter().map(Pattern::Triple).collect();
+        let ordered = reorder_patterns(&as_patterns, Some(&stats), &HashSet::new());
+        let first_triple = ordered[0]
+            .as_triple()
+            .expect("first reordered pattern should be a triple");
+        let first_pred = first_triple.p.as_sid().expect("predicate should be Sid");
         assert_eq!(
             &*first_pred.name, "notation",
             "expected optimizer to start from the most selective triple"
@@ -1419,5 +1427,167 @@ mod tests {
             "Should build successfully: {:?}",
             result.err()
         );
+    }
+
+    // =========================================================================
+    // Generalized reordering integration tests
+    // =========================================================================
+
+    #[test]
+    fn test_build_operators_with_union_builds_successfully() {
+        // Triple followed by UNION should build successfully
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
+            Pattern::Union(vec![
+                vec![Pattern::Triple(make_pattern(VarId(0), "type", VarId(2)))],
+                vec![Pattern::Triple(make_pattern(VarId(0), "class", VarId(3)))],
+            ]),
+        ];
+
+        let result = build_where_operators(&patterns, None);
+        assert!(result.is_ok(), "Should build: {:?}", result.err());
+
+        let op = result.unwrap();
+        assert!(op.schema().contains(&VarId(0)));
+    }
+
+    #[test]
+    fn test_build_operators_optional_after_triples() {
+        // OPTIONAL should work after triple patterns
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
+            Pattern::Triple(make_pattern(VarId(0), "age", VarId(2))),
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(
+                VarId(0),
+                "email",
+                VarId(3),
+            ))]),
+        ];
+
+        let result = build_where_operators(&patterns, None);
+        assert!(result.is_ok(), "Should build: {:?}", result.err());
+
+        let op = result.unwrap();
+        let schema = op.schema();
+        assert!(schema.contains(&VarId(0)), "subject var present");
+        assert!(schema.contains(&VarId(1)), "name var present");
+        assert!(schema.contains(&VarId(2)), "age var present");
+        assert!(
+            schema.contains(&VarId(3)),
+            "email var from OPTIONAL present"
+        );
+    }
+
+    #[test]
+    fn test_fast_path_triple_only_unchanged() {
+        // Triple-only patterns should work identically to before
+        // (reorder_patterns handles all pattern types uniformly)
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
+            Pattern::Triple(make_pattern(VarId(0), "age", VarId(2))),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(VarId(2)),
+                Expression::Const(FilterValue::Long(18)),
+            )),
+        ];
+
+        let result = build_where_operators(&patterns, None);
+        assert!(result.is_ok(), "Should build: {:?}", result.err());
+
+        let op = result.unwrap();
+        assert!(op.schema().contains(&VarId(0)));
+        assert!(op.schema().contains(&VarId(1)));
+        assert!(op.schema().contains(&VarId(2)));
+    }
+
+    #[test]
+    fn test_property_join_still_works_with_compound_patterns_elsewhere() {
+        // When compound patterns exist but triples still qualify for property join,
+        // the fast path should detect property join within the triple block.
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "date", VarId(1))),
+            Pattern::Triple(make_pattern(VarId(0), "vec", VarId(2))),
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(
+                VarId(0),
+                "email",
+                VarId(3),
+            ))]),
+        ];
+
+        let result = build_where_operators(&patterns, None);
+        assert!(result.is_ok(), "Should build: {:?}", result.err());
+
+        let op = result.unwrap();
+        let schema = op.schema();
+        assert!(schema.contains(&VarId(0)));
+        assert!(schema.contains(&VarId(1)));
+        assert!(schema.contains(&VarId(2)));
+    }
+
+    #[test]
+    fn test_build_operators_minus_after_triple() {
+        // MINUS after a triple should work
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
+            Pattern::Minus(vec![Pattern::Triple(make_pattern(
+                VarId(0),
+                "deleted",
+                VarId(2),
+            ))]),
+        ];
+
+        let result = build_where_operators(&patterns, None);
+        assert!(result.is_ok(), "Should build: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_build_operators_exists_after_triple() {
+        // EXISTS after a triple should work
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
+            Pattern::Exists(vec![Pattern::Triple(make_pattern(
+                VarId(0),
+                "verified",
+                VarId(2),
+            ))]),
+        ];
+
+        let result = build_where_operators(&patterns, None);
+        assert!(result.is_ok(), "Should build: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_build_operators_complex_mix() {
+        // Complex mix: Triple, UNION, Triple, MINUS, OPTIONAL
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
+            Pattern::Union(vec![
+                vec![Pattern::Triple(make_pattern(VarId(0), "type", VarId(2)))],
+                vec![Pattern::Triple(make_pattern(VarId(0), "class", VarId(3)))],
+            ]),
+            Pattern::Triple(make_pattern(VarId(0), "age", VarId(4))),
+            Pattern::Minus(vec![Pattern::Triple(make_pattern(
+                VarId(0),
+                "deleted",
+                VarId(5),
+            ))]),
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(
+                VarId(0),
+                "email",
+                VarId(6),
+            ))]),
+        ];
+
+        let result = build_where_operators(&patterns, None);
+        assert!(
+            result.is_ok(),
+            "Complex mix should build: {:?}",
+            result.err()
+        );
+
+        let op = result.unwrap();
+        let schema = op.schema();
+        assert!(schema.contains(&VarId(0)));
+        assert!(schema.contains(&VarId(1)));
     }
 }
