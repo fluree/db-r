@@ -177,8 +177,7 @@ pub fn init_logging(config: &TelemetryConfig) {
                 .with_target("fluree_db_ledger", tracing::Level::DEBUG)
                 .with_target("fluree_db_connection", tracing::Level::DEBUG)
                 .with_target("fluree_db_nameservice", tracing::Level::DEBUG)
-                .with_target("fluree_db_core", tracing::Level::DEBUG)
-                .with_target("fluree_db_ingest", tracing::Level::DEBUG);
+                .with_target("fluree_db_core", tracing::Level::DEBUG);
 
             let subscriber = tracing_subscriber::registry()
                 .with(init_otel_layer(config).with_filter(otel_targets))

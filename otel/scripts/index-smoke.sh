@@ -12,6 +12,16 @@ echo "Server: ${BASE_URL}"
 echo "Ledger: ${LEDGER}"
 echo ""
 
+# Check that the ledger exists before running tests
+EXISTS_RESP=$(curl -s "${BASE_URL}/v1/fluree/exists/${LEDGER}" 2>/dev/null || true)
+if echo "${EXISTS_RESP}" | grep -q '"exists":true'; then
+    :
+else
+    echo "Ledger '${LEDGER}' does not exist."
+    echo "Run 'make seed' first to create and populate the test ledger."
+    exit 1
+fi
+
 # Generate and insert ~500 entities in batches to push novelty up.
 # Each batch is a JSON-LD insert with 50 entities.
 
@@ -78,7 +88,7 @@ echo "  Product count query (HTTP ${CODE}): ${BODY}"
 
 # Verify that index files were actually written
 echo ""
-STORAGE_DIR="${3:-_data/storage}"
+STORAGE_DIR="${3:-.fluree/storage}"
 INDEX_DIRS=$(find "$STORAGE_DIR" -type d -name "index" 2>/dev/null)
 if [ -n "$INDEX_DIRS" ]; then
     INDEX_FILES=$(find $INDEX_DIRS -type f 2>/dev/null | wc -l | tr -d ' ')

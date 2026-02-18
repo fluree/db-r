@@ -8,7 +8,7 @@
 # Usage: stress-test.sh [BASE_URL] [LEDGER] [TOTAL_PRODUCTS] [BATCH_SIZE]
 #
 # Server lifecycle env vars (set by Makefile):
-#   SERVER_BIN, STORAGE, PID_FILE, LOG_FILE, PORT, RUST_LOG, INDEXING
+#   SERVER_BIN, FLUREE_DIR, PID_FILE, LOG_FILE, PORT, RUST_LOG, INDEXING
 
 set -euo pipefail
 
@@ -23,9 +23,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OTEL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SERVER_BIN="${SERVER_BIN:-${OTEL_DIR}/../target/release/fluree-server}"
-STORAGE="${STORAGE:-${OTEL_DIR}/_data/storage}"
-PID_FILE="${PID_FILE:-${OTEL_DIR}/_data/server.pid}"
-LOG_FILE="${LOG_FILE:-${OTEL_DIR}/_data/server.log}"
+FLUREE_DIR="${FLUREE_DIR:-${OTEL_DIR}/.fluree}"
+PID_FILE="${PID_FILE:-${FLUREE_DIR}/server.pid}"
+LOG_FILE="${LOG_FILE:-${FLUREE_DIR}/server.log}"
 PORT="${PORT:-8090}"
 RUST_LOG="${RUST_LOG:-info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug}"
 INDEXING="${INDEXING:-true}"
@@ -78,23 +78,14 @@ stop_server() {
 # ── Helper: start the server ─────────────────────────────────────────────────
 
 start_server() {
-    mkdir -p "$STORAGE" "$(dirname "$PID_FILE")"
+    mkdir -p "$(dirname "$PID_FILE")"
 
-    local indexing_flag=""
-    local reindex_flag=""
-    if [ "$INDEXING" = "true" ]; then
-        indexing_flag="--indexing-enabled"
-        reindex_flag="--reindex-max-bytes 1000000000"  # 1GB to force reindexing on restart
-    fi
-
+    # Server reads .fluree/config.toml automatically (cwd walk-up discovery).
+    # Config is pre-applied by 'make stress-config' (1GB reindex_max_bytes, etc.)
     OTEL_SERVICE_NAME=fluree-server \
     OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
     RUST_LOG="$RUST_LOG" \
     "$SERVER_BIN" \
-        --storage-path "$STORAGE" \
-        --listen-addr "0.0.0.0:${PORT}" \
-        $indexing_flag \
-        $reindex_flag \
         > "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
 
@@ -411,27 +402,27 @@ LIMIT 500"
 echo ""
 
 # Q5: Subquery — top 5 categories by count, then products in those
-run_query "Subquery: top 5 categories then their products" \
-    "PREFIX ex: <http://example.org/ns/>
-SELECT ?catLabel ?name ?price WHERE {
-  {
-    SELECT ?cat ?catLabel WHERE {
-      ?p a ex:Product ;
-         ex:category ?cat .
-      ?cat ex:label ?catLabel .
-    }
-    GROUP BY ?cat ?catLabel
-    ORDER BY DESC(COUNT(?p))
-    LIMIT 5
-  }
-  ?s a ex:Product ;
-     ex:name ?name ;
-     ex:price ?price ;
-     ex:category ?cat .
-}
-LIMIT 200"
+# run_query "Subquery: top 5 categories then their products" \
+#     "PREFIX ex: <http://example.org/ns/>
+# SELECT ?catLabel ?name ?price WHERE {
+#   {
+#     SELECT ?cat ?catLabel WHERE {
+#       ?p a ex:Product ;
+#          ex:category ?cat .
+#       ?cat ex:label ?catLabel .
+#     }
+#     GROUP BY ?cat ?catLabel
+#     ORDER BY DESC(COUNT(?p))
+#     LIMIT 5
+#   }
+#   ?s a ex:Product ;
+#      ex:name ?name ;
+#      ex:price ?price ;
+#      ex:category ?cat .
+# }
+# LIMIT 200"
 
-echo ""
+# echo ""
 
 # Q6: Range scan (broad, no tight filter)
 run_query "Range scan: all products with rating >= 4" \

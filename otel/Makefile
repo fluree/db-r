@@ -6,13 +6,13 @@ SHELL := /bin/bash
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 ROOT_DIR   := $(shell cd .. && pwd)
-DATA_DIR   := $(CURDIR)/_data
-STORAGE    := $(DATA_DIR)/storage
-GEN_DIR    := $(DATA_DIR)/generated
-PID_FILE   := $(DATA_DIR)/server.pid
-LOG_FILE   := $(DATA_DIR)/server.log
+FLUREE_DIR := $(CURDIR)/.fluree
+STORAGE    := $(FLUREE_DIR)/storage
+GEN_DIR    := $(CURDIR)/_data/generated
+PID_FILE   := $(FLUREE_DIR)/server.pid
+LOG_FILE   := $(FLUREE_DIR)/server.log
 SERVER_BIN := $(ROOT_DIR)/target/release/fluree-server
-INGEST_BIN := $(ROOT_DIR)/target/release/fluree-ingest
+CLI_BIN    := $(ROOT_DIR)/target/release/fluree
 
 # ── Configurable ─────────────────────────────────────────────────────────────
 PORT       ?= 8090
@@ -21,13 +21,9 @@ LEDGER     ?= otel-test:main
 ENTITIES   ?= 100000
 PROPS      ?= 6
 INDEXING   ?= true
-PARSE_THREADS ?= 4
 
 STRESS_PRODUCTS ?= 50000
 STRESS_BATCH    ?= 500
-
-INGEST_ENTITIES ?= 10000
-INGEST_LEDGER   ?= ingest-test:main
 
 RUST_LOG   ?= info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug
 
@@ -54,19 +50,37 @@ ui: ## Open Jaeger UI in browser
 
 .PHONY: build
 
-build: ## Build server and ingest binaries with otel feature (release)
+build: ## Build server and CLI binaries with otel feature (release)
 	cargo build -p fluree-db-server --features otel --release
-	cargo build -p fluree-db-ingest --features otel --release
+	cargo build -p fluree-db-cli --features otel --release
 	@echo "Built: $(SERVER_BIN)"
-	@echo "Built: $(INGEST_BIN)"
+	@echo "Built: $(CLI_BIN)"
+
+# ── Project initialization ───────────────────────────────────────────────────
+
+.PHONY: init config
+
+init: ## Initialize .fluree/ project directory with config
+	@if [ ! -x $(CLI_BIN) ]; then echo "Binary not found: $(CLI_BIN)"; echo "Run 'make build' first."; exit 1; fi
+	@if [ ! -d .fluree ]; then \
+		$(CLI_BIN) init; \
+		echo "Initialized .fluree/ project directory"; \
+	fi
+	@$(MAKE) --no-print-directory config
+
+config: ## Apply OTEL-specific server configuration via CLI
+	@$(CLI_BIN) config set server.storage_path ".fluree/storage"
+	@$(CLI_BIN) config set server.listen_addr "0.0.0.0:$(PORT)"
+	@$(CLI_BIN) config set server.indexing.enabled $(INDEXING)
+	@$(CLI_BIN) config set server.indexing.reindex_min_bytes 100000
+	@$(CLI_BIN) config set server.indexing.reindex_max_bytes 1000000000
 
 # ── Server lifecycle ─────────────────────────────────────────────────────────
 
 .PHONY: server server-stop server-logs
 
-server: ## Start fluree-server in background with OTEL export
+server: init ## Start fluree-server in background with OTEL export
 	@if [ ! -x $(SERVER_BIN) ]; then echo "Binary not found: $(SERVER_BIN)"; echo "Run 'make build' first."; exit 1; fi
-	@mkdir -p $(STORAGE) $(DATA_DIR)
 	@if [ -f $(PID_FILE) ] && kill -0 $$(cat $(PID_FILE)) 2>/dev/null; then \
 		echo "Server already running (PID $$(cat $(PID_FILE)))"; \
 		exit 0; \
@@ -75,9 +89,6 @@ server: ## Start fluree-server in background with OTEL export
 	OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 \
 	RUST_LOG=$(RUST_LOG) \
 	$(SERVER_BIN) \
-		--storage-path $(STORAGE) \
-		--listen-addr 0.0.0.0:$(PORT) \
-		$(if $(filter true,$(INDEXING)),--indexing-enabled) \
 		> $(LOG_FILE) 2>&1 & \
 	echo $$! > $(PID_FILE) && \
 	echo "Server starting (PID $$(cat $(PID_FILE))), logs: $(LOG_FILE)" && \
@@ -106,7 +117,10 @@ server-logs: ## Tail server stdout/stderr
 
 # ── Scenarios ────────────────────────────────────────────────────────────────
 
-.PHONY: transact query index firehose ingest smoke cycle stress stress-query
+.PHONY: seed transact query index import smoke cycle stress stress-query
+
+seed: ## Create and populate the test ledger (required before transact/query/index)
+	./scripts/seed-ledger.sh $(BASE_URL) $(LEDGER)
 
 transact: ## Minimal transaction scenarios (insert, upsert, update, turtle, SPARQL UPDATE)
 	./scripts/transact-smoke.sh $(BASE_URL) $(LEDGER)
@@ -117,20 +131,16 @@ query: ## Seed data + query via FQL and SPARQL
 index: ## Insert enough data to trigger indexing, then query indexed data
 	./scripts/index-smoke.sh $(BASE_URL) $(LEDGER)
 
-firehose: generate ## Generate large dataset, bulk import via fluree-ingest
-	@if [ ! -x $(INGEST_BIN) ]; then echo "Binary not found: $(INGEST_BIN)"; echo "Run 'make build' first."; exit 1; fi
-	./scripts/firehose.sh $(INGEST_BIN) $(GEN_DIR) $(DATA_DIR)/storage-firehose $(ENTITIES) $(PARSE_THREADS)
-
-ingest: generate ## Bulk-import via fluree-ingest with OTEL tracing (no server needed)
-	@if [ ! -x $(INGEST_BIN) ]; then echo "Binary not found: $(INGEST_BIN)"; echo "Run 'make build' first."; exit 1; fi
-	./scripts/ingest-smoke.sh $(INGEST_BIN) $(GEN_DIR) $(DATA_DIR)/storage-ingest $(INGEST_ENTITIES) $(PARSE_THREADS) $(INGEST_LEDGER)
+import: generate init ## Bulk import via CLI with OTEL tracing (no server needed)
+	@if [ ! -x $(CLI_BIN) ]; then echo "Binary not found: $(CLI_BIN)"; echo "Run 'make build' first."; exit 1; fi
+	./scripts/import-smoke.sh $(CLI_BIN) $(GEN_DIR)/data.ttl $(CURDIR) $(LEDGER)
 
 smoke: ## Full cycle: seed, transact, query, index — end-to-end span waterfall
 	./scripts/seed-ledger.sh $(BASE_URL) $(LEDGER)
 	./scripts/full-cycle.sh $(BASE_URL) $(LEDGER)
 
-stress: ## High-volume stress test: 50K inserts with backpressure + expensive queries
-	SERVER_BIN=$(SERVER_BIN) STORAGE=$(STORAGE) PID_FILE=$(PID_FILE) LOG_FILE=$(LOG_FILE) \
+stress: init ## High-volume stress test: 50K inserts with backpressure + expensive queries
+	SERVER_BIN=$(SERVER_BIN) FLUREE_DIR=$(FLUREE_DIR) PID_FILE=$(PID_FILE) LOG_FILE=$(LOG_FILE) \
 	PORT=$(PORT) RUST_LOG='$(RUST_LOG)' INDEXING=$(INDEXING) \
 	./scripts/stress-test.sh $(BASE_URL) $(LEDGER) $(STRESS_PRODUCTS) $(STRESS_BATCH)
 
@@ -155,26 +165,26 @@ cycle: ## Sustained transact + query workload triggering multiple index cycles
 generate: ## Generate TTL data files (configurable: ENTITIES, PROPS)
 	./scripts/generate-data.sh $(ENTITIES) $(PROPS) $(GEN_DIR)
 
-clean: server-stop ## Remove _data/ (generated storage, TTL, PIDs)
-	rm -rf $(DATA_DIR)
-	@echo "Cleaned: $(DATA_DIR)"
+clean: server-stop ## Remove .fluree/ and _data/ (all state + generated data)
+	rm -rf $(FLUREE_DIR) $(CURDIR)/_data
+	@echo "Cleaned: $(FLUREE_DIR) and _data/"
 
 clean-all: clean down ## clean + stop Docker
 
 nuke: clean-all ## clean-all + remove compiled binaries
-	rm -f $(SERVER_BIN) $(INGEST_BIN)
+	rm -f $(SERVER_BIN) $(CLI_BIN)
 	@echo "Removed compiled binaries"
 
 # ── Convenience combos ───────────────────────────────────────────────────────
 
 .PHONY: all fresh
 
-all: up build server smoke ## Full setup: Jaeger + build + server + smoke test
+all: up build init server smoke ## Full setup: Jaeger + build + init + server + smoke test
 	@echo ""
 	@echo "All done. Open Jaeger: http://localhost:16686"
 	@echo "Search for service: fluree-server"
 
-fresh: reset clean build server smoke ## Clean-slate re-run: reset Jaeger + rebuild + smoke
+fresh: reset clean build init server smoke ## Clean-slate re-run: reset Jaeger + rebuild + smoke
 	@echo ""
 	@echo "Fresh run complete. Open Jaeger: http://localhost:16686"
 
@@ -187,13 +197,10 @@ help: ## Show this help
 	@echo "Usage: make [target] [VAR=value ...]"
 	@echo ""
 	@echo "Configurable variables:"
-	@echo "  PORT=$(PORT)            Server listen port"
+	@echo "  PORT=$(PORT)            Server listen port (applied via fluree config)"
 	@echo "  LEDGER=$(LEDGER)    Ledger alias"
 	@echo "  ENTITIES=$(ENTITIES)       Entity count for data generation"
-	@echo "  INDEXING=$(INDEXING)         Enable background indexing"
-	@echo "  PARSE_THREADS=$(PARSE_THREADS)      Parallel parse threads for firehose/ingest"
-	@echo "  INGEST_ENTITIES=$(INGEST_ENTITIES)    Entity count for ingest smoke test"
-	@echo "  INGEST_LEDGER=$(INGEST_LEDGER)  Ledger alias for ingest smoke test"
+	@echo "  INDEXING=$(INDEXING)         Enable background indexing (applied via fluree config)"
 	@echo "  RUST_LOG=...            Log filter (see README.md)"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \

@@ -1,2 +1,5 @@
-# Generated at runtime — storage, TTL data, PID files
+# Fluree project directory — config, storage, PID, logs
+.fluree/
+
+# Generated test artifacts — TTL data files
 _data/

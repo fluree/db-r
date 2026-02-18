@@ -10,8 +10,8 @@
 #   OUTPUT_DIR — Output directory (default: _data/generated)
 #
 # Output:
-#   data.ttl            — Single file for server insert (via HTTP API)
-#   chunks/chunk_NNNN.ttl — Chunked files for fluree-ingest firehose
+#   data.ttl            — Single file for server insert (via HTTP API) or CLI import
+#   chunks/chunk_NNNN.ttl — Chunked files for large dataset testing
 
 set -euo pipefail
 

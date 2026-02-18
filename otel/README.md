@@ -1,6 +1,6 @@
 # OTEL Testing & Validation Infrastructure
 
-Validate that OpenTelemetry tracing spans appear correctly in Jaeger. Provides a Makefile-driven workflow to start Jaeger, build with `--features otel`, run the server, and exercise all instrumented code paths.
+Validate that OpenTelemetry tracing spans appear correctly in Jaeger. Provides a Makefile-driven workflow to start Jaeger, build with `--features otel`, run the server and CLI, and exercise all instrumented code paths.
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ Validate that OpenTelemetry tracing spans appear correctly in Jaeger. Provides a
 ```bash
 cd otel/
 
-# Full setup: start Jaeger, build binaries, start server, run smoke tests
+# Full setup: start Jaeger, build binaries, init config, start server, run smoke tests
 make all
 
 # Open Jaeger UI to inspect traces
@@ -31,7 +31,15 @@ make ui
 | `make down` | Stop Jaeger container |
 | `make reset` | Restart Jaeger (clears trace data) |
 | `make ui` | Open Jaeger UI in browser |
-| `make build` | Build server + ingest with `--features otel` (release) |
+| `make build` | Build server + CLI with `--features otel` (release) |
+
+### Project Initialization
+
+| Target | Description |
+|--------|-------------|
+| `make init` | Initialize `.fluree/` project directory + apply config |
+| `make config` | Apply OTEL-specific server configuration via `fluree config set` |
+| `make stress-config` | Pre-configure high novelty limits (1GB) for stress testing |
 
 ### Server
 
@@ -48,8 +56,7 @@ make ui
 | `make transact` | Insert, upsert, update, Turtle, SPARQL UPDATE | `transact_execute` > `txn_stage` > `txn_commit` |
 | `make query` | FQL select/filter/sort, SPARQL basic/OPTIONAL/GROUP BY | `query_execute` > `query_prepare` > `query_run` > operators |
 | `make index` | 500-entity burst to trigger background indexing | `index_build` > `build_all_indexes` > `build_index` |
-| `make firehose` | Bulk import 100K+ entities via fluree-ingest | Ingest spans, commit spans, indexing spans |
-| `make ingest` | Standalone import with OTEL tracing (no server) | `bulk_import` > `import_chunks` > `import_index_build` |
+| `make import` | Bulk import via CLI with OTEL tracing (no server) | `bulk_import` > `import_chunks` > commit spans |
 | `make smoke` | Full cycle: seed + transact + query + index | End-to-end span waterfall |
 | `make stress` | 50K inserts with backpressure + expensive query battery | Operator bottlenecks, `index_gc` with child spans, backpressure retries |
 | `make stress-query` | Re-run only the query battery (no inserts, no server restart) | Quick iteration on query traces when stress data is already loaded |
@@ -59,8 +66,8 @@ make ui
 
 | Target | Description |
 |--------|-------------|
-| `make generate` | Generate TTL data files for firehose |
-| `make clean` | Remove `_data/` (storage, generated TTL, PIDs) |
+| `make generate` | Generate TTL data files for import |
+| `make clean` | Remove `.fluree/` and `_data/` (all state + generated data) |
 | `make clean-all` | `clean` + stop Docker |
 | `make nuke` | `clean-all` + remove compiled binaries |
 
@@ -68,23 +75,41 @@ make ui
 
 | Target | Description |
 |--------|-------------|
-| `make all` | `up` + `build` + `server` + `smoke` |
-| `make fresh` | `reset` + `clean` + `build` + `server` + `smoke` |
+| `make all` | `up` + `build` + `init` + `server` + `smoke` |
+| `make fresh` | `reset` + `clean` + `build` + `init` + `server` + `smoke` |
 
-## Configuration
+## Configuration via fluree CLI
 
-All configurable via Make variables:
+Server configuration is managed through `.fluree/config.toml` using the `fluree` CLI tool, instead of passing flags on every server start:
 
 ```bash
-make server PORT=9090              # Custom port
+# Initialize project (one-time, idempotent)
+make init
+
+# View current config
+fluree config list
+
+# Change settings
+fluree config set server.listen_addr "0.0.0.0:9090"
+fluree config set server.indexing.reindex_max_bytes 1000000000
+
+# The server reads .fluree/config.toml automatically
+make server
+```
+
+`make init` runs `fluree init` (creates `.fluree/` with `config.toml` and `storage/`), then applies OTEL-specific settings via `fluree config set`. The server auto-discovers `config.toml` by walking up from the working directory.
+
+### Make variable overrides
+
+Make variables are applied to `.fluree/config.toml` via `make init`:
+
+```bash
+make server PORT=9090              # Custom port (written to config)
 make smoke LEDGER=mytest:main      # Custom ledger name
-make generate ENTITIES=500000      # More data for firehose
-make server INDEXING=false         # Disable background indexing
-make firehose PARSE_THREADS=8     # More parallel parse threads
-make server RUST_LOG=info,fluree_db_query=trace  # Custom log level
+make generate ENTITIES=500000      # More data for import
+make server INDEXING=false         # Disable background indexing (written to config)
+make server RUST_LOG=info,fluree_db_query=trace  # Custom log level (env var)
 make stress STRESS_PRODUCTS=10000 STRESS_BATCH=200  # Smaller stress test
-make ingest INGEST_ENTITIES=50000                  # More data for ingest smoke test
-make ingest INGEST_LEDGER=mytest:main              # Custom ledger name
 ```
 
 ## RUST_LOG Patterns
@@ -105,7 +130,7 @@ otel/
 ├── Makefile                # All targets
 ├── README.md               # This file
 ├── docker-compose.yml      # Jaeger all-in-one
-├── .gitignore              # Ignores _data/
+├── .gitignore              # Ignores .fluree/ and _data/
 ├── scripts/
 │   ├── generate-data.sh    # TTL data generator
 │   ├── wait-for-server.sh  # Health check poller
@@ -113,19 +138,23 @@ otel/
 │   ├── transact-smoke.sh   # Transaction scenario
 │   ├── query-smoke.sh      # Query scenario
 │   ├── index-smoke.sh      # Indexing scenario
-│   ├── firehose.sh         # High-volume ingest
-│   ├── ingest-smoke.sh     # Standalone OTEL ingest (no server)
+│   ├── import-smoke.sh     # Bulk import via CLI with OTEL
 │   ├── stress-test.sh      # 50K inserts + backpressure + query battery
 │   └── full-cycle.sh       # Combined scenario
-└── _data/                  # gitignored; created at runtime
-    ├── storage/            # File-backed Fluree storage
-    ├── generated/          # Generated TTL files
-    └── server.pid          # Background server PID
+├── .fluree/                # gitignored; created by 'make init'
+│   ├── config.toml         # Server + CLI configuration
+│   ├── storage/            # File-backed Fluree storage
+│   ├── server.pid          # Background server PID
+│   └── server.log          # Server stdout/stderr
+└── _data/                  # gitignored; generated test artifacts
+    └── generated/          # Generated TTL files
 ```
 
 ## What to Look for in Jaeger
 
-After running `make smoke`, open Jaeger at `http://localhost:16686` and search for service `fluree-server`.
+After running scenarios, open Jaeger at `http://localhost:16686` and search for:
+- **`fluree-server`** — server-side traces (query, transact, index)
+- **`fluree-cli`** — CLI import traces (bulk_import pipeline)
 
 ### Root span names (otel.name)
 
@@ -186,9 +215,20 @@ index_build
        └─ build_index (OPST)
 ```
 
+### Import traces (CLI)
+
+```
+bulk_import (root, service: fluree-cli)
+  └─ import_chunks
+       ├─ commit + run generation events
+       └─ index building spans
+```
+
 ## Stress Test
 
 The `make stress` target exercises high-volume insert throughput and expensive queries. It's designed to trigger multiple index cycles, backpressure retries, and generate traces with meaningful durations.
+
+The stress target automatically pre-configures the server with a 1GB `reindex_max_bytes` via `fluree config set` before starting.
 
 ### What it does
 
@@ -226,10 +266,10 @@ make stress STRESS_PRODUCTS=100000  # More products (triggers more index cycles)
 
 **No traces in Jaeger:**
 - Verify Jaeger is running: `docker compose ps`
-- Verify OTEL env vars: server must have `OTEL_SERVICE_NAME` and `OTEL_EXPORTER_OTLP_ENDPOINT` set (handled by Makefile)
+- Verify OTEL env vars: both server and CLI must have `OTEL_SERVICE_NAME` and `OTEL_EXPORTER_OTLP_ENDPOINT` set (handled by Makefile)
 - Check that binaries were built with `--features otel`
 - Traces batch-export with a slight delay; wait a few seconds after requests
 
 **Stale server PID:**
 - `make server-stop` handles stale PIDs gracefully
-- Or manually: `rm _data/server.pid`
+- Or manually: `rm .fluree/server.pid`

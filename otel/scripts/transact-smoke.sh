@@ -12,6 +12,16 @@ echo "Server: ${BASE_URL}"
 echo "Ledger: ${LEDGER}"
 echo ""
 
+# Check that the ledger exists before running tests
+EXISTS_RESP=$(curl -s "${BASE_URL}/v1/fluree/exists/${LEDGER}" 2>/dev/null || true)
+if echo "${EXISTS_RESP}" | grep -q '"exists":true'; then
+    :
+else
+    echo "Ledger '${LEDGER}' does not exist."
+    echo "Run 'make seed' first to create and populate the test ledger."
+    exit 1
+fi
+
 # Helper: run a curl and report status
 run_tx() {
     local label="$1"; shift

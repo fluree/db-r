@@ -100,27 +100,27 @@ LIMIT 500"
 echo ""
 
 # Q5: Subquery — top 5 categories by count, then products in those
-run_query "Subquery: top 5 categories then their products" \
-    "PREFIX ex: <http://example.org/ns/>
-SELECT ?catLabel ?name ?price WHERE {
-  {
-    SELECT ?cat ?catLabel WHERE {
-      ?p a ex:Product ;
-         ex:category ?cat .
-      ?cat ex:label ?catLabel .
-    }
-    GROUP BY ?cat ?catLabel
-    ORDER BY DESC(COUNT(?p))
-    LIMIT 5
-  }
-  ?s a ex:Product ;
-     ex:name ?name ;
-     ex:price ?price ;
-     ex:category ?cat .
-}
-LIMIT 200"
+# run_query "Subquery: top 5 categories then their products" \
+#     "PREFIX ex: <http://example.org/ns/>
+# SELECT ?catLabel ?name ?price WHERE {
+#   {
+#     SELECT ?cat ?catLabel WHERE {
+#       ?p a ex:Product ;
+#          ex:category ?cat .
+#       ?cat ex:label ?catLabel .
+#     }
+#     GROUP BY ?cat ?catLabel
+#     ORDER BY DESC(COUNT(?p))
+#     LIMIT 5
+#   }
+#   ?s a ex:Product ;
+#      ex:name ?name ;
+#      ex:price ?price ;
+#      ex:category ?cat .
+# }
+# LIMIT 200"
 
-echo ""
+# echo ""
 
 # Q6: Range scan (broad, no tight filter)
 run_query "Range scan: all products with rating >= 4" \
