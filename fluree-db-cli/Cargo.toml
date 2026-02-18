@@ -16,6 +16,8 @@ fluree-db-novelty = { path = "../fluree-db-novelty" }
 fluree-db-nameservice = { path = "../fluree-db-nameservice" }
 fluree-db-core = { path = "../fluree-db-core" }
 fluree-vocab = { path = "../fluree-vocab" }
+fluree-db-query = { path = "../fluree-db-query" }
+fluree-db-indexer = { path = "../fluree-db-indexer" }
 
 clap = { workspace = true }
 tokio.workspace = true
@@ -28,6 +30,8 @@ toml_edit = "0.22"
 comfy-table = "7"
 colored = "2"
 clap_complete = "4"
+indicatif = "0.17"
+tracing-subscriber = { workspace = true }
 
 # Token command dependencies
 fluree-db-credential = { path = "../fluree-db-credential" }

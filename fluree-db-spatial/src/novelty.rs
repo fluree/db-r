@@ -19,6 +19,7 @@ use crate::covering::covering_for_geometry;
 use crate::error::Result;
 use crate::geometry::{GeometryArena, GeometryType};
 use crate::provider::NOVELTY_HANDLE_FLAG;
+use fluree_db_core::GraphId;
 
 /// Input for novelty derivation - represents a single overlay operation.
 ///
@@ -27,7 +28,7 @@ use crate::provider::NOVELTY_HANDLE_FLAG;
 #[derive(Debug, Clone)]
 pub struct SpatialNoveltyOp {
     /// Graph ID (0 for default graph).
-    pub g_id: u32,
+    pub g_id: GraphId,
 
     /// Predicate ID.
     pub p_id: u32,
@@ -81,7 +82,7 @@ impl DerivedNovelty {
 pub fn derive_spatial_novelty(
     ops: impl Iterator<Item = SpatialNoveltyOp>,
     target_p_id: u32,
-    target_g_id: u32,
+    target_g_id: GraphId,
     s2_config: &S2CoveringConfig,
     index_points: bool,
 ) -> Result<DerivedNovelty> {

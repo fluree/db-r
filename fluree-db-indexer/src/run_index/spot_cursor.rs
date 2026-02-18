@@ -14,6 +14,8 @@ use super::leaflet::decode_leaflet;
 use super::run_record::RunSortOrder;
 use super::types::DecodedRow;
 use fluree_db_core::Flake;
+use fluree_db_core::GraphId;
+use fluree_db_core::ListIndex;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
@@ -26,7 +28,7 @@ use std::sync::Arc;
 /// all relevant leaves have been exhausted.
 pub struct SpotCursor {
     store: Arc<BinaryIndexStore>,
-    g_id: u32,
+    g_id: GraphId,
     /// Indices of leaves to visit (from BranchManifest::find_leaves_for_subject).
     leaf_range: Range<usize>,
     /// Current position within leaf_range.
@@ -45,13 +47,13 @@ impl SpotCursor {
     /// for the given subject in the specified graph.
     pub fn for_subject(
         store: Arc<BinaryIndexStore>,
-        g_id: u32,
+        g_id: GraphId,
         s_id: u64,
         p_id: Option<u32>,
     ) -> Self {
         let leaf_range = store
             .branch(g_id)
-            .map(|b| b.find_leaves_for_subject(g_id, s_id))
+            .map(|b| b.find_leaves_for_subject(s_id))
             .unwrap_or(0..0);
 
         let current_idx = leaf_range.start;
@@ -90,16 +92,14 @@ impl SpotCursor {
             };
 
             let leaf_entry = &branch.leaves[leaf_idx];
-            let leaf_dir = match self.store.leaf_dir(self.g_id) {
-                Some(d) => d,
-                None => {
-                    self.exhausted = true;
-                    return Ok(None);
-                }
-            };
 
-            let leaf_path = leaf_dir.join(&leaf_entry.path);
-            let leaf_data = std::fs::read(&leaf_path)?;
+            let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("leaf {} has no resolved path", leaf_entry.leaf_cid),
+                )
+            })?;
+            let leaf_data = std::fs::read(leaf_path)?;
             let header = read_leaf_header(&leaf_data)?;
 
             let mut flakes = Vec::new();
@@ -135,9 +135,12 @@ impl SpotCursor {
                         o_kind: decoded.o_kinds[row],
                         o_key: decoded.o_keys[row],
                         dt: decoded.dt_values[row],
-                        t: decoded.t_values[row],
-                        lang_id: decoded.lang_ids[row],
-                        i: decoded.i_values[row],
+                        t: decoded.t_values[row] as i64,
+                        lang_id: decoded.lang.as_ref().map_or(0, |c| c.get(row as u16)),
+                        i: decoded
+                            .i_col
+                            .as_ref()
+                            .map_or(ListIndex::none().as_i32(), |c| c.get(row as u16)),
                     };
                     let flake = self.store.row_to_flake(&decoded_row)?;
                     flakes.push(flake);

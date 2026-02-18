@@ -35,32 +35,11 @@ impl fmt::Display for PredicateId {
 // GraphId
 // ---------------------------------------------------------------------------
 
-/// Graph dictionary ID (u32).
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
-#[repr(transparent)]
-pub struct GraphId(pub u32);
-
-impl GraphId {
-    #[inline]
-    pub fn as_u32(self) -> u32 {
-        self.0
-    }
-    #[inline]
-    pub fn from_u32(v: u32) -> Self {
-        Self(v)
-    }
-    /// The default graph (graph ID 0).
-    #[inline]
-    pub fn default_graph() -> Self {
-        Self(0)
-    }
-}
-
-impl fmt::Display for GraphId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "GraphId({})", self.0)
-    }
-}
+/// Graph dictionary ID (u16).
+///
+/// 0 = default graph, 1 = txn-meta. Named-graph dict indices start at 2.
+/// Using a type alias keeps a single definition for easy future changes.
+pub type GraphId = u16;
 
 // ---------------------------------------------------------------------------
 // TxnT

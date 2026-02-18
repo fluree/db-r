@@ -1,40 +1,37 @@
 //! Binary envelope encode/decode for commit format v2.
 //!
-//! Replaces the JSON envelope with a compact binary encoding using
-//! varint primitives. No serde_json dependency.
-//!
-//! ## V2 ↔ CID-based types
-//!
-//! The v2 on-disk format stores address strings and optional id strings.
-//! This module converts between the on-disk format and the CID-based
-//! in-memory types (`CommitRef`, etc.) during encode/decode.
+//! Compact binary encoding using varint primitives and binary CID
+//! references. No serde_json dependency.
 //!
 //! Layout:
 //! ```text
 //! v: zigzag_varint(i32)
-//! flags: u8               // presence bits for 8 optional fields
+//! flags: u8               // presence bits for optional fields
 //! [fields in bit order, only if corresponding bit set]
 //! ```
 
 use super::error::CommitV2Error;
 use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
 use crate::{CommitRef, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_ENTRIES};
-use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN};
+use fluree_db_core::ContentId;
 use std::collections::HashMap;
 
 // --- Presence flag bits ---
-// Bit 0 was previously unused; now used for txn_meta
 const FLAG_TXN_META: u8 = 0x01;
 const FLAG_PREVIOUS_REF: u8 = 0x02;
 const FLAG_NAMESPACE_DELTA: u8 = 0x04;
 const FLAG_TXN: u8 = 0x08;
 const FLAG_TIME: u8 = 0x10;
-const FLAG_DATA: u8 = 0x20;
-const FLAG_INDEX: u8 = 0x40;
+// Bits 5 and 6 are reserved (previously FLAG_DATA / FLAG_INDEX, never shipped).
 const FLAG_TXN_SIGNATURE: u8 = 0x80;
 
-/// Maximum recursion depth for CommitData.previous chain (v2 backward compat).
-const MAX_COMMIT_DATA_DEPTH: usize = 16;
+/// Mask of all flag bits the current encoder/decoder understands.
+const KNOWN_FLAGS: u8 = FLAG_TXN_META
+    | FLAG_PREVIOUS_REF
+    | FLAG_NAMESPACE_DELTA
+    | FLAG_TXN
+    | FLAG_TIME
+    | FLAG_TXN_SIGNATURE;
 
 /// Maximum number of named graph entries per commit.
 pub const MAX_GRAPH_DELTA_ENTRIES: usize = 256;
@@ -42,25 +39,17 @@ pub const MAX_GRAPH_DELTA_ENTRIES: usize = 256;
 /// Maximum length of a graph IRI in bytes.
 pub const MAX_GRAPH_IRI_LENGTH: usize = 8192;
 
-/// Legacy CommitData — kept for v2 backward-compatible decoding only.
-///
-/// Not part of the public API. When reading v2 commits that contain
-/// embedded DB metadata (FLAG_DATA), we decode and discard it.
-#[derive(Clone, Debug, Default)]
-#[allow(dead_code)] // Fields populated during decode-and-discard of legacy FLAG_DATA
-struct LegacyCommitData {
-    id: Option<String>,
-    address: Option<String>,
-    flakes: u64,
-    size: u64,
-    previous: Option<Box<LegacyCommitData>>,
-}
+/// Maximum byte length for a length-prefixed CID blob.
+/// Fluree SHA-256 CIDs are exactly 39 bytes; 128 provides headroom
+/// for future hash algorithms while guarding against corrupt lengths.
+const MAX_CID_BYTES: usize = 128;
 
 /// Commit envelope fields — the non-flake metadata in a v2 commit blob.
 ///
 /// Used for both encoding (by the streaming and batch writers) and decoding.
 /// The `t` field is carried here for convenience but is actually stored in the
 /// header, not the envelope section.
+#[derive(Debug)]
 pub struct CommitV2Envelope {
     /// Transaction `t` (stored in header, not in the envelope bytes).
     pub t: i64,
@@ -74,7 +63,7 @@ pub struct CommitV2Envelope {
     /// User-provided transaction metadata (replay-safe)
     pub txn_meta: Vec<TxnMetaEntry>,
     /// Named graph IRI to g_id mappings introduced by this commit.
-    pub graph_delta: HashMap<u32, String>,
+    pub graph_delta: HashMap<u16, String>,
 }
 
 impl CommitV2Envelope {
@@ -94,17 +83,15 @@ impl CommitV2Envelope {
 }
 
 // =============================================================================
-// Encode (CID-based types → v2 binary wire format)
+// Encode
 // =============================================================================
 
 /// Encode envelope fields from a `CommitV2Envelope` into `buf`.
-///
-/// CID fields are converted to legacy string format for v2 wire compatibility.
 pub fn encode_envelope_fields(
     envelope: &CommitV2Envelope,
     buf: &mut Vec<u8>,
 ) -> Result<(), CommitV2Error> {
-    // v (always present) — v2 format version
+    // v (always present) — envelope format version
     encode_varint(zigzag_encode(2), buf);
 
     // Build presence flags
@@ -124,8 +111,6 @@ pub fn encode_envelope_fields(
     if envelope.time.is_some() {
         flags |= FLAG_TIME;
     }
-    // FLAG_DATA never set — CommitData removed from new commits
-    // FLAG_INDEX never set — index pointers are nameservice-only
     if envelope.txn_signature.is_some() {
         flags |= FLAG_TXN_SIGNATURE;
     }
@@ -136,21 +121,17 @@ pub fn encode_envelope_fields(
         encode_txn_meta(&envelope.txn_meta, buf)?;
     }
     if let Some(prev_ref) = &envelope.previous_ref {
-        encode_commit_ref(prev_ref, buf);
+        encode_commit_ref(prev_ref, buf)?;
     }
     if !envelope.namespace_delta.is_empty() {
         encode_ns_delta(&envelope.namespace_delta, buf);
     }
     if let Some(txn) = &envelope.txn {
-        // Encode ContentId as its string form for v2 wire compat
-        let txn_str = txn.to_string();
-        encode_len_str(&txn_str, buf);
+        encode_len_bytes(&txn.to_bytes(), buf)?;
     }
     if let Some(time) = &envelope.time {
         encode_len_str(time, buf);
     }
-    // FLAG_DATA: not set, no encoding needed
-    // FLAG_INDEX: not set, no encoding needed (index pointers are nameservice-only)
     if let Some(txn_sig) = &envelope.txn_signature {
         encode_len_str(&txn_sig.signer, buf);
         if let Some(txn_id) = &txn_sig.txn_id {
@@ -196,20 +177,23 @@ pub fn encode_envelope(commit: &crate::Commit, buf: &mut Vec<u8>) -> Result<(), 
 }
 
 // =============================================================================
-// Decode (v2 binary wire format → CID-based types)
+// Decode
 // =============================================================================
 
 /// Decode the envelope from a binary slice.
 ///
 /// The returned `CommitV2Envelope` has `t = 0` because `t` is stored in the
 /// header, not the envelope. The caller should populate `t` from the header.
-///
-/// V2 string-based references are converted to CID-based types.
 pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     let mut pos = 0;
 
-    // v (always present) — informational, we know it's v2
-    let _v = zigzag_decode(decode_varint(data, &mut pos)?) as i32;
+    // v (always present) — envelope format version
+    let v = zigzag_decode(decode_varint(data, &mut pos)?) as i32;
+    if v != 2 {
+        return Err(CommitV2Error::EnvelopeDecode(format!(
+            "unsupported envelope version: {v} (expected 2)"
+        )));
+    }
 
     // flags
     if pos >= data.len() {
@@ -217,6 +201,15 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     }
     let flags = data[pos];
     pos += 1;
+
+    // Reject unknown flag bits (forward safety: new flags require a new decoder)
+    let unknown = flags & !KNOWN_FLAGS;
+    if unknown != 0 {
+        return Err(CommitV2Error::EnvelopeDecode(format!(
+            "unknown envelope flags: 0x{:02x}",
+            unknown
+        )));
+    }
 
     // Fields in bit order
     let txn_meta = if flags & FLAG_TXN_META != 0 {
@@ -238,9 +231,11 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     };
 
     let txn = if flags & FLAG_TXN != 0 {
-        let txn_str = decode_len_str(data, &mut pos)?;
-        // Try to parse as CID first, fall back to deriving from address
-        txn_content_id_from_v2_string(&txn_str)
+        let cid_bytes = decode_len_bytes(data, &mut pos)?;
+        Some(
+            ContentId::from_bytes(cid_bytes)
+                .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid txn CID: {e}")))?,
+        )
     } else {
         None
     };
@@ -250,17 +245,6 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     } else {
         None
     };
-
-    // FLAG_DATA: decode and discard for backward compat
-    if flags & FLAG_DATA != 0 {
-        let _legacy_data = decode_legacy_commit_data(data, &mut pos, 0)?;
-    }
-
-    // FLAG_INDEX: skip for tolerant decode of stray dev artifacts
-    // (index pointers are nameservice-only)
-    if flags & FLAG_INDEX != 0 {
-        skip_legacy_index_ref(data, &mut pos)?;
-    }
 
     let txn_signature = if flags & FLAG_TXN_SIGNATURE != 0 {
         let signer = decode_len_str(data, &mut pos)?;
@@ -326,37 +310,6 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
 }
 
 // =============================================================================
-// V2 → CID conversion helpers
-// =============================================================================
-
-/// Convert a v2 txn address string to a ContentId.
-fn txn_content_id_from_v2_string(s: &str) -> Option<ContentId> {
-    // Try parsing as CID string first (for newer data)
-    if let Ok(cid) = s.parse::<ContentId>() {
-        return Some(cid);
-    }
-    // Fall back to extracting hash from legacy address
-    let path = if let Some(rest) = s.strip_prefix("fluree:") {
-        let pos = rest.find("://")?;
-        &rest[pos + 3..]
-    } else if let Some(pos) = s.find("://") {
-        &s[pos + 3..]
-    } else {
-        return None;
-    };
-    let last_segment = path.rsplit('/').next()?;
-    let hash = last_segment
-        .strip_suffix(".fcv2")
-        .or_else(|| last_segment.strip_suffix(".json"))
-        .unwrap_or(last_segment);
-    if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        ContentId::from_hex_digest(CODEC_FLUREE_TXN, hash)
-    } else {
-        None
-    }
-}
-
-// =============================================================================
 // String helpers
 // =============================================================================
 
@@ -378,200 +331,54 @@ fn decode_len_str(data: &[u8], pos: &mut usize) -> Result<String, CommitV2Error>
 }
 
 // =============================================================================
-// CommitRef (v2 wire: id_string + address → CID-based CommitRef)
+// Binary length-prefixed helpers (for CID bytes)
 // =============================================================================
 
-fn encode_commit_ref(cr: &CommitRef, buf: &mut Vec<u8>) {
-    // v2 wire format: has_id(u8) + optional id_string + address_string
-    // Encode CID as the id string, and derive address from digest hex
-    let id_str = cr.id.to_string();
-    buf.push(1); // has_id = true
-    encode_len_str(&id_str, buf);
-    // For address, use the digest hex as a placeholder since v2 format requires it
-    let addr = format!("cid:{}", cr.id.digest_hex());
-    encode_len_str(&addr, buf);
-}
-
-fn decode_commit_ref(data: &[u8], pos: &mut usize) -> Result<CommitRef, CommitV2Error> {
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
+fn encode_len_bytes(bytes: &[u8], buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
+    if bytes.len() > MAX_CID_BYTES {
+        return Err(CommitV2Error::EnvelopeDecode(format!(
+            "CID byte length {} exceeds maximum {}",
+            bytes.len(),
+            MAX_CID_BYTES
+        )));
     }
-    let has_id = data[*pos] != 0;
-    *pos += 1;
-    let id_str = if has_id {
-        Some(decode_len_str(data, pos)?)
-    } else {
-        None
-    };
-    let address = decode_len_str(data, pos)?;
-
-    // Convert v2 strings to ContentId
-    let content_id = try_content_id_from_v2_ref(id_str.as_deref(), &address, CODEC_FLUREE_COMMIT)
-        .ok_or_else(|| {
-        CommitV2Error::EnvelopeDecode(format!(
-            "cannot derive ContentId from commit ref (id={:?}, addr={})",
-            id_str, address
-        ))
-    })?;
-
-    Ok(CommitRef::new(content_id))
-}
-
-// =============================================================================
-// Legacy CommitData (decode-only for backward compat)
-// =============================================================================
-
-fn decode_legacy_commit_data(
-    data: &[u8],
-    pos: &mut usize,
-    depth: usize,
-) -> Result<LegacyCommitData, CommitV2Error> {
-    if depth >= MAX_COMMIT_DATA_DEPTH {
-        return Err(CommitV2Error::EnvelopeDecode(
-            "CommitData recursion too deep".into(),
-        ));
-    }
-
-    // id
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let has_id = data[*pos] != 0;
-    *pos += 1;
-    let id = if has_id {
-        Some(decode_len_str(data, pos)?)
-    } else {
-        None
-    };
-
-    // address
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let has_addr = data[*pos] != 0;
-    *pos += 1;
-    let address = if has_addr {
-        Some(decode_len_str(data, pos)?)
-    } else {
-        None
-    };
-
-    let flakes = decode_varint(data, pos)?;
-    let size = decode_varint(data, pos)?;
-
-    // previous (recursive)
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let has_prev = data[*pos] != 0;
-    *pos += 1;
-    let previous = if has_prev {
-        Some(Box::new(decode_legacy_commit_data(data, pos, depth + 1)?))
-    } else {
-        None
-    };
-
-    Ok(LegacyCommitData {
-        id,
-        address,
-        flakes,
-        size,
-        previous,
-    })
-}
-
-// =============================================================================
-// Legacy IndexRef skip (tolerant decode for stray dev artifacts)
-// =============================================================================
-
-/// Skip past a legacy index ref in the wire format.
-///
-/// Index pointers are no longer part of commits — they are tracked exclusively
-/// via the nameservice. This function advances the cursor past any index ref
-/// bytes in old blobs without constructing a value.
-fn skip_legacy_index_ref(data: &[u8], pos: &mut usize) -> Result<(), CommitV2Error> {
-    // id
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let has_id = data[*pos] != 0;
-    *pos += 1;
-    if has_id {
-        let _id_str = decode_len_str(data, pos)?;
-    }
-
-    // address
-    let _address = decode_len_str(data, pos)?;
-
-    // v
-    let _v = decode_varint(data, pos)?;
-
-    // t
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let has_t = data[*pos] != 0;
-    *pos += 1;
-    if has_t {
-        let _t = decode_varint(data, pos)?;
-    }
-
+    encode_varint(bytes.len() as u64, buf);
+    buf.extend_from_slice(bytes);
     Ok(())
 }
 
-/// Try to derive a ContentId from v2 id/address strings.
-fn try_content_id_from_v2_ref(
-    id_str: Option<&str>,
-    address: &str,
-    codec: u64,
-) -> Option<ContentId> {
-    // Try CID string first (for newer data written with CID-based encoder)
-    if let Some(id) = id_str {
-        if let Ok(cid) = id.parse::<ContentId>() {
-            return Some(cid);
-        }
+/// Decode a length-prefixed byte slice, returning a borrow into `data`.
+/// Advances `pos` past the consumed bytes. No allocation.
+fn decode_len_bytes<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], CommitV2Error> {
+    let len64 = decode_varint(data, pos)?;
+    if len64 > MAX_CID_BYTES as u64 {
+        return Err(CommitV2Error::EnvelopeDecode(format!(
+            "CID byte length {} exceeds maximum {}",
+            len64, MAX_CID_BYTES
+        )));
     }
-
-    // Try extracting hash from id string (legacy format: fluree:commit:sha256:HEX)
-    if let Some(id) = id_str {
-        let hex = id
-            .strip_prefix("fluree:commit:sha256:")
-            .or_else(|| id.strip_prefix("fluree:commit:"))
-            .or_else(|| id.strip_prefix("fluree:index:sha256:"))
-            .or_else(|| id.strip_prefix("fluree:index:"));
-        if let Some(hex) = hex {
-            if let Some(cid) = ContentId::from_hex_digest(codec, hex) {
-                return Some(cid);
-            }
-        }
+    let len = len64 as usize;
+    if *pos + len > data.len() {
+        return Err(CommitV2Error::UnexpectedEof);
     }
+    let slice = &data[*pos..*pos + len];
+    *pos += len;
+    Ok(slice)
+}
 
-    // Try extracting hash from address (cid:HEX or fluree:file:///path/HEX.json)
-    if let Some(hex) = address.strip_prefix("cid:") {
-        if let Some(cid) = ContentId::from_hex_digest(codec, hex) {
-            return Some(cid);
-        }
-    }
+// =============================================================================
+// CommitRef (binary CID encoding)
+// =============================================================================
 
-    // Legacy address format: fluree:file:///path/HEX.fcv2 (or .json for backward compat)
-    let path = if let Some(rest) = address.strip_prefix("fluree:") {
-        rest.find("://").map(|pos| &rest[pos + 3..])
-    } else {
-        address.find("://").map(|pos| &address[pos + 3..])
-    };
-    if let Some(path) = path {
-        if let Some(last) = path.rsplit('/').next() {
-            let hash = last
-                .strip_suffix(".fcv2")
-                .or_else(|| last.strip_suffix(".json"))
-                .unwrap_or(last);
-            if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                return ContentId::from_hex_digest(codec, hash);
-            }
-        }
-    }
+fn encode_commit_ref(cr: &CommitRef, buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
+    encode_len_bytes(&cr.id.to_bytes(), buf)
+}
 
-    None
+fn decode_commit_ref(data: &[u8], pos: &mut usize) -> Result<CommitRef, CommitV2Error> {
+    let cid_bytes = decode_len_bytes(data, pos)?;
+    let content_id = ContentId::from_bytes(cid_bytes)
+        .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid commit ref CID: {e}")))?;
+    Ok(CommitRef::new(content_id))
 }
 
 // =============================================================================
@@ -600,10 +407,10 @@ fn decode_ns_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u16, String>,
 }
 
 // =============================================================================
-// graph_delta (HashMap<u32, String>)
+// graph_delta (HashMap<u16, String>)
 // =============================================================================
 
-fn encode_graph_delta(delta: &HashMap<u32, String>, buf: &mut Vec<u8>) {
+fn encode_graph_delta(delta: &HashMap<u16, String>, buf: &mut Vec<u8>) {
     encode_varint(delta.len() as u64, buf);
     let mut entries: Vec<_> = delta.iter().collect();
     entries.sort_by_key(|(g_id, _)| **g_id);
@@ -613,11 +420,12 @@ fn encode_graph_delta(delta: &HashMap<u32, String>, buf: &mut Vec<u8>) {
     }
 }
 
-fn decode_graph_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u32, String>, CommitV2Error> {
+fn decode_graph_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u16, String>, CommitV2Error> {
     let count = decode_varint(data, pos)? as usize;
     let mut map = HashMap::with_capacity(count);
     for _ in 0..count {
-        let g_id = decode_varint(data, pos)? as u32;
+        let raw = decode_varint(data, pos)?;
+        let g_id = u16::try_from(raw).map_err(|_| CommitV2Error::GIdOutOfRange(raw))?;
         let iri = decode_len_str(data, pos)?;
         map.insert(g_id, iri);
     }
@@ -885,7 +693,7 @@ mod tests {
 
     #[test]
     fn test_decode_old_format_without_trailing_data() {
-        // Simulate old commit format without trailing graph_delta
+        // Simulate envelope without trailing graph_delta
         let mut buf = Vec::new();
         encode_varint(zigzag_encode(2), &mut buf); // v=2
         buf.push(0); // no flags
@@ -895,43 +703,122 @@ mod tests {
     }
 
     #[test]
-    fn test_try_content_id_from_v2_ref_cid_string() {
-        let original = make_test_cid(ContentKind::Commit, "test");
-        let cid_str = original.to_string();
+    fn test_round_trip_with_txn() {
+        let txn_id = make_test_cid(ContentKind::Txn, "my-txn-blob");
+        let mut commit = make_minimal_commit();
+        commit.txn = Some(txn_id.clone());
 
-        let result =
-            try_content_id_from_v2_ref(Some(&cid_str), "dummy-address", CODEC_FLUREE_COMMIT);
-        assert_eq!(result, Some(original));
+        let mut buf = Vec::new();
+        encode_envelope(&commit, &mut buf).unwrap();
+
+        let decoded = decode_envelope(&buf).unwrap();
+        assert_eq!(decoded.txn.as_ref(), Some(&txn_id));
     }
 
     #[test]
-    fn test_try_content_id_from_v2_ref_legacy_id() {
-        let hash = "a".repeat(64);
-        let id_str = format!("fluree:commit:sha256:{}", hash);
+    fn test_unknown_flags_rejected() {
+        // Bit 5 (0x20, formerly FLAG_DATA)
+        let mut buf = Vec::new();
+        encode_varint(zigzag_encode(2), &mut buf);
+        buf.push(0x20);
+        buf.push(0); // no graph_delta
+        let err = decode_envelope(&buf).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown envelope flags"),
+            "unexpected error: {err}"
+        );
 
-        let result = try_content_id_from_v2_ref(Some(&id_str), "dummy", CODEC_FLUREE_COMMIT);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().digest_hex(), hash);
+        // Bit 6 (0x40, formerly FLAG_INDEX)
+        let mut buf = Vec::new();
+        encode_varint(zigzag_encode(2), &mut buf);
+        buf.push(0x40);
+        buf.push(0);
+        let err = decode_envelope(&buf).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown envelope flags"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
-    fn test_try_content_id_from_v2_ref_legacy_address_json() {
-        // Backward compat: .json commit addresses should still parse
-        let hash = "b".repeat(64);
-        let address = format!("fluree:file:///data/commit/{}.json", hash);
+    fn test_unsupported_envelope_version_rejected() {
+        // Version 0
+        let mut buf = Vec::new();
+        encode_varint(zigzag_encode(0), &mut buf);
+        buf.push(0x00); // flags
+        buf.push(0); // graph_delta count
+        let err = decode_envelope(&buf).unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported envelope version"),
+            "unexpected error: {err}"
+        );
 
-        let result = try_content_id_from_v2_ref(None, &address, CODEC_FLUREE_COMMIT);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().digest_hex(), hash);
+        // Version 1
+        let mut buf = Vec::new();
+        encode_varint(zigzag_encode(1), &mut buf);
+        buf.push(0x00);
+        buf.push(0);
+        let err = decode_envelope(&buf).unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported envelope version"),
+            "unexpected error: {err}"
+        );
+
+        // Version 3 (hypothetical future)
+        let mut buf = Vec::new();
+        encode_varint(zigzag_encode(3), &mut buf);
+        buf.push(0x00);
+        buf.push(0);
+        let err = decode_envelope(&buf).unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported envelope version"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
-    fn test_try_content_id_from_v2_ref_legacy_address_fcv2() {
-        let hash = "b".repeat(64);
-        let address = format!("fluree:file:///data/commit/{}.fcv2", hash);
+    fn test_golden_bytes_previous_ref_and_txn() {
+        // Deterministic CIDs from fixed inputs
+        let prev_id = ContentId::new(ContentKind::Commit, b"golden-prev");
+        let txn_id = ContentId::new(ContentKind::Txn, b"golden-txn");
 
-        let result = try_content_id_from_v2_ref(None, &address, CODEC_FLUREE_COMMIT);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().digest_hex(), hash);
+        let mut commit = make_minimal_commit();
+        commit.previous_ref = Some(CommitRef::new(prev_id.clone()));
+        commit.txn = Some(txn_id.clone());
+
+        let mut buf = Vec::new();
+        encode_envelope(&commit, &mut buf).unwrap();
+
+        // Build expected bytes manually:
+        let mut expected = Vec::new();
+        // v = zigzag(2) = 4
+        encode_varint(zigzag_encode(2), &mut expected);
+        // flags = FLAG_PREVIOUS_REF | FLAG_TXN = 0x02 | 0x08 = 0x0A
+        expected.push(0x0A);
+        // previous_ref: varint(len) + CID binary bytes
+        let prev_bytes = prev_id.to_bytes();
+        encode_varint(prev_bytes.len() as u64, &mut expected);
+        expected.extend_from_slice(&prev_bytes);
+        // txn: varint(len) + CID binary bytes
+        let txn_bytes = txn_id.to_bytes();
+        encode_varint(txn_bytes.len() as u64, &mut expected);
+        expected.extend_from_slice(&txn_bytes);
+        // trailing graph_delta = 0 (empty)
+        expected.push(0);
+
+        assert_eq!(
+            buf, expected,
+            "wire format mismatch:\n  actual:   {:02x?}\n  expected: {:02x?}",
+            buf, expected
+        );
+
+        // Verify CID binary length is exactly 39 bytes (SHA-256 + Fluree codecs)
+        assert_eq!(prev_bytes.len(), 39, "commit CID binary should be 39 bytes");
+        assert_eq!(txn_bytes.len(), 39, "txn CID binary should be 39 bytes");
+
+        // Decode the golden bytes back and verify CIDs
+        let decoded = decode_envelope(&expected).unwrap();
+        assert_eq!(decoded.previous_ref.as_ref().unwrap().id, prev_id);
+        assert_eq!(decoded.txn.as_ref(), Some(&txn_id));
     }
 }

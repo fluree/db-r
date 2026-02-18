@@ -19,12 +19,24 @@ use super::forward_leaf::ForwardLeaf;
 use super::reverse_leaf::ReverseLeaf;
 
 use crate::run_index::leaflet_cache::LeafletCache;
+use fluree_db_core::{ContentId, ContentStore};
 
 /// Leaf data source for demand-loading.
 #[derive(Debug)]
 pub enum LeafSource {
     /// Read leaves from local files. Maps CAS address → file path.
     LocalFiles(HashMap<String, PathBuf>),
+    /// Fetch leaves from a CAS content store on demand (remote storages), with optional
+    /// local file fallbacks for any leaves that are already locally resolvable.
+    ///
+    /// This avoids pre-downloading entire dictionaries during store construction
+    /// (critical for Lambda + S3 cold starts). Leaf bytes are cached in `LeafletCache`
+    /// when configured.
+    CasOnDemand {
+        cs: Arc<dyn ContentStore>,
+        local_files: HashMap<String, PathBuf>,
+        remote_cids: HashMap<String, ContentId>,
+    },
     /// Leaves are provided inline (for testing or small dictionaries).
     InMemory(HashMap<String, Arc<[u8]>>),
 }
@@ -149,6 +161,33 @@ impl DictTreeReader {
     /// `xxh3_128(cas_address)`) to avoid repeated disk reads.
     /// Without a cache: reads directly from disk.
     fn load_leaf(&self, address: &str) -> io::Result<Arc<[u8]>> {
+        fn fetch_remote_leaf_bytes(
+            cs: Arc<dyn ContentStore>,
+            cid: ContentId,
+        ) -> io::Result<Vec<u8>> {
+            // DictTreeReader is sync, but ContentStore::get is async.
+            //
+            // We intentionally avoid `block_in_place` here because this code can run on
+            // runtimes that don't support it (e.g., current-thread). Instead we spawn a
+            // short-lived OS thread and block on the Tokio handle there.
+            let handle = tokio::runtime::Handle::try_current().map_err(|_| {
+                io::Error::other("dict tree: remote leaf fetch requires a Tokio runtime")
+            })?;
+
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
+            std::thread::spawn(move || {
+                let res = handle
+                    .block_on(async { cs.get(&cid).await })
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(res);
+            });
+
+            let res = rx
+                .recv()
+                .map_err(|_| io::Error::other("dict tree: fetch thread died"))?;
+            res.map_err(io::Error::other)
+        }
+
         match &self.leaf_source {
             LeafSource::LocalFiles(map) => {
                 let path = map.get(address).ok_or_else(|| {
@@ -177,6 +216,52 @@ impl DictTreeReader {
                 } else {
                     self.disk_reads.fetch_add(1, Ordering::Relaxed);
                     let bytes = std::fs::read(path)?;
+                    Ok(Arc::from(bytes.into_boxed_slice()))
+                }
+            }
+            LeafSource::CasOnDemand {
+                cs,
+                local_files,
+                remote_cids,
+            } => {
+                // Local file fast-path when available (e.g., file storage or mixed backends).
+                if let Some(path) = local_files.get(address) {
+                    if let Some(cache) = &self.global_cache {
+                        let cache_key = xxhash_rust::xxh3::xxh3_128(address.as_bytes());
+                        let path = path.clone();
+                        let disk_reads = &self.disk_reads;
+                        return cache.try_get_or_load_dict_leaf(cache_key, || {
+                            disk_reads.fetch_add(1, Ordering::Relaxed);
+                            let bytes = std::fs::read(&path)?;
+                            Ok(Arc::from(bytes.into_boxed_slice()))
+                        });
+                    }
+                    self.disk_reads.fetch_add(1, Ordering::Relaxed);
+                    let bytes = std::fs::read(path)?;
+                    return Ok(Arc::from(bytes.into_boxed_slice()));
+                }
+
+                let cid = remote_cids.get(address).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("dict tree: no CID mapping for leaf {}", address),
+                    )
+                })?;
+
+                // Remote fetch path: cache bytes in LeafletCache (keyed by CAS address).
+                if let Some(cache) = &self.global_cache {
+                    let cache_key = xxhash_rust::xxh3::xxh3_128(address.as_bytes());
+                    let cs = Arc::clone(cs);
+                    let cid = cid.clone();
+                    let disk_reads = &self.disk_reads;
+                    cache.try_get_or_load_dict_leaf(cache_key, || {
+                        disk_reads.fetch_add(1, Ordering::Relaxed);
+                        let bytes = fetch_remote_leaf_bytes(cs, cid)?;
+                        Ok(Arc::from(bytes.into_boxed_slice()))
+                    })
+                } else {
+                    self.disk_reads.fetch_add(1, Ordering::Relaxed);
+                    let bytes = fetch_remote_leaf_bytes(Arc::clone(cs), cid.clone())?;
                     Ok(Arc::from(bytes.into_boxed_slice()))
                 }
             }

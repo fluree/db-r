@@ -9,7 +9,7 @@ use crate::generate::{
     DT_G_DAY, DT_G_MONTH, DT_G_MONTH_DAY, DT_G_YEAR, DT_G_YEAR_MONTH, DT_INTEGER, DT_JSON,
     DT_LANG_STRING, DT_STRING, DT_TIME, DT_WKT_LITERAL, DT_YEAR_MONTH_DURATION,
 };
-use crate::namespace::NamespaceRegistry;
+use crate::namespace::NsAllocator;
 use fluree_db_core::geo::try_extract_point;
 use fluree_db_core::temporal::{
     Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
@@ -53,7 +53,7 @@ fn cached_dt_sid(dt_iri: &str) -> Option<Sid> {
 pub(crate) fn convert_string_literal(
     value: &str,
     dt_iri: &str,
-    ns: &mut NamespaceRegistry,
+    ns: &mut NsAllocator<'_>,
 ) -> (FlakeValue, Sid) {
     let dt_sid = cached_dt_sid(dt_iri).unwrap_or_else(|| ns.sid_for_iri(dt_iri));
 

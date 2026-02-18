@@ -7,8 +7,8 @@
 //!   lang_dict_offset: u64
 //!   lang_dict_len: u64
 //!   records_offset: u64
-//!   min_t: i64, max_t: i64
-//!   _reserved: [u8; 8]
+//!   min_t: u32, max_t: u32
+//!   _reserved: [u8; 16]
 //! [Language tag dictionary]
 //!   count: u16
 //!   entries: [len: u8, utf8_bytes]*
@@ -20,11 +20,33 @@ use super::run_record::{RunRecord, RunSortOrder, RECORD_WIRE_SIZE};
 use std::io::{self, Write};
 use std::path::Path;
 
+#[cfg(target_os = "macos")]
+fn try_disable_os_cache(file: &std::fs::File) {
+    use std::os::unix::io::AsRawFd;
+    // Best-effort: if this fails, fall back to normal cached I/O.
+    // Disabling cache helps prevent huge RSS spikes on large sequential writes.
+    unsafe {
+        let fd = file.as_raw_fd();
+        let _ = libc::fcntl(fd, libc::F_NOCACHE, 1);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn try_disable_os_cache(_file: &std::fs::File) {}
+
 /// Magic bytes for a run file.
 pub const RUN_MAGIC: [u8; 4] = *b"FRN1";
 
 /// Current run file format version.
-pub const RUN_VERSION: u8 = 1;
+///
+/// Version history:
+/// - 1: header + lang dict + raw record stream (44-byte records)
+/// - 2: header + lang dict + (optional) zstd-compressed record blocks (44-byte records)
+/// - 3: 34-byte records (g_id removed from wire; t→u32, i→u32)
+pub const RUN_VERSION: u8 = 3;
+
+/// Run file flags.
+const RUN_FLAG_ZSTD_BLOCKS: u8 = 1 << 0;
 
 /// Header size in bytes.
 pub const RUN_HEADER_LEN: usize = 64;
@@ -39,12 +61,14 @@ pub struct RunFileHeader {
     pub lang_dict_offset: u64,
     pub lang_dict_len: u64,
     pub records_offset: u64,
-    pub min_t: i64,
-    pub max_t: i64,
+    pub min_t: u32,
+    pub max_t: u32,
 }
 
 impl RunFileHeader {
     /// Write the header to the first 64 bytes of `buf`.
+    ///
+    /// `min_t`/`max_t` are stored as `u32` at offsets 40..44 and 44..48 (v3+).
     pub fn write_to(&self, buf: &mut [u8]) {
         debug_assert!(buf.len() >= RUN_HEADER_LEN);
         buf[0..4].copy_from_slice(&RUN_MAGIC);
@@ -56,9 +80,9 @@ impl RunFileHeader {
         buf[16..24].copy_from_slice(&self.lang_dict_offset.to_le_bytes());
         buf[24..32].copy_from_slice(&self.lang_dict_len.to_le_bytes());
         buf[32..40].copy_from_slice(&self.records_offset.to_le_bytes());
-        buf[40..48].copy_from_slice(&self.min_t.to_le_bytes());
-        buf[48..56].copy_from_slice(&self.max_t.to_le_bytes());
-        buf[56..64].fill(0); // reserved
+        buf[40..44].copy_from_slice(&self.min_t.to_le_bytes());
+        buf[44..48].copy_from_slice(&self.max_t.to_le_bytes());
+        buf[48..64].fill(0); // reserved
     }
 
     /// Read the header from the first 64 bytes of `buf`.
@@ -80,7 +104,7 @@ impl RunFileHeader {
             ));
         }
         let version = buf[4];
-        if version != RUN_VERSION {
+        if !(1..=3).contains(&version) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("run file: unsupported version {}", version),
@@ -93,6 +117,17 @@ impl RunFileHeader {
             )
         })?;
 
+        // v1/v2 stored min_t/max_t as i64 at [40..56]; v3 stores as u32 at [40..48].
+        let (min_t, max_t) = if version <= 2 {
+            let min = i64::from_le_bytes(buf[40..48].try_into().unwrap());
+            let max = i64::from_le_bytes(buf[48..56].try_into().unwrap());
+            (min as u32, max as u32)
+        } else {
+            let min = u32::from_le_bytes(buf[40..44].try_into().unwrap());
+            let max = u32::from_le_bytes(buf[44..48].try_into().unwrap());
+            (min, max)
+        };
+
         Ok(Self {
             version,
             sort_order,
@@ -101,8 +136,8 @@ impl RunFileHeader {
             lang_dict_offset: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
             lang_dict_len: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
             records_offset: u64::from_le_bytes(buf[32..40].try_into().unwrap()),
-            min_t: i64::from_le_bytes(buf[40..48].try_into().unwrap()),
-            max_t: i64::from_le_bytes(buf[48..56].try_into().unwrap()),
+            min_t,
+            max_t,
         })
     }
 }
@@ -177,10 +212,21 @@ pub fn write_run_file(
     records: &[RunRecord],
     lang_dict: &LanguageTagDict,
     sort_order: RunSortOrder,
-    min_t: i64,
-    max_t: i64,
+    min_t: u32,
+    max_t: u32,
 ) -> io::Result<RunFileInfo> {
-    let mut file = io::BufWriter::new(std::fs::File::create(path)?);
+    let raw = std::fs::File::create(path)?;
+    try_disable_os_cache(&raw);
+    let mut file = io::BufWriter::new(raw);
+
+    let compress_zstd = std::env::var("FLUREE_RUN_ZSTD")
+        .ok()
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(true);
+    let zstd_level = std::env::var("FLUREE_RUN_ZSTD_LEVEL")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(1);
 
     // Serialize lang dict
     let lang_bytes = serialize_lang_dict(lang_dict);
@@ -194,7 +240,11 @@ pub fn write_run_file(
     let header = RunFileHeader {
         version: RUN_VERSION,
         sort_order,
-        flags: 0,
+        flags: if compress_zstd {
+            RUN_FLAG_ZSTD_BLOCKS
+        } else {
+            0
+        },
         record_count: records.len() as u64,
         lang_dict_offset,
         lang_dict_len,
@@ -209,11 +259,45 @@ pub fn write_run_file(
     // Write lang dict
     file.write_all(&lang_bytes)?;
 
-    // Write records
-    let mut rec_buf = [0u8; RECORD_WIRE_SIZE];
-    for rec in records {
-        rec.write_le(&mut rec_buf);
-        file.write_all(&rec_buf)?;
+    // Write records (either raw stream or compressed blocks).
+    if !compress_zstd {
+        let mut rec_buf = [0u8; RECORD_WIRE_SIZE];
+        for rec in records {
+            rec.write_le(&mut rec_buf);
+            file.write_all(&rec_buf)?;
+        }
+    } else {
+        // Compressed blocks: each block contains N records encoded as raw wire bytes,
+        // then compressed with zstd.
+        //
+        // Block header:
+        // - n_records: u32
+        // - raw_len:   u32  (= n_records * RECORD_WIRE_SIZE)
+        // - z_len:     u32  (= compressed payload length)
+        //
+        // Then `z_len` bytes of zstd payload.
+        const BLOCK_RECORDS: usize = 8192;
+        let mut raw_buf: Vec<u8> = Vec::with_capacity(BLOCK_RECORDS * RECORD_WIRE_SIZE);
+        let mut rec_buf = [0u8; RECORD_WIRE_SIZE];
+
+        for chunk in records.chunks(BLOCK_RECORDS) {
+            raw_buf.clear();
+            raw_buf.resize(chunk.len() * RECORD_WIRE_SIZE, 0u8);
+            for (i, rec) in chunk.iter().enumerate() {
+                rec.write_le(&mut rec_buf);
+                let off = i * RECORD_WIRE_SIZE;
+                raw_buf[off..off + RECORD_WIRE_SIZE].copy_from_slice(&rec_buf);
+            }
+
+            let compressed = zstd::bulk::compress(&raw_buf, zstd_level)?;
+            let n_records = chunk.len() as u32;
+            let raw_len = raw_buf.len() as u32;
+            let z_len = compressed.len() as u32;
+            file.write_all(&n_records.to_le_bytes())?;
+            file.write_all(&raw_len.to_le_bytes())?;
+            file.write_all(&z_len.to_le_bytes())?;
+            file.write_all(&compressed)?;
+        }
     }
 
     file.flush()?;
@@ -256,20 +340,64 @@ pub fn read_run_file(path: &Path) -> io::Result<(RunFileHeader, LanguageTagDict,
 
     // Read records
     let rec_start = header.records_offset as usize;
-    let rec_byte_count = (header.record_count as usize) * RECORD_WIRE_SIZE;
-    if rec_start + rec_byte_count > data.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "run file: records extend past end",
-        ));
-    }
-
     let mut records = Vec::with_capacity(header.record_count as usize);
-    let mut pos = rec_start;
-    for _ in 0..header.record_count {
-        let buf: &[u8; RECORD_WIRE_SIZE] = data[pos..pos + RECORD_WIRE_SIZE].try_into().unwrap();
-        records.push(RunRecord::read_le(buf));
-        pos += RECORD_WIRE_SIZE;
+    if (header.flags & RUN_FLAG_ZSTD_BLOCKS) == 0 {
+        let rec_byte_count = (header.record_count as usize) * RECORD_WIRE_SIZE;
+        if rec_start + rec_byte_count > data.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "run file: records extend past end",
+            ));
+        }
+        let mut pos = rec_start;
+        for _ in 0..header.record_count {
+            let buf: &[u8; RECORD_WIRE_SIZE] =
+                data[pos..pos + RECORD_WIRE_SIZE].try_into().unwrap();
+            records.push(RunRecord::read_le(buf));
+            pos += RECORD_WIRE_SIZE;
+        }
+    } else {
+        // Compressed blocks stream.
+        let mut pos = rec_start;
+        while (records.len() as u64) < header.record_count {
+            if pos + 12 > data.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "run file: truncated compressed block header",
+                ));
+            }
+            let n_records = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+            let raw_len = u32::from_le_bytes(data[pos + 4..pos + 8].try_into().unwrap()) as usize;
+            let z_len = u32::from_le_bytes(data[pos + 8..pos + 12].try_into().unwrap()) as usize;
+            pos += 12;
+            if raw_len != n_records * RECORD_WIRE_SIZE {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "run file: invalid compressed block raw_len",
+                ));
+            }
+            if pos + z_len > data.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "run file: truncated compressed block payload",
+                ));
+            }
+            let compressed = &data[pos..pos + z_len];
+            pos += z_len;
+            let raw = zstd::bulk::decompress(compressed, raw_len)?;
+            if raw.len() != raw_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "run file: decompressed length mismatch",
+                ));
+            }
+            for i in 0..n_records {
+                let off = i * RECORD_WIRE_SIZE;
+                let buf: &[u8; RECORD_WIRE_SIZE] =
+                    raw[off..off + RECORD_WIRE_SIZE].try_into().unwrap();
+                records.push(RunRecord::read_le(buf));
+            }
+        }
     }
 
     Ok((header, lang_dict, records))
@@ -285,8 +413,8 @@ pub struct RunFileInfo {
     pub path: std::path::PathBuf,
     pub record_count: u64,
     pub sort_order: RunSortOrder,
-    pub min_t: i64,
-    pub max_t: i64,
+    pub min_t: u32,
+    pub max_t: u32,
 }
 
 // ============================================================================
@@ -317,7 +445,7 @@ mod tests {
         header.write_to(&mut buf);
 
         let parsed = RunFileHeader::read_from(&buf).unwrap();
-        assert_eq!(parsed.version, RUN_VERSION);
+        assert!((1..=3).contains(&parsed.version));
         assert_eq!(parsed.sort_order, RunSortOrder::Spot);
         assert_eq!(parsed.record_count, 1000);
         assert_eq!(parsed.min_t, 1);

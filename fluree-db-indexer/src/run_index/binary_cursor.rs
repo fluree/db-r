@@ -17,11 +17,15 @@ use super::leaf::read_leaf_header;
 use super::leaflet::{
     decode_leaflet_region1, decode_leaflet_region2, decode_leaflet_region3, LeafletHeader,
 };
-use super::leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCacheKey};
+use super::leaflet_cache::{
+    CachedRegion1, CachedRegion2, LeafletCacheKey, SparseIColumn, SparseU16Column,
+};
 use super::replay::replay_leaflet;
 use super::run_record::{cmp_for_order, FactKey, RunRecord, RunSortOrder};
-use super::types::{DecodedRow, OverlayOp, RowColumnOutput, RowColumnSlice};
+use super::types::{OverlayOp, RowColumnSlice};
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
+use fluree_db_core::GraphId;
+use fluree_db_core::ListIndex;
 use memmap2::Mmap;
 use std::cmp::Ordering;
 use std::io;
@@ -114,20 +118,10 @@ fn cmp_overlay_vs_record(ov: &OverlayOp, rec: &RunRecord, order: RunSortOrder) -
     }
 }
 
-/// Check if a decoded row and an OverlayOp share the same fact identity.
-///
-/// Uses FactKey semantics: (s_id, p_id, o_kind, o_key, dt, effective_lang_id, i).
+/// Build a `FactKey` from an `OverlayOp`.
 #[inline]
-fn same_identity_row_vs_overlay(row: &DecodedRow, ov: &OverlayOp) -> bool {
+fn fact_key_from_overlay(ov: &OverlayOp) -> FactKey {
     FactKey::from_decoded_row(
-        row.s_id,
-        row.p_id,
-        row.o_kind,
-        row.o_key,
-        row.dt,
-        row.lang_id,
-        row.i,
-    ) == FactKey::from_decoded_row(
         ov.s_id,
         ov.p_id,
         ov.o_kind,
@@ -141,6 +135,65 @@ fn same_identity_row_vs_overlay(row: &DecodedRow, ov: &OverlayOp) -> bool {
 // ============================================================================
 // merge_overlay: ephemeral overlay merge into decoded columns
 // ============================================================================
+
+struct OverlayMergeOut {
+    s: Vec<u64>,
+    p: Vec<u32>,
+    o_kinds: Vec<u8>,
+    o_keys: Vec<u64>,
+    dt: Vec<u32>,
+    t: Vec<u32>,
+    lang: Vec<u16>,
+    i: Vec<i32>,
+}
+
+impl OverlayMergeOut {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            s: Vec::with_capacity(cap),
+            p: Vec::with_capacity(cap),
+            o_kinds: Vec::with_capacity(cap),
+            o_keys: Vec::with_capacity(cap),
+            dt: Vec::with_capacity(cap),
+            t: Vec::with_capacity(cap),
+            lang: Vec::with_capacity(cap),
+            i: Vec::with_capacity(cap),
+        }
+    }
+
+    #[inline]
+    fn push_row(&mut self, input: &RowColumnSlice<'_>, ri: usize) {
+        self.s.push(input.s[ri]);
+        self.p.push(input.p[ri]);
+        self.o_kinds.push(input.o_kinds[ri]);
+        self.o_keys.push(input.o_keys[ri]);
+        self.dt.push(input.dt[ri]);
+        self.t.push(input.t[ri]);
+        self.lang.push(input.lang[ri]);
+        self.i.push(input.i[ri]);
+    }
+
+    #[inline]
+    fn push_overlay(&mut self, ov: &OverlayOp) {
+        debug_assert!(
+            ov.t >= 0 && ov.t <= u32::MAX as i64,
+            "merge_overlay: overlay t={} out of u32 range",
+            ov.t
+        );
+        self.s.push(ov.s_id);
+        self.p.push(ov.p_id);
+        self.o_kinds.push(ov.o_kind);
+        self.o_keys.push(ov.o_key);
+        self.dt.push(ov.dt as u32);
+        self.t.push(ov.t as u32);
+        self.lang.push(ov.lang_id);
+        self.i.push(ov.i_val);
+    }
+
+    fn row_count(&self) -> usize {
+        self.s.len()
+    }
+}
 
 /// Merge overlay ops into decoded leaflet columns (ephemeral, no R3 output).
 ///
@@ -160,94 +213,43 @@ fn merge_overlay(
     let row_count = input.len();
     let cap = row_count + overlay.len();
 
-    let mut out_s: Vec<u64> = Vec::with_capacity(cap);
-    let mut out_p = Vec::with_capacity(cap);
-    let mut out_o_kinds: Vec<u8> = Vec::with_capacity(cap);
-    let mut out_o_keys: Vec<u64> = Vec::with_capacity(cap);
-    let mut out_dt = Vec::with_capacity(cap);
-    let mut out_t = Vec::with_capacity(cap);
-    let mut out_lang = Vec::with_capacity(cap);
-    let mut out_i = Vec::with_capacity(cap);
+    let mut out = OverlayMergeOut::with_capacity(cap);
 
     let mut ri = 0usize; // row cursor
     let mut oi = 0usize; // overlay cursor
 
     while ri < row_count && oi < overlay.len() {
         let ov = &overlay[oi];
-        let cmp = cmp_row_vs_overlay(
-            input.s[ri],
-            input.p[ri],
-            input.o_kinds[ri],
-            input.o_keys[ri],
-            input.dt[ri] as u16,
-            ov,
-            order,
-        );
+        let s_id = input.s[ri];
+        let p_id = input.p[ri];
+        let o_kind = input.o_kinds[ri];
+        let o_key = input.o_keys[ri];
+        let dt = input.dt[ri];
+        let lang_id = input.lang[ri];
+        let i = input.i[ri];
+        let cmp = cmp_row_vs_overlay(s_id, p_id, o_kind, o_key, dt as u16, ov, order);
 
         match cmp {
             Ordering::Less => {
-                // Row comes first — emit unchanged
-                out_s.push(input.s[ri]);
-                out_p.push(input.p[ri]);
-                out_o_kinds.push(input.o_kinds[ri]);
-                out_o_keys.push(input.o_keys[ri]);
-                out_dt.push(input.dt[ri]);
-                out_t.push(input.t[ri]);
-                out_lang.push(input.lang[ri]);
-                out_i.push(input.i[ri]);
+                out.push_row(input, ri);
                 ri += 1;
             }
             Ordering::Greater => {
-                // Overlay comes first (not in existing data)
                 if ov.op {
-                    let mut out = RowColumnOutput {
-                        s: &mut out_s,
-                        p: &mut out_p,
-                        o_kinds: &mut out_o_kinds,
-                        o_keys: &mut out_o_keys,
-                        dt: &mut out_dt,
-                        t: &mut out_t,
-                        lang: &mut out_lang,
-                        i: &mut out_i,
-                    };
-                    emit_overlay(ov, &mut out);
+                    out.push_overlay(ov);
                 }
-                // Retract of non-existent → skip
                 oi += 1;
             }
             Ordering::Equal => {
-                // Sort-order position match — check full identity
-                let row = input.get(ri);
-                if same_identity_row_vs_overlay(&row, ov) {
-                    // Same fact identity
+                let row_key = FactKey::from_decoded_row(s_id, p_id, o_kind, o_key, dt, lang_id, i);
+                if row_key == fact_key_from_overlay(ov) {
                     if ov.op {
-                        // Assert (update) — emit overlay with new t
-                        let mut out = RowColumnOutput {
-                            s: &mut out_s,
-                            p: &mut out_p,
-                            o_kinds: &mut out_o_kinds,
-                            o_keys: &mut out_o_keys,
-                            dt: &mut out_dt,
-                            t: &mut out_t,
-                            lang: &mut out_lang,
-                            i: &mut out_i,
-                        };
-                        emit_overlay(ov, &mut out);
+                        out.push_overlay(ov);
                     }
-                    // else: Retract — omit from output
                     ri += 1;
                     oi += 1;
                 } else {
-                    // Same sort position but different identity (e.g., different lang_id/i).
-                    // Emit the existing row and retry the overlay on the next iteration.
-                    out_s.push(input.s[ri]);
-                    out_p.push(input.p[ri]);
-                    out_o_kinds.push(input.o_kinds[ri]);
-                    out_o_keys.push(input.o_keys[ri]);
-                    out_dt.push(input.dt[ri]);
-                    out_t.push(input.t[ri]);
-                    out_lang.push(input.lang[ri]);
-                    out_i.push(input.i[ri]);
+                    out.push_row(input, ri);
                     ri += 1;
                 }
             }
@@ -256,63 +258,84 @@ fn merge_overlay(
 
     // Drain remaining rows
     while ri < row_count {
-        out_s.push(input.s[ri]);
-        out_p.push(input.p[ri]);
-        out_o_kinds.push(input.o_kinds[ri]);
-        out_o_keys.push(input.o_keys[ri]);
-        out_dt.push(input.dt[ri]);
-        out_t.push(input.t[ri]);
-        out_lang.push(input.lang[ri]);
-        out_i.push(input.i[ri]);
+        out.push_row(input, ri);
         ri += 1;
     }
 
     // Drain remaining overlay asserts
     while oi < overlay.len() {
         if overlay[oi].op {
-            let mut out = RowColumnOutput {
-                s: &mut out_s,
-                p: &mut out_p,
-                o_kinds: &mut out_o_kinds,
-                o_keys: &mut out_o_keys,
-                dt: &mut out_dt,
-                t: &mut out_t,
-                lang: &mut out_lang,
-                i: &mut out_i,
-            };
-            emit_overlay(&overlay[oi], &mut out);
+            out.push_overlay(&overlay[oi]);
         }
         oi += 1;
     }
 
-    let merged_count = out_s.len();
+    let merged_count = out.row_count();
     let r1 = CachedRegion1 {
-        s_ids: SubjectIdColumn::from_wide(out_s.into_iter().map(SubjectId::from_u64).collect()),
-        p_ids: out_p.into(),
-        o_kinds: out_o_kinds.into(),
-        o_keys: out_o_keys.into(),
+        s_ids: SubjectIdColumn::from_wide(out.s.into_iter().map(SubjectId::from_u64).collect()),
+        p_ids: out.p.into(),
+        o_kinds: out.o_kinds.into(),
+        o_keys: out.o_keys.into(),
         row_count: merged_count,
     };
     let r2 = CachedRegion2 {
-        dt_values: out_dt.into(),
-        t_values: out_t.into(),
-        lang_ids: out_lang.into(),
-        i_values: out_i.into(),
+        dt_values: out.dt.into(),
+        t_values: out.t.into(),
+        lang: sparse_lang_from_dense(&out.lang),
+        i_col: sparse_i_from_dense(&out.i),
     };
     (r1, r2)
 }
 
-/// Emit an OverlayOp to the output column vectors.
-#[inline]
-fn emit_overlay(ov: &OverlayOp, out: &mut RowColumnOutput<'_>) {
-    out.s.push(ov.s_id);
-    out.p.push(ov.p_id);
-    out.o_kinds.push(ov.o_kind);
-    out.o_keys.push(ov.o_key);
-    out.dt.push(ov.dt as u32);
-    out.t.push(ov.t);
-    out.lang.push(ov.lang_id);
-    out.i.push(ov.i_val);
+/// Build a sparse lang column from a dense u16 vec. Returns `None` if all values are 0.
+fn sparse_lang_from_dense(dense: &[u16]) -> Option<SparseU16Column> {
+    debug_assert!(
+        dense.len() <= u16::MAX as usize,
+        "sparse lang positions overflow: len={}",
+        dense.len()
+    );
+    let mut positions = Vec::new();
+    let mut values = Vec::new();
+    for (i, &v) in dense.iter().enumerate() {
+        if v != 0 {
+            positions.push(i as u16);
+            values.push(v);
+        }
+    }
+    if positions.is_empty() {
+        None
+    } else {
+        Some(SparseU16Column {
+            positions: positions.into(),
+            values: values.into(),
+        })
+    }
+}
+
+/// Build a sparse i column from a dense i32 vec. Returns `None` if all values are `ListIndex::none()`.
+fn sparse_i_from_dense(dense: &[i32]) -> Option<SparseIColumn> {
+    debug_assert!(
+        dense.len() <= u16::MAX as usize,
+        "sparse i positions overflow: len={}",
+        dense.len()
+    );
+    let sentinel = ListIndex::none().as_i32();
+    let mut positions = Vec::new();
+    let mut values = Vec::new();
+    for (i, &v) in dense.iter().enumerate() {
+        if v != sentinel {
+            positions.push(i as u16);
+            values.push(v as u32);
+        }
+    }
+    if positions.is_empty() {
+        None
+    } else {
+        Some(SparseIColumn::U32 {
+            positions: positions.into(),
+            values: values.into(),
+        })
+    }
 }
 
 // ============================================================================
@@ -424,7 +447,7 @@ pub struct DecodedBatch {
 pub struct BinaryCursor {
     store: Arc<BinaryIndexStore>,
     order: RunSortOrder,
-    g_id: u32,
+    g_id: GraphId,
     /// Indices of leaves to visit.
     leaf_indices: Range<usize>,
     /// Current position within leaf_indices.
@@ -457,7 +480,7 @@ impl BinaryCursor {
     pub fn new(
         store: Arc<BinaryIndexStore>,
         order: RunSortOrder,
-        g_id: u32,
+        g_id: GraphId,
         min_key: &RunRecord,
         max_key: &RunRecord,
         filter: BinaryFilter,
@@ -519,7 +542,7 @@ impl BinaryCursor {
     /// immediately-exhausted cursor.
     pub fn for_subject(
         store: Arc<BinaryIndexStore>,
-        g_id: u32,
+        g_id: GraphId,
         s_id: u64,
         p_id: Option<u32>,
         need_region2: bool,
@@ -553,7 +576,7 @@ impl BinaryCursor {
             };
         };
 
-        let leaf_indices = branch.find_leaves_for_subject(g_id, s_id);
+        let leaf_indices = branch.find_leaves_for_subject(s_id);
 
         let current_idx = leaf_indices.start;
         // Don't set exhausted = true even when leaf_indices is empty.
@@ -617,6 +640,30 @@ impl BinaryCursor {
     /// Whether this cursor has overlay ops to merge.
     fn has_overlay(&self) -> bool {
         !self.overlay_ops.is_empty()
+    }
+
+    fn overlay_matches_filter(&self, ov: &OverlayOp) -> bool {
+        if let Some(f_s_id) = self.filter.s_id {
+            if ov.s_id != f_s_id {
+                return false;
+            }
+        }
+        if let Some(f_p_id) = self.filter.p_id {
+            if ov.p_id != f_p_id {
+                return false;
+            }
+        }
+        if let Some(f_o_kind) = self.filter.o_kind {
+            if ov.o_kind != f_o_kind {
+                return false;
+            }
+        }
+        if let Some(f_o_key) = self.filter.o_key {
+            if ov.o_key != f_o_key {
+                return false;
+            }
+        }
+        true
     }
 
     /// Yield the next batch of decoded rows (one leaf's worth).
@@ -701,8 +748,25 @@ impl BinaryCursor {
                 &[]
             };
 
-            // Memory-map leaf file (leaf_entry.path is fully resolved by branch reader)
-            let file = std::fs::File::open(&leaf_entry.path)?;
+            // Memory-map leaf file.
+            //
+            // For remote CAS stores (e.g., S3), leaf files may be downloaded lazily.
+            // If the file is missing, attempt to fetch it into the cache dir and retry.
+            let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("leaf {} has no resolved path", leaf_entry.leaf_cid),
+                )
+            })?;
+            let file = match std::fs::File::open(leaf_path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    self.store
+                        .ensure_index_leaf_cached(&leaf_entry.leaf_cid, leaf_path)?;
+                    std::fs::File::open(leaf_path)?
+                }
+                Err(e) => return Err(e),
+            };
             let leaf_mmap = unsafe { Mmap::map(&file)? };
             let header = read_leaf_header(&leaf_mmap)?;
 
@@ -718,8 +782,8 @@ impl BinaryCursor {
                 row_count: 0,
             };
 
-            // Compute leaf_id for cache key (xxh3_128 of content hash).
-            let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.content_hash.as_bytes());
+            // Compute leaf_id for cache key (xxh3_128 of CID binary).
+            let leaf_id = xxhash_rust::xxh3::xxh3_128(&leaf_entry.leaf_cid.to_bytes());
             let cache = self.store.leaflet_cache();
 
             let mut leaflets: u64 = 0;
@@ -857,26 +921,8 @@ impl BinaryCursor {
                     continue;
                 }
 
-                // Apply filter constraints (if any)
-                if let Some(f_s_id) = self.filter.s_id {
-                    if ov.s_id != f_s_id {
-                        continue;
-                    }
-                }
-                if let Some(f_p_id) = self.filter.p_id {
-                    if ov.p_id != f_p_id {
-                        continue;
-                    }
-                }
-                if let Some(f_o_kind) = self.filter.o_kind {
-                    if ov.o_kind != f_o_kind {
-                        continue;
-                    }
-                }
-                if let Some(f_o_key) = self.filter.o_key {
-                    if ov.o_key != f_o_key {
-                        continue;
-                    }
+                if !self.overlay_matches_filter(ov) {
+                    continue;
                 }
 
                 batch.s_ids.push(ov.s_id);
@@ -1024,6 +1070,9 @@ impl BinaryCursor {
                 let r1_s_u64: Vec<u64> = (0..r1.row_count)
                     .map(|i| r1.s_ids.get(i).as_u64())
                     .collect();
+                // Expand CachedRegion2 sparse lang/i to dense vecs for RowColumnSlice.
+                let lang_dense: Vec<u16> = (0..r1.row_count).map(|i| r2.lang_id(i)).collect();
+                let i_dense: Vec<i32> = (0..r1.row_count).map(|i| r2.list_index(i)).collect();
                 let input_slice = RowColumnSlice {
                     s: &r1_s_u64,
                     p: &r1.p_ids,
@@ -1031,8 +1080,8 @@ impl BinaryCursor {
                     o_keys: &r1.o_keys,
                     dt: &r2.dt_values,
                     t: &r2.t_values,
-                    lang: &r2.lang_ids,
-                    i: &r2.i_values,
+                    lang: &lang_dense,
+                    i: &i_dense,
                 };
                 let (merged_r1, merged_r2) = merge_overlay(&input_slice, local_overlay, self.order);
 
@@ -1124,13 +1173,12 @@ impl BinaryCursor {
             Some(h) => h.clone(),
             None => LeafletHeader::read_from(leaflet_bytes)?,
         };
-        let (dt_values, t_values, lang_values, i_values) =
-            decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
+        let decoded = decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
         let r2 = CachedRegion2 {
-            dt_values: dt_values.into(),
-            t_values: t_values.into(),
-            lang_ids: lang_values.into(),
-            i_values: i_values.into(),
+            dt_values: decoded.dt_values.into(),
+            t_values: decoded.t_values.into(),
+            lang: decoded.lang,
+            i_col: decoded.i_col,
         };
         if let Some(c) = cache {
             c.get_or_decode_r2(cache_key.clone(), || r2.clone());
@@ -1153,9 +1201,9 @@ impl BinaryCursor {
                 batch.o_kinds.push(r1.o_kinds[row]);
                 batch.o_keys.push(r1.o_keys[row]);
                 batch.dt_values.push(r2.dt_values[row]);
-                batch.t_values.push(r2.t_values[row]);
-                batch.lang_ids.push(r2.lang_ids[row]);
-                batch.i_values.push(r2.i_values[row]);
+                batch.t_values.push(r2.t_i64(row));
+                batch.lang_ids.push(r2.lang_id(row));
+                batch.i_values.push(r2.list_index(row));
             }
         } else {
             for &row in matches {
@@ -1180,40 +1228,7 @@ impl BinaryCursor {
         batch: &mut DecodedBatch,
     ) -> io::Result<()> {
         // Decode (or retrieve from cache) Region 1.
-        let (leaflet_header, r1) = if let Some(c) = cache {
-            if let Some(cached) = c.get_r1(cache_key) {
-                (None, cached)
-            } else {
-                let (lh, s_ids, p_ids, o_kinds, o_keys) =
-                    decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
-                let row_count = lh.row_count as usize;
-                let cached_r1 = CachedRegion1 {
-                    s_ids: SubjectIdColumn::from_wide(
-                        s_ids.into_iter().map(SubjectId::from_u64).collect(),
-                    ),
-                    p_ids: p_ids.into(),
-                    o_kinds: o_kinds.into(),
-                    o_keys: o_keys.into(),
-                    row_count,
-                };
-                c.get_or_decode_r1(cache_key.clone(), || cached_r1.clone());
-                (Some(lh), cached_r1)
-            }
-        } else {
-            let (lh, s_ids, p_ids, o_kinds, o_keys) =
-                decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
-            let row_count = lh.row_count as usize;
-            let r1 = CachedRegion1 {
-                s_ids: SubjectIdColumn::from_wide(
-                    s_ids.into_iter().map(SubjectId::from_u64).collect(),
-                ),
-                p_ids: p_ids.into(),
-                o_kinds: o_kinds.into(),
-                o_keys: o_keys.into(),
-                row_count,
-            };
-            (Some(lh), r1)
-        };
+        let (leaflet_header, r1) = self.decode_r1(leaflet_bytes, header, cache_key, cache)?;
 
         // Collect matching row indices using only Region 1 arrays.
         let matches = self.filter_r1(&r1);
@@ -1223,47 +1238,14 @@ impl BinaryCursor {
 
         // Decode (or retrieve from cache) Region 2 if needed.
         if self.need_region2 {
-            let r2 = if let Some(c) = cache {
-                if let Some(cached) = c.get_r2(cache_key) {
-                    cached
-                } else {
-                    let lh = match leaflet_header.as_ref() {
-                        Some(h) => h.clone(),
-                        None => LeafletHeader::read_from(leaflet_bytes)?,
-                    };
-                    let (dt_values, t_values, lang_values, i_values) =
-                        decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
-                    let cached_r2 = CachedRegion2 {
-                        dt_values: dt_values.into(),
-                        t_values: t_values.into(),
-                        lang_ids: lang_values.into(),
-                        i_values: i_values.into(),
-                    };
-                    c.get_or_decode_r2(cache_key.clone(), || cached_r2.clone());
-                    cached_r2
-                }
-            } else {
-                let lh = leaflet_header.as_ref().unwrap();
-                let (dt_values, t_values, lang_values, i_values) =
-                    decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)?;
-                CachedRegion2 {
-                    dt_values: dt_values.into(),
-                    t_values: t_values.into(),
-                    lang_ids: lang_values.into(),
-                    i_values: i_values.into(),
-                }
-            };
-
-            for &row in &matches {
-                batch.s_ids.push(r1.s_ids.get(row).as_u64());
-                batch.p_ids.push(r1.p_ids[row]);
-                batch.o_kinds.push(r1.o_kinds[row]);
-                batch.o_keys.push(r1.o_keys[row]);
-                batch.dt_values.push(r2.dt_values[row]);
-                batch.t_values.push(r2.t_values[row]);
-                batch.lang_ids.push(r2.lang_ids[row]);
-                batch.i_values.push(r2.i_values[row]);
-            }
+            let r2 = self.decode_r2(
+                leaflet_bytes,
+                leaflet_header.as_ref(),
+                header,
+                cache_key,
+                cache,
+            )?;
+            self.emit_matched_rows(&r1, &r2, &matches, batch);
         } else {
             for &row in &matches {
                 batch.s_ids.push(r1.s_ids.get(row).as_u64());
@@ -1310,9 +1292,9 @@ impl BinaryCursor {
                             batch.o_kinds.push(r1.o_kinds[row]);
                             batch.o_keys.push(r1.o_keys[row]);
                             batch.dt_values.push(r2.dt_values[row]);
-                            batch.t_values.push(r2.t_values[row]);
-                            batch.lang_ids.push(r2.lang_ids[row]);
-                            batch.i_values.push(r2.i_values[row]);
+                            batch.t_values.push(r2.t_i64(row));
+                            batch.lang_ids.push(r2.lang_id(row));
+                            batch.i_values.push(r2.list_index(row));
                         }
                         return Ok(());
                     }
@@ -1332,9 +1314,22 @@ impl BinaryCursor {
         // Step 2: Cache miss — decode raw R1, R2, R3 from bytes.
         let (lh, s_ids, p_ids, o_kinds, o_keys) =
             decode_leaflet_region1(leaflet_bytes, header.p_width, self.order)?;
-        let (dt_values, t_values, lang_values, i_values) =
-            decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
+        let decoded_r2 = decode_leaflet_region2(leaflet_bytes, &lh, header.dt_width)?;
         let r3_entries = decode_leaflet_region3(leaflet_bytes, &lh)?;
+
+        // Expand sparse lang/i to dense temporaries for RowColumnSlice.
+        let row_count_raw = lh.row_count as usize;
+        let lang_dense: Vec<u16> = (0..row_count_raw)
+            .map(|i| decoded_r2.lang.as_ref().map_or(0, |c| c.get(i as u16)))
+            .collect();
+        let i_dense: Vec<i32> = (0..row_count_raw)
+            .map(|i| {
+                decoded_r2
+                    .i_col
+                    .as_ref()
+                    .map_or(ListIndex::none().as_i32(), |c| c.get(i as u16))
+            })
+            .collect();
 
         // Step 3: Replay (or pass through if R3 is empty).
         let replay_input = RowColumnSlice {
@@ -1342,10 +1337,10 @@ impl BinaryCursor {
             p: &p_ids,
             o_kinds: &o_kinds,
             o_keys: &o_keys,
-            dt: &dt_values,
-            t: &t_values,
-            lang: &lang_values,
-            i: &i_values,
+            dt: &decoded_r2.dt_values,
+            t: &decoded_r2.t_values,
+            lang: &lang_dense,
+            i: &i_dense,
         };
         let (eff_r1, eff_r2) =
             match replay_leaflet(&replay_input, &r3_entries, self.to_t, self.order) {
@@ -1367,8 +1362,8 @@ impl BinaryCursor {
                     let r2 = CachedRegion2 {
                         dt_values: replayed.dt_values.into(),
                         t_values: replayed.t_values.into(),
-                        lang_ids: replayed.lang_ids.into(),
-                        i_values: replayed.i_values.into(),
+                        lang: sparse_lang_from_dense(&replayed.lang_ids),
+                        i_col: sparse_i_from_dense(&replayed.i_values),
                     };
                     (r1, r2)
                 }
@@ -1380,7 +1375,7 @@ impl BinaryCursor {
                     // since base_t. But if any row's t exceeds to_t, the leaflet
                     // WAS modified without a corresponding R3 entry — a data
                     // integrity issue that would produce incorrect time-travel results.
-                    if t_values.iter().any(|&t| t > self.to_t) {
+                    if decoded_r2.t_values.iter().any(|&t| (t as i64) > self.to_t) {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             format!(
@@ -1401,10 +1396,10 @@ impl BinaryCursor {
                         row_count,
                     };
                     let r2 = CachedRegion2 {
-                        dt_values: dt_values.into(),
-                        t_values: t_values.into(),
-                        lang_ids: lang_values.into(),
-                        i_values: i_values.into(),
+                        dt_values: decoded_r2.dt_values.into(),
+                        t_values: decoded_r2.t_values.into(),
+                        lang: decoded_r2.lang,
+                        i_col: decoded_r2.i_col,
                     };
                     (r1, r2)
                 }
@@ -1429,9 +1424,9 @@ impl BinaryCursor {
                 batch.o_kinds.push(eff_r1.o_kinds[row]);
                 batch.o_keys.push(eff_r1.o_keys[row]);
                 batch.dt_values.push(eff_r2.dt_values[row]);
-                batch.t_values.push(eff_r2.t_values[row]);
-                batch.lang_ids.push(eff_r2.lang_ids[row]);
-                batch.i_values.push(eff_r2.i_values[row]);
+                batch.t_values.push(eff_r2.t_i64(row));
+                batch.lang_ids.push(eff_r2.lang_id(row));
+                batch.i_values.push(eff_r2.list_index(row));
             }
         } else {
             for &row in &matches {
@@ -1546,7 +1541,7 @@ mod tests {
         o_kinds: Vec<u8>,
         o_keys: Vec<u64>,
         dt: Vec<u32>,
-        t: Vec<i64>,
+        t: Vec<u32>,
         lang: Vec<u16>,
         i: Vec<i32>,
     }
@@ -1563,7 +1558,7 @@ mod tests {
                     .map(|r| ObjKey::encode_i64(r.2).as_u64())
                     .collect(),
                 dt: vec![DatatypeDictId::INTEGER.as_u16() as u32; rows.len()],
-                t: rows.iter().map(|r| r.3).collect(),
+                t: rows.iter().map(|r| r.3 as u32).collect(),
                 lang: vec![0; rows.len()],
                 i: vec![ListIndex::none().as_i32(); rows.len()],
             }
@@ -1618,7 +1613,7 @@ mod tests {
         let (r1, r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 1);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1]);
-        assert_eq!(r2.t_values[0], 5); // updated t
+        assert_eq!(r2.t_i64(0), 5); // updated t
     }
 
     #[test]
@@ -1666,8 +1661,8 @@ mod tests {
         let (r1, r2) = merge_overlay(&cols.as_slice(), &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 4);
         assert_eq!(sid_col_to_u64(&r1.s_ids), &[1, 3, 4, 5]);
-        assert_eq!(r2.t_values[1], 5); // s=3 updated
-        assert_eq!(r2.t_values[2], 5); // s=4 inserted
+        assert_eq!(r2.t_i64(1), 5); // s=3 updated
+        assert_eq!(r2.t_i64(2), 5); // s=4 inserted
     }
 
     #[test]
@@ -1735,7 +1730,7 @@ mod tests {
                 DatatypeDictId::LANG_STRING.as_u16() as u32,
                 DatatypeDictId::LANG_STRING.as_u16() as u32,
             ],
-            t: &[1i64, 1],
+            t: &[1u32, 1],
             lang: &[1u16, 2], // different lang_ids
             i: &[ListIndex::none().as_i32(), ListIndex::none().as_i32()],
         };
@@ -1754,7 +1749,7 @@ mod tests {
         }];
         let (r1, r2) = merge_overlay(&cols, &overlay, RunSortOrder::Spot);
         assert_eq!(r1.row_count, 1);
-        assert_eq!(r2.lang_ids[0], 2); // lang_id=2 survives
+        assert_eq!(r2.lang_id(0), 2); // lang_id=2 survives
     }
 
     #[test]

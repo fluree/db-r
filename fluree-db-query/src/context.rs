@@ -11,7 +11,7 @@ use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{Db, NoOverlay, OverlayProvider, Sid, Tracker};
+use fluree_db_core::{Db, GraphId, NoOverlay, OverlayProvider, Sid, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_spatial::SpatialIndexProvider;
 use fluree_vocab::namespaces::{FLUREE_DB, JSON_LD, OGC_GEO, RDF, XSD};
@@ -80,7 +80,7 @@ pub struct ExecutionContext<'a> {
     /// to `range_with_overlay()`.
     pub binary_store: Option<Arc<BinaryIndexStore>>,
     /// Graph ID for binary index scans (typically 0 for default graph).
-    pub binary_g_id: u32,
+    pub binary_g_id: GraphId,
     /// Dictionary novelty layer for subject/string lookups in binary scans.
     ///
     /// When present, `DictOverlay` delegates subject/string lookups to this
@@ -535,7 +535,7 @@ impl<'a> ExecutionContext<'a> {
     ///
     /// When set, scan operators will use `BinaryScanOperator` instead of
     /// `ScanOperator` for reading from the binary columnar indexes.
-    pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>, g_id: u32) -> Self {
+    pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>, g_id: GraphId) -> Self {
         self.binary_store = Some(store);
         self.binary_g_id = g_id;
         self

@@ -5,6 +5,10 @@
 //! codes allocated, and these allocations are tracked for persistence
 //! in the commit record.
 //!
+//! For parallel import, [`SharedNamespaceAllocator`] provides thread-safe
+//! allocation with [`WorkerCache`] for lock-free per-worker lookups.
+//! [`NsAllocator`] abstracts over both single-threaded and parallel modes.
+//!
 //! ## Predefined Namespace Codes
 //!
 //! Fluree uses predefined codes for common namespaces to ensure compatibility
@@ -12,7 +16,10 @@
 
 use fluree_db_core::{Db, PrefixTrie, Sid};
 use fluree_vocab::namespaces::{BLANK_NODE, OVERFLOW, USER_START};
+use parking_lot::RwLock;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// First code available for user-defined namespaces.
 /// Re-exported from `fluree_vocab::namespaces::USER_START`.
@@ -28,6 +35,10 @@ pub const BLANK_NODE_ID_PREFIX: &str = "fdb";
 fn default_namespaces() -> HashMap<u16, String> {
     fluree_db_core::default_namespace_codes()
 }
+
+// ============================================================================
+// NamespaceRegistry (single-threaded, used by serial import + transact paths)
+// ============================================================================
 
 /// Registry for namespace prefix codes
 ///
@@ -188,6 +199,11 @@ impl NamespaceRegistry {
         self.codes.len()
     }
 
+    /// Returns the set of all registered namespace codes (numeric values).
+    pub fn all_codes(&self) -> FxHashSet<u16> {
+        self.codes.values().copied().collect()
+    }
+
     /// Take the delta (new allocations) and reset it
     ///
     /// Returns the map of new allocations (code → prefix) for
@@ -238,10 +254,10 @@ impl NamespaceRegistry {
 
     /// Register a namespace code if not already present.
     ///
-    /// Used to merge allocations from a parallel parser clone back into the
-    /// main registry. If the prefix is already registered (under any code),
-    /// this is a no-op. OVERFLOW codes are ignored since they are pure
-    /// sentinels and should never be registered.
+    /// Used to merge allocations from the shared allocator back into the
+    /// serial registry (e.g., after commit-order publication). If the prefix
+    /// is already registered (under any code), this is a no-op. OVERFLOW codes
+    /// are ignored since they are pure sentinels and should never be registered.
     pub fn ensure_code(&mut self, code: u16, prefix: &str) {
         if code >= OVERFLOW {
             return; // OVERFLOW is a sentinel, never register it
@@ -278,6 +294,308 @@ impl Default for NamespaceRegistry {
         Self::new()
     }
 }
+
+// ============================================================================
+// SharedNamespaceAllocator (thread-safe, for parallel import)
+// ============================================================================
+
+/// Internal state for the shared allocator, protected by RwLock.
+struct SharedAllocInner {
+    codes: HashMap<String, u16>,
+    names: HashMap<u16, String>,
+    next_code: u16,
+    trie: PrefixTrie,
+}
+
+/// Thread-safe namespace allocator shared across parallel parse workers.
+///
+/// Allocation is concurrent via `RwLock`. Publication (which codes go into
+/// which commit's `namespace_delta`) is handled separately in commit-order
+/// by the serial finalizer.
+///
+/// ## Invariant
+///
+/// For each finalized commit at t, every `ns_code` referenced by its ops
+/// must be resolvable from the cumulative `namespace_delta`s up to and
+/// including commit t. This is enforced by the commit-order publication
+/// logic in the import orchestrator, NOT by this allocator.
+pub struct SharedNamespaceAllocator {
+    inner: RwLock<SharedAllocInner>,
+}
+
+impl SharedNamespaceAllocator {
+    /// Create a shared allocator seeded from an existing `NamespaceRegistry`.
+    ///
+    /// Used after chunk 0 has been parsed serially to establish the initial
+    /// namespace mappings.
+    pub fn from_registry(reg: &NamespaceRegistry) -> Self {
+        Self {
+            inner: RwLock::new(SharedAllocInner {
+                codes: reg.codes.clone(),
+                names: reg.names.clone(),
+                next_code: reg.next_code,
+                trie: reg.trie.clone(),
+            }),
+        }
+    }
+
+    /// Thread-safe get-or-allocate with read-lock fast path.
+    ///
+    /// Returns `OVERFLOW` sentinel when codes are exhausted (never registers it).
+    pub fn get_or_allocate(&self, prefix: &str) -> u16 {
+        // Fast path: read lock
+        {
+            let inner = self.inner.read();
+            if let Some(&code) = inner.codes.get(prefix) {
+                return code;
+            }
+        }
+        // Slow path: write lock with double-check
+        let mut inner = self.inner.write();
+        if let Some(&code) = inner.codes.get(prefix) {
+            return code;
+        }
+        if inner.next_code >= OVERFLOW {
+            return OVERFLOW;
+        }
+        let code = inner.next_code;
+        inner.next_code += 1;
+        inner.codes.insert(prefix.to_string(), code);
+        inner.names.insert(code, prefix.to_string());
+        if !prefix.is_empty() {
+            inner.trie.insert(prefix, code);
+        }
+        code
+    }
+
+    /// Thread-safe SID resolution using the internal trie.
+    ///
+    /// Same logic as `NamespaceRegistry::sid_for_iri` but uses the RwLock.
+    pub fn sid_for_iri(&self, iri: &str) -> Sid {
+        // Trie lookup under read lock
+        {
+            let inner = self.inner.read();
+            if let Some((code, prefix_len)) = inner.trie.longest_match(iri) {
+                return Sid::new(code, &iri[prefix_len..]);
+            }
+        }
+        // No match — split heuristic + allocate
+        let split_pos = iri.rfind(['/', '#']);
+        let (prefix, local) = match split_pos {
+            Some(pos) => (&iri[..=pos], &iri[pos + 1..]),
+            None => ("", iri),
+        };
+        let code = self.get_or_allocate(prefix);
+        if code == OVERFLOW {
+            Sid::new(OVERFLOW, iri)
+        } else {
+            Sid::new(code, local)
+        }
+    }
+
+    /// Create a Sid for a blank node (no lock needed — BLANK_NODE is predefined).
+    pub fn blank_node_sid(&self, unique_id: &str) -> Sid {
+        let local = format!("{}-{}", BLANK_NODE_ID_PREFIX, unique_id);
+        Sid::new(BLANK_NODE, local)
+    }
+
+    /// Batch lookup of code→prefix mappings for publication.
+    ///
+    /// Returns mappings for all requested codes. Debug-asserts that every
+    /// requested code is found (a missing code indicates a bug). Never
+    /// returns OVERFLOW.
+    pub fn lookup_codes(&self, codes: &FxHashSet<u16>) -> HashMap<u16, String> {
+        let inner = self.inner.read();
+        let mut result = HashMap::with_capacity(codes.len());
+        for &code in codes {
+            debug_assert!(code < OVERFLOW, "OVERFLOW must never be published");
+            if let Some(prefix) = inner.names.get(&code) {
+                result.insert(code, prefix.clone());
+            } else {
+                debug_assert!(false, "code {} not found in shared allocator", code);
+                tracing::warn!(code, "namespace code not found in shared allocator");
+            }
+        }
+        result
+    }
+
+    /// Look up the prefix string for a namespace code.
+    ///
+    /// Returns `None` if the code is not registered (should not happen for
+    /// codes returned by `get_or_allocate` or `sid_for_iri`).
+    pub fn get_prefix(&self, code: u16) -> Option<String> {
+        self.inner.read().names.get(&code).cloned()
+    }
+
+    /// Take a snapshot of the current state for worker initialization.
+    ///
+    /// Returns `(codes, trie, next_code)`. Workers use the trie for local
+    /// lookups and `next_code` to identify which codes were allocated after
+    /// the snapshot.
+    pub fn snapshot(&self) -> (FxHashMap<String, u16>, PrefixTrie, u16) {
+        let inner = self.inner.read();
+        let codes: FxHashMap<String, u16> =
+            inner.codes.iter().map(|(k, &v)| (k.clone(), v)).collect();
+        (codes, inner.trie.clone(), inner.next_code)
+    }
+}
+
+// ============================================================================
+// WorkerCache (per-worker, lock-free lookups with local trie snapshot)
+// ============================================================================
+
+/// Per-worker namespace cache with a local trie snapshot.
+///
+/// Created at worker spawn time from a snapshot of [`SharedNamespaceAllocator`].
+/// All `sid_for_iri()` calls use the local trie (no lock). Only genuinely
+/// new prefix allocations touch the shared allocator, and the local trie
+/// is updated immediately afterward.
+///
+/// Tracks `new_codes`: codes first observed by this worker that were not in
+/// the initial snapshot (`code >= snapshot_next_code`). This includes codes
+/// allocated by OTHER workers if this worker uses them — because if this
+/// chunk's ops reference a code, the commit must publish it if not already
+/// published by a prior commit.
+pub struct WorkerCache {
+    alloc: Arc<SharedNamespaceAllocator>,
+    /// Local copy of prefix→code map (for exact lookups in get_or_allocate).
+    local_codes: FxHashMap<String, u16>,
+    /// Local copy of the trie (for longest-prefix match).
+    local_trie: PrefixTrie,
+    /// The allocator's `next_code` at snapshot time. Any code >= this value
+    /// was allocated after the snapshot and might need publishing.
+    snapshot_next_code: u16,
+    /// Codes first observed after snapshot (code >= snapshot_next_code, < OVERFLOW).
+    new_codes: FxHashSet<u16>,
+}
+
+impl WorkerCache {
+    /// Create a new worker cache from a snapshot of the shared allocator.
+    pub fn new(alloc: Arc<SharedNamespaceAllocator>) -> Self {
+        let (local_codes, local_trie, snapshot_next_code) = alloc.snapshot();
+        Self {
+            alloc,
+            local_codes,
+            local_trie,
+            snapshot_next_code,
+            new_codes: FxHashSet::default(),
+        }
+    }
+
+    /// Resolve an IRI to a SID using the local trie (no lock on hot path).
+    ///
+    /// Falls back to the shared allocator only when a genuinely new prefix
+    /// must be allocated.
+    pub fn sid_for_iri(&mut self, iri: &str) -> Sid {
+        // Local trie lookup — no lock
+        if let Some((code, prefix_len)) = self.local_trie.longest_match(iri) {
+            self.track_code(code);
+            return Sid::new(code, &iri[prefix_len..]);
+        }
+
+        // No local match — split heuristic + allocate via shared allocator
+        let split_pos = iri.rfind(['/', '#']);
+        let (prefix, local) = match split_pos {
+            Some(pos) => (&iri[..=pos], &iri[pos + 1..]),
+            None => ("", iri),
+        };
+
+        let code = self.get_or_allocate(prefix);
+        if code == OVERFLOW {
+            Sid::new(OVERFLOW, iri)
+        } else {
+            Sid::new(code, local)
+        }
+    }
+
+    /// Get or allocate a namespace code. Checks local cache first (no lock).
+    pub fn get_or_allocate(&mut self, prefix: &str) -> u16 {
+        // Local fast path
+        if let Some(&code) = self.local_codes.get(prefix) {
+            self.track_code(code);
+            return code;
+        }
+
+        // Shared allocator (may lock)
+        let code = self.alloc.get_or_allocate(prefix);
+
+        // Update local state
+        if code < OVERFLOW {
+            self.local_codes.insert(prefix.to_string(), code);
+            if !prefix.is_empty() {
+                self.local_trie.insert(prefix, code);
+            }
+            self.track_code(code);
+        }
+
+        code
+    }
+
+    /// Create a Sid for a blank node (no lock needed).
+    pub fn blank_node_sid(&self, unique_id: &str) -> Sid {
+        let local = format!("{}-{}", BLANK_NODE_ID_PREFIX, unique_id);
+        Sid::new(BLANK_NODE, local)
+    }
+
+    /// Consume the cache and return the set of codes first observed after
+    /// the snapshot. The serial finalizer uses these for commit-order publication.
+    pub fn into_new_codes(self) -> FxHashSet<u16> {
+        self.new_codes
+    }
+
+    /// Track a code as potentially needing publication if it was allocated
+    /// after our snapshot.
+    #[inline]
+    fn track_code(&mut self, code: u16) {
+        if code >= self.snapshot_next_code && code < OVERFLOW {
+            self.new_codes.insert(code);
+        }
+    }
+}
+
+// ============================================================================
+// NsAllocator (enum wrapper abstracting over single-thread / parallel modes)
+// ============================================================================
+
+/// Abstraction over namespace allocation for both serial and parallel paths.
+///
+/// - `Exclusive`: wraps `&mut NamespaceRegistry` for serial paths (transact,
+///   chunk 0, TriG).
+/// - `Cached`: wraps `&mut WorkerCache` for parallel import workers.
+pub enum NsAllocator<'a> {
+    Exclusive(&'a mut NamespaceRegistry),
+    Cached(&'a mut WorkerCache),
+}
+
+impl NsAllocator<'_> {
+    /// Resolve an IRI to a SID.
+    pub fn sid_for_iri(&mut self, iri: &str) -> Sid {
+        match self {
+            NsAllocator::Exclusive(reg) => reg.sid_for_iri(iri),
+            NsAllocator::Cached(cache) => cache.sid_for_iri(iri),
+        }
+    }
+
+    /// Get or allocate a namespace code for a prefix.
+    pub fn get_or_allocate(&mut self, prefix: &str) -> u16 {
+        match self {
+            NsAllocator::Exclusive(reg) => reg.get_or_allocate(prefix),
+            NsAllocator::Cached(cache) => cache.get_or_allocate(prefix),
+        }
+    }
+
+    /// Create a Sid for a blank node.
+    pub fn blank_node_sid(&self, unique_id: &str) -> Sid {
+        match self {
+            NsAllocator::Exclusive(reg) => reg.blank_node_sid(unique_id),
+            NsAllocator::Cached(cache) => cache.blank_node_sid(unique_id),
+        }
+    }
+}
+
+// ============================================================================
+// Free functions
+// ============================================================================
 
 /// Generate a unique blank node ID using ULID
 ///
@@ -511,5 +829,267 @@ mod tests {
         // Should be valid ULIDs (parseable)
         assert!(ulid::Ulid::from_string(&id1).is_ok());
         assert!(ulid::Ulid::from_string(&id2).is_ok());
+    }
+
+    #[test]
+    fn test_all_codes() {
+        let mut registry = NamespaceRegistry::new();
+        let initial_count = registry.all_codes().len();
+
+        registry.get_or_allocate("http://example.org/");
+        let codes = registry.all_codes();
+        assert_eq!(codes.len(), initial_count + 1);
+    }
+
+    // ========================================================================
+    // SharedNamespaceAllocator tests
+    // ========================================================================
+
+    #[test]
+    fn test_shared_alloc_from_registry() {
+        let mut reg = NamespaceRegistry::new();
+        reg.get_or_allocate("http://example.org/");
+        let code = reg.get_code("http://example.org/").unwrap();
+
+        let alloc = SharedNamespaceAllocator::from_registry(&reg);
+        // Should find existing prefix
+        assert_eq!(alloc.get_or_allocate("http://example.org/"), code);
+        // Should allocate new prefix with next code
+        let new_code = alloc.get_or_allocate("http://new.org/");
+        assert_ne!(new_code, code);
+        assert!(new_code >= USER_NS_START);
+    }
+
+    #[test]
+    fn test_shared_alloc_concurrent_no_collisions() {
+        let reg = NamespaceRegistry::new();
+        let alloc = Arc::new(SharedNamespaceAllocator::from_registry(&reg));
+
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let alloc = Arc::clone(&alloc);
+                std::thread::spawn(move || {
+                    let prefix = format!("http://thread-{}.org/", i);
+                    alloc.get_or_allocate(&prefix)
+                })
+            })
+            .collect();
+
+        let codes: Vec<u16> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        // All codes should be unique
+        let unique: FxHashSet<u16> = codes.iter().copied().collect();
+        assert_eq!(unique.len(), 8);
+    }
+
+    #[test]
+    fn test_shared_alloc_same_prefix_same_code() {
+        let reg = NamespaceRegistry::new();
+        let alloc = Arc::new(SharedNamespaceAllocator::from_registry(&reg));
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let alloc = Arc::clone(&alloc);
+                std::thread::spawn(move || alloc.get_or_allocate("http://shared-prefix.org/"))
+            })
+            .collect();
+
+        let codes: Vec<u16> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        // All should get the same code
+        assert!(codes.iter().all(|&c| c == codes[0]));
+    }
+
+    #[test]
+    fn test_shared_alloc_sid_for_iri() {
+        let mut reg = NamespaceRegistry::new();
+        reg.get_or_allocate("http://example.org/");
+        let alloc = SharedNamespaceAllocator::from_registry(&reg);
+
+        let sid = alloc.sid_for_iri("http://example.org/Person");
+        assert_eq!(sid.name.as_ref(), "Person");
+    }
+
+    #[test]
+    fn test_shared_alloc_lookup_codes() {
+        let reg = NamespaceRegistry::new();
+        let alloc = SharedNamespaceAllocator::from_registry(&reg);
+
+        let code1 = alloc.get_or_allocate("http://a.org/");
+        let code2 = alloc.get_or_allocate("http://b.org/");
+
+        let mut query = FxHashSet::default();
+        query.insert(code1);
+        query.insert(code2);
+
+        let result = alloc.lookup_codes(&query);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[&code1], "http://a.org/");
+        assert_eq!(result[&code2], "http://b.org/");
+    }
+
+    // ========================================================================
+    // WorkerCache tests
+    // ========================================================================
+
+    #[test]
+    fn test_worker_cache_local_trie() {
+        let mut reg = NamespaceRegistry::new();
+        let code = reg.get_or_allocate("http://example.org/");
+        let alloc = Arc::new(SharedNamespaceAllocator::from_registry(&reg));
+
+        let mut cache = WorkerCache::new(Arc::clone(&alloc));
+
+        // Should resolve from local trie (no lock)
+        let sid = cache.sid_for_iri("http://example.org/Person");
+        assert_eq!(sid.namespace_code, code);
+        assert_eq!(sid.name.as_ref(), "Person");
+
+        // Code was in snapshot, so not in new_codes
+        assert!(cache.new_codes.is_empty());
+    }
+
+    #[test]
+    fn test_worker_cache_new_alloc_tracked() {
+        let reg = NamespaceRegistry::new();
+        let alloc = Arc::new(SharedNamespaceAllocator::from_registry(&reg));
+
+        let mut cache = WorkerCache::new(Arc::clone(&alloc));
+
+        // Allocate a new prefix (not in snapshot)
+        let code = cache.get_or_allocate("http://new-domain.org/");
+        assert!(code >= USER_NS_START);
+
+        // Should be in new_codes
+        assert!(cache.new_codes.contains(&code));
+
+        // Subsequent lookups should use local trie
+        let sid = cache.sid_for_iri("http://new-domain.org/Thing");
+        assert_eq!(sid.namespace_code, code);
+        assert_eq!(sid.name.as_ref(), "Thing");
+    }
+
+    #[test]
+    fn test_worker_cache_cross_worker_code_tracked() {
+        let reg = NamespaceRegistry::new();
+        let alloc = Arc::new(SharedNamespaceAllocator::from_registry(&reg));
+
+        // Simulate: worker B allocates a code AFTER worker A takes its snapshot
+        let mut cache_a = WorkerCache::new(Arc::clone(&alloc));
+
+        // Another "worker" allocates a prefix directly on the shared allocator
+        let code_from_b = alloc.get_or_allocate("http://domain-b.org/");
+
+        // Worker A encounters the same prefix — gets the same code from shared allocator
+        let code_from_a = cache_a.get_or_allocate("http://domain-b.org/");
+        assert_eq!(code_from_a, code_from_b);
+
+        // Worker A's new_codes should include it (code >= snapshot_next_code)
+        assert!(cache_a.new_codes.contains(&code_from_a));
+    }
+
+    #[test]
+    fn test_worker_cache_overflow_not_tracked() {
+        // This test would require exhausting u16 codes which is impractical.
+        // Instead, verify the track_code logic directly.
+        let reg = NamespaceRegistry::new();
+        let alloc = Arc::new(SharedNamespaceAllocator::from_registry(&reg));
+        let mut cache = WorkerCache::new(Arc::clone(&alloc));
+
+        // OVERFLOW should never be tracked
+        cache.track_code(OVERFLOW);
+        assert!(cache.new_codes.is_empty());
+    }
+
+    #[test]
+    fn test_commit_order_publication() {
+        // Simulate the full publication workflow:
+        // chunk 0 (serial) → shared allocator → parallel workers → serial publication
+
+        // Step 1: chunk 0 establishes "http://base.org/"
+        let mut reg = NamespaceRegistry::new();
+        reg.get_or_allocate("http://base.org/");
+        let published_codes: FxHashSet<u16> = reg.all_codes();
+
+        let alloc = Arc::new(SharedNamespaceAllocator::from_registry(&reg));
+
+        // Step 2: Two workers take snapshots
+        let mut cache_a = WorkerCache::new(Arc::clone(&alloc));
+        let mut cache_b = WorkerCache::new(Arc::clone(&alloc));
+
+        // Worker B allocates "http://new-b.org/"
+        let code_b = cache_b.get_or_allocate("http://new-b.org/");
+
+        // Worker A uses the SAME prefix (after B allocated it)
+        let code_a = cache_a.get_or_allocate("http://new-b.org/");
+        assert_eq!(code_a, code_b);
+
+        // Worker A also uses a predefined prefix (already published)
+        cache_a.sid_for_iri("http://www.w3.org/2001/XMLSchema#string");
+
+        let new_codes_a = cache_a.into_new_codes();
+        let new_codes_b = cache_b.into_new_codes();
+
+        // Both should have code_b in their new_codes
+        assert!(new_codes_a.contains(&code_b));
+        assert!(new_codes_b.contains(&code_b));
+
+        // Step 3: Serial publication — commit A first
+        let mut published = published_codes;
+
+        // Commit A's delta
+        let unpublished_a: FxHashSet<u16> = new_codes_a
+            .iter()
+            .copied()
+            .filter(|c| *c < OVERFLOW && !published.contains(c))
+            .collect();
+        let delta_a = alloc.lookup_codes(&unpublished_a);
+        published.extend(&unpublished_a);
+
+        // Commit A publishes code_b
+        assert!(delta_a.contains_key(&code_b));
+
+        // Commit B's delta — code_b already published
+        let unpublished_b: FxHashSet<u16> = new_codes_b
+            .iter()
+            .copied()
+            .filter(|c| *c < OVERFLOW && !published.contains(c))
+            .collect();
+
+        // Nothing new to publish for B
+        assert!(unpublished_b.is_empty());
+    }
+
+    #[test]
+    fn test_publication_is_minimal() {
+        // A code published in commit t must not re-appear in t+1's delta.
+        let mut reg = NamespaceRegistry::new();
+        reg.get_or_allocate("http://base.org/");
+        let alloc = Arc::new(SharedNamespaceAllocator::from_registry(&reg));
+
+        let mut cache1 = WorkerCache::new(Arc::clone(&alloc));
+        let mut cache2 = WorkerCache::new(Arc::clone(&alloc));
+
+        // Both workers use the same new prefix
+        let code = cache1.get_or_allocate("http://shared-new.org/");
+        cache2.get_or_allocate("http://shared-new.org/");
+
+        let new1 = cache1.into_new_codes();
+        let new2 = cache2.into_new_codes();
+
+        let mut published: FxHashSet<u16> = reg.all_codes();
+
+        // Publish for chunk 1
+        let unpub1: FxHashSet<u16> = new1
+            .into_iter()
+            .filter(|c| *c < OVERFLOW && !published.contains(c))
+            .collect();
+        assert!(unpub1.contains(&code));
+        published.extend(&unpub1);
+
+        // Publish for chunk 2 — code should NOT be re-published
+        let unpub2: FxHashSet<u16> = new2
+            .into_iter()
+            .filter(|c| *c < OVERFLOW && !published.contains(c))
+            .collect();
+        assert!(!unpub2.contains(&code));
     }
 }

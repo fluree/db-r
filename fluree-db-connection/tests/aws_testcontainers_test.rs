@@ -600,11 +600,10 @@ async fn nameservice_config_publisher() {
     assert!(config.is_unborn());
 
     // push_config: set default context
+    let ctx_cid = ContentId::new(ContentKind::LedgerConfig, b"default-context");
     let new_config = ConfigValue::new(
         1,
-        Some(ConfigPayload::with_default_context(
-            "fluree:context/default",
-        )),
+        Some(ConfigPayload::with_default_context(ctx_cid.clone())),
     );
     let result = ns
         .push_config(alias, Some(&config), &new_config)
@@ -615,8 +614,8 @@ async fn nameservice_config_publisher() {
     let config2 = ns.get_config(alias).await.unwrap().unwrap();
     assert_eq!(config2.v, 1);
     assert_eq!(
-        config2.payload.as_ref().unwrap().default_context.as_deref(),
-        Some("fluree:context/default")
+        config2.payload.as_ref().unwrap().default_context,
+        Some(ctx_cid)
     );
 
     // push_config with stale expected → Conflict

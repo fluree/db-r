@@ -52,7 +52,7 @@ pub struct CommitOpts {
     ///
     /// Stored in the commit envelope for replay-safe persistence. The indexer
     /// uses this to resolve graph IRIs to dictionary IDs when building the index.
-    pub graph_delta: std::collections::HashMap<u32, String>,
+    pub graph_delta: std::collections::HashMap<u16, String>,
 }
 
 impl std::fmt::Debug for CommitOpts {
@@ -112,7 +112,7 @@ impl CommitOpts {
     }
 
     /// Set the named graph delta (g_id -> IRI mappings)
-    pub fn with_graph_delta(mut self, graph_delta: std::collections::HashMap<u32, String>) -> Self {
+    pub fn with_graph_delta(mut self, graph_delta: std::collections::HashMap<u16, String>) -> Self {
         self.graph_delta = graph_delta;
         self
     }
@@ -374,6 +374,7 @@ where
         head_index_id: base.head_index_id,
         ns_record: base.ns_record,
         binary_store: base.binary_store,
+        default_context: base.default_context,
         spatial_indexes: base.spatial_indexes,
     };
 

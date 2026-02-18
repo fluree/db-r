@@ -73,7 +73,8 @@ where
         ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
-        let (vars, parsed) = parse_jsonld_query(query_json, &ledger.db)?;
+        let (vars, parsed) =
+            parse_jsonld_query(query_json, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let r2rml_provider = crate::r2rml_provider!(self);
@@ -105,7 +106,8 @@ where
         ledger: &LedgerState,
         sparql: &str,
     ) -> Result<QueryResult> {
-        let (vars, parsed) = parse_sparql_to_ir(sparql, &ledger.db)?;
+        let (vars, parsed) =
+            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let r2rml_provider = crate::r2rml_provider!(self);

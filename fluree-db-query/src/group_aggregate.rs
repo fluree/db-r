@@ -1100,8 +1100,8 @@ mod tests {
         }
 
         // --- Run records (SPOT only) ---
-        let g_id = 0u32;
-        let t = 1i64;
+        let g_id: u16 = 0;
+        let t: u32 = 1;
         let records = vec![
             RunRecord::new(
                 g_id,
@@ -1142,7 +1142,18 @@ mod tests {
         .unwrap();
 
         // Build SPOT index + load store.
-        build_all_indexes(&run_dir, &index_dir, &[RunSortOrder::Spot], 64, 2, 0).unwrap();
+        build_all_indexes(
+            &run_dir,
+            &index_dir,
+            &[RunSortOrder::Spot],
+            64,
+            2,
+            0,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
         let store = Arc::new(BinaryIndexStore::load(&run_dir, &index_dir).unwrap());
 
         // --- Build GroupAggregateOperator over encoded subject IDs ---

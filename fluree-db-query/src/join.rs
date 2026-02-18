@@ -16,7 +16,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::{ObjectBounds, Sid, BATCHED_JOIN_SIZE};
+use fluree_db_core::{GraphId, ObjectBounds, Sid, BATCHED_JOIN_SIZE};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -913,12 +913,11 @@ impl NestedLoopJoinOperator {
     /// predicate partition even when subjects fall into a narrow range.
     fn find_psot_leaf_range(
         branch: &fluree_db_indexer::run_index::branch::BranchManifest,
-        g_id: u32,
+        g_id: GraphId,
         p_id: u32,
         min_s_id: u64,
         max_s_id: u64,
     ) -> std::ops::Range<usize> {
-        use fluree_db_core::ListIndex;
         use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord};
 
         let min_key = RunRecord {
@@ -929,9 +928,9 @@ impl NestedLoopJoinOperator {
             o_kind: 0,
             op: 0,
             o_key: 0,
-            t: i64::MIN,
+            t: 0,
             lang_id: 0,
-            i: ListIndex::none().as_i32(),
+            i: 0,
         };
         let max_key = RunRecord {
             g_id,
@@ -941,9 +940,9 @@ impl NestedLoopJoinOperator {
             o_kind: u8::MAX,
             op: u8::MAX,
             o_key: u64::MAX,
-            t: i64::MAX,
+            t: u32::MAX,
             lang_id: u16::MAX,
-            i: i32::MAX,
+            i: u32::MAX,
         };
         branch.find_leaves_in_range(&min_key, &max_key, cmp_psot)
     }
@@ -965,6 +964,7 @@ impl NestedLoopJoinOperator {
         s_id_to_accum: &HashMap<u64, Vec<usize>>,
         scatter: &mut [Vec<Vec<Binding>>],
     ) -> Result<()> {
+        use fluree_db_core::ListIndex;
         use fluree_db_indexer::run_index::leaf::read_leaf_header;
         use fluree_db_indexer::run_index::leaflet::{
             decode_leaflet_region1, decode_leaflet_region2, LeafletHeader,
@@ -1013,7 +1013,10 @@ impl NestedLoopJoinOperator {
         for leaf_idx in leaf_range {
             let leaf_entry = &branch.leaves[leaf_idx];
             let t_open = Instant::now();
-            let file = std::fs::File::open(&leaf_entry.path)
+            let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
+                QueryError::Internal(format!("leaf {} has no resolved path", leaf_entry.leaf_cid))
+            })?;
+            let file = std::fs::File::open(leaf_path)
                 .map_err(|e| QueryError::Internal(format!("open leaf: {}", e)))?;
             let leaf_mmap = unsafe { Mmap::map(&file) }
                 .map_err(|e| QueryError::Internal(format!("mmap leaf: {}", e)))?;
@@ -1023,7 +1026,7 @@ impl NestedLoopJoinOperator {
             let header = read_leaf_header(&leaf_mmap)
                 .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
             us_read_leaf_header += t_hdr.elapsed().as_micros() as u64;
-            let leaf_id = xxh3_128(leaf_entry.content_hash.as_bytes());
+            let leaf_id = xxh3_128(&leaf_entry.leaf_cid.to_bytes());
 
             for (leaflet_idx, dir_entry) in header.leaflet_dir.iter().enumerate() {
                 leaflets_scanned += 1;
@@ -1189,15 +1192,10 @@ impl NestedLoopJoinOperator {
                 matched_rows += matches.len() as u64;
 
                 // Need Region 2 for correct literal bindings (dt/lang/i/t)
-                let (dt_values, t_values, lang_ids, i_values) = if let Some(c) = cache {
+                let r2 = if let Some(c) = cache {
                     if let Some(cached) = c.get_r2(&cache_key) {
                         r2_cache_hits += 1;
-                        (
-                            cached.dt_values,
-                            cached.t_values,
-                            cached.lang_ids,
-                            cached.i_values,
-                        )
+                        cached
                     } else {
                         r2_cache_misses += 1;
                         region2_decodes += 1;
@@ -1215,23 +1213,17 @@ impl NestedLoopJoinOperator {
                             }
                         };
                         let t_r2 = Instant::now();
-                        let (dt_values, t_values, lang_ids, i_values) =
-                            decode_leaflet_region2(leaflet_bytes, lh, header.dt_width).map_err(
-                                |e| QueryError::Internal(format!("decode region2: {}", e)),
-                            )?;
+                        let decoded = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                            .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
                         us_decode_r2 += t_r2.elapsed().as_micros() as u64;
                         let cached_r2 = CachedRegion2 {
-                            dt_values: StdArc::from(dt_values.into_boxed_slice()),
-                            t_values: StdArc::from(t_values.into_boxed_slice()),
-                            lang_ids: StdArc::from(lang_ids.into_boxed_slice()),
-                            i_values: StdArc::from(i_values.into_boxed_slice()),
+                            dt_values: StdArc::from(decoded.dt_values.into_boxed_slice()),
+                            t_values: StdArc::from(decoded.t_values.into_boxed_slice()),
+                            lang: decoded.lang,
+                            i_col: decoded.i_col,
                         };
-                        let dt_values = cached_r2.dt_values.clone();
-                        let t_values = cached_r2.t_values.clone();
-                        let lang_ids = cached_r2.lang_ids.clone();
-                        let i_values = cached_r2.i_values.clone();
-                        c.get_or_decode_r2(cache_key.clone(), || cached_r2);
-                        (dt_values, t_values, lang_ids, i_values)
+                        c.get_or_decode_r2(cache_key.clone(), || cached_r2.clone());
+                        cached_r2
                     }
                 } else {
                     region2_decodes += 1;
@@ -1246,23 +1238,22 @@ impl NestedLoopJoinOperator {
                         }
                     };
                     let t_r2 = Instant::now();
-                    let (dt_values, t_values, lang_ids, i_values) =
-                        decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
-                            .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
+                    let decoded = decode_leaflet_region2(leaflet_bytes, lh, header.dt_width)
+                        .map_err(|e| QueryError::Internal(format!("decode region2: {}", e)))?;
                     us_decode_r2 += t_r2.elapsed().as_micros() as u64;
-                    (
-                        StdArc::from(dt_values.into_boxed_slice()),
-                        StdArc::from(t_values.into_boxed_slice()),
-                        StdArc::from(lang_ids.into_boxed_slice()),
-                        StdArc::from(i_values.into_boxed_slice()),
-                    )
+                    CachedRegion2 {
+                        dt_values: StdArc::from(decoded.dt_values.into_boxed_slice()),
+                        t_values: StdArc::from(decoded.t_values.into_boxed_slice()),
+                        lang: decoded.lang,
+                        i_col: decoded.i_col,
+                    }
                 };
 
                 let t_emit = Instant::now();
                 for (row, s_id) in matches {
                     // Late materialization: do NOT call decode_value here.
                     // Emit EncodedSid for refs, EncodedLit for literals.
-                    let t = t_values[row];
+                    let t = r2.t_values[row] as i64;
                     let obj_binding = if o_kinds[row] == ObjKind::REF_ID.as_u8() {
                         // Object is a reference; emit EncodedSid for late materialization.
                         Binding::EncodedSid { s_id: o_keys[row] }
@@ -1271,9 +1262,12 @@ impl NestedLoopJoinOperator {
                             o_kind: o_kinds[row],
                             o_key: o_keys[row],
                             p_id: p_ids[row],
-                            dt_id: dt_values[row] as u16,
-                            lang_id: lang_ids[row],
-                            i_val: i_values[row],
+                            dt_id: r2.dt_values[row] as u16,
+                            lang_id: r2.lang.as_ref().map_or(0, |c| c.get(row as u16)),
+                            i_val: r2
+                                .i_col
+                                .as_ref()
+                                .map_or(ListIndex::none().as_i32(), |c| c.get(row as u16)),
                             t,
                         }
                     };
@@ -1946,8 +1940,8 @@ mod tests {
         // score1 hasScore 0.5 ; score1 refersInstance concept1
         // score2 hasScore 0.3 ; score2 refersInstance concept2
         // Filter (>0.4) should keep only score1 → concept1.
-        let g_id = 0u32;
-        let t = 1i64;
+        let g_id: u16 = 0;
+        let t: u32 = 1;
         let records = vec![
             // score1 hasScore 0.5
             RunRecord::new(
@@ -2071,6 +2065,9 @@ mod tests {
             64, // leaflet_rows
             2,  // leaflets_per_leaf
             0,  // zstd_level
+            None,
+            false,
+            false,
         )
         .unwrap();
 

@@ -70,6 +70,8 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# Used for fast xxh3_128 hashing in streaming dictionary merge.
+xxhash-rust.workspace = true
 # Base64 for encryption key decoding
 base64 = "0.22"
 hex.workspace = true

@@ -8,9 +8,10 @@
 //! maintains the Region 3 operation log in reverse chronological order.
 
 use super::leaflet::Region3Entry;
-use super::run_record::{FactKey, RunRecord, RunSortOrder};
-use super::types::{DecodedRow, RowColumnOutput};
+use super::leaflet_cache::{SparseIColumn, SparseU16Column};
+use super::run_record::{FactKey, RunRecord, RunSortOrder, LIST_INDEX_NONE};
 use fluree_db_core::subject_id::SubjectIdColumn;
+use fluree_db_core::ListIndex;
 use std::cmp::Ordering;
 
 // ============================================================================
@@ -25,9 +26,9 @@ pub struct MergeInput<'a> {
     pub r1_o_kinds: &'a [u8],
     pub r1_o_keys: &'a [u64],
     pub r2_dt: &'a [u32],
-    pub r2_t: &'a [i64],
-    pub r2_lang_ids: &'a [u16],
-    pub r2_i: &'a [i32],
+    pub r2_t: &'a [u32],
+    pub r2_lang: Option<&'a SparseU16Column>,
+    pub r2_i: Option<&'a SparseIColumn>,
     // Existing Region 3 entries (carry forward, reverse chronological)
     pub existing_r3: &'a [Region3Entry],
     // Sorted novelty operations to apply (must be sorted by `order`)
@@ -44,12 +45,91 @@ pub struct MergeOutput {
     pub o_kinds: Vec<u8>,
     pub o_keys: Vec<u64>,
     pub dt: Vec<u32>,
-    pub t: Vec<i64>,
-    pub lang_ids: Vec<u16>,
+    pub t: Vec<u32>,
+    pub lang: Vec<u16>,
     pub i_vals: Vec<i32>,
     // New Region 3 entries (new ops ++ existing, reverse chronological)
     pub region3: Vec<Region3Entry>,
     pub row_count: usize,
+}
+
+struct OutputCols {
+    s: Vec<u64>,
+    p: Vec<u32>,
+    o_kind: Vec<u8>,
+    o_key: Vec<u64>,
+    dt: Vec<u32>,
+    t: Vec<u32>,
+    lang: Vec<u16>,
+    i: Vec<i32>,
+}
+
+impl OutputCols {
+    fn with_capacity(cap: usize) -> Self {
+        Self {
+            s: Vec::with_capacity(cap),
+            p: Vec::with_capacity(cap),
+            o_kind: Vec::with_capacity(cap),
+            o_key: Vec::with_capacity(cap),
+            dt: Vec::with_capacity(cap),
+            t: Vec::with_capacity(cap),
+            lang: Vec::with_capacity(cap),
+            i: Vec::with_capacity(cap),
+        }
+    }
+
+    #[inline]
+    fn push_existing(&mut self, input: &MergeInput<'_>, row: usize) {
+        self.s.push(input.r1_s_ids.get(row).as_u64());
+        self.p.push(input.r1_p_ids[row]);
+        self.o_kind.push(input.r1_o_kinds[row]);
+        self.o_key.push(input.r1_o_keys[row]);
+        self.dt.push(input.r2_dt[row]);
+        self.t.push(input.r2_t[row]);
+        self.lang.push(input.lang_id(row));
+        self.i.push(input.list_index(row));
+    }
+
+    #[inline]
+    fn push_novelty(&mut self, rec: &RunRecord) {
+        self.s.push(rec.s_id.as_u64());
+        self.p.push(rec.p_id);
+        self.o_kind.push(rec.o_kind);
+        self.o_key.push(rec.o_key);
+        self.dt.push(rec.dt as u32);
+        self.t.push(rec.t);
+        self.lang.push(rec.lang_id);
+        self.i.push(if rec.i == LIST_INDEX_NONE {
+            ListIndex::none().as_i32()
+        } else {
+            debug_assert!(
+                rec.i <= i32::MAX as u32,
+                "list index {} exceeds i32::MAX, would wrap in novelty merge",
+                rec.i
+            );
+            rec.i as i32
+        });
+    }
+
+    fn row_count(&self) -> usize {
+        self.s.len()
+    }
+}
+
+impl MergeInput<'_> {
+    /// Get lang_id at row from sparse column (0 if absent).
+    #[inline]
+    fn lang_id(&self, row: usize) -> u16 {
+        self.r2_lang.as_ref().map_or(0, |c| c.get(row as u16))
+    }
+
+    /// Get list index at row from sparse column (ListIndex::none() if absent).
+    #[inline]
+    fn list_index(&self, row: usize) -> i32 {
+        self.r2_i
+            .as_ref()
+            .map_or(ListIndex::none().as_i32(), |c| c.get(row as u16))
+    }
 }
 
 // ============================================================================
@@ -99,22 +179,6 @@ fn cmp_row_vs_record(
     }
 }
 
-/// Check if a decoded row and a RunRecord share the same fact identity.
-///
-/// Uses FactKey semantics: (s_id, p_id, o, dt, effective_lang_id, i).
-#[inline]
-fn same_identity_row_vs_record(row: &DecodedRow, rec: &RunRecord) -> bool {
-    FactKey::from_decoded_row(
-        row.s_id,
-        row.p_id,
-        row.o_kind,
-        row.o_key,
-        row.dt,
-        row.lang_id,
-        row.i,
-    ) == FactKey::from_run_record(rec)
-}
-
 // ============================================================================
 // Merge algorithm
 // ============================================================================
@@ -137,65 +201,36 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
     let existing_len = input.r1_s_ids.len();
     let novelty_len = input.novelty.len();
 
-    // Pre-allocate output at existing size (may grow or shrink slightly)
-    let mut out_s = Vec::with_capacity(existing_len + novelty_len);
-    let mut out_p = Vec::with_capacity(existing_len + novelty_len);
-    let mut out_ok = Vec::with_capacity(existing_len + novelty_len);
-    let mut out_okey: Vec<u64> = Vec::with_capacity(existing_len + novelty_len);
-    let mut out_dt = Vec::with_capacity(existing_len + novelty_len);
-    let mut out_t = Vec::with_capacity(existing_len + novelty_len);
-    let mut out_lang = Vec::with_capacity(existing_len + novelty_len);
-    let mut out_i = Vec::with_capacity(existing_len + novelty_len);
+    // Output columns (may grow or shrink slightly)
+    let mut out = OutputCols::with_capacity(existing_len + novelty_len);
 
-    // New R3 entries from this merge (will be prepended to existing R3)
-    let mut new_r3: Vec<Region3Entry> = Vec::with_capacity(novelty_len);
+    // New R3 entries from this merge (will be prepended to existing R3).
+    // Updates produce an additional "retract old" entry, so allow some headroom.
+    let mut new_r3: Vec<Region3Entry> = Vec::with_capacity(novelty_len * 2);
 
     let mut ei = 0usize; // existing row index
     let mut ni = 0usize; // novelty index
 
     while ei < existing_len && ni < novelty_len {
         let nov = &input.novelty[ni];
-        let cmp = cmp_row_vs_record(
-            input.r1_s_ids.get(ei).as_u64(),
-            input.r1_p_ids[ei],
-            input.r1_o_kinds[ei],
-            input.r1_o_keys[ei],
-            input.r2_dt[ei],
-            nov,
-            input.order,
-        );
+        let s_id = input.r1_s_ids.get(ei).as_u64();
+        let p_id = input.r1_p_ids[ei];
+        let o_kind = input.r1_o_kinds[ei];
+        let o_key = input.r1_o_keys[ei];
+        let dt = input.r2_dt[ei];
+        let cmp = cmp_row_vs_record(s_id, p_id, o_kind, o_key, dt, nov, input.order);
 
         match cmp {
             Ordering::Less => {
                 // Existing row comes first — emit unchanged
-                let mut out = RowColumnOutput {
-                    s: &mut out_s,
-                    p: &mut out_p,
-                    o_kinds: &mut out_ok,
-                    o_keys: &mut out_okey,
-                    dt: &mut out_dt,
-                    t: &mut out_t,
-                    lang: &mut out_lang,
-                    i: &mut out_i,
-                };
-                emit_existing(input, ei, &mut out);
+                out.push_existing(input, ei);
                 ei += 1;
             }
             Ordering::Greater => {
                 // Novelty comes first (not in existing data)
                 if nov.op == 1 {
                     // Assert of new fact — emit to output
-                    let mut out = RowColumnOutput {
-                        s: &mut out_s,
-                        p: &mut out_p,
-                        o_kinds: &mut out_ok,
-                        o_keys: &mut out_okey,
-                        dt: &mut out_dt,
-                        t: &mut out_t,
-                        lang: &mut out_lang,
-                        i: &mut out_i,
-                    };
-                    emit_novelty(nov, &mut out);
+                    out.push_novelty(nov);
                 }
                 // Record in R3 regardless (retract of non-existent is still logged)
                 new_r3.push(Region3Entry::from_run_record(nov));
@@ -203,42 +238,27 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
             }
             Ordering::Equal => {
                 // Sort-order position match — check full identity
-                let row = DecodedRow {
-                    s_id: input.r1_s_ids.get(ei).as_u64(),
-                    p_id: input.r1_p_ids[ei],
-                    o_kind: input.r1_o_kinds[ei],
-                    o_key: input.r1_o_keys[ei],
-                    dt: input.r2_dt[ei],
-                    t: input.r2_t[ei],
-                    lang_id: input.r2_lang_ids[ei],
-                    i: input.r2_i[ei],
-                };
-                if same_identity_row_vs_record(&row, nov) {
+                let row_lang_id = input.lang_id(ei);
+                let row_i = input.list_index(ei);
+                let row_key =
+                    FactKey::from_decoded_row(s_id, p_id, o_kind, o_key, dt, row_lang_id, row_i);
+                if row_key == FactKey::from_run_record(nov) {
                     // Same fact identity
                     if nov.op == 1 {
                         // Assert (update) — emit novelty, record old retraction + new assert
-                        let mut out = RowColumnOutput {
-                            s: &mut out_s,
-                            p: &mut out_p,
-                            o_kinds: &mut out_ok,
-                            o_keys: &mut out_okey,
-                            dt: &mut out_dt,
-                            t: &mut out_t,
-                            lang: &mut out_lang,
-                            i: &mut out_i,
-                        };
-                        emit_novelty(nov, &mut out);
+                        out.push_novelty(nov);
 
                         // Record retraction of old value in R3
                         new_r3.push(Region3Entry {
-                            s_id: input.r1_s_ids.get(ei).as_u64(),
-                            p_id: input.r1_p_ids[ei],
-                            o_kind: input.r1_o_kinds[ei],
-                            o_key: input.r1_o_keys[ei],
-                            t_signed: -input.r2_t[ei], // retract old
-                            dt: input.r2_dt[ei] as u16,
-                            lang_id: input.r2_lang_ids[ei],
-                            i: input.r2_i[ei],
+                            s_id,
+                            p_id,
+                            o_kind,
+                            o_key,
+                            t: input.r2_t[ei],
+                            op: 0, // retract old
+                            dt: dt as u16,
+                            lang_id: row_lang_id,
+                            i: row_i,
                         });
                     }
                     // else: Retract — omit from output
@@ -251,17 +271,7 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
                     // This is an edge case: the sort-order comparison doesn't include
                     // lang_id/i, so we can have equal sort position but distinct facts.
                     // Emit the existing row and try the novelty again on the next iteration.
-                    let mut out = RowColumnOutput {
-                        s: &mut out_s,
-                        p: &mut out_p,
-                        o_kinds: &mut out_ok,
-                        o_keys: &mut out_okey,
-                        dt: &mut out_dt,
-                        t: &mut out_t,
-                        lang: &mut out_lang,
-                        i: &mut out_i,
-                    };
-                    emit_existing(input, ei, &mut out);
+                    out.push_existing(input, ei);
                     ei += 1;
                 }
             }
@@ -270,17 +280,7 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
 
     // Drain remaining existing rows
     while ei < existing_len {
-        let mut out = RowColumnOutput {
-            s: &mut out_s,
-            p: &mut out_p,
-            o_kinds: &mut out_ok,
-            o_keys: &mut out_okey,
-            dt: &mut out_dt,
-            t: &mut out_t,
-            lang: &mut out_lang,
-            i: &mut out_i,
-        };
-        emit_existing(input, ei, &mut out);
+        out.push_existing(input, ei);
         ei += 1;
     }
 
@@ -288,46 +288,47 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
     while ni < novelty_len {
         let nov = &input.novelty[ni];
         if nov.op == 1 {
-            let mut out = RowColumnOutput {
-                s: &mut out_s,
-                p: &mut out_p,
-                o_kinds: &mut out_ok,
-                o_keys: &mut out_okey,
-                dt: &mut out_dt,
-                t: &mut out_t,
-                lang: &mut out_lang,
-                i: &mut out_i,
-            };
-            emit_novelty(nov, &mut out);
+            out.push_novelty(nov);
         }
         new_r3.push(Region3Entry::from_run_record(nov));
         ni += 1;
     }
 
-    // Assemble Region 3: new_r3 (sorted newest-first) ++ existing_r3
-    // new_r3 entries all come from novelty at the same t (or sorted by t desc).
-    // Sort new_r3 by abs(t_signed) descending for proper reverse-chronological order.
+    let region3 = assemble_region3(new_r3, input.existing_r3);
+    let row_count = out.row_count();
+    MergeOutput {
+        s_ids: out.s,
+        p_ids: out.p,
+        o_kinds: out.o_kind,
+        o_keys: out.o_key,
+        dt: out.dt,
+        t: out.t,
+        lang: out.lang,
+        i_vals: out.i,
+        region3,
+        row_count,
+    }
+}
+
+fn assemble_region3(
+    mut new_r3: Vec<Region3Entry>,
+    existing_r3: &[Region3Entry],
+) -> Vec<Region3Entry> {
+    // Sort new_r3 by t descending for proper reverse-chronological order.
     new_r3.sort_by(|a, b| {
-        b.t_signed
-            .unsigned_abs()
-            .cmp(&a.t_signed.unsigned_abs())
-            .then_with(|| {
-                // Tie-break: retracts before asserts at same t (retract = negative)
-                a.t_signed.cmp(&b.t_signed)
-            })
+        b.t.cmp(&a.t).then_with(|| {
+            // Tie-break: retracts before asserts at same t (retract op=0 < assert op=1)
+            a.op.cmp(&b.op)
+        })
     });
 
     // Adjacent dedup within new_r3: if both entries have the same FactKey
     // and both are asserts, drop the newer one (oldest assert wins).
     dedup_adjacent_asserts(&mut new_r3);
 
-    // Concatenate: new_r3 ++ existing_r3
-    // At the boundary, last_new is the oldest entry in new_r3 and first_old
-    // is the newest entry in existing_r3. If both are asserts with the same
-    // FactKey, drop whichever has the larger abs_t (newer) to enforce
-    // "oldest assert wins."
+    // Concatenate: new_r3 ++ existing_r3 with boundary dedup for duplicate asserts.
     let mut region3 = new_r3;
-    let skip_first_old = match (region3.last(), input.existing_r3.first()) {
+    let skip_first_old = match (region3.last(), existing_r3.first()) {
         (Some(last_new), Some(first_old))
             if FactKey::from_region3(last_new) == FactKey::from_region3(first_old)
                 && last_new.is_assert()
@@ -345,24 +346,11 @@ pub fn merge_novelty(input: &MergeInput<'_>) -> MergeOutput {
         _ => false,
     };
     if skip_first_old {
-        region3.extend_from_slice(&input.existing_r3[1..]);
+        region3.extend_from_slice(&existing_r3[1..]);
     } else {
-        region3.extend_from_slice(input.existing_r3);
+        region3.extend_from_slice(existing_r3);
     }
-
-    let row_count = out_s.len();
-    MergeOutput {
-        s_ids: out_s,
-        p_ids: out_p,
-        o_kinds: out_ok,
-        o_keys: out_okey,
-        dt: out_dt,
-        t: out_t,
-        lang_ids: out_lang,
-        i_vals: out_i,
-        region3,
-        row_count,
-    }
+    region3
 }
 
 /// Remove adjacent duplicate asserts within a reverse-chronological R3 list.
@@ -393,36 +381,6 @@ fn dedup_adjacent_asserts(entries: &mut Vec<Region3Entry>) {
 }
 
 // ============================================================================
-// Emit helpers
-// ============================================================================
-
-/// Emit an existing row (from decoded R1+R2 columns) to the output vectors.
-#[inline]
-fn emit_existing(input: &MergeInput<'_>, row: usize, out: &mut RowColumnOutput<'_>) {
-    out.s.push(input.r1_s_ids.get(row).as_u64());
-    out.p.push(input.r1_p_ids[row]);
-    out.o_kinds.push(input.r1_o_kinds[row]);
-    out.o_keys.push(input.r1_o_keys[row]);
-    out.dt.push(input.r2_dt[row]);
-    out.t.push(input.r2_t[row]);
-    out.lang.push(input.r2_lang_ids[row]);
-    out.i.push(input.r2_i[row]);
-}
-
-/// Emit a novelty RunRecord to the output vectors.
-#[inline]
-fn emit_novelty(rec: &RunRecord, out: &mut RowColumnOutput<'_>) {
-    out.s.push(rec.s_id.as_u64());
-    out.p.push(rec.p_id);
-    out.o_kinds.push(rec.o_kind);
-    out.o_keys.push(rec.o_key);
-    out.dt.push(rec.dt as u32);
-    out.t.push(rec.t);
-    out.lang.push(rec.lang_id);
-    out.i.push(rec.i);
-}
-
-// ============================================================================
 // Tests
 // ============================================================================
 
@@ -434,7 +392,7 @@ mod tests {
     use fluree_db_core::{DatatypeDictId, ListIndex};
 
     /// Helper: build a RunRecord for testing.
-    fn rec(s_id: u64, p_id: u32, val: i64, t: i64, assert: bool) -> RunRecord {
+    fn rec(s_id: u64, p_id: u32, val: i64, t: u32, assert: bool) -> RunRecord {
         RunRecord::new(
             0,
             SubjectId::from_u64(s_id),
@@ -456,14 +414,59 @@ mod tests {
         o_kinds: Vec<u8>,
         o_keys: Vec<u64>,
         dt: Vec<u32>,
-        t: Vec<i64>,
-        lang_ids: Vec<u16>,
-        i_vals: Vec<i32>,
+        t: Vec<u32>,
+        lang: Option<SparseU16Column>,
+        i_col: Option<SparseIColumn>,
     }
 
     impl TestLeaflet {
         fn from_records(records: &[RunRecord]) -> Self {
             let s_id_u64s: Vec<u64> = records.iter().map(|r| r.s_id.as_u64()).collect();
+            let row_count = records.len();
+
+            // Build sparse lang column from records
+            let lang_positions: Vec<u16> = records
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.lang_id != 0)
+                .map(|(idx, _)| idx as u16)
+                .collect();
+            let lang_values: Vec<u16> = records
+                .iter()
+                .filter(|r| r.lang_id != 0)
+                .map(|r| r.lang_id)
+                .collect();
+            let lang = if lang_positions.is_empty() {
+                None
+            } else {
+                Some(SparseU16Column {
+                    positions: lang_positions.into(),
+                    values: lang_values.into(),
+                })
+            };
+
+            // Build sparse i column from records
+            let i_positions: Vec<u16> = records
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.i != LIST_INDEX_NONE)
+                .map(|(idx, _)| idx as u16)
+                .collect();
+            let i_values: Vec<u32> = records
+                .iter()
+                .filter(|r| r.i != LIST_INDEX_NONE)
+                .map(|r| r.i)
+                .collect();
+            let i_col = if i_positions.is_empty() {
+                None
+            } else {
+                Some(SparseIColumn::U32 {
+                    positions: i_positions.into(),
+                    values: i_values.into(),
+                })
+            };
+
+            let _ = row_count; // used above for clarity
             Self {
                 s_ids: SubjectIdColumn::from_u64_vec(s_id_u64s, SubjectIdEncoding::Wide),
                 p_ids: records.iter().map(|r| r.p_id).collect(),
@@ -471,8 +474,8 @@ mod tests {
                 o_keys: records.iter().map(|r| r.o_key).collect(),
                 dt: records.iter().map(|r| r.dt as u32).collect(),
                 t: records.iter().map(|r| r.t).collect(),
-                lang_ids: records.iter().map(|r| r.lang_id).collect(),
-                i_vals: records.iter().map(|r| r.i).collect(),
+                lang,
+                i_col,
             }
         }
 
@@ -488,8 +491,8 @@ mod tests {
                 r1_o_keys: &self.o_keys,
                 r2_dt: &self.dt,
                 r2_t: &self.t,
-                r2_lang_ids: &self.lang_ids,
-                r2_i: &self.i_vals,
+                r2_lang: self.lang.as_ref(),
+                r2_i: self.i_col.as_ref(),
                 existing_r3,
                 novelty,
                 order: RunSortOrder::Spot,
@@ -625,7 +628,8 @@ mod tests {
             p_id: 1,
             o_kind: ObjKind::NUM_INT.as_u8(),
             o_key: ObjKey::encode_i64(5).as_u64(),
-            t_signed: -2, // retraction at t=2
+            t: 2,
+            op: 0, // retraction at t=2
             dt: DatatypeDictId::INTEGER.as_u16(),
             lang_id: 0,
             i: ListIndex::none().as_i32(),
@@ -705,7 +709,8 @@ mod tests {
                 p_id: 1,
                 o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(10).as_u64(),
-                t_signed: 5,
+                t: 5,
+                op: 1,
                 dt: DatatypeDictId::INTEGER.as_u16(),
                 lang_id: 0,
                 i: ListIndex::none().as_i32(),
@@ -715,7 +720,8 @@ mod tests {
                 p_id: 1,
                 o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(10).as_u64(),
-                t_signed: 3,
+                t: 3,
+                op: 1,
                 dt: DatatypeDictId::INTEGER.as_u16(),
                 lang_id: 0,
                 i: ListIndex::none().as_i32(),
@@ -723,7 +729,7 @@ mod tests {
         ];
         dedup_adjacent_asserts(&mut entries);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].t_signed, 3); // older assert kept
+        assert_eq!(entries[0].t, 3); // older assert kept
     }
 
     #[test]
@@ -735,7 +741,8 @@ mod tests {
                 p_id: 1,
                 o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(10).as_u64(),
-                t_signed: -5,
+                t: 5,
+                op: 0, // retract
                 dt: DatatypeDictId::INTEGER.as_u16(),
                 lang_id: 0,
                 i: ListIndex::none().as_i32(),
@@ -745,7 +752,8 @@ mod tests {
                 p_id: 1,
                 o_kind: ObjKind::NUM_INT.as_u8(),
                 o_key: ObjKey::encode_i64(10).as_u64(),
-                t_signed: 3,
+                t: 3,
+                op: 1, // assert
                 dt: DatatypeDictId::INTEGER.as_u16(),
                 lang_id: 0,
                 i: ListIndex::none().as_i32(),
@@ -802,7 +810,7 @@ mod tests {
 
         let out = merge_novelty(&input);
         assert_eq!(out.row_count, 1); // lang_id=2 survives
-        assert_eq!(out.lang_ids[0], 2);
+        assert_eq!(out.lang[0], 2);
     }
 
     #[test]
@@ -817,7 +825,8 @@ mod tests {
             p_id: 1,
             o_kind: ObjKind::NUM_INT.as_u8(),
             o_key: ObjKey::encode_i64(10).as_u64(),
-            t_signed: 3,
+            t: 3,
+            op: 1, // assert
             dt: DatatypeDictId::INTEGER.as_u16(),
             lang_id: 0,
             i: ListIndex::none().as_i32(),
@@ -856,7 +865,8 @@ mod tests {
             p_id: 1,
             o_kind: ObjKind::NUM_INT.as_u8(),
             o_key: ObjKey::encode_i64(10).as_u64(),
-            t_signed: 10,
+            t: 10,
+            op: 1, // assert
             dt: DatatypeDictId::INTEGER.as_u16(),
             lang_id: 0,
             i: ListIndex::none().as_i32(),
@@ -891,7 +901,8 @@ mod tests {
                 p_id: 1,
                 o_kind: ok,
                 o_key: okey,
-                t_signed: 7,
+                t: 7,
+                op: 1,
                 dt: DatatypeDictId::INTEGER.as_u16(),
                 lang_id: 0,
                 i: ListIndex::none().as_i32(),
@@ -901,7 +912,8 @@ mod tests {
                 p_id: 1,
                 o_kind: ok,
                 o_key: okey,
-                t_signed: 5,
+                t: 5,
+                op: 1,
                 dt: DatatypeDictId::INTEGER.as_u16(),
                 lang_id: 0,
                 i: ListIndex::none().as_i32(),
@@ -911,7 +923,8 @@ mod tests {
                 p_id: 1,
                 o_kind: ok,
                 o_key: okey,
-                t_signed: 3,
+                t: 3,
+                op: 1,
                 dt: DatatypeDictId::INTEGER.as_u16(),
                 lang_id: 0,
                 i: ListIndex::none().as_i32(),
@@ -919,6 +932,6 @@ mod tests {
         ];
         dedup_adjacent_asserts(&mut entries);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].t_signed, 3); // oldest survives
+        assert_eq!(entries[0].t, 3); // oldest survives
     }
 }

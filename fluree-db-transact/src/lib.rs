@@ -47,8 +47,9 @@ mod value_convert;
 #[cfg(feature = "import")]
 pub mod import;
 pub mod import_sink;
+/// Re-export from `fluree_graph_turtle::splitter` for backwards compatibility.
 #[cfg(feature = "import")]
-pub mod turtle_splitter;
+pub use fluree_graph_turtle::splitter as turtle_splitter;
 
 // Re-exports
 pub use address::parse_commit_id;
@@ -59,7 +60,7 @@ pub use flake_sink::FlakeSink;
 pub use generate::{apply_cancellation, FlakeGenerator};
 pub use ir::{InlineValues, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnType};
 pub use lower_sparql_update::{lower_sparql_update, lower_sparql_update_ast, LowerError};
-pub use namespace::{NamespaceRegistry, BLANK_NODE_PREFIX};
+pub use namespace::{NamespaceRegistry, SharedNamespaceAllocator, BLANK_NODE_PREFIX};
 pub use parse::{
     parse_transaction, parse_trig_phase1, resolve_trig_meta, NamedGraphBlock, RawObject, RawTerm,
     RawTrigMeta, RawTriple, TrigPhase1Result,

@@ -113,11 +113,7 @@ impl HistoricalLedgerView {
         let (mut db, index_t) = if use_index {
             let index_cid = record.index_head_id.as_ref().unwrap();
             let root_bytes = store.get(index_cid).await?;
-            let root_json: serde_json::Value =
-                serde_json::from_slice(&root_bytes).map_err(|e| {
-                    fluree_db_core::Error::invalid_index(format!("invalid root JSON: {}", e))
-                })?;
-            let loaded = Db::from_v2_json(&root_json)?;
+            let loaded = Db::from_root_bytes(&root_bytes)?;
             (loaded, record.index_t)
         } else {
             (Db::genesis(&record.ledger_id), 0)

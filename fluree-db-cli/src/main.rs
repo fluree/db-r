@@ -12,6 +12,35 @@ use clap::Parser;
 use cli::{Cli, Commands};
 use error::exit_with_error;
 
+fn init_tracing(cli: &Cli) {
+    // CLI tracing policy:
+    //   --quiet  → always "off" (no logs, no matter what)
+    //   --verbose → "info" level for fluree crates (useful diagnostics)
+    //   default  → "off" (clean terminal, progress bars only)
+    //   RUST_LOG → honoured only when neither --verbose nor --quiet is set,
+    //              so developers can still get fine-grained control.
+    let filter = if cli.quiet {
+        tracing_subscriber::EnvFilter::new("off")
+    } else if cli.verbose {
+        // --verbose: honour RUST_LOG if set, otherwise show info for fluree crates.
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())
+    } else {
+        // Default: suppress all logs. RUST_LOG is intentionally ignored so that
+        // developer env vars don't leak log lines into the user-facing CLI output
+        // (which uses progress bars on stderr). Use --verbose to see logs.
+        tracing_subscriber::EnvFilter::new("off")
+    };
+
+    let ansi = !(cli.no_color || std::env::var_os("NO_COLOR").is_some());
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(ansi)
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .init();
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -23,6 +52,8 @@ async fn main() {
     if cli.no_color || std::env::var_os("NO_COLOR").is_some() {
         colored::control::set_override(false);
     }
+
+    init_tracing(&cli);
 
     if let Err(e) = run(cli).await {
         exit_with_error(e);
@@ -45,18 +76,34 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             ledger,
             from,
             chunk_size_mb,
+            memory_budget_mb,
+            parallelism,
+            leaflet_rows,
+            leaflets_per_leaf,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
+            // Create-specific flags take precedence; fall back to global flags.
             let import_opts = commands::create::ImportOpts {
-                memory_budget_mb: cli.memory_budget_mb,
-                parallelism: cli.parallelism,
+                memory_budget_mb: if memory_budget_mb > 0 {
+                    memory_budget_mb
+                } else {
+                    cli.memory_budget_mb
+                },
+                parallelism: if parallelism > 0 {
+                    parallelism
+                } else {
+                    cli.parallelism
+                },
                 chunk_size_mb,
+                leaflet_rows,
+                leaflets_per_leaf,
             };
             commands::create::run(
                 &ledger,
                 from.as_deref(),
                 &fluree_dir,
                 cli.verbose,
+                cli.quiet,
                 &import_opts,
             )
             .await
@@ -124,6 +171,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             args,
             expr,
             format,
+            bench,
             sparql,
             jsonld,
             at,
@@ -134,6 +182,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 &args,
                 expr.as_deref(),
                 &format,
+                bench,
                 sparql,
                 jsonld,
                 at.as_deref(),

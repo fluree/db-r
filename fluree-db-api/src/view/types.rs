@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use fluree_db_core::dict_novelty::DictNovelty;
+use fluree_db_core::ids::GraphId;
 use fluree_db_core::{Db, NoOverlay, OverlayProvider};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
@@ -89,7 +90,7 @@ pub struct FlureeView {
     ///
     /// Note: This is *not* the same thing as a SPARQL "named graph IRI" — it is
     /// the internal numeric graph selector used by the binary indexes.
-    pub graph_id: u32,
+    pub graph_id: GraphId,
 
     // ========================================================================
     // Novelty (for policy stats and time resolution)
@@ -134,6 +135,12 @@ pub struct FlureeView {
 
     /// Dictionary novelty layer for binary scan subject/string lookups.
     pub(crate) dict_novelty: Option<Arc<DictNovelty>>,
+
+    /// Default JSON-LD context for queries that don't provide their own.
+    ///
+    /// Populated from turtle `@prefix` declarations captured during import.
+    /// When a query has no `@context`, this is injected automatically.
+    pub default_context: Option<serde_json::Value>,
 }
 
 impl std::fmt::Debug for FlureeView {
@@ -188,6 +195,7 @@ impl FlureeView {
             reasoning_precedence: ReasoningModePrecedence::default(),
             binary_store: None,
             dict_novelty: None,
+            default_context: None,
         }
     }
 
@@ -216,6 +224,7 @@ impl FlureeView {
             .binary_store
             .as_ref()
             .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
+        view.default_context = ledger.default_context.clone();
         view
     }
 
@@ -359,7 +368,7 @@ impl FlureeView {
     /// internal graph selector used by binary scans. Callers that rely on
     /// `range_with_overlay()` must ensure the underlying `Db.range_provider`
     /// is scoped appropriately for the chosen graph.
-    pub fn with_graph_id(mut self, graph_id: u32) -> Self {
+    pub fn with_graph_id(mut self, graph_id: GraphId) -> Self {
         self.graph_id = graph_id;
         self
     }

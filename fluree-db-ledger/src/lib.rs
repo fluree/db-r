@@ -107,6 +107,12 @@ pub struct LedgerState {
     /// Set by `Fluree::ledger()` when a binary index is available. Used by
     /// the query engine to enable `BinaryScanOperator` for IRI resolution.
     pub binary_store: Option<TypeErasedStore>,
+    /// Default JSON-LD @context for this ledger.
+    ///
+    /// Captured from turtle @prefix declarations during import and augmented
+    /// with built-in namespace prefixes. Applied to queries that don't supply
+    /// their own @context. Loaded from CAS via `NsRecord.default_context`.
+    pub default_context: Option<serde_json::Value>,
     /// Type-erased spatial index providers, keyed by predicate IRI.
     ///
     /// Each entry is `Arc<dyn SpatialIndexProvider>`. Set by `Fluree::ledger()`
@@ -135,11 +141,7 @@ impl LedgerState {
         let (mut db, dict_novelty) = match &record.index_head_id {
             Some(index_cid) => {
                 let root_bytes = store.get(index_cid).await?;
-                let root_json: serde_json::Value =
-                    serde_json::from_slice(&root_bytes).map_err(|e| {
-                        fluree_db_core::Error::invalid_index(format!("invalid root JSON: {}", e))
-                    })?;
-                let loaded = Db::from_v2_json(&root_json)?;
+                let loaded = Db::from_root_bytes(&root_bytes)?;
                 let dn = DictNovelty::with_watermarks(
                     loaded.subject_watermarks.clone(),
                     loaded.string_watermark,
@@ -169,6 +171,7 @@ impl LedgerState {
                     head_index_id,
                     ns_record: Some(record),
                     binary_store: None,
+                    default_context: None,
                     spatial_indexes: None,
                 });
             }
@@ -185,6 +188,7 @@ impl LedgerState {
             head_index_id,
             ns_record: Some(record),
             binary_store: None,
+            default_context: None,
             spatial_indexes: None,
         })
     }
@@ -256,6 +260,7 @@ impl LedgerState {
             head_index_id: None,
             ns_record: None,
             binary_store: None,
+            default_context: None,
             spatial_indexes: None,
         }
     }
@@ -334,10 +339,7 @@ impl LedgerState {
     /// - `Core` errors from loading the index
     pub async fn apply_index(&mut self, index_id: &ContentId, cs: &dyn ContentStore) -> Result<()> {
         let root_bytes = cs.get(index_id).await?;
-        let root_json: serde_json::Value = serde_json::from_slice(&root_bytes).map_err(|e| {
-            fluree_db_core::Error::invalid_index(format!("invalid root JSON: {}", e))
-        })?;
-        let new_db = Db::from_v2_json(&root_json)?;
+        let new_db = Db::from_root_bytes(&root_bytes)?;
 
         // Verify ledger ID matches
         if new_db.ledger_id != self.db.ledger_id {
@@ -535,14 +537,85 @@ mod tests {
         )
     }
 
-    /// Helper: store index root bytes via the content store and return the CID.
+    /// Helper: build minimal IRB1 root bytes for testing.
+    ///
+    /// Only populates ledger_id, index_t, and namespace_codes.
+    /// All other sections are empty/zero.
+    fn build_test_irb1(ledger_id: &str, index_t: i64, ns_codes: &[(u16, &str)]) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(256);
+        buf.extend_from_slice(b"IRB1"); // magic
+        buf.push(1); // version
+        buf.push(0); // flags (no optional sections)
+        buf.extend_from_slice(&0u16.to_le_bytes()); // pad
+        buf.extend_from_slice(&index_t.to_le_bytes()); // index_t
+        buf.extend_from_slice(&0i64.to_le_bytes()); // base_t
+
+        // Ledger ID
+        let lid = ledger_id.as_bytes();
+        buf.extend_from_slice(&(lid.len() as u16).to_le_bytes());
+        buf.extend_from_slice(lid);
+
+        buf.push(0); // subject_id_encoding = Narrow
+
+        // Namespace codes
+        buf.extend_from_slice(&(ns_codes.len() as u16).to_le_bytes());
+        for &(code, prefix) in ns_codes {
+            buf.extend_from_slice(&code.to_le_bytes());
+            let pb = prefix.as_bytes();
+            buf.extend_from_slice(&(pb.len() as u16).to_le_bytes());
+            buf.extend_from_slice(pb);
+        }
+
+        // Predicate SIDs (empty)
+        buf.extend_from_slice(&0u32.to_le_bytes());
+
+        // Small dict inlines: graph_iris, datatype_iris, language_tags (all empty)
+        for _ in 0..3 {
+            buf.extend_from_slice(&0u16.to_le_bytes());
+        }
+
+        // Dict refs: 4 trees (each: dummy CID + 0 leaves)
+        // Use a minimal valid CID (all zeros isn't valid, so we create one)
+        let dummy_cid = ContentId::new(ContentKind::IndexRoot, b"dummy");
+        let cid_bytes = dummy_cid.to_bytes();
+        for _ in 0..4 {
+            buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
+            buf.extend_from_slice(&cid_bytes);
+            buf.extend_from_slice(&0u32.to_le_bytes()); // 0 leaves
+        }
+
+        // Numbig (empty)
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        // Vectors (empty)
+        buf.extend_from_slice(&0u16.to_le_bytes());
+
+        // Watermarks (empty)
+        buf.extend_from_slice(&0u16.to_le_bytes()); // 0 subject watermarks
+        buf.extend_from_slice(&0u32.to_le_bytes()); // string_watermark = 0
+
+        // Cumulative commit stats (3x u64 = 0)
+        for _ in 0..3 {
+            buf.extend_from_slice(&0u64.to_le_bytes());
+        }
+
+        // Default graph routing (0 orders)
+        buf.push(0);
+
+        // Named graph routing (0 graphs)
+        buf.extend_from_slice(&0u16.to_le_bytes());
+
+        buf
+    }
+
+    /// Helper: store IRB1 root bytes via the content store and return the CID.
     async fn store_index_root(
         storage: &MemoryStorage,
         ledger_id: &str,
-        root_json: &serde_json::Value,
+        index_t: i64,
+        ns_codes: &[(u16, &str)],
     ) -> ContentId {
         let store = content_store_for(storage.clone(), ledger_id);
-        let bytes = serde_json::to_vec(root_json).unwrap();
+        let bytes = build_test_irb1(ledger_id, index_t, ns_codes);
         store.put(ContentKind::IndexRoot, &bytes).await.unwrap()
     }
 
@@ -643,16 +716,8 @@ mod tests {
         // Check active flakes via index iterator (arena has 2, and 2 are active)
         assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 2);
 
-        // Create a v2 index root at t=1 and store via CAS
-        let root_json = serde_json::json!({
-            "version": 2,
-            "ledger_id": "test:main",
-            "index_t": 1,
-            "namespace_codes": { "0": "", "1": "@" },
-            "dicts": {},
-            "graphs": []
-        });
-        let index_cid = store_index_root(&storage, "test:main", &root_json).await;
+        // Create an IRB1 index root at t=1 and store via CAS
+        let index_cid = store_index_root(&storage, "test:main", 1, &[(0, ""), (1, "@")]).await;
         let store = content_store_for(storage.clone(), "test:main");
 
         // Apply the index
@@ -673,18 +738,10 @@ mod tests {
 
         let mut state = LedgerState::new(db, novelty);
 
-        // Create a v2 index root for a different ledger, stored under test:main's CAS space
-        let root_json = serde_json::json!({
-            "version": 2,
-            "ledger_id": "other:ledger",
-            "index_t": 1,
-            "namespace_codes": { "0": "" },
-            "dicts": {},
-            "graphs": []
-        });
-        // Store under "test:main" CAS namespace so the CID resolves
-        let index_cid = store_index_root(&storage, "test:main", &root_json).await;
+        // Create an IRB1 root for a different ledger, but store under test:main's CAS space
+        let bytes = build_test_irb1("other:ledger", 1, &[(0, "")]);
         let store = content_store_for(storage.clone(), "test:main");
+        let index_cid = store.put(ContentKind::IndexRoot, &bytes).await.unwrap();
 
         // Should fail with ledger ID mismatch
         let result = state.apply_index(&index_cid, &store).await;
@@ -695,36 +752,19 @@ mod tests {
     async fn test_apply_index_stale() {
         let storage = MemoryStorage::new();
 
-        // Create a v2 index root at t=2 and store via CAS
-        let root_json_t2 = serde_json::json!({
-            "version": 2,
-            "ledger_id": "test:main",
-            "index_t": 2,
-            "namespace_codes": { "0": "" },
-            "dicts": {},
-            "graphs": []
-        });
-        let index_cid_t2 = store_index_root(&storage, "test:main", &root_json_t2).await;
+        // Create an IRB1 root at t=2
+        let index_cid_t2 = store_index_root(&storage, "test:main", 2, &[(0, "")]).await;
 
         // Load the Db from CAS for current state
         let store = content_store_for(storage.clone(), "test:main");
         let root_bytes = store.get(&index_cid_t2).await.unwrap();
-        let root: serde_json::Value = serde_json::from_slice(&root_bytes).unwrap();
-        let db = Db::from_v2_json(&root).unwrap();
+        let db = Db::from_root_bytes(&root_bytes).unwrap();
         let novelty = Novelty::new(2);
         let mut state = LedgerState::new(db, novelty);
         assert_eq!(state.index_t(), 2);
 
-        // Create an older v2 index root at t=1
-        let root_json_t1 = serde_json::json!({
-            "version": 2,
-            "ledger_id": "test:main",
-            "index_t": 1,
-            "namespace_codes": { "0": "" },
-            "dicts": {},
-            "graphs": []
-        });
-        let index_cid_t1 = store_index_root(&storage, "test:main", &root_json_t1).await;
+        // Create an older IRB1 root at t=1
+        let index_cid_t1 = store_index_root(&storage, "test:main", 1, &[(0, "")]).await;
 
         // Should fail with stale index error
         let cs = content_store_for(storage.clone(), "test:main");
@@ -736,35 +776,19 @@ mod tests {
     async fn test_apply_index_equal_t_noop() {
         let storage = MemoryStorage::new();
 
-        // Create a v2 index root at t=1
-        let root_json = serde_json::json!({
-            "version": 2,
-            "ledger_id": "test:main",
-            "index_t": 1,
-            "namespace_codes": { "0": "" },
-            "dicts": {},
-            "graphs": []
-        });
-        let index_cid = store_index_root(&storage, "test:main", &root_json).await;
+        // Create an IRB1 root at t=1
+        let index_cid = store_index_root(&storage, "test:main", 1, &[(0, "")]).await;
 
         // Load Db from CAS
         let store = content_store_for(storage.clone(), "test:main");
         let root_bytes = store.get(&index_cid).await.unwrap();
-        let root: serde_json::Value = serde_json::from_slice(&root_bytes).unwrap();
-        let db = Db::from_v2_json(&root).unwrap();
+        let db = Db::from_root_bytes(&root_bytes).unwrap();
         let novelty = Novelty::new(1);
         let mut state = LedgerState::new(db, novelty);
 
-        // Create another v2 index root at same t (different bytes produce different CID)
-        let root_json_same = serde_json::json!({
-            "version": 2,
-            "ledger_id": "test:main",
-            "index_t": 1,
-            "namespace_codes": { "0": "", "99": "extra" },
-            "dicts": {},
-            "graphs": []
-        });
-        let index_cid_same = store_index_root(&storage, "test:main", &root_json_same).await;
+        // Create another IRB1 root at same t (different bytes produce different CID)
+        let index_cid_same =
+            store_index_root(&storage, "test:main", 1, &[(0, ""), (99, "extra")]).await;
 
         // Should succeed as no-op (equal t)
         let cs = content_store_for(storage.clone(), "test:main");

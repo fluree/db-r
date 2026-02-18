@@ -84,6 +84,8 @@ pub struct LedgerSnapshot {
     /// Present when `db.range_provider` is also set — the two are always
     /// set/cleared together (see coherence `debug_assert` in `snapshot()`).
     pub binary_store: Option<Arc<BinaryIndexStore>>,
+    /// Default JSON-LD @context for this ledger.
+    pub default_context: Option<serde_json::Value>,
 }
 
 impl LedgerSnapshot {
@@ -101,6 +103,7 @@ impl LedgerSnapshot {
             head_index_id: state.head_index_id.clone(),
             ns_record: state.ns_record.clone(),
             binary_store: None,
+            default_context: state.default_context.clone(),
         }
     }
 
@@ -141,6 +144,7 @@ impl LedgerSnapshot {
             head_index_id: self.head_index_id,
             ns_record: self.ns_record,
             binary_store: self.binary_store.map(|store| TypeErasedStore(store)),
+            default_context: self.default_context,
             spatial_indexes: None,
         }
     }
@@ -337,32 +341,29 @@ impl LedgerHandle {
     /// The state lock is held for the brief atomic swap of both `state` and
     /// `binary_store`, ensuring coherence between `db.range_provider` and
     /// `binary_store` (lock ordering: state → binary_store).
-    pub async fn apply_index_v2<S: Storage + Clone>(
+    pub async fn apply_index_v2<S: Storage + Clone + 'static>(
         &self,
         index_id: &ContentId,
         storage: &S,
         cache_dir: &std::path::Path,
         leaflet_cache: Option<Arc<LeafletCache>>,
     ) -> Result<()> {
-        use fluree_db_core::serde::json::{
-            raw_schema_to_index_schema, raw_stats_to_index_stats, RawDbRootSchema, RawDbRootStats,
-        };
-
         // Load index root by CID via content store
         let ledger_id = {
             let state = self.inner.state.lock().await;
             state.db.ledger_id.clone()
         };
-        let store = fluree_db_core::content_store_for(storage.clone(), &ledger_id);
-        let bytes = store
+        let content_store = fluree_db_core::content_store_for(storage.clone(), &ledger_id);
+        let bytes = content_store
             .get(index_id)
             .await
             .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
-        let root: BinaryIndexRoot = serde_json::from_slice(&bytes)
-            .map_err(|e| ApiError::internal(format!("failed to parse v2 root: {}", e)))?;
 
-        let cs = fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
-        let store = BinaryIndexStore::load_from_root(&cs, &root, cache_dir, leaflet_cache)
+        let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
+            storage.clone(),
+            &ledger_id,
+        ));
+        let store = BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, leaflet_cache)
             .await
             .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
         let arc_store = Arc::new(store);
@@ -371,26 +372,17 @@ impl LedgerHandle {
         let dn = Arc::new(DictNovelty::new_uninitialized());
         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
 
-        // Build metadata-only Db from root
-        let ns_codes = root.namespace_codes.into_iter().collect();
-        let stats = root
-            .stats
-            .as_ref()
-            .and_then(|s| serde_json::from_value::<RawDbRootStats>(s.clone()).ok())
-            .and_then(|raw| raw_stats_to_index_stats(&raw));
-        let schema = root
-            .schema
-            .as_ref()
-            .and_then(|s| serde_json::from_value::<RawDbRootSchema>(s.clone()).ok())
-            .map(|raw| raw_schema_to_index_schema(&raw));
+        // Build metadata-only Db from IRB1 root.
+        let v5 = fluree_db_indexer::run_index::IndexRootV5::decode(&bytes)
+            .map_err(|e| ApiError::internal(format!("failed to decode IRB1 root: {}", e)))?;
         let meta = DbMetadata {
-            ledger_id: root.ledger_id,
-            t: root.index_t,
-            namespace_codes: ns_codes,
-            stats,
-            schema,
-            subject_watermarks: root.subject_watermarks,
-            string_watermark: root.string_watermark,
+            ledger_id: v5.ledger_id,
+            t: v5.index_t,
+            namespace_codes: v5.namespace_codes.into_iter().collect(),
+            stats: v5.stats,
+            schema: v5.schema,
+            subject_watermarks: v5.subject_watermarks,
+            string_watermark: v5.string_watermark,
         };
         let mut db = Db::new_meta(meta);
         db.range_provider = Some(Arc::new(provider));
@@ -501,11 +493,23 @@ impl std::fmt::Debug for LedgerManagerConfig {
 
 impl Default for LedgerManagerConfig {
     fn default() -> Self {
+        // Match `BinaryIndexStore::load_from_root_v5_default()`:
+        // - enable a shared leaflet cache by default
+        // - allow override via `FLUREE_LEAFLET_CACHE_BYTES`
+        //
+        // IMPORTANT: Ledger caching and leaflet caching are complementary.
+        // Ledger caching prevents repeated full store loads; leaflet caching
+        // prevents repeated decode churn during scans/formatting.
+        let leaflet_cache_bytes: u64 = std::env::var("FLUREE_LEAFLET_CACHE_BYTES")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(8 * 1024 * 1024 * 1024);
+
         Self {
             idle_ttl: Duration::from_secs(30 * 60),
             sweep_interval: Duration::from_secs(60),
             cache_dir: std::env::temp_dir().join("fluree_binary_cache"),
-            leaflet_cache: None,
+            leaflet_cache: Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes))),
         }
     }
 }
@@ -514,7 +518,6 @@ impl Default for LedgerManagerConfig {
 // Binary Index Loading Helper
 // ============================================================================
 
-use fluree_db_indexer::run_index::{BinaryIndexRoot, BINARY_INDEX_ROOT_VERSION};
 use fluree_db_query::BinaryRangeProvider;
 
 /// Load BinaryIndexStore from a v2 index root, attach range_provider
@@ -542,19 +545,11 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         .await
         .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
 
-    let root: BinaryIndexRoot = match serde_json::from_slice(&bytes) {
-        Ok(r) => r,
-        Err(_) => return Ok(None), // Not a v2 root (could be v1 or malformed)
-    };
-
-    // BinaryIndexRoot's custom Deserialize already validates version == 2,
-    // but belt-and-suspenders:
-    if root.version != BINARY_INDEX_ROOT_VERSION {
-        return Ok(None);
-    }
-
-    let cs = fluree_db_core::content_store_for(storage.clone(), &root.ledger_id);
-    let mut store = BinaryIndexStore::load_from_root(&cs, &root, cache_dir, leaflet_cache)
+    let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
+        storage.clone(),
+        &state.db.ledger_id,
+    ));
+    let mut store = BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, leaflet_cache)
         .await
         .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
@@ -570,6 +565,27 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     // graph-scoped BinaryRangeProviders (needed for named-graph upsert deletions).
     let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
     state.binary_store = Some(TypeErasedStore(te_store));
+
+    // Load default context from CAS if the nameservice record has one.
+    if state.default_context.is_none() {
+        if let Some(ctx_id) = state
+            .ns_record
+            .as_ref()
+            .and_then(|r| r.default_context.as_ref())
+        {
+            let cs = fluree_db_core::content_store_for(storage.clone(), &state.db.ledger_id);
+            match cs.get(ctx_id).await {
+                Ok(bytes) => match serde_json::from_slice(&bytes) {
+                    Ok(ctx) => state.default_context = Some(ctx),
+                    Err(e) => tracing::warn!(%e, "failed to parse default context JSON"),
+                },
+                Err(e) => {
+                    tracing::debug!(%e, "could not load default context: {}", e)
+                }
+            }
+        }
+    }
+
     Ok(Some(arc_store))
 }
 

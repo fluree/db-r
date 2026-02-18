@@ -182,12 +182,12 @@ No address rewriting is needed because commits contain no storage addresses.
 - `ContentStore` trait + `MemoryContentStore` + bridge adapter: `fluree-db-core/src/storage.rs`
 - `Commit` and `CommitRef` use `ContentId` for all references (index pointers are tracked exclusively via nameservice, not embedded in commits)
 - Nameservice records use `head_commit_id` / `index_head_id` as ContentId values
-- `BinaryIndexRootV2` references all artifacts by ContentId
+- `IndexRootV5` (IRB1) references all artifacts by ContentId
 - Transact and indexer paths use `ContentStore` for all object I/O
 
 ## Related documentation
 
 - [Storage-agnostic commits and sync](../design/storage-agnostic-commits-and-sync.md) — full design rationale
 - [Storage traits](storage-traits.md) — existing storage trait hierarchy
-- [Index format](index-format.md) — binary index format (BinaryIndexRootV2)
+- [Index format](index-format.md) — binary index format (IndexRootV5 / IRB1)
 - [Nameservice schema v2](nameservice-schema-v2.md) — nameservice record schema

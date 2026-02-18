@@ -15,6 +15,7 @@
 //! let entries = hook.into_entries();
 //! ```
 
+use fluree_db_core::GraphId;
 use fluree_db_novelty::commit_v2::raw_reader::{RawObject, RawOp};
 use fluree_vocab::{geo_names, namespaces};
 
@@ -22,7 +23,7 @@ use fluree_vocab::{geo_names, namespaces};
 #[derive(Debug, Clone)]
 pub struct SpatialEntry {
     /// Graph ID (0 = default graph).
-    pub g_id: u32,
+    pub g_id: GraphId,
     /// Subject ID (sid64) that owns this geometry.
     pub subject_id: u64,
     /// Predicate ID in binary index space.
@@ -78,7 +79,7 @@ impl SpatialHook {
     /// * `subject_id` - Resolved subject ID (sid64)
     /// * `p_id` - Resolved predicate ID in binary index space
     /// * `t` - Transaction time
-    pub fn on_op(&mut self, raw_op: &RawOp<'_>, g_id: u32, subject_id: u64, p_id: u32, t: i64) {
+    pub fn on_op(&mut self, raw_op: &RawOp<'_>, g_id: GraphId, subject_id: u64, p_id: u32, t: i64) {
         // Check if datatype is geo:wktLiteral - must match BOTH namespace code AND local name
         // to avoid false positives from user-defined datatypes with same local name
         if raw_op.dt_ns_code != namespaces::OGC_GEO || raw_op.dt_name != geo_names::WKT_LITERAL {
