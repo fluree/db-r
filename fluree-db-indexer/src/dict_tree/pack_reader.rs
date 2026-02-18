@@ -467,7 +467,13 @@ fn mmap_file(path: &Path) -> io::Result<memmap2::Mmap> {
 }
 
 /// Write bytes to a cache file atomically (temp file + rename).
+///
+/// Ensures the parent directory exists so lazy fetches succeed even if the
+/// cache directory was removed between construction and first lookup.
 fn atomic_write_to_cache(cache_path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let tmp = cache_path.with_extension(format!(
         "tmp.{}.{}",
         std::process::id(),
@@ -496,6 +502,9 @@ fn atomic_write_to_cache(cache_path: &Path, bytes: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::dict_tree::forward_pack::{encode_forward_pack, KIND_STRING_FWD};
+    use crate::run_index::index_root::PackBranchEntry;
+    use fluree_db_core::content_kind::DictKind;
+    use fluree_db_core::{ContentKind, MemoryContentStore};
 
     fn make_pack_bytes(first: u64, count: usize) -> Vec<u8> {
         let entries: Vec<(u64, Vec<u8>)> = (0..count)
@@ -623,5 +632,66 @@ mod tests {
         ]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("overlaps"));
+    }
+
+    /// Forces the lazy fetch path under a **current-thread** Tokio runtime.
+    ///
+    /// `MemoryContentStore` always returns `None` from `resolve_local_path`,
+    /// so all packs become `Lazy`. The lookup triggers `fetch_and_load` which
+    /// uses `thread::spawn` + `Handle::block_on` — this test verifies that
+    /// pattern works on the single-threaded `#[tokio::test]` runtime.
+    #[tokio::test]
+    async fn test_lazy_fetch_current_thread_runtime() {
+        let pack_bytes = make_pack_bytes(0, 50);
+        let cs = MemoryContentStore::new();
+
+        // Store the pack in the content store.
+        let cid = cs
+            .put(ContentKind::DictBlob { dict: DictKind::StringForward }, &pack_bytes)
+            .await
+            .unwrap();
+
+        let refs = vec![PackBranchEntry {
+            first_id: 0,
+            last_id: 49,
+            pack_cid: cid,
+        }];
+
+        let cache_dir = std::env::temp_dir().join(format!(
+            "fluree_test_lazy_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&cache_dir);
+
+        let reader = ForwardPackReader::from_pack_refs(
+            Arc::new(cs),
+            &cache_dir,
+            &refs,
+            KIND_STRING_FWD,
+            0,
+        )
+        .await
+        .unwrap();
+
+        // All packs should be Lazy (MemoryContentStore has no local path).
+        assert_eq!(reader.pack_count(), 1);
+
+        // This triggers the lazy fetch via thread::spawn + block_on.
+        assert_eq!(
+            reader.forward_lookup_str(0).unwrap(),
+            Some("val_0".to_string())
+        );
+        assert_eq!(
+            reader.forward_lookup_str(25).unwrap(),
+            Some("val_25".to_string())
+        );
+        assert_eq!(
+            reader.forward_lookup_str(49).unwrap(),
+            Some("val_49".to_string())
+        );
+        assert_eq!(reader.forward_lookup_str(50).unwrap(), None);
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&cache_dir);
     }
 }

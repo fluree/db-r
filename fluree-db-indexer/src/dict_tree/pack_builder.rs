@@ -10,7 +10,7 @@ use super::forward_pack::{encode_forward_pack, KIND_STRING_FWD, KIND_SUBJECT_FWD
 /// Default target page size (bytes). Each page is the smallest unit of
 /// random access within a pack. Smaller pages reduce the first-touch
 /// working set on cold runs (fewer bytes faulted per page hit).
-pub const DEFAULT_TARGET_PAGE_BYTES: usize = 256 * 1024;
+pub const DEFAULT_TARGET_PAGE_BYTES: usize = 512 * 1024;
 
 /// Default target pack size (bytes). Packs are large immutable CAS objects.
 pub const DEFAULT_TARGET_PACK_BYTES: usize = 256 * 1024 * 1024;
