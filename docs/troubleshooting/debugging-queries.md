@@ -266,57 +266,56 @@ Look for:
 
 ## Query Optimization
 
-### Pattern Ordering
+### Automatic Pattern Reordering
 
-Order patterns from most to least selective:
+The query planner automatically reorders WHERE-clause patterns for optimal
+join order. You do not need to manually order patterns from most to least
+selective — the planner does this for you using a greedy algorithm that
+considers cardinality estimates and which variables are already bound at each
+step.
 
-**Good:**
+When database statistics are available (after at least one indexing cycle),
+estimates use HLL-derived property counts and distinct-value counts.
+Without statistics, the planner falls back to heuristic constants. You can
+verify the planner's decisions using explain plans (see
+[Explain Plans](../query/explain.md)).
+
+Both of these queries produce the same execution plan:
+
 ```json
 {
   "where": [
-    {"@id": "ex:alice", "schema:name": "?name"},      // Most specific
-    {"@id": "ex:alice", "schema:worksFor": "?company"}, 
-    {"@id": "?company", "schema:name": "?companyName"} // Least specific
-  ]
-}
-```
-
-**Bad:**
-```json
-{
-  "where": [
-    {"@id": "?company", "schema:name": "?companyName"}, // Too broad first
+    {"@id": "?company", "schema:name": "?companyName"},
     {"@id": "?person", "schema:worksFor": "?company"},
-    {"@id": "?person", "schema:name": "?name"}
+    {"@id": "ex:alice", "schema:name": "?name"}
   ]
 }
 ```
+
+```json
+{
+  "where": [
+    {"@id": "ex:alice", "schema:name": "?name"},
+    {"@id": "ex:alice", "schema:worksFor": "?company"},
+    {"@id": "?company", "schema:name": "?companyName"}
+  ]
+}
+```
+
+The planner recognizes that `ex:alice` patterns are highly selective (bound
+subject), and that `?company` becomes bound after those patterns execute,
+making the final pattern a cheap per-subject lookup rather than a full scan.
 
 ### Filter Placement
 
-Apply filters early:
+Filters are automatically placed at the earliest point where all their
+referenced variables are bound, regardless of where they appear in the query.
+You do not need to manually position filters for efficiency.
 
-**Good:**
-```json
-{
-  "where": [
-    {"@id": "?person", "schema:age": "?age"}
-  ],
-  "filter": "?age > 25"  // Applied immediately after scan
-}
-```
-
-**Less efficient:**
-```json
-{
-  "where": [
-    {"@id": "?person", "schema:name": "?name"},
-    {"@id": "?person", "schema:age": "?age"},
-    {"@id": "?person", "schema:email": "?email"}  // Many patterns first
-  ],
-  "filter": "?age > 25"  // Applied after all joins
-}
-```
+Additionally, filters whose variables are all bound by a join operator are
+evaluated inline during the join itself, avoiding the overhead of a separate
+filter pass. Range-safe filters (comparisons like `>`, `<` on indexed
+properties) are pushed down to the index scan.
 
 ### Use LIMIT
 
@@ -616,18 +615,18 @@ Good:
 {"@id": "?person", "schema:name": "?name"}
 ```
 
-### Antipattern 2: Late Filtering
+### Antipattern 2: Disconnected Patterns (Cartesian Products)
+
+Ensure all patterns share at least one variable with the rest of the query.
+Disconnected patterns produce a Cartesian product:
 
 Bad:
 ```json
 {
   "where": [
     {"@id": "?person", "schema:name": "?name"},
-    {"@id": "?person", "schema:age": "?age"},
-    {"@id": "?person", "schema:email": "?email"},
-    {"@id": "?person", "schema:address": "?addr"}
-  ],
-  "filter": "?age > 25"  // Should filter earlier
+    {"@id": "?dept", "schema:budget": "?budget"}
+  ]
 }
 ```
 
@@ -635,15 +634,16 @@ Good:
 ```json
 {
   "where": [
-    {"@id": "?person", "schema:age": "?age"}
-  ],
-  "filter": "?age > 25",  // Filter early
-  "where": [
     {"@id": "?person", "schema:name": "?name"},
-    {"@id": "?person", "schema:email": "?email"}
+    {"@id": "?person", "schema:department": "?dept"},
+    {"@id": "?dept", "schema:budget": "?budget"}
   ]
 }
 ```
+
+Note: filter placement is handled automatically by the planner. Filters are
+applied as soon as all their referenced variables are bound, regardless of
+where they appear in the query.
 
 ### Antipattern 3: Missing LIMIT
 
