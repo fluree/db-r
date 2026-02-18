@@ -2983,7 +2983,7 @@ where
     // ---- Phase 5: Build IndexRootV5 (binary IRB1) ----
     tracing::info!("post-upload: stats built, constructing IRB1 root");
 
-    // Convert DictRefs (v4, string-keyed maps) → DictRefsV5 (u32 vecs).
+    // Convert DictRefs (string-keyed maps) → DictRefsV5 (u32 vecs).
     let dict_refs_v5 = {
         let dr = uploaded_dicts.dict_refs;
         use fluree_db_indexer::run_index::{DictRefsV5, VectorDictRefV5};
@@ -3002,9 +3002,8 @@ where
             })
             .collect();
         DictRefsV5 {
-            subject_forward: dr.subject_forward,
+            forward_packs: dr.forward_packs,
             subject_reverse: dr.subject_reverse,
-            string_forward: dr.string_forward,
             string_reverse: dr.string_reverse,
             numbig,
             vectors,

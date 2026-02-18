@@ -332,7 +332,7 @@ where
 mod tests {
     use super::*;
     use crate::run_index::{
-        BinaryGarbageRef, BinaryPrevIndexRef, DictRefsV5, DictTreeRefs, IndexRootV5,
+        BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefsV5, DictTreeRefs, IndexRootV5,
     };
     use fluree_db_core::prelude::*;
     use std::collections::BTreeMap;
@@ -361,9 +361,11 @@ mod tests {
             datatype_iris: Vec::new(),
             language_tags: Vec::new(),
             dict_refs: DictRefsV5 {
-                subject_forward: dummy_tree.clone(),
+                forward_packs: DictPackRefs {
+                    string_fwd_packs: Vec::new(),
+                    subject_fwd_ns_packs: Vec::new(),
+                },
                 subject_reverse: dummy_tree.clone(),
-                string_forward: dummy_tree.clone(),
                 string_reverse: dummy_tree,
                 numbig: Vec::new(),
                 vectors: Vec::new(),
