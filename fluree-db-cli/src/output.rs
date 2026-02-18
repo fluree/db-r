@@ -12,6 +12,7 @@ pub enum OutputFormatKind {
     Json,
     Table,
     Csv,
+    Tsv,
 }
 
 /// Result of formatting: the rendered string plus the total row count.
@@ -215,6 +216,14 @@ pub fn format_result(
         OutputFormatKind::Json => format_json(json, query_format, limit),
         OutputFormatKind::Table => format_as_table(json, query_format, limit),
         OutputFormatKind::Csv => format_as_csv(json, query_format, limit),
+        OutputFormatKind::Tsv => {
+            // TSV should be handled before reaching this function (via QueryResult::to_tsv_bytes).
+            // If we get here, the caller didn't have access to the raw QueryResult.
+            Err(crate::error::CliError::Usage(
+                "TSV format requires direct access to query results (not available for remote queries)"
+                    .to_string(),
+            ))
+        }
     }
 }
 

@@ -214,6 +214,40 @@ impl QueryResult {
     }
 
     // ========================================================================
+    // TSV formatting (high-performance path)
+    // ========================================================================
+
+    /// Format as tab-separated values (high-performance path).
+    ///
+    /// Bypasses IRI compaction and JSON DOM construction entirely.
+    /// IRIs are output in full (`namespace_prefix + name`, no `@context` shortening).
+    /// Returns a `String`.
+    pub fn to_tsv(&self, db: &Db) -> format::Result<String> {
+        format::tsv::format_tsv(self, db)
+    }
+
+    /// Format as TSV bytes (high-performance path for server use).
+    ///
+    /// Returns raw `Vec<u8>` suitable for direct HTTP response body.
+    pub fn to_tsv_bytes(&self, db: &Db) -> format::Result<Vec<u8>> {
+        format::tsv::format_tsv_bytes(self, db)
+    }
+
+    /// Format as TSV string with a row limit (for benchmark/preview).
+    ///
+    /// Returns `(tsv_string, total_row_count)`.
+    pub fn to_tsv_limited(&self, db: &Db, limit: usize) -> format::Result<(String, usize)> {
+        format::tsv::format_tsv_limited(self, db, limit)
+    }
+
+    /// Format as TSV bytes with a row limit (for server benchmark/preview).
+    ///
+    /// Returns `(tsv_bytes, total_row_count)`.
+    pub fn to_tsv_bytes_limited(&self, db: &Db, limit: usize) -> format::Result<(Vec<u8>, usize)> {
+        format::tsv::format_tsv_bytes_limited(self, db, limit)
+    }
+
+    // ========================================================================
     // Async formatting methods (required for graph crawl queries)
     // ========================================================================
 

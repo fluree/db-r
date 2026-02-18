@@ -139,6 +139,10 @@ fn format_history_result(json: &serde_json::Value, format: OutputFormatKind) -> 
         }
         OutputFormatKind::Table => format_history_table(json),
         OutputFormatKind::Csv => format_history_csv(json),
+        OutputFormatKind::Tsv => Err(CliError::Usage(
+            "--format tsv is not supported for history queries; use json, table, or csv instead"
+                .to_string(),
+        )),
     }
 }
 

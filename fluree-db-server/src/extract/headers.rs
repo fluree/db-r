@@ -45,6 +45,9 @@ pub struct FlureeHeaders {
 
     /// Content-Type header value
     pub content_type: Option<String>,
+
+    /// Accept header value (for content negotiation)
+    pub accept: Option<String>,
 }
 
 impl Default for FlureeHeaders {
@@ -61,6 +64,7 @@ impl Default for FlureeHeaders {
             track_time: false,
             max_fuel: None,
             content_type: None,
+            accept: None,
         }
     }
 }
@@ -135,6 +139,13 @@ impl FlureeHeaders {
             }
         }
 
+        // Accept
+        if let Some(accept) = headers.get(axum::http::header::ACCEPT) {
+            if let Ok(accept_str) = accept.to_str() {
+                fluree_headers.accept = Some(accept_str.to_string());
+            }
+        }
+
         Ok(fluree_headers)
     }
 
@@ -156,6 +167,20 @@ impl FlureeHeaders {
         self.content_type
             .as_ref()
             .map(|ct| ct.contains("application/sparql-update"))
+            .unwrap_or(false)
+    }
+
+    /// Check if the client explicitly requests TSV output via Accept header.
+    ///
+    /// Matches `text/tab-separated-values` or `text/tsv` (case-insensitive).
+    /// Does NOT match `*/*` — TSV must be explicitly requested.
+    pub fn wants_tsv(&self) -> bool {
+        self.accept
+            .as_ref()
+            .map(|a| {
+                let lower = a.to_ascii_lowercase();
+                lower.contains("text/tab-separated-values") || lower.contains("text/tsv")
+            })
             .unwrap_or(false)
     }
 

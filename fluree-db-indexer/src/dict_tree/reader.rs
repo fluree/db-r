@@ -141,6 +141,29 @@ impl DictTreeReader {
         }
     }
 
+    /// Forward lookup that appends value bytes directly into a caller-provided
+    /// buffer, avoiding the intermediate `Vec<u8>` allocation.
+    ///
+    /// Returns `true` if the ID was found (and bytes were appended), `false` otherwise.
+    pub fn forward_lookup_into(&self, id: u64, out: &mut Vec<u8>) -> io::Result<bool> {
+        let leaf_idx = match self.branch.find_leaf_by_id(id) {
+            Some(idx) => idx,
+            None => return Ok(false),
+        };
+
+        let address = &self.branch.leaves[leaf_idx].address;
+        let leaf_data = self.load_leaf(address)?;
+        let leaf = ForwardLeaf::from_bytes(&leaf_data)?;
+
+        match leaf.lookup(id) {
+            Some(v) => {
+                out.extend_from_slice(v);
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// Reverse lookup: find ID by key bytes.
     pub fn reverse_lookup(&self, key: &[u8]) -> io::Result<Option<u64>> {
         let leaf_idx = match self.branch.find_leaf(key) {
@@ -199,20 +222,17 @@ impl DictTreeReader {
 
                 if let Some(cache) = &self.global_cache {
                     let cache_key = xxhash_rust::xxh3::xxh3_128(address.as_bytes());
+                    if let Some(bytes) = cache.get_dict_leaf(cache_key) {
+                        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                        return Ok(bytes);
+                    }
                     let path = path.clone();
                     let disk_reads = &self.disk_reads;
-                    let _cache_hits = &self.cache_hits;
-                    cache
-                        .try_get_or_load_dict_leaf(cache_key, || {
-                            disk_reads.fetch_add(1, Ordering::Relaxed);
-                            let bytes = std::fs::read(&path)?;
-                            Ok(Arc::from(bytes.into_boxed_slice()))
-                        })
-                        .inspect(|_| {
-                            // If we didn't hit the loader closure, it was a cache hit.
-                            // We can't distinguish perfectly since try_get_or_load_dict_leaf
-                            // doesn't report hit/miss. Track total calls instead.
-                        })
+                    cache.try_get_or_load_dict_leaf(cache_key, || {
+                        disk_reads.fetch_add(1, Ordering::Relaxed);
+                        let bytes = std::fs::read(&path)?;
+                        Ok(Arc::from(bytes.into_boxed_slice()))
+                    })
                 } else {
                     self.disk_reads.fetch_add(1, Ordering::Relaxed);
                     let bytes = std::fs::read(path)?;
@@ -228,6 +248,10 @@ impl DictTreeReader {
                 if let Some(path) = local_files.get(address) {
                     if let Some(cache) = &self.global_cache {
                         let cache_key = xxhash_rust::xxh3::xxh3_128(address.as_bytes());
+                        if let Some(bytes) = cache.get_dict_leaf(cache_key) {
+                            self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                            return Ok(bytes);
+                        }
                         let path = path.clone();
                         let disk_reads = &self.disk_reads;
                         return cache.try_get_or_load_dict_leaf(cache_key, || {
@@ -251,6 +275,10 @@ impl DictTreeReader {
                 // Remote fetch path: cache bytes in LeafletCache (keyed by CAS address).
                 if let Some(cache) = &self.global_cache {
                     let cache_key = xxhash_rust::xxh3::xxh3_128(address.as_bytes());
+                    if let Some(bytes) = cache.get_dict_leaf(cache_key) {
+                        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                        return Ok(bytes);
+                    }
                     let cs = Arc::clone(cs);
                     let cid = cid.clone();
                     let disk_reads = &self.disk_reads;
