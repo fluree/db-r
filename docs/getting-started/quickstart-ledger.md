@@ -42,15 +42,33 @@ let ledger = fluree.ledger("mydb:main").await?;
 
 ### HTTP API (Server Usage)
 
-Via the HTTP API, ledgers can be created **implicitly** on the first transaction, or **explicitly** via `POST /ledgers`. Simply send a transaction to a ledger ID, and the server will create it automatically.
+Via the HTTP API, create a ledger explicitly with `POST /v1/fluree/create`, then write data with `POST /v1/fluree/insert`.
 
-#### Method 1: Via First Transaction
-
-The simplest way to create a ledger is to write data to it:
+#### Step 1: Create the Ledger
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/create \
   -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb:main"}'
+```
+
+Response:
+
+```json
+{
+  "ledger_id": "mydb:main",
+  "t": 0,
+  "tx-id": "fluree:tx:sha256:...",
+  "commit": {"hash": ""}
+}
+```
+
+#### Step 2: Insert Data
+
+```bash
+curl -X POST http://localhost:8090/v1/fluree/insert \
+  -H "Content-Type: application/json" \
+  -H "fluree-ledger: mydb:main" \
   -d '{
     "@context": {
       "ex": "http://example.org/ns/",
@@ -71,50 +89,29 @@ Response:
 
 ```json
 {
+  "ledger_id": "mydb:main",
   "t": 1,
-  "timestamp": "2024-01-22T10:30:00.000Z",
-  "commit_id": "bafybeig...commitT1"
+  "tx-id": "fluree:tx:sha256:...",
+  "commit": {"hash": "bagaybqab..."}
 }
 ```
 
-The ledger `mydb:main` now exists!
-
-#### Method 2: Empty Initialization
-
-Create an empty ledger without data:
-
-```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
-  -H "Content-Type: application/json" \
-  -d '{
-    "@context": {},
-    "@graph": []
-  }'
-```
-
-This creates the ledger with no initial data (transaction `t=1` will be empty).
+The ledger `mydb:main` now has data!
 
 ## Verifying Ledger Creation
 
-### List All Ledgers
+### Check Ledger Exists
 
 ```bash
-curl http://localhost:8090/ledgers
+curl http://localhost:8090/v1/fluree/exists/mydb:main
 ```
 
 Response:
 
 ```json
 {
-  "ledgers": [
-    {
-      "ledger_id": "mydb:main",
-      "branch": "main",
-      "commit_t": 1,
-      "index_t": 0,
-      "created": "2024-01-22T10:30:00.000Z"
-    }
-  ]
+  "ledger_id": "mydb:main",
+  "exists": true
 }
 ```
 
@@ -123,7 +120,7 @@ Response:
 Verify you can query the new ledger:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -187,23 +184,31 @@ mydb:bugfix-login      - Bug fix branch
 
 ### Creating a New Branch
 
-Branches are independent ledgers. Create a new branch by transacting to it:
+Branches are independent ledgers. First create the branch, then transact data into it:
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:dev \
+# Create the branch
+curl -X POST http://localhost:8090/v1/fluree/create \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb:dev"}'
+
+# Insert data into the branch
+curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:dev \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
       "ex": "http://example.org/ns/",
       "schema": "http://schema.org/"
     },
-    "@graph": [
-      {
-        "@id": "ex:bob",
-        "@type": "schema:Person",
-        "schema:name": "Bob"
-      }
-    ]
+    "insert": {
+      "@graph": [
+        {
+          "@id": "ex:bob",
+          "@type": "schema:Person",
+          "schema:name": "Bob"
+        }
+      ]
+    }
   }'
 ```
 
@@ -217,12 +222,12 @@ Branches are completely independent—changes in one don't affect the other:
 
 ```bash
 # Query main branch
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{"from": "mydb:main", "select": ["?name"], "where": [{"@id": "?person", "schema:name": "?name"}]}'
 # Returns: [{"name": "Alice"}]
 
 # Query dev branch
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -d '{"from": "mydb:dev", "select": ["?name"], "where": [{"@id": "?person", "schema:name": "?name"}]}'
 # Returns: [{"name": "Bob"}]
 ```
@@ -240,7 +245,7 @@ Each ledger maintains metadata accessible via the nameservice:
 ### Checking Ledger Status
 
 ```bash
-curl http://localhost:8090/ledgers/mydb:main
+curl http://localhost:8090/v1/fluree/info/mydb:main
 ```
 
 Response:
@@ -288,19 +293,21 @@ tenant2-orders:main
 
 ## Setting Default Context
 
-Specify a default JSON-LD @context for a ledger to simplify queries and transactions:
+A ledger's default JSON-LD @context is set by the `@context` included in any transaction. The context from the most recent transaction becomes the ledger's default, which subsequent queries and transactions can use.
 
-```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
-  -H "Content-Type: application/json" \
-  -d '{
-    "@context": {
-      "ex": "http://example.org/ns/",
-      "schema": "http://schema.org/",
-      "xsd": "http://www.w3.org/2001/XMLSchema#"
-    },
-    "@graph": []
-  }'
+Simply include the desired `@context` in your regular transactions:
+
+```json
+{
+  "@context": {
+    "ex": "http://example.org/ns/",
+    "schema": "http://schema.org/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "insert": {
+    "@graph": [...]
+  }
+}
 ```
 
 Future transactions and queries can omit the context if desired (though explicit is recommended).
