@@ -589,10 +589,7 @@ impl LazyVectorArena {
         let cas = self.cas.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!(
-                    "vector shard {} not on disk and no CAS configured",
-                    idx
-                ),
+                format!("vector shard {} not on disk and no CAS configured", idx),
             )
         })?;
         let cid = source.cid.as_ref().ok_or_else(|| {
@@ -606,9 +603,8 @@ impl LazyVectorArena {
         })?;
         // Sync→async bridge: spawn an OS thread to block_on the async fetch.
         // Same pattern as ensure_index_leaf_cached() for index leaflets.
-        let handle = tokio::runtime::Handle::try_current().map_err(|_| {
-            io::Error::other("vector shard download requires a Tokio runtime")
-        })?;
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| io::Error::other("vector shard download requires a Tokio runtime"))?;
         let cs = Arc::clone(cas);
         let cid = cid.clone();
         let path = source.path.clone();
