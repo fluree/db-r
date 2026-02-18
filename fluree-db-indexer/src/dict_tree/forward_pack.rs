@@ -768,7 +768,7 @@ mod tests {
 
         // Check every entry.
         for &(id, ref value) in &entries {
-            let found = pack.lookup(id).expect(&format!("should find id={}", id));
+            let found = pack.lookup(id).unwrap_or_else(|| panic!("should find id={}", id));
             assert_eq!(found, value.as_slice());
         }
 
@@ -830,7 +830,7 @@ mod tests {
 
         // Spot-check a few entries.
         for id in [0, 1, 999, 50_000, 99_999] {
-            let val = pack.lookup(id).expect(&format!("should find id={}", id));
+            let val = pack.lookup(id).unwrap_or_else(|| panic!("should find id={}", id));
             assert_eq!(val, format!("value_{}", id).as_bytes());
         }
     }

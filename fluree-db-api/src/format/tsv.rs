@@ -617,7 +617,7 @@ mod tests {
             &["?flag", "?score"],
             vec![vec![
                 Binding::lit(FlakeValue::Boolean(true), Sid::new(2, "boolean")),
-                Binding::lit(FlakeValue::Double(3.14), Sid::new(2, "double")),
+                Binding::lit(FlakeValue::Double(3.15), Sid::new(2, "double")),
             ]],
         );
         let tsv = format_tsv(&result, &db).unwrap();

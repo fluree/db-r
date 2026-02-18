@@ -2529,6 +2529,7 @@ dependencies = [
  "moka",
  "num-bigint",
  "num-traits",
+ "once_cell",
  "parking_lot",
  "rustc-hash",
  "serde",
