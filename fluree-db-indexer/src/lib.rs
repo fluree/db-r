@@ -953,7 +953,7 @@ where
 
                 fluree_db_core::index_stats::IndexStats {
                     flakes: id_result.total_flakes,
-                    size: 0,
+                    size: total_commit_size,
                     properties: if properties.is_empty() {
                         None
                     } else {
