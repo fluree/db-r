@@ -5,8 +5,9 @@
 //! - `eval_to_binding*()` - evaluate to Binding for BIND operator
 //! - `eval_to_comparable()` - evaluate to ComparableValue
 
-use crate::binding::{Binding, RowAccess, RowView};
+use crate::binding::{Binding, BindingRow, RowAccess, RowView};
 use crate::context::ExecutionContext;
+use crate::var_registry::VarId;
 use crate::error::{QueryError, Result};
 use crate::ir::{Expression, FilterValue, Function};
 use std::sync::Arc;
@@ -167,6 +168,27 @@ impl Expression {
         };
         comparable.to_binding(ctx)
     }
+}
+
+/// Check whether a row of bindings passes all inline filter expressions.
+///
+/// Returns `true` if `filters` is empty or every expression evaluates to `true`.
+/// Any expression that errors or evaluates to `false` causes the entire check
+/// to return `false`.
+///
+/// This is the single point of inline-filter evaluation shared by
+/// `ScanOperator`, `NestedLoopJoinOperator`, and any future operator that
+/// supports inline filters.
+pub fn passes_filters(
+    filters: &[Expression],
+    schema: &[VarId],
+    bindings: &[Binding],
+    ctx: Option<&ExecutionContext<'_>>,
+) -> bool {
+    filters.iter().all(|expr| {
+        let row = BindingRow::new(schema, bindings);
+        expr.eval_to_bool(&row, ctx).unwrap_or(false)
+    })
 }
 
 #[cfg(test)]

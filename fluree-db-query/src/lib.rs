@@ -112,8 +112,8 @@ pub use optional::OptionalOperator;
 pub use options::QueryOptions;
 pub use pattern::{Term, TriplePattern};
 pub use planner::{
-    can_match_pattern, extract_object_bounds_for_var, extract_range_constraints, is_property_join,
-    plan, reorder_patterns, BindingState, PatternType, PlanResult, RangeConstraint, RangeValue,
+    extract_object_bounds_for_var, extract_range_constraints, is_property_join, PatternType,
+    RangeConstraint, RangeValue,
 };
 pub use policy::{QueryPolicyEnforcer, QueryPolicyExecutor};
 pub use project::ProjectOperator;
