@@ -545,12 +545,7 @@ pub fn build_where_operators_seeded(
                         pending_filters = remaining;
 
                         // Build scan/join for this triple with inline filters
-                        operator = Some(build_scan_or_join(
-                            operator,
-                            tp,
-                            &object_bounds,
-                            inlined,
-                        ));
+                        operator = Some(build_scan_or_join(operator, tp, &object_bounds, inlined));
 
                         // Update bound vars after this triple
                         for v in tp.variables() {

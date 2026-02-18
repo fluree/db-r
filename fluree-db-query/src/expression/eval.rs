@@ -7,9 +7,9 @@
 
 use crate::binding::{Binding, BindingRow, RowAccess, RowView};
 use crate::context::ExecutionContext;
-use crate::var_registry::VarId;
 use crate::error::{QueryError, Result};
 use crate::ir::{Expression, FilterValue, Function};
+use crate::var_registry::VarId;
 use std::sync::Arc;
 
 use super::helpers::has_unbound_vars;

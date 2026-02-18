@@ -26,8 +26,8 @@
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
-use crate::expression::passes_filters;
 use crate::error::{QueryError, Result};
+use crate::expression::passes_filters;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -173,7 +173,11 @@ pub struct BinaryScanOperator {
 
 impl BinaryScanOperator {
     /// Check whether a row should be skipped due to inline filters.
-    fn should_skip_bindings(&self, bindings: &[Binding], ctx: Option<&ExecutionContext<'_>>) -> bool {
+    fn should_skip_bindings(
+        &self,
+        bindings: &[Binding],
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> bool {
         !passes_filters(&self.filters, &self.schema, bindings, ctx)
     }
 
@@ -1513,7 +1517,11 @@ struct RangeScanOperator {
 
 impl RangeScanOperator {
     /// Check whether a row should be skipped due to inline filters.
-    fn should_skip_bindings(&self, bindings: &[Binding], ctx: Option<&ExecutionContext<'_>>) -> bool {
+    fn should_skip_bindings(
+        &self,
+        bindings: &[Binding],
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> bool {
         !passes_filters(&self.filters, &self.schema, bindings, ctx)
     }
 

@@ -6,9 +6,9 @@
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
-use crate::expression::passes_filters;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
+use crate::expression::passes_filters;
 use crate::ir::Expression;
 use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
@@ -182,7 +182,11 @@ pub struct NestedLoopJoinOperator {
 
 impl NestedLoopJoinOperator {
     /// Check whether a combined row should be skipped due to inline filters.
-    fn should_skip_bindings(&self, bindings: &[Binding], ctx: Option<&ExecutionContext<'_>>) -> bool {
+    fn should_skip_bindings(
+        &self,
+        bindings: &[Binding],
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> bool {
         !passes_filters(&self.filters, &self.combined_schema, bindings, ctx)
     }
 
