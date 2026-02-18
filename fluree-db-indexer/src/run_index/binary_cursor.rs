@@ -697,7 +697,7 @@ impl BinaryCursor {
             return Ok(None);
         }
 
-        let span = tracing::info_span!(
+        let span = tracing::trace_span!(
             "binary_cursor_next_leaf",
             order = self.order.dir_name(),
             g_id = self.g_id,

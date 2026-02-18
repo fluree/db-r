@@ -8,3 +8,4 @@ services:
       - "16686:16686"   # Jaeger UI
     environment:
       - COLLECTOR_OTLP_ENABLED=true
+      - MEMORY_MAX_TRACES=5000

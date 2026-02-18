@@ -190,7 +190,7 @@ impl Operator for GroupByOperator {
                     let next = self
                         .child
                         .next_batch(ctx)
-                        .instrument(tracing::info_span!("groupby_child_next_batch"))
+                        .instrument(tracing::trace_span!("groupby_child_next_batch"))
                         .await?;
                     child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
 
@@ -203,7 +203,7 @@ impl Operator for GroupByOperator {
                     }
 
                     // Process each row
-                    let proc_span = tracing::info_span!(
+                    let proc_span = tracing::trace_span!(
                         "groupby_process_batch",
                         rows = batch.len(),
                         schema_cols = self.schema.len()

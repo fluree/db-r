@@ -405,7 +405,7 @@ impl Operator for SortOperator {
                     let next = self
                         .child
                         .next_batch(ctx)
-                        .instrument(tracing::info_span!("sort_child_next_batch"))
+                        .instrument(tracing::trace_span!("sort_child_next_batch"))
                         .await?;
                     child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
                     let Some(batch) = next else {
@@ -414,7 +414,7 @@ impl Operator for SortOperator {
 
                     input_batches += 1;
                     let build_span =
-                        tracing::info_span!("sort_build_rows_batch", rows = batch.len());
+                        tracing::trace_span!("sort_build_rows_batch", rows = batch.len());
                     let build_start = Instant::now();
                     let _bg = build_span.enter();
                     for row_idx in 0..batch.len() {
@@ -432,12 +432,20 @@ impl Operator for SortOperator {
                 // Late materialization hook:
                 // If the batched-join path produced EncodedLit bindings, we must
                 // materialize ONLY the ORDER BY key columns before sorting.
+                let sort_execute_span = tracing::debug_span!(
+                    "sort_execute",
+                    total_rows = all_rows.len(),
+                    sort_columns = self.sort_col_indices.len(),
+                    materialize = ctx.binary_store.is_some(),
+                );
+                let _sort_exec_guard = sort_execute_span.enter();
                 if let Some(store) = ctx.binary_store.as_deref() {
                     materialize_sort_keys_in_rows(&mut all_rows, &self.sort_col_indices, store);
                 }
                 let sort_start = Instant::now();
                 all_rows.sort_by(|a, b| self.compare_rows(a, b));
                 let sort_ms = (sort_start.elapsed().as_secs_f64() * 1000.0) as u64;
+                drop(_sort_exec_guard);
 
                 span.record("input_batches", input_batches);
                 span.record("input_rows", input_rows);

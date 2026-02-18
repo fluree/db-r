@@ -364,7 +364,11 @@ where
             let content_store =
                 fluree_db_core::storage::content_store_for(storage.clone(), &ledger_id);
 
+            // Phase spans below use .entered() — safe because block_on inside
+            // spawn_blocking pins this async task to a single OS thread.
+
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
+            let _span_a = tracing::info_span!("commit_chain_walk").entered();
             let commit_cids = {
                 let mut cids = Vec::new();
                 let mut current = Some(head_commit_id.clone());
@@ -383,8 +387,11 @@ where
                 cids.reverse(); // chronological order (genesis first)
                 cids
             };
+            drop(_span_a);
 
             // ---- Phase B: Resolve commits into batched chunks ----
+            let _span_b =
+                tracing::info_span!("commit_resolve", commits = commit_cids.len()).entered();
             let mut shared = SharedResolverState::new();
 
             // Pre-insert rdf:type into predicate dictionary so class tracking
@@ -448,8 +455,10 @@ where
                 graphs = shared.graphs.len(),
                 "Phase B complete: all commits resolved into chunks"
             );
+            drop(_span_b);
 
             // ---- Phase C: Dict merge → global IDs + remap tables ----
+            let _span_c = tracing::info_span!("dict_merge_and_remap").entered();
             // Separate dicts from records so merge can borrow owned dicts.
             let mut subject_dicts = Vec::with_capacity(chunks.len());
             let mut string_dicts = Vec::with_capacity(chunks.len());
@@ -652,6 +661,7 @@ where
                 strings = string_merge.total_strings,
                 "Phase C complete: dict merge done"
             );
+            drop(_span_c);
 
             // ---- Phase D: Build SPOT from sorted commits ----
             // Records are already remapped to global IDs, so use identity remaps.
@@ -747,6 +757,7 @@ where
 
             // E.1: Read sorted commit files, partition by g_id, collect stats,
             //      and write per-graph run files via MultiOrderRunWriter.
+            let _span_e12 = tracing::info_span!("secondary_partition").entered();
             let remap_dir = run_dir.join("remap");
             std::fs::create_dir_all(&remap_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
@@ -803,6 +814,7 @@ where
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 graph_run_results.insert(g_id, results);
             }
+            drop(_span_e12);
 
             // E.3: Build per-graph secondary indexes from the run files.
             let mut secondary_results: Vec<(run_index::RunSortOrder, run_index::IndexBuildResult)> =
@@ -900,15 +912,18 @@ where
             // so we use upload_dicts_from_disk which reads the flat files we already wrote.
             let dict_addresses =
                 upload_dicts_from_disk(&storage, &ledger_id, &run_dir, store.namespace_codes())
+                    .instrument(tracing::info_span!("upload_dicts"))
                     .await?;
 
             // F.3: Upload index artifacts (branches + leaves) to CAS.
             // Default graph (g_id=0): leaves uploaded, branch NOT (inline in root).
             // Named graphs: both branches and leaves uploaded.
-            let uploaded_indexes =
-                upload_indexes_to_cas(&storage, &ledger_id, &build_results).await?;
+            let uploaded_indexes = upload_indexes_to_cas(&storage, &ledger_id, &build_results)
+                .instrument(tracing::info_span!("upload_indexes"))
+                .await?;
 
             // F.4: Build IndexStats directly from IdStatsHook + class stats.
+            let _span_f = tracing::info_span!("build_index_root").entered();
             let index_stats: fluree_db_core::index_stats::IndexStats = {
                 let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
                     stats_hook.finalize_with_aggregate_properties();
@@ -1099,6 +1114,7 @@ where
                 )
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            drop(_span_f);
 
             // Clean up ephemeral tmp_import session directory
             if let Err(e) = std::fs::remove_dir_all(&run_dir) {

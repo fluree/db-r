@@ -312,7 +312,10 @@ pub async fn run_operator(
         span.record("from_t", ctx.from_t);
 
         let open_start = Instant::now();
-        operator.open(ctx).await?;
+        operator
+            .open(ctx)
+            .instrument(tracing::debug_span!("operator_open"))
+            .await?;
         span.record(
             "open_ms",
             (open_start.elapsed().as_secs_f64() * 1000.0) as u64,

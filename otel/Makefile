@@ -25,11 +25,11 @@ INDEXING   ?= true
 STRESS_PRODUCTS ?= 50000
 STRESS_BATCH    ?= 500
 
-RUST_LOG   ?= info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug
+RUST_LOG   ?= debug
 
 # ── Infrastructure lifecycle ─────────────────────────────────────────────────
 
-.PHONY: up down reset ui
+.PHONY: up down reset ui jaeger-diag
 
 up: ## Start Jaeger via docker compose
 	docker compose up -d
@@ -45,6 +45,18 @@ reset: ## Restart Jaeger (clears all trace data)
 
 ui: ## Open Jaeger UI in browser
 	@open http://localhost:16686 2>/dev/null || xdg-open http://localhost:16686 2>/dev/null || echo "Open http://localhost:16686"
+
+jaeger-diag: ## Check Jaeger container health, memory, and API status
+	@echo "── Container status ──"
+	@docker inspect fluree-jaeger --format='Running={{.State.Running}}  OOMKilled={{.State.OOMKilled}}  ExitCode={{.State.ExitCode}}' 2>/dev/null || echo "  Container not found"
+	@echo ""
+	@echo "── Memory usage ──"
+	@docker stats fluree-jaeger --no-stream --format='  {{.MemUsage}}  ({{.MemPerc}} of limit)' 2>/dev/null || echo "  Container not running"
+	@echo ""
+	@echo "── API health ──"
+	@curl -sf "http://localhost:16686/api/services" \
+		| python3 -c "import json,sys; d=json.load(sys.stdin); svcs=d.get('data',[]); print(f'  Services: {svcs}  ({len(svcs)} total)')" \
+		2>/dev/null || echo "  API unreachable"
 
 # ── Build ────────────────────────────────────────────────────────────────────
 

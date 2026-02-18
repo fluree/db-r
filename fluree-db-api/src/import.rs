@@ -838,127 +838,128 @@ where
     let span = tracing::info_span!("bulk_import", alias = %alias);
 
     async {
-    // ---- Log effective settings and resolve chunk source ----
-    config.log_effective_settings();
-    let chunk_source = resolve_chunk_source(import_path, config)?;
-    let estimated_total = chunk_source.estimated_len();
-    tracing::info!(
-        estimated_chunks = estimated_total,
-        streaming = chunk_source.is_streaming(),
-        path = %import_path.display(),
-        "resolved import chunks"
-    );
+        // ---- Log effective settings and resolve chunk source ----
+        config.log_effective_settings();
+        let chunk_source = resolve_chunk_source(import_path, config)?;
+        let estimated_total = chunk_source.estimated_len();
+        tracing::info!(
+            estimated_chunks = estimated_total,
+            streaming = chunk_source.is_streaming(),
+            path = %import_path.display(),
+            "resolved import chunks"
+        );
 
-    // ---- Phase 1: Create ledger (init nameservice) ----
-    let normalized_alias =
-        fluree_db_core::ledger_id::normalize_ledger_id(alias).unwrap_or_else(|_| alias.to_string());
+        // ---- Phase 1: Create ledger (init nameservice) ----
+        let normalized_alias = fluree_db_core::ledger_id::normalize_ledger_id(alias)
+            .unwrap_or_else(|_| alias.to_string());
 
-    // Check if ledger already exists
-    let ns_record = nameservice
-        .lookup(&normalized_alias)
-        .await
-        .map_err(|e| ImportError::Storage(e.to_string()))?;
-
-    let needs_init = match &ns_record {
-        None => true,
-        Some(record) if record.retracted => {
-            // Ledger was dropped — safe to re-create.
-            tracing::info!(alias = %normalized_alias, "re-initializing retracted ledger");
-            true
-        }
-        Some(record) if record.commit_t > 0 || record.commit_head_id.is_some() => {
-            return Err(ImportError::Transact(format!(
-                "import requires a fresh ledger, but '{}' already has commits (t={})",
-                normalized_alias, record.commit_t
-            )));
-        }
-        Some(_) => false,
-    };
-
-    if needs_init {
-        nameservice
-            .publish_ledger_init(&normalized_alias)
+        // Check if ledger already exists
+        let ns_record = nameservice
+            .lookup(&normalized_alias)
             .await
             .map_err(|e| ImportError::Storage(e.to_string()))?;
-        tracing::info!(alias = %normalized_alias, "initialized new ledger in nameservice");
-    }
 
-    // ---- Set up session directory for runs/indexes ----
-    let alias_prefix = fluree_db_core::address_path::ledger_id_to_path_prefix(&normalized_alias)
-        .unwrap_or_else(|_| normalized_alias.replace(':', "/"));
+        let needs_init = match &ns_record {
+            None => true,
+            Some(record) if record.retracted => {
+                // Ledger was dropped — safe to re-create.
+                tracing::info!(alias = %normalized_alias, "re-initializing retracted ledger");
+                true
+            }
+            Some(record) if record.commit_t > 0 || record.commit_head_id.is_some() => {
+                return Err(ImportError::Transact(format!(
+                    "import requires a fresh ledger, but '{}' already has commits (t={})",
+                    normalized_alias, record.commit_t
+                )));
+            }
+            Some(_) => false,
+        };
 
-    // Derive session dir from storage's data directory.
-    // For file storage: {data_dir}/{alias_path}/tmp_import/{session_id}/
-    let sid = session_id();
-    let session_dir = derive_session_dir(storage, &alias_prefix, &sid);
-    let run_dir = session_dir.join("runs");
-    let index_dir = session_dir.join("index");
-    std::fs::create_dir_all(&run_dir)?;
+        if needs_init {
+            nameservice
+                .publish_ledger_init(&normalized_alias)
+                .await
+                .map_err(|e| ImportError::Storage(e.to_string()))?;
+            tracing::info!(alias = %normalized_alias, "initialized new ledger in nameservice");
+        }
 
-    tracing::info!(
-        session_dir = %session_dir.display(),
-        run_dir = %run_dir.display(),
-        "import session directory created"
-    );
+        // ---- Set up session directory for runs/indexes ----
+        let alias_prefix =
+            fluree_db_core::address_path::ledger_id_to_path_prefix(&normalized_alias)
+                .unwrap_or_else(|_| normalized_alias.replace(':', "/"));
 
-    // ---- Phases 2-6: Import, build, upload, publish ----
-    // Wrapped in a helper to ensure cleanup semantics:
-    // - On success or failure + cleanup_local_files=true → delete session dir
-    // - If cleanup itself fails → log warning, do not fail import
-    let paths = PipelinePaths {
-        run_dir: &run_dir,
-        index_dir: &index_dir,
-    };
-    let chunk_source = std::sync::Arc::new(chunk_source);
-    let pipeline_result = run_pipeline_phases(
-        storage,
-        nameservice,
-        &normalized_alias,
-        &chunk_source,
-        paths,
-        config,
-        pipeline_start,
-    )
-    .await;
+        // Derive session dir from storage's data directory.
+        // For file storage: {data_dir}/{alias_path}/tmp_import/{session_id}/
+        let sid = session_id();
+        let session_dir = derive_session_dir(storage, &alias_prefix, &sid);
+        let run_dir = session_dir.join("runs");
+        let index_dir = session_dir.join("index");
+        std::fs::create_dir_all(&run_dir)?;
 
-    // Cleanup session dir on both success and failure to avoid accumulating
-    // hundreds of GB of orphaned temp files from failed imports.
-    if config.cleanup_local_files {
-        if let Err(e) = std::fs::remove_dir_all(&session_dir) {
-            tracing::warn!(
-                session_dir = %session_dir.display(),
-                error = %e,
-                "failed to clean up import session directory"
-            );
+        tracing::info!(
+            session_dir = %session_dir.display(),
+            run_dir = %run_dir.display(),
+            "import session directory created"
+        );
+
+        // ---- Phases 2-6: Import, build, upload, publish ----
+        // Wrapped in a helper to ensure cleanup semantics:
+        // - On success or failure + cleanup_local_files=true → delete session dir
+        // - If cleanup itself fails → log warning, do not fail import
+        let paths = PipelinePaths {
+            run_dir: &run_dir,
+            index_dir: &index_dir,
+        };
+        let chunk_source = std::sync::Arc::new(chunk_source);
+        let pipeline_result = run_pipeline_phases(
+            storage,
+            nameservice,
+            &normalized_alias,
+            &chunk_source,
+            paths,
+            config,
+            pipeline_start,
+        )
+        .await;
+
+        // Cleanup session dir on both success and failure to avoid accumulating
+        // hundreds of GB of orphaned temp files from failed imports.
+        if config.cleanup_local_files {
+            if let Err(e) = std::fs::remove_dir_all(&session_dir) {
+                tracing::warn!(
+                    session_dir = %session_dir.display(),
+                    error = %e,
+                    "failed to clean up import session directory"
+                );
+            } else {
+                tracing::info!(
+                    session_dir = %session_dir.display(),
+                    "import session directory cleaned up"
+                );
+            }
         } else {
             tracing::info!(
                 session_dir = %session_dir.display(),
-                "import session directory cleaned up"
+                "cleanup disabled; import artifacts retained"
             );
         }
-    } else {
-        tracing::info!(
-            session_dir = %session_dir.display(),
-            "cleanup disabled; import artifacts retained"
-        );
-    }
 
-    match pipeline_result {
-        Ok(result) => {
-            let total_elapsed = pipeline_start.elapsed();
-            tracing::info!(
-                alias = %normalized_alias,
-                t = result.t,
-                flakes = result.flake_count,
-                root_id = ?result.root_id,
-                elapsed = ?total_elapsed,
-                "bulk import pipeline complete"
-            );
+        match pipeline_result {
+            Ok(result) => {
+                let total_elapsed = pipeline_start.elapsed();
+                tracing::info!(
+                    alias = %normalized_alias,
+                    t = result.t,
+                    flakes = result.flake_count,
+                    root_id = ?result.root_id,
+                    elapsed = ?total_elapsed,
+                    "bulk import pipeline complete"
+                );
 
-            Ok(result)
+                Ok(result)
+            }
+            Err(e) => Err(e),
         }
-        Err(e) => Err(e),
-    }
     }
     .instrument(span)
     .await
