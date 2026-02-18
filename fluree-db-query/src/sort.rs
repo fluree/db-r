@@ -376,7 +376,7 @@ impl Operator for SortOperator {
 
         // First call: buffer all input and sort
         if self.buffer.is_none() {
-            let span = tracing::info_span!(
+            let span = tracing::debug_span!(
                 "sort_blocking",
                 sort_keys = self.sort_col_indices.len(),
                 schema_cols = self.schema.len(),

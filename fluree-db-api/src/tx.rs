@@ -1103,7 +1103,7 @@ where
     ) -> Result<StageResult> {
         use fluree_db_transact::{generate_txn_id, stage_flakes, FlakeSink};
 
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "stage_turtle_insert",
             ledger_t = ledger.t(),
             new_t = ledger.t() + 1,
@@ -1116,7 +1116,7 @@ where
         let txn_id = generate_txn_id();
 
         // Parse Turtle directly to flakes
-        let parse_span = tracing::info_span!("turtle_parse_to_flakes", turtle_bytes = turtle.len());
+        let parse_span = tracing::debug_span!("turtle_parse_to_flakes", turtle_bytes = turtle.len());
         let flakes = {
             let _g = parse_span.enter();
             let mut sink = FlakeSink::new(&mut ns_registry, new_t, txn_id);

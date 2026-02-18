@@ -186,7 +186,7 @@ impl Operator for AggregateOperator {
             return Ok(None);
         }
 
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "aggregate_batch",
             aggregates = self.aggregates.len(),
             rows_in = tracing::field::Empty,

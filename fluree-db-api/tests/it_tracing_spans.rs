@@ -120,7 +120,7 @@ async fn ac1_fql_query_waterfall() {
     assert_eq!(plan.level, tracing::Level::DEBUG, "plan should be DEBUG");
 
     let qr = store.find_span("query_run").unwrap();
-    assert_eq!(qr.level, tracing::Level::INFO, "query_run should be INFO");
+    assert_eq!(qr.level, tracing::Level::DEBUG, "query_run should be DEBUG");
 
     // Verify parent-child: reasoning_prep should be child of query_prepare
     assert_eq!(
@@ -230,8 +230,8 @@ async fn ac2a_insert_waterfall() {
     let stage = store.find_span("txn_stage").unwrap();
     assert_eq!(
         stage.level,
-        tracing::Level::INFO,
-        "txn_stage should be INFO"
+        tracing::Level::DEBUG,
+        "txn_stage should be DEBUG"
     );
 
     // Insert should produce insert_gen and cancellation sub-spans
@@ -269,8 +269,8 @@ async fn ac2a_insert_waterfall() {
     let commit = store.find_span("txn_commit").unwrap();
     assert_eq!(
         commit.level,
-        tracing::Level::INFO,
-        "txn_commit should be INFO"
+        tracing::Level::DEBUG,
+        "txn_commit should be DEBUG"
     );
 
     // Verify commit sub-spans exist (key I/O phases)
@@ -438,11 +438,14 @@ async fn ac5_zero_noise_at_info() {
         trace_spans.iter().map(|s| s.name).collect::<Vec<_>>()
     );
 
-    // But info-level spans SHOULD be captured (txn_stage, txn_commit from seeding, query_run from query)
-    let info_spans = store.info_spans();
+    // All operation spans are now debug_span!, so at INFO level the API layer
+    // should produce ZERO spans. This validates the true zero-overhead guarantee:
+    // without otel or debug logging, no span metadata is allocated.
+    let all_spans = store.span_names();
     assert!(
-        !info_spans.is_empty(),
-        "INFO-level spans should still be captured"
+        all_spans.is_empty(),
+        "At INFO level, zero spans should be captured from the API layer (all are debug_span!). Found: {:?}",
+        all_spans
     );
 }
 
@@ -581,8 +584,8 @@ async fn ac4_commit_subspan_hierarchy() {
         let child = child.unwrap();
         assert_eq!(
             child.level,
-            tracing::Level::INFO,
-            "{child_name} should be INFO level"
+            tracing::Level::DEBUG,
+            "{child_name} should be DEBUG level"
         );
         assert_eq!(
             child.parent_name.as_deref(),

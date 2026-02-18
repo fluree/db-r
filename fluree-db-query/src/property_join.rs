@@ -327,7 +327,7 @@ impl Operator for PropertyJoinOperator {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "property_join_open",
             predicates = self.predicates.len(),
             multi_ledger = ctx.is_multi_ledger(),

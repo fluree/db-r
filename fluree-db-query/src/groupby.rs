@@ -162,7 +162,7 @@ impl Operator for GroupByOperator {
 
         // If we haven't consumed all input yet, do so now
         if self.emit_iter.is_none() {
-            let span = tracing::info_span!(
+            let span = tracing::debug_span!(
                 "groupby_blocking",
                 group_key_cols = self.group_key_indices.len(),
                 schema_cols = self.schema.len(),

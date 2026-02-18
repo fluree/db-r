@@ -580,7 +580,7 @@ impl Operator for GroupAggregateOperator {
 
         // If we haven't consumed all input yet, do so now (streaming aggregation)
         if self.emit_iter.is_none() {
-            let span = tracing::info_span!(
+            let span = tracing::debug_span!(
                 "group_aggregate_streaming",
                 group_key_cols = self.group_key_indices.len(),
                 agg_count = self.agg_specs.len(),

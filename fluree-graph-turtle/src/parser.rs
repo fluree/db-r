@@ -93,7 +93,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
 
     /// Parse the entire Turtle document.
     pub fn parse(mut self) -> Result<()> {
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "turtle_parse_events",
             statement_count = tracing::field::Empty,
             iri_cache_hits = tracing::field::Empty,

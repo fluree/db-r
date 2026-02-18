@@ -835,7 +835,7 @@ where
     N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
 {
     let pipeline_start = Instant::now();
-    let span = tracing::info_span!("bulk_import", alias = %alias);
+    let span = tracing::debug_span!("bulk_import", alias = %alias);
 
     async {
         // ---- Log effective settings and resolve chunk source ----

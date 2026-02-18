@@ -1139,7 +1139,7 @@ async fn execute_transaction(
     author: Option<&str>,
 ) -> Result<Json<TransactResponse>> {
     // Create execution span
-    let span = tracing::info_span!("transact_execute", ledger_id = ledger_id, txn_type = ?txn_type);
+    let span = tracing::debug_span!("transact_execute", ledger_id = ledger_id, txn_type = ?txn_type);
     async move {
         let span = tracing::Span::current();
 
@@ -1257,7 +1257,7 @@ async fn execute_turtle_transaction(
 
     // Create execution span
     let format = if is_trig { "trig" } else { "turtle" };
-    let span = tracing::info_span!("transact_execute", ledger_id = ledger_id, txn_type = ?txn_type, format = format);
+    let span = tracing::debug_span!("transact_execute", ledger_id = ledger_id, txn_type = ?txn_type, format = format);
     async move {
         let span = tracing::Span::current();
 

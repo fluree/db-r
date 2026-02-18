@@ -4,6 +4,7 @@
 //! Follows the logging plan for performance-conscious observability.
 
 use crate::config::ServerConfig;
+use std::borrow::Cow;
 use std::env;
 #[cfg(feature = "otel")]
 use tracing_subscriber::filter::Targets;
@@ -384,9 +385,9 @@ pub fn create_request_span(
     tenant_id: Option<&str>,
     input_format: Option<&str>,
 ) -> tracing::Span {
-    let otel_name = match input_format {
-        Some(fmt) => format!("{operation}:{fmt}"),
-        None => operation.to_string(),
+    let otel_name: Cow<'_, str> = match input_format {
+        Some(fmt) => format!("{operation}:{fmt}").into(),
+        None => operation.into(),
     };
     tracing::info_span!(
         "request",

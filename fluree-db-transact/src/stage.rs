@@ -131,7 +131,7 @@ pub async fn stage(
     mut ns_registry: NamespaceRegistry,
     options: StageOptions<'_>,
 ) -> Result<(LedgerView, NamespaceRegistry)> {
-    let span = tracing::info_span!("txn_stage",
+    let span = tracing::debug_span!("txn_stage",
         current_t = ledger.t(),
         txn_type = ?txn.txn_type,
         insert_count = txn.insert_templates.len(),
@@ -298,7 +298,7 @@ pub async fn stage_flakes(
     flakes: Vec<Flake>,
     options: StageOptions<'_>,
 ) -> Result<LedgerView> {
-    let span = tracing::info_span!("stage_flakes", flake_count = flakes.len());
+    let span = tracing::debug_span!("stage_flakes", flake_count = flakes.len());
     async move {
         // 1. Backpressure check
         if let Some(config) = options.index_config {

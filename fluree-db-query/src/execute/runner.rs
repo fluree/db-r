@@ -289,7 +289,7 @@ pub async fn run_operator(
     ctx: &ExecutionContext<'_>,
 ) -> Result<Vec<Batch>> {
     let op_type = std::any::type_name_of_val(operator.as_ref());
-    let span = tracing::info_span!(
+    let span = tracing::debug_span!(
         "query_run",
         operator = op_type,
         to_t = ctx.to_t,

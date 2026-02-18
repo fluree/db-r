@@ -632,7 +632,7 @@ impl Operator for NestedLoopJoinOperator {
                 let batch_len = self.current_left_batch.as_ref().unwrap().len();
                 let remaining = batch_len.saturating_sub(self.current_left_row);
                 if remaining > 0 {
-                    let span = tracing::info_span!(
+                    let span = tracing::debug_span!(
                         "join_resolve_per_row",
                         left_rows = remaining,
                         right_scans = tracing::field::Empty,
@@ -927,7 +927,7 @@ impl NestedLoopJoinOperator {
 
         let accum_len = self.batched_accumulator.len();
         self.flush_batched_accumulator_binary(ctx)
-            .instrument(tracing::info_span!(
+            .instrument(tracing::debug_span!(
                 "join_flush_batched_binary",
                 accum_len,
                 batch_size = ctx.batch_size,
@@ -1041,7 +1041,7 @@ impl NestedLoopJoinOperator {
         let cache = store.leaflet_cache();
         let total_leaf_count: usize = leaf_range.end.saturating_sub(leaf_range.start);
 
-        let scan_span = tracing::info_span!(
+        let scan_span = tracing::debug_span!(
             "join_flush_scan_spot",
             unique_subjects = unique_s_ids.len(),
             s_id_min = unique_s_ids.first().copied().unwrap_or(0),

@@ -169,7 +169,7 @@ where
         graph_delta,
     } = opts;
 
-    let commit_span = tracing::info_span!(
+    let commit_span = tracing::debug_span!(
         "txn_commit",
         alias = base.ledger_id(),
         base_t = base.t(),
@@ -210,10 +210,10 @@ where
         // 5. Verify sequencing
         let current = nameservice
             .lookup(base.ledger_id())
-            .instrument(tracing::info_span!("commit_nameservice_lookup"))
+            .instrument(tracing::debug_span!("commit_nameservice_lookup"))
             .await?;
         {
-            let span = tracing::info_span!("commit_verify_sequencing");
+            let span = tracing::debug_span!("commit_verify_sequencing");
             let _g = span.enter();
             verify_sequencing(&base, current.as_ref())?;
         }
@@ -227,7 +227,7 @@ where
         // - apply to returned in-memory Db so subsequent operations (e.g., SPARQL/JSON-LD queries)
         //   can encode IRIs without requiring a reload.
         let ns_delta = {
-            let span = tracing::info_span!("commit_namespace_delta");
+            let span = tracing::debug_span!("commit_namespace_delta");
             let _g = span.enter();
             ns_registry.take_delta()
         };
@@ -253,7 +253,7 @@ where
                     .await?;
                 Ok::<_, TransactError>((txn_bytes, res))
             }
-            .instrument(tracing::info_span!("commit_write_raw_txn"))
+            .instrument(tracing::debug_span!("commit_write_raw_txn"))
             .await?;
             tracing::info!(raw_txn_bytes = txn_bytes.len(), "raw txn stored");
             // Derive ContentId from the content hash in the write result
@@ -263,7 +263,7 @@ where
         };
 
         let mut commit_record = {
-            let span = tracing::info_span!("commit_build_record");
+            let span = tracing::debug_span!("commit_build_record");
             let _g = span.enter();
             Commit::new(new_t, flakes)
                 .with_namespace_delta(ns_delta)
@@ -302,7 +302,7 @@ where
         // SHA-256 hash after writing.
 
         let (commit_cid, commit_hash_hex, bytes) = {
-            let span = tracing::info_span!("commit_write_commit_blob");
+            let span = tracing::debug_span!("commit_write_commit_blob");
             let _g = span.enter();
             let signing = signing_key
                 .as_ref()
@@ -330,14 +330,14 @@ where
         // 8. Publish to nameservice
         nameservice
             .publish_commit(base.ledger_id(), new_t, &commit_cid)
-            .instrument(tracing::info_span!("commit_publish_nameservice"))
+            .instrument(tracing::debug_span!("commit_publish_nameservice"))
             .await?;
 
         // 9. Generate commit metadata flakes (Clojure parity)
         // Note: We merge these into novelty only, not into commit_record.flakes
         // (matching Clojure's behavior where metadata flakes are derived separately)
         let commit_metadata_flakes = {
-            let span = tracing::info_span!("commit_generate_metadata_flakes");
+            let span = tracing::debug_span!("commit_generate_metadata_flakes");
             let _g = span.enter();
             generate_commit_flakes(&commit_record, base.ledger_id(), new_t)
         };
@@ -353,14 +353,14 @@ where
         // 10.1 Populate DictNovelty with subjects/strings from this commit
         let mut dict_novelty = base.dict_novelty.clone();
         {
-            let span = tracing::info_span!("commit_populate_dict_novelty");
+            let span = tracing::debug_span!("commit_populate_dict_novelty");
             let _g = span.enter();
             populate_dict_novelty(Arc::make_mut(&mut dict_novelty), &all_flakes);
         }
 
         let mut new_novelty = Arc::clone(&base.novelty);
         {
-            let span = tracing::info_span!("commit_apply_to_novelty");
+            let span = tracing::debug_span!("commit_apply_to_novelty");
             let _g = span.enter();
             Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t)?;
         }

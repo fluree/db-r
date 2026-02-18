@@ -56,7 +56,7 @@ pub async fn stats(
     State(state): State<Arc<AppState>>,
     _headers: FlureeHeaders,
 ) -> Json<StatsResponse> {
-    let span = tracing::info_span!("stats");
+    let span = tracing::debug_span!("stats");
     async move {
         let _span = tracing::Span::current();
 

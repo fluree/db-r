@@ -460,7 +460,7 @@ async fn execute_query(
     query_json: &JsonValue,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create execution span
-    let span = tracing::info_span!(
+    let span = tracing::debug_span!(
         "query_execute",
         ledger_id = ledger_id,
         query_kind = "jsonld",
@@ -661,7 +661,7 @@ async fn execute_sparql_ledger(
     identity: Option<&str>,
 ) -> Result<(HeaderMap, Json<JsonValue>)> {
     // Create span for peer mode loading
-    let span = tracing::info_span!("sparql_execute", ledger_id = ledger_id);
+    let span = tracing::debug_span!("sparql_execute", ledger_id = ledger_id);
     async move {
         let span = tracing::Span::current();
 
