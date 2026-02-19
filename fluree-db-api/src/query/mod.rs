@@ -219,32 +219,63 @@ impl QueryResult {
 
     /// Format as tab-separated values (high-performance path).
     ///
-    /// Bypasses IRI compaction and JSON DOM construction entirely.
-    /// IRIs are output in full (`namespace_prefix + name`, no `@context` shortening).
-    /// Returns a `String`.
+    /// Bypasses JSON DOM construction entirely. IRIs are compacted via `@context`.
     pub fn to_tsv(&self, db: &Db) -> format::Result<String> {
-        format::tsv::format_tsv(self, db)
+        format::delimited::format_tsv(self, db)
     }
 
     /// Format as TSV bytes (high-performance path for server use).
     ///
     /// Returns raw `Vec<u8>` suitable for direct HTTP response body.
     pub fn to_tsv_bytes(&self, db: &Db) -> format::Result<Vec<u8>> {
-        format::tsv::format_tsv_bytes(self, db)
+        format::delimited::format_tsv_bytes(self, db)
     }
 
     /// Format as TSV string with a row limit (for benchmark/preview).
     ///
     /// Returns `(tsv_string, total_row_count)`.
     pub fn to_tsv_limited(&self, db: &Db, limit: usize) -> format::Result<(String, usize)> {
-        format::tsv::format_tsv_limited(self, db, limit)
+        format::delimited::format_tsv_limited(self, db, limit)
     }
 
     /// Format as TSV bytes with a row limit (for server benchmark/preview).
     ///
     /// Returns `(tsv_bytes, total_row_count)`.
     pub fn to_tsv_bytes_limited(&self, db: &Db, limit: usize) -> format::Result<(Vec<u8>, usize)> {
-        format::tsv::format_tsv_bytes_limited(self, db, limit)
+        format::delimited::format_tsv_bytes_limited(self, db, limit)
+    }
+
+    // ========================================================================
+    // CSV formatting (high-performance path)
+    // ========================================================================
+
+    /// Format as comma-separated values (high-performance path).
+    ///
+    /// Bypasses JSON DOM construction entirely. IRIs are compacted via `@context`.
+    /// Uses RFC 4180 quoting for values containing commas, quotes, or newlines.
+    pub fn to_csv(&self, db: &Db) -> format::Result<String> {
+        format::delimited::format_csv(self, db)
+    }
+
+    /// Format as CSV bytes (high-performance path for server use).
+    ///
+    /// Returns raw `Vec<u8>` suitable for direct HTTP response body.
+    pub fn to_csv_bytes(&self, db: &Db) -> format::Result<Vec<u8>> {
+        format::delimited::format_csv_bytes(self, db)
+    }
+
+    /// Format as CSV string with a row limit (for benchmark/preview).
+    ///
+    /// Returns `(csv_string, total_row_count)`.
+    pub fn to_csv_limited(&self, db: &Db, limit: usize) -> format::Result<(String, usize)> {
+        format::delimited::format_csv_limited(self, db, limit)
+    }
+
+    /// Format as CSV bytes with a row limit (for server benchmark/preview).
+    ///
+    /// Returns `(csv_bytes, total_row_count)`.
+    pub fn to_csv_bytes_limited(&self, db: &Db, limit: usize) -> format::Result<(Vec<u8>, usize)> {
+        format::delimited::format_csv_bytes_limited(self, db, limit)
     }
 
     // ========================================================================

@@ -7,8 +7,9 @@
 //! - **SPARQL JSON** (`OutputFormat::SparqlJson`): W3C SPARQL 1.1 Query Results JSON
 //! - **TypedJson** (`OutputFormat::TypedJson`): Always includes explicit datatypes
 //!
-//! **Text formats** (produce `String` / `Vec<u8>` directly):
-//! - **TSV** (`OutputFormat::Tsv`): High-performance tab-separated values
+//! **Delimited-text formats** (produce `String` / `Vec<u8>` directly):
+//! - **TSV** (`OutputFormat::Tsv`): Tab-separated values
+//! - **CSV** (`OutputFormat::Csv`): Comma-separated values (RFC 4180)
 //!
 //! # Sync vs Async Formatting
 //!
@@ -16,10 +17,10 @@
 //! queries** require async database access for property expansion and must use
 //! `format_results_async()` instead.
 //!
-//! # TSV Fast Path
+//! # Delimited-Text Fast Path
 //!
-//! TSV bypasses IRI compaction, JSON DOM construction, and JSON serialization.
-//! Use `format_results_string()` or `QueryResult::to_tsv()` / `to_tsv_bytes()` —
+//! TSV and CSV bypass JSON DOM construction and JSON serialization.
+//! Use `format_results_string()` or `QueryResult::to_tsv()` / `to_csv()` —
 //! **not** `format_results()` (which returns `JsonValue`).
 //!
 //! # Example
@@ -33,19 +34,20 @@
 //! // For graph crawl queries (async)
 //! let json = format_results_async(&result, &parsed.context, &ledger.db, &FormatterConfig::jsonld()).await?;
 //!
-//! // For TSV (high-performance)
+//! // For TSV/CSV (high-performance)
 //! let tsv = result.to_tsv(&ledger.db)?;
+//! let csv = result.to_csv(&ledger.db)?;
 //! ```
 
 pub mod config;
 mod construct;
 pub mod datatype;
+pub mod delimited;
 mod graph_crawl;
 pub mod iri;
 mod jsonld;
 mod materialize;
 mod sparql;
-pub mod tsv;
 mod typed;
 
 pub use config::{FormatterConfig, JsonLdRowShape, OutputFormat, SelectMode};
@@ -101,13 +103,13 @@ pub fn format_results(
     db: &Db,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
-    // TSV produces bytes/String, not JsonValue. Reject early before IriCompactor.
-    if config.format == OutputFormat::Tsv {
-        return Err(FormatError::InvalidBinding(
-            "TSV format produces bytes/String, not JsonValue. \
-             Use format_results_string(), QueryResult::to_tsv(), or to_tsv_bytes() instead."
-                .to_string(),
-        ));
+    // Delimited-text formats produce bytes/String, not JsonValue. Reject early.
+    if matches!(config.format, OutputFormat::Tsv | OutputFormat::Csv) {
+        return Err(FormatError::InvalidBinding(format!(
+            "{:?} format produces bytes/String, not JsonValue. \
+             Use format_results_string() or QueryResult::to_tsv()/to_csv() instead.",
+            config.format
+        )));
     }
 
     let compactor = IriCompactor::new(db.namespaces(), context);
@@ -144,7 +146,9 @@ pub fn format_results(
         OutputFormat::JsonLd => jsonld::format(result, &compactor, config),
         OutputFormat::SparqlJson => sparql::format(result, &compactor, config),
         OutputFormat::TypedJson => typed::format(result, &compactor, config),
-        OutputFormat::Tsv => unreachable!("TSV rejected before IriCompactor construction"),
+        OutputFormat::Tsv | OutputFormat::Csv => {
+            unreachable!("Delimited formats rejected before dispatch")
+        }
     }
 }
 
@@ -160,9 +164,11 @@ pub fn format_results_string(
     db: &Db,
     config: &FormatterConfig,
 ) -> Result<String> {
-    // TSV fast-path: skip IriCompactor, JSON DOM, JSON serialization entirely
-    if config.format == OutputFormat::Tsv {
-        return tsv::format_tsv(result, db);
+    // Delimited-text fast-path: skip JSON DOM and JSON serialization entirely
+    match config.format {
+        OutputFormat::Tsv => return delimited::format_tsv(result, db),
+        OutputFormat::Csv => return delimited::format_csv(result, db),
+        _ => {}
     }
 
     let value = format_results(result, context, db, config)?;
@@ -209,13 +215,13 @@ pub async fn format_results_async(
     policy: Option<&fluree_db_policy::PolicyContext>,
     tracker: Option<&Tracker>,
 ) -> Result<JsonValue> {
-    // TSV produces bytes/String, not JsonValue. Reject early before IriCompactor.
-    if config.format == OutputFormat::Tsv {
-        return Err(FormatError::InvalidBinding(
-            "TSV format produces bytes/String, not JsonValue. \
-             Use format_results_string(), QueryResult::to_tsv(), or to_tsv_bytes() instead."
-                .to_string(),
-        ));
+    // Delimited-text formats produce bytes/String, not JsonValue. Reject early.
+    if matches!(config.format, OutputFormat::Tsv | OutputFormat::Csv) {
+        return Err(FormatError::InvalidBinding(format!(
+            "{:?} format produces bytes/String, not JsonValue. \
+             Use format_results_string() or QueryResult::to_tsv()/to_csv() instead.",
+            config.format
+        )));
     }
 
     let compactor = IriCompactor::new(db.namespaces(), context);
@@ -259,7 +265,9 @@ pub async fn format_results_async(
         OutputFormat::JsonLd => jsonld::format(result, &compactor, config),
         OutputFormat::SparqlJson => sparql::format(result, &compactor, config),
         OutputFormat::TypedJson => typed::format(result, &compactor, config),
-        OutputFormat::Tsv => unreachable!("TSV rejected before IriCompactor construction"),
+        OutputFormat::Tsv | OutputFormat::Csv => {
+            unreachable!("Delimited formats rejected before dispatch")
+        }
     }
 }
 
@@ -281,9 +289,11 @@ pub async fn format_results_string_async(
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
 ) -> Result<String> {
-    // TSV fast-path: skip IriCompactor, JSON DOM, JSON serialization entirely
-    if config.format == OutputFormat::Tsv {
-        return tsv::format_tsv(result, db);
+    // Delimited-text fast-path: skip JSON DOM and JSON serialization entirely
+    match config.format {
+        OutputFormat::Tsv => return delimited::format_tsv(result, db),
+        OutputFormat::Csv => return delimited::format_csv(result, db),
+        _ => {}
     }
 
     let value = format_results_async(result, context, db, config, policy, None).await?;

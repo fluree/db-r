@@ -184,6 +184,17 @@ impl FlureeHeaders {
             .unwrap_or(false)
     }
 
+    /// Check if the client explicitly requests CSV output via Accept header.
+    ///
+    /// Matches `text/csv` (case-insensitive).
+    /// Does NOT match `*/*` — CSV must be explicitly requested.
+    pub fn wants_csv(&self) -> bool {
+        self.accept
+            .as_ref()
+            .map(|a| a.to_ascii_lowercase().contains("text/csv"))
+            .unwrap_or(false)
+    }
+
     /// Check if this is a JWT/JWS based on Content-Type
     pub fn is_jwt(&self) -> bool {
         self.content_type

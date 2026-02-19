@@ -111,10 +111,10 @@ pub async fn run(
                     "time-travel (--at) is not supported for tracked ledgers".to_string(),
                 ));
             }
-            if output_format == OutputFormatKind::Tsv {
+            if matches!(output_format, OutputFormatKind::Tsv | OutputFormatKind::Csv) {
                 return Err(CliError::Usage(
-                    "--format tsv is not supported for tracked (remote) ledgers; \
-                     use json, table, or csv instead"
+                    "--format tsv/csv is not supported for tracked (remote) ledgers; \
+                     use json or table instead"
                         .to_string(),
                 ));
             }
@@ -210,19 +210,29 @@ pub async fn run(
                         print_footer(total_rows, Some(BENCH_ROWS), elapsed);
                     }
                 }
-            } else if output_format == OutputFormatKind::Tsv {
-                // TSV fast path: write bytes directly to stdout (no JSON intermediate).
+            } else if matches!(output_format, OutputFormatKind::Tsv | OutputFormatKind::Csv) {
+                // Delimited fast path: write bytes directly to stdout (no JSON intermediate).
+                let fmt_name = if output_format == OutputFormatKind::Tsv {
+                    "tsv"
+                } else {
+                    "csv"
+                };
                 let total_rows = result.row_count();
-                let tsv_timer = Instant::now();
-                let bytes = result.to_tsv_bytes(&view.db)?;
-                let tsv_elapsed = tsv_timer.elapsed();
+                let fmt_timer = Instant::now();
+                let bytes = if output_format == OutputFormatKind::Tsv {
+                    result.to_tsv_bytes(&view.db)?
+                } else {
+                    result.to_csv_bytes(&view.db)?
+                };
+                let fmt_elapsed = fmt_timer.elapsed();
                 use std::io::Write;
                 std::io::stdout().write_all(&bytes)?;
                 eprintln!(
-                    "({} rows, query: {}, tsv: {})",
+                    "({} rows, query: {}, {}: {})",
                     format_count(total_rows),
                     format_duration(elapsed),
-                    format_duration(tsv_elapsed),
+                    fmt_name,
+                    format_duration(fmt_elapsed),
                 );
             } else {
                 // JSON-LD queries can produce nested graph crawl results; always render as JSON.

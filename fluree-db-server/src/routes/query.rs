@@ -183,16 +183,17 @@ pub async fn query(
         return Err(error);
     }
 
-    let wants_tsv = headers.wants_tsv();
+    let delimited = wants_delimited(&headers);
 
     // Handle SPARQL query
     if headers.is_sparql_query() || credential.is_sparql {
-        // Connection-scoped SPARQL returns pre-formatted JSON — TSV not supported
-        if wants_tsv {
-            return Err(ServerError::not_acceptable(
-                "TSV format not supported for connection-scoped SPARQL queries. \
-                 Use the /:ledger/query endpoint instead.",
-            ));
+        // Connection-scoped SPARQL returns pre-formatted JSON — delimited not supported
+        if let Some(fmt) = delimited {
+            return Err(ServerError::not_acceptable(format!(
+                "{} format not supported for connection-scoped SPARQL queries. \
+                     Use the /:ledger/query endpoint instead.",
+                fmt.name().to_uppercase()
+            )));
         }
 
         let sparql = credential.body_string()?;
@@ -276,7 +277,7 @@ pub async fn query(
         let policy_class = data_auth.default_policy_class.as_deref();
         force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
-        execute_query(&state, &ledger_id, &query_json, wants_tsv).await
+        execute_query(&state, &ledger_id, &query_json, delimited).await
     }
 }
 
@@ -333,7 +334,7 @@ pub async fn query_ledger(
         return Err(error);
     }
 
-    let wants_tsv = headers.wants_tsv();
+    let delimited = wants_delimited(&headers);
 
     // Handle SPARQL query - ledger is known from path
     if headers.is_sparql_query() || credential.is_sparql {
@@ -350,7 +351,7 @@ pub async fn query_ledger(
         }
 
         let identity = effective_identity(&credential, &bearer);
-        return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref(), wants_tsv)
+        return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref(), delimited)
             .await;
     }
 
@@ -392,7 +393,7 @@ pub async fn query_ledger(
     let policy_class = data_auth.default_policy_class.as_deref();
     force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
-    execute_query(&state, &ledger_id, &query_json, wants_tsv).await
+    execute_query(&state, &ledger_id, &query_json, delimited).await
 }
 
 /// Execute a query with ledger as greedy tail segment.
@@ -443,23 +444,47 @@ fn requires_dataset_features(query: &JsonValue) -> bool {
     false
 }
 
-/// Build an HTTP response with TSV body and appropriate Content-Type.
-fn tsv_response(bytes: Vec<u8>) -> Response {
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/tab-separated-values; charset=utf-8",
-        )],
-        bytes,
-    )
-        .into_response()
+/// Delimited format requested by the client (TSV or CSV).
+#[derive(Debug, Clone, Copy)]
+enum DelimitedFormat {
+    Tsv,
+    Csv,
+}
+
+impl DelimitedFormat {
+    fn name(self) -> &'static str {
+        match self {
+            DelimitedFormat::Tsv => "tsv",
+            DelimitedFormat::Csv => "csv",
+        }
+    }
+}
+
+/// Check if the client requested a delimited format (TSV or CSV).
+fn wants_delimited(headers: &FlureeHeaders) -> Option<DelimitedFormat> {
+    if headers.wants_tsv() {
+        Some(DelimitedFormat::Tsv)
+    } else if headers.wants_csv() {
+        Some(DelimitedFormat::Csv)
+    } else {
+        None
+    }
+}
+
+/// Build an HTTP response with delimited body and appropriate Content-Type.
+fn delimited_response(bytes: Vec<u8>, format: DelimitedFormat) -> Response {
+    let content_type = match format {
+        DelimitedFormat::Tsv => "text/tab-separated-values; charset=utf-8",
+        DelimitedFormat::Csv => "text/csv; charset=utf-8",
+    };
+    ([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response()
 }
 
 async fn execute_query(
     state: &AppState,
     ledger_id: &str,
     query_json: &JsonValue,
-    wants_tsv: bool,
+    delimited: Option<DelimitedFormat>,
 ) -> Result<Response> {
     // Create execution span
     let span = tracing::info_span!(
@@ -472,10 +497,11 @@ async fn execute_query(
     // Check for history query: explicit "to" key indicates history mode
     // History queries must go through the dataset/connection path for correct index selection
     if query_json.get("to").is_some() {
-        if wants_tsv {
-            return Err(ServerError::not_acceptable(
-                "TSV format not supported for history queries",
-            ));
+        if let Some(fmt) = delimited {
+            return Err(ServerError::not_acceptable(format!(
+                "{} format not supported for history queries",
+                fmt.name().to_uppercase()
+            )));
         }
         return execute_history_query(state, ledger_id, query_json, &span)
             .await
@@ -485,10 +511,11 @@ async fn execute_query(
     // Check for dataset features (from-named, from array, from object with graph/alias/time)
     // These require the connection execution path for proper dataset handling
     if requires_dataset_features(query_json) {
-        if wants_tsv {
-            return Err(ServerError::not_acceptable(
-                "TSV format not supported for dataset queries",
-            ));
+        if let Some(fmt) = delimited {
+            return Err(ServerError::not_acceptable(format!(
+                "{} format not supported for dataset queries",
+                fmt.name().to_uppercase()
+            )));
         }
         return execute_dataset_query(state, ledger_id, query_json, &span)
             .await
@@ -497,10 +524,11 @@ async fn execute_query(
 
     // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
     if state.config.is_proxy_storage_mode() {
-        if wants_tsv {
-            return Err(ServerError::not_acceptable(
-                "TSV format not supported in proxy mode",
-            ));
+        if let Some(fmt) = delimited {
+            return Err(ServerError::not_acceptable(format!(
+                "{} format not supported in proxy mode",
+                fmt.name().to_uppercase()
+            )));
         }
         return execute_query_proxy(state, ledger_id, query_json, &span)
             .await
@@ -514,10 +542,11 @@ async fn execute_query(
 
     // Check if tracking is requested
     if has_tracking_opts(query_json) {
-        if wants_tsv {
-            return Err(ServerError::not_acceptable(
-                "TSV format not supported for tracked queries",
-            ));
+        if let Some(fmt) = delimited {
+            return Err(ServerError::not_acceptable(format!(
+                "{} format not supported for tracked queries",
+                fmt.name().to_uppercase()
+            )));
         }
         // Execute tracked query via builder
         let response = match graph
@@ -561,8 +590,8 @@ async fn execute_query(
         return Ok((headers, Json(json)).into_response());
     }
 
-    // TSV fast path: execute raw query and format as TSV bytes
-    if wants_tsv {
+    // Delimited fast path: execute raw query and format as TSV/CSV bytes
+    if let Some(fmt) = delimited {
         let result = graph
             .query(fluree.as_ref())
             .jsonld(query_json)
@@ -576,12 +605,20 @@ async fn execute_query(
             })?;
 
         let row_count = result.row_count();
-        let bytes = result
-            .to_tsv_bytes(&graph.db)
-            .map_err(|e| ServerError::internal(format!("TSV formatting error: {}", e)))?;
+        let bytes = match fmt {
+            DelimitedFormat::Tsv => result.to_tsv_bytes(&graph.db),
+            DelimitedFormat::Csv => result.to_csv_bytes(&graph.db),
+        }
+        .map_err(|e| {
+            ServerError::internal(format!(
+                "{} formatting error: {}",
+                fmt.name().to_uppercase(),
+                e
+            ))
+        })?;
 
-        tracing::info!(status = "success", format = "tsv", row_count);
-        return Ok(tsv_response(bytes));
+        tracing::info!(status = "success", format = fmt.name(), row_count);
+        return Ok(delimited_response(bytes, fmt));
     }
 
     // Execute query via builder - formatted JSON-LD output
@@ -688,7 +725,7 @@ async fn execute_sparql_ledger(
     ledger_id: &str,
     sparql: &str,
     identity: Option<&str>,
-    wants_tsv: bool,
+    delimited: Option<DelimitedFormat>,
 ) -> Result<Response> {
     // Create span for peer mode loading
     let span = tracing::info_span!("sparql_execute", ledger_id = ledger_id);
@@ -696,10 +733,11 @@ async fn execute_sparql_ledger(
 
     // In proxy mode, use the unified FlureeInstance method (returns pre-formatted JSON)
     if state.config.is_proxy_storage_mode() {
-        if wants_tsv {
-            return Err(ServerError::not_acceptable(
-                "TSV format not supported in proxy mode",
-            ));
+        if let Some(fmt) = delimited {
+            return Err(ServerError::not_acceptable(format!(
+                "{} format not supported in proxy mode",
+                fmt.name().to_uppercase()
+            )));
         }
         let result = match identity {
             Some(id) => {
@@ -720,10 +758,11 @@ async fn execute_sparql_ledger(
 
     // Identity-based queries go through connection path (returns pre-formatted JSON)
     if let Some(id) = identity {
-        if wants_tsv {
-            return Err(ServerError::not_acceptable(
-                "TSV format not supported for identity-scoped SPARQL queries",
-            ));
+        if let Some(fmt) = delimited {
+            return Err(ServerError::not_acceptable(format!(
+                "{} format not supported for identity-scoped SPARQL queries",
+                fmt.name().to_uppercase()
+            )));
         }
         let result = state
             .fluree
@@ -737,8 +776,8 @@ async fn execute_sparql_ledger(
     let graph = FlureeView::from_ledger_state(&ledger);
     let fluree = state.fluree.as_file();
 
-    // TSV fast path: execute raw query and format as TSV bytes
-    if wants_tsv {
+    // Delimited fast path: execute raw query and format as TSV/CSV bytes
+    if let Some(fmt) = delimited {
         let result = graph
             .query(fluree.as_ref())
             .sparql(sparql)
@@ -751,12 +790,20 @@ async fn execute_sparql_ledger(
             })?;
 
         let row_count = result.row_count();
-        let bytes = result
-            .to_tsv_bytes(&graph.db)
-            .map_err(|e| ServerError::internal(format!("TSV formatting error: {}", e)))?;
+        let bytes = match fmt {
+            DelimitedFormat::Tsv => result.to_tsv_bytes(&graph.db),
+            DelimitedFormat::Csv => result.to_csv_bytes(&graph.db),
+        }
+        .map_err(|e| {
+            ServerError::internal(format!(
+                "{} formatting error: {}",
+                fmt.name().to_uppercase(),
+                e
+            ))
+        })?;
 
-        tracing::info!(status = "success", format = "tsv", row_count);
-        return Ok(tsv_response(bytes));
+        tracing::info!(status = "success", format = fmt.name(), row_count);
+        return Ok(delimited_response(bytes, fmt));
     }
 
     // Execute SPARQL query via builder - formatted JSON output
