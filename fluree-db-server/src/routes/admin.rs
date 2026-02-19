@@ -58,8 +58,6 @@ pub async fn stats(
 ) -> Json<StatsResponse> {
     let span = tracing::debug_span!("stats");
     async move {
-        let _span = tracing::Span::current();
-
         tracing::info!("server stats requested");
 
         Json(StatsResponse {

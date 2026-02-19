@@ -11,7 +11,7 @@ Parse the arguments: extract the file path (first token, or a quoted path) and t
 ## Principles
 
 - **Two-track analysis.** Always investigate both (A) the trace data and (B) the code that produced it. Neither alone is sufficient.
-- **Never read the raw JSON into conversation.** Use Python scripts via Bash to extract targeted signal from trace files.
+- **Never read the raw JSON into conversation.** Use the trace analysis skill scripts via Bash to extract targeted signal from trace files.
 - **Code is the source of truth for what's *possible*.** The trace file shows current behavior; the code + OTEL SDK capabilities show what *could* be done differently.
 - **Protect the context window.** Use Explore agents for code investigation (grepping across 37 crates, reading multiple files, checking SDK capabilities). Keep the main session for file analysis results and diagnosis synthesis.
 - **Progressive disclosure.** Start with high-level summaries, then drill into specifics guided by the user's problem.
@@ -20,7 +20,7 @@ Parse the arguments: extract the file path (first token, or a quoted path) and t
 ## Execution Strategy: What Runs Where
 
 ### Main session (results needed inline for reasoning):
-- **All Python scripts** analyzing the trace file — output is compact and directly informs diagnosis
+- **Skill script invocations** analyzing the trace file — output is compact and directly informs diagnosis
 - **Final diagnosis synthesis** — combines findings from both tracks
 
 ### Explore agents (bulky code search, summarized on return):
@@ -39,50 +39,17 @@ Parse the arguments: extract the file path (first token, or a quoted path) and t
 
 Launch these simultaneously:
 
-#### 1A. Trace file structure probe + overview (main session, Python via Bash)
+#### 1A. Trace file overview (main session)
 
-Run a single comprehensive Python script that produces:
-- File stats (size, trace count, total spans)
-- All unique tag keys across the file
-- Trace overview table: for each trace, show root span operationName, key tags (operation, ledger_alias, error_code), duration, immediate child span names
+Use the trace-overview skill scripts for a high-level summary:
 
-This is the "table of contents" for the file. When traces > 50, aggregate by operation type with count and duration stats instead of listing each trace.
-
-```python
-import json, os
-from collections import Counter
-
-path = "<FILE_PATH>"
-print(f"File: {os.path.getsize(path)/1024/1024:.1f} MB")
-
-with open(path) as f:
-    data = json.load(f)
-
-traces = data['data']
-total_spans = sum(len(t['spans']) for t in traces)
-print(f"Traces: {len(traces)} | Spans: {total_spans}")
-
-# All unique tag keys
-tag_keys = sorted({t['key'] for tr in traces for sp in tr['spans'] for t in sp.get('tags', [])})
-print(f"Tag keys: {tag_keys}\n")
-
-# Trace overview
-for i, trace in enumerate(traces):
-    spans = trace['spans']
-    parent_map = {}
-    for s in spans:
-        for ref in s.get('references', []):
-            if ref.get('refType') == 'CHILD_OF':
-                parent_map[s['spanID']] = ref['spanID']
-    roots = [s for s in spans if s['spanID'] not in parent_map]
-    for root in roots:
-        tags = {t['key']: t['value'] for t in root.get('tags', [])}
-        children = [s for s in spans if parent_map.get(s['spanID']) == root['spanID']]
-        child_ops = [c['operationName'] for c in sorted(children, key=lambda x: x['startTime'])]
-        dur_ms = root['duration'] / 1000.0
-        print(f"Trace {i+1:3d} | {root['operationName']:<20s} | {dur_ms:8.1f}ms | "
-              f"op={tags.get('operation',''):<20s} | children={child_ops}")
+```bash
+python3 .claude/skills/trace-overview/scripts/trace_summary.py <FILE_PATH>
 ```
+
+This gives: file stats, trace count, span count, operation breakdown, duration stats.
+
+If the file is large (>50 traces), this aggregates by operation type automatically.
 
 #### 1B. Code exploration (Explore agent, parallel)
 
@@ -102,43 +69,24 @@ Tailor the span name list based on what the trace overview (1A) actually shows. 
 
 ### Step 2: Problem-Specific Deep Dive (main session)
 
-Based on the user's problem description and the trace overview from 1A, run targeted Python analysis. Choose from these patterns:
+Based on the user's problem and trace overview from 1A, use the trace-inspect skill for targeted analysis:
 
-**Waterfall dump** — full indented span tree for specific trace(s):
-```python
-# Walk parent_map recursively, print with indentation, include duration + key tags
+**Span tree for a specific trace:**
+```bash
+python3 .claude/skills/trace-inspect/scripts/trace_tree.py <FILE_PATH> --trace <N> --detail
 ```
 
-**Cross-trace comparison** — compare structure of two trace types:
-```python
-# "Why does trace 5 have transact_execute but trace 27 doesn't?"
-# Extract and diff the span name sets or tree structures
+**Anomaly detection across all traces:**
+```bash
+python3 .claude/skills/trace-overview/scripts/trace_corpus_anomalies.py <FILE_PATH>
 ```
 
-**Duration outliers** — find and show the slowest traces:
-```python
-# Sort traces by root span duration, show top N waterfalls
+**Anomaly detection for a single trace:**
+```bash
+python3 .claude/skills/trace-inspect/scripts/trace_anomalies.py <FILE_PATH> --trace <N>
 ```
 
-**Missing span detection** — check which traces lack expected spans:
-```python
-expected = ['query_prepare', 'query_run']
-for i, trace in enumerate(data['data']):
-    names = {s['operationName'] for s in trace['spans']}
-    missing = [e for e in expected if e not in names]
-    if missing: print(f"Trace {i+1}: missing {missing}")
-```
-
-**Tag value extraction** — pull specific attributes from matching spans:
-```python
-# For spans named X, extract tags Y and Z across all traces
-```
-
-**Parent-child validation** — verify nesting matches expected hierarchy from docs:
-```python
-# "transact_execute should always be child of request"
-# "txn_stage should always be child of transact_execute"
-```
+Choose the analysis that best targets the user's question. Multiple scripts can be run in sequence.
 
 ### Step 3: Synthesis — Combine Both Tracks
 
@@ -190,14 +138,14 @@ Always end by asking the user whether they'd like to proceed with implementing t
 
 - Top-level: `{ "data": [ <trace>, ... ] }`
 - Each trace: `{ "traceID", "spans": [...], "processes": {...} }`
-- Each span: `{ "operationName", "spanID", "traceID", "startTime" (epoch μs), "duration" (μs), "tags": [{key, value, type}], "references": [{refType, traceID, spanID}], "logs": [...] }`
+- Each span: `{ "operationName", "spanID", "traceID", "startTime" (epoch us), "duration" (us), "tags": [{key, value, type}], "references": [{refType, traceID, spanID}], "logs": [...] }`
 - Parent-child: `references` with `refType: "CHILD_OF"`, `spanID` = parent
-- `processes` maps `processID` → `{ "serviceName", "tags": [...] }`
+- `processes` maps `processID` -> `{ "serviceName", "tags": [...] }`
 - Duration is **microseconds** — divide by 1000 for ms, by 1_000_000 for seconds
 
 ## Tips
 
-- The trace overview table (1A) is almost always the right starting point — it's cheap and immediately reveals patterns.
+- The trace overview (1A) is almost always the right starting point — it's cheap and immediately reveals patterns.
 - When the file has > 50 traces, aggregate first (group by root span operation tag, show count + min/p50/max duration) before listing individuals.
 - When investigating "missing spans", check whether the span is gated behind a log level — `debug_span!` won't appear if RUST_LOG or the OTEL Targets filter doesn't enable that crate at debug. The Explore agent checking B2 should note what Targets filter is configured in telemetry.rs.
 - Secondary findings are valuable — trace files are expensive to produce. Extract maximum value from each one.

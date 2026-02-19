@@ -93,6 +93,11 @@ fn init_tracing(cli: &Cli) {
 }
 
 /// Initialize the OTEL tracing layer (same configuration as fluree-db-server).
+///
+/// SYNC: This function mirrors `fluree-db-server/src/telemetry.rs::init_otel_layer`.
+/// If you change the exporter, sampler, batch processor, or Targets filter here,
+/// apply the same change there. Both must stay in lock-step.
+/// See CLAUDE.md § "Tracing & OTEL Spans" for the maintenance protocol.
 #[cfg(feature = "otel")]
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();

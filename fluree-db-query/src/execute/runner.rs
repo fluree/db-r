@@ -245,6 +245,8 @@ pub async fn prepare_execution(
                     db.encode_iri(iri)
                 });
 
+            tracing::Span::current().record("patterns_after", rewritten_patterns.len());
+
             if rewritten_patterns.len() != query.query.patterns.len() {
                 tracing::debug!(
                     original_count = query.query.patterns.len(),

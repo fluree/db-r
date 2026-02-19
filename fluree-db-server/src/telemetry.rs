@@ -204,6 +204,11 @@ pub fn init_logging(config: &TelemetryConfig) {
 ///
 /// Only call this if OTEL environment variables are set.
 /// Returns a tracing layer that exports spans via OTLP.
+///
+/// SYNC: This function mirrors `fluree-db-cli/src/main.rs::init_otel_layer`.
+/// If you change the exporter, sampler, batch processor, or Targets filter here,
+/// apply the same change there. Both must stay in lock-step.
+/// See CLAUDE.md § "Tracing & OTEL Spans" for the maintenance protocol.
 #[cfg(feature = "otel")]
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();
