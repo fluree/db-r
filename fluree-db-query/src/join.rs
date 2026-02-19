@@ -998,12 +998,11 @@ impl NestedLoopJoinOperator {
                     store
                         .ensure_index_leaf_cached(&leaf_entry.leaf_cid, leaf_path)
                         .map_err(|e| QueryError::Internal(format!("fetch leaf: {}", e)))?;
-                    std::fs::File::open(leaf_path)
-                        .map_err(|e| QueryError::Internal(format!("open leaf after fetch: {}", e)))?
+                    std::fs::File::open(leaf_path).map_err(|e| {
+                        QueryError::Internal(format!("open leaf after fetch: {}", e))
+                    })?
                 }
-                Err(e) => {
-                    return Err(QueryError::Internal(format!("open leaf: {}", e)))
-                }
+                Err(e) => return Err(QueryError::Internal(format!("open leaf: {}", e))),
             };
             let leaf_mmap = unsafe { Mmap::map(&file) }
                 .map_err(|e| QueryError::Internal(format!("mmap leaf: {}", e)))?;
