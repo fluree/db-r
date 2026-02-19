@@ -23,7 +23,7 @@ Both provide access to the same data and features.
 Retrieve all person names:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -50,7 +50,7 @@ Response:
 ### Query Multiple Properties
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -80,7 +80,7 @@ Response:
 Query with a specific filter:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -101,7 +101,7 @@ curl -X POST http://localhost:8090/query \
 Query a specific entity by IRI:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -123,7 +123,7 @@ curl -X POST http://localhost:8090/query \
 Follow links between entities:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -154,7 +154,7 @@ Response:
 The same queries in SPARQL syntax:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/sparql-query" \
   -d '
     PREFIX schema: <http://schema.org/>
@@ -170,7 +170,7 @@ curl -X POST http://localhost:8090/query \
 ### Query Multiple Properties
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/sparql-query" \
   -d '
     PREFIX schema: <http://schema.org/>
@@ -187,7 +187,7 @@ curl -X POST http://localhost:8090/query \
 ### Filter Results
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/sparql-query" \
   -d '
     PREFIX schema: <http://schema.org/>
@@ -205,7 +205,7 @@ curl -X POST http://localhost:8090/query \
 ### Query with Relationships
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/sparql-query" \
   -d '
     PREFIX schema: <http://schema.org/>
@@ -227,7 +227,7 @@ Query historical data using time specifiers.
 ### Query at Specific Transaction
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -246,7 +246,7 @@ This shows data as it existed at transaction 1.
 ### Query at ISO Timestamp
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -263,7 +263,7 @@ curl -X POST http://localhost:8090/query \
 ### Query at Commit ContentId
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -286,7 +286,7 @@ Track changes to entities over time by specifying a time range in the `from` cla
 ### Entity History
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -321,7 +321,7 @@ Response shows all changes:
 Track changes to a specific property:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -353,7 +353,7 @@ Response:
 ### Count Results
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/sparql-query" \
   -d '
     PREFIX schema: <http://schema.org/>
@@ -369,7 +369,7 @@ curl -X POST http://localhost:8090/query \
 ### Average, Min, Max
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/sparql-query" \
   -d '
     PREFIX schema: <http://schema.org/>
@@ -453,7 +453,7 @@ ORDER BY DESC(?age)
 Query across multiple ledgers:
 
 ```bash
-curl -X POST http://localhost:8090/query \
+curl -X POST http://localhost:8090/v1/fluree/query \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
