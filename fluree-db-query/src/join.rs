@@ -620,7 +620,11 @@ impl Operator for NestedLoopJoinOperator {
 
             // 2. Pending output from per-row path
             if !self.pending_output.is_empty() {
-                return self.build_output_batch(ctx).await;
+                if let Some(batch) = self.build_output_batch(ctx).await? {
+                    return Ok(Some(batch));
+                }
+                // All pending rows were filtered out — continue to process more left rows
+                continue;
             }
 
             // 3. Need to process more left rows
