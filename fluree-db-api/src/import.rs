@@ -2176,10 +2176,9 @@ where
         let mut samples: Vec<(u16, String)> = Vec::new();
 
         for (&code, prefix) in namespace_codes.iter() {
-            if prefix.starts_with("https://dblp.org/pid/") {
+            if let Some(rest) = prefix.strip_prefix("https://dblp.org/pid/") {
                 // Expecting either ".../pid/" (shallow) in coarse mode,
                 // or ".../pid/<bucket>/" (deep) in legacy mode.
-                let rest = &prefix["https://dblp.org/pid/".len()..];
                 if rest.is_empty() {
                     dblp_pid_shallow += 1;
                 } else if rest.as_bytes().iter().filter(|&&b| b == b'/').count() >= 1 {
@@ -2190,9 +2189,8 @@ where
                 } else {
                     dblp_pid_shallow += 1;
                 }
-            } else if prefix.starts_with("https://doi.org/") {
+            } else if let Some(rest) = prefix.strip_prefix("https://doi.org/") {
                 // Deep DOI prefixes like https://doi.org/10.1007/... indicate over-splitting.
-                let rest = &prefix["https://doi.org/".len()..];
                 if rest.as_bytes().iter().filter(|&&b| b == b'/').count() >= 2 {
                     doi_deep += 1;
                     if samples.len() < 8 {
