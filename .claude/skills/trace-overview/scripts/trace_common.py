@@ -204,3 +204,52 @@ def select_trace(traces, trace_idx=None, trace_id_prefix=None, op_pattern=None):
 
     # No selector: return all
     return list(enumerate(traces))
+
+
+# ---- Shared span hierarchy constants ----
+# These are the single source of truth for expected span relationships,
+# cross-thread spans, and known zero-duration spans. Both trace-inspect
+# and trace-overview skills import from here.
+#
+# Maintenance: update these when span names are added, renamed, or removed.
+# See CLAUDE.md "Tracing & OTEL Spans" section for the full update checklist.
+
+# Expected parent-child relationships (from docs/operations/telemetry.md).
+# Values are REQUIRED children — if parent exists, at least one of these should too.
+EXPECTED_CHILDREN = {
+    # transact_execute has txn_commit always; staging varies by format:
+    #   txn_stage (FQL/SPARQL) or stage_turtle_insert (Turtle)
+    "transact_execute": {"txn_commit"},  # txn_stage/stage_turtle_insert are format-dependent
+    "query_execute": {"query_prepare", "query_run"},
+    "sparql_execute": {"query_prepare", "query_run"},
+    "query_prepare": {"reasoning_prep"},  # pattern_rewrite + plan are common but optional
+    "index_build": {"commit_chain_walk", "dict_merge_and_remap", "build_all_indexes"},
+    "build_all_indexes": {"build_index"},
+    "bulk_import": {"import_chunks"},
+}
+
+# Spans that are expected to cross thread boundaries.
+# Includes commit sub-spans (txn_commit runs in spawn_blocking)
+# and txn_stage/txn_commit themselves (tokio task migration).
+EXPECTED_CROSS_THREAD = {
+    "build_index", "build_spot_from_commits", "BinaryIndexStore::load",
+    "sort_blocking", "sort_child_next_batch", "sort_build_rows_batch",
+    "groupby_blocking",
+    # transact phases may cross threads due to tokio task migration
+    "txn_stage", "txn_commit", "stage_turtle_insert",
+    # commit pipeline runs in spawn_blocking — all children cross threads
+    "commit_nameservice_lookup", "commit_verify_sequencing",
+    "commit_namespace_delta", "commit_write_raw_txn", "commit_build_record",
+    "commit_write_commit_blob", "commit_publish_nameservice",
+    "commit_generate_metadata_flakes", "commit_clone_novelty",
+    "commit_populate_dict_novelty", "commit_apply_to_novelty",
+}
+
+# Spans known to have zero/near-zero duration (sub-microsecond metadata ops)
+KNOWN_ZERO_DURATION = {
+    "commit_namespace_delta", "commit_build_record", "commit_verify_sequencing",
+    "commit_publish_nameservice", "commit_generate_metadata_flakes",
+    "commit_clone_novelty", "commit_populate_dict_novelty",
+    "where_exec", "cancellation", "delete_gen",
+    "sort_build_rows_batch",  # zero-duration in lightweight sort batches
+}

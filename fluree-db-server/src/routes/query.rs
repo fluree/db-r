@@ -179,6 +179,7 @@ pub async fn query(
         && !credential.is_signed()
         && bearer.0.is_none()
     {
+        set_span_error_code(&span, "error:Unauthorized");
         return Err(ServerError::unauthorized(
             "Authentication required (signed request or Bearer token)",
         ));
@@ -266,6 +267,7 @@ pub async fn query(
         // Enforce bearer ledger scope for unsigned requests
         if let Some(p) = bearer.0.as_ref() {
             if !credential.is_signed() && !p.can_read(&ledger_id) {
+                set_span_error_code(&span, "error:Forbidden");
                 // Avoid existence leak
                 return Err(ServerError::not_found("Ledger not found"));
             }
@@ -329,6 +331,7 @@ pub async fn query_ledger(
         && !credential.is_signed()
         && bearer.0.is_none()
     {
+        set_span_error_code(&span, "error:Unauthorized");
         return Err(ServerError::unauthorized(
             "Authentication required (signed request or Bearer token)",
         ));
@@ -354,6 +357,7 @@ pub async fn query_ledger(
         // Enforce bearer ledger scope for unsigned requests
         if let Some(p) = bearer.0.as_ref() {
             if !credential.is_signed() && !p.can_read(&ledger) {
+                set_span_error_code(&span, "error:Forbidden");
                 return Err(ServerError::not_found("Ledger not found"));
             }
         }
@@ -391,6 +395,7 @@ pub async fn query_ledger(
     // Enforce bearer ledger scope for unsigned requests
     if let Some(p) = bearer.0.as_ref() {
         if !credential.is_signed() && !p.can_read(&ledger) {
+            set_span_error_code(&span, "error:Forbidden");
             return Err(ServerError::not_found("Ledger not found"));
         }
     }
@@ -668,43 +673,51 @@ async fn execute_sparql_ledger(
         // In proxy mode, use the unified FlureeInstance method
         if state.config.is_proxy_storage_mode() {
             let result = match identity {
-                Some(id) => {
-                    state
-                        .fluree
-                        .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
-                        .await?
-                }
-                None => {
-                    state
-                        .fluree
-                        .query_ledger_sparql_jsonld(ledger_id, sparql)
-                        .await?
-                }
+                Some(id) => state
+                    .fluree
+                    .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
+                    .await
+                    .inspect_err(|_| {
+                        set_span_error_code(&span, "error:QueryFailed");
+                    })?,
+                None => state
+                    .fluree
+                    .query_ledger_sparql_jsonld(ledger_id, sparql)
+                    .await
+                    .inspect_err(|_| {
+                        set_span_error_code(&span, "error:QueryFailed");
+                    })?,
             };
             return Ok((HeaderMap::new(), Json(result)));
         }
 
         // Shared storage mode: use load_ledger_for_query with freshness checking
-        let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
+        let ledger = load_ledger_for_query(state, ledger_id, &span)
+            .await
+            .inspect_err(|_| {
+                set_span_error_code(&span, "error:LedgerLoad");
+            })?;
         let graph = FlureeView::from_ledger_state(&ledger);
         let fluree = state.fluree.as_file();
 
         // Execute SPARQL query via builder
         // Note: SPARQL tracking not yet implemented - returns empty headers
         let result = match identity {
-            Some(id) => {
-                state
-                    .fluree
-                    .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
-                    .await?
-            }
-            None => {
-                graph
-                    .query(fluree.as_ref())
-                    .sparql(sparql)
-                    .execute_formatted()
-                    .await?
-            }
+            Some(id) => state
+                .fluree
+                .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
+                .await
+                .inspect_err(|_| {
+                    set_span_error_code(&span, "error:QueryFailed");
+                })?,
+            None => graph
+                .query(fluree.as_ref())
+                .sparql(sparql)
+                .execute_formatted()
+                .await
+                .inspect_err(|_| {
+                    set_span_error_code(&span, "error:QueryFailed");
+                })?,
         };
         Ok((HeaderMap::new(), Json(result)))
     }
@@ -748,6 +761,7 @@ pub async fn explain(
             && !credential.is_signed()
             && bearer.0.is_none()
         {
+            set_span_error_code(&span, "error:Unauthorized");
             return Err(ServerError::unauthorized(
                 "Authentication required (signed request or Bearer token)",
             ));
@@ -789,6 +803,7 @@ pub async fn explain(
         // Enforce bearer ledger scope for unsigned requests
         if let Some(p) = bearer.0.as_ref() {
             if !credential.is_signed() && !p.can_read(&ledger_id) {
+                set_span_error_code(&span, "error:Forbidden");
                 return Err(ServerError::not_found("Ledger not found"));
             }
         }

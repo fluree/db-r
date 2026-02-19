@@ -346,10 +346,12 @@ pub async fn info(
         // Enforce data auth (ledger-info is a read operation; Bearer token only)
         let data_auth = state.config.data_auth();
         if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {
+            set_span_error_code(&span, "error:Unauthorized");
             return Err(ServerError::unauthorized("Bearer token required"));
         }
         if let Some(p) = bearer.0.as_ref() {
             if !p.can_read(alias) {
+                set_span_error_code(&span, "error:Forbidden");
                 // Avoid existence leak
                 return Err(ServerError::not_found("Ledger not found"));
             }
@@ -536,10 +538,12 @@ pub async fn exists(
         // Enforce data auth (exists is a read operation; Bearer token only)
         let data_auth = state.config.data_auth();
         if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {
+            set_span_error_code(&span, "error:Unauthorized");
             return Err(ServerError::unauthorized("Bearer token required"));
         }
         if let Some(p) = bearer.0.as_ref() {
             if !p.can_read(&alias) {
+                set_span_error_code(&span, "error:Forbidden");
                 // Avoid existence leak
                 return Err(ServerError::not_found("Ledger not found"));
             }

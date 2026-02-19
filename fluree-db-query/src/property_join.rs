@@ -554,7 +554,7 @@ impl Operator for PropertyJoinOperator {
             // Collect subjects for iteration
             self.pending_subjects = self.subject_values.keys().cloned().collect();
 
-            tracing::info!(
+            tracing::debug!(
                 subjects = self.pending_subjects.len(),
                 used_batched_probe,
                 probe_chunks,

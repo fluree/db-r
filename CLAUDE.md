@@ -162,7 +162,7 @@ All operation spans use `debug_span!` (not `info_span!`). The only `info_span!` 
 
 - `.claude/skills/trace-inspect/references/span-hierarchy.md` (BOTH copies)
 - `.claude/skills/trace-overview/references/span-hierarchy.md`
-- `.claude/skills/*/scripts/*_anomalies.py` (`EXPECTED_CHILDREN`, `EXPECTED_CROSS_THREAD`)
+- `.claude/skills/*/scripts/trace_common.py` (`EXPECTED_CHILDREN`, `EXPECTED_CROSS_THREAD`, `KNOWN_ZERO_DURATION`)
 - `docs/operations/telemetry.md` (span tree section)
 - `docs/contributing/tracing-guide.md` (if new patterns are introduced)
 - `fluree-db-api/tests/it_tracing_spans.rs` (add or update acceptance tests)

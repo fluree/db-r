@@ -405,6 +405,7 @@ pub fn create_request_span(
         ledger_id = ledger_id,
         tenant_id = tenant_id,
         error_code = tracing::field::Empty,
+        query_hash = tracing::field::Empty,
     )
 }
 

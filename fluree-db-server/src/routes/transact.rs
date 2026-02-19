@@ -169,6 +169,8 @@ fn effective_author(
 }
 
 /// Enforce write authorization for a ledger according to `data_auth.mode`.
+///
+/// Records `error_code` on the current span when access is denied.
 fn enforce_write_access(
     state: &AppState,
     ledger: &str,
@@ -180,11 +182,13 @@ fn enforce_write_access(
     // In Required mode: accept either signed requests OR bearer tokens.
     if data_auth.mode == crate::config::DataAuthMode::Required && !credential.is_signed() {
         let Some(p) = bearer else {
+            set_span_error_code(&tracing::Span::current(), "error:Unauthorized");
             return Err(ServerError::unauthorized(
                 "Authentication required (signed request or Bearer token)",
             ));
         };
         if !p.can_write(ledger) {
+            set_span_error_code(&tracing::Span::current(), "error:Forbidden");
             // Avoid existence leak
             return Err(ServerError::not_found("Ledger not found"));
         }
@@ -195,6 +199,7 @@ fn enforce_write_access(
     if !credential.is_signed() {
         if let Some(p) = bearer {
             if !p.can_write(ledger) {
+                set_span_error_code(&tracing::Span::current(), "error:Forbidden");
                 return Err(ServerError::not_found("Ledger not found"));
             }
         }

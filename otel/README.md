@@ -173,55 +173,69 @@ The `operation` tag on each span retains the handler-specific name (e.g. `query`
 ### Transaction traces
 
 ```
-transact:fql (root, otel.name)
-  └─ transact_execute
-       └─ txn_stage
-            ├─ where_exec          (for updates with WHERE clause)
-            ├─ insert_gen          (generate insert flakes)
-            ├─ delete_gen          (generate delete flakes)
-            └─ cancellation_check  (policy evaluation)
-       └─ txn_commit
-            ├─ build_novelty
-            ├─ resolve_commit
-            └─ write_commit
+request (info, otel.name = transact:fql)
+  └─ transact_execute (debug)
+       ├─ txn_stage (debug)
+       │   ├─ where_exec (debug)
+       │   ├─ delete_gen (debug)
+       │   ├─ insert_gen (debug)
+       │   ├─ cancellation (debug)
+       │   └─ policy_enforce (debug)
+       └─ txn_commit (debug)
+            ├─ commit_nameservice_lookup (debug)
+            ├─ commit_verify_sequencing (debug)
+            ├─ commit_namespace_delta (debug)
+            ├─ commit_write_raw_txn (debug)
+            ├─ commit_build_record (debug)
+            ├─ commit_write_commit_blob (debug)
+            ├─ commit_publish_nameservice (debug)
+            ├─ commit_generate_metadata_flakes (debug)
+            ├─ commit_populate_dict_novelty (debug)
+            └─ commit_apply_to_novelty (debug)
 ```
 
 ### Query traces
 
 ```
-query:sparql (root, otel.name)
-  └─ query_execute / sparql_execute
-       └─ query_prepare
-            ├─ reasoning_prep
-            ├─ pattern_rewrite
-            └─ plan
-       └─ query_run
-            ├─ scan              (per-scan operator)
-            ├─ join              (hash/nested-loop)
-            ├─ filter
-            ├─ sort
-            ├─ aggregate
-            └─ project
+request (info, otel.name = query:sparql)
+  └─ query_execute / sparql_execute (debug)
+       ├─ query_prepare (debug)
+       │   ├─ reasoning_prep (debug)
+       │   ├─ pattern_rewrite (debug)
+       │   └─ plan (debug)
+       ├─ query_run (debug)
+       │   ├─ scan (debug)
+       │   ├─ join (debug)
+       │   ├─ filter (debug)
+       │   ├─ sort (debug)
+       │   ├─ sort_blocking (debug, cross-thread)
+       │   ├─ aggregate (debug)
+       │   └─ project (debug)
+       └─ format (debug)
 ```
 
 ### Index traces
 
 ```
-index_build
-  └─ build_all_indexes
-       ├─ build_index (SPOT)
-       ├─ build_index (PSOT)
-       ├─ build_index (POST)
-       └─ build_index (OPST)
+index_build (debug, separate top-level trace)
+  ├─ commit_chain_walk (debug)
+  ├─ commit_resolve (debug, per commit)
+  ├─ dict_merge_and_remap (debug)
+  ├─ build_all_indexes (debug)
+  │   └─ build_index (debug, per order: SPOT/PSOT/POST/OPST) [cross-thread]
+  ├─ upload_dicts (debug)
+  ├─ upload_indexes (debug)
+  ├─ build_index_root (debug)
+  └─ BinaryIndexStore::load (debug) [cross-thread]
 ```
 
 ### Import traces (CLI)
 
 ```
-bulk_import (root, service: fluree-cli)
-  └─ import_chunks
-       ├─ commit + run generation events
-       └─ index building spans
+bulk_import (debug, service: fluree-cli)
+  └─ import_chunks (debug)
+       ├─ import_parse (debug, per chunk)
+       └─ import_commit (debug, per chunk)
 ```
 
 ## Stress Test

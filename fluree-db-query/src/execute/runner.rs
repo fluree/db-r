@@ -360,7 +360,7 @@ pub async fn run_operator(
         span.record("total_batches", batch_count as u64);
         span.record("total_rows", total_rows as u64);
         span.record("max_batch_ms", max_batch_ms);
-        tracing::info!(
+        tracing::debug!(
             total_batches = batch_count,
             total_rows,
             "query execution completed"

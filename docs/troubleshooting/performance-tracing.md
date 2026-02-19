@@ -480,13 +480,14 @@ The JSON file contains `data[].spans[]` with full span details: operation names,
 
 ### Analyzing with Claude Code
 
-The repository includes a Claude Code slash command for trace analysis:
+The repository includes Claude Code skills for trace analysis:
 
 ```
-/jaeger-debug /path/to/traces.json "All traces show as 'request' — can't tell queries from transactions"
+/trace-inspect /path/to/traces.json    # Drill into a single trace's span tree and timing
+/trace-overview /path/to/traces.json   # Aggregate stats and anomaly detection across all traces
 ```
 
-This command analyzes the export file using targeted Python scripts (to avoid loading the full JSON into context) and cross-references the results against the codebase instrumentation to produce a diagnosis with concrete code-level fix recommendations.
+These skills analyze the export file using targeted Python scripts (to avoid loading the full JSON into context) and cross-reference the results against the expected span hierarchy to produce a diagnosis with concrete code-level fix recommendations.
 
 ### Manual analysis with Python
 

@@ -162,7 +162,7 @@ mod inner {
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
 
-            tracing::info!(
+            tracing::debug!(
                 op_count,
                 ns_delta_size = ns_delta.len(),
                 ns_codes = ns_codes_after,
@@ -209,7 +209,7 @@ mod inner {
                 .await?
         };
 
-        tracing::info!(
+        tracing::debug!(
             t = new_t,
             flakes = op_count,
             blob_bytes,
@@ -301,7 +301,7 @@ mod inner {
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
 
-            tracing::info!(
+            tracing::debug!(
                 op_count,
                 ns_delta_size = ns_delta.len(),
                 ns_codes = ns_codes_after,
@@ -345,7 +345,7 @@ mod inner {
                 .await?
         };
 
-        tracing::info!(
+        tracing::debug!(
             t = new_t,
             flakes = op_count,
             blob_bytes,
@@ -521,7 +521,7 @@ mod inner {
         let ns_delta = state.ns_registry.take_delta();
         let named_graph_count = graph_delta.len();
 
-        tracing::info!(
+        tracing::debug!(
             op_count,
             ns_delta_size = ns_delta.len(),
             graph_delta_size = named_graph_count,
@@ -566,7 +566,7 @@ mod inner {
                 .await?
         };
 
-        tracing::info!(
+        tracing::debug!(
             t = new_t,
             flakes = op_count,
             blob_bytes,
@@ -883,7 +883,7 @@ mod inner {
             )
             .await?;
 
-        tracing::info!(
+        tracing::debug!(
             t = new_t,
             flakes = parsed.op_count,
             blob_bytes,
