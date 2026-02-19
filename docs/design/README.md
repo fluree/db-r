@@ -24,6 +24,10 @@ The content-addressed identity layer: `ContentId` type, `ContentStore` trait, mu
 
 Binary columnar index format: branch/leaf/leaflet hierarchy, dictionary artifacts, SPOT/PSOT/POST/OPST/TSPO layout, and encoding details.
 
+### [Namespace allocation and fallback modes](namespace-allocation.md)
+
+How Fluree assigns `ns_code` values for IRIs (prefix trie matching, fallback split modes), including bulk-import preflight mitigation and how the “host-only” fallback persists for future transactions.
+
 ### [Storage Traits](storage-traits.md)
 
 Storage trait architecture: `StorageRead`, `StorageWrite`, `ContentAddressedWrite`, `Storage`, and `NameService` trait design with guidance for implementing new backends.

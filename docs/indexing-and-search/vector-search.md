@@ -158,7 +158,7 @@ Computes the dot product (inner product) of two vectors. Higher scores indicate 
   ],
   "where": [
     {"@id": "?doc", "ex:embedding": "?vec"},
-    ["bind", "(dotProduct ?vec ?queryVec)", "?score"]
+    ["bind", "?score", "(dotProduct ?vec ?queryVec)"]
   ],
   "orderBy": [["desc", "?score"]],
   "limit": 10
@@ -184,7 +184,7 @@ Computes the cosine of the angle between two vectors. Ignores magnitude, focusin
   ],
   "where": [
     {"@id": "?doc", "ex:embedding": "?vec"},
-    ["bind", "(cosineSimilarity ?vec ?queryVec)", "?score"]
+    ["bind", "?score", "(cosineSimilarity ?vec ?queryVec)"]
   ],
   "orderBy": [["desc", "?score"]],
   "limit": 10
@@ -210,7 +210,7 @@ Computes the L2 (straight-line) distance between two vectors. Lower scores indic
   ],
   "where": [
     {"@id": "?doc", "ex:embedding": "?vec"},
-    ["bind", "(euclideanDistance ?vec ?queryVec)", "?distance"]
+    ["bind", "?distance", "(euclideanDistance ?vec ?queryVec)"]
   ],
   "orderBy": "?distance",
   "limit": 10
@@ -230,7 +230,7 @@ The similarity functions also accept array form instead of the S-expression stri
 This is equivalent to:
 
 ```json
-["bind", "(dotProduct ?vec ?queryVec)", "?score"]
+["bind", "?score", "(dotProduct ?vec ?queryVec)"]
 ```
 
 ### Filtering by score threshold
@@ -250,7 +250,7 @@ Combine `bind` with `filter` to return only results above a similarity threshold
   ],
   "where": [
     {"@id": "?doc", "ex:embedding": "?vec"},
-    ["bind", "(dotProduct ?vec ?queryVec)", "?score"],
+    ["bind", "?score", "(dotProduct ?vec ?queryVec)"],
     ["filter", "(> ?score 0.7)"]
   ]
 }
@@ -273,7 +273,7 @@ Vector similarity can be combined with standard graph patterns to filter by type
   ],
   "where": [
     {"@id": "?doc", "@type": "ex:Article", "ex:title": "?title", "ex:embedding": "?vec"},
-    ["bind", "(cosineSimilarity ?vec ?queryVec)", "?score"],
+    ["bind", "?score", "(cosineSimilarity ?vec ?queryVec)"],
     ["filter", "(> ?score 0.5)"]
   ],
   "orderBy": [["desc", "?score"]],
@@ -295,7 +295,7 @@ Instead of providing a literal vector, you can use a stored entity's vector:
     {"@id": "ex:reference-doc", "ex:embedding": "?queryVec"},
     {"@id": "?similar", "ex:embedding": "?vec"},
     ["filter", "(!= ?similar ex:reference-doc)"],
-    ["bind", "(cosineSimilarity ?vec ?queryVec)", "?score"]
+    ["bind", "?score", "(cosineSimilarity ?vec ?queryVec)"]
   ],
   "orderBy": [["desc", "?score"]],
   "limit": 10
@@ -708,7 +708,7 @@ Inline similarity functions (`dotProduct`, `cosineSimilarity`, `euclideanDistanc
   ],
   "where": [
     {"@id": "?doc", "@type": "ex:Article", "ex:title": "?title", "ex:embedding": "?vec"},
-    ["bind", "(cosineSimilarity ?vec ?queryVec)", "?score"]
+    ["bind", "?score", "(cosineSimilarity ?vec ?queryVec)"]
   ],
   "orderBy": [["desc", "?score"]],
   "limit": 5

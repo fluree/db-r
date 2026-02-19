@@ -281,7 +281,7 @@ Compute values and bind to variables:
 {
   "where": [
     { "@id": "?person", "ex:age": "?age" },
-    ["bind", "(+ ?age 1)", "?nextAge"]
+    ["bind", "?nextAge", "(+ ?age 1)"]
   ]
 }
 ```

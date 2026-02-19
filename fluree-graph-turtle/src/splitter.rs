@@ -904,9 +904,36 @@ pub struct StreamingTurtleReader {
     prelude: TurtlePrelude,
     file_size: u64,
     estimated_chunks: usize,
+    ns_preflight: std::sync::Arc<std::sync::OnceLock<NamespacePreflight>>,
     /// Shared receiver — multiple parse workers can receive chunks concurrently.
     rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<ChunkPayload>>>,
     reader_handle: Option<std::thread::JoinHandle<Result<usize, SplitError>>>,
+}
+
+/// Namespace preflight results computed during streaming read.
+///
+/// Intended to help upstream import code detect “namespace explosion” datasets
+/// without any extra I/O pass.
+#[derive(Debug, Clone)]
+pub struct NamespacePreflight {
+    /// Distinct namespace prefixes observed in the sampled windows (using last '/' or '#').
+    pub distinct_prefixes: usize,
+    /// Distinct http(s) namespace prefixes under `scheme://host/`.
+    pub http_host_prefixes: usize,
+    /// Distinct http(s) namespace prefixes under `scheme://host/<seg1>/`.
+    pub http_host_seg1_prefixes: usize,
+    /// True when `distinct_prefixes` exceeded the budget.
+    pub exceeded_budget: bool,
+    /// Recommended mitigation strategy for namespace allocation.
+    pub suggestion: NamespaceSuggestion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceSuggestion {
+    /// No special handling recommended.
+    None,
+    /// Enable coarse namespace fallback heuristic (import-side).
+    CoarseHeuristic,
 }
 
 impl StreamingTurtleReader {
@@ -954,6 +981,9 @@ impl StreamingTurtleReader {
         let (tx, rx) = std::sync::mpsc::sync_channel(channel_capacity);
 
         let reader_path = path.to_path_buf();
+        let ns_preflight: std::sync::Arc<std::sync::OnceLock<NamespacePreflight>> =
+            std::sync::Arc::new(std::sync::OnceLock::new());
+        let ns_preflight_thread = std::sync::Arc::clone(&ns_preflight);
         let reader_handle = std::thread::Builder::new()
             .name("ttl-reader".into())
             .spawn(move || {
@@ -964,6 +994,7 @@ impl StreamingTurtleReader {
                     chunk_size_bytes,
                     tx,
                     progress,
+                    ns_preflight_thread,
                 )
             })
             .map_err(|e| {
@@ -978,6 +1009,7 @@ impl StreamingTurtleReader {
             prelude,
             file_size,
             estimated_chunks,
+            ns_preflight,
             rx: Arc::new(std::sync::Mutex::new(rx)),
             reader_handle: Some(reader_handle),
         })
@@ -1021,6 +1053,20 @@ impl StreamingTurtleReader {
         &self.prelude
     }
 
+    /// Namespace preflight results (if computed).
+    ///
+    /// For streaming reads this is populated by the reader thread before chunk 0 is emitted.
+    pub fn namespace_preflight(&self) -> Option<&NamespacePreflight> {
+        self.ns_preflight.get()
+    }
+
+    /// Clone the internal preflight cell (allows waiting/polling without borrowing `self`).
+    pub fn namespace_preflight_cell(
+        &self,
+    ) -> std::sync::Arc<std::sync::OnceLock<NamespacePreflight>> {
+        std::sync::Arc::clone(&self.ns_preflight)
+    }
+
     /// Total file size in bytes.
     pub fn file_size(&self) -> u64 {
         self.file_size
@@ -1057,6 +1103,7 @@ fn reader_thread(
     chunk_size_bytes: u64,
     tx: std::sync::mpsc::SyncSender<ChunkPayload>,
     progress: Option<ScanProgressFn>,
+    ns_preflight: std::sync::Arc<std::sync::OnceLock<NamespacePreflight>>,
 ) -> Result<usize, SplitError> {
     let file = File::open(path)?;
     let mut reader = BufReader::with_capacity(SCAN_BUF_SIZE, file);
@@ -1082,6 +1129,9 @@ fn reader_thread(
     let progress_interval = 64 * 1024 * 1024u64;
     let mut next_progress = data_start + progress_interval;
 
+    // Namespace preflight (bounded windows within chunk 0).
+    let mut ns_detector = NamespacePreflightDetector::new(data_start);
+
     loop {
         let n = reader.read(&mut buf)?;
         if n == 0 {
@@ -1101,6 +1151,15 @@ fn reader_thread(
         // Bulk append.
         chunk_buf.extend_from_slice(&buf[..n]);
         abs_pos += n as u64;
+
+        // Feed namespace detector only while chunk 0 is being built.
+        if chunk_idx == 0 && ns_detector.is_active() {
+            let read_start = abs_pos - n as u64;
+            ns_detector.feed_range(read_start, &buf[..n]);
+            if ns_detector.maybe_finish(&ns_preflight) {
+                // Finished early (exceeded budget or all windows processed).
+            }
+        }
 
         // Report progress periodically.
         if abs_pos >= next_progress {
@@ -1164,6 +1223,10 @@ fn reader_thread(
                 && end > line_start
                 && chunk_buf[end - 1] == b'.'
             {
+                // Ensure namespace preflight is published before emitting chunk 0.
+                if chunk_idx == 0 && ns_preflight.get().is_none() {
+                    ns_detector.finish(&ns_preflight);
+                }
                 let boundary = nl_pos + 1; // include newline
                 let remainder = chunk_buf[boundary..].to_vec();
                 chunk_buf.truncate(boundary);
@@ -1208,9 +1271,314 @@ fn reader_thread(
         cb(file_size - data_start, file_size - data_start);
     }
 
+    // If we never emitted chunk 0 (small file) or finished scanning windows late, publish now.
+    if ns_preflight.get().is_none() {
+        ns_detector.finish(&ns_preflight);
+    }
+
     tracing::info!(total_chunks = chunk_idx, "reader thread finished");
 
     Ok(chunk_idx)
+}
+
+// ============================================================================
+// NamespacePreflightDetector (streaming, bounded windows)
+// ============================================================================
+
+const NS_PREFLIGHT_BUDGET: usize = 255;
+const NS_PREFLIGHT_WINDOW_SIZE: u64 = 8 * 1024 * 1024;
+const NS_PREFLIGHT_OFFSETS: &[u64] = &[0, 32 * 1024 * 1024, 128 * 1024 * 1024, 320 * 1024 * 1024, 640 * 1024 * 1024];
+
+struct NamespacePreflightDetector {
+    windows: std::collections::VecDeque<(u64, u64, NsWindowScanner)>,
+    distinct_prefixes: rustc_hash::FxHashSet<Vec<u8>>,
+    http_hosts: rustc_hash::FxHashSet<Vec<u8>>,
+    http_host_seg1: rustc_hash::FxHashSet<Vec<u8>>,
+    exceeded: bool,
+}
+
+impl NamespacePreflightDetector {
+    fn new(data_start: u64) -> Self {
+        let mut windows = std::collections::VecDeque::new();
+        for &off in NS_PREFLIGHT_OFFSETS {
+            let start = data_start + off;
+            let end = start + NS_PREFLIGHT_WINDOW_SIZE;
+            windows.push_back((start, end, NsWindowScanner::default()));
+        }
+        Self {
+            windows,
+            distinct_prefixes: rustc_hash::FxHashSet::default(),
+            http_hosts: rustc_hash::FxHashSet::default(),
+            http_host_seg1: rustc_hash::FxHashSet::default(),
+            exceeded: false,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        !self.exceeded && !self.windows.is_empty() && self.distinct_prefixes.len() <= NS_PREFLIGHT_BUDGET
+    }
+
+    fn feed_range(&mut self, abs_start: u64, bytes: &[u8]) {
+        if self.exceeded || self.windows.is_empty() {
+            return;
+        }
+        let abs_end = abs_start + bytes.len() as u64;
+        // Feed any windows that overlap this read.
+        for (w_start, w_end, scanner) in self.windows.iter_mut() {
+            if *w_end <= abs_start || *w_start >= abs_end {
+                continue;
+            }
+            let s = (*w_start).max(abs_start);
+            let e = (*w_end).min(abs_end);
+            let rel_s = (s - abs_start) as usize;
+            let rel_e = (e - abs_start) as usize;
+            scanner.feed(
+                &bytes[rel_s..rel_e],
+                &mut self.distinct_prefixes,
+                &mut self.http_hosts,
+                &mut self.http_host_seg1,
+                &mut self.exceeded,
+            );
+            if self.exceeded {
+                break;
+            }
+        }
+
+        // Drop any windows that are fully behind abs_end (we've fed all their bytes).
+        while let Some((w_start, w_end, _)) = self.windows.front() {
+            if *w_end <= abs_end {
+                self.windows.pop_front();
+            } else if *w_start < abs_end {
+                break;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn maybe_finish(&mut self, out: &std::sync::OnceLock<NamespacePreflight>) -> bool {
+        if out.get().is_some() {
+            return true;
+        }
+        if self.exceeded || self.windows.is_empty() {
+            self.finish(out);
+            return true;
+        }
+        false
+    }
+
+    fn finish(&mut self, out: &std::sync::OnceLock<NamespacePreflight>) {
+        let exceeded = self.exceeded || self.distinct_prefixes.len() > NS_PREFLIGHT_BUDGET;
+        let http_host_prefixes = self.http_hosts.len();
+        let http_host_seg1_prefixes = self.http_host_seg1.len();
+
+        let suggestion = if exceeded {
+            NamespaceSuggestion::CoarseHeuristic
+        } else {
+            NamespaceSuggestion::None
+        };
+        tracing::info!(
+            distinct_prefixes = self.distinct_prefixes.len(),
+            http_host_prefixes,
+            http_host_seg1_prefixes,
+            exceeded_budget = exceeded,
+            ?suggestion,
+            "namespace preflight complete"
+        );
+        let _ = out.set(NamespacePreflight {
+            distinct_prefixes: self.distinct_prefixes.len(),
+            http_host_prefixes,
+            http_host_seg1_prefixes,
+            exceeded_budget: exceeded,
+            suggestion,
+        });
+    }
+}
+
+#[derive(Default)]
+struct NsWindowScanner {
+    in_comment: bool,
+    in_iri: bool,
+    iri_buf: Vec<u8>,
+    in_string: Option<(u8, bool)>, // (quote, triple)
+    quote_run: u8,
+    escape: bool,
+}
+
+impl NsWindowScanner {
+    fn feed(
+        &mut self,
+        bytes: &[u8],
+        distinct: &mut rustc_hash::FxHashSet<Vec<u8>>,
+        http_hosts: &mut rustc_hash::FxHashSet<Vec<u8>>,
+        http_host_seg1: &mut rustc_hash::FxHashSet<Vec<u8>>,
+        exceeded: &mut bool,
+    ) {
+        if *exceeded {
+            return;
+        }
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let b = bytes[i];
+
+            if self.in_comment {
+                if b == b'\n' {
+                    self.in_comment = false;
+                }
+                i += 1;
+                continue;
+            }
+
+            if self.in_iri {
+                if self.escape {
+                    self.escape = false;
+                    // Keep escaped char as-is (best-effort).
+                    self.iri_buf.push(b);
+                    i += 1;
+                    continue;
+                }
+                if b == b'\\' {
+                    self.escape = true;
+                    i += 1;
+                    continue;
+                }
+                if b == b'>' {
+                    self.in_iri = false;
+                    // Compute prefix = last '/' or '#', inclusive; else empty prefix.
+                    let mut split: Option<usize> = None;
+                    for (idx, &c) in self.iri_buf.iter().enumerate() {
+                        if c == b'/' || c == b'#' {
+                            split = Some(idx);
+                        }
+                    }
+                    let prefix = match split {
+                        Some(pos) => self.iri_buf[..=pos].to_vec(),
+                        None => Vec::new(),
+                    };
+                    distinct.insert(prefix);
+
+                    // Also track http(s) host and host+seg1 prefixes for strategy selection.
+                    if let Some((host_prefix, host_seg1_prefix)) =
+                        http_prefixes(&self.iri_buf)
+                    {
+                        http_hosts.insert(host_prefix);
+                        if let Some(seg1) = host_seg1_prefix {
+                            http_host_seg1.insert(seg1);
+                        }
+                    }
+
+                    self.iri_buf.clear();
+                    if distinct.len() > NS_PREFLIGHT_BUDGET {
+                        *exceeded = true;
+                        return;
+                    }
+                    i += 1;
+                    continue;
+                }
+                self.iri_buf.push(b);
+                i += 1;
+                continue;
+            }
+
+            if let Some((quote, triple)) = self.in_string {
+                if self.escape {
+                    self.escape = false;
+                    i += 1;
+                    continue;
+                }
+                if b == b'\\' {
+                    self.escape = true;
+                    i += 1;
+                    continue;
+                }
+                if !triple {
+                    // Short string ends at matching quote or newline.
+                    if b == quote || b == b'\n' || b == b'\r' {
+                        self.in_string = None;
+                    }
+                    i += 1;
+                    continue;
+                }
+                // Triple-quoted: track consecutive quote run.
+                if b == quote {
+                    self.quote_run = self.quote_run.saturating_add(1);
+                    if self.quote_run >= 3 {
+                        self.in_string = None;
+                        self.quote_run = 0;
+                    }
+                    i += 1;
+                    continue;
+                }
+                self.quote_run = 0;
+                i += 1;
+                continue;
+            }
+
+            // Normal state
+            match b {
+                b'#' => {
+                    self.in_comment = true;
+                    i += 1;
+                }
+                b'<' => {
+                    self.in_iri = true;
+                    self.escape = false;
+                    self.iri_buf.clear();
+                    i += 1;
+                }
+                b'"' | b'\'' => {
+                    // Triple-quote check.
+                    if i + 2 < bytes.len() && bytes[i + 1] == b && bytes[i + 2] == b {
+                        self.in_string = Some((b, true));
+                        self.quote_run = 0;
+                        i += 3;
+                    } else {
+                        self.in_string = Some((b, false));
+                        i += 1;
+                    }
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+    }
+}
+
+/// Extract `scheme://host/` and optionally `scheme://host/<seg1>/` from a raw IRI buffer.
+///
+/// Returns `None` if the IRI is not http(s) or doesn't contain a host.
+fn http_prefixes(iri: &[u8]) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
+    let scheme_len = if iri.starts_with(b"http://") {
+        7
+    } else if iri.starts_with(b"https://") {
+        8
+    } else {
+        return None;
+    };
+
+    // Find end of host.
+    let mut host_end = scheme_len;
+    while host_end < iri.len() && iri[host_end] != b'/' {
+        host_end += 1;
+    }
+    if host_end >= iri.len() || iri[host_end] != b'/' {
+        return None;
+    }
+    // host-only prefix includes trailing '/'
+    let host_prefix = iri[..=host_end].to_vec();
+
+    // seg1 (first path segment)
+    let mut seg1_end = host_end + 1;
+    while seg1_end < iri.len() && iri[seg1_end] != b'/' {
+        seg1_end += 1;
+    }
+    if seg1_end < iri.len() && iri[seg1_end] == b'/' && seg1_end > host_end + 1 {
+        let seg1_prefix = iri[..=seg1_end].to_vec(); // include trailing '/'
+        Some((host_prefix, Some(seg1_prefix)))
+    } else {
+        Some((host_prefix, None))
+    }
 }
 
 // ============================================================================

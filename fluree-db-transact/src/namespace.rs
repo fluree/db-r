@@ -19,7 +19,55 @@ use fluree_vocab::namespaces::{BLANK_NODE, OVERFLOW, USER_START};
 use parking_lot::RwLock;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+
+/// Fallback split mode used when no registered prefix matches an IRI.
+///
+/// Default preserves existing behavior (`LastSlashOrHash`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NsFallbackMode {
+    /// Split on the last `/` or `#` (prefix inclusive).
+    LastSlashOrHash = 0,
+    /// Coarse, outlier-oriented split:
+    ///
+    /// - Prefer declared prefixes via trie (unchanged).
+    /// - Otherwise:
+    ///   - http(s): allocate at most *two* path segments deep when the 2nd segment
+    ///     looks like a stable bucket (e.g., `.../pid/69/`), else at one segment
+    ///     deep (`.../rec/`, `.../db/`, `.../10.1007/`).
+    ///   - non-http(s) with `:` but no `/` or `#`: split at the 2nd `:` when present
+    ///     (e.g., `urn:isbn:`), else at the 1st `:`.
+    ///
+    /// This is intended to prevent namespace-code explosion for rare datasets
+    /// with highly-segmented IRIs (e.g. DBLP).
+    CoarseHeuristic = 1,
+    /// Ultra-coarse fallback intended as a “fallback to the fallback” when
+    /// the coarse heuristic still yields too many distinct namespace codes.
+    ///
+    /// - Prefer declared prefixes via trie (unchanged).
+    /// - Otherwise:
+    ///   - http(s): `scheme://host/`
+    ///   - non-http(s) with `:` but no `/` or `#`: split at the 1st `:`
+    ///   - else: last-slash-or-hash
+    HostOnly = 2,
+}
+
+impl NsFallbackMode {
+    #[inline]
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => NsFallbackMode::CoarseHeuristic,
+            2 => NsFallbackMode::HostOnly,
+            _ => NsFallbackMode::LastSlashOrHash,
+        }
+    }
+
+    #[inline]
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
 
 /// First code available for user-defined namespaces.
 /// Re-exported from `fluree_vocab::namespaces::USER_START`.
@@ -69,6 +117,12 @@ pub struct NamespaceRegistry {
     /// The empty prefix (code 0) is NOT stored in the trie — unmatched
     /// IRIs fall through to the split heuristic which may allocate it.
     trie: PrefixTrie,
+
+    /// Fallback mode used only when no trie prefix matches.
+    ///
+    /// For “namespace explosion” datasets, this can be upgraded (persistently)
+    /// by inferring from the DB state in `from_db()`.
+    fallback_mode: NsFallbackMode,
 }
 
 impl NamespaceRegistry {
@@ -93,6 +147,7 @@ impl NamespaceRegistry {
             next_code: USER_NS_START,
             delta: HashMap::new(),
             trie,
+            fallback_mode: NsFallbackMode::LastSlashOrHash,
         }
     }
 
@@ -131,13 +186,35 @@ impl NamespaceRegistry {
             }
         }
 
+        // Persisted behavior: once a DB has already crossed the u8-ish namespace budget,
+        // keep future allocations at host-only granularity for unseen hosts to prevent
+        // regression back to last-slash splitting in later transactions.
+        let fallback_mode = if max_code > u8::MAX as u16 {
+            NsFallbackMode::HostOnly
+        } else {
+            NsFallbackMode::LastSlashOrHash
+        };
+
         Self {
             codes,
             names,
             next_code,
             delta: HashMap::new(),
             trie,
+            fallback_mode,
         }
+    }
+
+    /// Set the fallback split mode for unknown IRIs.
+    #[inline]
+    pub fn set_fallback_mode(&mut self, mode: NsFallbackMode) {
+        self.fallback_mode = mode;
+    }
+
+    /// Get the current fallback split mode.
+    #[inline]
+    pub fn fallback_mode(&self) -> NsFallbackMode {
+        self.fallback_mode
     }
 
     /// Get the code for a prefix, allocating a new one if needed.
@@ -236,12 +313,8 @@ impl NamespaceRegistry {
             return Sid::new(code, &iri[prefix_len..]);
         }
 
-        // No known prefix matched; fall back to split heuristic for new prefixes.
-        let split_pos = iri.rfind(['/', '#']);
-        let (prefix, local) = match split_pos {
-            Some(pos) => (&iri[..=pos], &iri[pos + 1..]),
-            None => ("", iri),
-        };
+        // No known prefix matched; fall back to configured split heuristic for new prefixes.
+        let (prefix, local) = split_iri_fallback(iri, self.fallback_mode);
 
         let code = self.get_or_allocate(prefix);
         if code == OVERFLOW {
@@ -321,6 +394,7 @@ struct SharedAllocInner {
 /// logic in the import orchestrator, NOT by this allocator.
 pub struct SharedNamespaceAllocator {
     inner: RwLock<SharedAllocInner>,
+    fallback_mode: AtomicU8,
 }
 
 impl SharedNamespaceAllocator {
@@ -336,7 +410,21 @@ impl SharedNamespaceAllocator {
                 next_code: reg.next_code,
                 trie: reg.trie.clone(),
             }),
+            fallback_mode: AtomicU8::new(NsFallbackMode::LastSlashOrHash.as_u8()),
         }
+    }
+
+    /// Set the fallback split mode for unknown IRIs.
+    ///
+    /// This is an atomic update and is safe to call while parse workers are running.
+    pub fn set_fallback_mode(&self, mode: NsFallbackMode) {
+        self.fallback_mode.store(mode.as_u8(), Ordering::Relaxed);
+    }
+
+    /// Get the current fallback split mode.
+    #[inline]
+    pub fn fallback_mode(&self) -> NsFallbackMode {
+        NsFallbackMode::from_u8(self.fallback_mode.load(Ordering::Relaxed))
     }
 
     /// Thread-safe get-or-allocate with read-lock fast path.
@@ -365,6 +453,23 @@ impl SharedNamespaceAllocator {
         if !prefix.is_empty() {
             inner.trie.insert(prefix, code);
         }
+
+        // Fallback-to-fallback: if we enabled the coarse heuristic but it still
+        // allocates beyond the u8 namespace-code budget, collapse future unknown
+        // IRIs to host-only to avoid runaway prefix growth.
+        //
+        // IMPORTANT: This does not affect IRIs that match declared prefixes;
+        // those continue to win via trie longest-match.
+        if code > u8::MAX as u16
+            && self.fallback_mode.load(Ordering::Relaxed) == NsFallbackMode::CoarseHeuristic.as_u8()
+        {
+            self.fallback_mode
+                .store(NsFallbackMode::HostOnly.as_u8(), Ordering::Relaxed);
+            tracing::info!(
+                allocated_ns_code = code,
+                "coarse namespace fallback exceeded u8 budget; switching to host-only fallback"
+            );
+        }
         code
     }
 
@@ -380,11 +485,7 @@ impl SharedNamespaceAllocator {
             }
         }
         // No match — split heuristic + allocate
-        let split_pos = iri.rfind(['/', '#']);
-        let (prefix, local) = match split_pos {
-            Some(pos) => (&iri[..=pos], &iri[pos + 1..]),
-            None => ("", iri),
-        };
+        let (prefix, local) = split_iri_fallback(iri, self.fallback_mode());
         let code = self.get_or_allocate(prefix);
         if code == OVERFLOW {
             Sid::new(OVERFLOW, iri)
@@ -494,11 +595,7 @@ impl WorkerCache {
         }
 
         // No local match — split heuristic + allocate via shared allocator
-        let split_pos = iri.rfind(['/', '#']);
-        let (prefix, local) = match split_pos {
-            Some(pos) => (&iri[..=pos], &iri[pos + 1..]),
-            None => ("", iri),
-        };
+        let (prefix, local) = split_iri_fallback(iri, self.alloc.fallback_mode());
 
         let code = self.get_or_allocate(prefix);
         if code == OVERFLOW {
@@ -550,6 +647,150 @@ impl WorkerCache {
         if code >= self.snapshot_next_code && code < OVERFLOW {
             self.new_codes.insert(code);
         }
+    }
+}
+
+// ============================================================================
+// Fallback splitting helpers
+// ============================================================================
+
+#[inline]
+fn split_iri_last_slash_or_hash(iri: &str) -> (&str, &str) {
+    let split_pos = iri.rfind(['/', '#']);
+    match split_pos {
+        Some(pos) => (&iri[..=pos], &iri[pos + 1..]),
+        None => ("", iri),
+    }
+}
+
+#[inline]
+fn is_short_digit_bucket(seg: &[u8]) -> bool {
+    // Heuristic: small numeric buckets like "69" or "163" are common in DBLP pid paths.
+    !seg.is_empty() && seg.len() <= 4 && seg.iter().all(|b| b.is_ascii_digit())
+}
+
+#[inline]
+fn split_non_http_colonish(iri: &str) -> Option<(&str, &str)> {
+    // Only consider colon split when there is no '/' or '#', so we don't fight normal IRIs.
+    if iri.contains('/') || iri.contains('#') {
+        return None;
+    }
+    let bytes = iri.as_bytes();
+    let mut first = None;
+    let mut second = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b':' {
+            if first.is_none() {
+                first = Some(i);
+            } else {
+                second = Some(i);
+                break;
+            }
+        }
+    }
+    match (first, second) {
+        (Some(_first), Some(second)) => Some((&iri[..=second], &iri[second + 1..])),
+        (Some(first), None) => Some((&iri[..=first], &iri[first + 1..])),
+        _ => None,
+    }
+}
+
+#[inline]
+fn split_non_http_first_colon(iri: &str) -> Option<(&str, &str)> {
+    // Only consider colon split when there is no '/' or '#', so we don't fight normal IRIs.
+    if iri.contains('/') || iri.contains('#') {
+        return None;
+    }
+    if let Some(pos) = iri.find(':') {
+        Some((&iri[..=pos], &iri[pos + 1..]))
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn split_iri_coarse_heuristic(iri: &str) -> (&str, &str) {
+    let bytes = iri.as_bytes();
+    let scheme_len = if bytes.starts_with(b"http://") {
+        7
+    } else if bytes.starts_with(b"https://") {
+        8
+    } else {
+        // Non-http(s): try colon split (urn/isbn/etc), else legacy.
+        return split_non_http_colonish(iri).unwrap_or_else(|| split_iri_last_slash_or_hash(iri));
+    };
+
+    // Find end of host (first '/' after scheme).
+    let mut host_end = scheme_len;
+    while host_end < bytes.len() && bytes[host_end] != b'/' {
+        host_end += 1;
+    }
+    if host_end >= bytes.len() {
+        return ("", iri);
+    }
+    if bytes[host_end] != b'/' {
+        return split_iri_last_slash_or_hash(iri);
+    }
+
+    // seg1: bytes [host_end+1 .. seg1_end)
+    let mut seg1_end = host_end + 1;
+    while seg1_end < bytes.len() && bytes[seg1_end] != b'/' {
+        seg1_end += 1;
+    }
+    if seg1_end >= bytes.len() || bytes[seg1_end] != b'/' {
+        // No trailing slash after seg1 → host-only.
+        return (&iri[..=host_end], &iri[host_end + 1..]);
+    }
+
+    let seg1 = &bytes[host_end + 1..seg1_end];
+
+    // seg2 (optional): only use when it looks like a stable small bucket.
+    let mut seg2_end = seg1_end + 1;
+    while seg2_end < bytes.len() && bytes[seg2_end] != b'/' {
+        seg2_end += 1;
+    }
+    if seg2_end < bytes.len() && bytes[seg2_end] == b'/' {
+        let seg2 = &bytes[seg1_end + 1..seg2_end];
+        if seg1 == b"pid" && is_short_digit_bucket(seg2) {
+            // Use host/seg1/seg2/
+            return (&iri[..=seg2_end], &iri[seg2_end + 1..]);
+        }
+    }
+
+    // Default coarse: host/seg1/
+    (&iri[..=seg1_end], &iri[seg1_end + 1..])
+}
+
+#[inline]
+fn split_iri_host_only(iri: &str) -> (&str, &str) {
+    let bytes = iri.as_bytes();
+    let scheme_len = if bytes.starts_with(b"http://") {
+        7
+    } else if bytes.starts_with(b"https://") {
+        8
+    } else {
+        // Non-http(s): split at the first ':' when possible, else legacy.
+        return split_non_http_first_colon(iri).unwrap_or_else(|| split_iri_last_slash_or_hash(iri));
+    };
+
+    // Find end of host (first '/' after scheme).
+    let mut host_end = scheme_len;
+    while host_end < bytes.len() && bytes[host_end] != b'/' {
+        host_end += 1;
+    }
+    if host_end >= bytes.len() || bytes[host_end] != b'/' {
+        return ("", iri);
+    }
+    // Host-only prefix includes trailing '/'.
+    (&iri[..=host_end], &iri[host_end + 1..])
+}
+
+#[inline]
+fn split_iri_fallback(iri: &str, mode: NsFallbackMode) -> (&str, &str) {
+    match mode {
+        NsFallbackMode::LastSlashOrHash => split_iri_last_slash_or_hash(iri),
+        NsFallbackMode::CoarseHeuristic => split_iri_coarse_heuristic(iri),
+        NsFallbackMode::HostOnly => split_iri_host_only(iri),
     }
 }
 
