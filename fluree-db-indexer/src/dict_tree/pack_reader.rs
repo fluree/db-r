@@ -71,10 +71,7 @@ impl LoadedBacking {
 impl PackHandle {
     /// Get pre-parsed metadata and raw bytes. For lazy packs, triggers
     /// fetch + cache + mmap + parse on first call (subsequent calls return cached).
-    fn ensure_loaded(
-        &self,
-        ctx: Option<&LoadContext>,
-    ) -> io::Result<(&ParsedPackMeta, &[u8])> {
+    fn ensure_loaded(&self, ctx: Option<&LoadContext>) -> io::Result<(&ParsedPackMeta, &[u8])> {
         match &self.inner {
             PackInner::Loaded { meta, backing } => Ok((meta, backing.bytes())),
             PackInner::Lazy {
@@ -82,9 +79,7 @@ impl PackHandle {
                 cache_path,
                 loaded,
             } => {
-                let ctx = ctx.ok_or_else(|| {
-                    io::Error::other("lazy pack without load context")
-                })?;
+                let ctx = ctx.ok_or_else(|| io::Error::other("lazy pack without load context"))?;
                 let lazy = loaded.get_or_try_init(|| {
                     fetch_and_load(self.first_id, self.last_id, pack_cid, cache_path, ctx)
                 })?;
@@ -647,7 +642,12 @@ mod tests {
 
         // Store the pack in the content store.
         let cid = cs
-            .put(ContentKind::DictBlob { dict: DictKind::StringForward }, &pack_bytes)
+            .put(
+                ContentKind::DictBlob {
+                    dict: DictKind::StringForward,
+                },
+                &pack_bytes,
+            )
             .await
             .unwrap();
 
@@ -657,21 +657,14 @@ mod tests {
             pack_cid: cid,
         }];
 
-        let cache_dir = std::env::temp_dir().join(format!(
-            "fluree_test_lazy_{}",
-            std::process::id()
-        ));
+        let cache_dir =
+            std::env::temp_dir().join(format!("fluree_test_lazy_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cache_dir);
 
-        let reader = ForwardPackReader::from_pack_refs(
-            Arc::new(cs),
-            &cache_dir,
-            &refs,
-            KIND_STRING_FWD,
-            0,
-        )
-        .await
-        .unwrap();
+        let reader =
+            ForwardPackReader::from_pack_refs(Arc::new(cs), &cache_dir, &refs, KIND_STRING_FWD, 0)
+                .await
+                .unwrap();
 
         // All packs should be Lazy (MemoryContentStore has no local path).
         assert_eq!(reader.pack_count(), 1);

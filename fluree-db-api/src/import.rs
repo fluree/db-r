@@ -1722,9 +1722,7 @@ where
         for handle in parse_handles {
             handle.join().expect("parse thread panicked");
         }
-        forward_handle
-            .join()
-            .expect("forwarder thread panicked");
+        forward_handle.join().expect("forwarder thread panicked");
 
         // Note: The reader thread finishes when all chunks are consumed (channel
         // drained). Any reader errors would have manifested as channel closure,

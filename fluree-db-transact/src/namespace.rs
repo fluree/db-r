@@ -770,7 +770,8 @@ fn split_iri_host_only(iri: &str) -> (&str, &str) {
         8
     } else {
         // Non-http(s): split at the first ':' when possible, else legacy.
-        return split_non_http_first_colon(iri).unwrap_or_else(|| split_iri_last_slash_or_hash(iri));
+        return split_non_http_first_colon(iri)
+            .unwrap_or_else(|| split_iri_last_slash_or_hash(iri));
     };
 
     // Find end of host (first '/' after scheme).
@@ -860,6 +861,7 @@ pub fn is_blank_node_id(iri: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::Db;
     use fluree_vocab::namespaces::{DID_KEY, EMPTY, JSON_LD, XSD};
 
     #[test]
@@ -984,6 +986,42 @@ mod tests {
         let sid4 = registry.sid_for_iri("http://ex.org/qux");
         assert_eq!(sid4.namespace_code, short_code);
         assert_eq!(sid4.name.as_ref(), "qux");
+    }
+
+    #[test]
+    fn test_registry_from_db_enables_host_only_after_budget_crossed() {
+        // Simulate a DB that has already allocated beyond the u8-ish namespace budget,
+        // as would happen for outlier datasets after an import + index publish.
+        let mut db = Db::genesis("test:main");
+        db.namespace_codes
+            .insert(300, "http://already-allocated.example/".to_string());
+
+        let mut registry = NamespaceRegistry::from_db(&db);
+        assert_eq!(registry.fallback_mode(), NsFallbackMode::HostOnly);
+
+        let iri = "http://some-unseen-host/blah/123/456";
+        let sid = registry.sid_for_iri(iri);
+
+        // Host-only fallback allocates at scheme://host/ and keeps the full remainder as local.
+        assert!(registry.has_prefix("http://some-unseen-host/"));
+        assert!(!registry.has_prefix("http://some-unseen-host/blah/123/"));
+        assert_eq!(sid.name.as_ref(), "blah/123/456");
+    }
+
+    #[test]
+    fn test_registry_from_db_defaults_to_last_slash_under_budget() {
+        // Simulate a normal DB (no namespace explosion): fallback remains last-slash-or-hash.
+        let db = Db::genesis("test:main");
+        let mut registry = NamespaceRegistry::from_db(&db);
+        assert_eq!(registry.fallback_mode(), NsFallbackMode::LastSlashOrHash);
+
+        let iri = "http://some-unseen-host/blah/123/456";
+        let sid = registry.sid_for_iri(iri);
+
+        // Last-slash fallback allocates at the last path segment boundary.
+        assert!(registry.has_prefix("http://some-unseen-host/blah/123/"));
+        assert!(!registry.has_prefix("http://some-unseen-host/"));
+        assert_eq!(sid.name.as_ref(), "456");
     }
 
     #[test]

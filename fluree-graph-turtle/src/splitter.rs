@@ -1287,7 +1287,13 @@ fn reader_thread(
 
 const NS_PREFLIGHT_BUDGET: usize = 255;
 const NS_PREFLIGHT_WINDOW_SIZE: u64 = 8 * 1024 * 1024;
-const NS_PREFLIGHT_OFFSETS: &[u64] = &[0, 32 * 1024 * 1024, 128 * 1024 * 1024, 320 * 1024 * 1024, 640 * 1024 * 1024];
+const NS_PREFLIGHT_OFFSETS: &[u64] = &[
+    0,
+    32 * 1024 * 1024,
+    128 * 1024 * 1024,
+    320 * 1024 * 1024,
+    640 * 1024 * 1024,
+];
 
 struct NamespacePreflightDetector {
     windows: std::collections::VecDeque<(u64, u64, NsWindowScanner)>,
@@ -1315,7 +1321,9 @@ impl NamespacePreflightDetector {
     }
 
     fn is_active(&self) -> bool {
-        !self.exceeded && !self.windows.is_empty() && self.distinct_prefixes.len() <= NS_PREFLIGHT_BUDGET
+        !self.exceeded
+            && !self.windows.is_empty()
+            && self.distinct_prefixes.len() <= NS_PREFLIGHT_BUDGET
     }
 
     fn feed_range(&mut self, abs_start: u64, bytes: &[u8]) {
@@ -1345,11 +1353,9 @@ impl NamespacePreflightDetector {
         }
 
         // Drop any windows that are fully behind abs_end (we've fed all their bytes).
-        while let Some((w_start, w_end, _)) = self.windows.front() {
+        while let Some((_w_start, w_end, _)) = self.windows.front() {
             if *w_end <= abs_end {
                 self.windows.pop_front();
-            } else if *w_start < abs_end {
-                break;
             } else {
                 break;
             }
@@ -1458,9 +1464,7 @@ impl NsWindowScanner {
                     distinct.insert(prefix);
 
                     // Also track http(s) host and host+seg1 prefixes for strategy selection.
-                    if let Some((host_prefix, host_seg1_prefix)) =
-                        http_prefixes(&self.iri_buf)
-                    {
+                    if let Some((host_prefix, host_seg1_prefix)) = http_prefixes(&self.iri_buf) {
                         http_hosts.insert(host_prefix);
                         if let Some(seg1) = host_seg1_prefix {
                             http_host_seg1.insert(seg1);
