@@ -11,7 +11,7 @@
 //! // ... run queries/transactions ...
 //! assert!(store.has_span("query_prepare"));
 //! let span = store.find_span("txn_stage").unwrap();
-//! assert_eq!(span.level, tracing::Level::INFO);
+//! assert_eq!(span.level, tracing::Level::DEBUG);
 //! ```
 //!
 //! Uses `tracing::subscriber::set_default()` (not `set_global_default`) for test
@@ -19,6 +19,8 @@
 //! Tests MUST use `#[tokio::test(flavor = "current_thread")]` so all async work
 //! runs on the thread where the subscriber is installed.
 
+// Kept for: test utilities — not all methods are used in every test file.
+// Use when: writing new tracing acceptance tests in it_tracing_spans.rs.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -35,9 +37,17 @@ pub struct CapturedSpan {
     pub level: tracing::Level,
     pub fields: HashMap<String, String>,
     pub parent_name: Option<String>,
+    /// True if the parent was set explicitly (via `parent:` on the span macro),
+    /// false if determined from the current span context. When false, the parent
+    /// is contextual — correct under `current_thread` runtime but may be wrong
+    /// under multi-threaded runtimes.
+    pub parent_is_explicit: bool,
+    /// True once the span has been closed (guard dropped). False means the span
+    /// was created but never closed — a potential span leak.
+    pub closed: bool,
 }
 
-/// Index into the SpanStore vec, stored in span extensions for `on_record` updates.
+/// Index into the SpanStore vec, stored in span extensions for `on_record` and `on_close` updates.
 struct SpanIndex(usize);
 
 /// Thread-safe store of captured spans with query methods.
@@ -112,9 +122,31 @@ impl SpanStore {
             .cloned()
             .collect()
     }
+
+    /// Find spans that were created but never closed (potential leaks).
+    pub fn unclosed_spans(&self) -> Vec<CapturedSpan> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| !s.closed)
+            .cloned()
+            .collect()
+    }
+
+    /// Find all children of a given parent span name.
+    pub fn children_of(&self, parent_name: &str) -> Vec<CapturedSpan> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.parent_name.as_deref() == Some(parent_name))
+            .cloned()
+            .collect()
+    }
 }
 
-/// Custom tracing layer that captures span creation and field updates.
+/// Custom tracing layer that captures span creation, field updates, and close events.
 pub struct SpanCaptureLayer {
     store: SpanStore,
 }
@@ -138,12 +170,21 @@ where
         let mut fields = FieldVisitor(HashMap::new());
         attrs.record(&mut fields);
 
-        // Determine parent span name (explicit parent or contextual current)
-        let parent_name = attrs
+        // Determine parent span name.
+        // First check explicit parent (set via `parent:` in span macro),
+        // then fall back to contextual current span.
+        let explicit_parent = attrs
             .parent()
             .and_then(|pid| ctx.span(pid))
-            .map(|span| span.name().to_string())
-            .or_else(|| ctx.lookup_current().map(|span| span.name().to_string()));
+            .map(|span| span.name().to_string());
+
+        let (parent_name, parent_is_explicit) = match explicit_parent {
+            Some(name) => (Some(name), true),
+            None => {
+                let contextual = ctx.lookup_current().map(|span| span.name().to_string());
+                (contextual, false)
+            }
+        };
 
         let span_ref = ctx.span(id).expect("span should exist in registry");
         let meta = span_ref.metadata();
@@ -156,11 +197,13 @@ where
                 level: *meta.level(),
                 fields: fields.0,
                 parent_name,
+                parent_is_explicit,
+                closed: false,
             });
             index
         };
 
-        // Store index in span extensions for on_record lookups
+        // Store index in span extensions for on_record and on_close lookups
         span_ref.extensions_mut().insert(SpanIndex(index));
     }
 
@@ -177,6 +220,17 @@ where
                 let mut store = self.store.0.lock().unwrap();
                 if let Some(captured) = store.get_mut(index.0) {
                     captured.fields.extend(visitor.0);
+                }
+            }
+        }
+    }
+
+    fn on_close(&self, id: tracing::span::Id, ctx: Context<'_, S>) {
+        if let Some(span_ref) = ctx.span(&id) {
+            if let Some(index) = span_ref.extensions().get::<SpanIndex>() {
+                let mut store = self.store.0.lock().unwrap();
+                if let Some(captured) = store.get_mut(index.0) {
+                    captured.closed = true;
                 }
             }
         }

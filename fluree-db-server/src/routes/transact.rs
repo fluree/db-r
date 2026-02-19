@@ -1139,7 +1139,8 @@ async fn execute_transaction(
     author: Option<&str>,
 ) -> Result<Json<TransactResponse>> {
     // Create execution span
-    let span = tracing::debug_span!("transact_execute", ledger_id = ledger_id, txn_type = ?txn_type);
+    let span =
+        tracing::debug_span!("transact_execute", ledger_id = ledger_id, txn_type = ?txn_type);
     async move {
         let span = tracing::Span::current();
 

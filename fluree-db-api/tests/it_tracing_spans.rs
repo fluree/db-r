@@ -594,3 +594,252 @@ async fn ac4_commit_subspan_hierarchy() {
         );
     }
 }
+
+// =============================================================================
+// AC-6: Top-level operation span coverage (H-5)
+// =============================================================================
+
+/// Verify the query span hierarchy in the API layer.
+///
+/// In the API layer, `fluree.query()` calls `prepare_execution()` + `execute_prepared()`
+/// separately, so there is no wrapping `query_execute` span. The top-level query
+/// spans are `query_prepare` and `query_run`.
+///
+/// The `query_execute` span only exists in:
+/// - The server route handler (`routes/query.rs`)
+/// - The `execute()` convenience function (`execute.rs`)
+#[tokio::test(flavor = "current_thread")]
+async fn api_query_hierarchy_has_prepare_and_run_at_top() {
+    let (_store, _guard) = span_capture::init_test_tracing();
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "ac6-qe:main").await;
+
+    drop(_guard);
+    let (store, _guard) = span_capture::init_test_tracing();
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "select": ["?name"],
+        "where": {
+            "@id": "?s",
+            "@type": "ex:User",
+            "schema:name": "?name"
+        }
+    });
+
+    fluree
+        .query(&ledger, &query)
+        .await
+        .expect("query should succeed");
+
+    // query_prepare and query_run should exist (these are the API-layer top-level spans)
+    assert!(
+        store.has_span("query_prepare"),
+        "query_prepare should exist. Captured: {:?}",
+        store.span_names()
+    );
+    assert!(store.has_span("query_run"), "query_run should exist");
+
+    // query_execute does NOT exist in the API layer — it's a server route span
+    assert!(
+        !store.has_span("query_execute"),
+        "query_execute should NOT exist in the API layer (it wraps prepare+run in the server route only)"
+    );
+
+    // query_prepare sub-spans should be children of query_prepare
+    let rp = store.find_span("reasoning_prep").unwrap();
+    assert_eq!(rp.parent_name.as_deref(), Some("query_prepare"));
+    let pr = store.find_span("pattern_rewrite").unwrap();
+    assert_eq!(pr.parent_name.as_deref(), Some("query_prepare"));
+    let plan = store.find_span("plan").unwrap();
+    assert_eq!(plan.parent_name.as_deref(), Some("query_prepare"));
+}
+
+/// Verify the transaction span hierarchy in the API layer.
+///
+/// In the API layer, `fluree.insert()` calls `stage()` + `commit()` directly,
+/// so there is no wrapping `transact_execute` span (that only exists in the
+/// server route handler).
+#[tokio::test(flavor = "current_thread")]
+async fn api_transaction_hierarchy_has_stage_and_commit_at_top() {
+    let (store, _guard) = span_capture::init_test_tracing();
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = support::genesis_ledger(&fluree, "ac6-te:main");
+
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [{
+            "@id": "ex:alice",
+            "@type": "ex:User",
+            "schema:name": "Alice"
+        }]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert should succeed");
+
+    // txn_stage and txn_commit should both exist
+    assert!(store.has_span("txn_stage"), "txn_stage should exist");
+    assert!(store.has_span("txn_commit"), "txn_commit should exist");
+
+    // In the API layer, transact_execute does NOT exist (it's a server-only span)
+    assert!(
+        !store.has_span("transact_execute"),
+        "transact_execute should NOT exist in the API layer — it's a server route span only"
+    );
+}
+
+// =============================================================================
+// AC-7: Negative tests — spans do NOT cross operation boundaries (L-6)
+// =============================================================================
+
+/// Verify query spans do NOT appear in the transaction path and vice versa.
+#[tokio::test(flavor = "current_thread")]
+async fn query_spans_not_in_transaction_path() {
+    let (store, _guard) = span_capture::init_test_tracing();
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = support::genesis_ledger(&fluree, "ac7-neg:main");
+
+    // Only do an insert (no query)
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [{
+            "@id": "ex:alice",
+            "@type": "ex:User",
+            "schema:name": "Alice"
+        }]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert should succeed");
+
+    // Transaction path should NOT produce query-specific spans
+    assert!(
+        !store.has_span("query_prepare"),
+        "query_prepare should NOT appear in insert path"
+    );
+    assert!(
+        !store.has_span("query_run"),
+        "query_run should NOT appear in insert path"
+    );
+    assert!(
+        !store.has_span("reasoning_prep"),
+        "reasoning_prep should NOT appear in insert path"
+    );
+    assert!(
+        !store.has_span("pattern_rewrite"),
+        "pattern_rewrite should NOT appear in insert path"
+    );
+    assert!(
+        !store.has_span("plan"),
+        "plan should NOT appear in pure insert path"
+    );
+}
+
+/// Verify transaction spans do NOT appear in the query path.
+#[tokio::test(flavor = "current_thread")]
+async fn transaction_spans_not_in_query_path() {
+    let (_store, _guard) = span_capture::init_test_tracing();
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "ac7-neg2:main").await;
+
+    // Re-init to capture only query spans
+    drop(_guard);
+    let (store, _guard) = span_capture::init_test_tracing();
+
+    // Only do a query (no transaction)
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "select": ["?name"],
+        "where": {
+            "@id": "?s",
+            "@type": "ex:User",
+            "schema:name": "?name"
+        }
+    });
+
+    fluree
+        .query(&ledger, &query)
+        .await
+        .expect("query should succeed");
+
+    // Query path should NOT produce transaction-specific spans
+    assert!(
+        !store.has_span("txn_stage"),
+        "txn_stage should NOT appear in query path"
+    );
+    assert!(
+        !store.has_span("txn_commit"),
+        "txn_commit should NOT appear in query path"
+    );
+    assert!(
+        !store.has_span("insert_gen"),
+        "insert_gen should NOT appear in query path"
+    );
+    assert!(
+        !store.has_span("delete_gen"),
+        "delete_gen should NOT appear in query path"
+    );
+    assert!(
+        !store.has_span("commit_nameservice_lookup"),
+        "commit_nameservice_lookup should NOT appear in query path"
+    );
+}
+
+// =============================================================================
+// AC-8: Span close tracking — verify spans are properly closed (L-2)
+// =============================================================================
+
+/// Verify that all captured spans are properly closed (no leaked guards).
+#[tokio::test(flavor = "current_thread")]
+async fn all_spans_properly_closed() {
+    let (store, _guard) = span_capture::init_test_tracing();
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger0 = support::genesis_ledger(&fluree, "ac8:main");
+
+    let insert = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [{
+            "@id": "ex:alice",
+            "@type": "ex:User",
+            "schema:name": "Alice"
+        }]
+    });
+
+    fluree
+        .insert(ledger0, &insert)
+        .await
+        .expect("insert should succeed");
+
+    // All spans should be closed — no leaked guards
+    let unclosed = store.unclosed_spans();
+    assert!(
+        unclosed.is_empty(),
+        "All spans should be closed after operation completes. Unclosed: {:?}",
+        unclosed.iter().map(|s| s.name).collect::<Vec<_>>()
+    );
+}
