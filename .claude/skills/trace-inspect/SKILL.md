@@ -88,6 +88,12 @@ Do not alarm the user about these — they are expected behavior:
 - **`scripts/trace_common.py`** — shared Jaeger JSON parsing utilities
 - **`references/span-hierarchy.md`** — expected hierarchies, tag catalog, thread boundary rules
 
+## Maintenance Note
+
+`trace_common.py` and `references/span-hierarchy.md` are intentionally duplicated between
+`trace-inspect/` and `trace-overview/` because Claude skills must be self-contained directories.
+When updating these files, **update both copies**.
+
 ## Jaeger Export Format Quick Reference
 
 - Top-level: `{ "data": [ { "traceID", "spans": [...], "processes": {...} } ] }`

@@ -30,7 +30,8 @@ EXPECTED_CHILDREN = {
     "query_execute": {"query_prepare", "query_run"},
     "sparql_execute": {"query_prepare", "query_run"},
     "query_prepare": {"reasoning_prep"},  # pattern_rewrite + plan are common but optional
-    "index_build": {"build_index"},  # build_index directly under index_build (per sort order)
+    "index_build": {"commit_chain_walk", "dict_merge_and_remap", "build_all_indexes"},
+    "build_all_indexes": {"build_index"},
     "bulk_import": {"import_chunks"},
 }
 

@@ -21,8 +21,15 @@ def load_traces(path):
     metadata keys: file_size, format, trace_count, total_spans, services
     """
     file_size = os.path.getsize(path)
-    with open(path) as f:
-        data = json.load(f)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"Error: {path} is not valid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+    except FileNotFoundError:
+        print(f"Error: file not found: {path}", file=sys.stderr)
+        sys.exit(1)
 
     traces = data.get("data", [])
     fmt = detect_format(traces)
@@ -53,12 +60,11 @@ def load_traces(path):
 
 
 def detect_format(traces):
-    """Detect flat vs nested format by checking first span for nested-only fields."""
+    """Detect flat vs nested format by checking spans for nested-only fields."""
     for t in traces:
         for s in t.get("spans", []):
             if "depth" in s or "childSpanIds" in s:
                 return "nested"
-            return "flat"
     return "flat"
 
 

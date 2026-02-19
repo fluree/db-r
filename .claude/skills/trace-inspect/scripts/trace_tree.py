@@ -162,7 +162,10 @@ def render_detail_tree(trace_idx, trace, min_duration_ms=0, max_lines=200, lines
         print(f"{indent}{op:<{40-2*depth}s}  {format_duration(dur):>10s}  {pct:5.1f}%  {tag_str}")
         lines_used += 1
 
-        # Detect timing gaps between children
+        # Detect timing gaps between children.
+        # NOTE: gap can be negative when children execute concurrently
+        # (e.g. thread::scope, parallel builds). Negative gap means
+        # children's wall-clock sum exceeds parent's — expected for parallelism.
         children = index["children_map"].get(span["spanID"], [])
         if children and dur > 0:
             parent_start = span.get("startTime", 0)
@@ -199,12 +202,21 @@ def render_detail_tree(trace_idx, trace, min_duration_ms=0, max_lines=200, lines
 
 
 def walk_tree_limited(span_id, index, visitor_fn, depth, max_lines, lines_used):
-    """DFS walk with line limit awareness."""
+    """DFS walk with line limit awareness.
+
+    Note: lines_used is tracked via nonlocal in the visitor_fn closure
+    (see render_summary_tree / render_detail_tree). The max_lines check
+    here provides an additional guard against runaway recursion.
+    """
+    if max_lines > 0 and lines_used >= max_lines:
+        return
     span = index["span_by_id"].get(span_id)
     if not span:
         return
     visitor_fn(span, depth, index)
     for child in index["children_map"].get(span_id, []):
+        if max_lines > 0 and lines_used >= max_lines:
+            break
         walk_tree_limited(child["spanID"], index, visitor_fn, depth + 1, max_lines, lines_used)
 
 

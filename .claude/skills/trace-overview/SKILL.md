@@ -115,7 +115,7 @@ For stress test files (50K+ traces), always use `--op-filter` and `--top N`.
 When the overview reveals an interesting trace (outlier, error, anomaly), switch to the `trace-inspect` skill to examine its span tree in detail:
 
 ```bash
-python3 <trace-inspect_skill_dir>/scripts/trace_tree.py <FILE> --trace N --detail
+python3 .claude/skills/trace-inspect/scripts/trace_tree.py <FILE> --trace N --detail
 ```
 
 ## Resources
@@ -124,6 +124,13 @@ python3 <trace-inspect_skill_dir>/scripts/trace_tree.py <FILE> --trace N --detai
 - **`scripts/trace_corpus_anomalies.py`** — cross-trace anomaly detection (--verbose)
 - **`scripts/trace_common.py`** — shared Jaeger JSON parsing utilities
 - **`references/anomaly-catalog.md`** — anomaly types, root causes, code cross-references
+- **`references/span-hierarchy.md`** — expected span trees, thread boundary rules, tag catalog
+
+## Maintenance Note
+
+`trace_common.py` and `references/span-hierarchy.md` are intentionally duplicated between
+`trace-inspect/` and `trace-overview/` because Claude skills must be self-contained directories.
+When updating these files, **update both copies**.
 
 ## Jaeger Export Format Quick Reference
 
