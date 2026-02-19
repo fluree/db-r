@@ -326,6 +326,35 @@ Without this, spans from the new crate will appear in console logs but not in Ja
 6. **Compiler won't catch `span.enter()` across `.await`** -- Unlike what the tracing docs suggest, `Entered` may actually be `Send` (since `&Span` is `Send` when `Span: Sync`). The code compiles fine but produces incorrect traces at runtime. The only way to detect this is visual inspection in Jaeger. Grep for `span.enter()` in async functions as part of code review.
 7. **`std::thread::scope` / `std::thread::spawn` drops span context** -- New OS threads start with empty thread-local span context, so any spans created on them become orphaned root traces. You must capture `Span::current()` and `.enter()` it inside the thread closure. This same issue applies to `tokio::task::spawn_blocking`, `rayon`, and any other thread-spawning API.
 
+## Claude Code Trace Analysis Skills
+
+Two Claude Code skills are available for analyzing Jaeger trace exports:
+
+### `/trace-inspect`
+
+Drills into a **single trace**: span tree visualization, timing breakdown, structural health checks. Use when you have a specific slow request and want to understand where time went.
+
+```
+/trace-inspect path/to/traces.json
+```
+
+### `/trace-overview`
+
+Analyzes **all traces** in an export: aggregate statistics, anomaly detection across the corpus, comparison of query vs transaction patterns. Use when you want a high-level understanding of system behavior.
+
+```
+/trace-overview path/to/traces.json
+```
+
+### Exporting traces from Jaeger
+
+1. Open Jaeger UI (default: `http://localhost:16686`)
+2. Search for traces of interest (by service name, operation, duration, etc.)
+3. Click the JSON download button on a trace or search result
+4. Save to a file and pass to either skill
+
+See the [OTEL dev harness](../../otel/README.md) for running a local Jaeger instance.
+
 ## Related Documentation
 
 - [Performance Investigation](../troubleshooting/performance-tracing.md) -- How operators use deep tracing

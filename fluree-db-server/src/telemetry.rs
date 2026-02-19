@@ -394,6 +394,8 @@ pub fn create_request_span(
         Some(fmt) => format!("{operation}:{fmt}").into(),
         None => operation.into(),
     };
+    // error_code: intentionally Empty on success (OTEL convention — omit, don't record "ok").
+    // Only recorded on error paths via set_span_error_code().
     tracing::info_span!(
         "request",
         otel.name = %otel_name,
