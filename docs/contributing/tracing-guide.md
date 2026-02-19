@@ -4,30 +4,28 @@ When you add or modify code paths in Fluree, you should instrument them with tra
 
 ## The Two-Tier Span Strategy
 
-Fluree uses a tiered approach so that tracing is **zero-noise by default** but **deeply informative on demand**.
+Fluree uses a tiered approach so that tracing is **zero-overhead by default** but **deeply informative on demand**.
 
-### Tier 1: `info_span!` -- always visible
+### The `request` span: `info_span!` (the one exception)
 
-These are the public telemetry contract. They appear at the default `RUST_LOG=info` level and are the spans operators see in production. **Do not add new info-level spans casually** -- they should represent top-level operations or phases that are *always* relevant.
+The HTTP `request` span in `telemetry.rs::create_request_span()` is the only `info_span!` in the codebase. It provides operators with HTTP request visibility at the production default `RUST_LOG=info`. All other operation spans are `debug_span!` — this guarantees true zero overhead when the `otel` feature is not compiled and `RUST_LOG` is at `info`.
 
-Existing info spans: `request`, `query_execute`, `transact_execute`, `txn_stage`, `txn_commit`, `index_build`, `sort_blocking`, `join_flush_*`, etc.
+### Tier 1: `debug_span!` -- operation and phase level
 
-### Tier 2: `debug_span!` -- opt-in investigation
+All operation spans (`query_execute`, `transact_execute`, `txn_stage`, `txn_commit`, `index_build`, `sort_blocking`, etc.) and their phases use `debug_span!`. They are visible when OTEL is enabled (the OTEL `Targets` filter registers interest at DEBUG for `fluree_*` crates) or when a developer sets `RUST_LOG=debug` or `RUST_LOG=info,fluree_db_query=debug`. Without either, `debug_span!` short-circuits to a single atomic load (~1-2ns, unmeasurable).
 
-These decompose an operation into its phases: parse, plan, execute, format, etc. Visible when a developer sets `RUST_LOG=info,fluree_db_query=debug`. Add debug spans when you create a new code path that represents a **distinct, named phase** of an operation.
+### Tier 2: `trace_span!` -- maximum detail
 
-### Tier 3: `trace_span!` -- maximum detail
-
-Per-operator, per-item, or per-iteration spans. Visible at `RUST_LOG=info,fluree_db_query=trace`. Use for fine-grained instrumentation in hot paths where you only want visibility during deep investigation.
+Per-operator, per-item, or per-iteration spans. Visible at `RUST_LOG=info,fluree_db_query=trace`. Use for fine-grained instrumentation in hot paths where you only want visibility during deep investigation. The OTEL `Targets` filter intentionally excludes TRACE to prevent flooding the batch processor.
 
 ### Decision guide
 
 | You're adding... | Span level | Example |
 |-------------------|-----------|---------|
-| New top-level operation (HTTP handler, background task) | `info_span!` | `sparql_execute` |
-| New phase within an existing operation | `debug_span!` | `reasoning_prep`, `format` |
-| Core query operator (structural, always useful for debugging) | `debug_span!` | `scan`, `join`, `filter`, `project`, `sort` |
-| Detail operator or per-iteration instrumentation | `trace_span!` | `group_by`, `distinct`, `resolve_commit` |
+| New top-level operation, phase, or operator | `debug_span!` | `query_execute`, `reasoning_prep`, `join` |
+| Detail or per-iteration instrumentation | `trace_span!` | `group_by`, `distinct`, `binary_cursor_next_leaf` |
+
+**Do not use `info_span!`** for new operation spans. The `request` span is the sole exception.
 
 ## Code Patterns
 
@@ -223,7 +221,7 @@ If you add a new query operator:
 
 1. For core structural operators (scan, join, filter, project, sort), use `debug_span!` in `open()`
 2. For detail operators (group_by, distinct, limit, offset, etc.), use `trace_span!` in `open()`
-3. If it's a blocking/buffering operator (like sort), add an info-level timing span in `next_batch()`
+3. If it's a blocking/buffering operator (like sort), add a `debug_span!` timing span in `next_batch()`
 4. Add a test verifying the span emits at the correct level
 
 ### New transaction phase
@@ -238,7 +236,7 @@ If you add a new phase to transaction processing:
 
 If you add a new background task (like indexing, garbage collection, compaction):
 
-1. Add an `info_span!` as the **trace root** (these are independent traces, not children of HTTP requests)
+1. Add a `debug_span!` as the **trace root** (these are independent traces, not children of HTTP requests)
 2. Add debug sub-spans for phases within the task
 3. Ensure the crate target is listed in the OTEL `Targets` filter in `telemetry.rs`
 
@@ -248,14 +246,15 @@ All new spans should have at least one test verifying they emit with expected fi
 
 ### Test utilities
 
-The test infrastructure lives in `fluree-db-api/tests/support/tracing.rs`:
+The test infrastructure lives in `fluree-db-api/tests/support/span_capture.rs`:
 
 ```rust
-use crate::support::tracing::{init_test_tracing, init_info_only_tracing};
+mod support;
+use support::span_capture;
 
 #[tokio::test]
 async fn my_new_span_emits_at_debug_level() {
-    let (store, _guard) = init_test_tracing(); // captures ALL levels
+    let (store, _guard) = span_capture::init_test_tracing(); // captures ALL levels
 
     // ... run the code that emits the span ...
 
@@ -267,7 +266,7 @@ async fn my_new_span_emits_at_debug_level() {
 
 #[tokio::test]
 async fn my_new_span_not_visible_at_info() {
-    let (store, _guard) = init_info_only_tracing(); // captures only INFO+
+    let (store, _guard) = span_capture::init_info_only_tracing(); // captures only INFO+
 
     // ... run the code ...
 
@@ -277,8 +276,8 @@ async fn my_new_span_not_visible_at_info() {
 
 ### Test helpers available
 
-- `init_test_tracing()` -- captures all spans regardless of level (for verifying span existence)
-- `init_info_only_tracing()` -- captures only INFO+ (for verifying zero-noise at default level)
+- `span_capture::init_test_tracing()` -- captures all spans regardless of level (for verifying span existence)
+- `span_capture::init_info_only_tracing()` -- captures only INFO+ (for verifying zero-noise at default level)
 - `SpanStore::has_span(name)` -- check if a span was emitted
 - `SpanStore::find_span(name)` -- get span details (level, fields, parent)
 - `SpanStore::find_spans(name)` -- find all spans with a given name
@@ -287,7 +286,7 @@ async fn my_new_span_not_visible_at_info() {
 ### Where to put tests
 
 - Tracing integration tests go in `fluree-db-api/tests/it_tracing_spans.rs`
-- The test utilities are in `fluree-db-api/tests/support/tracing.rs`
+- The test utilities are in `fluree-db-api/tests/support/span_capture.rs`
 
 ## OTEL Layer Configuration
 
@@ -307,13 +306,14 @@ Without this, spans from the new crate will appear in console logs but not in Ja
 
 ## Checklist for New Instrumentation
 
-- [ ] Chose the right span level (info / debug / trace)
+- [ ] Used `debug_span!` (not `info_span!`) for all new operation spans
 - [ ] Used `span.enter()` only in sync code, `.instrument(span)` for async
 - [ ] Propagated span context into spawned threads (`spawn_blocking`, `std::thread::scope`, etc.)
 - [ ] Added deferred fields for values computed after span creation
 - [ ] Tested span emission with `SpanCaptureLayer`
-- [ ] Verified zero-noise at INFO level (debug/trace spans don't appear)
-- [ ] Updated span hierarchy in `docs/operations/telemetry.md` if adding debug/info spans
+- [ ] Verified zero overhead at INFO level (no debug/trace spans appear without OTEL or `RUST_LOG=debug`)
+- [ ] Updated span hierarchy in `docs/operations/telemetry.md` if adding spans
+- [ ] Updated `.claude/skills/*/references/span-hierarchy.md` (both copies)
 - [ ] Added new crate to OTEL `Targets` filter if applicable
 
 ## Common Gotchas
@@ -321,7 +321,7 @@ Without this, spans from the new crate will appear in console logs but not in Ja
 1. **`span.enter()` across `.await` causes cross-request contamination** -- This is the most dangerous tracing bug. In tokio's multi-threaded runtime, `span.enter()` sets the span on the current thread. When the task suspends at `.await`, the span stays "entered" on that thread. Other tasks polled on the same thread inherit it as their parent. **Result**: unrelated requests cascade into each other's traces in Jaeger, with child spans that outlive their parents. Always use `.instrument(span)` in async code. This was a real bug in the HTTP route handlers and took Jaeger analysis to identify.
 2. **`Span::current().record()` targets the innermost span** -- not necessarily the one you intend. Hold a reference to the span you want to record on.
 3. **OTEL exporter floods** -- if you set `RUST_LOG=debug` globally, third-party crates (hyper, tonic, h2) emit debug spans that overwhelm the OTEL batch processor. The `Targets` filter on the OTEL layer prevents this.
-4. **Tower-HTTP duplicate `request` span** -- tower-http's `TraceLayer` creates its own `request` span at DEBUG level. We've configured it to use TRACE level to avoid collision with Fluree's `request` info_span.
+4. **Tower-HTTP `TraceLayer` removed** -- tower-http's `TraceLayer` was removed entirely because it created a duplicate `request` span that collided with Fluree's own `request` span in `create_request_span()`. If you re-add tower-http tracing, ensure it does not conflict.
 5. **`set_global_default` in tests** -- can only be called once per process. Use `set_default()` which returns a guard scoped to the test.
 6. **Compiler won't catch `span.enter()` across `.await`** -- Unlike what the tracing docs suggest, `Entered` may actually be `Send` (since `&Span` is `Send` when `Span: Sync`). The code compiles fine but produces incorrect traces at runtime. The only way to detect this is visual inspection in Jaeger. Grep for `span.enter()` in async functions as part of code review.
 7. **`std::thread::scope` / `std::thread::spawn` drops span context** -- New OS threads start with empty thread-local span context, so any spans created on them become orphaned root traces. You must capture `Span::current()` and `.enter()` it inside the thread closure. This same issue applies to `tokio::task::spawn_blocking`, `rayon`, and any other thread-spawning API.

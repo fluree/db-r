@@ -131,61 +131,25 @@ Output:
 
 ## Metrics
 
-### Prometheus Metrics
+> **Planned — not yet implemented.** The metrics below are a design target for a future PR. Prometheus metrics are not currently exposed by the server. The tracing/OTEL instrumentation described in the rest of this document is the current observability mechanism.
 
-Fluree exposes Prometheus-compatible metrics:
+### Prometheus Metrics (planned)
 
 ```bash
 curl http://localhost:8090/metrics
 ```
 
-Output:
-```text
-# HELP fluree_transactions_total Total number of transactions
-# TYPE fluree_transactions_total counter
-fluree_transactions_total{ledger="mydb:main"} 567
+**Planned metrics:**
+- `fluree_transactions_total` - Total transactions (counter)
+- `fluree_transaction_duration_seconds` - Transaction latency (histogram)
+- `fluree_queries_total` - Total queries (counter)
+- `fluree_query_duration_seconds` - Query latency (histogram)
+- `fluree_query_errors_total` - Query errors (counter)
+- `fluree_indexing_lag_transactions` - Novelty count (gauge)
+- `fluree_index_duration_seconds` - Indexing time (histogram)
+- `fluree_uptime_seconds` - Server uptime (gauge)
 
-# HELP fluree_queries_total Total number of queries
-# TYPE fluree_queries_total counter
-fluree_queries_total 12345
-
-# HELP fluree_query_duration_seconds Query execution duration
-# TYPE fluree_query_duration_seconds histogram
-fluree_query_duration_seconds_bucket{le="0.01"} 8234
-fluree_query_duration_seconds_bucket{le="0.05"} 11890
-fluree_query_duration_seconds_bucket{le="0.1"} 12100
-fluree_query_duration_seconds_sum 556.789
-fluree_query_duration_seconds_count 12345
-
-# HELP fluree_indexing_lag_transactions Indexing lag in transactions
-# TYPE fluree_indexing_lag_transactions gauge
-fluree_indexing_lag_transactions{ledger="mydb:main"} 5
-```
-
-### Available Metrics
-
-**Transaction Metrics:**
-- `fluree_transactions_total` - Total transactions
-- `fluree_transaction_duration_seconds` - Transaction latency
-- `fluree_flakes_added_total` - Total flakes added
-- `fluree_flakes_retracted_total` - Total flakes retracted
-
-**Query Metrics:**
-- `fluree_queries_total` - Total queries
-- `fluree_query_duration_seconds` - Query latency
-- `fluree_query_errors_total` - Query errors
-
-**Indexing Metrics:**
-- `fluree_indexing_lag_transactions` - Novelty count
-- `fluree_index_duration_seconds` - Indexing time
-- `fluree_index_size_bytes` - Index size
-
-**System Metrics:**
-- `fluree_uptime_seconds` - Server uptime
-- `fluree_memory_used_bytes` - Memory usage
-- `fluree_storage_used_bytes` - Storage usage
-
-### Prometheus Integration
+### Prometheus Integration (planned)
 
 Configure Prometheus to scrape Fluree:
 
@@ -260,6 +224,8 @@ The OTEL exporter uses its own `Targets` filter **independent of `RUST_LOG`**. T
 
 This means `RUST_LOG=debug` produces verbose console output, but the OTEL exporter only receives Fluree spans -- no hyper/tonic/tower noise.
 
+**Batch processor queue size:** The OTEL batch span processor queue is set to 1,000,000 spans. At ~200 bytes per span, this represents ~200MB of potential memory usage under sustained debug-level traffic. This is intentional to prevent span loss during investigation. At `RUST_LOG=info` without OTEL, no debug spans are created at all (true zero overhead). With OTEL enabled, the queue rarely exceeds a few thousand entries under normal operation.
+
 ### Shutdown
 
 On server shutdown, the OTEL `SdkTracerProvider` is flushed and shut down to ensure all pending spans are exported. This is handled automatically by the server's shutdown hook.
@@ -280,32 +246,19 @@ The `operation` span attribute retains the handler-specific name (e.g. `query` v
 
 ### Span Hierarchy
 
-Fluree instruments queries, transactions, and indexing with structured tracing spans at three tiers. All debug/trace spans are opt-in via `RUST_LOG` -- at default `info` level, only top-level operation spans appear.
+Fluree instruments queries, transactions, and indexing with structured tracing spans at two tiers. The only `info_span!` in the codebase is `request` (the HTTP request span). All operation spans use `debug_span!`, guaranteeing true zero overhead when OTEL is not compiled and `RUST_LOG` is at `info`.
 
-#### Tier 1: INFO (always visible)
+#### Tier 1: DEBUG (operation and phase level)
 
-Production-level spans. Shows top-level operations and timing:
-
-```bash
-RUST_LOG=info  # default
-```
-
-Spans: `query_run`, `txn_stage`, `txn_commit`, `commit_*` sub-spans, `index_build`, `build_all_indexes`, `build_index`, `sort_blocking`, `groupby_blocking`, `join_flush_*`
-
-#### Tier 2: DEBUG (opt-in investigation)
-
-Phase-level decomposition. Use to identify which phase is the bottleneck:
+All operation, phase, and operator spans. Visible when OTEL is enabled or when `RUST_LOG` includes debug:
 
 ```bash
 RUST_LOG=info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug
 ```
 
-Additional spans:
-- **Query:** `query_prepare` > [`reasoning_prep`, `pattern_rewrite`, `plan`], `parse`, `format`, `policy_eval`, core operators: `scan`, `join`, `join_next_batch`, `filter`, `project`, `sort`
-- **Transaction:** `txn_stage` > [`where_exec`, `delete_gen`, `insert_gen`, `cancellation`, `policy_enforce`]
-- **Indexer:** `resolve_commit`, `index_gc` > [`gc_walk_chain`, `gc_delete_entries`]
+Spans: `query_execute`, `query_prepare`, `query_run`, `txn_stage`, `txn_commit`, `commit_*` sub-spans, `index_build`, `build_all_indexes`, `build_index`, `sort_blocking`, `groupby_blocking`, core operators (`scan`, `join`, `filter`, `project`, `sort`), `format`, `policy_enforce`, etc.
 
-#### Tier 3: TRACE (maximum detail)
+#### Tier 2: TRACE (maximum detail)
 
 Per-operator detail for deep performance analysis:
 
@@ -318,43 +271,44 @@ Additional spans: `binary_cursor_next_leaf`, `property_join`, `group_by`, `aggre
 #### Span Tree (Query)
 
 ```
-query_prepare (debug)
-├── reasoning_prep (debug)
-├── pattern_rewrite (debug)
-└── plan (debug)
-query_run (info)
-├── scan (debug)
-├── join (debug, open)
-├── join_next_batch (debug, per iteration)
-│   └── join_flush_batched_binary (info)
-├── filter (debug)
-├── project (debug)
-├── sort (debug)
-├── sort_blocking (info)
-└── ...
-format (debug)
+query_execute (debug)
+├── query_prepare (debug)
+│   ├── reasoning_prep (debug)
+│   ├── pattern_rewrite (debug, patterns_before, patterns_after)
+│   └── plan (debug, pattern_count)
+├── query_run (debug)
+│   ├── scan (debug)
+│   ├── join (debug)
+│   │   └── join_next_batch (debug, per iteration)
+│   ├── filter (debug)
+│   ├── project (debug)
+│   ├── sort (debug)
+│   ├── sort_blocking (debug, cross-thread via spawn_blocking)
+│   └── ...
+└── format (debug)
 ```
 
 #### Span Tree (Transaction)
 
 ```
-txn_stage (info)
-├── where_exec (debug)
-├── delete_gen (debug)
-├── insert_gen (debug)
-├── cancellation (debug)
-└── policy_enforce (debug)
-txn_commit (info)
-├── commit_nameservice_lookup (info)
-├── commit_verify_sequencing (info)
-├── commit_namespace_delta (info)
-├── commit_write_raw_txn (info)
-├── commit_build_record (info)
-├── commit_write_commit_blob (info)
-├── commit_publish_nameservice (info)
-├── commit_generate_metadata_flakes (info)
-├── commit_clone_novelty (info)
-└── commit_apply_to_novelty (info)
+transact_execute (debug)
+├── txn_stage (debug, insert_count, delete_count)
+│   ├── where_exec (debug)
+│   ├── delete_gen (debug)
+│   ├── insert_gen (debug)
+│   ├── cancellation (debug)
+│   └── policy_enforce (debug)
+└── txn_commit (debug, flake_count, delta_bytes)
+    ├── commit_nameservice_lookup (debug)
+    ├── commit_verify_sequencing (debug)
+    ├── commit_namespace_delta (debug)
+    ├── commit_write_raw_txn (debug)
+    ├── commit_build_record (debug)
+    ├── commit_write_commit_blob (debug)
+    ├── commit_publish_nameservice (debug)
+    ├── commit_generate_metadata_flakes (debug)
+    ├── commit_populate_dict_novelty (debug)
+    └── commit_apply_to_novelty (debug)
 ```
 
 #### Span Tree (Indexing)
@@ -362,30 +316,39 @@ txn_commit (info)
 Indexing runs as a **separate top-level trace** (not nested under an HTTP request). Each index refresh cycle starts its own trace root:
 
 ```
-index_build (info)
-├── build_all_indexes (info)
-│   └── build_index (info, per order: SPOT, PSOT, POST, OPST, TSOP)
-├── generate_runs (info)
-├── walk_commit_chain (info)
-│   └── resolve_commit (debug)
-└── index_gc (debug)
-    ├── gc_walk_chain (debug)
-    └── gc_delete_entries (debug)
+index_build (debug, ledger_id)
+├── commit_chain_walk (debug)
+├── commit_resolve (debug, per commit)
+├── dict_merge_and_remap (debug)
+├── build_all_indexes (debug)
+│   └── build_index (debug, per order: SPOT, PSOT, POST, OPST) [cross-thread]
+├── secondary_partition (debug)
+├── upload_dicts (debug)
+├── upload_indexes (debug)
+├── build_index_root (debug)
+└── BinaryIndexStore::load (debug) [cross-thread]
+```
+
+`index_gc` is a separate top-level trace (fire-and-forget `tokio::spawn`):
+```
+index_gc (debug, separate trace)
+├── gc_walk_chain (debug)
+└── gc_delete_entries (debug)
 ```
 
 #### Span Tree (Bulk Import / fluree-ingest)
 
-Bulk import runs as a **standalone top-level trace** under the `fluree-ingest` service (no HTTP server involved). The import pipeline instruments all major phases:
+Bulk import runs as a **standalone top-level trace** under the `fluree-cli` service (no HTTP server involved). The import pipeline instruments all major phases:
 
 ```
-bulk_import (info, alias)
-├── import_chunks (info, total_chunks, parse_threads)
+bulk_import (debug, alias)
+├── import_chunks (debug, total_chunks, parse_threads)
 │   ├── [resolver thread: inherits parent context]
 │   ├── [ttl-parser-N threads: inherit parent context]
 │   └── commit + run generation log events
-├── import_index_build (info)
-│   ├── build_all_indexes (info)
-│   │   └── build_index (info, per order: SPOT, PSOT, POST, OPST)
+├── import_index_build (debug)
+│   ├── build_all_indexes (debug)
+│   │   └── build_index (debug, per order: SPOT, PSOT, POST, OPST) [cross-thread]
 │   ├── import_cas_upload (debug)
 │   └── import_publish (debug)
 └── cleanup log events
@@ -399,14 +362,16 @@ When tracked queries or transactions are executed (via the `/query` or `/transac
 
 ### RUST_LOG Quick Reference
 
-| Goal | Pattern |
-|------|---------|
-| Production default | `info` |
-| Debug slow queries | `info,fluree_db_query=debug` |
-| Debug slow transactions | `info,fluree_db_transact=debug` |
-| Full phase decomposition | `info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug` |
-| Per-operator detail | `info,fluree_db_query=trace` |
-| Console firehose | `debug` (OTEL still filters to fluree_*) |
+| Goal | Pattern | What you see |
+|------|---------|--------------|
+| Production default | `info` | HTTP `request` spans only (zero operation spans) |
+| Debug slow queries | `info,fluree_db_query=debug` | + `query_execute`, `query_prepare`, `query_run`, operators |
+| Debug slow transactions | `info,fluree_db_transact=debug` | + `txn_stage`, `txn_commit`, commit sub-spans |
+| Full phase decomposition | `info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug` | All debug spans |
+| Per-operator detail | `info,fluree_db_query=trace` | + per-leaf: `binary_cursor_next_leaf`, etc. |
+| Console firehose | `debug` | Everything (OTEL still filters to `fluree_*`) |
+
+**Note:** When OTEL is enabled, the OTEL `Targets` filter always captures `fluree_*` spans at DEBUG regardless of `RUST_LOG`. The table above describes console output visibility only.
 
 ### Further Reading
 

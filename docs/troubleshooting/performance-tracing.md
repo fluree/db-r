@@ -9,7 +9,7 @@ Fluree includes deep instrumentation that decomposes every query, transaction, a
 | Single slow query | `X-Fluree-Explain: true` header | Deep tracing at `debug` level |
 | Slow queries in general, unclear which phase | Deep tracing at `debug` level | `trace` level for operator detail |
 | Slow transactions / commits | Deep tracing at `debug` level | Check `txn_commit` sub-spans |
-| Indexing taking too long | Deep tracing (indexer spans always at `info`) | `debug` for `resolve_commit` detail |
+| Indexing taking too long | Deep tracing at `debug` level | Check `build_index` per-order timing |
 | Intermittent latency spikes | Sustained tracing + Jaeger search by duration | Correlate with indexing traces |
 | Production regression | Compare Jaeger traces before/after deploy | Filter by `tracker_time` span attribute |
 
@@ -134,19 +134,19 @@ my-investigation: _data/storage
 
 ```
 request (info)                              ─────────────────────────── 834ms
-  query_execute (info)                      ─────────────────────────── 832ms
+  query_execute (debug)                     ─────────────────────────── 832ms
     query_prepare (debug)                   ──── 12ms
       reasoning_prep (debug)                ── 3ms
       pattern_rewrite (debug)               ── 2ms
       plan (debug)                          ── 5ms
-    query_run (info)                        ──────────────────────── 818ms
-      scan (trace)                          ── 4ms
-      join (trace)                          ─────────────────── 780ms
-        join_flush_scan_spot (info)         ────────────────── 775ms
-      filter (trace)                        ── 2ms
-      sort (trace)                          ── 15ms
-        sort_blocking (info)                ── 14ms
-      project (trace)                       ── 1ms
+    query_run (debug)                       ──────────────────────── 818ms
+      scan (debug)                          ── 4ms
+      join (debug)                          ─────────────────── 780ms
+        join_flush_scan_spot (debug)        ────────────────── 775ms
+      filter (debug)                        ── 2ms
+      sort (debug)                          ── 15ms
+        sort_blocking (debug)               ── 14ms
+      project (debug)                       ── 1ms
     format (debug)                          ── 2ms
 ```
 
@@ -165,24 +165,26 @@ In this example, the bottleneck is immediately visible: the `join_flush_scan_spo
 | `txn_stage` | `insert_count`, `delete_count` | Transaction size |
 | `txn_commit` | `flake_count`, `delta_bytes` | Commit I/O volume |
 
+> **Note:** Span attributes like `tracker_time`, `tracker_fuel`, `patterns_before`, `assertion_count`, `template_count`, and `pattern_count` are verified by acceptance tests (`it_tracing_spans.rs`). Other attributes in this table (`unique_subjects`, `total_leaves`, `sort_ms`, `flake_count`, `delta_bytes`) are documented from code inspection but not programmatically verified — they may drift if span instrumentation is refactored.
+
 ### Anatomy of a transaction trace
 
 ```
 request (info)                              ─────────────── 245ms
-  transact_execute (info)                   ─────────────── 243ms
-    txn_stage (info)                        ────── 45ms
+  transact_execute (debug)                  ─────────────── 243ms
+    txn_stage (debug)                       ────── 45ms
       where_exec (debug)                    ── 8ms
       delete_gen (debug)                    ── 3ms
       insert_gen (debug)                    ── 12ms
       cancellation (debug)                  ── 5ms
       policy_enforce (debug)                ── 2ms
-    txn_commit (info)                       ──────────── 195ms
-      commit_nameservice_lookup (info)      ── 2ms
-      commit_verify_sequencing (info)       ── 1ms
-      commit_write_raw_txn (info)           ────── 85ms
-      commit_build_record (info)            ── 3ms
-      commit_write_commit_blob (info)       ────── 65ms
-      commit_publish_nameservice (info)     ────── 35ms
+    txn_commit (debug)                      ──────────── 195ms
+      commit_nameservice_lookup (debug)     ── 2ms
+      commit_verify_sequencing (debug)      ── 1ms
+      commit_write_raw_txn (debug)          ────── 85ms
+      commit_build_record (debug)           ── 3ms
+      commit_write_commit_blob (debug)      ────── 65ms
+      commit_publish_nameservice (debug)    ────── 35ms
 ```
 
 Here the bottleneck is I/O during commit: `commit_write_raw_txn` (85ms) and `commit_write_commit_blob` (65ms). On AWS S3 storage, this is expected; on local file storage, it may indicate disk contention.
@@ -192,15 +194,14 @@ Here the bottleneck is I/O during commit: `commit_write_raw_txn` (85ms) and `com
 Indexing runs as a **separate trace** (not nested under an HTTP request). Search Jaeger for operation name `index_build`:
 
 ```
-index_build (info)                          ─────────────────── 12.5s
-  build_all_indexes (info)                  ─────────────────── 12.4s
-    build_index (info, order=SPOT)          ──────── 3.1s
-    build_index (info, order=PSOT)          ──────── 3.2s
-    build_index (info, order=POST)          ──────── 3.0s
-    build_index (info, order=OPST)          ──────── 3.1s
-  walk_commit_chain (info)                  ── 50ms
-    resolve_commit (debug, t=42)            ── 15ms
-    resolve_commit (debug, t=41)            ── 12ms
+index_build (debug)                         ─────────────────── 12.5s
+  commit_chain_walk (debug)                 ── 50ms
+  commit_resolve (debug, commits=2)         ── 27ms
+  build_all_indexes (debug)                 ─────────────────── 12.4s
+    build_index (debug, order=SPOT)         ──────── 3.1s
+    build_index (debug, order=PSOT)         ──────── 3.2s
+    build_index (debug, order=POST)         ──────── 3.0s
+    build_index (debug, order=OPST)         ──────── 3.1s
 ```
 
 ## Common Bottleneck Patterns
@@ -251,12 +252,14 @@ index_build (info)                          ────────────
 
 | Goal | Pattern | Visible spans |
 |------|---------|---------------|
-| Production default | `info` | Top-level operations, commit sub-steps, join/sort blocking |
-| Query investigation | `info,fluree_db_query=debug` | + parse, plan, rewrite, format, policy_eval |
-| Transaction investigation | `info,fluree_db_transact=debug` | + where_exec, delete_gen, insert_gen, cancellation |
+| Production default | `info` | HTTP `request` spans only (zero operation spans) |
+| Query investigation | `info,fluree_db_query=debug` | + `query_execute`, `query_prepare`, `query_run`, operators |
+| Transaction investigation | `info,fluree_db_transact=debug` | + `txn_stage`, `txn_commit`, commit sub-spans |
 | Full debug | `info,fluree_db_query=debug,fluree_db_transact=debug,fluree_db_indexer=debug` | All debug spans |
-| Operator-level detail | `info,fluree_db_query=trace` | + per-operator: scan, join, filter, sort, project, etc. |
+| Operator-level detail | `info,fluree_db_query=trace` | + per-leaf: `binary_cursor_next_leaf`, etc. |
 | Everything | `debug` | Console firehose (OTEL layer still filters to `fluree_*` only) |
+
+**Note:** When OTEL is enabled, all `fluree_*` debug spans flow to the OTEL collector regardless of `RUST_LOG`. The table above describes console output only.
 
 ### With the otel/ harness
 

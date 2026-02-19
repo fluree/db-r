@@ -1,23 +1,25 @@
 # Expected Span Hierarchies & Tag Catalog
 
-Source of truth: `dev-docs/deep-tracing-overview.md` (Pillars C & D).
+Source of truth: `docs/operations/telemetry.md` (Span Hierarchy section).
+
+All operation spans use `debug_span!`. The only `info_span!` is `request` in `telemetry.rs::create_request_span()`.
 
 ## Query Traces
 
 ```
 request (info, otel.name = "query:fql" or "query:sparql")
-└── query_execute / sparql_execute (info)
+└── query_execute / sparql_execute (debug)
     ├── query_prepare (debug)
     │   ├── reasoning_prep (debug)
     │   ├── pattern_rewrite (debug, patterns_before, patterns_after)
     │   └── plan (debug, pattern_count)
-    ├── query_run (info)
+    ├── query_run (debug)
     │   ├── scan (debug, per pattern)
     │   ├── join (debug)
-    │   │   └── join_next_batch / join_flush_batched_binary (debug/info)
+    │   │   └── join_next_batch / join_flush_batched_binary (debug)
     │   ├── filter (debug)
     │   ├── project (debug)
-    │   ├── sort (debug) → sort_blocking (info, cross-thread)
+    │   ├── sort (debug) → sort_blocking (debug, cross-thread)
     │   │   ├── sort_child_next_batch (cross-thread)
     │   │   └── sort_build_rows_batch (cross-thread)
     │   ├── property_join (trace)
@@ -40,34 +42,34 @@ Applies to insert, transact, and upsert operations.
 **FQL / SPARQL format:**
 ```
 request (info, otel.name = "transact:fql" / "insert:fql" / "upsert:fql" / etc.)
-└── transact_execute (info)
-    ├── txn_stage (info, insert_count, delete_count)
+└── transact_execute (debug)
+    ├── txn_stage (debug, insert_count, delete_count)
     │   ├── where_exec (debug, pattern_count, binding_rows)
     │   ├── delete_gen (debug, retraction_count)
     │   ├── insert_gen (debug, assertion_count)
     │   ├── cancellation (debug)
     │   └── policy_enforce (debug)
-    └── txn_commit (info, flake_count, delta_bytes, current_novelty_bytes)
+    └── txn_commit (debug, flake_count, delta_bytes, current_novelty_bytes)
 ```
 
 **Turtle format** (different staging span):
 ```
 request (info, otel.name = "insert:turtle" / "upsert:turtle")
-└── transact_execute (info)
-    ├── stage_turtle_insert (info)
+└── transact_execute (debug)
+    ├── stage_turtle_insert (debug)
     │   ├── turtle_parse_to_flakes (debug)
     │   └── stage_flakes (debug, flake_count)
-    └── txn_commit (info, flake_count, delta_bytes, current_novelty_bytes)
-        ├── commit_nameservice_lookup (info)
-        ├── commit_verify_sequencing (info)
-        ├── commit_namespace_delta (info)
-        ├── commit_write_raw_txn (info)
-        ├── commit_build_record (info)
-        ├── commit_write_commit_blob (info)
-        ├── commit_publish_nameservice (info)
-        ├── commit_generate_metadata_flakes (info)
-        ├── commit_clone_novelty (info)
-        └── commit_apply_to_novelty (info)
+    └── txn_commit (debug, flake_count, delta_bytes, current_novelty_bytes)
+        ├── commit_nameservice_lookup (debug)
+        ├── commit_verify_sequencing (debug)
+        ├── commit_namespace_delta (debug)
+        ├── commit_write_raw_txn (debug)
+        ├── commit_build_record (debug)
+        ├── commit_write_commit_blob (debug)
+        ├── commit_publish_nameservice (debug)
+        ├── commit_generate_metadata_flakes (debug)
+        ├── commit_populate_dict_novelty (debug)
+        └── commit_apply_to_novelty (debug)
 ```
 
 ## Index Traces
@@ -75,11 +77,17 @@ request (info, otel.name = "insert:turtle" / "upsert:turtle")
 Separate top-level traces (not nested under HTTP requests).
 
 ```
-index_build (info, ledger_id)
-├── resolve_commit (debug, per commit — commit_index, commit_t, commit_ops)
-├── build_all_indexes (info)
-│   └── build_index (info, per sort order: SPOT, PSOT, POST, OPST) [cross-thread]
-└── BinaryIndexStore::load (info) [cross-thread]
+index_build (debug, ledger_id)
+├── commit_chain_walk (debug)
+├── commit_resolve (debug, per commit)
+├── dict_merge_and_remap (debug)
+├── build_all_indexes (debug)
+│   └── build_index (debug, per sort order: SPOT, PSOT, POST, OPST) [cross-thread]
+├── secondary_partition (debug)
+├── upload_dicts (debug)
+├── upload_indexes (debug)
+├── build_index_root (debug)
+└── BinaryIndexStore::load (debug) [cross-thread]
 ```
 
 `index_gc` is a separate top-level trace (intentional, fire-and-forget `tokio::spawn`):
@@ -94,11 +102,11 @@ index_gc (debug, separate trace)
 Service: `fluree-cli` (not `fluree-server`).
 
 ```
-bulk_import (info, alias)
-├── import_chunks (info, total_chunks, parse_threads)
-├── import_index_build (info)
-│   ├── build_all_indexes (info)
-│   │   └── build_index (info, per order) [cross-thread]
+bulk_import (debug, alias)
+├── import_chunks (debug, total_chunks, parse_threads)
+├── import_index_build (debug)
+│   ├── build_all_indexes (debug)
+│   │   └── build_index (debug, per order) [cross-thread]
 │   ├── import_cas_upload (debug)
 │   └── import_publish (debug)
 ```
@@ -125,7 +133,6 @@ These sub-microsecond metadata operations appear as zero-duration in Jaeger (dur
 - `commit_verify_sequencing`
 - `commit_publish_nameservice`
 - `commit_generate_metadata_flakes`
-- `commit_clone_novelty`
 - `commit_populate_dict_novelty`
 - `where_exec` (when no WHERE clause)
 - `cancellation` (when no cancellation needed)
