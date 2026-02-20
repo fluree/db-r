@@ -653,7 +653,11 @@ impl Operator for NestedLoopJoinOperator {
             // left batch in one instrumented span, rather than one-at-a-time.
             // This gives visibility into per-row join work that was previously
             // invisible (97-100% gap in query_run traces).
-            if let (false, Some(left_batch), true) = (use_batched, self.current_left_batch.as_ref(), self.pending_output.is_empty()) {
+            if let (false, Some(left_batch), true) = (
+                use_batched,
+                self.current_left_batch.as_ref(),
+                self.pending_output.is_empty(),
+            ) {
                 let batch_len = left_batch.len();
                 let remaining = batch_len.saturating_sub(self.current_left_row);
                 if remaining > 0 {
