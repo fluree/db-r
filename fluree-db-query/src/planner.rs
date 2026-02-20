@@ -838,6 +838,26 @@ pub fn pattern_shares_variables(pattern: &Pattern, bound_vars: &HashSet<VarId>) 
 // Generalized Pattern Reordering
 // =============================================================================
 
+/// A pattern annotated with its original position in the input list.
+///
+/// `orig_index` is used as a deterministic tiebreaker when two patterns have
+/// equal selectivity estimates, preserving the user's original ordering.
+struct RankedPattern {
+    orig_index: usize,
+    pattern: Pattern,
+}
+
+/// A deferred pattern (FILTER/BIND) with pre-computed input variables.
+///
+/// `required_vars` is the set of variables that must be bound before this
+/// pattern can execute. For FILTER this is all referenced variables; for BIND
+/// it is the expression's variables (the target variable is an output).
+struct DeferredPattern {
+    orig_index: usize,
+    required_vars: HashSet<VarId>,
+    pattern: Pattern,
+}
+
 /// Reorder all pattern types for optimal join order.
 ///
 /// Handles all pattern types including triples, compound patterns (UNION,
@@ -860,17 +880,30 @@ pub fn reorder_patterns(
     let mut bound_vars = initial_bound_vars.clone();
 
     // Classify each pattern by its cardinality category.
-    let mut sources: Vec<(usize, Pattern)> = Vec::new();
-    let mut reducers: Vec<(usize, Pattern)> = Vec::new();
-    let mut expanders: Vec<(usize, Pattern)> = Vec::new();
-    let mut deferred: Vec<(usize, Pattern)> = Vec::new();
+    let mut sources: Vec<RankedPattern> = Vec::new();
+    let mut reducers: Vec<RankedPattern> = Vec::new();
+    let mut expanders: Vec<RankedPattern> = Vec::new();
+    let mut deferred: Vec<DeferredPattern> = Vec::new();
 
     for (i, pattern) in patterns.iter().enumerate() {
         match estimate_pattern(pattern, &bound_vars, stats) {
-            PatternEstimate::Source { .. } => sources.push((i, pattern.clone())),
-            PatternEstimate::Reducer { .. } => reducers.push((i, pattern.clone())),
-            PatternEstimate::Expander { .. } => expanders.push((i, pattern.clone())),
-            PatternEstimate::Deferred => deferred.push((i, pattern.clone())),
+            PatternEstimate::Source { .. } => sources.push(RankedPattern {
+                orig_index: i,
+                pattern: pattern.clone(),
+            }),
+            PatternEstimate::Reducer { .. } => reducers.push(RankedPattern {
+                orig_index: i,
+                pattern: pattern.clone(),
+            }),
+            PatternEstimate::Expander { .. } => expanders.push(RankedPattern {
+                orig_index: i,
+                pattern: pattern.clone(),
+            }),
+            PatternEstimate::Deferred => deferred.push(DeferredPattern {
+                orig_index: i,
+                required_vars: deferred_required_vars(pattern).into_iter().collect(),
+                pattern: pattern.clone(),
+            }),
         }
     }
 
@@ -889,19 +922,19 @@ pub fn reorder_patterns(
         if !placed {
             // Nothing could be placed (shouldn't happen with sources always eligible).
             // Force-place the first remaining pattern.
-            let p = if !sources.is_empty() {
-                sources.remove(0).1
+            let rp = if !sources.is_empty() {
+                sources.remove(0)
             } else if !reducers.is_empty() {
-                reducers.remove(0).1
+                reducers.remove(0)
             } else if !expanders.is_empty() {
-                expanders.remove(0).1
+                expanders.remove(0)
             } else {
                 break;
             };
-            for v in p.variables() {
+            for v in rp.pattern.variables() {
                 bound_vars.insert(v);
             }
-            result.push(p);
+            result.push(rp.pattern);
         }
 
         // After each placement, drain any deferred patterns that have become
@@ -912,9 +945,9 @@ pub fn reorder_patterns(
 
     // Append any remaining deferred patterns (their inputs may never be bound,
     // e.g. referencing variables from an OPTIONAL that hasn't been placed yet).
-    deferred.sort_by_key(|(orig_idx, _)| *orig_idx);
-    for (_, pattern) in deferred {
-        result.push(pattern);
+    deferred.sort_by_key(|dp| dp.orig_index);
+    for dp in deferred {
+        result.push(dp.pattern);
     }
 
     result
@@ -922,7 +955,7 @@ pub fn reorder_patterns(
 
 /// Try to place the best eligible reducer. Returns true if one was placed.
 fn try_place_reducer(
-    remaining: &mut Vec<(usize, Pattern)>,
+    remaining: &mut Vec<RankedPattern>,
     bound_vars: &mut HashSet<VarId>,
     stats: Option<&StatsView>,
     result: &mut Vec<Pattern>,
@@ -931,23 +964,23 @@ fn try_place_reducer(
     let eligible_idx = remaining
         .iter()
         .enumerate()
-        .filter(|(_, (_, p))| pattern_shares_variables(p, bound_vars))
-        .min_by(|(_, (ia, a)), (_, (ib, b))| {
-            let ca = estimate_pattern(a, bound_vars, stats);
-            let cb = estimate_pattern(b, bound_vars, stats);
+        .filter(|(_, rp)| pattern_shares_variables(&rp.pattern, bound_vars))
+        .min_by(|(_, a), (_, b)| {
+            let ca = estimate_pattern(&a.pattern, bound_vars, stats);
+            let cb = estimate_pattern(&b.pattern, bound_vars, stats);
             ca.multiplier()
                 .partial_cmp(&cb.multiplier())
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| ia.cmp(ib)) // deterministic tiebreaker: original position
+                .then_with(|| a.orig_index.cmp(&b.orig_index))
         })
         .map(|(idx, _)| idx);
 
     if let Some(idx) = eligible_idx {
-        let (_, pattern) = remaining.remove(idx);
-        for v in pattern.variables() {
+        let rp = remaining.remove(idx);
+        for v in rp.pattern.variables() {
             bound_vars.insert(v);
         }
-        result.push(pattern);
+        result.push(rp.pattern);
         true
     } else {
         false
@@ -956,7 +989,7 @@ fn try_place_reducer(
 
 /// Try to place the best source. Returns true if one was placed.
 fn try_place_source(
-    remaining: &mut Vec<(usize, Pattern)>,
+    remaining: &mut Vec<RankedPattern>,
     bound_vars: &mut HashSet<VarId>,
     stats: Option<&StatsView>,
     result: &mut Vec<Pattern>,
@@ -971,7 +1004,7 @@ fn try_place_source(
     let candidates: Vec<usize> = remaining
         .iter()
         .enumerate()
-        .filter(|(_, (_, p))| !has_bound || pattern_shares_variables(p, bound_vars))
+        .filter(|(_, rp)| !has_bound || pattern_shares_variables(&rp.pattern, bound_vars))
         .map(|(idx, _)| idx)
         .collect();
 
@@ -983,20 +1016,20 @@ fn try_place_source(
     };
 
     let best_idx = pool.into_iter().min_by(|&i, &j| {
-        let ci = estimate_pattern(&remaining[i].1, bound_vars, stats);
-        let cj = estimate_pattern(&remaining[j].1, bound_vars, stats);
+        let ci = estimate_pattern(&remaining[i].pattern, bound_vars, stats);
+        let cj = estimate_pattern(&remaining[j].pattern, bound_vars, stats);
         ci.row_count()
             .partial_cmp(&cj.row_count())
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| remaining[i].0.cmp(&remaining[j].0)) // deterministic: orig position
+            .then_with(|| remaining[i].orig_index.cmp(&remaining[j].orig_index))
     });
 
     if let Some(idx) = best_idx {
-        let (_, pattern) = remaining.remove(idx);
-        for v in pattern.variables() {
+        let rp = remaining.remove(idx);
+        for v in rp.pattern.variables() {
             bound_vars.insert(v);
         }
-        result.push(pattern);
+        result.push(rp.pattern);
         true
     } else {
         false
@@ -1005,7 +1038,7 @@ fn try_place_source(
 
 /// Try to place the best eligible expander. Returns true if one was placed.
 fn try_place_expander(
-    remaining: &mut Vec<(usize, Pattern)>,
+    remaining: &mut Vec<RankedPattern>,
     bound_vars: &mut HashSet<VarId>,
     stats: Option<&StatsView>,
     result: &mut Vec<Pattern>,
@@ -1013,23 +1046,23 @@ fn try_place_expander(
     let eligible_idx = remaining
         .iter()
         .enumerate()
-        .filter(|(_, (_, p))| pattern_shares_variables(p, bound_vars))
-        .min_by(|(_, (ia, a)), (_, (ib, b))| {
-            let ca = estimate_pattern(a, bound_vars, stats);
-            let cb = estimate_pattern(b, bound_vars, stats);
+        .filter(|(_, rp)| pattern_shares_variables(&rp.pattern, bound_vars))
+        .min_by(|(_, a), (_, b)| {
+            let ca = estimate_pattern(&a.pattern, bound_vars, stats);
+            let cb = estimate_pattern(&b.pattern, bound_vars, stats);
             ca.multiplier()
                 .partial_cmp(&cb.multiplier())
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| ia.cmp(ib))
+                .then_with(|| a.orig_index.cmp(&b.orig_index))
         })
         .map(|(idx, _)| idx);
 
     if let Some(idx) = eligible_idx {
-        let (_, pattern) = remaining.remove(idx);
-        for v in pattern.variables() {
+        let rp = remaining.remove(idx);
+        for v in rp.pattern.variables() {
             bound_vars.insert(v);
         }
-        result.push(pattern);
+        result.push(rp.pattern);
         true
     } else {
         false
@@ -1046,7 +1079,7 @@ fn try_place_expander(
 /// further deferred patterns.  The function loops until no more can be placed.
 /// Among simultaneously-ready patterns, original position order is preserved.
 fn drain_ready_deferred(
-    deferred: &mut Vec<(usize, Pattern)>,
+    deferred: &mut Vec<DeferredPattern>,
     bound_vars: &mut HashSet<VarId>,
     result: &mut Vec<Pattern>,
 ) {
@@ -1055,10 +1088,7 @@ fn drain_ready_deferred(
         let ready_indices: Vec<usize> = deferred
             .iter()
             .enumerate()
-            .filter(|(_, (_, p))| {
-                let required: HashSet<VarId> = deferred_required_vars(p).into_iter().collect();
-                required.is_subset(bound_vars)
-            })
+            .filter(|(_, dp)| dp.required_vars.is_subset(bound_vars))
             .map(|(idx, _)| idx)
             .collect();
 
@@ -1067,19 +1097,19 @@ fn drain_ready_deferred(
         }
 
         // Remove in reverse order to preserve indices, then sort by original position.
-        let mut ready: Vec<(usize, Pattern)> = ready_indices
+        let mut ready: Vec<DeferredPattern> = ready_indices
             .into_iter()
             .rev()
             .map(|idx| deferred.remove(idx))
             .collect();
-        ready.sort_by_key(|(orig_idx, _)| *orig_idx);
+        ready.sort_by_key(|dp| dp.orig_index);
 
-        for (_, pattern) in ready {
+        for dp in ready {
             // BIND produces a new variable; FILTER does not.
-            if let Pattern::Bind { var, .. } = &pattern {
+            if let Pattern::Bind { var, .. } = &dp.pattern {
                 bound_vars.insert(*var);
             }
-            result.push(pattern);
+            result.push(dp.pattern);
         }
     }
 }
