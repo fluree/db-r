@@ -75,8 +75,12 @@ The greedy loop places patterns in this priority order:
 A reducer or expander is "eligible" when at least one of its variables is
 already bound by a previously placed pattern.
 
-FILTER and BIND patterns are interleaved at the earliest position where all of
-their referenced variables are bound.
+FILTER and BIND patterns are integrated into the greedy loop: after each
+source, reducer, or expander is placed, any deferred patterns whose input
+variables are now satisfied are drained in original-position order. For BIND
+patterns, only the expression's input variables must be bound — the target
+variable is an output that feeds back into `bound_vars`, potentially enabling
+further deferred patterns to be placed immediately (cascading placement).
 
 ### Bound-Variable-Aware Estimation
 
@@ -153,9 +157,11 @@ Key things to look for:
   inherently broad pattern.
 - **Reducer multiplier**: Values below 1.0 indicate the fraction of rows
   that survive. A MINUS with multiplier 0.90 removes ~10% of rows.
-- **Deferred placement**: FILTERs appear immediately after the last pattern
-  that binds a variable they reference. If a FILTER appears late, check
-  whether its variables could be bound sooner.
+- **Deferred placement**: FILTERs and BINDs appear immediately after all of
+  their input variables become bound. BIND outputs cascade — a BIND placed
+  early can enable subsequent FILTERs or BINDs that depend on its target
+  variable. If a FILTER appears late, check whether its variables could be
+  bound sooner.
 - **Statistics available: no**: Without statistics, the planner uses
   conservative heuristics. Run at least one indexing cycle to enable
   statistics-based optimization.
@@ -174,8 +180,10 @@ components of the triple pattern are bound:
 
 Filters are automatically optimized by the query engine in three ways:
 
-- **Dependency-based placement**: Filters are applied as soon as all their
-  required variables are bound, regardless of where they appear in the query.
+- **Dependency-based placement**: Filters and BINDs are placed as soon as all
+  their input variables are bound, as part of the greedy reordering loop.
+  BIND target variables feed back into the bound set, enabling cascading
+  placement of dependent patterns.
 - **Index pushdown**: Range-safe filters (comparisons like `>`, `<`, `>=`,
   `<=` on indexed properties) are pushed down to the index scan, reducing the
   number of rows read.

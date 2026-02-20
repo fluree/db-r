@@ -306,11 +306,13 @@ The planner recognizes that `ex:alice` patterns are highly selective (bound
 subject), and that `?company` becomes bound after those patterns execute,
 making the final pattern a cheap per-subject lookup rather than a full scan.
 
-### Filter Placement
+### Filter and BIND Placement
 
-Filters are automatically placed at the earliest point where all their
-referenced variables are bound, regardless of where they appear in the query.
-You do not need to manually position filters for efficiency.
+Filters and BINDs are placed during the greedy reordering loop, as soon as all
+their input variables are bound. You do not need to manually position them for
+efficiency. For BIND patterns, only the expression's input variables must be
+bound — the target variable is an output that feeds back into the bound set,
+enabling cascading placement of dependent patterns.
 
 Additionally, filters whose variables are all bound by a join operator are
 evaluated inline during the join itself, avoiding the overhead of a separate
