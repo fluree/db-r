@@ -858,22 +858,15 @@ pub fn reorder_patterns(
     }
 
     let mut bound_vars = initial_bound_vars.clone();
-    reorder_zone(patterns, stats, &mut bound_vars)
-}
 
-/// Reorder patterns within a single zone (no barriers).
-fn reorder_zone(
-    patterns: &[Pattern],
-    stats: Option<&StatsView>,
-    bound_vars: &mut HashSet<VarId>,
-) -> Vec<Pattern> {
+    // Classify each pattern by its cardinality category.
     let mut sources: Vec<(usize, Pattern)> = Vec::new();
     let mut reducers: Vec<(usize, Pattern)> = Vec::new();
     let mut expanders: Vec<(usize, Pattern)> = Vec::new();
     let mut deferred: Vec<(usize, Pattern)> = Vec::new();
 
     for (i, pattern) in patterns.iter().enumerate() {
-        match estimate_pattern(pattern, bound_vars, stats) {
+        match estimate_pattern(pattern, &bound_vars, stats) {
             PatternEstimate::Source { .. } => sources.push((i, pattern.clone())),
             PatternEstimate::Reducer { .. } => reducers.push((i, pattern.clone())),
             PatternEstimate::Expander { .. } => expanders.push((i, pattern.clone())),
@@ -882,49 +875,47 @@ fn reorder_zone(
     }
 
     let mut result: Vec<Pattern> = Vec::with_capacity(patterns.len());
-    let mut remaining_sources = sources;
-    let mut remaining_reducers = reducers;
-    let mut remaining_expanders = expanders;
+
+    // Place any deferred patterns whose inputs are already satisfied by the
+    // initial bound_vars (e.g. from a seed operator).
+    drain_ready_deferred(&mut deferred, &mut bound_vars, &mut result);
 
     // Greedy loop: place patterns by priority
-    while !remaining_sources.is_empty()
-        || !remaining_reducers.is_empty()
-        || !remaining_expanders.is_empty()
-    {
-        let placed = try_place_reducer(&mut remaining_reducers, bound_vars, stats, &mut result)
-            || try_place_source(&mut remaining_sources, bound_vars, stats, &mut result)
-            || try_place_expander(&mut remaining_expanders, bound_vars, stats, &mut result);
+    while !sources.is_empty() || !reducers.is_empty() || !expanders.is_empty() {
+        let placed = try_place_reducer(&mut reducers, &mut bound_vars, stats, &mut result)
+            || try_place_source(&mut sources, &mut bound_vars, stats, &mut result)
+            || try_place_expander(&mut expanders, &mut bound_vars, stats, &mut result);
 
         if !placed {
-            // Nothing could be placed (shouldn't happen with sources always eligible)
-            // Force-place the first remaining pattern
-            if let Some((_, p)) = remaining_sources.first() {
-                let p = p.clone();
-                for v in p.variables() {
-                    bound_vars.insert(v);
-                }
-                result.push(p);
-                remaining_sources.remove(0);
-            } else if let Some((_, p)) = remaining_reducers.first() {
-                let p = p.clone();
-                for v in p.variables() {
-                    bound_vars.insert(v);
-                }
-                result.push(p);
-                remaining_reducers.remove(0);
-            } else if let Some((_, p)) = remaining_expanders.first() {
-                let p = p.clone();
-                for v in p.variables() {
-                    bound_vars.insert(v);
-                }
-                result.push(p);
-                remaining_expanders.remove(0);
+            // Nothing could be placed (shouldn't happen with sources always eligible).
+            // Force-place the first remaining pattern.
+            let p = if !sources.is_empty() {
+                sources.remove(0).1
+            } else if !reducers.is_empty() {
+                reducers.remove(0).1
+            } else if !expanders.is_empty() {
+                expanders.remove(0).1
+            } else {
+                break;
+            };
+            for v in p.variables() {
+                bound_vars.insert(v);
             }
+            result.push(p);
         }
+
+        // After each placement, drain any deferred patterns that have become
+        // ready.  BIND outputs feed back into bound_vars, so a single source
+        // placement can cascade through multiple BINDs.
+        drain_ready_deferred(&mut deferred, &mut bound_vars, &mut result);
     }
 
-    // Interleave deferred (FILTER/BIND) at earliest valid position
-    interleave_deferred(&mut result, deferred, bound_vars);
+    // Append any remaining deferred patterns (their inputs may never be bound,
+    // e.g. referencing variables from an OPTIONAL that hasn't been placed yet).
+    deferred.sort_by_key(|(orig_idx, _)| *orig_idx);
+    for (_, pattern) in deferred {
+        result.push(pattern);
+    }
 
     result
 }
@@ -1045,41 +1036,66 @@ fn try_place_expander(
     }
 }
 
-/// Interleave deferred patterns (FILTER/BIND) at the earliest valid position.
+/// Drain all deferred patterns whose required variables are currently bound.
 ///
-/// Each deferred pattern is inserted at the first position where all its
-/// required variables are bound by preceding patterns.
-fn interleave_deferred(
+/// For FILTER, the required variables are the expression's referenced variables.
+/// For BIND, the required variables are the expression's referenced variables
+/// (the target variable is an *output*, not an input).
+///
+/// BIND outputs are added to `bound_vars` after placement, which may enable
+/// further deferred patterns.  The function loops until no more can be placed.
+/// Among simultaneously-ready patterns, original position order is preserved.
+fn drain_ready_deferred(
+    deferred: &mut Vec<(usize, Pattern)>,
+    bound_vars: &mut HashSet<VarId>,
     result: &mut Vec<Pattern>,
-    mut deferred: Vec<(usize, Pattern)>,
-    _bound_vars: &HashSet<VarId>,
 ) {
-    if deferred.is_empty() {
-        return;
-    }
+    loop {
+        // Find all deferred patterns whose inputs are satisfied.
+        let ready_indices: Vec<usize> = deferred
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, p))| {
+                let required: HashSet<VarId> = deferred_required_vars(p).into_iter().collect();
+                required.is_subset(bound_vars)
+            })
+            .map(|(idx, _)| idx)
+            .collect();
 
-    // Sort deferred by original position to maintain relative order
-    deferred.sort_by_key(|(orig_idx, _)| *orig_idx);
-
-    // For each deferred pattern, find the earliest insertion point
-    for (_, pattern) in deferred {
-        let required_vars: HashSet<VarId> = pattern.variables().into_iter().collect();
-
-        // Walk through result accumulating bound vars to find insertion point
-        let mut accumulated: HashSet<VarId> = HashSet::new();
-        let mut insert_pos = result.len(); // default: end
-
-        for (i, existing) in result.iter().enumerate() {
-            for v in existing.variables() {
-                accumulated.insert(v);
-            }
-            if required_vars.is_subset(&accumulated) {
-                insert_pos = i + 1;
-                break;
-            }
+        if ready_indices.is_empty() {
+            break;
         }
 
-        result.insert(insert_pos, pattern);
+        // Remove in reverse order to preserve indices, then sort by original position.
+        let mut ready: Vec<(usize, Pattern)> = ready_indices
+            .into_iter()
+            .rev()
+            .map(|idx| deferred.remove(idx))
+            .collect();
+        ready.sort_by_key(|(orig_idx, _)| *orig_idx);
+
+        for (_, pattern) in ready {
+            // BIND produces a new variable; FILTER does not.
+            if let Pattern::Bind { var, .. } = &pattern {
+                bound_vars.insert(*var);
+            }
+            result.push(pattern);
+        }
+    }
+}
+
+/// Return the *input* variables that must be bound before a deferred pattern
+/// can execute.
+///
+/// - FILTER: all referenced variables
+/// - BIND: the expression's variables (not the target variable)
+fn deferred_required_vars(pattern: &Pattern) -> Vec<VarId> {
+    match pattern {
+        Pattern::Filter(expr) => expr.variables(),
+        Pattern::Bind { expr, .. } => expr.variables(),
+        // Other patterns should not be classified as Deferred, but handle
+        // gracefully by returning all variables.
+        other => other.variables(),
     }
 }
 
