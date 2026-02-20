@@ -8,17 +8,15 @@
 //! so the index is inherently a latest-state snapshot. SpotCursor does not
 //! support time-travel (`to_t` filtering).
 
-use super::binary_index_store::BinaryIndexStore;
+use super::binary_index_store::GraphView;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::run_record::RunSortOrder;
 use super::types::DecodedRow;
 use fluree_db_core::Flake;
-use fluree_db_core::GraphId;
 use fluree_db_core::ListIndex;
 use std::io;
 use std::ops::Range;
-use std::sync::Arc;
 
 /// A cursor that yields batches of Flakes from the Phase C SPOT index.
 ///
@@ -27,8 +25,7 @@ use std::sync::Arc;
 /// converts them to Flakes, and returns the batch. Returns `None` when
 /// all relevant leaves have been exhausted.
 pub struct SpotCursor {
-    store: Arc<BinaryIndexStore>,
-    g_id: GraphId,
+    graph_view: GraphView,
     /// Indices of leaves to visit (from BranchManifest::find_leaves_for_subject).
     leaf_range: Range<usize>,
     /// Current position within leaf_range.
@@ -45,13 +42,10 @@ impl SpotCursor {
     ///
     /// The cursor will iterate through all leaves that may contain records
     /// for the given subject in the specified graph.
-    pub fn for_subject(
-        store: Arc<BinaryIndexStore>,
-        g_id: GraphId,
-        s_id: u64,
-        p_id: Option<u32>,
-    ) -> Self {
-        let leaf_range = store
+    pub fn for_subject(graph_view: GraphView, s_id: u64, p_id: Option<u32>) -> Self {
+        let g_id = graph_view.g_id();
+        let leaf_range = graph_view
+            .store()
             .branch(g_id)
             .map(|b| b.find_leaves_for_subject(s_id))
             .unwrap_or(0..0);
@@ -60,8 +54,7 @@ impl SpotCursor {
         let exhausted = leaf_range.is_empty();
 
         Self {
-            store,
-            g_id,
+            graph_view,
             leaf_range,
             current_idx,
             filter_s_id: s_id,
@@ -83,7 +76,8 @@ impl SpotCursor {
             let leaf_idx = self.current_idx;
             self.current_idx += 1;
 
-            let branch = match self.store.branch(self.g_id) {
+            let g_id = self.graph_view.g_id();
+            let branch = match self.graph_view.store().branch(g_id) {
                 Some(b) => b,
                 None => {
                     self.exhausted = true;
@@ -142,7 +136,7 @@ impl SpotCursor {
                             .as_ref()
                             .map_or(ListIndex::none().as_i32(), |c| c.get(row as u16)),
                     };
-                    let flake = self.store.row_to_flake(&decoded_row)?;
+                    let flake = self.graph_view.row_to_flake(&decoded_row)?;
                     flakes.push(flake);
                 }
             }

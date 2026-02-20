@@ -7,7 +7,7 @@ use std::sync::Arc;
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::ids::GraphId;
 use fluree_db_core::{Db, NoOverlay, OverlayProvider};
-use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::PolicyContext;
@@ -388,6 +388,15 @@ impl FlureeView {
     /// Get the binary index store (if any).
     pub fn binary_store(&self) -> Option<&Arc<BinaryIndexStore>> {
         self.binary_store.as_ref()
+    }
+
+    /// Build a `GraphView` combining the binary store with the view's graph ID.
+    ///
+    /// Returns `None` if no binary store is attached.
+    pub fn binary_graph(&self) -> Option<GraphView> {
+        self.binary_store
+            .as_ref()
+            .map(|store| GraphView::new(store.clone(), self.graph_id))
     }
 }
 

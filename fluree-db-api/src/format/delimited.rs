@@ -22,7 +22,7 @@ use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{Db, FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_indexer::run_index::GraphView;
 use fluree_db_query::binding::Binding;
 use fluree_db_query::{SelectMode, VarId};
 
@@ -120,7 +120,7 @@ fn format_delimited_bytes(result: &QueryResult, db: &Db, delimiter: Delimiter) -
     reject_non_tabular(result, delimiter)?;
 
     let compactor = IriCompactor::new(db.namespaces(), &result.context);
-    let store = result.binary_store.as_deref();
+    let gv = result.binary_graph.as_ref();
     let select_vars = resolve_select_vars(result);
 
     let est_size = (result.row_count() + 1)
@@ -136,7 +136,7 @@ fn format_delimited_bytes(result: &QueryResult, db: &Db, delimiter: Delimiter) -
         result,
         &select_vars,
         &compactor,
-        store,
+        gv,
         delimiter,
         None,
     )?;
@@ -168,7 +168,7 @@ fn format_delimited_bytes_limited(
     reject_non_tabular(result, delimiter)?;
 
     let compactor = IriCompactor::new(db.namespaces(), &result.context);
-    let store = result.binary_store.as_deref();
+    let gv = result.binary_graph.as_ref();
     let select_vars = resolve_select_vars(result);
     let total = result.row_count();
 
@@ -185,7 +185,7 @@ fn format_delimited_bytes_limited(
         result,
         &select_vars,
         &compactor,
-        store,
+        gv,
         delimiter,
         Some(limit),
     )?;
@@ -278,7 +278,7 @@ fn write_data_rows(
     result: &QueryResult,
     select_vars: &[VarId],
     compactor: &IriCompactor,
-    store: Option<&BinaryIndexStore>,
+    gv: Option<&GraphView>,
     delimiter: Delimiter,
     limit: Option<usize>,
 ) -> Result<()> {
@@ -310,7 +310,7 @@ fn write_data_rows(
                 }
                 cell_buf.clear();
                 let binding = batch.get_by_col(row, col);
-                write_binding_cell(&mut cell_buf, binding, compactor, store)?;
+                write_binding_cell(&mut cell_buf, binding, compactor, gv)?;
                 flush_cell(out, &cell_buf, delimiter);
             }
             out.push(b'\n');
@@ -333,7 +333,7 @@ fn write_binding_cell(
     cell: &mut Vec<u8>,
     binding: &Binding,
     compactor: &IriCompactor,
-    store: Option<&BinaryIndexStore>,
+    gv: Option<&GraphView>,
 ) -> Result<()> {
     match binding {
         Binding::Unbound | Binding::Poisoned => {
@@ -354,7 +354,8 @@ fn write_binding_cell(
             write_flake_value(cell, val, compactor);
         }
         Binding::EncodedSid { s_id } => {
-            let store = require_store(store)?;
+            let gv = require_graph_view(gv)?;
+            let store = gv.store();
             let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
                 FormatError::InvalidBinding(format!(
                     "Failed to resolve subject IRI for s_id {}: {}",
@@ -365,7 +366,8 @@ fn write_binding_cell(
             cell.extend_from_slice(compacted.as_bytes());
         }
         Binding::EncodedPid { p_id } => {
-            let store = require_store(store)?;
+            let gv = require_graph_view(gv)?;
+            let store = gv.store();
             let iri = store.resolve_predicate_iri(*p_id).ok_or_else(|| {
                 FormatError::InvalidBinding(format!(
                     "Failed to resolve predicate IRI for p_id {}",
@@ -381,7 +383,8 @@ fn write_binding_cell(
             p_id,
             ..
         } => {
-            let store = require_store(store)?;
+            let gv = require_graph_view(gv)?;
+            let store = gv.store();
             if *o_kind == ObjKind::LEX_ID.as_u8() || *o_kind == ObjKind::JSON_ID.as_u8() {
                 store
                     .write_string_value_bytes(*o_key as u32, cell)
@@ -401,7 +404,7 @@ fn write_binding_cell(
                 let compacted = compactor.compact_vocab_iri(&iri);
                 cell.extend_from_slice(compacted.as_bytes());
             } else {
-                let val = store.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
+                let val = gv.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
                     FormatError::InvalidBinding(format!(
                         "Failed to decode value (kind={}, key={}, p_id={}): {}",
                         o_kind, o_key, p_id, e
@@ -416,16 +419,16 @@ fn write_binding_cell(
                 if j > 0 {
                     cell.push(b';');
                 }
-                write_binding_cell(cell, val, compactor, store)?;
+                write_binding_cell(cell, val, compactor, gv)?;
             }
         }
     }
     Ok(())
 }
 
-/// Require a BinaryIndexStore for encoded binding resolution.
-fn require_store(store: Option<&BinaryIndexStore>) -> Result<&BinaryIndexStore> {
-    store.ok_or_else(|| {
+/// Require a GraphView for encoded binding resolution.
+fn require_graph_view(gv: Option<&GraphView>) -> Result<&GraphView> {
+    gv.ok_or_else(|| {
         FormatError::InvalidBinding(
             "Encountered encoded binding but QueryResult has no binary_store".to_string(),
         )
@@ -604,7 +607,7 @@ mod tests {
             select: var_ids,
             select_mode: SelectMode::Many,
             batches: vec![batch],
-            binary_store: None,
+            binary_graph: None,
             construct_template: None,
             graph_select: None,
         }

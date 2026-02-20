@@ -246,7 +246,7 @@ where
             batches,
             construct_template: parsed.construct_template,
             graph_select: parsed.graph_select,
-            binary_store: None,
+            binary_graph: None,
         };
 
         let json = result.to_jsonld_async(&ledger.db).await?;
@@ -298,7 +298,7 @@ where
             batches,
             construct_template: parsed.construct_template,
             graph_select: parsed.graph_select,
-            binary_store: None,
+            binary_graph: None,
         };
 
         let json = result.to_jsonld_async(&view.db).await?;

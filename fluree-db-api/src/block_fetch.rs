@@ -37,7 +37,7 @@ use fluree_db_indexer::run_index::leaflet::{
     decode_leaflet, decode_leaflet_region1, LeafletHeader,
 };
 use fluree_db_indexer::run_index::types::DecodedRow;
-use fluree_db_indexer::run_index::{BinaryIndexStore, RunSortOrder};
+use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView, RunSortOrder};
 use fluree_db_query::QueryPolicyEnforcer;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -182,7 +182,7 @@ pub struct LedgerBlockContext<'a> {
     /// Time horizon for policy filtering (not always `db.t`).
     pub to_t: i64,
     /// Binary index store for leaf decoding (None if not yet indexed).
-    pub binary_store: Option<&'a BinaryIndexStore>,
+    pub binary_store: Option<Arc<BinaryIndexStore>>,
 }
 
 // ============================================================================
@@ -232,10 +232,7 @@ pub fn is_binary_leaf(bytes: &[u8]) -> bool {
 ///
 /// Returns the decoded flakes. Fails if the block is not a valid FLI2 leaf
 /// or if row-to-flake conversion fails (e.g., missing dictionary entries).
-pub fn decode_leaf_block(
-    bytes: &[u8],
-    store: &BinaryIndexStore,
-) -> Result<Vec<Flake>, BlockFetchError> {
+pub fn decode_leaf_block(bytes: &[u8], gv: &GraphView) -> Result<Vec<Flake>, BlockFetchError> {
     let header = read_leaf_header(bytes).map_err(BlockFetchError::LeafDecode)?;
     if header.leaflet_dir.is_empty() {
         return Ok(vec![]);
@@ -275,11 +272,7 @@ pub fn decode_leaf_block(
                         c.get(idx as u16)
                     }),
             };
-            out.push(
-                store
-                    .row_to_flake(&row)
-                    .map_err(BlockFetchError::LeafDecode)?,
-            );
+            out.push(gv.row_to_flake(&row).map_err(BlockFetchError::LeafDecode)?);
         }
     }
 
@@ -463,9 +456,14 @@ pub async fn fetch_and_decode_block<S: Storage + Clone + 'static>(
 
             let store = lctx
                 .binary_store
+                .as_ref()
                 .ok_or(BlockFetchError::MissingBinaryStore)?;
 
-            let flakes = decode_leaf_block(&bytes, store)?;
+            // Construct a GraphView with g_id=0 (default graph) for leaf decoding.
+            // Block fetch decodes leaves for replication / policy filtering;
+            // specialty kinds (BigInt, Vector) route through per-graph arenas.
+            let gv = GraphView::new(Arc::clone(store), 0);
+            let flakes = decode_leaf_block(&bytes, &gv)?;
 
             let (filtered, policy_applied) = apply_policy_filter(
                 lctx.db,

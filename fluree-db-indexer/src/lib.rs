@@ -385,9 +385,17 @@ where
             // works from the very first commit.
             let rdf_type_p_id = shared.predicates.get_or_insert(fluree_vocab::rdf::TYPE);
 
+            // Enable spatial geometry collection during resolution.
+            shared.spatial_hook = Some(crate::spatial_hook::SpatialHook::new());
+
             let chunk_max_flakes: u64 = 5_000_000; // ~5M flakes per chunk
             let mut chunk = RebuildChunk::new();
             let mut chunks: Vec<RebuildChunk> = Vec::new();
+
+            // Track spatial entry ranges per chunk for subject ID remapping.
+            // Each entry is (start_idx, end_idx) into spatial_hook.entries().
+            let mut spatial_chunk_ranges: Vec<(usize, usize)> = Vec::new();
+            let mut spatial_cursor: usize = 0;
 
             // Accumulate commit statistics for index root
             let mut total_commit_size = 0u64;
@@ -398,6 +406,9 @@ where
                 // If chunk is non-empty and near budget, flush before processing
                 // the next commit to avoid memory bloat on large commits.
                 if !chunk.is_empty() && chunk.flake_count() >= chunk_max_flakes {
+                    let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
+                    spatial_chunk_ranges.push((spatial_cursor, spatial_end));
+                    spatial_cursor = spatial_end;
                     chunks.push(std::mem::take(&mut chunk));
                 }
 
@@ -424,12 +435,17 @@ where
 
                 // Post-commit flush check.
                 if chunk.flake_count() >= chunk_max_flakes {
+                    let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
+                    spatial_chunk_ranges.push((spatial_cursor, spatial_end));
+                    spatial_cursor = spatial_end;
                     chunks.push(std::mem::take(&mut chunk));
                 }
             }
 
             // Push final chunk if non-empty.
             if !chunk.is_empty() {
+                let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
+                spatial_chunk_ranges.push((spatial_cursor, spatial_end));
                 chunks.push(chunk);
             }
 
@@ -459,6 +475,35 @@ where
                 run_index::dict_merge::merge_subject_dicts(&subject_dicts);
             let (string_merge, string_remaps) =
                 run_index::dict_merge::merge_string_dicts(&string_dicts);
+
+            // Remap spatial entries' chunk-local subject IDs → global sid64.
+            // The spatial hook accumulated entries with chunk-local s_id values;
+            // spatial_chunk_ranges[ci] = (start, end) into entries for chunk ci.
+            let spatial_entries: Vec<crate::spatial_hook::SpatialEntry> = {
+                let mut all_entries = shared
+                    .spatial_hook
+                    .take()
+                    .map(|h| h.into_entries())
+                    .unwrap_or_default();
+
+                for (ci, &(start, end)) in spatial_chunk_ranges.iter().enumerate() {
+                    let s_remap = &subject_remaps[ci];
+                    for entry in &mut all_entries[start..end] {
+                        let local_s = entry.subject_id as usize;
+                        if let Some(&global_s) = s_remap.get(local_s) {
+                            entry.subject_id = global_s;
+                        }
+                    }
+                }
+
+                if !all_entries.is_empty() {
+                    tracing::info!(
+                        spatial_entries = all_entries.len(),
+                        "spatial entries collected and remapped to global IDs"
+                    );
+                }
+                all_entries
+            };
 
             // Remap records to global IDs in-place, sort by cmp_g_spot, write .fsc files.
             let commits_dir = run_dir.join("sorted_commits");
@@ -592,12 +637,15 @@ where
             )
             .map_err(|e: std::io::Error| IndexerError::StorageWrite(e.to_string()))?;
 
-            // Write numbig arenas
-            if !shared.numbigs.is_empty() {
-                let nb_dir = run_dir.join("numbig");
+            // Write numbig arenas (per-graph subdirectories)
+            for (&g_id, per_pred) in &shared.numbigs {
+                if per_pred.is_empty() {
+                    continue;
+                }
+                let nb_dir = run_dir.join(format!("g_{}", g_id)).join("numbig");
                 std::fs::create_dir_all(&nb_dir)
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                for (&p_id, arena) in &shared.numbigs {
+                for (&p_id, arena) in per_pred {
                     run_index::numbig_dict::write_numbig_arena(
                         &nb_dir.join(format!("p_{}.nba", p_id)),
                         arena,
@@ -606,12 +654,15 @@ where
                 }
             }
 
-            // Write vector arenas (shards + manifests per predicate)
-            if !shared.vectors.is_empty() {
-                let vec_dir = run_dir.join("vectors");
+            // Write vector arenas (per-graph subdirectories, shards + manifests per predicate)
+            for (&g_id, per_pred) in &shared.vectors {
+                if per_pred.is_empty() {
+                    continue;
+                }
+                let vec_dir = run_dir.join(format!("g_{}", g_id)).join("vectors");
                 std::fs::create_dir_all(&vec_dir)
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                for (&p_id, arena) in &shared.vectors {
+                for (&p_id, arena) in per_pred {
                     if arena.is_empty() {
                         continue;
                     }
@@ -873,6 +924,21 @@ where
                 "Phase E complete: secondary indexes built"
             );
 
+            // ---- Phase E.5: Build spatial indexes from collected geometry entries ----
+            let spatial_arena_refs: Vec<(GraphId, Vec<run_index::SpatialArenaRefV5>)> = {
+                if spatial_entries.is_empty() {
+                    vec![]
+                } else {
+                    build_and_upload_spatial_indexes(
+                        &spatial_entries,
+                        &shared.predicates,
+                        &ledger_id,
+                        &storage,
+                    )
+                    .await?
+                }
+            };
+
             // ---- Phase F: Upload artifacts to CAS and write v4 root ----
 
             // F.1: Load store for max_t / base_t / namespace_codes
@@ -964,30 +1030,80 @@ where
                 }
             };
 
-            // F.5: Convert DictRefs (string-keyed maps) → DictRefsV5 (u32 vecs).
-            let dict_refs_v5 = {
+            // F.5: Convert DictRefs (string-keyed maps) → DictRefsV5 + GraphArenaRefsV5.
+            //
+            // numbig and vectors are now per-graph in DictRefs.
+            let (dict_refs_v5, graph_arenas) = {
                 let dr = dict_addresses.dict_refs;
-                let numbig: Vec<(u32, ContentId)> = dr
-                    .numbig
-                    .iter()
-                    .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
-                    .collect();
-                let vectors: Vec<run_index::VectorDictRefV5> = dr
-                    .vectors
-                    .iter()
-                    .map(|(k, v)| run_index::VectorDictRefV5 {
-                        p_id: k.parse::<u32>().unwrap_or(0),
-                        manifest: v.manifest.clone(),
-                        shards: v.shards.clone(),
-                    })
-                    .collect();
-                run_index::DictRefsV5 {
+
+                let dict_refs = run_index::DictRefsV5 {
                     forward_packs: dr.forward_packs,
                     subject_reverse: dr.subject_reverse,
                     string_reverse: dr.string_reverse,
-                    numbig,
-                    vectors,
+                };
+
+                // Collect all graph IDs that have numbig or vector arenas.
+                let mut graph_ids = std::collections::BTreeSet::new();
+                for g_id_str in dr.numbig.keys() {
+                    if let Ok(g_id) = g_id_str.parse::<u16>() {
+                        graph_ids.insert(g_id);
+                    }
                 }
+                for g_id_str in dr.vectors.keys() {
+                    if let Ok(g_id) = g_id_str.parse::<u16>() {
+                        graph_ids.insert(g_id);
+                    }
+                }
+
+                let mut arenas: Vec<run_index::GraphArenaRefsV5> = graph_ids
+                    .into_iter()
+                    .map(|g_id| {
+                        let g_id_str = g_id.to_string();
+                        let numbig: Vec<(u32, ContentId)> = dr
+                            .numbig
+                            .get(&g_id_str)
+                            .map(|m| {
+                                m.iter()
+                                    .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let vectors: Vec<run_index::VectorDictRefV5> = dr
+                            .vectors
+                            .get(&g_id_str)
+                            .map(|m| {
+                                m.iter()
+                                    .map(|(k, v)| run_index::VectorDictRefV5 {
+                                        p_id: k.parse::<u32>().unwrap_or(0),
+                                        manifest: v.manifest.clone(),
+                                        shards: v.shards.clone(),
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        run_index::GraphArenaRefsV5 {
+                            g_id,
+                            numbig,
+                            vectors,
+                            spatial: Vec::new(),
+                        }
+                    })
+                    .collect();
+                // Merge spatial arena refs into graph arenas.
+                for (g_id, spatial_refs) in spatial_arena_refs {
+                    if let Some(ga) = arenas.iter_mut().find(|ga| ga.g_id == g_id) {
+                        ga.spatial = spatial_refs;
+                    } else {
+                        arenas.push(run_index::GraphArenaRefsV5 {
+                            g_id,
+                            numbig: vec![],
+                            vectors: vec![],
+                            spatial: spatial_refs,
+                        });
+                    }
+                }
+
+                (dict_refs, arenas)
             };
 
             // F.6: Build IndexRootV5 (binary IRB1) from upload results.
@@ -1013,6 +1129,7 @@ where
                 total_commit_size,
                 total_asserts,
                 total_retracts,
+                graph_arenas,
                 default_graph_orders: uploaded_indexes.default_graph_orders,
                 named_graphs: uploaded_indexes.named_graphs,
                 stats: Some(index_stats),
@@ -3298,128 +3415,169 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 ))
             }
         },
-        // Task C: Numbig arenas
+        // Task C: Numbig arenas (per-graph subdirectories)
         async {
-            let mut numbig = BTreeMap::new();
-            let nb_dir = run_dir.join("numbig");
-            if nb_dir.exists() {
-                for entry in std::fs::read_dir(&nb_dir)
-                    .map_err(|e| IndexerError::StorageRead(format!("read numbig dir: {}", e)))?
-                {
-                    let entry = entry.map_err(|e| {
-                        IndexerError::StorageRead(format!("read numbig entry: {}", e))
-                    })?;
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    if let Some(rest) = name_str.strip_prefix("p_") {
-                        if let Some(id_str) = rest.strip_suffix(".nba") {
-                            if let Ok(p_id) = id_str.parse::<u32>() {
-                                let (cid, _) = upload_dict_file(
-                                    storage,
-                                    ledger_id,
-                                    &entry.path(),
-                                    DictKind::NumBig { p_id },
-                                    "dict artifact uploaded to CAS (from disk)",
-                                )
-                                .await?;
-                                numbig.insert(p_id.to_string(), cid);
+            let mut numbig: BTreeMap<String, BTreeMap<String, ContentId>> = BTreeMap::new();
+            // Scan for g_{id}/numbig/ subdirectories
+            for dir_entry in std::fs::read_dir(run_dir)
+                .map_err(|e| IndexerError::StorageRead(format!("read run_dir: {}", e)))?
+            {
+                let dir_entry = dir_entry
+                    .map_err(|e| IndexerError::StorageRead(format!("read run_dir entry: {}", e)))?;
+                let dir_name = dir_entry.file_name();
+                let dir_name_str = dir_name.to_string_lossy();
+                if let Some(g_id_str) = dir_name_str.strip_prefix("g_") {
+                    let nb_dir = dir_entry.path().join("numbig");
+                    if nb_dir.exists() {
+                        let mut per_pred = BTreeMap::new();
+                        for entry in std::fs::read_dir(&nb_dir).map_err(|e| {
+                            IndexerError::StorageRead(format!("read numbig dir: {}", e))
+                        })? {
+                            let entry = entry.map_err(|e| {
+                                IndexerError::StorageRead(format!("read numbig entry: {}", e))
+                            })?;
+                            let name = entry.file_name();
+                            let name_str = name.to_string_lossy();
+                            if let Some(rest) = name_str.strip_prefix("p_") {
+                                if let Some(id_str) = rest.strip_suffix(".nba") {
+                                    if let Ok(p_id) = id_str.parse::<u32>() {
+                                        let (cid, _) = upload_dict_file(
+                                            storage,
+                                            ledger_id,
+                                            &entry.path(),
+                                            DictKind::NumBig { p_id },
+                                            "dict artifact uploaded to CAS (from disk)",
+                                        )
+                                        .await?;
+                                        per_pred.insert(p_id.to_string(), cid);
+                                    }
+                                }
                             }
+                        }
+                        if !per_pred.is_empty() {
+                            numbig.insert(g_id_str.to_string(), per_pred);
                         }
                     }
                 }
             }
             Ok::<_, IndexerError>(numbig)
         },
-        // Task D: Vector arenas
+        // Task D: Vector arenas (per-graph subdirectories)
         async {
-            let mut vectors = BTreeMap::new();
-            let vec_dir = run_dir.join("vectors");
-            if vec_dir.exists() {
-                for entry in std::fs::read_dir(&vec_dir)
-                    .map_err(|e| IndexerError::StorageRead(format!("read vectors dir: {}", e)))?
-                {
-                    let entry = entry.map_err(|e| {
-                        IndexerError::StorageRead(format!("read vectors entry: {}", e))
-                    })?;
-                    let name = entry.file_name();
-                    let name_str = name.to_string_lossy();
-                    if let Some(rest) = name_str.strip_prefix("p_") {
-                        if let Some(id_str) = rest.strip_suffix(".vam") {
-                            if let Ok(p_id) = id_str.parse::<u32>() {
-                                let manifest_bytes =
-                                    tokio::fs::read(entry.path()).await.map_err(|e| {
-                                        IndexerError::StorageRead(format!(
-                                            "read vector manifest: {}",
-                                            e
-                                        ))
-                                    })?;
-                                let manifest =
-                                    run_index::vector_arena::read_vector_manifest(&manifest_bytes)
+            let mut vectors: BTreeMap<String, BTreeMap<String, run_index::VectorDictRef>> =
+                BTreeMap::new();
+            // Scan for g_{id}/vectors/ subdirectories
+            for dir_entry in std::fs::read_dir(run_dir)
+                .map_err(|e| IndexerError::StorageRead(format!("read run_dir: {}", e)))?
+            {
+                let dir_entry = dir_entry
+                    .map_err(|e| IndexerError::StorageRead(format!("read run_dir entry: {}", e)))?;
+                let dir_name = dir_entry.file_name();
+                let dir_name_str = dir_name.to_string_lossy();
+                if let Some(g_id_str) = dir_name_str.strip_prefix("g_") {
+                    let vec_dir = dir_entry.path().join("vectors");
+                    if vec_dir.exists() {
+                        let mut per_pred = BTreeMap::new();
+                        for entry in std::fs::read_dir(&vec_dir).map_err(|e| {
+                            IndexerError::StorageRead(format!("read vectors dir: {}", e))
+                        })? {
+                            let entry = entry.map_err(|e| {
+                                IndexerError::StorageRead(format!("read vectors entry: {}", e))
+                            })?;
+                            let name = entry.file_name();
+                            let name_str = name.to_string_lossy();
+                            if let Some(rest) = name_str.strip_prefix("p_") {
+                                if let Some(id_str) = rest.strip_suffix(".vam") {
+                                    if let Ok(p_id) = id_str.parse::<u32>() {
+                                        let manifest_bytes =
+                                            tokio::fs::read(entry.path()).await.map_err(|e| {
+                                                IndexerError::StorageRead(format!(
+                                                    "read vector manifest: {}",
+                                                    e
+                                                ))
+                                            })?;
+                                        let manifest =
+                                            run_index::vector_arena::read_vector_manifest(
+                                                &manifest_bytes,
+                                            )
+                                            .map_err(
+                                                |e| {
+                                                    IndexerError::StorageRead(format!(
+                                                        "parse vector manifest: {}",
+                                                        e
+                                                    ))
+                                                },
+                                            )?;
+
+                                        let mut shard_cids =
+                                            Vec::with_capacity(manifest.shards.len());
+                                        let mut shard_infos =
+                                            Vec::with_capacity(manifest.shards.len());
+                                        for (shard_idx, shard_info) in
+                                            manifest.shards.iter().enumerate()
+                                        {
+                                            let shard_path = vec_dir
+                                                .join(format!("p_{}_s_{}.vas", p_id, shard_idx));
+                                            let (shard_cid, shard_wr) = upload_dict_file(
+                                                storage,
+                                                ledger_id,
+                                                &shard_path,
+                                                DictKind::VectorShard { p_id },
+                                                "dict artifact uploaded to CAS (from disk)",
+                                            )
+                                            .await?;
+                                            shard_infos.push(run_index::vector_arena::ShardInfo {
+                                                cas: shard_wr.address,
+                                                count: shard_info.count,
+                                            });
+                                            shard_cids.push(shard_cid);
+                                        }
+
+                                        let final_manifest =
+                                            run_index::vector_arena::VectorManifest {
+                                                shards: shard_infos,
+                                                ..manifest
+                                            };
+                                        let manifest_json = serde_json::to_vec_pretty(
+                                            &final_manifest,
+                                        )
                                         .map_err(|e| {
-                                            IndexerError::StorageRead(format!(
-                                                "parse vector manifest: {}",
+                                            IndexerError::StorageWrite(format!(
+                                                "serialize vector manifest: {}",
                                                 e
                                             ))
                                         })?;
+                                        let final_manifest_path =
+                                            vec_dir.join(format!("p_{}_final.vam", p_id));
+                                        std::fs::write(&final_manifest_path, &manifest_json)
+                                            .map_err(|e| {
+                                                IndexerError::StorageWrite(format!(
+                                                    "write final vector manifest: {}",
+                                                    e
+                                                ))
+                                            })?;
+                                        let (manifest_cid, _) = upload_dict_file(
+                                            storage,
+                                            ledger_id,
+                                            &final_manifest_path,
+                                            DictKind::VectorManifest { p_id },
+                                            "dict artifact uploaded to CAS (from disk)",
+                                        )
+                                        .await?;
 
-                                let mut shard_cids = Vec::with_capacity(manifest.shards.len());
-                                let mut shard_infos = Vec::with_capacity(manifest.shards.len());
-                                for (shard_idx, shard_info) in manifest.shards.iter().enumerate() {
-                                    let shard_path =
-                                        vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                                    let (shard_cid, shard_wr) = upload_dict_file(
-                                        storage,
-                                        ledger_id,
-                                        &shard_path,
-                                        DictKind::VectorShard { p_id },
-                                        "dict artifact uploaded to CAS (from disk)",
-                                    )
-                                    .await?;
-                                    shard_infos.push(run_index::vector_arena::ShardInfo {
-                                        cas: shard_wr.address,
-                                        count: shard_info.count,
-                                    });
-                                    shard_cids.push(shard_cid);
+                                        per_pred.insert(
+                                            p_id.to_string(),
+                                            run_index::VectorDictRef {
+                                                manifest: manifest_cid,
+                                                shards: shard_cids,
+                                            },
+                                        );
+                                    }
                                 }
-
-                                let final_manifest = run_index::vector_arena::VectorManifest {
-                                    shards: shard_infos,
-                                    ..manifest
-                                };
-                                let manifest_json = serde_json::to_vec_pretty(&final_manifest)
-                                    .map_err(|e| {
-                                        IndexerError::StorageWrite(format!(
-                                            "serialize vector manifest: {}",
-                                            e
-                                        ))
-                                    })?;
-                                let final_manifest_path =
-                                    vec_dir.join(format!("p_{}_final.vam", p_id));
-                                std::fs::write(&final_manifest_path, &manifest_json).map_err(
-                                    |e| {
-                                        IndexerError::StorageWrite(format!(
-                                            "write final vector manifest: {}",
-                                            e
-                                        ))
-                                    },
-                                )?;
-                                let (manifest_cid, _) = upload_dict_file(
-                                    storage,
-                                    ledger_id,
-                                    &final_manifest_path,
-                                    DictKind::VectorManifest { p_id },
-                                    "dict artifact uploaded to CAS (from disk)",
-                                )
-                                .await?;
-
-                                vectors.insert(
-                                    p_id.to_string(),
-                                    run_index::VectorDictRef {
-                                        manifest: manifest_cid,
-                                        shards: shard_cids,
-                                    },
-                                );
                             }
+                        }
+                        if !per_pred.is_empty() {
+                            vectors.insert(g_id_str.to_string(), per_pred);
                         }
                     }
                 }
@@ -3486,8 +3644,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     tracing::info!(
         subjects = sids.len(),
         strings = string_count,
-        numbig_count = numbig.len(),
-        vector_count = vectors.len(),
+        numbig_graphs = numbig.len(),
+        vector_graphs = vectors.len(),
         ?subject_id_encoding,
         watermarks = subject_watermarks.len(),
         string_watermark,
@@ -3512,6 +3670,167 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         datatype_iris,
         language_tags,
     })
+}
+
+/// Build spatial indexes from collected geometry entries and upload to CAS.
+///
+/// Groups entries by `(g_id, p_id)`, builds one spatial index per group,
+/// and uploads cell index leaflets, manifests, and geometry arenas to CAS.
+///
+/// Two-phase approach:
+/// 1. Build the index and collect all serialized blobs with locally-computed
+///    SHA-256 hashes (synchronous — no async needed).
+/// 2. Upload all blobs to CAS using `content_write_bytes` (async).
+///
+/// This avoids re-entering `block_on` from within a sync closure, which would
+/// deadlock inside the `spawn_blocking` + `handle.block_on()` pattern.
+///
+/// Returns per-graph spatial arena refs for inclusion in `IndexRootV5`.
+async fn build_and_upload_spatial_indexes<S: Storage>(
+    entries: &[crate::spatial_hook::SpatialEntry],
+    predicates: &run_index::PredicateDict,
+    ledger_id: &str,
+    storage: &S,
+) -> Result<Vec<(GraphId, Vec<run_index::SpatialArenaRefV5>)>> {
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
+
+    // Group entries by (g_id, p_id).
+    let mut grouped: BTreeMap<(GraphId, u32), Vec<&crate::spatial_hook::SpatialEntry>> =
+        BTreeMap::new();
+    for entry in entries {
+        grouped
+            .entry((entry.g_id, entry.p_id))
+            .or_default()
+            .push(entry);
+    }
+
+    let mut per_graph: BTreeMap<GraphId, Vec<run_index::SpatialArenaRefV5>> = BTreeMap::new();
+
+    for ((g_id, p_id), group_entries) in grouped {
+        // Resolve predicate IRI for SpatialCreateConfig.
+        let pred_iri = predicates.resolve(p_id).unwrap_or("unknown").to_string();
+
+        let config = fluree_db_spatial::SpatialCreateConfig::new(
+            format!("spatial:g{}p{}", g_id, p_id),
+            ledger_id.to_string(),
+            pred_iri.clone(),
+        );
+        let mut builder = fluree_db_spatial::SpatialIndexBuilder::new(config);
+
+        for entry in &group_entries {
+            // add_geometry returns Ok(false) for skipped entries (e.g., parse errors).
+            // We log but do not fail the entire build for individual geometry errors.
+            if let Err(e) =
+                builder.add_geometry(entry.subject_id, &entry.wkt, entry.t, entry.is_assert)
+            {
+                tracing::warn!(
+                    subject_id = entry.subject_id,
+                    p_id = p_id,
+                    error = %e,
+                    "spatial: failed to add geometry, skipping"
+                );
+            }
+        }
+
+        let build_result = builder
+            .build()
+            .map_err(|e| IndexerError::Other(format!("spatial build error: {}", e)))?;
+
+        if build_result.entries.is_empty() {
+            continue;
+        }
+
+        // Phase 1: Build the index and collect all serialized blobs.
+        // We compute SHA-256 locally so write_to_cas gets the correct hashes
+        // without needing async CAS writes during the build.
+        let mut pending_blobs: Vec<(String, Vec<u8>)> = Vec::new();
+        let write_result = build_result
+            .write_to_cas(|bytes| {
+                let hash_hex = hex::encode(Sha256::digest(bytes));
+                pending_blobs.push((hash_hex.clone(), bytes.to_vec()));
+                Ok(hash_hex)
+            })
+            .map_err(|e| IndexerError::Other(format!("spatial build: {}", e)))?;
+
+        // Phase 2: Upload all collected blobs to CAS.
+        for (expected_hash, blob_bytes) in &pending_blobs {
+            let cas_result = storage
+                .content_write_bytes(ContentKind::SpatialIndex, ledger_id, blob_bytes)
+                .await
+                .map_err(|e| IndexerError::StorageWrite(format!("spatial CAS write: {}", e)))?;
+            debug_assert_eq!(
+                &cas_result.content_hash, expected_hash,
+                "CAS content_hash mismatch for spatial blob"
+            );
+        }
+
+        // Construct ContentIds from the content hashes.
+        let spatial_codec = ContentKind::SpatialIndex.to_codec();
+        let manifest_cid =
+            ContentId::from_hex_digest(spatial_codec, &write_result.manifest_address).ok_or_else(
+                || {
+                    IndexerError::Other(format!(
+                        "invalid spatial manifest hash: {}",
+                        write_result.manifest_address
+                    ))
+                },
+            )?;
+        let arena_cid = ContentId::from_hex_digest(spatial_codec, &write_result.arena_address)
+            .ok_or_else(|| {
+                IndexerError::Other(format!(
+                    "invalid spatial arena hash: {}",
+                    write_result.arena_address
+                ))
+            })?;
+        let leaflet_cids: Vec<ContentId> = write_result
+            .leaflet_addresses
+            .iter()
+            .map(|hash| {
+                ContentId::from_hex_digest(spatial_codec, hash).ok_or_else(|| {
+                    IndexerError::Other(format!("invalid spatial leaflet hash: {}", hash))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // Serialize SpatialIndexRoot as JSON and write to CAS.
+        let root_json = serde_json::to_vec(&write_result.root)
+            .map_err(|e| IndexerError::Other(format!("spatial root serialize: {}", e)))?;
+        let root_cas = storage
+            .content_write_bytes(ContentKind::SpatialIndex, ledger_id, &root_json)
+            .await
+            .map_err(|e| IndexerError::StorageWrite(format!("spatial root CAS write: {}", e)))?;
+        let root_cid = ContentId::from_hex_digest(spatial_codec, &root_cas.content_hash)
+            .ok_or_else(|| {
+                IndexerError::Other(format!(
+                    "invalid spatial root hash: {}",
+                    root_cas.content_hash
+                ))
+            })?;
+
+        per_graph
+            .entry(g_id)
+            .or_default()
+            .push(run_index::SpatialArenaRefV5 {
+                p_id,
+                root_cid,
+                manifest: manifest_cid,
+                arena: arena_cid,
+                leaflets: leaflet_cids,
+            });
+
+        tracing::info!(
+            g_id,
+            p_id,
+            predicate = %pred_iri,
+            geometries = write_result.root.geometry_count,
+            cell_entries = write_result.root.entry_count,
+            blobs_uploaded = pending_blobs.len(),
+            "spatial index built for (graph, predicate)"
+        );
+    }
+
+    Ok(per_graph.into_iter().collect())
 }
 
 /// Publish index result to nameservice

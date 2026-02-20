@@ -257,7 +257,7 @@ impl Db {
 
         // Validate version (caller already checked len >= 24 and magic)
         let version = data[4];
-        if version != 2 {
+        if version != 3 {
             return Err(Error::invalid_index(format!(
                 "IRB1: unsupported version {version}"
             )));
@@ -318,18 +318,38 @@ impl Db {
         skip_dict_tree_refs(data, &mut pos)?;
         // String reverse tree
         skip_dict_tree_refs(data, &mut pos)?;
-        let numbig_count = read_u16(data, &mut pos)? as usize;
-        for _ in 0..numbig_count {
-            let _p_id = read_u32(data, &mut pos)?;
-            skip_cid(data, &mut pos)?;
-        }
-        let vector_count = read_u16(data, &mut pos)? as usize;
-        for _ in 0..vector_count {
-            let _p_id = read_u32(data, &mut pos)?;
-            skip_cid(data, &mut pos)?; // manifest
-            let shard_count = read_u16(data, &mut pos)? as usize;
-            for _ in 0..shard_count {
+
+        // Per-graph specialty arenas (v3: graph-scoped numbig/vectors/spatial)
+        let arena_graph_count = read_u16(data, &mut pos)? as usize;
+        for _ in 0..arena_graph_count {
+            let _g_id = read_u16(data, &mut pos)?;
+            // numbig
+            let numbig_count = read_u16(data, &mut pos)? as usize;
+            for _ in 0..numbig_count {
+                let _p_id = read_u32(data, &mut pos)?;
                 skip_cid(data, &mut pos)?;
+            }
+            // vectors
+            let vector_count = read_u16(data, &mut pos)? as usize;
+            for _ in 0..vector_count {
+                let _p_id = read_u32(data, &mut pos)?;
+                skip_cid(data, &mut pos)?; // manifest
+                let shard_count = read_u16(data, &mut pos)? as usize;
+                for _ in 0..shard_count {
+                    skip_cid(data, &mut pos)?;
+                }
+            }
+            // spatial
+            let spatial_count = read_u16(data, &mut pos)? as usize;
+            for _ in 0..spatial_count {
+                let _p_id = read_u32(data, &mut pos)?;
+                skip_cid(data, &mut pos)?; // root_cid (SpatialIndexRoot JSON)
+                skip_cid(data, &mut pos)?; // manifest
+                skip_cid(data, &mut pos)?; // arena
+                let leaflet_count = read_u16(data, &mut pos)? as usize;
+                for _ in 0..leaflet_count {
+                    skip_cid(data, &mut pos)?;
+                }
             }
         }
 

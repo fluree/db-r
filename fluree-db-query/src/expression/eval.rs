@@ -68,10 +68,10 @@ impl Expression {
                     p_id,
                     ..
                 }) => {
-                    let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
+                    let Some(gv) = ctx.and_then(|c| c.graph_view()) else {
                         return Ok(None);
                     };
-                    let val = store
+                    let val = gv
                         .decode_value(*o_kind, *o_key, *p_id)
                         .map_err(|e| QueryError::Internal(format!("decode_value: {}", e)))?;
                     Ok(ComparableValue::try_from(&val).ok())
@@ -82,10 +82,10 @@ impl Expression {
                 }
                 Some(Binding::Iri(iri)) => Ok(Some(ComparableValue::Iri(Arc::clone(iri)))),
                 Some(Binding::EncodedSid { s_id }) => {
-                    let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) else {
+                    let Some(gv) = ctx.and_then(|c| c.graph_view()) else {
                         return Ok(None);
                     };
-                    match store.resolve_subject_iri(*s_id) {
+                    match gv.store().resolve_subject_iri(*s_id) {
                         Ok(iri) => Ok(Some(ComparableValue::Iri(Arc::from(iri)))),
                         Err(e) => Err(QueryError::Internal(format!("resolve_subject_iri: {}", e))),
                     }

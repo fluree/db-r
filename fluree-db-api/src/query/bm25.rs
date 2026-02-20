@@ -104,7 +104,7 @@ where
             select_mode: parsed.select_mode,
             construct_template: parsed.construct_template,
             graph_select: parsed.graph_select,
-            binary_store: None,
+            binary_graph: None,
         })
     }
 

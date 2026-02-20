@@ -27,7 +27,7 @@ use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{Flake, GraphId, IndexType, OverlayProvider, RangeProvider, Sid};
 use fluree_db_indexer::run_index::run_record::{RunRecord, RunSortOrder};
 use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, GraphView,
 };
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -106,7 +106,8 @@ fn binary_lookup_subject_predicate_refs_batched(
     }
 
     // Per-call DictOverlay for ephemeral subject handling + overlay translation.
-    let mut dict_ov = DictOverlay::new(store.clone(), dict_novelty.clone());
+    let gv = GraphView::new(store.clone(), g_id);
+    let mut dict_ov = DictOverlay::new(gv, dict_novelty.clone());
 
     // Predicate ID (supports ephemeral predicates, though rdf:type is always persisted).
     let p_id = dict_ov.assign_predicate_id_from_sid(predicate);
@@ -236,6 +237,7 @@ fn binary_range_eq(
     opts: &RangeOptions,
     overlay: Option<(&dyn OverlayProvider, &mut DictOverlay)>,
 ) -> io::Result<Vec<Flake>> {
+    let gv = GraphView::new(Arc::clone(store), g_id);
     let order = index_type_to_sort_order(index);
 
     // Translate match components to integer-ID bounds.
@@ -319,7 +321,7 @@ fn binary_range_eq(
 
     while let Some(batch) = cursor.next_leaf()? {
         decode_batch_to_flakes_filtered(
-            store,
+            &gv,
             &batch,
             &mut flakes,
             bounds,
@@ -337,14 +339,18 @@ fn binary_range_eq(
 
 /// Convert a `DecodedBatch` into `Vec<Flake>` by resolving integer IDs back
 /// to Sid/FlakeValue.
+///
+/// Uses `GraphView` for graph-scoped value decoding (handles specialty arenas
+/// like NumBig/Vector that are per-graph).
 fn decode_batch_to_flakes_filtered(
-    store: &BinaryIndexStore,
+    gv: &GraphView,
     batch: &DecodedBatch,
     out: &mut Vec<Flake>,
     bounds: Option<&ObjectBounds>,
     offset_remaining: &mut usize,
     flake_limit: usize,
 ) -> io::Result<()> {
+    let store = gv.store();
     let dt_sids = store.dt_sids();
 
     for i in 0..batch.row_count {
@@ -370,8 +376,8 @@ fn decode_batch_to_flakes_filtered(
         })?;
         let p_sid = store.encode_iri(p_iri);
 
-        // (o_kind, o_key) → FlakeValue
-        let o_val = store.decode_value(o_kind, o_key, p_id)?;
+        // (o_kind, o_key) → FlakeValue (graph-scoped decode)
+        let o_val = gv.decode_value(o_kind, o_key, p_id)?;
 
         // Optional post-filter for object bounds (RangeOptions semantics).
         if let Some(b) = bounds {
@@ -412,15 +418,14 @@ fn decode_batch_to_flakes_filtered(
 
 /// Binary columnar index implementation of `RangeProvider`.
 ///
-/// Wraps a `BinaryIndexStore` and a default graph ID to serve range queries
-/// from the binary index.  When attached to a `Db` via
-/// `db.with_range_provider()`, all callers of `range_with_overlay()` —
-/// including the reasoner, API, policy, and SHACL crates — automatically
-/// use the binary index without code changes.
+/// Wraps a `GraphView` (store + graph ID) to serve range queries from the
+/// binary index.  When attached to a `Db` via `db.with_range_provider()`,
+/// all callers of `range_with_overlay()` — including the reasoner, API,
+/// policy, and SHACL crates — automatically use the binary index without
+/// code changes.
 pub struct BinaryRangeProvider {
-    store: Arc<BinaryIndexStore>,
+    graph_view: GraphView,
     dict_novelty: Arc<DictNovelty>,
-    g_id: GraphId,
 }
 
 impl BinaryRangeProvider {
@@ -431,9 +436,8 @@ impl BinaryRangeProvider {
         g_id: GraphId,
     ) -> Self {
         Self {
-            store,
+            graph_view: GraphView::new(store, g_id),
             dict_novelty,
-            g_id,
         }
     }
 }
@@ -447,14 +451,16 @@ impl RangeProvider for BinaryRangeProvider {
         opts: &RangeOptions,
         overlay: &dyn OverlayProvider,
     ) -> io::Result<Vec<Flake>> {
+        let store = self.graph_view.clone_store();
+        let gv = GraphView::new(Arc::clone(&store), self.graph_view.g_id());
         // Create a per-call DictOverlay for ephemeral ID handling.
-        let mut dict_ov = DictOverlay::new(self.store.clone(), self.dict_novelty.clone());
+        let mut dict_ov = DictOverlay::new(gv, self.dict_novelty.clone());
 
         // Always pass the overlay — translate_overlay_flakes handles empty
         // overlays by returning an empty vec, which is a no-op.
         binary_range(
-            &self.store,
-            self.g_id,
+            &store,
+            self.graph_view.g_id(),
             index,
             test,
             match_val,
@@ -472,8 +478,8 @@ impl RangeProvider for BinaryRangeProvider {
         overlay: &dyn OverlayProvider,
     ) -> io::Result<HashMap<Sid, Vec<Sid>>> {
         binary_lookup_subject_predicate_refs_batched(
-            &self.store,
-            self.g_id,
+            &self.graph_view.clone_store(),
+            self.graph_view.g_id(),
             index,
             predicate,
             subjects,

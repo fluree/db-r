@@ -56,11 +56,12 @@ pub struct DictRefs {
     pub subject_reverse: DictTreeRefs,
     /// String reverse tree: value → string_id.
     pub string_reverse: DictTreeRefs,
-    /// Per-predicate numbig arenas. Key is `p_id` as string.
-    pub numbig: BTreeMap<String, ContentId>,
-    /// Per-predicate vector arena metadata. Key is `p_id` as string.
-    /// Value contains manifest CID + all shard CIDs.
-    pub vectors: BTreeMap<String, VectorDictRef>,
+    /// Per-graph, per-predicate numbig arenas.
+    /// Outer key = `g_id` as string, inner key = `p_id` as string.
+    pub numbig: BTreeMap<String, BTreeMap<String, ContentId>>,
+    /// Per-graph, per-predicate vector arena metadata.
+    /// Outer key = `g_id` as string, inner key = `p_id` as string.
+    pub vectors: BTreeMap<String, BTreeMap<String, VectorDictRef>>,
 }
 
 // ============================================================================
@@ -150,8 +151,9 @@ use std::path::Path;
 const ROOT_V5_MAGIC: [u8; 4] = *b"IRB1";
 
 /// Wire format version for IRB1.
-/// v2: forward dicts use FPK1 packs instead of DLF1 trees.
-const ROOT_V5_VERSION: u8 = 2;
+/// v3: per-graph specialty arenas (numbig/vectors/spatial) replace global
+///     numbig/vectors in DictRefsV5.
+const ROOT_V5_VERSION: u8 = 3;
 
 /// Fixed header size: magic(4) + version(1) + flags(1) + pad(2) + index_t(8) + base_t(8) = 24.
 const ROOT_V5_HEADER_LEN: usize = 24;
@@ -181,10 +183,12 @@ pub struct NamedGraphRouting {
     pub orders: Vec<(RunSortOrder, ContentId)>,
 }
 
-/// Dictionary refs for v5 (u32 p_id keys for numbig/vectors).
+/// Dictionary refs for v5 (graph-independent dict artifacts only).
 ///
 /// Forward dictionaries use packed FPK1 format (DictPackRefs).
 /// Reverse dictionaries use CoW tree format (DictTreeRefs).
+/// Per-graph specialty arenas (numbig, vectors, spatial) live in
+/// `GraphArenaRefsV5` on the root, not here.
 #[derive(Debug, Clone)]
 pub struct DictRefsV5 {
     /// Forward dictionary packs (string + subject, FPK1 format).
@@ -193,10 +197,20 @@ pub struct DictRefsV5 {
     pub subject_reverse: DictTreeRefs,
     /// String reverse tree: value → string_id.
     pub string_reverse: DictTreeRefs,
+}
+
+/// Per-graph specialty arena refs (numbig, vectors, spatial).
+///
+/// One entry per graph that has any specialty arenas.
+#[derive(Debug, Clone)]
+pub struct GraphArenaRefsV5 {
+    pub g_id: GraphId,
     /// Per-predicate numbig arenas, sorted by p_id.
     pub numbig: Vec<(u32, ContentId)>,
     /// Per-predicate vector arenas, sorted by p_id.
     pub vectors: Vec<VectorDictRefV5>,
+    /// Per-predicate spatial index refs, sorted by p_id.
+    pub spatial: Vec<SpatialArenaRefV5>,
 }
 
 /// Vector arena ref with u32 p_id key.
@@ -205,6 +219,20 @@ pub struct VectorDictRefV5 {
     pub p_id: u32,
     pub manifest: ContentId,
     pub shards: Vec<ContentId>,
+}
+
+/// Spatial index ref for one (graph, predicate) pair.
+#[derive(Debug, Clone)]
+pub struct SpatialArenaRefV5 {
+    pub p_id: u32,
+    /// CID of the serialized `SpatialIndexRoot` JSON blob (contains SpatialConfig, hashes, etc.).
+    pub root_cid: ContentId,
+    /// CID of the cell index manifest.
+    pub manifest: ContentId,
+    /// CID of the geometry arena.
+    pub arena: ContentId,
+    /// CIDs of all leaflet chunks (for GC).
+    pub leaflets: Vec<ContentId>,
 }
 
 /// Binary index root v5 (`IRB1`).
@@ -237,6 +265,9 @@ pub struct IndexRootV5 {
     pub total_commit_size: u64,
     pub total_asserts: u64,
     pub total_retracts: u64,
+
+    // Per-graph specialty arenas (numbig, vectors, spatial)
+    pub graph_arenas: Vec<GraphArenaRefsV5>,
 
     // Default graph routing (inline)
     pub default_graph_orders: Vec<InlineOrderRouting>,
@@ -324,25 +355,45 @@ impl IndexRootV5 {
         write_dict_tree_refs(&mut buf, &self.dict_refs.subject_reverse);
         write_dict_tree_refs(&mut buf, &self.dict_refs.string_reverse);
 
-        // numbig (sorted by p_id)
-        let mut sorted_numbig = self.dict_refs.numbig.clone();
-        sorted_numbig.sort_by_key(|(p_id, _)| *p_id);
-        buf.extend_from_slice(&(sorted_numbig.len() as u16).to_le_bytes());
-        for (p_id, cid) in &sorted_numbig {
-            buf.extend_from_slice(&p_id.to_le_bytes());
-            write_cid(&mut buf, cid);
-        }
-
-        // vectors (sorted by p_id)
-        let mut sorted_vectors = self.dict_refs.vectors.clone();
-        sorted_vectors.sort_by_key(|v| v.p_id);
-        buf.extend_from_slice(&(sorted_vectors.len() as u16).to_le_bytes());
-        for vdr in &sorted_vectors {
-            buf.extend_from_slice(&vdr.p_id.to_le_bytes());
-            write_cid(&mut buf, &vdr.manifest);
-            buf.extend_from_slice(&(vdr.shards.len() as u16).to_le_bytes());
-            for shard_cid in &vdr.shards {
-                write_cid(&mut buf, shard_cid);
+        // ---- Per-graph specialty arenas (sorted by g_id) ----
+        let mut sorted_arenas = self.graph_arenas.clone();
+        sorted_arenas.sort_by_key(|ga| ga.g_id);
+        buf.extend_from_slice(&(sorted_arenas.len() as u16).to_le_bytes());
+        for ga in &sorted_arenas {
+            buf.extend_from_slice(&ga.g_id.to_le_bytes());
+            // numbig (sorted by p_id)
+            let mut sorted_nb = ga.numbig.clone();
+            sorted_nb.sort_by_key(|(p_id, _)| *p_id);
+            buf.extend_from_slice(&(sorted_nb.len() as u16).to_le_bytes());
+            for (p_id, cid) in &sorted_nb {
+                buf.extend_from_slice(&p_id.to_le_bytes());
+                write_cid(&mut buf, cid);
+            }
+            // vectors (sorted by p_id)
+            let mut sorted_v = ga.vectors.clone();
+            sorted_v.sort_by_key(|v| v.p_id);
+            buf.extend_from_slice(&(sorted_v.len() as u16).to_le_bytes());
+            for vdr in &sorted_v {
+                buf.extend_from_slice(&vdr.p_id.to_le_bytes());
+                write_cid(&mut buf, &vdr.manifest);
+                buf.extend_from_slice(&(vdr.shards.len() as u16).to_le_bytes());
+                for shard_cid in &vdr.shards {
+                    write_cid(&mut buf, shard_cid);
+                }
+            }
+            // spatial (sorted by p_id)
+            let mut sorted_s = ga.spatial.clone();
+            sorted_s.sort_by_key(|s| s.p_id);
+            buf.extend_from_slice(&(sorted_s.len() as u16).to_le_bytes());
+            for sar in &sorted_s {
+                buf.extend_from_slice(&sar.p_id.to_le_bytes());
+                write_cid(&mut buf, &sar.root_cid);
+                write_cid(&mut buf, &sar.manifest);
+                write_cid(&mut buf, &sar.arena);
+                buf.extend_from_slice(&(sar.leaflets.len() as u16).to_le_bytes());
+                for leaf_cid in &sar.leaflets {
+                    write_cid(&mut buf, leaf_cid);
+                }
             }
         }
 
@@ -485,40 +536,70 @@ impl IndexRootV5 {
         let subject_reverse = read_dict_tree_refs(data, &mut pos)?;
         let string_reverse = read_dict_tree_refs(data, &mut pos)?;
 
-        // numbig
-        let numbig_count = read_u16_at(data, &mut pos)? as usize;
-        let mut numbig = Vec::with_capacity(numbig_count);
-        for _ in 0..numbig_count {
-            let p_id = read_u32_at(data, &mut pos)?;
-            let cid = read_cid(data, &mut pos)?;
-            numbig.push((p_id, cid));
-        }
-
-        // vectors
-        let vector_count = read_u16_at(data, &mut pos)? as usize;
-        let mut vectors = Vec::with_capacity(vector_count);
-        for _ in 0..vector_count {
-            let p_id = read_u32_at(data, &mut pos)?;
-            let manifest = read_cid(data, &mut pos)?;
-            let shard_count = read_u16_at(data, &mut pos)? as usize;
-            let mut shards = Vec::with_capacity(shard_count);
-            for _ in 0..shard_count {
-                shards.push(read_cid(data, &mut pos)?);
-            }
-            vectors.push(VectorDictRefV5 {
-                p_id,
-                manifest,
-                shards,
-            });
-        }
-
         let dict_refs = DictRefsV5 {
             forward_packs,
             subject_reverse,
             string_reverse,
-            numbig,
-            vectors,
         };
+
+        // Per-graph specialty arenas
+        let arena_graph_count = read_u16_at(data, &mut pos)? as usize;
+        let mut graph_arenas = Vec::with_capacity(arena_graph_count);
+        for _ in 0..arena_graph_count {
+            let g_id = read_u16_at(data, &mut pos)?;
+            // numbig
+            let nb_count = read_u16_at(data, &mut pos)? as usize;
+            let mut numbig = Vec::with_capacity(nb_count);
+            for _ in 0..nb_count {
+                let p_id = read_u32_at(data, &mut pos)?;
+                let cid = read_cid(data, &mut pos)?;
+                numbig.push((p_id, cid));
+            }
+            // vectors
+            let vec_count = read_u16_at(data, &mut pos)? as usize;
+            let mut vectors = Vec::with_capacity(vec_count);
+            for _ in 0..vec_count {
+                let p_id = read_u32_at(data, &mut pos)?;
+                let manifest = read_cid(data, &mut pos)?;
+                let shard_count = read_u16_at(data, &mut pos)? as usize;
+                let mut shards = Vec::with_capacity(shard_count);
+                for _ in 0..shard_count {
+                    shards.push(read_cid(data, &mut pos)?);
+                }
+                vectors.push(VectorDictRefV5 {
+                    p_id,
+                    manifest,
+                    shards,
+                });
+            }
+            // spatial
+            let sp_count = read_u16_at(data, &mut pos)? as usize;
+            let mut spatial = Vec::with_capacity(sp_count);
+            for _ in 0..sp_count {
+                let p_id = read_u32_at(data, &mut pos)?;
+                let root_cid = read_cid(data, &mut pos)?;
+                let manifest = read_cid(data, &mut pos)?;
+                let arena = read_cid(data, &mut pos)?;
+                let leaf_count = read_u16_at(data, &mut pos)? as usize;
+                let mut leaflets = Vec::with_capacity(leaf_count);
+                for _ in 0..leaf_count {
+                    leaflets.push(read_cid(data, &mut pos)?);
+                }
+                spatial.push(SpatialArenaRefV5 {
+                    p_id,
+                    root_cid,
+                    manifest,
+                    arena,
+                    leaflets,
+                });
+            }
+            graph_arenas.push(GraphArenaRefsV5 {
+                g_id,
+                numbig,
+                vectors,
+                spatial,
+            });
+        }
 
         // Watermarks
         let wm_count = read_u16_at(data, &mut pos)? as usize;
@@ -630,6 +711,7 @@ impl IndexRootV5 {
             datatype_iris,
             language_tags,
             dict_refs,
+            graph_arenas,
             subject_watermarks,
             string_watermark,
             total_commit_size,
@@ -672,15 +754,21 @@ impl IndexRootV5 {
             ids.extend(tree.leaves.iter().cloned());
         }
 
-        // Numbig
-        for (_, cid) in &self.dict_refs.numbig {
-            ids.push(cid.clone());
-        }
-
-        // Vectors
-        for vdr in &self.dict_refs.vectors {
-            ids.push(vdr.manifest.clone());
-            ids.extend(vdr.shards.iter().cloned());
+        // Per-graph arenas (numbig, vectors, spatial)
+        for ga in &self.graph_arenas {
+            for (_, cid) in &ga.numbig {
+                ids.push(cid.clone());
+            }
+            for vdr in &ga.vectors {
+                ids.push(vdr.manifest.clone());
+                ids.extend(vdr.shards.iter().cloned());
+            }
+            for sar in &ga.spatial {
+                ids.push(sar.root_cid.clone());
+                ids.push(sar.manifest.clone());
+                ids.push(sar.arena.clone());
+                ids.extend(sar.leaflets.iter().cloned());
+            }
         }
 
         // Default graph inline leaves
@@ -1060,8 +1148,6 @@ mod tests_v5 {
                 branch: test_cid(DICT, "str_branch"),
                 leaves: vec![test_cid(DICT, "str_l0")],
             },
-            numbig: vec![],
-            vectors: vec![],
         }
     }
 
@@ -1086,6 +1172,7 @@ mod tests_v5 {
             total_commit_size: 1000,
             total_asserts: 500,
             total_retracts: 50,
+            graph_arenas: vec![],
             default_graph_orders: vec![],
             named_graphs: vec![],
             stats: None,
@@ -1275,7 +1362,7 @@ mod tests_v5 {
         let bytes = root.encode();
 
         assert_eq!(&bytes[0..4], b"IRB1");
-        assert_eq!(bytes[4], 2); // version
+        assert_eq!(bytes[4], 3); // version
         assert_eq!(bytes[5], 0); // flags (no optional sections)
         assert_eq!(bytes[6], 0); // pad
         assert_eq!(bytes[7], 0); // pad
@@ -1284,7 +1371,12 @@ mod tests_v5 {
     #[test]
     fn all_cas_ids_comprehensive() {
         let mut root = minimal_root();
-        root.dict_refs.numbig = vec![(5, test_cid(DICT, "numbig_5"))];
+        root.graph_arenas = vec![GraphArenaRefsV5 {
+            g_id: 0,
+            numbig: vec![(5, test_cid(DICT, "numbig_5"))],
+            vectors: vec![],
+            spatial: vec![],
+        }];
         root.default_graph_orders = vec![InlineOrderRouting {
             order: RunSortOrder::Spot,
             leaves: vec![LeafEntry {

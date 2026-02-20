@@ -20,6 +20,7 @@ use fluree_db_core::temporal::{
 };
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::DatatypeDictId;
+use fluree_db_core::GraphId;
 use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
 use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
 use fluree_db_novelty::commit_v2::{load_commit_ops, CommitV2Error};
@@ -58,6 +59,9 @@ pub struct CommitResolver {
     /// Optional per-(graph, property) stats hook. When set, `on_record()` is
     /// called for every resolved user-data op (not txn-meta).
     stats_hook: Option<crate::stats::IdStatsHook>,
+    /// Optional spatial geometry collection hook. When set, `on_op()` is
+    /// called for every resolved user-data op to collect non-POINT WKT geometries.
+    spatial_hook: Option<crate::spatial_hook::SpatialHook>,
 }
 
 impl CommitResolver {
@@ -67,6 +71,7 @@ impl CommitResolver {
             ns_prefixes: fluree_db_core::default_namespace_codes(),
             hasher: Xxh3::new(),
             stats_hook: None,
+            spatial_hook: None,
         }
     }
 
@@ -78,6 +83,16 @@ impl CommitResolver {
     /// Take the stats hook out of the resolver (for finalization / merge).
     pub fn take_stats_hook(&mut self) -> Option<crate::stats::IdStatsHook> {
         self.stats_hook.take()
+    }
+
+    /// Set the spatial geometry collection hook for non-POINT WKT geometries.
+    pub fn set_spatial_hook(&mut self, hook: crate::spatial_hook::SpatialHook) {
+        self.spatial_hook = Some(hook);
+    }
+
+    /// Take the spatial hook out of the resolver (for finalization).
+    pub fn take_spatial_hook(&mut self) -> Option<crate::spatial_hook::SpatialHook> {
+        self.spatial_hook.take()
     }
 
     /// Apply a commit's namespace delta to update prefix mappings.
@@ -130,6 +145,17 @@ impl CommitResolver {
                     t: record.t as i64,
                     op: record.op != 0,
                 });
+            }
+
+            // Feed raw op to spatial hook (needs raw WKT string + resolved IDs)
+            if let Some(ref mut spatial) = self.spatial_hook {
+                spatial.on_op(
+                    &raw_op,
+                    record.g_id,
+                    record.s_id.as_u64(),
+                    record.p_id,
+                    t as i64,
+                );
             }
 
             writer
@@ -557,7 +583,7 @@ impl CommitResolver {
 
         // 5. Encode object -> (ObjKind, ObjKey)
         let (o_kind, o_key) = self
-            .resolve_object(&op.o, p_id, dt_id, dicts)
+            .resolve_object(&op.o, g_id, p_id, dt_id, dicts)
             .map_err(|e| CommitV2Error::InvalidOp(format!("object resolve: {}", e)))?;
 
         // 6. Language tag
@@ -659,6 +685,7 @@ impl CommitResolver {
     fn resolve_object(
         &mut self,
         obj: &RawObject<'_>,
+        g_id: GraphId,
         p_id: u32,
         _dt_id: u16,
         dicts: &mut GlobalDicts,
@@ -740,6 +767,8 @@ impl CommitResolver {
                         // Overflow BigInt -> NumBig
                         let handle = dicts
                             .numbigs
+                            .entry(g_id)
+                            .or_default()
                             .entry(p_id)
                             .or_default()
                             .get_or_insert_bigint(&bi);
@@ -761,6 +790,8 @@ impl CommitResolver {
                     Ok(bd) => {
                         let handle = dicts
                             .numbigs
+                            .entry(g_id)
+                            .or_default()
                             .entry(p_id)
                             .or_default()
                             .get_or_insert_bigdec(&bd);
@@ -843,6 +874,8 @@ impl CommitResolver {
             RawObject::Vector(v) => {
                 let handle = dicts
                     .vectors
+                    .entry(g_id)
+                    .or_default()
                     .entry(p_id)
                     .or_default()
                     .insert_f64(v)
@@ -888,13 +921,19 @@ pub struct SharedResolverState {
     pub graphs: super::global_dict::PredicateDict,
     /// Global language tag dict (shared across all chunks — no per-chunk remap needed).
     pub languages: super::global_dict::LanguageTagDict,
-    /// Per-predicate overflow numeric arenas (BigInt/BigDecimal). Key = p_id.
-    pub numbigs: FxHashMap<u32, super::numbig_dict::NumBigArena>,
-    /// Per-predicate vector arenas (packed f32). Key = p_id.
-    pub vectors: FxHashMap<u32, super::vector_arena::VectorArena>,
+    /// Per-graph, per-predicate overflow numeric arenas (BigInt/BigDecimal).
+    /// Outer key = g_id, inner key = p_id.
+    pub numbigs: FxHashMap<GraphId, FxHashMap<u32, super::numbig_dict::NumBigArena>>,
+    /// Per-graph, per-predicate vector arenas (packed f32).
+    /// Outer key = g_id, inner key = p_id.
+    pub vectors: FxHashMap<GraphId, FxHashMap<u32, super::vector_arena::VectorArena>>,
     /// Datatype dict ID → ValueTypeTag mapping, populated at insertion time.
     /// Indexed by dt_id (u32). Pre-seeded with reserved entries in `new()`.
     pub dt_tags: Vec<fluree_db_core::value_id::ValueTypeTag>,
+    /// Optional spatial geometry collection hook. When set, `on_op()` is
+    /// called for every resolved user-data op to collect non-POINT WKT geometries.
+    /// Subject IDs in entries are chunk-local and must be remapped after dict merge.
+    pub spatial_hook: Option<crate::spatial_hook::SpatialHook>,
 }
 
 impl Default for SharedResolverState {
@@ -934,6 +973,7 @@ impl SharedResolverState {
             numbigs: FxHashMap::default(),
             vectors: FxHashMap::default(),
             dt_tags,
+            spatial_hook: None,
         }
     }
 
@@ -1054,6 +1094,7 @@ impl SharedResolverState {
             numbigs: FxHashMap::default(),
             vectors: FxHashMap::default(),
             dt_tags,
+            spatial_hook: None,
         })
     }
 
@@ -1108,6 +1149,20 @@ impl SharedResolverState {
         // Resolve user-data ops into chunk-local records.
         commit_ops.for_each_op(|raw_op: RawOp<'_>| {
             let record = self.resolve_op_chunk(&raw_op, t, chunk)?;
+
+            // Feed raw op to spatial hook (needs raw WKT string + resolved IDs).
+            // Note: record.s_id is chunk-local here; subject IDs in spatial entries
+            // must be remapped after dict merge (Phase C).
+            if let Some(ref mut spatial) = self.spatial_hook {
+                spatial.on_op(
+                    &raw_op,
+                    record.g_id,
+                    record.s_id.as_u64(),
+                    record.p_id,
+                    t as i64,
+                );
+            }
+
             chunk.records.push(record);
             chunk.flake_count += 1;
             if record.op != 0 {
@@ -1167,7 +1222,7 @@ impl SharedResolverState {
 
         // 5. Encode object (subjects/strings → chunk-local)
         let (o_kind, o_key) = self
-            .resolve_object_chunk(&op.o, p_id, dt_id, chunk)
+            .resolve_object_chunk(&op.o, g_id, p_id, dt_id, chunk)
             .map_err(|e| CommitV2Error::InvalidOp(format!("object resolve: {}", e)))?;
 
         // 6. Language tag (global)
@@ -1238,6 +1293,7 @@ impl SharedResolverState {
     fn resolve_object_chunk(
         &mut self,
         obj: &RawObject<'_>,
+        g_id: GraphId,
         p_id: u32,
         _dt_id: u16,
         chunk: &mut RebuildChunk,
@@ -1293,6 +1349,8 @@ impl SharedResolverState {
                         }
                         let handle = self
                             .numbigs
+                            .entry(g_id)
+                            .or_default()
                             .entry(p_id)
                             .or_default()
                             .get_or_insert_bigint(&bi);
@@ -1308,6 +1366,8 @@ impl SharedResolverState {
                 Ok(bd) => {
                     let handle = self
                         .numbigs
+                        .entry(g_id)
+                        .or_default()
                         .entry(p_id)
                         .or_default()
                         .get_or_insert_bigdec(&bd);
@@ -1378,6 +1438,8 @@ impl SharedResolverState {
             RawObject::Vector(v) => {
                 let handle = self
                     .vectors
+                    .entry(g_id)
+                    .or_default()
                     .entry(p_id)
                     .or_default()
                     .insert_f64(v)

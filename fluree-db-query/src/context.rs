@@ -12,7 +12,7 @@ use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{Db, GraphId, NoOverlay, OverlayProvider, Sid, Tracker};
-use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
 use fluree_db_spatial::SpatialIndexProvider;
 use fluree_vocab::namespaces::{FLUREE_DB, JSON_LD, OGC_GEO, RDF, XSD};
 use fluree_vocab::{geo_names, xsd_names};
@@ -424,6 +424,17 @@ impl<'a> ExecutionContext<'a> {
     /// conditions (e.g. `to_t >= base_t`, `!history_mode`).
     pub fn has_binary_store(&self) -> bool {
         !self.is_multi_ledger() && self.binary_store.is_some()
+    }
+
+    /// Return a `GraphView` for the current graph, combining the binary store
+    /// with `binary_g_id`.
+    ///
+    /// Returns `None` if no binary store is attached. Callers should grab this
+    /// once at operator construction and store it — not call it in tight loops
+    /// (each call clones an Arc).
+    pub fn graph_view(&self) -> Option<GraphView> {
+        let store = self.binary_store.as_ref()?;
+        Some(store.graph(self.binary_g_id))
     }
 
     /// Get the default graphs slice without allocation (for scan hot path).

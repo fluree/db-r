@@ -41,7 +41,7 @@ use fluree_db_core::{
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, OverlayOp,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, DecodedBatch, GraphView, OverlayOp,
 };
 use fluree_vocab::namespaces::FLUREE_DB;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -136,10 +136,8 @@ pub struct BinaryScanOperator {
     o_var_pos: Option<usize>,
     /// Operator lifecycle state.
     state: OperatorState,
-    /// The binary index store (shared, immutable).
-    store: Arc<BinaryIndexStore>,
-    /// Graph ID to query.
-    g_id: GraphId,
+    /// Graph-scoped view of the binary index store (shared, immutable).
+    graph_view: GraphView,
     /// Cursor for leaf iteration (created during open).
     cursor: Option<BinaryCursor>,
     /// Pre-computed p_id → Sid (all predicates, done once at open).
@@ -173,13 +171,11 @@ pub struct BinaryScanOperator {
 impl BinaryScanOperator {
     /// Create a new BinaryScanOperator for a triple pattern.
     ///
-    /// The `store` must be loaded with indexes for the relevant sort orders.
-    /// The `g_id` selects which graph to scan (typically 0 for default graph).
+    /// The `graph_view` provides a graph-scoped view of the binary index store.
     /// Filters are evaluated per-row before adding bindings to output columns.
     pub fn new(
         pattern: TriplePattern,
-        store: Arc<BinaryIndexStore>,
-        g_id: GraphId,
+        graph_view: GraphView,
         object_bounds: Option<ObjectBounds>,
         filters: Vec<crate::ir::Expression>,
     ) -> Self {
@@ -207,8 +203,7 @@ impl BinaryScanOperator {
             p_var_pos,
             o_var_pos,
             state: OperatorState::Created,
-            store,
-            g_id,
+            graph_view,
             cursor: None,
             p_sids: Vec::new(),
             sid_cache: HashMap::new(),
@@ -225,12 +220,11 @@ impl BinaryScanOperator {
     /// Create with explicit index selection (for testing or forced order).
     pub fn with_index(
         pattern: TriplePattern,
-        store: Arc<BinaryIndexStore>,
-        g_id: GraphId,
+        graph_view: GraphView,
         index: IndexType,
         filters: Vec<crate::ir::Expression>,
     ) -> Self {
-        let mut op = Self::new(pattern, store, g_id, None, filters);
+        let mut op = Self::new(pattern, graph_view, None, filters);
         op.index = index;
         op
     }
@@ -275,10 +269,11 @@ impl BinaryScanOperator {
                 .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?
         } else {
             let iri = self
-                .store
+                .graph_view
+                .store()
                 .resolve_subject_iri(s_id)
                 .map_err(|e| QueryError::Internal(format!("resolve s_id {}: {}", s_id, e)))?;
-            self.store.encode_iri(&iri)
+            self.graph_view.store().encode_iri(&iri)
         };
         self.sid_cache.insert(s_id, sid.clone());
         Ok(sid)
@@ -302,7 +297,7 @@ impl BinaryScanOperator {
     fn decode_obj(&self, o_kind: u8, o_key: u64, p_id: u32) -> std::io::Result<FlakeValue> {
         match &self.dict_overlay {
             Some(ov) => ov.decode_value(o_kind, o_key, p_id),
-            None => self.store.decode_value(o_kind, o_key, p_id),
+            None => self.graph_view.decode_value(o_kind, o_key, p_id),
         }
     }
 
@@ -337,8 +332,8 @@ impl BinaryScanOperator {
                 return sid;
             }
         }
-        match self.store.resolve_predicate_iri(p_id) {
-            Some(iri) => self.store.encode_iri(iri),
+        match self.graph_view.store().resolve_predicate_iri(p_id) {
+            Some(iri) => self.graph_view.store().encode_iri(iri),
             None => {
                 tracing::warn!(p_id, "unresolvable predicate ID in batch_to_bindings");
                 Sid::new(0, "")
@@ -571,7 +566,8 @@ impl BinaryScanOperator {
             .as_ref()
             .map(|ov| ov.decode_dt_sid(dt_id))
             .unwrap_or_else(|| {
-                self.store
+                self.graph_view
+                    .store()
                     .dt_sids()
                     .get(dt_id as usize)
                     .cloned()
@@ -661,19 +657,19 @@ impl BinaryScanOperator {
     fn extract_bound_terms(&self) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
         let s_sid = match &self.pattern.s {
             Term::Sid(s) => Some(s.clone()),
-            Term::Iri(iri) => Some(self.store.encode_iri(iri)),
+            Term::Iri(iri) => Some(self.graph_view.store().encode_iri(iri)),
             _ => None,
         };
 
         let p_sid = match &self.pattern.p {
             Term::Sid(s) => Some(s.clone()),
-            Term::Iri(iri) => Some(self.store.encode_iri(iri)),
+            Term::Iri(iri) => Some(self.graph_view.store().encode_iri(iri)),
             _ => None,
         };
 
         let o_val = match &self.pattern.o {
             Term::Sid(sid) => Some(FlakeValue::Ref(sid.clone())),
-            Term::Iri(iri) => Some(FlakeValue::Ref(self.store.encode_iri(iri))),
+            Term::Iri(iri) => Some(FlakeValue::Ref(self.graph_view.store().encode_iri(iri))),
             Term::Value(v) => Some(v.clone()),
             Term::Var(_) => None,
         };
@@ -749,12 +745,14 @@ impl Operator for BinaryScanOperator {
         }
 
         // Pre-compute p_sids for all predicates (typically ~96 for DBLP)
-        let pred_count = self.store.predicate_count();
+        let pred_count = self.graph_view.store().predicate_count();
         self.p_sids = (0..pred_count)
-            .map(|p_id| match self.store.resolve_predicate_iri(p_id) {
-                Some(iri) => self.store.encode_iri(iri),
-                None => Sid::new(0, ""),
-            })
+            .map(
+                |p_id| match self.graph_view.store().resolve_predicate_iri(p_id) {
+                    Some(iri) => self.graph_view.store().encode_iri(iri),
+                    None => Sid::new(0, ""),
+                },
+            )
             .collect();
 
         // Extract bound terms from the pattern
@@ -771,13 +769,14 @@ impl Operator for BinaryScanOperator {
 
         // Translate to RunRecord bounds
         let bounds = self
-            .store
+            .graph_view
+            .store()
             .translate_range(
                 s_sid.as_ref(),
                 p_sid.as_ref(),
                 o_val.as_ref(),
                 order,
-                self.g_id,
+                self.graph_view.g_id(),
             )
             .map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
 
@@ -795,8 +794,15 @@ impl Operator for BinaryScanOperator {
             None => {
                 if o_val.is_some() {
                     let retry = self
-                        .store
-                        .translate_range(s_sid.as_ref(), p_sid.as_ref(), None, order, self.g_id)
+                        .graph_view
+                        .store()
+                        .translate_range(
+                            s_sid.as_ref(),
+                            p_sid.as_ref(),
+                            None,
+                            order,
+                            self.graph_view.g_id(),
+                        )
                         .map_err(|e| QueryError::Internal(format!("translate_range: {}", e)))?;
                     if retry.is_some() {
                         self.bound_o_filter = o_val.clone();
@@ -833,12 +839,14 @@ impl Operator for BinaryScanOperator {
                                 // Create bounds for this specific subject
                                 use fluree_db_core::subject_id::SubjectId;
                                 use fluree_db_indexer::run_index::RunRecord;
-                                let p_id = p_sid.as_ref().and_then(|p| self.store.sid_to_p_id(p));
+                                let p_id = p_sid
+                                    .as_ref()
+                                    .and_then(|p| self.graph_view.store().sid_to_p_id(p));
 
                                 let (min_o_kind, min_o_key, max_o_kind, max_o_key) =
                                     if let Some(val) = &o_val {
                                         if let Ok(Some((ok, okey))) =
-                                            self.store.value_to_obj_pair(val)
+                                            self.graph_view.store().value_to_obj_pair(val)
                                         {
                                             (ok.as_u8(), okey.as_u64(), ok.as_u8(), okey.as_u64())
                                         } else {
@@ -855,7 +863,7 @@ impl Operator for BinaryScanOperator {
                                     };
 
                                 let min_key = RunRecord {
-                                    g_id: self.g_id,
+                                    g_id: self.graph_view.g_id(),
                                     s_id: SubjectId::from_u64(s_id),
                                     p_id: p_id.unwrap_or(0),
                                     dt: 0,
@@ -867,7 +875,7 @@ impl Operator for BinaryScanOperator {
                                     i: 0,
                                 };
                                 let max_key = RunRecord {
-                                    g_id: self.g_id,
+                                    g_id: self.graph_view.g_id(),
                                     s_id: SubjectId::from_u64(s_id),
                                     p_id: p_id.unwrap_or(u32::MAX),
                                     dt: u16::MAX,
@@ -905,14 +913,18 @@ impl Operator for BinaryScanOperator {
                 // Requires a bound predicate (need p_id for shape lookup and POST order).
                 if let Some(obj_bounds) = &self.object_bounds {
                     if let Some(p) = &p_sid {
-                        if let Some(p_id) = self.store.sid_to_p_id(p) {
+                        if let Some(p_id) = self.graph_view.store().sid_to_p_id(p) {
                             let shape = {
-                                let pred_iri_for_stats = self.store.sid_to_iri(p);
+                                let pred_iri_for_stats = self.graph_view.store().sid_to_iri(p);
                                 numeric_shape_from_db_stats(ctx, &pred_iri_for_stats, p)
                             };
                             let mut narrowed: Option<(ObjKind, ObjKey, ObjKind, ObjKey)> = None;
                             if let Some(shape) = shape {
-                                match self.store.translate_object_bounds(obj_bounds, p_id, shape) {
+                                match self
+                                    .graph_view
+                                    .store()
+                                    .translate_object_bounds(obj_bounds, p_id, shape)
+                                {
                                     Some((min_ok, min_okey, max_ok, max_okey)) => {
                                         narrowed = Some((min_ok, min_okey, max_ok, max_okey));
                                         min_key.o_kind = min_ok.as_u8();
@@ -934,7 +946,7 @@ impl Operator for BinaryScanOperator {
 
                             // One-per-scan debug line to verify pushdown + float-only narrowing.
                             // This should be low volume: it only triggers when ObjectBounds exist.
-                            let pred_iri = self.store.sid_to_iri(p);
+                            let pred_iri = self.graph_view.store().sid_to_iri(p);
                             let lower = obj_bounds
                                 .lower
                                 .as_ref()
@@ -1008,7 +1020,7 @@ impl Operator for BinaryScanOperator {
 
                 if let Some(sid) = &s_sid {
                     // First try persisted index
-                    if let Ok(Some(s_id)) = self.store.sid_to_s_id(sid) {
+                    if let Ok(Some(s_id)) = self.graph_view.store().sid_to_s_id(sid) {
                         filter.s_id = Some(s_id);
                     } else if let Some(dict_ov) = &mut self.dict_overlay {
                         // Fallback to DictOverlay for novelty-only subjects
@@ -1017,15 +1029,17 @@ impl Operator for BinaryScanOperator {
                         }
                     }
                 }
-                let resolved_p_id = p_sid.as_ref().and_then(|sid| self.store.sid_to_p_id(sid));
+                let resolved_p_id = p_sid
+                    .as_ref()
+                    .and_then(|sid| self.graph_view.store().sid_to_p_id(sid));
                 if let Some(p_id) = resolved_p_id {
                     filter.p_id = Some(p_id);
                 }
                 if let Some(val) = &o_val {
                     let pair_result = if let Some(p_id) = resolved_p_id {
-                        self.store.value_to_obj_pair_for_predicate(val, p_id)
+                        self.graph_view.value_to_obj_pair_for_predicate(val, p_id)
                     } else {
-                        self.store.value_to_obj_pair(val)
+                        self.graph_view.store().value_to_obj_pair(val)
                     };
                     if let Ok(Some((ok, okey))) = pair_result {
                         filter.o_kind = Some(ok.as_u8());
@@ -1038,17 +1052,17 @@ impl Operator for BinaryScanOperator {
                 let cursor = if order == RunSortOrder::Spot {
                     if let Some(s_id) = filter.s_id {
                         BinaryCursor::for_subject(
-                            self.store.clone(),
-                            self.g_id,
+                            self.graph_view.clone_store(),
+                            self.graph_view.g_id(),
                             s_id,
                             filter.p_id,
                             need_region2,
                         )
                     } else {
                         BinaryCursor::new(
-                            self.store.clone(),
+                            self.graph_view.clone_store(),
                             order,
-                            self.g_id,
+                            self.graph_view.g_id(),
                             &min_key,
                             &max_key,
                             filter,
@@ -1057,9 +1071,9 @@ impl Operator for BinaryScanOperator {
                     }
                 } else {
                     BinaryCursor::new(
-                        self.store.clone(),
+                        self.graph_view.clone_store(),
                         order,
-                        self.g_id,
+                        self.graph_view.g_id(),
                         &min_key,
                         &max_key,
                         filter,
@@ -1403,10 +1417,11 @@ impl Operator for ScanOperator {
         // ephemeral IDs are allocated for entities not in persisted dictionaries).
         let (overlay_data, dict_overlay) = if use_binary && ctx.overlay.is_some() {
             let store = ctx.binary_store.as_ref().unwrap().clone();
+            let gv = GraphView::new(store, ctx.binary_g_id);
             let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
-            let mut dict_ov = crate::dict_overlay::DictOverlay::new(store, dn);
+            let mut dict_ov = crate::dict_overlay::DictOverlay::new(gv, dn);
             let ops =
                 translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t, ctx.binary_g_id);
             tracing::trace!(
@@ -1422,20 +1437,21 @@ impl Operator for ScanOperator {
             }
         } else if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
+            let gv = GraphView::new(store, ctx.binary_g_id);
             let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
-            (None, Some(crate::dict_overlay::DictOverlay::new(store, dn)))
+            (None, Some(crate::dict_overlay::DictOverlay::new(gv, dn)))
         } else {
             (None, None)
         };
 
         let mut inner: BoxedOperator = if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
+            let gv = GraphView::new(store, ctx.binary_g_id);
             let mut op = BinaryScanOperator::new(
                 self.pattern.clone(),
-                store,
-                ctx.binary_g_id,
+                gv,
                 self.object_bounds.clone(),
                 std::mem::take(&mut self.filters),
             );

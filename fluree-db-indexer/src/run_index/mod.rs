@@ -52,7 +52,7 @@ pub mod vocab_file;
 pub mod vocab_merge;
 
 pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
-pub use binary_index_store::BinaryIndexStore;
+pub use binary_index_store::{BinaryIndexStore, GraphView};
 pub use chunk_dict::{hash_subject, ChunkStringDict, ChunkSubjectDict};
 // dict_merge is superseded by vocab_merge (external-sort k-way merge)
 // but kept for its unit tests as a reference implementation.
@@ -83,7 +83,8 @@ pub use index_root::{
     GraphRefs, PackBranchEntry, VectorDictRef,
 };
 pub use index_root::{
-    DictRefsV5, IndexRootV5, InlineOrderRouting, NamedGraphRouting, VectorDictRefV5,
+    DictRefsV5, GraphArenaRefsV5, IndexRootV5, InlineOrderRouting, NamedGraphRouting,
+    SpatialArenaRefV5, VectorDictRefV5,
 };
 pub use lang_remap::{build_lang_remap, build_lang_remap_from_vocabs};
 pub use leaflet_cache::{CachedRegion1, CachedRegion2, LeafletCache, LeafletCacheKey};

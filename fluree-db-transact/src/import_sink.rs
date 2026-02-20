@@ -368,7 +368,9 @@ mod inner {
                         (ObjKind::NUM_INT.as_u8(), ObjKey::encode_i64(v).as_u64())
                     } else {
                         // Overflow: use shared numbig pool for global handle.
-                        let handle = self.numbig_pool.get_or_insert_bigint(p_id, bi.as_ref());
+                        let handle =
+                            self.numbig_pool
+                                .get_or_insert_bigint(self.g_id, p_id, bi.as_ref());
                         (
                             ObjKind::NUM_BIG.as_u8(),
                             ObjKey::encode_u32_id(handle).as_u64(),
@@ -377,7 +379,9 @@ mod inner {
                 }
                 FlakeValue::Decimal(dec) => {
                     // Use shared numbig pool for global handle.
-                    let handle = self.numbig_pool.get_or_insert_bigdec(p_id, dec.as_ref());
+                    let handle =
+                        self.numbig_pool
+                            .get_or_insert_bigdec(self.g_id, p_id, dec.as_ref());
                     (
                         ObjKind::NUM_BIG.as_u8(),
                         ObjKey::encode_u32_id(handle).as_u64(),
@@ -385,7 +389,7 @@ mod inner {
                 }
                 FlakeValue::Vector(v) => {
                     // Use shared vector pool for global handle.
-                    match self.vector_pool.insert_f64(p_id, v) {
+                    match self.vector_pool.insert_f64(self.g_id, p_id, v) {
                         Ok(handle) => (
                             ObjKind::VECTOR_ID.as_u8(),
                             ObjKey::encode_u32_id(handle).as_u64(),

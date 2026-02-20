@@ -22,6 +22,7 @@
 //! NUM_FLOAT dictionaries with midpoint-splitting ranks are a later optimization.
 
 use fluree_db_core::vec_bi_dict::VecBiDict;
+use fluree_db_core::GraphId;
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use serde_json;
@@ -1034,10 +1035,12 @@ pub struct GlobalDicts {
     pub strings: StringValueDict,
     pub languages: LanguageTagDict,
     pub datatypes: PredicateDict,
-    /// Per-predicate overflow numeric arenas (BigInt/BigDecimal). Key = p_id.
-    pub numbigs: FxHashMap<u32, super::numbig_dict::NumBigArena>,
-    /// Per-predicate vector arenas (packed f32). Key = p_id.
-    pub vectors: FxHashMap<u32, super::vector_arena::VectorArena>,
+    /// Per-graph, per-predicate overflow numeric arenas (BigInt/BigDecimal).
+    /// Outer key = g_id, inner key = p_id.
+    pub numbigs: FxHashMap<GraphId, FxHashMap<u32, super::numbig_dict::NumBigArena>>,
+    /// Per-graph, per-predicate vector arenas (packed f32).
+    /// Outer key = g_id, inner key = p_id.
+    pub vectors: FxHashMap<GraphId, FxHashMap<u32, super::vector_arena::VectorArena>>,
 }
 
 impl GlobalDicts {
@@ -1140,62 +1143,83 @@ impl GlobalDicts {
         // Write datatype dict
         write_predicate_dict(&run_dir.join("datatypes.dict"), &self.datatypes)?;
 
-        // Write numbig arenas (one file per predicate)
-        if !self.numbigs.is_empty() {
-            let nb_dir = run_dir.join("numbig");
-            std::fs::create_dir_all(&nb_dir)?;
-            for (&p_id, arena) in &self.numbigs {
-                super::numbig_dict::write_numbig_arena(
-                    &nb_dir.join(format!("p_{}.nba", p_id)),
-                    arena,
-                )?;
-            }
-            tracing::info!(
-                predicates = self.numbigs.len(),
-                total_entries = self.numbigs.values().map(|a| a.len()).sum::<usize>(),
-                "numbig arenas persisted"
-            );
-        }
-
-        // Write vector arenas (shards + manifests per predicate)
-        if !self.vectors.is_empty() {
-            let vec_dir = run_dir.join("vectors");
-            std::fs::create_dir_all(&vec_dir)?;
-            for (&p_id, arena) in &self.vectors {
-                if arena.is_empty() {
+        // Write numbig arenas (per-graph subdirectories, one file per predicate)
+        {
+            let mut total_predicates = 0usize;
+            let mut total_entries = 0usize;
+            for (&g_id, per_pred) in &self.numbigs {
+                if per_pred.is_empty() {
                     continue;
                 }
-                let shard_paths = super::vector_arena::write_vector_shards(&vec_dir, p_id, arena)?;
-                // Write manifest with placeholder CAS addresses (local paths).
-                // The real CAS addresses are filled in during upload_dicts_to_cas.
-                let shard_infos: Vec<super::vector_arena::ShardInfo> = shard_paths
-                    .iter()
-                    .enumerate()
-                    .map(|(i, path)| {
-                        let cap = super::vector_arena::SHARD_CAPACITY;
-                        let start = i as u32 * cap;
-                        let count = (arena.len() - start).min(cap);
-                        super::vector_arena::ShardInfo {
-                            cas: path.display().to_string(),
-                            count,
-                        }
-                    })
-                    .collect();
-                super::vector_arena::write_vector_manifest(
-                    &vec_dir.join(format!("p_{}.vam", p_id)),
-                    arena,
-                    &shard_infos,
-                )?;
+                let nb_dir = run_dir.join(format!("g_{}", g_id)).join("numbig");
+                std::fs::create_dir_all(&nb_dir)?;
+                for (&p_id, arena) in per_pred {
+                    super::numbig_dict::write_numbig_arena(
+                        &nb_dir.join(format!("p_{}.nba", p_id)),
+                        arena,
+                    )?;
+                    total_predicates += 1;
+                    total_entries += arena.len();
+                }
             }
-            tracing::info!(
-                predicates = self.vectors.len(),
-                total_vectors = self
-                    .vectors
-                    .values()
-                    .map(|a| a.len() as usize)
-                    .sum::<usize>(),
-                "vector arenas persisted"
-            );
+            if total_predicates > 0 {
+                tracing::info!(
+                    graphs = self.numbigs.len(),
+                    predicates = total_predicates,
+                    total_entries,
+                    "numbig arenas persisted"
+                );
+            }
+        }
+
+        // Write vector arenas (per-graph subdirectories, shards + manifests per predicate)
+        {
+            let mut total_predicates = 0usize;
+            let mut total_vectors = 0usize;
+            for (&g_id, per_pred) in &self.vectors {
+                if per_pred.is_empty() {
+                    continue;
+                }
+                let vec_dir = run_dir.join(format!("g_{}", g_id)).join("vectors");
+                std::fs::create_dir_all(&vec_dir)?;
+                for (&p_id, arena) in per_pred {
+                    if arena.is_empty() {
+                        continue;
+                    }
+                    let shard_paths =
+                        super::vector_arena::write_vector_shards(&vec_dir, p_id, arena)?;
+                    // Write manifest with placeholder CAS addresses (local paths).
+                    // The real CAS addresses are filled in during upload_dicts_to_cas.
+                    let shard_infos: Vec<super::vector_arena::ShardInfo> = shard_paths
+                        .iter()
+                        .enumerate()
+                        .map(|(i, path)| {
+                            let cap = super::vector_arena::SHARD_CAPACITY;
+                            let start = i as u32 * cap;
+                            let count = (arena.len() - start).min(cap);
+                            super::vector_arena::ShardInfo {
+                                cas: path.display().to_string(),
+                                count,
+                            }
+                        })
+                        .collect();
+                    super::vector_arena::write_vector_manifest(
+                        &vec_dir.join(format!("p_{}.vam", p_id)),
+                        arena,
+                        &shard_infos,
+                    )?;
+                    total_predicates += 1;
+                    total_vectors += arena.len() as usize;
+                }
+            }
+            if total_predicates > 0 {
+                tracing::info!(
+                    graphs = self.vectors.len(),
+                    predicates = total_predicates,
+                    total_vectors,
+                    "vector arenas persisted"
+                );
+            }
         }
 
         tracing::info!(

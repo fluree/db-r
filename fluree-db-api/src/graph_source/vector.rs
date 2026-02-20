@@ -270,7 +270,7 @@ where
             select: parsed.select,
             select_mode: parsed.select_mode,
             batches,
-            binary_store: None,
+            binary_graph: None,
             construct_template: parsed.construct_template,
             graph_select: parsed.graph_select,
         };

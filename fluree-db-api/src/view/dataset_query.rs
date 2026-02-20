@@ -118,7 +118,7 @@ where
             batches,
             dataset.max_t(),
             dataset.composite_overlay(),
-            primary.binary_store.clone(),
+            primary.binary_graph(),
         ))
     }
 
@@ -183,7 +183,7 @@ where
             batches,
             dataset.max_t(),
             None,
-            primary.binary_store.clone(),
+            primary.binary_graph(),
         );
 
         // Format with tracking
@@ -277,6 +277,11 @@ where
             None => (None, primary.to_t, false),
         };
 
+        let spatial_map = primary
+            .binary_store
+            .as_ref()
+            .map(|s| s.spatial_provider_map());
+
         let config = ContextConfig {
             tracker: if tracker.is_enabled() {
                 Some(tracker)
@@ -288,6 +293,7 @@ where
             binary_store: primary.binary_store.clone(),
             binary_g_id: primary.graph_id,
             dict_novelty: primary.dict_novelty.clone(),
+            spatial_providers: spatial_map.as_ref(),
             history_mode,
             strict_bind_errors: true,
             ..Default::default()
@@ -333,6 +339,11 @@ where
             None => (None, primary.to_t, false),
         };
 
+        let spatial_map = primary
+            .binary_store
+            .as_ref()
+            .map(|s| s.spatial_provider_map());
+
         let config = ContextConfig {
             tracker: Some(tracker),
             dataset: Some(&runtime_dataset),
@@ -340,6 +351,7 @@ where
             binary_store: primary.binary_store.clone(),
             binary_g_id: primary.graph_id,
             dict_novelty: primary.dict_novelty.clone(),
+            spatial_providers: spatial_map.as_ref(),
             history_mode,
             strict_bind_errors: true,
             ..Default::default()

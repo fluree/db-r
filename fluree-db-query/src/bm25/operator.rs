@@ -240,8 +240,8 @@ impl Bm25SearchOperator {
                     ..
                 }) => {
                     // Late materialization: decode only when BM25 needs the target string.
-                    if let Some(store) = ctx.binary_store.as_deref() {
-                        let val = store.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
+                    if let Some(gv) = ctx.graph_view() {
+                        let val = gv.decode_value(*o_kind, *o_key, *p_id).map_err(|e| {
                             crate::error::QueryError::Internal(format!(
                                 "decode EncodedLit for BM25: {}",
                                 e

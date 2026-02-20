@@ -91,9 +91,15 @@ struct OrderIndex {
     leaf_dir: PathBuf,
 }
 
-/// Per-graph index data: holds indexes for all loaded sort orders.
+/// Per-graph index data: holds sort-order indexes plus per-predicate specialty arenas.
 struct GraphIndex {
     orders: HashMap<RunSortOrder, OrderIndex>,
+    /// Per-predicate NumBig arenas (BigInt/Decimal values).
+    numbig: HashMap<u32, super::numbig_dict::NumBigArena>,
+    /// Per-predicate lazy vector arenas (on-demand shard loading).
+    vectors: HashMap<u32, super::vector_arena::LazyVectorArena>,
+    /// Per-predicate spatial index providers.
+    spatial: HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
 }
 
 // ============================================================================
@@ -122,9 +128,6 @@ struct DictionarySet {
     prefix_trie: PrefixTrie,
     language_tags: LanguageTagDict,
     dt_sids: Vec<Sid>,
-    numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena>,
-    /// Per-predicate lazy vector arenas (on-demand shard loading). Key = p_id.
-    vector_forward: HashMap<u32, super::vector_arena::LazyVectorArena>,
 }
 
 /// Per-graph, per-order branch manifests and leaf directories.
@@ -211,6 +214,9 @@ impl BinaryIndexStore {
 
                     let graph_index = graphs.entry(entry.g_id).or_insert_with(|| GraphIndex {
                         orders: HashMap::new(),
+                        numbig: HashMap::new(),
+                        vectors: HashMap::new(),
+                        spatial: HashMap::new(),
                     });
 
                     graph_index.orders.insert(
@@ -578,6 +584,19 @@ impl BinaryIndexStore {
             );
         }
 
+        // ---- Inject arenas into default graph (g_id=0) ----
+        // Current disk layout stores arenas globally; per-graph layout comes in Phase 1g.
+        if !numbig_forward.is_empty() || !vector_forward.is_empty() {
+            let gi = graphs.entry(0).or_insert_with(|| GraphIndex {
+                orders: HashMap::new(),
+                numbig: HashMap::new(),
+                vectors: HashMap::new(),
+                spatial: HashMap::new(),
+            });
+            gi.numbig = numbig_forward;
+            gi.vectors = vector_forward;
+        }
+
         Ok(Self {
             dicts: DictionarySet {
                 predicates,
@@ -594,8 +613,6 @@ impl BinaryIndexStore {
                 prefix_trie,
                 language_tags,
                 dt_sids,
-                numbig_forward,
-                vector_forward,
             },
             graph_indexes: GraphIndexes { graphs },
             cas: None,
@@ -825,69 +842,143 @@ impl BinaryIndexStore {
             .collect();
         tracing::info!(graphs = graphs_reverse.len(), "loaded graphs dict");
 
-        // ---- Numbig arenas (u32 keys, no string parsing) ----
-        let mut numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena> = HashMap::new();
-        for (p_id, cid) in &root.dict_refs.numbig {
-            let bytes = fetch_cached_bytes(cs.as_ref(), cid, cache_dir, "nba").await?;
-            let arena = super::numbig_dict::read_numbig_arena_from_bytes(&bytes)?;
-            numbig_forward.insert(*p_id, arena);
-        }
-        if !numbig_forward.is_empty() {
-            tracing::info!(
-                predicates = numbig_forward.len(),
-                total_entries = numbig_forward.values().map(|a| a.len()).sum::<usize>(),
-                "loaded numbig arenas"
-            );
-        }
+        // ---- Per-graph specialty arenas (numbig, vectors, spatial) ----
+        // Load from root.graph_arenas keyed by g_id.
+        let mut per_graph_numbig: HashMap<GraphId, HashMap<u32, super::numbig_dict::NumBigArena>> =
+            HashMap::new();
+        let mut per_graph_vectors: HashMap<
+            GraphId,
+            HashMap<u32, super::vector_arena::LazyVectorArena>,
+        > = HashMap::new();
+        let mut per_graph_spatial: HashMap<
+            GraphId,
+            HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
+        > = HashMap::new();
 
-        // ---- Vector arenas (lazy — only manifest loaded, shards on demand) ----
-        let mut vector_forward: HashMap<u32, super::vector_arena::LazyVectorArena> = HashMap::new();
-        for entry in &root.dict_refs.vectors {
-            let manifest_bytes =
-                fetch_cached_bytes(cs.as_ref(), &entry.manifest, cache_dir, "vam").await?;
-            let manifest = super::vector_arena::read_vector_manifest(&manifest_bytes)?;
-
-            let mut shard_sources = Vec::with_capacity(entry.shards.len());
-            for shard_cid in &entry.shards {
-                let cid_hash = LeafletCache::cid_cache_key(&shard_cid.to_bytes());
-                if let Some(local) = cs.resolve_local_path(shard_cid) {
-                    // FileStorage: direct path, on disk
-                    shard_sources.push(super::vector_arena::ShardSource {
-                        cid_hash,
-                        cid: None,
-                        path: local,
-                        on_disk: std::sync::atomic::AtomicBool::new(true),
-                    });
-                } else {
-                    // Remote: derive cache path, check if already cached
-                    let cache_path = cache_dir.join(format!("{}.vas", shard_cid));
-                    let exists = cache_path.exists();
-                    shard_sources.push(super::vector_arena::ShardSource {
-                        cid_hash,
-                        cid: Some(shard_cid.clone()),
-                        path: cache_path,
-                        on_disk: std::sync::atomic::AtomicBool::new(exists),
-                    });
+        for ga in &root.graph_arenas {
+            // numbig
+            if !ga.numbig.is_empty() {
+                let nb_map = per_graph_numbig.entry(ga.g_id).or_default();
+                for (p_id, cid) in &ga.numbig {
+                    let bytes = fetch_cached_bytes(cs.as_ref(), cid, cache_dir, "nba").await?;
+                    let arena = super::numbig_dict::read_numbig_arena_from_bytes(&bytes)?;
+                    nb_map.insert(*p_id, arena);
                 }
             }
 
-            let arena = super::vector_arena::LazyVectorArena::new(
-                manifest,
-                shard_sources,
-                Arc::clone(leaflet_cache.as_ref().unwrap()),
-                Some(Arc::clone(&cs)),
-            );
-            vector_forward.insert(entry.p_id, arena);
-        }
-        if !vector_forward.is_empty() {
-            tracing::info!(
-                predicates = vector_forward.len(),
-                total_vectors = vector_forward
-                    .values()
-                    .map(|a| a.len() as usize)
-                    .sum::<usize>(),
-                "registered lazy vector arenas"
-            );
+            // vectors
+            if !ga.vectors.is_empty() {
+                let vec_map = per_graph_vectors.entry(ga.g_id).or_default();
+                for entry in &ga.vectors {
+                    let manifest_bytes =
+                        fetch_cached_bytes(cs.as_ref(), &entry.manifest, cache_dir, "vam").await?;
+                    let manifest = super::vector_arena::read_vector_manifest(&manifest_bytes)?;
+
+                    let mut shard_sources = Vec::with_capacity(entry.shards.len());
+                    for shard_cid in &entry.shards {
+                        let cid_hash = LeafletCache::cid_cache_key(&shard_cid.to_bytes());
+                        if let Some(local) = cs.resolve_local_path(shard_cid) {
+                            shard_sources.push(super::vector_arena::ShardSource {
+                                cid_hash,
+                                cid: None,
+                                path: local,
+                                on_disk: std::sync::atomic::AtomicBool::new(true),
+                            });
+                        } else {
+                            let cache_path = cache_dir.join(format!("{}.vas", shard_cid));
+                            let exists = cache_path.exists();
+                            shard_sources.push(super::vector_arena::ShardSource {
+                                cid_hash,
+                                cid: Some(shard_cid.clone()),
+                                path: cache_path,
+                                on_disk: std::sync::atomic::AtomicBool::new(exists),
+                            });
+                        }
+                    }
+
+                    let arena = super::vector_arena::LazyVectorArena::new(
+                        manifest,
+                        shard_sources,
+                        Arc::clone(leaflet_cache.as_ref().unwrap()),
+                        Some(Arc::clone(&cs)),
+                    );
+                    vec_map.insert(entry.p_id, arena);
+                }
+            }
+
+            // spatial
+            if !ga.spatial.is_empty() {
+                let sp_map = per_graph_spatial.entry(ga.g_id).or_default();
+                for sp_ref in &ga.spatial {
+                    // 1. Fetch the SpatialIndexRoot JSON blob.
+                    let root_bytes =
+                        fetch_cached_bytes(cs.as_ref(), &sp_ref.root_cid, cache_dir, "spr").await?;
+                    let spatial_root: fluree_db_spatial::SpatialIndexRoot =
+                        serde_json::from_slice(&root_bytes).map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("spatial root deserialize: {}", e),
+                            )
+                        })?;
+
+                    // 2. Pre-fetch all spatial blobs into a HashMap for the sync
+                    //    `load_from_cas` closure.
+                    let manifest_bytes =
+                        fetch_cached_bytes(cs.as_ref(), &sp_ref.manifest, cache_dir, "spm").await?;
+                    let arena_bytes =
+                        fetch_cached_bytes(cs.as_ref(), &sp_ref.arena, cache_dir, "spa").await?;
+
+                    let mut blob_cache: std::collections::HashMap<String, Vec<u8>> =
+                        std::collections::HashMap::new();
+                    blob_cache.insert(sp_ref.manifest.digest_hex(), manifest_bytes);
+                    blob_cache.insert(sp_ref.arena.digest_hex(), arena_bytes);
+
+                    for leaflet_cid in &sp_ref.leaflets {
+                        let leaf_bytes =
+                            fetch_cached_bytes(cs.as_ref(), leaflet_cid, cache_dir, "spl").await?;
+                        blob_cache.insert(leaflet_cid.digest_hex(), leaf_bytes);
+                    }
+
+                    let blob_cache = Arc::new(blob_cache);
+
+                    // 3. Load snapshot from pre-fetched blobs.
+                    let snapshot = fluree_db_spatial::SpatialIndexSnapshot::load_from_cas(
+                        spatial_root,
+                        move |hash| {
+                            blob_cache.get(hash).cloned().ok_or_else(|| {
+                                fluree_db_spatial::SpatialError::ChunkNotFound(hash.to_string())
+                            })
+                        },
+                    )
+                    .map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("spatial snapshot load: {}", e),
+                        )
+                    })?;
+
+                    // 4. Wrap in EmbeddedSpatialProvider.
+                    let provider: Arc<dyn fluree_db_spatial::SpatialIndexProvider> =
+                        Arc::new(fluree_db_spatial::EmbeddedSpatialProvider::new(snapshot));
+                    sp_map.insert(sp_ref.p_id, provider);
+
+                    tracing::info!(
+                        g_id = ga.g_id,
+                        p_id = sp_ref.p_id,
+                        "loaded spatial index provider"
+                    );
+                }
+            }
+
+            if !ga.numbig.is_empty() || !ga.vectors.is_empty() || !ga.spatial.is_empty() {
+                tracing::info!(
+                    g_id = ga.g_id,
+                    numbig_predicates = ga.numbig.len(),
+                    vector_predicates = ga.vectors.len(),
+                    spatial_predicates = ga.spatial.len(),
+                    "loaded per-graph arenas"
+                );
+            }
         }
 
         // ---- Build graph indexes ----
@@ -938,6 +1029,9 @@ impl BinaryIndexStore {
                     0,
                     GraphIndex {
                         orders: order_indexes,
+                        numbig: HashMap::new(),
+                        vectors: HashMap::new(),
+                        spatial: HashMap::new(),
                     },
                 );
             }
@@ -988,8 +1082,40 @@ impl BinaryIndexStore {
                 ng.g_id,
                 GraphIndex {
                     orders: order_indexes,
+                    numbig: HashMap::new(),
+                    vectors: HashMap::new(),
+                    spatial: HashMap::new(),
                 },
             );
+        }
+
+        // ---- Inject per-graph arenas into GraphIndex entries ----
+        for (g_id, nb_map) in per_graph_numbig {
+            let gi = graphs.entry(g_id).or_insert_with(|| GraphIndex {
+                orders: HashMap::new(),
+                numbig: HashMap::new(),
+                vectors: HashMap::new(),
+                spatial: HashMap::new(),
+            });
+            gi.numbig = nb_map;
+        }
+        for (g_id, vec_map) in per_graph_vectors {
+            let gi = graphs.entry(g_id).or_insert_with(|| GraphIndex {
+                orders: HashMap::new(),
+                numbig: HashMap::new(),
+                vectors: HashMap::new(),
+                spatial: HashMap::new(),
+            });
+            gi.vectors = vec_map;
+        }
+        for (g_id, sp_map) in per_graph_spatial {
+            let gi = graphs.entry(g_id).or_insert_with(|| GraphIndex {
+                orders: HashMap::new(),
+                numbig: HashMap::new(),
+                vectors: HashMap::new(),
+                spatial: HashMap::new(),
+            });
+            gi.spatial = sp_map;
         }
 
         // Log summary
@@ -1040,8 +1166,6 @@ impl BinaryIndexStore {
                 prefix_trie,
                 language_tags,
                 dt_sids,
-                numbig_forward,
-                vector_forward,
             },
             graph_indexes: GraphIndexes { graphs },
             cas: Some(Arc::clone(&cs)),
@@ -1697,13 +1821,14 @@ impl BinaryIndexStore {
     // Value → ObjKind/ObjKey translation
     // ========================================================================
 
-    /// Translate a FlakeValue to `(ObjKind, ObjKey)` using per-predicate context.
+    /// Translate a FlakeValue to `(ObjKind, ObjKey)` using per-graph, per-predicate context.
     ///
-    /// Handles Double (inline f64 encoding), BigInt/Decimal (numbig arena lookup)
-    /// that `value_to_obj_pair()` returns `None` for.
-    pub fn value_to_obj_pair_for_predicate(
+    /// Handles Double (inline f64 encoding), BigInt/Decimal (numbig arena lookup
+    /// through per-graph arenas). Returns `None` for values not found in arenas.
+    fn value_to_obj_pair_for_graph(
         &self,
         val: &FlakeValue,
+        g_id: GraphId,
         p_id: u32,
     ) -> io::Result<Option<(ObjKind, ObjKey)>> {
         match val {
@@ -1731,22 +1856,32 @@ impl BinaryIndexStore {
                 if let Some(v) = bi.to_i64() {
                     return Ok(Some((ObjKind::NUM_INT, ObjKey::encode_i64(v))));
                 }
-                // Overflow → numbig arena lookup (read-only)
-                if let Some(arena) = self.dicts.numbig_forward.get(&p_id) {
+                // Overflow → per-graph numbig arena lookup (read-only)
+                if let Some(arena) = self
+                    .graph_indexes
+                    .graphs
+                    .get(&g_id)
+                    .and_then(|gi| gi.numbig.get(&p_id))
+                {
                     if let Some(handle) = arena.find_bigint(bi) {
                         return Ok(Some((ObjKind::NUM_BIG, ObjKey::encode_u32_id(handle))));
                     }
                 }
-                Ok(None) // BigInt not in arena for this predicate
+                Ok(None) // BigInt not in arena for this graph/predicate
             }
             FlakeValue::Decimal(bd) => {
-                // Decimal → numbig arena lookup (read-only)
-                if let Some(arena) = self.dicts.numbig_forward.get(&p_id) {
+                // Decimal → per-graph numbig arena lookup (read-only)
+                if let Some(arena) = self
+                    .graph_indexes
+                    .graphs
+                    .get(&g_id)
+                    .and_then(|gi| gi.numbig.get(&p_id))
+                {
                     if let Some(handle) = arena.find_bigdec(bd) {
                         return Ok(Some((ObjKind::NUM_BIG, ObjKey::encode_u32_id(handle))));
                     }
                 }
-                Ok(None) // Decimal not in arena for this predicate
+                Ok(None) // Decimal not in arena for this graph/predicate
             }
             // All other types: delegate to generic lookup
             _ => self.value_to_obj_pair(val),
@@ -1837,48 +1972,76 @@ impl BinaryIndexStore {
         Some((ObjKind::NUM_F64, min_key, ObjKind::NUM_F64, max_key))
     }
 
-    /// Get the numbig arena for a predicate (for decode-time lookup).
-    pub fn numbig_arena(&self, p_id: u32) -> Option<&super::numbig_dict::NumBigArena> {
-        self.dicts.numbig_forward.get(&p_id)
-    }
-
-    /// Get the vector arena for a predicate (for arena-direct f32 scoring).
-    pub fn vector_arena(&self, p_id: u32) -> Option<&super::vector_arena::LazyVectorArena> {
-        self.dicts.vector_forward.get(&p_id)
-    }
-
-    /// Look up a single vector by predicate and handle.
-    ///
-    /// Returns a `VectorSlice` that borrows the shard through the cache.
-    /// The shard is loaded on demand if not already cached.
-    pub fn get_vector_f32(
+    /// Get the numbig arena for a (graph, predicate) pair.
+    fn numbig_arena_for_graph(
         &self,
+        g_id: GraphId,
         p_id: u32,
-        handle: u32,
-    ) -> io::Result<Option<super::vector_arena::VectorSlice>> {
-        match self.dicts.vector_forward.get(&p_id) {
-            Some(arena) => arena.lookup_vector(handle),
-            None => Ok(None),
-        }
+    ) -> Option<&super::numbig_dict::NumBigArena> {
+        self.graph_indexes
+            .graphs
+            .get(&g_id)
+            .and_then(|gi| gi.numbig.get(&p_id))
     }
 
-    /// Check whether vectors for a predicate are all unit-normalized.
-    pub fn is_vector_normalized(&self, p_id: u32) -> bool {
-        self.dicts
-            .vector_forward
-            .get(&p_id)
-            .is_some_and(|arena| arena.is_normalized())
+    /// Get the vector arena for a (graph, predicate) pair.
+    fn vector_arena_for_graph(
+        &self,
+        g_id: GraphId,
+        p_id: u32,
+    ) -> Option<&super::vector_arena::LazyVectorArena> {
+        self.graph_indexes
+            .graphs
+            .get(&g_id)
+            .and_then(|gi| gi.vectors.get(&p_id))
+    }
+
+    /// Get the spatial index provider for a (graph, predicate) pair.
+    fn spatial_provider_for_graph(
+        &self,
+        g_id: GraphId,
+        p_id: u32,
+    ) -> Option<&Arc<dyn fluree_db_spatial::SpatialIndexProvider>> {
+        self.graph_indexes
+            .graphs
+            .get(&g_id)
+            .and_then(|gi| gi.spatial.get(&p_id))
+    }
+
+    /// Build the provider map expected by `ContextConfig.spatial_providers`.
+    ///
+    /// Format: `"g{g_id}:{predicate_iri}"` -> `Arc<dyn SpatialIndexProvider>`.
+    /// Returns an empty map if no spatial indexes are loaded.
+    pub fn spatial_provider_map(
+        &self,
+    ) -> HashMap<String, Arc<dyn fluree_db_spatial::SpatialIndexProvider>> {
+        let mut map = HashMap::new();
+        for (&g_id, gi) in &self.graph_indexes.graphs {
+            for (&p_id, provider) in &gi.spatial {
+                let pred_iri = self
+                    .dicts
+                    .predicates
+                    .resolve(p_id)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let key = format!("g{}:{}", g_id, pred_iri);
+                map.insert(key, Arc::clone(provider));
+            }
+        }
+        map
     }
 
     // ========================================================================
     // Row → Flake conversion
     // ========================================================================
 
-    /// Convert a decoded leaflet row into a Flake.
+    /// Convert a decoded leaflet row into a Flake (internal, graph-scoped).
     ///
     /// Does IRI round-trip: `id → IRI string → encode_iri(iri) → Sid`.
     /// PrefixTrie makes this O(len(iri)) per call.
-    pub fn row_to_flake(&self, row: &DecodedRow) -> io::Result<Flake> {
+    /// Uses `decode_value_for_graph` so specialty kinds (NUM_BIG, VECTOR_ID)
+    /// route through per-graph arenas.
+    fn row_to_flake_impl(&self, row: &DecodedRow, g_id: GraphId) -> io::Result<Flake> {
         // Subject: s_id → IRI → Sid
         let s_iri = self.resolve_subject_iri(row.s_id)?;
         let s_sid = self.encode_iri(&s_iri);
@@ -1892,8 +2055,8 @@ impl BinaryIndexStore {
         })?;
         let p_sid = self.encode_iri(p_iri);
 
-        // Object: (ObjKind, ObjKey) → FlakeValue
-        let o_val = self.decode_value(row.o_kind, row.o_key, row.p_id)?;
+        // Object: (ObjKind, ObjKey) → FlakeValue (graph-scoped)
+        let o_val = self.decode_value_for_graph(row.o_kind, row.o_key, row.p_id, g_id)?;
 
         // Datatype: dt_id → Sid via pre-computed dt_sids vec
         let dt_sid = self
@@ -1909,11 +2072,12 @@ impl BinaryIndexStore {
         Ok(Flake::new(s_sid, p_sid, o_val, dt_sid, row.t, true, meta))
     }
 
-    /// Decode an `(o_kind, o_key)` pair into a FlakeValue.
+    /// Decode an `(o_kind, o_key)` pair into a FlakeValue — graph-independent kinds only.
     ///
-    /// `p_id` is required for NUM_BIG decoding — it identifies the
-    /// per-predicate numbig arena to look up the handle.
-    pub fn decode_value(&self, o_kind: u8, o_key: u64, p_id: u32) -> io::Result<FlakeValue> {
+    /// Handles all kinds except NUM_BIG and VECTOR_ID, which require per-graph
+    /// arena context. Returns a hard error for those kinds — use
+    /// [`GraphView::decode_value`] instead.
+    pub fn decode_value_no_graph(&self, o_kind: u8, o_key: u64) -> io::Result<FlakeValue> {
         if o_kind == ObjKind::MIN.as_u8() || o_kind == ObjKind::NULL.as_u8() {
             return Ok(FlakeValue::Null);
         }
@@ -1976,35 +2140,16 @@ impl BinaryIndexStore {
             return Ok(FlakeValue::Json(s));
         }
         if o_kind == ObjKind::NUM_BIG.as_u8() {
-            let handle = o_key as u32;
-            if let Some(arena) = self.dicts.numbig_forward.get(&p_id) {
-                if let Some(stored) = arena.get_by_handle(handle) {
-                    return Ok(stored.to_flake_value());
-                }
-            }
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("NUM_BIG handle {} not found for p_id={}", handle, p_id),
+                "NUM_BIG requires graph context — use GraphView::decode_value()",
             ));
         }
         if o_kind == ObjKind::VECTOR_ID.as_u8() {
-            let handle = o_key as u32;
-            let arena = self.dicts.vector_forward.get(&p_id).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("no vector arena for p_id={}", p_id),
-                )
-            })?;
-            let vs = arena.lookup_vector(handle)?.ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("VECTOR_ID handle {} not found for p_id={}", handle, p_id),
-                )
-            })?;
-            // Upcast f32→f64 for FlakeValue::Vector. Because f:vector values are
-            // quantized to f32 at ingest, this upcast is lossless.
-            let f64_vec: Vec<f64> = vs.as_f32().iter().map(|&x| x as f64).collect();
-            return Ok(FlakeValue::Vector(f64_vec));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "VECTOR_ID requires graph context — use GraphView::decode_value()",
+            ));
         }
         if o_kind == ObjKind::G_YEAR.as_u8() {
             let year = ObjKey::from_u64(o_key).decode_g_year();
@@ -2056,6 +2201,71 @@ impl BinaryIndexStore {
         }
         // Unknown kind → null fallback
         Ok(FlakeValue::Null)
+    }
+
+    /// Full decode including per-graph specialty arenas (NUM_BIG, VECTOR_ID).
+    ///
+    /// Routes specialty kinds through per-graph `GraphIndex` arenas, falls
+    /// through to `decode_value_no_graph` for all other kinds.
+    fn decode_value_for_graph(
+        &self,
+        o_kind: u8,
+        o_key: u64,
+        p_id: u32,
+        g_id: GraphId,
+    ) -> io::Result<FlakeValue> {
+        if o_kind == ObjKind::NUM_BIG.as_u8() {
+            let handle = o_key as u32;
+            let arena = self
+                .graph_indexes
+                .graphs
+                .get(&g_id)
+                .and_then(|gi| gi.numbig.get(&p_id))
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("no numbig arena for g_id={}, p_id={}", g_id, p_id),
+                    )
+                })?;
+            let stored = arena.get_by_handle(handle).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "NUM_BIG handle {} not found for g_id={}, p_id={}",
+                        handle, g_id, p_id
+                    ),
+                )
+            })?;
+            return Ok(stored.to_flake_value());
+        }
+        if o_kind == ObjKind::VECTOR_ID.as_u8() {
+            let handle = o_key as u32;
+            let arena = self
+                .graph_indexes
+                .graphs
+                .get(&g_id)
+                .and_then(|gi| gi.vectors.get(&p_id))
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("no vector arena for g_id={}, p_id={}", g_id, p_id),
+                    )
+                })?;
+            let vs = arena.lookup_vector(handle)?.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "VECTOR_ID handle {} not found for g_id={}, p_id={}",
+                        handle, g_id, p_id
+                    ),
+                )
+            })?;
+            // Upcast f32→f64 for FlakeValue::Vector. Because f:vector values are
+            // quantized to f32 at ingest, this upcast is lossless.
+            let f64_vec: Vec<f64> = vs.as_f32().iter().map(|&x| x as f64).collect();
+            return Ok(FlakeValue::Vector(f64_vec));
+        }
+        self.decode_value_no_graph(o_kind, o_key)
     }
 
     /// Decode lang_id and i_val into FlakeMeta.
@@ -2169,13 +2379,180 @@ impl BinaryIndexStore {
                             .as_ref()
                             .map_or(ListIndex::none().as_i32(), |c| c.get(row as u16)),
                     };
-                    let flake = self.row_to_flake(&decoded_row)?;
+                    let flake = self.row_to_flake_impl(&decoded_row, g_id)?;
                     flakes.push(flake);
                 }
             }
         }
 
         Ok(flakes)
+    }
+
+    /// Create a graph-scoped view for decode/arena operations.
+    ///
+    /// The returned [`GraphView`] bundles the store with a specific graph ID,
+    /// so callers do not need to pass `g_id` on every decode call.
+    pub fn graph(self: &Arc<Self>, g_id: GraphId) -> GraphView {
+        GraphView {
+            store: Arc::clone(self),
+            g_id,
+        }
+    }
+}
+
+// ============================================================================
+// GraphView — graph-scoped wrapper over BinaryIndexStore
+// ============================================================================
+
+/// A lightweight handle that pairs a [`BinaryIndexStore`] with a graph ID.
+///
+/// Callers obtain a `GraphView` via [`BinaryIndexStore::graph`] and use it
+/// instead of passing `(store, g_id)` pairs to individual decode calls.
+pub struct GraphView {
+    store: Arc<BinaryIndexStore>,
+    g_id: GraphId,
+}
+
+impl GraphView {
+    /// Create a new graph-scoped view from an `Arc<BinaryIndexStore>` and graph ID.
+    pub fn new(store: Arc<BinaryIndexStore>, g_id: GraphId) -> Self {
+        Self { store, g_id }
+    }
+
+    // ====================================================================
+    // Graph-scoped decode (primary decode path for all callers)
+    // ====================================================================
+
+    /// Decode an `(o_kind, o_key)` pair into a [`FlakeValue`].
+    ///
+    /// Routes specialty kinds (NUM_BIG, VECTOR_ID) through per-graph arenas.
+    /// This is the primary decode path — callers should prefer GraphView over
+    /// `BinaryIndexStore::decode_value_no_graph` when a graph context is available.
+    pub fn decode_value(&self, o_kind: u8, o_key: u64, p_id: u32) -> io::Result<FlakeValue> {
+        self.store
+            .decode_value_for_graph(o_kind, o_key, p_id, self.g_id)
+    }
+
+    /// Convert a decoded leaflet row into a Flake (graph-scoped decode).
+    ///
+    /// This is the public API for row → Flake conversion. All external callers
+    /// (SpotCursor, BinaryScanOperator, block_fetch, etc.) should use this method.
+    pub fn row_to_flake(&self, row: &DecodedRow) -> io::Result<Flake> {
+        self.store.row_to_flake_impl(row, self.g_id)
+    }
+
+    /// Translate a FlakeValue to `(ObjKind, ObjKey)` using per-graph, per-predicate
+    /// arena context.
+    ///
+    /// Handles Double (inline f64 encoding), BigInt/Decimal (per-graph numbig
+    /// arena lookup). Returns `None` for values not found in arenas.
+    pub fn value_to_obj_pair_for_predicate(
+        &self,
+        val: &FlakeValue,
+        p_id: u32,
+    ) -> io::Result<Option<(ObjKind, ObjKey)>> {
+        self.store.value_to_obj_pair_for_graph(val, self.g_id, p_id)
+    }
+
+    // ====================================================================
+    // Per-graph arena accessors
+    // ====================================================================
+
+    /// Get the numbig arena for this graph and predicate.
+    pub fn numbig_arena(&self, p_id: u32) -> Option<&super::numbig_dict::NumBigArena> {
+        self.store.numbig_arena_for_graph(self.g_id, p_id)
+    }
+
+    /// Get the vector arena for this graph and predicate.
+    pub fn vector_arena(&self, p_id: u32) -> Option<&super::vector_arena::LazyVectorArena> {
+        self.store.vector_arena_for_graph(self.g_id, p_id)
+    }
+
+    /// Look up a single vector by predicate and handle.
+    ///
+    /// Returns a `VectorSlice` that borrows the shard through the cache.
+    /// The shard is loaded on demand if not already cached.
+    pub fn get_vector_f32(
+        &self,
+        p_id: u32,
+        handle: u32,
+    ) -> io::Result<Option<super::vector_arena::VectorSlice>> {
+        match self.store.vector_arena_for_graph(self.g_id, p_id) {
+            Some(arena) => arena.lookup_vector(handle),
+            None => Ok(None),
+        }
+    }
+
+    /// Check whether vectors for a predicate are all unit-normalized.
+    pub fn is_vector_normalized(&self, p_id: u32) -> bool {
+        self.store
+            .vector_arena_for_graph(self.g_id, p_id)
+            .is_some_and(|arena| arena.is_normalized())
+    }
+
+    /// Get the spatial index provider for this graph and predicate.
+    pub fn spatial_provider(
+        &self,
+        p_id: u32,
+    ) -> Option<&Arc<dyn fluree_db_spatial::SpatialIndexProvider>> {
+        self.store.spatial_provider_for_graph(self.g_id, p_id)
+    }
+
+    // ====================================================================
+    // Store access + forwarded convenience methods
+    // ====================================================================
+
+    /// Access the underlying store for non-graph-scoped operations
+    /// (subject/string/predicate/datatype lookup, IRI encoding, etc.).
+    pub fn store(&self) -> &BinaryIndexStore {
+        &self.store
+    }
+
+    /// Clone the underlying `Arc<BinaryIndexStore>`.
+    ///
+    /// Use when constructors need an owned Arc (e.g., `BinaryCursor`).
+    pub fn clone_store(&self) -> Arc<BinaryIndexStore> {
+        Arc::clone(&self.store)
+    }
+
+    /// The graph ID this view is bound to.
+    pub fn g_id(&self) -> GraphId {
+        self.g_id
+    }
+
+    /// Convenience: decode language/list-index metadata.
+    pub fn decode_meta(&self, lang_id: u16, i_val: i32) -> Option<FlakeMeta> {
+        self.store.decode_meta(lang_id, i_val)
+    }
+
+    /// Convenience: datatype SIDs vector.
+    pub fn dt_sids(&self) -> &[Sid] {
+        self.store.dt_sids()
+    }
+
+    /// Convenience: resolve predicate IRI.
+    pub fn resolve_predicate_iri(&self, p_id: u32) -> Option<&str> {
+        self.store.resolve_predicate_iri(p_id)
+    }
+
+    /// Convenience: resolve subject IRI.
+    pub fn resolve_subject_iri(&self, s_id: u64) -> io::Result<String> {
+        self.store.resolve_subject_iri(s_id)
+    }
+
+    /// Convenience: encode an IRI into a Sid.
+    pub fn encode_iri(&self, iri: &str) -> Sid {
+        self.store.encode_iri(iri)
+    }
+
+    /// Convenience: convert a Sid to its IRI string.
+    pub fn sid_to_iri(&self, sid: &Sid) -> String {
+        self.store.sid_to_iri(sid)
+    }
+
+    /// Convenience: resolve string value by ID.
+    pub fn resolve_string_value(&self, id: u32) -> io::Result<String> {
+        self.store.resolve_string_value(id)
     }
 }
 

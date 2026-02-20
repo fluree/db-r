@@ -45,7 +45,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_indexer::run_index::GraphView;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -86,11 +86,12 @@ enum AggState {
 /// EncodedSid/EncodedPid raw IDs don't have semantic ordering (s_id=100 for "zebra"
 /// would incorrectly compare > s_id=50 for "apple"). We must decode to get correct
 /// term ordering via namespace/name comparison.
-fn materialize_for_minmax(binding: &Binding, store: Option<&BinaryIndexStore>) -> Binding {
-    let Some(store) = store else {
+fn materialize_for_minmax(binding: &Binding, gv: Option<&GraphView>) -> Binding {
+    let Some(gv) = gv else {
         // No store available - return as-is (will use raw ID comparison as fallback)
         return binding.clone();
     };
+    let store = gv.store();
 
     match binding {
         Binding::EncodedLit {
@@ -102,7 +103,7 @@ fn materialize_for_minmax(binding: &Binding, store: Option<&BinaryIndexStore>) -
             i_val,
             t,
         } => {
-            match store.decode_value(*o_kind, *o_key, *p_id) {
+            match gv.decode_value(*o_kind, *o_key, *p_id) {
                 Ok(fluree_db_core::FlakeValue::Ref(sid)) => Binding::Sid(sid),
                 Ok(val) => {
                     let dt_sid = store
@@ -166,8 +167,8 @@ impl AggState {
     /// # Arguments
     ///
     /// * `binding` - The binding value to incorporate
-    /// * `store` - Optional binary store for materializing encoded bindings (needed for MIN/MAX)
-    fn update(&mut self, binding: &Binding, store: Option<&BinaryIndexStore>) {
+    /// * `gv` - Optional graph view for materializing encoded bindings (needed for MIN/MAX)
+    fn update(&mut self, binding: &Binding, gv: Option<&GraphView>) {
         match self {
             AggState::Count { n } => {
                 // COUNT: count non-Unbound values (COUNT(*) counts all via CountAll variant)
@@ -207,7 +208,7 @@ impl AggState {
                     // Materialize encoded bindings for correct semantic comparison.
                     // Raw s_id comparison would give wrong ordering (s_id=100 for "zebra"
                     // would incorrectly be > s_id=50 for "apple").
-                    let materialized = materialize_for_minmax(binding, store);
+                    let materialized = materialize_for_minmax(binding, gv);
                     match min {
                         None => *min = Some(materialized),
                         Some(current) => {
@@ -226,7 +227,7 @@ impl AggState {
                     Binding::Unbound | Binding::Poisoned | Binding::Grouped(_)
                 ) {
                     // Materialize encoded bindings for correct semantic comparison.
-                    let materialized = materialize_for_minmax(binding, store);
+                    let materialized = materialize_for_minmax(binding, gv);
                     match max {
                         None => *max = Some(materialized),
                         Some(current) => {
@@ -463,8 +464,8 @@ pub struct GroupAggregateOperator {
     groups: HashMap<CompositeGroupKey, GroupState>,
     /// Iterator for emitting results
     emit_iter: Option<std::collections::hash_map::IntoIter<CompositeGroupKey, GroupState>>,
-    /// Binary index store for materializing encoded bindings (used for MIN/MAX semantic ordering).
-    binary_store: Option<Arc<BinaryIndexStore>>,
+    /// Graph view for materializing encoded bindings (used for MIN/MAX semantic ordering).
+    graph_view: Option<GraphView>,
 }
 
 impl GroupAggregateOperator {
@@ -475,12 +476,12 @@ impl GroupAggregateOperator {
     /// * `child` - Input operator
     /// * `group_vars` - Variables to group by
     /// * `agg_specs` - Aggregate specifications (input col, function, output var)
-    /// * `binary_store` - Optional binary store for encoded binding materialization
+    /// * `graph_view` - Optional graph view for encoded binding materialization
     pub fn new(
         child: BoxedOperator,
         group_vars: Vec<VarId>,
         agg_specs: Vec<StreamingAggSpec>,
-        binary_store: Option<Arc<BinaryIndexStore>>,
+        graph_view: Option<GraphView>,
     ) -> Self {
         let child_schema = child.schema().to_vec();
 
@@ -511,7 +512,7 @@ impl GroupAggregateOperator {
             agg_specs,
             groups: HashMap::new(),
             emit_iter: None,
-            binary_store,
+            graph_view,
         }
     }
 
@@ -566,8 +567,8 @@ impl Operator for GroupAggregateOperator {
         self.emit_iter = None;
         // If the execution context has a binary store, use it to materialize
         // encoded bindings for correct MIN/MAX comparison semantics.
-        if self.binary_store.is_none() {
-            self.binary_store = ctx.binary_store.clone();
+        if self.graph_view.is_none() {
+            self.graph_view = ctx.graph_view();
         }
         Ok(())
     }
@@ -628,12 +629,12 @@ impl Operator for GroupAggregateOperator {
                     });
 
                     // Update each aggregate with this row's values
-                    let store_ref = self.binary_store.as_deref();
+                    let gv_ref = self.graph_view.as_ref();
                     for (agg_idx, spec) in self.agg_specs.iter().enumerate() {
                         match spec.input_col {
                             Some(col_idx) => {
                                 let binding = batch.get_by_col(row_idx, col_idx);
-                                group_state.agg_states[agg_idx].update(binding, store_ref);
+                                group_state.agg_states[agg_idx].update(binding, gv_ref);
                             }
                             None => {
                                 // COUNT(*) - count all rows

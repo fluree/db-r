@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{GraphId, ObjectBounds, Sid, BATCHED_JOIN_SIZE};
-use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -382,12 +382,12 @@ impl NestedLoopJoinOperator {
         self.substitute_pattern_with_store(left_batch, left_row, None)
     }
 
-    /// Substitute left row bindings into right pattern with optional store for encoded binding resolution.
+    /// Substitute left row bindings into right pattern with optional graph view for encoded binding resolution.
     fn substitute_pattern_with_store(
         &self,
         left_batch: &Batch,
         left_row: usize,
-        store: Option<&BinaryIndexStore>,
+        gv: Option<&GraphView>,
     ) -> TriplePattern {
         let mut pattern = self.right_pattern.clone();
 
@@ -405,9 +405,9 @@ impl NestedLoopJoinOperator {
                             pattern.s = Term::Iri(iri.clone());
                         }
                         Binding::EncodedSid { s_id } => {
-                            // Resolve encoded s_id to IRI if store available
-                            if let Some(store) = store {
-                                if let Ok(iri) = store.resolve_subject_iri(*s_id) {
+                            // Resolve encoded s_id to IRI if graph view available
+                            if let Some(gv) = gv {
+                                if let Ok(iri) = gv.store().resolve_subject_iri(*s_id) {
                                     pattern.s = Term::Iri(Arc::from(iri));
                                 }
                             }
@@ -428,9 +428,9 @@ impl NestedLoopJoinOperator {
                             pattern.p = Term::Iri(iri.clone());
                         }
                         Binding::EncodedPid { p_id } => {
-                            // Resolve encoded p_id to IRI if store available
-                            if let Some(store) = store {
-                                if let Some(iri) = store.resolve_predicate_iri(*p_id) {
+                            // Resolve encoded p_id to IRI if graph view available
+                            if let Some(gv) = gv {
+                                if let Some(iri) = gv.store().resolve_predicate_iri(*p_id) {
                                     pattern.p = Term::Iri(Arc::from(iri));
                                 }
                             }
@@ -459,18 +459,18 @@ impl NestedLoopJoinOperator {
                             p_id,
                             ..
                         } => {
-                            // Decode encoded literal if store available
-                            if let Some(store) = store {
-                                if let Ok(val) = store.decode_value(*o_kind, *o_key, *p_id) {
+                            // Decode encoded literal if graph view available
+                            if let Some(gv) = gv {
+                                if let Ok(val) = gv.decode_value(*o_kind, *o_key, *p_id) {
                                     pattern.o = Term::Value(val);
                                 }
                             }
                             // Otherwise leave as variable
                         }
                         Binding::EncodedSid { s_id } => {
-                            // Resolve encoded s_id to IRI if store available (object is a ref)
-                            if let Some(store) = store {
-                                if let Ok(iri) = store.resolve_subject_iri(*s_id) {
+                            // Resolve encoded s_id to IRI if graph view available (object is a ref)
+                            if let Some(gv) = gv {
+                                if let Ok(iri) = gv.store().resolve_subject_iri(*s_id) {
                                     pattern.o = Term::Iri(Arc::from(iri));
                                 }
                             }
@@ -682,11 +682,12 @@ impl Operator for NestedLoopJoinOperator {
                     let batch_idx = self.ensure_current_batch_stored();
                     let batch_ref = BatchRef::Stored(batch_idx);
                     let left_batch = self.stored_left_batches.last().unwrap();
-                    let bound_pattern = self.substitute_pattern_with_store(
-                        left_batch,
-                        left_row,
-                        ctx.binary_store.as_deref(),
-                    );
+                    let gv = ctx
+                        .binary_store
+                        .as_ref()
+                        .map(|s| GraphView::new(Arc::clone(s), ctx.binary_g_id));
+                    let bound_pattern =
+                        self.substitute_pattern_with_store(left_batch, left_row, gv.as_ref());
                     let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
                     right_scan.open(ctx).await?;
                     while let Some(right_batch) = right_scan.next_batch(ctx).await? {
@@ -703,11 +704,12 @@ impl Operator for NestedLoopJoinOperator {
             } else {
                 // Non-batched path: existing per-row join
                 let left_batch = self.current_left_batch.as_ref().unwrap();
-                let bound_pattern = self.substitute_pattern_with_store(
-                    left_batch,
-                    left_row,
-                    ctx.binary_store.as_deref(),
-                );
+                let gv = ctx
+                    .binary_store
+                    .as_ref()
+                    .map(|s| GraphView::new(Arc::clone(s), ctx.binary_g_id));
+                let bound_pattern =
+                    self.substitute_pattern_with_store(left_batch, left_row, gv.as_ref());
                 let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
                 right_scan.open(ctx).await?;
                 while let Some(right_batch) = right_scan.next_batch(ctx).await? {
@@ -1372,10 +1374,10 @@ impl NestedLoopJoinOperator {
         }
 
         let overall_start = Instant::now();
-        let store = ctx.binary_store.as_ref().unwrap().clone();
+        let gv: GraphView = ctx.graph_view().unwrap();
 
         // Phase 1: Resolve predicate
-        let p_id = match self.resolve_batched_predicate(&store) {
+        let p_id = match self.resolve_batched_predicate(gv.store()) {
             Some(id) => id,
             None => {
                 self.clear_batched_state();
@@ -1391,12 +1393,13 @@ impl NestedLoopJoinOperator {
         }
 
         // Phase 3: Find leaf range
-        let branch = store
-            .branch_for_order(ctx.binary_g_id, RunSortOrder::Psot)
+        let branch = gv
+            .store()
+            .branch_for_order(gv.g_id(), RunSortOrder::Psot)
             .expect("PSOT index must exist for every graph");
         let leaf_range = Self::find_psot_leaf_range(
             branch,
-            ctx.binary_g_id,
+            gv.g_id(),
             p_id,
             unique_s_ids[0],
             *unique_s_ids.last().unwrap(),
@@ -1406,7 +1409,7 @@ impl NestedLoopJoinOperator {
         let mut scatter: Vec<Vec<Vec<Binding>>> = vec![Vec::new(); self.batched_accumulator.len()];
         self.scan_leaves_into_scatter(
             ctx,
-            &store,
+            gv.store(),
             branch,
             leaf_range,
             p_id,

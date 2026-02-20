@@ -371,7 +371,7 @@ pub fn build_operator_tree(
                 operator,
                 options.group_by.clone(),
                 streaming_specs,
-                None, // binary_store - will be set from context if needed
+                None, // graph_view - will be set from context if needed
             ));
         } else {
             // Traditional path: GroupByOperator + AggregateOperator

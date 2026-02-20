@@ -103,7 +103,7 @@ where
             batches,
             view.to_t,
             Some(view.overlay.clone()),
-            view.binary_store.clone(),
+            view.binary_graph(),
         ))
     }
 
@@ -164,7 +164,7 @@ where
             batches,
             view.to_t,
             Some(view.overlay.clone()),
-            view.binary_store.clone(),
+            view.binary_graph(),
         );
 
         // Format with tracking
@@ -259,12 +259,15 @@ where
             .await
             .map_err(query_error_to_api_error)?;
 
+        let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
+
         let config = ContextConfig {
             tracker: Some(tracker),
             policy_enforcer: view.policy_enforcer().cloned(),
             binary_store: view.binary_store.clone(),
             binary_g_id: view.graph_id,
             dict_novelty: view.dict_novelty.clone(),
+            spatial_providers: spatial_map.as_ref(),
             strict_bind_errors: true,
             ..Default::default()
         };
@@ -293,12 +296,15 @@ where
         let prepared =
             prepare_execution(&view.db, view.overlay.as_ref(), executable, view.to_t).await?;
 
+        let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
+
         let config = ContextConfig {
             tracker: Some(tracker),
             policy_enforcer: view.policy_enforcer().cloned(),
             binary_store: view.binary_store.clone(),
             binary_g_id: view.graph_id,
             dict_novelty: view.dict_novelty.clone(),
+            spatial_providers: spatial_map.as_ref(),
             strict_bind_errors: true,
             ..Default::default()
         };

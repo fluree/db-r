@@ -16,7 +16,7 @@ use crate::{
 };
 
 use fluree_db_core::Db;
-use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_indexer::run_index::GraphView;
 
 use fluree_db_query::parse::{ConstructTemplate, GraphSelectSpec};
 
@@ -41,12 +41,13 @@ pub struct QueryResult {
     pub select_mode: SelectMode,
     /// Result batches
     pub batches: Vec<Batch>,
-    /// Optional binary index store used during execution (for late materialization).
+    /// Graph-scoped binary index view for late materialization of encoded bindings.
     ///
-    /// When present, result formatting can decode `Binding::EncodedLit` values
-    /// into concrete literals. When absent, all bindings must already be fully
-    /// materialized.
-    pub binary_store: Option<std::sync::Arc<BinaryIndexStore>>,
+    /// When present, formatters decode `Binding::EncodedLit` values through
+    /// `GraphView::decode_value` — routing per-graph specialty kinds (NUM_BIG,
+    /// VECTOR_ID) through the correct arenas.  When absent, all bindings must
+    /// already be fully materialized.
+    pub binary_graph: Option<GraphView>,
     /// CONSTRUCT template (None for SELECT queries)
     pub construct_template: Option<ConstructTemplate>,
     /// Graph crawl select specification (None for flat SELECT or CONSTRUCT)
@@ -62,7 +63,7 @@ impl std::fmt::Debug for QueryResult {
             .field("select_mode", &self.select_mode)
             .field("select_len", &self.select.len())
             .field("batches_len", &self.batches.len())
-            .field("has_binary_store", &self.binary_store.is_some())
+            .field("has_binary_graph", &self.binary_graph.is_some())
             .field("has_novelty", &self.novelty.is_some())
             .field("has_graph_select", &self.graph_select.is_some())
             .finish()

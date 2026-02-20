@@ -346,7 +346,7 @@ pub async fn get_block(
     let ledger_ctx = LedgerBlockContext {
         db: &snapshot.db,
         to_t,
-        binary_store: snapshot.binary_store.as_deref(),
+        binary_store: snapshot.binary_store.clone(),
     };
 
     // 5. Fetch and decode with enforcement

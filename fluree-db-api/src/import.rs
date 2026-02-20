@@ -2334,71 +2334,94 @@ where
     // Persist namespaces.json from shared allocator.
     persist_namespaces(namespace_codes.as_ref(), run_dir)?;
 
-    // Persist numbig arenas from shared pool.
+    // Persist numbig arenas from shared pool (per-graph subdirectories).
     {
         let numbig_arenas = Arc::try_unwrap(spool_config.numbig_pool)
             .unwrap_or_else(|_| panic!("numbig_pool still shared after import"))
             .into_arenas();
         if !numbig_arenas.is_empty() {
-            let nb_dir = run_dir.join("numbig");
-            std::fs::create_dir_all(&nb_dir)?;
-            for (&p_id, arena) in &numbig_arenas {
-                fluree_db_indexer::run_index::numbig_dict::write_numbig_arena(
-                    &nb_dir.join(format!("p_{}.nba", p_id)),
-                    arena,
-                )?;
+            let mut total_predicates = 0usize;
+            let mut total_entries = 0usize;
+            for (&g_id, per_pred) in &numbig_arenas {
+                if per_pred.is_empty() {
+                    continue;
+                }
+                let nb_dir = run_dir.join(format!("g_{}", g_id)).join("numbig");
+                std::fs::create_dir_all(&nb_dir)?;
+                for (&p_id, arena) in per_pred {
+                    fluree_db_indexer::run_index::numbig_dict::write_numbig_arena(
+                        &nb_dir.join(format!("p_{}.nba", p_id)),
+                        arena,
+                    )?;
+                    total_predicates += 1;
+                    total_entries += arena.len();
+                }
             }
-            tracing::info!(
-                predicates = numbig_arenas.len(),
-                total_entries = numbig_arenas.values().map(|a| a.len()).sum::<usize>(),
-                "numbig arenas persisted"
-            );
+            if total_predicates > 0 {
+                tracing::info!(
+                    graphs = numbig_arenas.len(),
+                    predicates = total_predicates,
+                    total_entries,
+                    "numbig arenas persisted"
+                );
+            }
         }
     }
 
-    // Persist vector arenas from shared pool.
+    // Persist vector arenas from shared pool (per-graph subdirectories).
     {
         let vector_arenas = Arc::try_unwrap(spool_config.vector_pool)
             .unwrap_or_else(|_| panic!("vector_pool still shared after import"))
             .into_arenas();
         if !vector_arenas.is_empty() {
-            let vec_dir = run_dir.join("vectors");
-            std::fs::create_dir_all(&vec_dir)?;
-            for (&p_id, arena) in &vector_arenas {
-                if arena.is_empty() {
+            let mut total_predicates = 0usize;
+            let mut total_vectors = 0usize;
+            for (&g_id, per_pred) in &vector_arenas {
+                if per_pred.is_empty() {
                     continue;
                 }
-                let shard_paths = fluree_db_indexer::run_index::vector_arena::write_vector_shards(
-                    &vec_dir, p_id, arena,
-                )?;
-                let shard_infos: Vec<fluree_db_indexer::run_index::vector_arena::ShardInfo> =
-                    shard_paths
-                        .iter()
-                        .enumerate()
-                        .map(|(i, path)| {
-                            let cap = fluree_db_indexer::run_index::vector_arena::SHARD_CAPACITY;
-                            let start = i as u32 * cap;
-                            let count = (arena.len() - start).min(cap);
-                            fluree_db_indexer::run_index::vector_arena::ShardInfo {
-                                cas: path.display().to_string(),
-                                count,
-                            }
-                        })
-                        .collect();
-                fluree_db_indexer::run_index::vector_arena::write_vector_manifest(
-                    &vec_dir.join(format!("p_{}.vam", p_id)),
-                    arena,
-                    &shard_infos,
-                )?;
+                let vec_dir = run_dir.join(format!("g_{}", g_id)).join("vectors");
+                std::fs::create_dir_all(&vec_dir)?;
+                for (&p_id, arena) in per_pred {
+                    if arena.is_empty() {
+                        continue;
+                    }
+                    let shard_paths =
+                        fluree_db_indexer::run_index::vector_arena::write_vector_shards(
+                            &vec_dir, p_id, arena,
+                        )?;
+                    let shard_infos: Vec<fluree_db_indexer::run_index::vector_arena::ShardInfo> =
+                        shard_paths
+                            .iter()
+                            .enumerate()
+                            .map(|(i, path)| {
+                                let cap =
+                                    fluree_db_indexer::run_index::vector_arena::SHARD_CAPACITY;
+                                let start = i as u32 * cap;
+                                let count = (arena.len() - start).min(cap);
+                                fluree_db_indexer::run_index::vector_arena::ShardInfo {
+                                    cas: path.display().to_string(),
+                                    count,
+                                }
+                            })
+                            .collect();
+                    fluree_db_indexer::run_index::vector_arena::write_vector_manifest(
+                        &vec_dir.join(format!("p_{}.vam", p_id)),
+                        arena,
+                        &shard_infos,
+                    )?;
+                    total_predicates += 1;
+                    total_vectors += arena.len() as usize;
+                }
             }
-            tracing::info!(
-                predicates = vector_arenas.len(),
-                total_vectors = vector_arenas
-                    .values()
-                    .map(|a| a.len() as usize)
-                    .sum::<usize>(),
-                "vector arenas persisted"
-            );
+            if total_predicates > 0 {
+                tracing::info!(
+                    graphs = vector_arenas.len(),
+                    predicates = total_predicates,
+                    total_vectors,
+                    "vector arenas persisted"
+                );
+            }
         }
     }
 
@@ -3085,31 +3108,65 @@ where
     // ---- Phase 5: Build IndexRootV5 (binary IRB1) ----
     tracing::info!("post-upload: stats built, constructing IRB1 root");
 
-    // Convert DictRefs (string-keyed maps) → DictRefsV5 (u32 vecs).
-    let dict_refs_v5 = {
+    // Convert DictRefs (string-keyed maps) → DictRefsV5 + GraphArenaRefsV5.
+    let (dict_refs_v5, graph_arenas) = {
         let dr = uploaded_dicts.dict_refs;
-        use fluree_db_indexer::run_index::{DictRefsV5, VectorDictRefV5};
-        let numbig: Vec<(u32, ContentId)> = dr
-            .numbig
-            .iter()
-            .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
-            .collect();
-        let vectors: Vec<VectorDictRefV5> = dr
-            .vectors
-            .iter()
-            .map(|(k, v)| VectorDictRefV5 {
-                p_id: k.parse::<u32>().unwrap_or(0),
-                manifest: v.manifest.clone(),
-                shards: v.shards.clone(),
-            })
-            .collect();
-        DictRefsV5 {
+        use fluree_db_indexer::run_index::{DictRefsV5, GraphArenaRefsV5, VectorDictRefV5};
+
+        let dict_refs = DictRefsV5 {
             forward_packs: dr.forward_packs,
             subject_reverse: dr.subject_reverse,
             string_reverse: dr.string_reverse,
-            numbig,
-            vectors,
+        };
+
+        // Collect all graph IDs that have numbig or vector arenas.
+        let mut graph_ids = std::collections::BTreeSet::new();
+        for g_id_str in dr.numbig.keys() {
+            if let Ok(g_id) = g_id_str.parse::<u16>() {
+                graph_ids.insert(g_id);
+            }
         }
+        for g_id_str in dr.vectors.keys() {
+            if let Ok(g_id) = g_id_str.parse::<u16>() {
+                graph_ids.insert(g_id);
+            }
+        }
+
+        let arenas: Vec<GraphArenaRefsV5> = graph_ids
+            .into_iter()
+            .map(|g_id| {
+                let g_id_str = g_id.to_string();
+                let numbig: Vec<(u32, ContentId)> = dr
+                    .numbig
+                    .get(&g_id_str)
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, v)| (k.parse::<u32>().unwrap_or(0), v.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let vectors: Vec<VectorDictRefV5> = dr
+                    .vectors
+                    .get(&g_id_str)
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, v)| VectorDictRefV5 {
+                                p_id: k.parse::<u32>().unwrap_or(0),
+                                manifest: v.manifest.clone(),
+                                shards: v.shards.clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                GraphArenaRefsV5 {
+                    g_id,
+                    numbig,
+                    vectors,
+                    spatial: Vec::new(),
+                }
+            })
+            .collect();
+        (dict_refs, arenas)
     };
 
     let ns_codes: std::collections::BTreeMap<u16, String> = input
@@ -3136,6 +3193,7 @@ where
         total_retracts,
         default_graph_orders: uploaded_indexes.default_graph_orders,
         named_graphs: uploaded_indexes.named_graphs,
+        graph_arenas,
         stats: Some(index_stats),
         schema: None,
         prev_index: None, // fresh import

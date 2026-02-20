@@ -20,6 +20,8 @@ use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{Db, GraphId, StatsView, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_reasoner::DerivedFactsOverlay;
+use fluree_db_spatial::SpatialIndexProvider;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -368,6 +370,9 @@ pub struct ContextConfig<'a, 'b> {
     pub binary_g_id: GraphId,
     /// Dictionary novelty layer for binary scan subject/string lookups.
     pub dict_novelty: Option<Arc<DictNovelty>>,
+    /// Spatial index providers for S2Search patterns.
+    /// Keys are graph-scoped: `"g{g_id}:{predicate_iri}"`.
+    pub spatial_providers: Option<&'a HashMap<String, Arc<dyn SpatialIndexProvider>>>,
 }
 
 /// Parameters for query execution with dataset, policy, and search providers.
@@ -471,6 +476,9 @@ pub async fn execute_prepared<'a, 'b>(
     }
     if let Some(dn) = config.dict_novelty {
         ctx = ctx.with_dict_novelty(dn);
+    }
+    if let Some(providers) = config.spatial_providers {
+        ctx = ctx.with_spatial_providers(providers);
     }
 
     run_operator(prepared.operator, &ctx).await

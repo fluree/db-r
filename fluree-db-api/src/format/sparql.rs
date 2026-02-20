@@ -459,7 +459,7 @@ mod tests {
             select: vec![],
             select_mode: SelectMode::Many,
             batches: vec![],
-            binary_store: None,
+            binary_graph: None,
             construct_template: None,
             graph_select: None,
         }

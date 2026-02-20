@@ -11,7 +11,7 @@ use crate::{
     OverlayProvider, PolicyContext, QueryResult, Result, Storage, Tracker, TrackingOptions,
     TrackingTally, VarRegistry,
 };
-use fluree_db_indexer::run_index::BinaryIndexStore;
+use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
 use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig, DataSource};
 
 impl<S, N> Fluree<S, N>
@@ -30,10 +30,11 @@ where
             .execute_query_internal(ledger, &vars, &executable, &tracker)
             .await?;
 
-        let binary_store = ledger
+        let binary_graph = ledger
             .binary_store
             .as_ref()
-            .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
+            .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok())
+            .map(|store| GraphView::new(store, 0));
 
         Ok(build_query_result(
             vars,
@@ -41,7 +42,7 @@ where
             batches,
             ledger.t(),
             Some(ledger.novelty.clone()),
-            binary_store,
+            binary_graph,
         ))
     }
 
@@ -66,6 +67,7 @@ where
             prepare_execution(&ledger.db, ledger.novelty.as_ref(), executable, ledger.t()).await?;
 
         let r2rml_provider = NoOpR2rmlProvider::new();
+        let spatial_map = binary_store.as_ref().map(|s| s.spatial_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -76,6 +78,7 @@ where
             } else {
                 None
             },
+            spatial_providers: spatial_map.as_ref(),
             strict_bind_errors: true,
             ..Default::default()
         };

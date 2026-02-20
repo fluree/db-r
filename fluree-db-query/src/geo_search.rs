@@ -25,7 +25,7 @@ use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{FlakeValue, GeoPointBits, GraphId};
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, OverlayOp, RunRecord,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, GraphView, OverlayOp, RunRecord,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -343,7 +343,8 @@ impl Operator for GeoSearchOperator {
             let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
-            let mut dict_ov = crate::dict_overlay::DictOverlay::new(store.clone(), dn);
+            let gv = GraphView::new(store.clone(), ctx.binary_g_id);
+            let mut dict_ov = crate::dict_overlay::DictOverlay::new(gv, dn);
             let mut ops = crate::binary_scan::translate_overlay_flakes(
                 ovl,
                 &mut dict_ov,

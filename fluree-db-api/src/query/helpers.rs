@@ -8,6 +8,7 @@ use crate::{
 };
 
 use fluree_db_core::Db;
+use fluree_db_indexer::run_index::GraphView;
 use fluree_db_query::parse::{parse_query, ParsedQuery};
 
 use super::QueryResult;
@@ -128,7 +129,7 @@ pub(crate) fn build_query_result(
     batches: Vec<Batch>,
     t: i64,
     novelty: Option<Arc<dyn OverlayProvider>>,
-    binary_store: Option<std::sync::Arc<fluree_db_indexer::run_index::BinaryIndexStore>>,
+    binary_graph: Option<GraphView>,
 ) -> QueryResult {
     QueryResult {
         vars,
@@ -139,7 +140,7 @@ pub(crate) fn build_query_result(
         select: parsed.select,
         select_mode: parsed.select_mode,
         batches,
-        binary_store,
+        binary_graph,
         construct_template: parsed.construct_template,
         graph_select: parsed.graph_select,
     }
@@ -152,7 +153,7 @@ pub(crate) fn build_sparql_result(
     batches: Vec<Batch>,
     t: i64,
     novelty: Option<Arc<dyn OverlayProvider>>,
-    binary_store: Option<std::sync::Arc<fluree_db_indexer::run_index::BinaryIndexStore>>,
+    binary_graph: Option<GraphView>,
 ) -> QueryResult {
     QueryResult {
         vars,
@@ -163,7 +164,7 @@ pub(crate) fn build_sparql_result(
         select: parsed.select,
         select_mode: parsed.select_mode,
         batches,
-        binary_store,
+        binary_graph,
         construct_template: parsed.construct_template,
         graph_select: None, // SPARQL doesn't support graph crawl
     }
