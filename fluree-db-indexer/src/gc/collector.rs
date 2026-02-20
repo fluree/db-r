@@ -897,4 +897,137 @@ mod tests {
         assert!(storage.read_bytes(&addr5).await.is_ok());
         assert!(storage.read_bytes(&garb_addr4).await.is_ok());
     }
+
+    /// End-to-end: simulates an incremental index update that replaces leaf,
+    /// branch, and dict CIDs, publishes a new root with garbage manifest,
+    /// then verifies clean_garbage deletes exactly those replaced artifacts
+    /// after the retention period.
+    #[tokio::test]
+    async fn test_incremental_gc_deletes_replaced_artifacts() {
+        let storage = MemoryStorage::new();
+
+        // --- Artifacts from the ORIGINAL (base) index at t=5 ---
+        // These are the CAS blobs that get replaced during incremental update.
+        let (old_leaf_spot_0, old_leaf_spot_0_addr) =
+            cid_and_addr(ContentKind::IndexLeaf, b"spot-leaf-0-old");
+        let (old_leaf_spot_1, old_leaf_spot_1_addr) =
+            cid_and_addr(ContentKind::IndexLeaf, b"spot-leaf-1-old");
+        let (old_branch_g1, old_branch_g1_addr) =
+            cid_and_addr(ContentKind::IndexBranch, b"branch-g1-old");
+        let (old_rev_branch, old_rev_branch_addr) =
+            cid_and_addr(ContentKind::IndexLeaf, b"subj-rev-branch-old");
+        let (old_rev_leaf, old_rev_leaf_addr) =
+            cid_and_addr(ContentKind::IndexLeaf, b"subj-rev-leaf-old");
+
+        // Write old artifacts to storage (they exist in CAS)
+        storage
+            .write_bytes(&old_leaf_spot_0_addr, b"old spot leaf 0")
+            .await
+            .unwrap();
+        storage
+            .write_bytes(&old_leaf_spot_1_addr, b"old spot leaf 1")
+            .await
+            .unwrap();
+        storage
+            .write_bytes(&old_branch_g1_addr, b"old g1 branch")
+            .await
+            .unwrap();
+        storage
+            .write_bytes(&old_rev_branch_addr, b"old rev branch")
+            .await
+            .unwrap();
+        storage
+            .write_bytes(&old_rev_leaf_addr, b"old rev leaf")
+            .await
+            .unwrap();
+
+        // --- Base root at t=5 (the index before incremental update) ---
+        let (base_root_cid, base_root_addr) = cid_and_addr(ContentKind::IndexRoot, b"root-t5");
+        let base_root_bytes = minimal_irb1(5, None, None);
+        storage
+            .write_bytes(&base_root_addr, &base_root_bytes)
+            .await
+            .unwrap();
+
+        // --- Incremental update produces new root at t=10 ---
+        // The pipeline accumulated these replaced CIDs:
+        let replaced_cids = [
+            old_leaf_spot_0.clone(),
+            old_leaf_spot_1.clone(),
+            old_branch_g1.clone(),
+            old_rev_branch.clone(),
+            old_rev_leaf.clone(),
+        ];
+
+        // Write garbage manifest (as the pipeline does via write_garbage_record)
+        let old_ts = current_timestamp_ms() - (60 * 60 * 1000); // 1 hour ago
+        let garbage_items: Vec<String> = replaced_cids.iter().map(|c| c.to_string()).collect();
+        let garbage_json = format!(
+            r#"{{"ledger_id": "{}", "t": 10, "garbage": [{}], "created_at_ms": {}}}"#,
+            LEDGER,
+            garbage_items
+                .iter()
+                .map(|s| format!("\"{}\"", s))
+                .collect::<Vec<_>>()
+                .join(","),
+            old_ts
+        );
+        let (garb_cid, garb_addr) = cid_and_addr(ContentKind::GarbageRecord, b"garb-t10");
+        storage
+            .write_bytes(&garb_addr, garbage_json.as_bytes())
+            .await
+            .unwrap();
+
+        // New root at t=10: prev_index → base root, garbage → manifest
+        let (new_root_cid, new_root_addr) = cid_and_addr(ContentKind::IndexRoot, b"root-t10");
+        let new_root_bytes = minimal_irb1(
+            10,
+            Some(BinaryPrevIndexRef {
+                t: 5,
+                id: base_root_cid.clone(),
+            }),
+            Some(BinaryGarbageRef {
+                id: garb_cid.clone(),
+            }),
+        );
+        storage
+            .write_bytes(&new_root_addr, &new_root_bytes)
+            .await
+            .unwrap();
+
+        // --- Before GC: all artifacts exist ---
+        assert!(storage.read_bytes(&old_leaf_spot_0_addr).await.is_ok());
+        assert!(storage.read_bytes(&old_leaf_spot_1_addr).await.is_ok());
+        assert!(storage.read_bytes(&old_branch_g1_addr).await.is_ok());
+        assert!(storage.read_bytes(&old_rev_branch_addr).await.is_ok());
+        assert!(storage.read_bytes(&old_rev_leaf_addr).await.is_ok());
+        assert!(storage.read_bytes(&base_root_addr).await.is_ok());
+
+        // --- Run GC: max_old_indexes=0 means only keep current ---
+        let config = CleanGarbageConfig {
+            max_old_indexes: Some(0),
+            min_time_garbage_mins: Some(30),
+        };
+        let result = clean_garbage(&storage, &new_root_cid, LEDGER, config)
+            .await
+            .unwrap();
+
+        // Should delete 1 old index (t=5) and 5 replaced artifacts
+        assert_eq!(result.indexes_cleaned, 1);
+        assert_eq!(result.nodes_deleted, 5);
+
+        // --- All replaced artifacts deleted ---
+        assert!(storage.read_bytes(&old_leaf_spot_0_addr).await.is_err());
+        assert!(storage.read_bytes(&old_leaf_spot_1_addr).await.is_err());
+        assert!(storage.read_bytes(&old_branch_g1_addr).await.is_err());
+        assert!(storage.read_bytes(&old_rev_branch_addr).await.is_err());
+        assert!(storage.read_bytes(&old_rev_leaf_addr).await.is_err());
+
+        // --- Old root deleted ---
+        assert!(storage.read_bytes(&base_root_addr).await.is_err());
+
+        // --- Current root + its garbage manifest retained ---
+        assert!(storage.read_bytes(&new_root_addr).await.is_ok());
+        assert!(storage.read_bytes(&garb_addr).await.is_ok());
+    }
 }

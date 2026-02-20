@@ -237,7 +237,7 @@ impl Novelty {
                 let _p = parent_opst.enter();
                 let span = tracing::info_span!("novelty_merge_opst", batch_len = batch_ids.len());
                 let _g = span.enter();
-                merge_batch_into_opst_refs_only(store, opst, batch_ids)
+                merge_batch_into_index(store, opst, batch_ids, IndexType::Opst)
             });
         });
 
@@ -439,50 +439,6 @@ fn merge_batch_into_index(
     *target = merged;
 }
 
-/// Merge only reference flakes into OPST index.
-fn merge_batch_into_opst_refs_only(
-    store: &FlakeStore,
-    opst: &mut Vec<FlakeId>,
-    batch_ids: &[FlakeId],
-) {
-    use rayon::prelude::*;
-
-    // Filter to refs only
-    let ref_ids: Vec<FlakeId> = batch_ids
-        .iter()
-        .copied()
-        .filter(|&id| store.get(id).is_ref())
-        .collect();
-
-    if ref_ids.is_empty() {
-        return;
-    }
-
-    // Sort by OPST comparator
-    let mut sorted_batch = ref_ids;
-    sorted_batch.par_sort_unstable_by(|&a, &b| IndexType::Opst.compare(store.get(a), store.get(b)));
-
-    // Two-way merge
-    let mut merged = Vec::with_capacity(opst.len() + sorted_batch.len());
-    let mut i = 0;
-    let mut j = 0;
-
-    while i < opst.len() && j < sorted_batch.len() {
-        let cmp = IndexType::Opst.compare(store.get(opst[i]), store.get(sorted_batch[j]));
-        if cmp != Ordering::Greater {
-            merged.push(opst[i]);
-            i += 1;
-        } else {
-            merged.push(sorted_batch[j]);
-            j += 1;
-        }
-    }
-    merged.extend_from_slice(&opst[i..]);
-    merged.extend_from_slice(&sorted_batch[j..]);
-
-    *opst = merged;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,26 +572,22 @@ mod tests {
     }
 
     #[test]
-    fn test_opst_refs_only() {
+    fn test_opst_all_object_types() {
         let mut novelty = Novelty::new(0);
 
         // Add mixed flakes - refs and non-refs
         let flakes = vec![
-            make_flake(1, 1, 100, 1, true), // not a ref
+            make_flake(1, 1, 100, 1, true), // not a ref (Long)
             make_ref_flake(2, 1, 10, 1),    // ref
-            make_flake(3, 1, 200, 1, true), // not a ref
+            make_flake(3, 1, 200, 1, true), // not a ref (Long)
             make_ref_flake(4, 1, 5, 1),     // ref
         ];
 
         novelty.apply_commit(flakes, 1).unwrap();
 
-        // OPST should only contain refs
+        // OPST should contain ALL flakes, not just refs
         let opst_ids: Vec<FlakeId> = novelty.iter_index(IndexType::Opst).collect();
-        assert_eq!(opst_ids.len(), 2);
-
-        for id in opst_ids {
-            assert!(novelty.get_flake(id).is_ref());
-        }
+        assert_eq!(opst_ids.len(), 4);
     }
 
     #[test]

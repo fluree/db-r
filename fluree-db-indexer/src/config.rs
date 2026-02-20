@@ -66,10 +66,31 @@ pub struct IndexerConfig {
     /// If `None`, defaults to `{system_temp_dir}/fluree-index`. For production
     /// deployments, this should always be set to a persistent directory.
     pub data_dir: Option<PathBuf>,
+
+    /// Whether incremental indexing is enabled.
+    ///
+    /// When `true`, `build_index_for_ledger` will attempt to incrementally
+    /// update the existing index by merging only new commits into affected
+    /// leaves. Falls back to full rebuild on failure.
+    ///
+    /// Default: `true`
+    pub incremental_enabled: bool,
+
+    /// Maximum number of commits to process incrementally.
+    ///
+    /// If the gap between `index_t` and `commit_t` exceeds this, a full
+    /// rebuild is used instead. Larger windows increase the number of
+    /// touched leaves and reduce the incremental advantage.
+    ///
+    /// Default: 10,000
+    pub incremental_max_commits: usize,
 }
 
 /// Default run-sort budget: 256 MB.
 pub const DEFAULT_RUN_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+
+/// Default max commits for incremental indexing.
+pub const DEFAULT_INCREMENTAL_MAX_COMMITS: usize = 10_000;
 
 impl Default for IndexerConfig {
     fn default() -> Self {
@@ -82,6 +103,8 @@ impl Default for IndexerConfig {
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
             run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
+            incremental_enabled: true,
+            incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
         }
     }
 }
@@ -103,6 +126,8 @@ impl IndexerConfig {
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
             run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
+            incremental_enabled: true,
+            incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
         }
     }
 
@@ -117,6 +142,8 @@ impl IndexerConfig {
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
             run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
+            incremental_enabled: true,
+            incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
         }
     }
 
@@ -131,6 +158,8 @@ impl IndexerConfig {
             gc_min_time_mins: DEFAULT_MIN_TIME_GARBAGE_MINS,
             run_budget_bytes: DEFAULT_RUN_BUDGET_BYTES,
             data_dir: None,
+            incremental_enabled: true,
+            incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
         }
     }
 
@@ -159,6 +188,18 @@ impl IndexerConfig {
         self.data_dir = Some(data_dir.into());
         self
     }
+
+    /// Builder method to enable or disable incremental indexing
+    pub fn with_incremental_enabled(mut self, enabled: bool) -> Self {
+        self.incremental_enabled = enabled;
+        self
+    }
+
+    /// Builder method to set the maximum commit window for incremental indexing
+    pub fn with_incremental_max_commits(mut self, max_commits: usize) -> Self {
+        self.incremental_max_commits = max_commits;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +215,11 @@ mod tests {
         assert_eq!(config.branch_max_children, 200);
         assert_eq!(config.gc_max_old_indexes, DEFAULT_MAX_OLD_INDEXES);
         assert_eq!(config.gc_min_time_mins, DEFAULT_MIN_TIME_GARBAGE_MINS);
+        assert!(config.incremental_enabled);
+        assert_eq!(
+            config.incremental_max_commits,
+            DEFAULT_INCREMENTAL_MAX_COMMITS
+        );
     }
 
     #[test]
@@ -181,6 +227,7 @@ mod tests {
         let config = IndexerConfig::small();
         assert_eq!(config.leaf_target_bytes, 50_000);
         assert_eq!(config.gc_max_old_indexes, DEFAULT_MAX_OLD_INDEXES);
+        assert!(config.incremental_enabled);
     }
 
     #[test]
@@ -188,6 +235,7 @@ mod tests {
         let config = IndexerConfig::large();
         assert_eq!(config.leaf_target_bytes, 750_000);
         assert_eq!(config.gc_max_old_indexes, DEFAULT_MAX_OLD_INDEXES);
+        assert!(config.incremental_enabled);
     }
 
     #[test]
@@ -197,5 +245,14 @@ mod tests {
             .with_gc_min_time_mins(60);
         assert_eq!(config.gc_max_old_indexes, 10);
         assert_eq!(config.gc_min_time_mins, 60);
+    }
+
+    #[test]
+    fn test_incremental_config_builders() {
+        let config = IndexerConfig::default()
+            .with_incremental_enabled(false)
+            .with_incremental_max_commits(500);
+        assert!(!config.incremental_enabled);
+        assert_eq!(config.incremental_max_commits, 500);
     }
 }

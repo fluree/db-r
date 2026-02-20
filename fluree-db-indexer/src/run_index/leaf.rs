@@ -29,16 +29,16 @@ use std::time::Duration;
 use std::{fs, io::Write};
 
 /// Magic bytes for a leaf file (v2: Region 2 sparse lang/i, u32 t; Region 3 width-aware).
-const LEAF_MAGIC: [u8; 4] = *b"FLI2";
+pub(crate) const LEAF_MAGIC: [u8; 4] = *b"FLI2";
 
 /// Current leaf file format version.
-const LEAF_VERSION: u8 = 2;
+pub(crate) const LEAF_VERSION: u8 = 2;
 
 /// Fixed part of the leaf header: magic(4) + version(1) + leaflet_count(1) + pad(2) + total_rows(8) + first_key(26) + last_key(26) = 68.
-const LEAF_HEADER_FIXED: usize = 68;
+pub(crate) const LEAF_HEADER_FIXED: usize = 68;
 
 /// Per-leaflet directory entry: offset(8) + compressed_len(4) + row_count(4) + first_s_id(8) + first_p_id(4) = 28.
-const LEAFLET_DIR_ENTRY: usize = 28;
+pub(crate) const LEAFLET_DIR_ENTRY: usize = 28;
 
 // ============================================================================
 // SortKey: compact key for leaf routing
@@ -62,7 +62,7 @@ pub struct SortKey {
 // Serialized size is SORT_KEY_BYTES (26); in-memory layout may differ.
 
 impl SortKey {
-    fn from_record(r: &RunRecord) -> Self {
+    pub(crate) fn from_record(r: &RunRecord) -> Self {
         Self {
             g_id: r.g_id,
             s_id: r.s_id.as_u64(),
@@ -74,7 +74,7 @@ impl SortKey {
         }
     }
 
-    fn write_to(&self, buf: &mut [u8]) {
+    pub(crate) fn write_to(&self, buf: &mut [u8]) {
         buf[0..2].copy_from_slice(&self.g_id.to_le_bytes());
         buf[2..10].copy_from_slice(&self.s_id.to_le_bytes());
         buf[10..14].copy_from_slice(&self.p_id.to_le_bytes());
@@ -84,7 +84,7 @@ impl SortKey {
         buf[18..26].copy_from_slice(&self.o_key.to_le_bytes());
     }
 
-    fn read_from(buf: &[u8]) -> Self {
+    pub(crate) fn read_from(buf: &[u8]) -> Self {
         Self {
             g_id: u16::from_le_bytes(buf[0..2].try_into().unwrap()),
             s_id: u64::from_le_bytes(buf[2..10].try_into().unwrap()),
@@ -98,7 +98,7 @@ impl SortKey {
 }
 
 /// Sort key written size in bytes (exactly 26 bytes in leaf headers).
-const SORT_KEY_BYTES: usize = 26;
+pub(crate) const SORT_KEY_BYTES: usize = 26;
 
 // ============================================================================
 // Encoded leaflet (intermediate)

@@ -25,6 +25,10 @@ pub mod branch;
 pub mod chunk_dict;
 pub mod dict_io;
 pub mod dict_merge;
+pub mod incremental_branch;
+pub mod incremental_leaf;
+pub mod incremental_resolve;
+pub mod incremental_root;
 pub mod index_build;
 pub mod index_root;
 pub mod lang_remap;
@@ -57,6 +61,17 @@ pub use global_dict::{
     DictAllocator, DictWorkerCache, GlobalDicts, LanguageTagDict, PredicateDict,
     SharedDictAllocator, StringValueDict, SubjectDict,
 };
+pub use incremental_branch::{
+    update_branch, BranchUpdateResult, IncrementalBranchConfig, IncrementalBranchError,
+};
+pub use incremental_leaf::{
+    update_leaf, IncrementalLeafError, LeafUpdateInput, LeafUpdateOutput, NewLeafBlob,
+};
+pub use incremental_resolve::{
+    resolve_incremental_commits, IncrementalNovelty, IncrementalResolveConfig,
+    IncrementalResolveError,
+};
+pub use incremental_root::IncrementalRootBuilder;
 pub use index_build::{
     build_all_indexes, build_index, build_index_from_run_paths, build_spot_from_sorted_commits,
     build_spot_index, precompute_language_dict, ClassBitsetTable, GraphIndexResult,

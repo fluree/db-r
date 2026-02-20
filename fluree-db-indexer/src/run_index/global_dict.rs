@@ -416,6 +416,21 @@ impl PredicateDict {
         );
         Ok(())
     }
+
+    /// Reconstruct from an ordered list of IRIs (e.g., from `IndexRootV5`).
+    ///
+    /// Entry at index `i` gets ID `i`. This is the safe way to seed a dict
+    /// from persisted data — it guarantees ID stability.
+    pub fn from_ordered_iris(iris: Vec<std::sync::Arc<str>>) -> Self {
+        Self {
+            inner: VecBiDict::from_ordered_vec(0, iris),
+        }
+    }
+
+    /// Iterator over `(id, &str)` pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &str)> {
+        self.inner.iter()
+    }
 }
 
 impl Default for PredicateDict {
@@ -951,6 +966,15 @@ impl LanguageTagDict {
     /// Clear and reset the dictionary (for per-run reuse).
     pub fn clear(&mut self) {
         self.inner = VecBiDict::new(1);
+    }
+
+    /// Reconstruct from an ordered list of tags (e.g., from `IndexRootV5`).
+    ///
+    /// Tag at index `i` gets ID `i + 1` (base_id=1; 0 = "no tag").
+    pub fn from_ordered_tags(tags: Vec<std::sync::Arc<str>>) -> Self {
+        Self {
+            inner: VecBiDict::from_ordered_vec(1, tags),
+        }
     }
 }
 

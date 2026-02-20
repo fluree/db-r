@@ -34,6 +34,7 @@
 pub mod branch;
 pub mod builder;
 pub mod forward_pack;
+pub mod incremental;
 pub mod pack_builder;
 pub mod pack_reader;
 pub mod reader;
