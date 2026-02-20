@@ -395,4 +395,43 @@ mod tests {
         let miss = b"http://example.org/nonexistent".to_vec();
         assert_eq!(leaf.lookup(&miss), None);
     }
+
+    /// Regression test: reverse tree entries for subjects must store the full
+    /// SubjectId (ns_code + local_id encoded via `SubjectId::new().as_u64()`),
+    /// not just the raw local_id. Using raw local_id loses the namespace and
+    /// breaks multi-pattern query JOINs that translate Sids back to s_ids via
+    /// the reverse tree.
+    #[test]
+    fn test_subject_reverse_stores_full_subject_id() {
+        use fluree_db_core::subject_id::SubjectId;
+
+        let ns_code: u16 = 12;
+        let local_id: u64 = 2;
+        let suffix = b"person2";
+
+        // Build entry the CORRECT way — full SubjectId encoding
+        let sid = SubjectId::new(ns_code, local_id);
+        let entry = ReverseEntry {
+            key: subject_reverse_key(ns_code, suffix),
+            id: sid.as_u64(),
+        };
+
+        let blob = encode_reverse_leaf(&[entry]);
+        let leaf = ReverseLeaf::from_bytes(&blob).unwrap();
+
+        let lookup_key = subject_reverse_key(ns_code, suffix);
+        let found_id = leaf.lookup(&lookup_key).expect("entry should be found");
+
+        // The stored ID must decode back to the original (ns_code, local_id)
+        let decoded = SubjectId::from_u64(found_id);
+        assert_eq!(decoded.ns_code(), ns_code);
+        assert_eq!(decoded.local_id(), local_id);
+
+        // Critically: the raw local_id alone is NOT the same as the full sid64
+        assert_ne!(
+            found_id, local_id,
+            "must store full sid64, not raw local_id"
+        );
+        assert_eq!(found_id, sid.as_u64());
+    }
 }

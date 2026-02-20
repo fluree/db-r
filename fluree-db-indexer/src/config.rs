@@ -84,6 +84,17 @@ pub struct IndexerConfig {
     ///
     /// Default: 10,000
     pub incremental_max_commits: usize,
+
+    /// Maximum number of concurrent (graph, order) branch updates during
+    /// incremental indexing.
+    ///
+    /// Each branch update fetches affected leaves from CAS, merges novelty,
+    /// and uploads new blobs. Higher concurrency speeds up multi-graph
+    /// ledgers at the cost of more peak memory (one decoded leaf set per
+    /// in-flight task).
+    ///
+    /// Default: 4 (one per sort order in a single-graph workload)
+    pub incremental_max_concurrency: usize,
 }
 
 /// Default run-sort budget: 256 MB.
@@ -91,6 +102,9 @@ pub const DEFAULT_RUN_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 
 /// Default max commits for incremental indexing.
 pub const DEFAULT_INCREMENTAL_MAX_COMMITS: usize = 10_000;
+
+/// Default max concurrency for incremental branch updates.
+pub const DEFAULT_INCREMENTAL_MAX_CONCURRENCY: usize = 4;
 
 impl Default for IndexerConfig {
     fn default() -> Self {
@@ -105,6 +119,7 @@ impl Default for IndexerConfig {
             data_dir: None,
             incremental_enabled: true,
             incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
+            incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
         }
     }
 }
@@ -128,6 +143,7 @@ impl IndexerConfig {
             data_dir: None,
             incremental_enabled: true,
             incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
+            incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
         }
     }
 
@@ -144,6 +160,7 @@ impl IndexerConfig {
             data_dir: None,
             incremental_enabled: true,
             incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
+            incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
         }
     }
 
@@ -160,6 +177,7 @@ impl IndexerConfig {
             data_dir: None,
             incremental_enabled: true,
             incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
+            incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
         }
     }
 
@@ -200,6 +218,12 @@ impl IndexerConfig {
         self.incremental_max_commits = max_commits;
         self
     }
+
+    /// Builder method to set the maximum concurrency for incremental branch updates
+    pub fn with_incremental_max_concurrency(mut self, max_concurrency: usize) -> Self {
+        self.incremental_max_concurrency = max_concurrency.max(1);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +243,10 @@ mod tests {
         assert_eq!(
             config.incremental_max_commits,
             DEFAULT_INCREMENTAL_MAX_COMMITS
+        );
+        assert_eq!(
+            config.incremental_max_concurrency,
+            DEFAULT_INCREMENTAL_MAX_CONCURRENCY
         );
     }
 
@@ -251,8 +279,14 @@ mod tests {
     fn test_incremental_config_builders() {
         let config = IndexerConfig::default()
             .with_incremental_enabled(false)
-            .with_incremental_max_commits(500);
+            .with_incremental_max_commits(500)
+            .with_incremental_max_concurrency(8);
         assert!(!config.incremental_enabled);
         assert_eq!(config.incremental_max_commits, 500);
+        assert_eq!(config.incremental_max_concurrency, 8);
+
+        // Concurrency is clamped to at least 1.
+        let config2 = IndexerConfig::default().with_incremental_max_concurrency(0);
+        assert_eq!(config2.incremental_max_concurrency, 1);
     }
 }

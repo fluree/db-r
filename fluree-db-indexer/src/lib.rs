@@ -267,7 +267,9 @@ where
             "attempting incremental index"
         );
         match incremental_index_from_root(storage, ledger_id, &record, config.clone()).await {
-            Ok(result) => return Ok(result),
+            Ok(result) => {
+                return Ok(result);
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -1199,7 +1201,7 @@ async fn incremental_index_inner<S>(
     base_root_id: ContentId,
     head_commit_id: ContentId,
     from_t: i64,
-    _config: IndexerConfig,
+    config: IndexerConfig,
 ) -> Result<IndexResult>
 where
     S: Storage + Clone + Send + Sync + 'static,
@@ -1212,10 +1214,6 @@ where
     use run_index::incremental_root::IncrementalRootBuilder;
     use run_index::run_record::{cmp_for_order, RunSortOrder};
     use std::sync::Arc;
-
-    // We're running inside spawn_blocking + handle.block_on(), so the tokio
-    // runtime is active. Capture the handle for sync→async bridging in closures.
-    let handle = tokio::runtime::Handle::current();
 
     let content_store: Arc<dyn fluree_db_core::storage::ContentStore> = Arc::new(
         fluree_db_core::storage::content_store_for(storage.clone(), ledger_id),
@@ -1248,7 +1246,6 @@ where
         max_t = novelty.max_t,
         "Phase 1 complete: incremental resolve"
     );
-
     // Bail to full rebuild if specialty arenas were populated.
     // Incremental update of numbig/vector/spatial arenas is not yet implemented.
     if !novelty.shared.numbigs.is_empty() {
@@ -1259,6 +1256,15 @@ where
     if !novelty.shared.vectors.is_empty() {
         return Err(IndexerError::IncrementalAbort(
             "new vector values require full rebuild".into(),
+        ));
+    }
+
+    // Bail to full rebuild when the base root carries stats or schema.
+    // The incremental path does not recompute these, so carrying stale
+    // values would return incorrect counts/property-lists to callers.
+    if novelty.base_root.stats.is_some() || novelty.base_root.schema.is_some() {
+        return Err(IndexerError::IncrementalAbort(
+            "base root has stats/schema that require full rebuild to update".into(),
         ));
     }
 
@@ -1323,350 +1329,578 @@ where
         novelty.delta_retracts,
     );
 
-    // Track total leaf/branch stats.
-    let mut total_new_leaves = 0usize;
-    let mut total_replaced_leaves = 0usize;
+    // ---- Build unified work queue: branch updates + dict updates ----
+    //
+    // Both branch and dict work run concurrently in a single JoinSet, bounded
+    // by the same semaphore. Results are collected, sorted deterministically,
+    // and applied to IncrementalRootBuilder after all tasks complete.
 
-    for (&g_id, graph_records) in &by_graph {
+    // -- Work item / result types --
+
+    struct BranchWorkItem {
+        g_id: u16,
+        order: RunSortOrder,
+        /// Shared unsorted records for this graph — sorting is deferred until
+        /// the semaphore permit is acquired so only `max_concurrency` sorted
+        /// copies exist at once.
+        graph_records: Arc<Vec<run_index::RunRecord>>,
+        existing_manifest: Option<run_index::branch::BranchManifest>,
+        old_branch_cid: Option<ContentId>,
+    }
+
+    struct BranchWorkResult {
+        g_id: u16,
+        order: RunSortOrder,
+        update: run_index::incremental_branch::BranchUpdateResult,
+        old_branch_cid: Option<ContentId>,
+    }
+
+    /// Forward pack result for a single dict (string or subject ns).
+    struct FwdPackResult {
+        all_pack_refs: Vec<run_index::PackBranchEntry>,
+    }
+
+    enum DictWorkResult {
+        StringForwardPacks(FwdPackResult),
+        SubjectForwardPacks { ns_code: u16, result: FwdPackResult },
+        SubjectReverseTree(UpdatedReverseTree),
+        StringReverseTree(UpdatedReverseTree),
+    }
+
+    /// Sort key for deterministic result application.
+    /// Branch results sort before dict results; within each category,
+    /// items sort by their natural keys.
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum WorkResultKey {
+        Branch { g_id: u16, order: RunSortOrder },
+        DictStringFwdPacks,
+        DictSubjectFwdPacks { ns_code: u16 },
+        DictSubjectReverseTree,
+        DictStringReverseTree,
+    }
+
+    enum WorkResult {
+        Branch(BranchWorkResult),
+        Dict(DictWorkResult),
+    }
+
+    impl WorkResult {
+        fn sort_key(&self) -> WorkResultKey {
+            match self {
+                WorkResult::Branch(b) => WorkResultKey::Branch {
+                    g_id: b.g_id,
+                    order: b.order,
+                },
+                WorkResult::Dict(d) => match d {
+                    DictWorkResult::StringForwardPacks(_) => WorkResultKey::DictStringFwdPacks,
+                    DictWorkResult::SubjectForwardPacks { ns_code, .. } => {
+                        WorkResultKey::DictSubjectFwdPacks { ns_code: *ns_code }
+                    }
+                    DictWorkResult::SubjectReverseTree(_) => WorkResultKey::DictSubjectReverseTree,
+                    DictWorkResult::StringReverseTree(_) => WorkResultKey::DictStringReverseTree,
+                },
+            }
+        }
+    }
+
+    // -- Shared state for all tasks --
+
+    let max_concurrency = config.incremental_max_concurrency.max(1);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
+    let content_store_shared = content_store.clone();
+    let storage_shared = Arc::new(storage.clone());
+    let branch_config = Arc::new(branch_config);
+    let ledger_id_shared: Arc<str> = Arc::from(ledger_id);
+
+    let mut join_set: tokio::task::JoinSet<Result<WorkResult>> = tokio::task::JoinSet::new();
+
+    // -- Build branch work items --
+
+    // Build per-graph shared record vectors (one copy per graph, shared across
+    // 4 orders via Arc). Sorting is deferred to inside each task.
+    let mut shared_graph_records: std::collections::BTreeMap<u16, Arc<Vec<run_index::RunRecord>>> =
+        std::collections::BTreeMap::new();
+    for (&g_id, refs) in &by_graph {
+        let records: Vec<run_index::RunRecord> = refs.iter().map(|r| **r).collect();
+        shared_graph_records.insert(g_id, Arc::new(records));
+    }
+
+    let mut n_branch_items = 0usize;
+    for (&g_id, graph_records) in &shared_graph_records {
         let is_default_graph = g_id == 0;
 
         for &order in all_orders {
-            // Sort this graph's records by the current order.
-            let cmp = cmp_for_order(order);
-            let mut sorted_records: Vec<run_index::RunRecord> =
-                graph_records.iter().map(|r| **r).collect();
-            sorted_records.sort_unstable_by(cmp);
-
-            // Get existing branch manifest for this graph+order.
-            let existing_manifest = if is_default_graph {
-                // Default graph: inline leaf entries in root.
-                base_root
+            let (existing_manifest, old_branch_cid) = if is_default_graph {
+                let manifest = base_root
                     .default_graph_orders
                     .iter()
                     .find(|o| o.order == order)
                     .map(|o| run_index::branch::BranchManifest {
                         leaves: o.leaves.clone(),
-                    })
+                    });
+                (manifest, None)
             } else {
-                // Named graph: fetch branch manifest from CAS.
-                let branch_cid = base_root
+                let branch_ref = base_root
                     .named_graphs
                     .iter()
                     .find(|ng| ng.g_id == g_id)
                     .and_then(|ng| ng.orders.iter().find(|(o, _)| *o == order))
                     .map(|(_, cid)| cid);
 
-                if let Some(cid) = branch_cid {
+                if let Some(cid) = branch_ref {
                     let branch_bytes = content_store.get(cid).await.map_err(|e| {
                         IndexerError::StorageRead(format!(
                             "load branch g_id={g_id} order={order:?}: {e}"
                         ))
                     })?;
-                    Some(read_branch_v2_from_bytes(&branch_bytes).map_err(|e| {
+                    let manifest = read_branch_v2_from_bytes(&branch_bytes).map_err(|e| {
                         IndexerError::StorageRead(format!(
                             "decode branch g_id={g_id} order={order:?}: {e}"
                         ))
-                    })?)
+                    })?;
+                    (Some(manifest), Some(cid.clone()))
                 } else {
-                    None
+                    (None, None)
                 }
             };
 
-            // Build branch update result.
-            let update_result = if let Some(ref manifest) = existing_manifest {
-                // Pre-fetch affected leaves using the same half-open interval
-                // slicing as update_branch. Uses partition_point (binary search)
-                // on sorted_records for O(leaves * log(records)) instead of
-                // O(leaves * records).
+            let item = BranchWorkItem {
+                g_id,
+                order,
+                graph_records: Arc::clone(graph_records),
+                existing_manifest,
+                old_branch_cid,
+            };
+
+            n_branch_items += 1;
+            let sem = semaphore.clone();
+            let cs = content_store_shared.clone();
+            let st = storage_shared.clone();
+            let cfg = branch_config.clone();
+            let lid = ledger_id_shared.clone();
+
+            join_set.spawn(async move {
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
+
+                let g_id = item.g_id;
+                let order = item.order;
+                let is_default = g_id == 0;
+
+                // Sort records for this order (deferred from work-item construction).
+                let mut sorted_records: Vec<run_index::RunRecord> = (*item.graph_records).clone();
+                drop(item.graph_records);
                 let cmp = cmp_for_order(order);
-                let mut prefetched: std::collections::HashMap<ContentId, Vec<u8>> =
-                    std::collections::HashMap::new();
+                sorted_records.sort_unstable_by(cmp);
 
-                let n_leaves = manifest.leaves.len();
-                let mut start = 0usize;
-                for (i, leaf) in manifest.leaves.iter().enumerate() {
-                    let end = if i == n_leaves - 1 {
-                        sorted_records.len()
-                    } else {
-                        let next_key = &manifest.leaves[i + 1].first_key;
-                        start
-                            + sorted_records[start..]
-                                .partition_point(|r| cmp(r, next_key) == std::cmp::Ordering::Less)
-                    };
-                    let has_novelty = end > start;
-                    if has_novelty && !prefetched.contains_key(&leaf.leaf_cid) {
-                        let bytes = content_store.get(&leaf.leaf_cid).await.map_err(|e| {
-                            IndexerError::StorageRead(format!("fetch leaf {}: {e}", leaf.leaf_cid))
-                        })?;
-                        prefetched.insert(leaf.leaf_cid.clone(), bytes);
+                let update_result = if let Some(manifest) = item.existing_manifest {
+                    // Pre-fetch affected leaves from CAS (async I/O).
+                    let cmp = cmp_for_order(order);
+                    let mut prefetched: std::collections::HashMap<ContentId, Vec<u8>> =
+                        std::collections::HashMap::new();
+
+                    let n_leaves = manifest.leaves.len();
+                    let mut start = 0usize;
+                    for (i, leaf) in manifest.leaves.iter().enumerate() {
+                        let end = if i == n_leaves - 1 {
+                            sorted_records.len()
+                        } else {
+                            let next_key = &manifest.leaves[i + 1].first_key;
+                            start
+                                + sorted_records[start..].partition_point(|r| {
+                                    cmp(r, next_key) == std::cmp::Ordering::Less
+                                })
+                        };
+                        let has_novelty = end > start;
+                        if has_novelty && !prefetched.contains_key(&leaf.leaf_cid) {
+                            let bytes = cs.get(&leaf.leaf_cid).await.map_err(|e| {
+                                IndexerError::StorageRead(format!(
+                                    "fetch leaf {}: {e}",
+                                    leaf.leaf_cid
+                                ))
+                            })?;
+                            prefetched.insert(leaf.leaf_cid.clone(), bytes);
+                        }
+                        start = end;
                     }
-                    start = end;
-                }
 
-                // Sync callback that returns pre-fetched data.
-                let mut fetch_leaf =
-                    |cid: &ContentId| -> std::result::Result<Vec<u8>, IncrementalBranchError> {
-                        prefetched.get(cid).cloned().ok_or_else(|| {
-                            IncrementalBranchError::Io(std::io::Error::other(format!(
-                                "leaf not pre-fetched: {cid}"
-                            )))
+                    // CPU-bound merge/encode in spawn_blocking.
+                    let cfg_inner = cfg.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let mut fetch_leaf = |cid: &ContentId| -> std::result::Result<
+                            Vec<u8>,
+                            IncrementalBranchError,
+                        > {
+                            prefetched.get(cid).cloned().ok_or_else(|| {
+                                IncrementalBranchError::Io(std::io::Error::other(format!(
+                                    "leaf not pre-fetched: {cid}"
+                                )))
+                            })
+                        };
+
+                        update_branch(
+                            &manifest,
+                            &sorted_records,
+                            order,
+                            g_id,
+                            &cfg_inner,
+                            &mut fetch_leaf,
+                        )
+                        .map_err(|e| match e {
+                            IncrementalBranchError::EmptyLeafletWithHistory => {
+                                IndexerError::StorageWrite(
+                                    "incremental: empty leaflet with history".to_string(),
+                                )
+                            }
+                            IncrementalBranchError::Io(io_err) => {
+                                IndexerError::StorageWrite(format!("incremental branch: {io_err}"))
+                            }
                         })
-                    };
+                    })
+                    .await
+                    .map_err(|e| {
+                        IndexerError::StorageWrite(format!("branch update task panicked: {e}"))
+                    })??
+                } else {
+                    let cfg_inner = cfg.clone();
+                    tokio::task::spawn_blocking(move || {
+                        build_fresh_branch(
+                            &sorted_records,
+                            order,
+                            g_id,
+                            &cfg_inner,
+                            p_width,
+                            base_dt_width,
+                        )
+                    })
+                    .await
+                    .map_err(|e| {
+                        IndexerError::StorageWrite(format!("fresh branch build task panicked: {e}"))
+                    })??
+                };
 
-                update_branch(
-                    manifest,
-                    &sorted_records,
-                    order,
-                    g_id,
-                    &branch_config,
-                    &mut fetch_leaf,
-                )
-                .map_err(|e| match e {
-                    IncrementalBranchError::EmptyLeafletWithHistory => IndexerError::StorageWrite(
-                        "incremental: empty leaflet with history".to_string(),
-                    ),
-                    IncrementalBranchError::Io(io_err) => {
-                        IndexerError::StorageWrite(format!("incremental branch: {io_err}"))
-                    }
-                })?
-            } else {
-                // New graph+order: build fresh branch from novelty only.
-                build_fresh_branch(
-                    &sorted_records,
-                    order,
-                    g_id,
-                    &branch_config,
-                    p_width,
-                    base_dt_width,
-                )?
-            };
-
-            total_new_leaves += update_result.new_leaf_blobs.len();
-            total_replaced_leaves += update_result.replaced_leaf_cids.len();
-
-            // Upload new leaf blobs to CAS.
-            for blob in &update_result.new_leaf_blobs {
-                storage
-                    .content_write_bytes_with_hash(
+                // Upload new leaf blobs to CAS.
+                for blob in &update_result.new_leaf_blobs {
+                    st.content_write_bytes_with_hash(
                         ContentKind::IndexLeaf,
-                        ledger_id,
+                        &lid,
                         &blob.cid.digest_hex(),
                         &blob.bytes,
                     )
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            }
+                }
 
-            // Track replaced CIDs for GC.
-            root_builder.add_replaced_cids(update_result.replaced_leaf_cids);
-
-            if is_default_graph {
-                // Default graph: update inline leaf entries.
-                root_builder.set_default_graph_order(order, update_result.leaf_entries);
-            } else {
-                // Named graph: upload branch manifest, store CID.
-                let branch_write = storage
-                    .content_write_bytes_with_hash(
+                // Upload branch manifest for named graphs.
+                if !is_default {
+                    st.content_write_bytes_with_hash(
                         ContentKind::IndexBranch,
-                        ledger_id,
+                        &lid,
                         &update_result.branch_cid.digest_hex(),
                         &update_result.branch_bytes,
                     )
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                let branch_cid = cid_from_write(ContentKind::IndexBranch, &branch_write);
-                root_builder.set_named_graph_branch(g_id, order, branch_cid);
-
-                // Track old branch CID for GC if it existed.
-                if let Some(old_cid) = base_root
-                    .named_graphs
-                    .iter()
-                    .find(|ng| ng.g_id == g_id)
-                    .and_then(|ng| ng.orders.iter().find(|(o, _)| *o == order))
-                    .map(|(_, cid)| cid.clone())
-                {
-                    root_builder.add_replaced_cids([old_cid]);
                 }
-            }
-        }
-    }
 
-    tracing::info!(
-        graphs = by_graph.len(),
-        new_leaves = total_new_leaves,
-        replaced_leaves = total_replaced_leaves,
-        "Phase 2-3 complete: branch updates"
-    );
-
-    // ---- Phase 4: Dictionary updates ----
-    // 4a: Forward packs (append new entries, reuse existing packs).
-    let mut new_dict_refs = base_root.dict_refs.clone();
-
-    // String forward packs.
-    if !novelty.new_strings.is_empty() {
-        let new_entries: Vec<(u32, &[u8])> = novelty
-            .new_strings
-            .iter()
-            .map(|(id, val)| (*id, val.as_slice()))
-            .collect();
-
-        let pack_result = dict_tree::incremental::build_incremental_string_packs(
-            &new_dict_refs.forward_packs.string_fwd_packs,
-            &new_entries,
-        )
-        .map_err(|e| IndexerError::StorageWrite(format!("incremental string packs: {e}")))?;
-
-        // Upload new pack artifacts.
-        let kind = ContentKind::DictBlob {
-            dict: fluree_db_core::DictKind::StringForward,
-        };
-        let mut updated_refs = Vec::new();
-        // Carry existing refs.
-        updated_refs.extend_from_slice(&new_dict_refs.forward_packs.string_fwd_packs);
-        // Upload and add new refs.
-        for pack in &pack_result.new_packs {
-            let cas_result = storage
-                .content_write_bytes(kind, ledger_id, &pack.bytes)
-                .await
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            updated_refs.push(run_index::PackBranchEntry {
-                first_id: pack.first_id,
-                last_id: pack.last_id,
-                pack_cid: cid_from_write(kind, &cas_result),
+                Ok(WorkResult::Branch(BranchWorkResult {
+                    g_id,
+                    order,
+                    update: update_result,
+                    old_branch_cid: item.old_branch_cid,
+                }))
             });
         }
-        new_dict_refs.forward_packs.string_fwd_packs = updated_refs;
     }
 
-    // Subject forward packs (per namespace).
-    if !novelty.new_subjects.is_empty() {
-        // Group by ns_code.
-        let mut by_ns: std::collections::BTreeMap<u16, Vec<(u64, &[u8])>> =
-            std::collections::BTreeMap::new();
-        for (ns_code, local_id, suffix) in &novelty.new_subjects {
-            by_ns
-                .entry(*ns_code)
-                .or_default()
-                .push((*local_id, suffix.as_slice()));
-        }
+    // Drop shared_graph_records — each work item holds its own Arc.
+    drop(shared_graph_records);
 
-        let kind = ContentKind::DictBlob {
-            dict: fluree_db_core::DictKind::SubjectForward,
-        };
+    // -- Build dict work items --
 
-        for (ns_code, entries) in &by_ns {
-            // Find existing pack refs for this namespace.
-            let existing_ns_refs = new_dict_refs
-                .forward_packs
-                .subject_fwd_ns_packs
-                .iter()
-                .find(|(ns, _)| ns == ns_code)
-                .map(|(_, refs)| refs.as_slice())
-                .unwrap_or(&[]);
+    let mut n_dict_items = 0usize;
 
-            let pack_result = dict_tree::incremental::build_incremental_subject_packs_for_ns(
-                *ns_code,
-                existing_ns_refs,
-                entries,
-            )
-            .map_err(|e| {
-                IndexerError::StorageWrite(format!("incremental subject packs ns={ns_code}: {e}"))
-            })?;
+    // 4a: String forward packs.
+    if !novelty.new_strings.is_empty() {
+        n_dict_items += 1;
+        let sem = semaphore.clone();
+        let st = storage_shared.clone();
+        let lid = ledger_id_shared.clone();
+        let existing_refs = base_root.dict_refs.forward_packs.string_fwd_packs.clone();
+        // Own the entries so they're Send + 'static.
+        let new_entries: Vec<(u32, Vec<u8>)> = novelty
+            .new_strings
+            .iter()
+            .map(|(id, val)| (*id, val.clone()))
+            .collect();
 
-            // Upload new packs.
-            let mut updated_ns_refs = existing_ns_refs.to_vec();
+        join_set.spawn(async move {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
+
+            // CPU-bound pack building in spawn_blocking.
+            let existing_refs_inner = existing_refs.clone();
+            let pack_result = tokio::task::spawn_blocking(move || {
+                let refs: Vec<(u32, &[u8])> = new_entries
+                    .iter()
+                    .map(|(id, v)| (*id, v.as_slice()))
+                    .collect();
+                dict_tree::incremental::build_incremental_string_packs(&existing_refs_inner, &refs)
+            })
+            .await
+            .map_err(|e| IndexerError::StorageWrite(format!("string fwd pack task panicked: {e}")))?
+            .map_err(|e| IndexerError::StorageWrite(format!("incremental string packs: {e}")))?;
+
+            // Upload new pack artifacts.
+            let kind = ContentKind::DictBlob {
+                dict: fluree_db_core::DictKind::StringForward,
+            };
+            let mut updated_refs = existing_refs;
             for pack in &pack_result.new_packs {
-                let cas_result = storage
-                    .content_write_bytes(kind, ledger_id, &pack.bytes)
+                let cas_result = st
+                    .content_write_bytes(kind, &lid, &pack.bytes)
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                updated_ns_refs.push(run_index::PackBranchEntry {
+                updated_refs.push(run_index::PackBranchEntry {
                     first_id: pack.first_id,
                     last_id: pack.last_id,
                     pack_cid: cid_from_write(kind, &cas_result),
                 });
             }
 
-            // Update or insert ns entry.
-            if let Some(entry) = new_dict_refs
+            Ok(WorkResult::Dict(DictWorkResult::StringForwardPacks(
+                FwdPackResult {
+                    all_pack_refs: updated_refs,
+                },
+            )))
+        });
+    }
+
+    // 4a: Subject forward packs (one task per ns_code).
+    if !novelty.new_subjects.is_empty() {
+        // Group by ns_code.
+        let mut by_ns: std::collections::BTreeMap<u16, Vec<(u64, Vec<u8>)>> =
+            std::collections::BTreeMap::new();
+        for (ns_code, local_id, suffix) in &novelty.new_subjects {
+            by_ns
+                .entry(*ns_code)
+                .or_default()
+                .push((*local_id, suffix.clone()));
+        }
+
+        for (ns_code, entries) in by_ns {
+            n_dict_items += 1;
+            let sem = semaphore.clone();
+            let st = storage_shared.clone();
+            let lid = ledger_id_shared.clone();
+            let existing_ns_refs: Vec<run_index::PackBranchEntry> = base_root
+                .dict_refs
                 .forward_packs
                 .subject_fwd_ns_packs
-                .iter_mut()
-                .find(|(ns, _)| ns == ns_code)
-            {
-                entry.1 = updated_ns_refs;
-            } else {
-                new_dict_refs
-                    .forward_packs
-                    .subject_fwd_ns_packs
-                    .push((*ns_code, updated_ns_refs));
-            }
+                .iter()
+                .find(|(ns, _)| *ns == ns_code)
+                .map(|(_, refs)| refs.clone())
+                .unwrap_or_default();
+
+            join_set.spawn(async move {
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
+
+                // CPU-bound pack building in spawn_blocking.
+                let existing_inner = existing_ns_refs.clone();
+                let pack_result = tokio::task::spawn_blocking(move || {
+                    let refs: Vec<(u64, &[u8])> =
+                        entries.iter().map(|(id, v)| (*id, v.as_slice())).collect();
+                    dict_tree::incremental::build_incremental_subject_packs_for_ns(
+                        ns_code,
+                        &existing_inner,
+                        &refs,
+                    )
+                })
+                .await
+                .map_err(|e| {
+                    IndexerError::StorageWrite(format!(
+                        "subject fwd pack ns={ns_code} task panicked: {e}"
+                    ))
+                })?
+                .map_err(|e| {
+                    IndexerError::StorageWrite(format!(
+                        "incremental subject packs ns={ns_code}: {e}"
+                    ))
+                })?;
+
+                let kind = ContentKind::DictBlob {
+                    dict: fluree_db_core::DictKind::SubjectForward,
+                };
+                let mut updated_refs = existing_ns_refs;
+                for pack in &pack_result.new_packs {
+                    let cas_result = st
+                        .content_write_bytes(kind, &lid, &pack.bytes)
+                        .await
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    updated_refs.push(run_index::PackBranchEntry {
+                        first_id: pack.first_id,
+                        last_id: pack.last_id,
+                        pack_cid: cid_from_write(kind, &cas_result),
+                    });
+                }
+
+                Ok(WorkResult::Dict(DictWorkResult::SubjectForwardPacks {
+                    ns_code,
+                    result: FwdPackResult {
+                        all_pack_refs: updated_refs,
+                    },
+                }))
+            });
         }
     }
 
-    // 4b: Reverse trees (CoW update).
-    // Subject reverse tree.
+    // 4b: Subject reverse tree.
     if !novelty.new_subjects.is_empty() {
-        let mut reverse_entries: Vec<dict_tree::reverse_leaf::ReverseEntry> = novelty
-            .new_subjects
-            .iter()
-            .map(|(ns_code, local_id, suffix)| {
-                let sid = fluree_db_core::subject_id::SubjectId::new(*ns_code, *local_id);
-                dict_tree::reverse_leaf::ReverseEntry {
-                    key: dict_tree::reverse_leaf::subject_reverse_key(*ns_code, suffix),
-                    id: sid.as_u64(),
-                }
-            })
-            .collect();
-        reverse_entries.sort_by(|a, b| a.key.cmp(&b.key));
+        n_dict_items += 1;
+        let sem = semaphore.clone();
+        let cs = content_store_shared.clone();
+        let st = storage_shared.clone();
+        let lid = ledger_id_shared.clone();
+        let existing_refs = base_root.dict_refs.subject_reverse.clone();
+        // Own the entries.
+        let new_subjects: Vec<(u16, u64, Vec<u8>)> = novelty.new_subjects.clone();
 
-        let updated = upload_incremental_reverse_tree(
-            storage,
-            ledger_id,
-            fluree_db_core::DictKind::SubjectReverse,
-            &content_store,
-            &handle,
-            &base_root.dict_refs.subject_reverse,
-            &reverse_entries,
-        )
-        .await?;
+        join_set.spawn(async move {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
 
-        root_builder.add_replaced_cids(updated.replaced_cids);
-        new_dict_refs.subject_reverse = updated.tree_refs;
+            let updated = upload_incremental_reverse_tree_async(
+                &*st,
+                &lid,
+                fluree_db_core::DictKind::SubjectReverse,
+                &cs,
+                &existing_refs,
+                new_subjects,
+            )
+            .await?;
+
+            Ok(WorkResult::Dict(DictWorkResult::SubjectReverseTree(
+                updated,
+            )))
+        });
     }
 
-    // String reverse tree.
+    // 4b: String reverse tree.
     if !novelty.new_strings.is_empty() {
-        let mut reverse_entries: Vec<dict_tree::reverse_leaf::ReverseEntry> = novelty
-            .new_strings
-            .iter()
-            .map(|(string_id, value)| dict_tree::reverse_leaf::ReverseEntry {
-                key: value.clone(),
-                id: *string_id as u64,
-            })
-            .collect();
-        reverse_entries.sort_by(|a, b| a.key.cmp(&b.key));
+        n_dict_items += 1;
+        let sem = semaphore.clone();
+        let cs = content_store_shared.clone();
+        let st = storage_shared.clone();
+        let lid = ledger_id_shared.clone();
+        let existing_refs = base_root.dict_refs.string_reverse.clone();
+        let new_strings: Vec<(u32, Vec<u8>)> = novelty.new_strings.clone();
 
-        let updated = upload_incremental_reverse_tree(
-            storage,
-            ledger_id,
-            fluree_db_core::DictKind::StringReverse,
-            &content_store,
-            &handle,
-            &base_root.dict_refs.string_reverse,
-            &reverse_entries,
-        )
-        .await?;
+        join_set.spawn(async move {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| IndexerError::StorageWrite("semaphore closed".into()))?;
 
-        root_builder.add_replaced_cids(updated.replaced_cids);
-        new_dict_refs.string_reverse = updated.tree_refs;
+            let updated = upload_incremental_reverse_tree_async_strings(
+                &*st,
+                &lid,
+                fluree_db_core::DictKind::StringReverse,
+                &cs,
+                &existing_refs,
+                new_strings,
+            )
+            .await?;
+
+            Ok(WorkResult::Dict(DictWorkResult::StringReverseTree(updated)))
+        });
+    }
+
+    let n_total_items = n_branch_items + n_dict_items;
+
+    // ---- Collect all results and apply deterministically ----
+
+    let mut results: Vec<WorkResult> = Vec::with_capacity(n_total_items);
+    while let Some(join_result) = join_set.join_next().await {
+        let result = join_result.map_err(|e| {
+            IndexerError::StorageWrite(format!("incremental work task panicked: {e}"))
+        })??;
+        results.push(result);
+    }
+
+    // Sort by deterministic key: branches by (g_id, order), then dict items
+    // in a fixed canonical order.
+    results.sort_by_key(|a| a.sort_key());
+
+    let mut total_new_leaves = 0usize;
+    let mut total_replaced_leaves = 0usize;
+    let mut new_dict_refs = base_root.dict_refs.clone();
+
+    for result in results {
+        match result {
+            WorkResult::Branch(b) => {
+                total_new_leaves += b.update.new_leaf_blobs.len();
+                total_replaced_leaves += b.update.replaced_leaf_cids.len();
+                root_builder.add_replaced_cids(b.update.replaced_leaf_cids);
+
+                if b.g_id == 0 {
+                    root_builder.set_default_graph_order(b.order, b.update.leaf_entries);
+                } else {
+                    root_builder.set_named_graph_branch(b.g_id, b.order, b.update.branch_cid);
+                    if let Some(old_cid) = b.old_branch_cid {
+                        root_builder.add_replaced_cids([old_cid]);
+                    }
+                }
+            }
+            WorkResult::Dict(d) => match d {
+                DictWorkResult::StringForwardPacks(fwd) => {
+                    new_dict_refs.forward_packs.string_fwd_packs = fwd.all_pack_refs;
+                }
+                DictWorkResult::SubjectForwardPacks { ns_code, result } => {
+                    if let Some(entry) = new_dict_refs
+                        .forward_packs
+                        .subject_fwd_ns_packs
+                        .iter_mut()
+                        .find(|(ns, _)| *ns == ns_code)
+                    {
+                        entry.1 = result.all_pack_refs;
+                    } else {
+                        new_dict_refs
+                            .forward_packs
+                            .subject_fwd_ns_packs
+                            .push((ns_code, result.all_pack_refs));
+                    }
+                }
+                DictWorkResult::SubjectReverseTree(updated) => {
+                    root_builder.add_replaced_cids(updated.replaced_cids);
+                    new_dict_refs.subject_reverse = updated.tree_refs;
+                }
+                DictWorkResult::StringReverseTree(updated) => {
+                    root_builder.add_replaced_cids(updated.replaced_cids);
+                    new_dict_refs.string_reverse = updated.tree_refs;
+                }
+            },
+        }
     }
 
     tracing::info!(
+        graphs = by_graph.len(),
+        branch_items = n_branch_items,
+        dict_items = n_dict_items,
+        max_concurrency = max_concurrency,
+        new_leaves = total_new_leaves,
+        replaced_leaves = total_replaced_leaves,
         new_strings = novelty.new_strings.len(),
         new_subjects = novelty.new_subjects.len(),
-        "Phase 4 complete: dictionary updates"
+        "Phase 2-4 complete: branch + dict updates"
     );
 
     // ---- Phase 5: Root assembly ----
@@ -1810,22 +2044,89 @@ struct UpdatedReverseTree {
     replaced_cids: Vec<ContentId>,
 }
 
-/// Upload an incrementally-updated reverse tree (subject or string) to CAS.
+/// Async version of reverse tree upload for **subject** dictionaries.
 ///
-/// Handles: fetch existing branch, run CoW update, upload new leaves,
-/// finalize branch (replace pending addresses), upload branch, build CID list.
-async fn upload_incremental_reverse_tree<S: Storage>(
+/// Builds `ReverseEntry` from `(ns_code, local_id, suffix)`, pre-fetches
+/// affected leaves, runs the CPU-bound CoW update in `spawn_blocking`,
+/// then async-uploads new artifacts.
+async fn upload_incremental_reverse_tree_async<S: Storage>(
     storage: &S,
     ledger_id: &str,
     dict: fluree_db_core::DictKind,
     content_store: &std::sync::Arc<dyn fluree_db_core::storage::ContentStore>,
-    handle: &tokio::runtime::Handle,
     existing_refs: &run_index::DictTreeRefs,
-    new_entries: &[dict_tree::reverse_leaf::ReverseEntry],
+    new_subjects: Vec<(u16, u64, Vec<u8>)>,
+) -> Result<UpdatedReverseTree> {
+    use dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
+
+    let mut entries: Vec<ReverseEntry> = new_subjects
+        .iter()
+        .map(|(ns_code, local_id, suffix)| ReverseEntry {
+            key: subject_reverse_key(*ns_code, suffix),
+            id: fluree_db_core::subject_id::SubjectId::new(*ns_code, *local_id).as_u64(),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+
+    upload_incremental_reverse_tree_core(
+        storage,
+        ledger_id,
+        dict,
+        content_store,
+        existing_refs,
+        entries,
+    )
+    .await
+}
+
+/// Async version of reverse tree upload for **string** dictionaries.
+///
+/// Builds `ReverseEntry` from `(string_id, value)`, pre-fetches affected
+/// leaves, runs the CPU-bound CoW update in `spawn_blocking`, then
+/// async-uploads new artifacts.
+async fn upload_incremental_reverse_tree_async_strings<S: Storage>(
+    storage: &S,
+    ledger_id: &str,
+    dict: fluree_db_core::DictKind,
+    content_store: &std::sync::Arc<dyn fluree_db_core::storage::ContentStore>,
+    existing_refs: &run_index::DictTreeRefs,
+    new_strings: Vec<(u32, Vec<u8>)>,
+) -> Result<UpdatedReverseTree> {
+    use dict_tree::reverse_leaf::ReverseEntry;
+
+    let mut entries: Vec<ReverseEntry> = new_strings
+        .iter()
+        .map(|(string_id, value)| ReverseEntry {
+            key: value.clone(),
+            id: *string_id as u64,
+        })
+        .collect();
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+
+    upload_incremental_reverse_tree_core(
+        storage,
+        ledger_id,
+        dict,
+        content_store,
+        existing_refs,
+        entries,
+    )
+    .await
+}
+
+/// Core async reverse tree upload: pre-fetch affected leaves, spawn_blocking
+/// for CoW update, async-upload new artifacts.
+async fn upload_incremental_reverse_tree_core<S: Storage>(
+    storage: &S,
+    ledger_id: &str,
+    dict: fluree_db_core::DictKind,
+    content_store: &std::sync::Arc<dyn fluree_db_core::storage::ContentStore>,
+    existing_refs: &run_index::DictTreeRefs,
+    entries: Vec<dict_tree::reverse_leaf::ReverseEntry>,
 ) -> Result<UpdatedReverseTree> {
     let kind = ContentKind::DictBlob { dict };
 
-    // Load existing branch.
+    // 1. Async fetch existing branch.
     let existing_branch_bytes = content_store
         .get(&existing_refs.branch)
         .await
@@ -1833,7 +2134,7 @@ async fn upload_incremental_reverse_tree<S: Storage>(
     let existing_branch = dict_tree::branch::DictBranch::decode(&existing_branch_bytes)
         .map_err(|e| IndexerError::StorageRead(format!("decode reverse branch: {e}")))?;
 
-    // Build address→CID map for existing leaves.
+    // 2. Build address→CID map for existing leaves.
     let mut address_to_cid: std::collections::HashMap<String, ContentId> =
         std::collections::HashMap::new();
     for (i, entry) in existing_branch.leaves.iter().enumerate() {
@@ -1842,28 +2143,41 @@ async fn upload_incremental_reverse_tree<S: Storage>(
         }
     }
 
-    // Fetch leaf callback.
-    let cs_clone = content_store.clone();
-    let leaf_cids = existing_refs.leaves.clone();
-    let mut fetch_leaf = |idx: usize| -> std::result::Result<Vec<u8>, std::io::Error> {
-        let cid = leaf_cids.get(idx).ok_or_else(|| {
-            std::io::Error::other(format!("reverse leaf index {idx} out of bounds"))
+    // 3. Pre-fetch only affected leaves (those that will receive novelty).
+    let affected_indices = compute_affected_leaf_indices(&entries, &existing_branch.leaves);
+    let mut prefetched: std::collections::HashMap<usize, Vec<u8>> =
+        std::collections::HashMap::with_capacity(affected_indices.len());
+    for &idx in &affected_indices {
+        let cid = existing_refs.leaves.get(idx).ok_or_else(|| {
+            IndexerError::StorageRead(format!("reverse leaf index {idx} out of bounds"))
         })?;
-        handle
-            .block_on(cs_clone.get(cid))
-            .map_err(|e| std::io::Error::other(format!("fetch reverse leaf: {e}")))
-    };
+        let bytes = content_store
+            .get(cid)
+            .await
+            .map_err(|e| IndexerError::StorageRead(format!("fetch reverse leaf: {e}")))?;
+        prefetched.insert(idx, bytes);
+    }
 
-    // Run CoW update.
-    let tree_result = dict_tree::incremental::update_reverse_tree(
-        &existing_branch,
-        new_entries,
-        dict_tree::builder::DEFAULT_TARGET_LEAF_BYTES,
-        &mut fetch_leaf,
-    )
+    // 4. CPU-bound CoW update in spawn_blocking.
+    let existing_branch_owned = existing_branch;
+    let tree_result = tokio::task::spawn_blocking(move || {
+        let mut fetch_leaf = |idx: usize| -> std::result::Result<Vec<u8>, std::io::Error> {
+            prefetched
+                .remove(&idx)
+                .ok_or_else(|| std::io::Error::other(format!("reverse leaf {idx} not prefetched")))
+        };
+        dict_tree::incremental::update_reverse_tree(
+            &existing_branch_owned,
+            &entries,
+            dict_tree::builder::DEFAULT_TARGET_LEAF_BYTES,
+            &mut fetch_leaf,
+        )
+    })
+    .await
+    .map_err(|e| IndexerError::StorageWrite(format!("reverse tree task panicked: {e}")))?
     .map_err(|e| IndexerError::StorageWrite(format!("incremental reverse tree: {e}")))?;
 
-    // Upload new leaf artifacts and build hash→address + hash→CID maps.
+    // 5. Async upload new leaf artifacts.
     let mut hash_to_address: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for leaf_art in &tree_result.new_leaves {
@@ -1876,19 +2190,19 @@ async fn upload_incremental_reverse_tree<S: Storage>(
         hash_to_address.insert(leaf_art.hash.clone(), cas_result.address);
     }
 
-    // Finalize branch (replace pending:hash → real addresses).
+    // 6. Finalize branch (replace pending:hash → real addresses).
     let (finalized_branch, finalized_bytes, _) =
         dict_tree::builder::finalize_branch(tree_result.branch, &hash_to_address)
             .map_err(|e| IndexerError::StorageWrite(format!("finalize reverse branch: {e}")))?;
 
-    // Upload finalized branch.
+    // 7. Async upload finalized branch.
     let branch_result = storage
         .content_write_bytes(kind, ledger_id, &finalized_bytes)
         .await
         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
     let new_branch_cid = cid_from_write(kind, &branch_result);
 
-    // Build leaf CID list by looking up each finalized entry's address.
+    // 8. Build leaf CID list from finalized branch.
     let mut leaf_cids: Vec<ContentId> = Vec::with_capacity(finalized_branch.leaves.len());
     for entry in &finalized_branch.leaves {
         let cid = address_to_cid.get(&entry.address).ok_or_else(|| {
@@ -1900,7 +2214,7 @@ async fn upload_incremental_reverse_tree<S: Storage>(
         leaf_cids.push(cid.clone());
     }
 
-    // Collect replaced CIDs for GC.
+    // 9. Collect replaced CIDs for GC.
     let mut replaced_cids = vec![existing_refs.branch.clone()];
     for &idx in &tree_result.replaced_leaf_indices {
         if let Some(cid) = existing_refs.leaves.get(idx) {
@@ -1915,6 +2229,43 @@ async fn upload_incremental_reverse_tree<S: Storage>(
         },
         replaced_cids,
     })
+}
+
+/// Compute which leaf indices in a reverse tree branch are affected by new entries.
+///
+/// Uses the same half-open interval logic as the internal `slice_entries_to_leaves`:
+/// leaf `i` owns keys in `[leaf[i].first_key, leaf[i+1].first_key)`, and the last
+/// leaf owns `[leaf[last].first_key, +∞)`.
+fn compute_affected_leaf_indices(
+    entries: &[dict_tree::reverse_leaf::ReverseEntry],
+    leaves: &[dict_tree::branch::BranchLeafEntry],
+) -> Vec<usize> {
+    let n = leaves.len();
+    if n == 0 || entries.is_empty() {
+        return Vec::new();
+    }
+
+    let mut affected = Vec::new();
+    let mut start = 0;
+
+    for i in 0..n {
+        if i == n - 1 {
+            // Last leaf: anything remaining goes here.
+            if start < entries.len() {
+                affected.push(i);
+            }
+        } else {
+            let next_key = &leaves[i + 1].first_key;
+            let end = start
+                + entries[start..].partition_point(|e| e.key.as_slice() < next_key.as_slice());
+            if end > start {
+                affected.push(i);
+            }
+            start = end;
+        }
+    }
+
+    affected
 }
 
 /// Build predicate SIDs from resolver state for the index root.

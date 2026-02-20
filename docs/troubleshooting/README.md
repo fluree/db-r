@@ -142,7 +142,7 @@ curl http://localhost:8090/admin/transaction-stats
 **Quick Checks:**
 ```bash
 # Check indexing lag
-curl http://localhost:8090/ledgers/mydb:main | jq '.novelty_count'
+curl http://localhost:8090/ledgers/mydb:main | jq '.commit_t - .index_t'
 
 # Check resource usage
 curl http://localhost:8090/admin/memory

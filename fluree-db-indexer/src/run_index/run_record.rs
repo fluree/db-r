@@ -307,6 +307,19 @@ pub enum RunSortOrder {
     Opst = 3,
 }
 
+impl PartialOrd for RunSortOrder {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RunSortOrder {
+    /// Ordering is based on the canonical wire ID, not variant declaration order.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.to_wire_id().cmp(&other.to_wire_id())
+    }
+}
+
 impl RunSortOrder {
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
