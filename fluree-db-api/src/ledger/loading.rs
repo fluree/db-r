@@ -61,6 +61,10 @@ where
                             ))
                         })?;
 
+                // Vector shards are truly lazy — loaded on demand per-shard
+                // when decode_value hits a VECTOR_ID, using the same sync→async
+                // bridge as index leaflets (thread + block_on).
+
                 // Augment namespace codes with entries from novelty commits.
                 // The index root only contains namespaces known at index time, but
                 // subsequent transactions may introduce new namespace prefixes.

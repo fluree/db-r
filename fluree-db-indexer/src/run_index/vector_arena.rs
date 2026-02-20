@@ -44,7 +44,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::io;
-use std::path::Path;
+use std::ops::ControlFlow;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Maximum vectors per shard. At 768-dim f32 each shard ≈ 9 MB.
 pub const SHARD_CAPACITY: u32 = 3072;
@@ -414,6 +417,322 @@ pub fn load_arena_from_shards(
 }
 
 // ============================================================================
+// LazyVectorArena — on-demand shard loading backed by LeafletCache
+// ============================================================================
+
+/// Per-shard resolution metadata (addressing only, no data loaded).
+pub struct ShardSource {
+    /// xxh3_128 of shard CID bytes — LeafletCache key.
+    pub(crate) cid_hash: u128,
+    /// Content ID for remote fetching. `None` for FileStorage (local path suffices).
+    pub(crate) cid: Option<fluree_db_core::ContentId>,
+    /// Local file path to shard data.
+    /// FileStorage: direct CAS path. Remote: disk-cache path.
+    pub(crate) path: PathBuf,
+    /// Whether the shard file is known to exist on disk.
+    /// AtomicBool for safe mutation through `Arc<BinaryIndexStore>`.
+    pub(crate) on_disk: AtomicBool,
+}
+
+/// Per-predicate lazy vector shard reader (read-only, sync access).
+///
+/// Shards are loaded on demand through the shared [`super::leaflet_cache::LeafletCache`],
+/// competing for the same TinyLFU memory pool as all other cached artifacts.
+/// Two access modes are provided:
+/// - **Cached** (point lookups): shards enter the shared cache.
+/// - **Transient** (streaming scans): shards bypass the cache to avoid evicting
+///   R1/dict/BM25 entries.
+///
+/// For remote backends (S3), shards that are not yet on local disk are fetched
+/// on demand using the same sync→async bridge as index leaflets and dict leaves
+/// (thread + `tokio::Handle::block_on`). This makes vector loading truly lazy:
+/// only the shards actually decoded by a query are ever downloaded.
+pub struct LazyVectorArena {
+    manifest: VectorManifest,
+    shard_sources: Vec<ShardSource>,
+    cache: Arc<super::leaflet_cache::LeafletCache>,
+    /// Content store for on-demand remote shard fetching.
+    /// `None` for FileStorage (all shards are always on disk).
+    cas: Option<Arc<dyn fluree_db_core::ContentStore>>,
+}
+
+/// A vector slice backed by a cache-managed shard.
+///
+/// Holds an `Arc<VectorShard>` to keep the shard alive while the caller
+/// reads the slice. Dropping the `VectorSlice` releases the Arc reference
+/// (the shard stays in cache if still referenced there).
+pub struct VectorSlice {
+    shard: Arc<VectorShard>,
+    offset: u32,
+}
+
+impl std::fmt::Debug for VectorSlice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VectorSlice")
+            .field("offset", &self.offset)
+            .field("dims", &self.shard.dims)
+            .finish()
+    }
+}
+
+impl VectorSlice {
+    /// Borrow the f32 slice for this vector.
+    #[inline]
+    pub fn as_f32(&self) -> &[f32] {
+        // Safety: offset was validated at construction time in lookup_vector().
+        self.shard
+            .get_f32(self.offset)
+            .expect("offset validated at construction in lookup_vector()")
+    }
+}
+
+impl LazyVectorArena {
+    /// Create a new lazy arena from a parsed manifest, shard source metadata,
+    /// a shared cache handle, and an optional content store for remote fetching.
+    pub fn new(
+        manifest: VectorManifest,
+        shard_sources: Vec<ShardSource>,
+        cache: Arc<super::leaflet_cache::LeafletCache>,
+        cas: Option<Arc<dyn fluree_db_core::ContentStore>>,
+    ) -> Self {
+        Self {
+            manifest,
+            shard_sources,
+            cache,
+            cas,
+        }
+    }
+
+    // ========================================================================
+    // Manifest-only accessors (no shard loading)
+    // ========================================================================
+
+    /// Vector dimensionality.
+    pub fn dims(&self) -> u16 {
+        self.manifest.dims
+    }
+
+    /// Total number of vectors across all shards.
+    pub fn len(&self) -> u32 {
+        self.manifest.total_count
+    }
+
+    /// Whether the arena has no vectors.
+    pub fn is_empty(&self) -> bool {
+        self.manifest.total_count == 0
+    }
+
+    /// Whether all stored vectors have unit norm.
+    pub fn is_normalized(&self) -> bool {
+        self.manifest.normalized
+    }
+
+    /// Number of shards backing this arena.
+    pub fn shard_count(&self) -> usize {
+        self.shard_sources.len()
+    }
+
+    // ========================================================================
+    // Internal shard loading — two flavors
+    // ========================================================================
+
+    /// Load shard through the global cache (point lookups, small batches).
+    fn load_shard_cached(&self, shard_idx: usize) -> io::Result<Arc<VectorShard>> {
+        let source = self.get_source(shard_idx)?;
+        self.ensure_on_disk(source, shard_idx)?;
+        let path = source.path.clone();
+        let shard = self
+            .cache
+            .try_get_or_load_vector_shard(source.cid_hash, || {
+                let bytes = std::fs::read(&path)?;
+                let parsed = read_vector_shard_from_bytes(&bytes)?;
+                Ok(Arc::new(parsed))
+            })?;
+        self.validate_shard_dims(&shard, shard_idx)?;
+        Ok(shard)
+    }
+
+    /// Load shard WITHOUT inserting into the global cache.
+    /// For streaming scans — avoids evicting BM25/dict/R1/R2 entries.
+    fn load_shard_transient(&self, shard_idx: usize) -> io::Result<Arc<VectorShard>> {
+        let source = self.get_source(shard_idx)?;
+        self.ensure_on_disk(source, shard_idx)?;
+        let bytes = std::fs::read(&source.path)?;
+        let shard = Arc::new(read_vector_shard_from_bytes(&bytes)?);
+        self.validate_shard_dims(&shard, shard_idx)?;
+        Ok(shard)
+    }
+
+    fn get_source(&self, shard_idx: usize) -> io::Result<&ShardSource> {
+        self.shard_sources.get(shard_idx).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "shard index {} out of range (have {} shards)",
+                    shard_idx,
+                    self.shard_sources.len()
+                ),
+            )
+        })
+    }
+
+    /// Ensure a shard file exists on local disk, fetching from remote if needed.
+    ///
+    /// For FileStorage (all shards `on_disk: true` at construction), this is
+    /// a fast Acquire-load no-op. For remote backends, uses the same sync→async
+    /// bridge as `ensure_index_leaf_cached`: spawns an OS thread that calls
+    /// `tokio::Handle::block_on(cs.get(&cid))`, writes the result to disk,
+    /// then flips `on_disk`.
+    fn ensure_on_disk(&self, source: &ShardSource, idx: usize) -> io::Result<()> {
+        if source.on_disk.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        // Shard not on disk — try lazy fetch from remote CAS.
+        let cas = self.cas.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("vector shard {} not on disk and no CAS configured", idx),
+            )
+        })?;
+        let cid = source.cid.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "vector shard {} not on disk and no CID for remote fetch",
+                    idx
+                ),
+            )
+        })?;
+        // Sync→async bridge: spawn an OS thread to block_on the async fetch.
+        // Same pattern as ensure_index_leaf_cached() for index leaflets.
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| io::Error::other("vector shard download requires a Tokio runtime"))?;
+        let cs = Arc::clone(cas);
+        let cid = cid.clone();
+        let path = source.path.clone();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
+        std::thread::spawn(move || {
+            let res = handle
+                .block_on(async { cs.get(&cid).await })
+                .map_err(|e| e.to_string());
+            let _ = tx.send(res);
+        });
+        let bytes = rx
+            .recv()
+            .map_err(|_| io::Error::other("vector shard fetch thread died"))?
+            .map_err(io::Error::other)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, &bytes)?;
+        source.on_disk.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn validate_shard_dims(&self, shard: &VectorShard, idx: usize) -> io::Result<()> {
+        if shard.dims != self.manifest.dims {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "vector shard {} dims {} != manifest dims {}",
+                    idx, shard.dims, self.manifest.dims
+                ),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    // ========================================================================
+    // Access mode 1: Filtered point-lookup (cached)
+    // ========================================================================
+
+    /// Look up a single vector by its global handle.
+    ///
+    /// Loads the containing shard through the cache on first access.
+    /// Returns `None` if the handle is out of range.
+    pub fn lookup_vector(&self, handle: u32) -> io::Result<Option<VectorSlice>> {
+        if handle >= self.manifest.total_count {
+            return Ok(None);
+        }
+        let shard_cap = self.manifest.shard_capacity;
+        let shard_idx = (handle / shard_cap) as usize;
+        let offset = handle % shard_cap;
+        let shard = self.load_shard_cached(shard_idx)?;
+        // Validate offset within partially-filled last shard
+        if offset >= shard.count {
+            return Ok(None);
+        }
+        Ok(Some(VectorSlice { shard, offset }))
+    }
+
+    /// Batch point-lookup. Sorts handles for sequential shard access,
+    /// loading each shard at most once through the cache.
+    pub fn lookup_many<F>(&self, handles: &mut [u32], mut f: F) -> io::Result<()>
+    where
+        F: FnMut(u32, &[f32]),
+    {
+        if handles.is_empty() {
+            return Ok(());
+        }
+        handles.sort_unstable();
+
+        let shard_cap = self.manifest.shard_capacity;
+        let mut current_shard_idx = u32::MAX;
+        let mut current_shard: Option<Arc<VectorShard>> = None;
+
+        for &handle in handles.iter() {
+            if handle >= self.manifest.total_count {
+                continue;
+            }
+            let shard_idx = handle / shard_cap;
+            let offset = handle % shard_cap;
+
+            if shard_idx != current_shard_idx {
+                current_shard = Some(self.load_shard_cached(shard_idx as usize)?);
+                current_shard_idx = shard_idx;
+            }
+
+            if let Some(ref shard) = current_shard {
+                if let Some(slice) = shard.get_f32(offset) {
+                    f(handle, slice);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ========================================================================
+    // Access mode 2: Streaming scan (transient — no cache pollution)
+    // ========================================================================
+
+    /// Scan all vectors sequentially. Each shard is loaded transiently
+    /// (not inserted into the cache) to avoid evicting other entries.
+    ///
+    /// The callback receives `(handle, &[f32])` and can return
+    /// `ControlFlow::Break(())` to stop early.
+    pub fn scan_all<F>(&self, mut f: F) -> io::Result<()>
+    where
+        F: FnMut(u32, &[f32]) -> ControlFlow<()>,
+    {
+        let shard_cap = self.manifest.shard_capacity;
+        for shard_idx in 0..self.shard_sources.len() {
+            let shard = self.load_shard_transient(shard_idx)?;
+            for offset in 0..shard.count {
+                let handle = shard_idx as u32 * shard_cap + offset;
+                if let Some(slice) = shard.get_f32(offset) {
+                    if let ControlFlow::Break(()) = f(handle, slice) {
+                        return Ok(());
+                    }
+                }
+            }
+            // shard Arc dropped here unless caller captured a reference
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -605,5 +924,321 @@ mod tests {
         // f64::MAX overflows to f32::INFINITY
         let err = arena.insert_f64(&[1.0, f64::MAX]).unwrap_err();
         assert!(err.contains("not finite"), "got: {err}");
+    }
+
+    // ========================================================================
+    // LazyVectorArena tests
+    // ========================================================================
+
+    /// Helper: write a VAS1 shard file and return a ShardSource for it.
+    fn write_test_shard(
+        dir: &Path,
+        name: &str,
+        dims: u16,
+        vectors: &[&[f32]],
+    ) -> (std::path::PathBuf, ShardSource) {
+        let path = dir.join(name);
+        let mut flat: Vec<f32> = Vec::new();
+        for v in vectors {
+            flat.extend_from_slice(v);
+        }
+        let mut buf = Vec::new();
+        write_vas1_shard(&mut buf, dims, &flat).unwrap();
+        std::fs::write(&path, &buf).unwrap();
+
+        let cid_hash = super::super::leaflet_cache::LeafletCache::cid_cache_key(name.as_bytes());
+        let source = ShardSource {
+            cid_hash,
+            cid: None,
+            path: path.clone(),
+            on_disk: AtomicBool::new(true),
+        };
+        (path, source)
+    }
+
+    /// Helper: create a LazyVectorArena from test shards.
+    fn make_lazy_arena(
+        manifest: VectorManifest,
+        shard_sources: Vec<ShardSource>,
+    ) -> LazyVectorArena {
+        let cache = Arc::new(super::super::leaflet_cache::LeafletCache::with_max_bytes(
+            10 * 1024 * 1024,
+        ));
+        LazyVectorArena::new(manifest, shard_sources, cache, None)
+    }
+
+    #[test]
+    fn test_lazy_arena_single_shard_lookup() {
+        let dir = std::env::temp_dir().join("fluree_lazy_single");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let vecs: Vec<&[f32]> = vec![&[1.0, 2.0], &[3.0, 4.0], &[5.0, 6.0]];
+        let (_, source) = write_test_shard(&dir, "s0.vas", 2, &vecs);
+
+        let manifest = VectorManifest {
+            version: 1,
+            dims: 2,
+            dtype: "f32".to_string(),
+            normalized: false,
+            shard_capacity: SHARD_CAPACITY,
+            total_count: 3,
+            shards: vec![ShardInfo {
+                cas: "test".to_string(),
+                count: 3,
+            }],
+        };
+        let arena = make_lazy_arena(manifest, vec![source]);
+
+        // Manifest accessors
+        assert_eq!(arena.dims(), 2);
+        assert_eq!(arena.len(), 3);
+        assert!(!arena.is_empty());
+        assert_eq!(arena.shard_count(), 1);
+
+        // Point lookup
+        let vs0 = arena.lookup_vector(0).unwrap().unwrap();
+        assert_eq!(vs0.as_f32(), &[1.0f32, 2.0]);
+        let vs2 = arena.lookup_vector(2).unwrap().unwrap();
+        assert_eq!(vs2.as_f32(), &[5.0f32, 6.0]);
+
+        // Out of range
+        assert!(arena.lookup_vector(3).unwrap().is_none());
+        assert!(arena.lookup_vector(u32::MAX).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lazy_arena_multi_shard_lookup() {
+        let dir = std::env::temp_dir().join("fluree_lazy_multi");
+        let _ = std::fs::create_dir_all(&dir);
+
+        // Use shard_capacity=2 for easy boundary testing
+        let vecs0: Vec<&[f32]> = vec![&[1.0, 0.0], &[0.0, 1.0]];
+        let vecs1: Vec<&[f32]> = vec![&[2.0, 0.0]];
+        let (_, s0) = write_test_shard(&dir, "s0.vas", 2, &vecs0);
+        let (_, s1) = write_test_shard(&dir, "s1.vas", 2, &vecs1);
+
+        let manifest = VectorManifest {
+            version: 1,
+            dims: 2,
+            dtype: "f32".to_string(),
+            normalized: false,
+            shard_capacity: 2,
+            total_count: 3,
+            shards: vec![
+                ShardInfo {
+                    cas: "s0".to_string(),
+                    count: 2,
+                },
+                ShardInfo {
+                    cas: "s1".to_string(),
+                    count: 1,
+                },
+            ],
+        };
+        let arena = make_lazy_arena(manifest, vec![s0, s1]);
+
+        // Handle 0 → shard 0, offset 0
+        assert_eq!(
+            arena.lookup_vector(0).unwrap().unwrap().as_f32(),
+            &[1.0f32, 0.0]
+        );
+        // Handle 1 → shard 0, offset 1
+        assert_eq!(
+            arena.lookup_vector(1).unwrap().unwrap().as_f32(),
+            &[0.0f32, 1.0]
+        );
+        // Handle 2 → shard 1, offset 0
+        assert_eq!(
+            arena.lookup_vector(2).unwrap().unwrap().as_f32(),
+            &[2.0f32, 0.0]
+        );
+        // Handle 3 → out of range
+        assert!(arena.lookup_vector(3).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lazy_arena_scan_all() {
+        let dir = std::env::temp_dir().join("fluree_lazy_scan");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let vecs0: Vec<&[f32]> = vec![&[1.0, 2.0], &[3.0, 4.0]];
+        let vecs1: Vec<&[f32]> = vec![&[5.0, 6.0]];
+        let (_, s0) = write_test_shard(&dir, "s0.vas", 2, &vecs0);
+        let (_, s1) = write_test_shard(&dir, "s1.vas", 2, &vecs1);
+
+        let manifest = VectorManifest {
+            version: 1,
+            dims: 2,
+            dtype: "f32".to_string(),
+            normalized: false,
+            shard_capacity: 2,
+            total_count: 3,
+            shards: vec![
+                ShardInfo {
+                    cas: "s0".to_string(),
+                    count: 2,
+                },
+                ShardInfo {
+                    cas: "s1".to_string(),
+                    count: 1,
+                },
+            ],
+        };
+        let arena = make_lazy_arena(manifest, vec![s0, s1]);
+
+        let mut collected: Vec<(u32, Vec<f32>)> = Vec::new();
+        arena
+            .scan_all(|handle, slice| {
+                collected.push((handle, slice.to_vec()));
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+
+        assert_eq!(collected.len(), 3);
+        assert_eq!(collected[0], (0, vec![1.0f32, 2.0]));
+        assert_eq!(collected[1], (1, vec![3.0f32, 4.0]));
+        assert_eq!(collected[2], (2, vec![5.0f32, 6.0]));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lazy_arena_scan_transient_no_cache() {
+        let dir = std::env::temp_dir().join("fluree_lazy_scan_nc");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let vecs: Vec<&[f32]> = vec![&[1.0, 2.0]];
+        let (_, source) = write_test_shard(&dir, "s0.vas", 2, &vecs);
+        let cid_hash = source.cid_hash;
+
+        let cache = Arc::new(super::super::leaflet_cache::LeafletCache::with_max_bytes(
+            10 * 1024 * 1024,
+        ));
+        let manifest = VectorManifest {
+            version: 1,
+            dims: 2,
+            dtype: "f32".to_string(),
+            normalized: false,
+            shard_capacity: SHARD_CAPACITY,
+            total_count: 1,
+            shards: vec![ShardInfo {
+                cas: "s0".to_string(),
+                count: 1,
+            }],
+        };
+        let arena = LazyVectorArena::new(manifest, vec![source], cache.clone(), None);
+
+        // Scan should not populate cache
+        arena.scan_all(|_, _| ControlFlow::Continue(())).unwrap();
+        assert!(cache.get_vector_shard(cid_hash).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lazy_arena_lookup_many() {
+        let dir = std::env::temp_dir().join("fluree_lazy_many");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let vecs0: Vec<&[f32]> = vec![&[10.0, 20.0], &[30.0, 40.0]];
+        let vecs1: Vec<&[f32]> = vec![&[50.0, 60.0]];
+        let (_, s0) = write_test_shard(&dir, "s0.vas", 2, &vecs0);
+        let (_, s1) = write_test_shard(&dir, "s1.vas", 2, &vecs1);
+
+        let manifest = VectorManifest {
+            version: 1,
+            dims: 2,
+            dtype: "f32".to_string(),
+            normalized: false,
+            shard_capacity: 2,
+            total_count: 3,
+            shards: vec![
+                ShardInfo {
+                    cas: "s0".to_string(),
+                    count: 2,
+                },
+                ShardInfo {
+                    cas: "s1".to_string(),
+                    count: 1,
+                },
+            ],
+        };
+        let arena = make_lazy_arena(manifest, vec![s0, s1]);
+
+        let mut handles = vec![2u32, 0, 1];
+        let mut results: Vec<(u32, Vec<f32>)> = Vec::new();
+        arena
+            .lookup_many(&mut handles, |h, slice| {
+                results.push((h, slice.to_vec()));
+            })
+            .unwrap();
+
+        // Results should be in sorted handle order (lookup_many sorts)
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].0, 0);
+        assert_eq!(results[1].0, 1);
+        assert_eq!(results[2].0, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lazy_arena_dims_mismatch() {
+        let dir = std::env::temp_dir().join("fluree_lazy_dims");
+        let _ = std::fs::create_dir_all(&dir);
+
+        // Shard has dims=3 but manifest says dims=2
+        let vecs: Vec<&[f32]> = vec![&[1.0, 2.0, 3.0]];
+        let (_, source) = write_test_shard(&dir, "s0.vas", 3, &vecs);
+
+        let manifest = VectorManifest {
+            version: 1,
+            dims: 2, // mismatch!
+            dtype: "f32".to_string(),
+            normalized: false,
+            shard_capacity: SHARD_CAPACITY,
+            total_count: 1,
+            shards: vec![ShardInfo {
+                cas: "s0".to_string(),
+                count: 1,
+            }],
+        };
+        let arena = make_lazy_arena(manifest, vec![source]);
+
+        let err = arena.lookup_vector(0).unwrap_err();
+        assert!(err.to_string().contains("dims"), "got: {err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lazy_arena_shard_not_on_disk() {
+        let manifest = VectorManifest {
+            version: 1,
+            dims: 2,
+            dtype: "f32".to_string(),
+            normalized: false,
+            shard_capacity: SHARD_CAPACITY,
+            total_count: 1,
+            shards: vec![ShardInfo {
+                cas: "missing".to_string(),
+                count: 1,
+            }],
+        };
+        let source = ShardSource {
+            cid_hash: 42,
+            cid: None,
+            path: PathBuf::from("/nonexistent/shard.vas"),
+            on_disk: AtomicBool::new(false),
+        };
+        let arena = make_lazy_arena(manifest, vec![source]);
+
+        let err = arena.lookup_vector(0).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(err.to_string().contains("not on disk"), "got: {err}");
     }
 }
