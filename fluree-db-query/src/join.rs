@@ -8,6 +8,8 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
+use crate::expression::passes_filters;
+use crate::ir::Expression;
 use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -170,9 +172,25 @@ pub struct NestedLoopJoinOperator {
     ///
     /// This prevents storing/cloning the same `current_left_batch` repeatedly.
     current_left_batch_stored_idx: Option<usize>,
+    /// Inline filter expressions evaluated on combined rows during the join.
+    ///
+    /// These filters have all required variables bound by the combined (left + right)
+    /// schema, so they can be evaluated immediately on each combined row rather than
+    /// requiring a separate FilterOperator wrapper. This eliminates per-batch allocation
+    /// overhead for filters whose last required variable is bound by this join.
+    filters: Vec<Expression>,
 }
 
 impl NestedLoopJoinOperator {
+    /// Check whether a combined row should be skipped due to inline filters.
+    fn should_skip_bindings(
+        &self,
+        bindings: &[Binding],
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> bool {
+        !passes_filters(&self.filters, &self.combined_schema, bindings, ctx)
+    }
+
     /// Create a new bind-join operator
     ///
     /// # Arguments
@@ -181,11 +199,13 @@ impl NestedLoopJoinOperator {
     /// * `left_schema` - Schema of the left operator
     /// * `right_pattern` - Pattern to execute for each left row
     /// * `object_bounds` - Optional range bounds for object variable (filter pushdown)
+    /// * `filters` - Inline filter expressions evaluated on combined rows during the join
     pub fn new(
         left: Box<dyn Operator>,
         left_schema: Arc<[VarId]>,
         right_pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
+        filters: Vec<Expression>,
     ) -> Self {
         // Build bind instructions: which left columns bind which right pattern positions
         let mut bind_instructions = Vec::new();
@@ -326,6 +346,7 @@ impl NestedLoopJoinOperator {
             stored_left_batches: Vec::new(),
             batched_output: VecDeque::new(),
             current_left_batch_stored_idx: None,
+            filters,
         }
     }
 
@@ -600,7 +621,11 @@ impl Operator for NestedLoopJoinOperator {
 
             // 2. Pending output from per-row path
             if !self.pending_output.is_empty() {
-                return self.build_output_batch(ctx).await;
+                if let Some(batch) = self.build_output_batch(ctx).await? {
+                    return Ok(Some(batch));
+                }
+                // All pending rows were filtered out — continue to process more left rows
+                continue;
             }
 
             // 3. Need to process more left rows
@@ -628,8 +653,12 @@ impl Operator for NestedLoopJoinOperator {
             // left batch in one instrumented span, rather than one-at-a-time.
             // This gives visibility into per-row join work that was previously
             // invisible (97-100% gap in query_run traces).
-            if !use_batched && self.current_left_batch.is_some() && self.pending_output.is_empty() {
-                let batch_len = self.current_left_batch.as_ref().unwrap().len();
+            if let (false, Some(left_batch), true) = (
+                use_batched,
+                self.current_left_batch.as_ref(),
+                self.pending_output.is_empty(),
+            ) {
+                let batch_len = left_batch.len();
                 let remaining = batch_len.saturating_sub(self.current_left_row);
                 if remaining > 0 {
                     let span = tracing::debug_span!(
@@ -802,6 +831,13 @@ impl NestedLoopJoinOperator {
                 if self.unify_check(left_batch, left_row, right_batch, right_row) {
                     // Combine and add to output
                     let combined = self.combine_rows(left_batch, left_row, right_batch, right_row);
+
+                    // Inline filter evaluation on the combined row
+                    if self.should_skip_bindings(&combined, Some(ctx)) {
+                        right_row += 1;
+                        continue;
+                    }
+
                     for (col, val) in combined.into_iter().enumerate() {
                         output_columns[col].push(val);
                     }
@@ -1346,6 +1382,11 @@ impl NestedLoopJoinOperator {
                                 combined.push(obj_binding.clone());
                             }
 
+                            // Inline filter evaluation before scatter
+                            if self.should_skip_bindings(&combined, Some(ctx)) {
+                                continue;
+                            }
+
                             scatter[accum_idx].push(combined);
                         }
                     }
@@ -1663,6 +1704,7 @@ mod tests {
             left_schema.clone(),
             right_pattern,
             None, // No object bounds
+            Vec::new(),
         );
 
         // Create a batch with one row that has Poisoned in position 0 (used for binding)
@@ -1750,6 +1792,7 @@ mod tests {
             left_schema.clone(),
             right_pattern,
             None, // No object bounds
+            Vec::new(),
         );
 
         // Verify that ?v is NOT in unify_instructions (it's substituted, not unified)
@@ -1851,6 +1894,7 @@ mod tests {
             left_schema.clone(),
             right_pattern,
             None, // No object bounds
+            Vec::new(),
         );
 
         // No unify_instructions since no shared vars between left [?s] and right [?x, ?y]

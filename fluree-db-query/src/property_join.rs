@@ -442,9 +442,9 @@ impl Operator for PropertyJoinOperator {
                                     left_schema,
                                     right_pattern,
                                     None, // bounds already applied in driver; keep probe unconstrained
+                                    Vec::new(),
                                 );
                                 join.open(ctx).await?;
-
                                 while let Some(batch) = join.next_batch(ctx).await? {
                                     let subject_col = batch.column_by_idx(0);
                                     let object_col = batch.column_by_idx(1);

@@ -110,7 +110,7 @@ impl FlakeStore {
 ///
 /// Stores flakes in an arena with per-index sorted vectors for efficient
 /// range queries and merge operations.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Novelty {
     /// Canonical flake storage (arena)
     store: FlakeStore,
@@ -130,12 +130,6 @@ pub struct Novelty {
 
     /// Epoch for cache invalidation - bumped once per commit
     pub epoch: u64,
-}
-
-impl Default for Novelty {
-    fn default() -> Self {
-        Self::new(0)
-    }
 }
 
 impl Novelty {
