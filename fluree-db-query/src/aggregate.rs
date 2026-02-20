@@ -25,6 +25,7 @@ use fluree_db_core::{FlakeValue, Sid};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Aggregate function types
 #[derive(Debug, Clone, PartialEq)]
@@ -185,104 +186,108 @@ impl Operator for AggregateOperator {
             return Ok(None);
         }
 
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "aggregate_batch",
             aggregates = self.aggregates.len(),
             rows_in = tracing::field::Empty,
             ms = tracing::field::Empty
         );
-        let _g = span.enter();
-        let start = Instant::now();
+        async {
+            let span = tracing::Span::current();
+            let start = Instant::now();
 
-        let batch = match self.child.next_batch(ctx).await? {
-            Some(b) => b,
-            None => {
-                self.state = OperatorState::Exhausted;
-                return Ok(None);
-            }
-        };
+            let batch = match self.child.next_batch(ctx).await? {
+                Some(b) => b,
+                None => {
+                    self.state = OperatorState::Exhausted;
+                    return Ok(None);
+                }
+            };
 
-        if batch.is_empty() {
-            return Ok(Some(Batch::empty(self.schema.clone())?));
-        }
-
-        span.record("rows_in", batch.len() as u64);
-
-        let num_cols = self.schema.len();
-        let mut output_columns: Vec<Vec<Binding>> = Vec::with_capacity(num_cols);
-
-        // Process child columns (regular aggregates and pass-through)
-        for col_idx in 0..self.child_col_count {
-            let mut col_output = Vec::with_capacity(batch.len());
-
-            for row_idx in 0..batch.len() {
-                let input_binding = batch.get_by_col(row_idx, col_idx);
-
-                let output_binding = match self.aggregate_map.get(col_idx).copied().flatten() {
-                    Some(agg_idx) => {
-                        // This column needs aggregation
-                        let spec = &self.aggregates[agg_idx];
-                        apply_aggregate(&spec.function, input_binding)
-                    }
-                    None => {
-                        // Pass through unchanged
-                        input_binding.clone()
-                    }
-                };
-
-                col_output.push(output_binding);
+            if batch.is_empty() {
+                return Ok(Some(Batch::empty(self.schema.clone())?));
             }
 
-            output_columns.push(col_output);
-        }
+            span.record("rows_in", batch.len() as u64);
 
-        if !self.extra_specs.is_empty() {
-            let mut group_sizes: Option<Vec<i64>> = None;
+            let num_cols = self.schema.len();
+            let mut output_columns: Vec<Vec<Binding>> = Vec::with_capacity(num_cols);
 
-            for (agg_idx, input_col, _output_col_idx) in &self.extra_specs {
-                let spec = &self.aggregates[*agg_idx];
-                let col_output: Vec<Binding> = match input_col {
-                    Some(col_idx) => (0..batch.len())
-                        .map(|row_idx| {
-                            let input_binding = batch.get_by_col(row_idx, *col_idx);
+            // Process child columns (regular aggregates and pass-through)
+            for col_idx in 0..self.child_col_count {
+                let mut col_output = Vec::with_capacity(batch.len());
+
+                for row_idx in 0..batch.len() {
+                    let input_binding = batch.get_by_col(row_idx, col_idx);
+
+                    let output_binding = match self.aggregate_map.get(col_idx).copied().flatten() {
+                        Some(agg_idx) => {
+                            // This column needs aggregation
+                            let spec = &self.aggregates[agg_idx];
                             apply_aggregate(&spec.function, input_binding)
-                        })
-                        .collect(),
-                    None => {
-                        let sizes = group_sizes.get_or_insert_with(|| {
-                            (0..batch.len())
-                                .map(|row_idx| {
-                                    if let Some(col_idx) = self.group_size_col {
-                                        let binding = batch.get_by_col(row_idx, col_idx);
-                                        if let Binding::Grouped(values) = binding {
-                                            return values.len() as i64;
-                                        }
-                                    }
+                        }
+                        None => {
+                            // Pass through unchanged
+                            input_binding.clone()
+                        }
+                    };
 
-                                    for col_idx in 0..self.child_col_count {
-                                        let binding = batch.get_by_col(row_idx, col_idx);
-                                        if let Binding::Grouped(values) = binding {
-                                            return values.len() as i64;
-                                        }
-                                    }
+                    col_output.push(output_binding);
+                }
 
-                                    1
-                                })
-                                .collect()
-                        });
-                        sizes
-                            .iter()
-                            .map(|&size| Binding::lit(FlakeValue::Long(size), xsd_long()))
-                            .collect()
-                    }
-                };
                 output_columns.push(col_output);
             }
-        }
 
-        let out = Batch::new(self.schema.clone(), output_columns)?;
-        span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
-        Ok(Some(out))
+            if !self.extra_specs.is_empty() {
+                let mut group_sizes: Option<Vec<i64>> = None;
+
+                for (agg_idx, input_col, _output_col_idx) in &self.extra_specs {
+                    let spec = &self.aggregates[*agg_idx];
+                    let col_output: Vec<Binding> = match input_col {
+                        Some(col_idx) => (0..batch.len())
+                            .map(|row_idx| {
+                                let input_binding = batch.get_by_col(row_idx, *col_idx);
+                                apply_aggregate(&spec.function, input_binding)
+                            })
+                            .collect(),
+                        None => {
+                            let sizes = group_sizes.get_or_insert_with(|| {
+                                (0..batch.len())
+                                    .map(|row_idx| {
+                                        if let Some(col_idx) = self.group_size_col {
+                                            let binding = batch.get_by_col(row_idx, col_idx);
+                                            if let Binding::Grouped(values) = binding {
+                                                return values.len() as i64;
+                                            }
+                                        }
+
+                                        for col_idx in 0..self.child_col_count {
+                                            let binding = batch.get_by_col(row_idx, col_idx);
+                                            if let Binding::Grouped(values) = binding {
+                                                return values.len() as i64;
+                                            }
+                                        }
+
+                                        1
+                                    })
+                                    .collect()
+                            });
+                            sizes
+                                .iter()
+                                .map(|&size| Binding::lit(FlakeValue::Long(size), xsd_long()))
+                                .collect()
+                        }
+                    };
+                    output_columns.push(col_output);
+                }
+            }
+
+            let out = Batch::new(self.schema.clone(), output_columns)?;
+            span.record("ms", (start.elapsed().as_secs_f64() * 1000.0) as u64);
+            Ok(Some(out))
+        }
+        .instrument(span)
+        .await
     }
 
     fn close(&mut self) {

@@ -4,7 +4,10 @@
 //! Follows the logging plan for performance-conscious observability.
 
 use crate::config::ServerConfig;
+use std::borrow::Cow;
 use std::env;
+#[cfg(feature = "otel")]
+use tracing_subscriber::filter::Targets;
 #[cfg(feature = "otel")]
 use tracing_subscriber::Layer;
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
@@ -154,14 +157,36 @@ pub fn init_logging(config: &TelemetryConfig) {
         EnvFilter::new(&config.log_filter)
     };
 
-    // When OTEL is enabled, attach the OTEL layer *first* so its type is `Layer<Registry>`.
+    // When OTEL is enabled, use a dual-layer architecture:
+    // - Console layer: uses RUST_LOG (EnvFilter) — operator controls all crates, all levels
+    // - OTEL layer: uses a hardcoded Targets filter — only fluree_* crates at DEBUG
+    //
+    // This prevents third-party crate spans (hyper, tonic, h2, tower-http) from flooding
+    // the OTEL BatchSpanProcessor queue when RUST_LOG=debug is set for investigation.
     #[cfg(feature = "otel")]
     {
         if config.is_otel_enabled() {
+            // Hardcoded allowlist: only fluree_* crates, capped at DEBUG (never TRACE).
+            // TRACE-level spans (per-leaf-node cursors etc.) generate thousands per query
+            // and would overwhelm the batch exporter.
+            let otel_targets = Targets::new()
+                .with_target("fluree_db_server", tracing::Level::DEBUG)
+                .with_target("fluree_db_api", tracing::Level::DEBUG)
+                .with_target("fluree_db_query", tracing::Level::DEBUG)
+                .with_target("fluree_db_transact", tracing::Level::DEBUG)
+                .with_target("fluree_db_indexer", tracing::Level::DEBUG)
+                .with_target("fluree_db_ledger", tracing::Level::DEBUG)
+                .with_target("fluree_db_connection", tracing::Level::DEBUG)
+                .with_target("fluree_db_nameservice", tracing::Level::DEBUG)
+                .with_target("fluree_db_core", tracing::Level::DEBUG);
+
             let subscriber = tracing_subscriber::registry()
-                .with(init_otel_layer(config))
-                .with(filter.clone())
-                .with(tracing_subscriber::fmt::layer().compact());
+                .with(init_otel_layer(config).with_filter(otel_targets))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .compact()
+                        .with_filter(filter),
+                );
 
             let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber));
             return;
@@ -179,6 +204,11 @@ pub fn init_logging(config: &TelemetryConfig) {
 ///
 /// Only call this if OTEL environment variables are set.
 /// Returns a tracing layer that exports spans via OTLP.
+///
+/// SYNC: This function mirrors `fluree-db-cli/src/main.rs::init_otel_layer`.
+/// If you change the exporter, sampler, batch processor, or Targets filter here,
+/// apply the same change there. Both must stay in lock-step.
+/// See CLAUDE.md § "Tracing & OTEL Spans" for the maintenance protocol.
 #[cfg(feature = "otel")]
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();
@@ -233,7 +263,15 @@ fn init_otel_layer(
         _ => Sampler::AlwaysOn, // default
     };
 
-    let batch = BatchSpanProcessor::builder(exporter, runtime::Tokio).build();
+    // Increase max queue size from default (~2048) to handle span volume from
+    // large queries at debug level without dropping parent spans.
+    let batch = BatchSpanProcessor::builder(exporter, runtime::Tokio)
+        .with_batch_config(
+            opentelemetry_sdk::trace::BatchConfigBuilder::default()
+                .with_max_queue_size(1_000_000)
+                .build(),
+        )
+        .build();
 
     let resource = Resource::builder_empty()
         .with_attributes(vec![
@@ -336,25 +374,38 @@ pub fn extract_trace_id(headers: &axum::http::HeaderMap) -> Option<String> {
     None
 }
 
-/// Create a request span with correlation context
+/// Create a request span with correlation context and dynamic OTEL naming.
 ///
 /// This is the main entry point for creating spans at request boundaries.
 /// Includes all correlation fields for CloudWatch filtering.
+///
+/// When `input_format` is provided, the OTEL span name becomes
+/// `"operation:format"` (e.g. `"query:sparql"`, `"transact:turtle"`),
+/// producing descriptive names in Jaeger/Tempo instead of generic "request".
 pub fn create_request_span(
     operation: &str,
     request_id: Option<&str>,
     trace_id: Option<&str>,
     ledger_id: Option<&str>,
     tenant_id: Option<&str>,
+    input_format: Option<&str>,
 ) -> tracing::Span {
+    let otel_name: Cow<'_, str> = match input_format {
+        Some(fmt) => format!("{operation}:{fmt}").into(),
+        None => operation.into(),
+    };
+    // error_code: intentionally Empty on success (OTEL convention — omit, don't record "ok").
+    // Only recorded on error paths via set_span_error_code().
     tracing::info_span!(
         "request",
+        otel.name = %otel_name,
         operation = operation,
         request_id = request_id,
         trace_id = trace_id,
         ledger_id = ledger_id,
         tenant_id = tenant_id,
-        error_code = tracing::field::Empty, // Will be set on error
+        error_code = tracing::field::Empty,
+        query_hash = tracing::field::Empty,
     )
 }
 

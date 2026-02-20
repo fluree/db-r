@@ -40,6 +40,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 // ============================================================================
 // Configuration
@@ -834,129 +835,134 @@ where
     N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
 {
     let pipeline_start = Instant::now();
-    let _span = tracing::info_span!("bulk_import", alias = %alias).entered();
+    let span = tracing::debug_span!("bulk_import", alias = %alias);
 
-    // ---- Log effective settings and resolve chunk source ----
-    config.log_effective_settings();
-    let chunk_source = resolve_chunk_source(import_path, config)?;
-    let estimated_total = chunk_source.estimated_len();
-    tracing::info!(
-        estimated_chunks = estimated_total,
-        streaming = chunk_source.is_streaming(),
-        path = %import_path.display(),
-        "resolved import chunks"
-    );
+    async {
+        // ---- Log effective settings and resolve chunk source ----
+        config.log_effective_settings();
+        let chunk_source = resolve_chunk_source(import_path, config)?;
+        let estimated_total = chunk_source.estimated_len();
+        tracing::info!(
+            estimated_chunks = estimated_total,
+            streaming = chunk_source.is_streaming(),
+            path = %import_path.display(),
+            "resolved import chunks"
+        );
 
-    // ---- Phase 1: Create ledger (init nameservice) ----
-    let normalized_alias =
-        fluree_db_core::ledger_id::normalize_ledger_id(alias).unwrap_or_else(|_| alias.to_string());
+        // ---- Phase 1: Create ledger (init nameservice) ----
+        let normalized_alias = fluree_db_core::ledger_id::normalize_ledger_id(alias)
+            .unwrap_or_else(|_| alias.to_string());
 
-    // Check if ledger already exists
-    let ns_record = nameservice
-        .lookup(&normalized_alias)
-        .await
-        .map_err(|e| ImportError::Storage(e.to_string()))?;
-
-    let needs_init = match &ns_record {
-        None => true,
-        Some(record) if record.retracted => {
-            // Ledger was dropped — safe to re-create.
-            tracing::info!(alias = %normalized_alias, "re-initializing retracted ledger");
-            true
-        }
-        Some(record) if record.commit_t > 0 || record.commit_head_id.is_some() => {
-            return Err(ImportError::Transact(format!(
-                "import requires a fresh ledger, but '{}' already has commits (t={})",
-                normalized_alias, record.commit_t
-            )));
-        }
-        Some(_) => false,
-    };
-
-    if needs_init {
-        nameservice
-            .publish_ledger_init(&normalized_alias)
+        // Check if ledger already exists
+        let ns_record = nameservice
+            .lookup(&normalized_alias)
             .await
             .map_err(|e| ImportError::Storage(e.to_string()))?;
-        tracing::info!(alias = %normalized_alias, "initialized new ledger in nameservice");
-    }
 
-    // ---- Set up session directory for runs/indexes ----
-    let alias_prefix = fluree_db_core::address_path::ledger_id_to_path_prefix(&normalized_alias)
-        .unwrap_or_else(|_| normalized_alias.replace(':', "/"));
+        let needs_init = match &ns_record {
+            None => true,
+            Some(record) if record.retracted => {
+                // Ledger was dropped — safe to re-create.
+                tracing::info!(alias = %normalized_alias, "re-initializing retracted ledger");
+                true
+            }
+            Some(record) if record.commit_t > 0 || record.commit_head_id.is_some() => {
+                return Err(ImportError::Transact(format!(
+                    "import requires a fresh ledger, but '{}' already has commits (t={})",
+                    normalized_alias, record.commit_t
+                )));
+            }
+            Some(_) => false,
+        };
 
-    // Derive session dir from storage's data directory.
-    // For file storage: {data_dir}/{alias_path}/tmp_import/{session_id}/
-    let sid = session_id();
-    let session_dir = derive_session_dir(storage, &alias_prefix, &sid);
-    let run_dir = session_dir.join("runs");
-    let index_dir = session_dir.join("index");
-    std::fs::create_dir_all(&run_dir)?;
+        if needs_init {
+            nameservice
+                .publish_ledger_init(&normalized_alias)
+                .await
+                .map_err(|e| ImportError::Storage(e.to_string()))?;
+            tracing::info!(alias = %normalized_alias, "initialized new ledger in nameservice");
+        }
 
-    tracing::info!(
-        session_dir = %session_dir.display(),
-        run_dir = %run_dir.display(),
-        "import session directory created"
-    );
+        // ---- Set up session directory for runs/indexes ----
+        let alias_prefix =
+            fluree_db_core::address_path::ledger_id_to_path_prefix(&normalized_alias)
+                .unwrap_or_else(|_| normalized_alias.replace(':', "/"));
 
-    // ---- Phases 2-6: Import, build, upload, publish ----
-    // Wrapped in a helper to ensure cleanup semantics:
-    // - On success or failure + cleanup_local_files=true → delete session dir
-    // - If cleanup itself fails → log warning, do not fail import
-    let paths = PipelinePaths {
-        run_dir: &run_dir,
-        index_dir: &index_dir,
-    };
-    let chunk_source = std::sync::Arc::new(chunk_source);
-    let pipeline_result = run_pipeline_phases(
-        storage,
-        nameservice,
-        &normalized_alias,
-        &chunk_source,
-        paths,
-        config,
-        pipeline_start,
-    )
-    .await;
+        // Derive session dir from storage's data directory.
+        // For file storage: {data_dir}/{alias_path}/tmp_import/{session_id}/
+        let sid = session_id();
+        let session_dir = derive_session_dir(storage, &alias_prefix, &sid);
+        let run_dir = session_dir.join("runs");
+        let index_dir = session_dir.join("index");
+        std::fs::create_dir_all(&run_dir)?;
 
-    // Cleanup session dir on both success and failure to avoid accumulating
-    // hundreds of GB of orphaned temp files from failed imports.
-    if config.cleanup_local_files {
-        if let Err(e) = std::fs::remove_dir_all(&session_dir) {
-            tracing::warn!(
-                session_dir = %session_dir.display(),
-                error = %e,
-                "failed to clean up import session directory"
-            );
+        tracing::info!(
+            session_dir = %session_dir.display(),
+            run_dir = %run_dir.display(),
+            "import session directory created"
+        );
+
+        // ---- Phases 2-6: Import, build, upload, publish ----
+        // Wrapped in a helper to ensure cleanup semantics:
+        // - On success or failure + cleanup_local_files=true → delete session dir
+        // - If cleanup itself fails → log warning, do not fail import
+        let paths = PipelinePaths {
+            run_dir: &run_dir,
+            index_dir: &index_dir,
+        };
+        let chunk_source = std::sync::Arc::new(chunk_source);
+        let pipeline_result = run_pipeline_phases(
+            storage,
+            nameservice,
+            &normalized_alias,
+            &chunk_source,
+            paths,
+            config,
+            pipeline_start,
+        )
+        .await;
+
+        // Cleanup session dir on both success and failure to avoid accumulating
+        // hundreds of GB of orphaned temp files from failed imports.
+        if config.cleanup_local_files {
+            if let Err(e) = std::fs::remove_dir_all(&session_dir) {
+                tracing::warn!(
+                    session_dir = %session_dir.display(),
+                    error = %e,
+                    "failed to clean up import session directory"
+                );
+            } else {
+                tracing::info!(
+                    session_dir = %session_dir.display(),
+                    "import session directory cleaned up"
+                );
+            }
         } else {
             tracing::info!(
                 session_dir = %session_dir.display(),
-                "import session directory cleaned up"
+                "cleanup disabled; import artifacts retained"
             );
         }
-    } else {
-        tracing::info!(
-            session_dir = %session_dir.display(),
-            "cleanup disabled; import artifacts retained"
-        );
-    }
 
-    match pipeline_result {
-        Ok(result) => {
-            let total_elapsed = pipeline_start.elapsed();
-            tracing::info!(
-                alias = %normalized_alias,
-                t = result.t,
-                flakes = result.flake_count,
-                root_id = ?result.root_id,
-                elapsed = ?total_elapsed,
-                "bulk import pipeline complete"
-            );
+        match pipeline_result {
+            Ok(result) => {
+                let total_elapsed = pipeline_start.elapsed();
+                tracing::info!(
+                    alias = %normalized_alias,
+                    t = result.t,
+                    flakes = result.flake_count,
+                    root_id = ?result.root_id,
+                    elapsed = ?total_elapsed,
+                    "bulk import pipeline complete"
+                );
 
-            Ok(result)
+                Ok(result)
+            }
+            Err(e) => Err(e),
         }
-        Err(e) => Err(e),
     }
+    .instrument(span)
+    .await
 }
 
 // ============================================================================
@@ -1200,7 +1206,9 @@ where
             .acquire_owned()
             .await
             .expect("semaphore closed");
+        let parent_span = tracing::Span::current();
         sort_write_handles.push(tokio::task::spawn_blocking(move || {
+            let _guard = parent_span.enter();
             let r = fluree_db_indexer::run_index::spool::sort_remap_and_write_sorted_commit(
                 sr.records,
                 sr.subjects,
@@ -1910,7 +1918,9 @@ where
         let vocab_dir = vocab_dir.clone();
         let spool_dir = spool_dir.clone();
 
+        let parent_span = tracing::Span::current();
         Some(tokio::task::spawn_blocking(move || {
+            let _guard = parent_span.enter();
             use fluree_db_core::value_id::{ObjKey, ObjKind};
             use fluree_db_core::{DatatypeDictId, SubjectId};
             use fluree_db_indexer::run_index::run_record::LIST_INDEX_NONE;
@@ -2138,7 +2148,10 @@ where
     let namespace_codes_for_subj = Arc::clone(&namespace_codes);
     let run_dir_for_subj = run_dir_path.clone();
     let remap_dir_for_subj = remap_dir_path.clone();
+    let merge_parent_span = tracing::Span::current();
+    let subj_span = merge_parent_span.clone();
     let subj_handle = tokio::task::spawn_blocking(move || {
+        let _guard = subj_span.enter();
         vocab_merge::merge_subject_vocabs(
             &subj_vocab_paths_for_task,
             &chunk_ids_for_subj,
@@ -2152,7 +2165,9 @@ where
     let chunk_ids_for_str = chunk_ids.clone();
     let run_dir_for_str = run_dir_path.clone();
     let remap_dir_for_str = remap_dir_path.clone();
+    let str_span = merge_parent_span.clone();
     let str_handle = tokio::task::spawn_blocking(move || {
+        let _guard = str_span.enter();
         vocab_merge::merge_string_vocabs(
             &str_vocab_paths_for_task,
             &chunk_ids_for_str,
@@ -2162,7 +2177,9 @@ where
     });
 
     let lang_vocab_paths_for_task = lang_vocab_paths.clone();
+    let lang_span = merge_parent_span;
     let lang_handle = tokio::task::spawn_blocking(move || {
+        let _guard = lang_span.enter();
         fluree_db_indexer::run_index::build_lang_remap_from_vocabs(&lang_vocab_paths_for_task)
     });
 
@@ -2544,7 +2561,10 @@ where
     let spot_index_dir = input.index_dir.to_path_buf();
     let spot_counter = merge_counter.clone();
     let spot_rdf_type_p_id = input.rdf_type_p_id;
+    let index_parent_span = tracing::Span::current();
+    let spot_span = index_parent_span.clone();
     let spot_handle = tokio::task::spawn_blocking(move || {
+        let _guard = spot_span.enter();
         build_spot_from_sorted_commits(
             spot_inputs,
             SpotFromCommitsConfig {
@@ -2589,8 +2609,10 @@ where
         Option<fluree_db_indexer::stats::IdStatsHook>,
     );
 
+    let de_span = index_parent_span;
     let de_handle = tokio::task::spawn_blocking(
         move || -> std::result::Result<DeResult, ImportError> {
+            let _guard = de_span.enter();
             use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
             use fluree_db_indexer::run_index::{
                 MultiOrderConfig, MultiOrderRunWriter, RunSortOrder as RSO,
@@ -2619,6 +2641,7 @@ where
             let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
             std::thread::scope(|scope| -> std::result::Result<(), ImportError> {
+                let thread_parent = tracing::Span::current();
                 let mut handles = Vec::with_capacity(worker_count);
                 for _ in 0..worker_count {
                     let commit_infos_ref = &sorted_commit_infos;
@@ -2627,8 +2650,10 @@ where
                     let remap_run_dir = remap_run_dir.clone();
                     let remap_dir = remap_remap_dir.clone();
                     let next_chunk = std::sync::Arc::clone(&next_chunk);
+                    let thread_span = thread_parent.clone();
 
                     handles.push(scope.spawn(move || -> std::result::Result<(u64, Vec<fluree_db_indexer::stats::IdStatsHook>), ImportError> {
+                    let _guard = thread_span.enter();
                     let mut local_total = 0u64;
                     let mut local_hooks = Vec::new();
 

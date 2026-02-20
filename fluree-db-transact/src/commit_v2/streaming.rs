@@ -128,7 +128,7 @@ impl StreamingCommitWriter {
         // 1. Finalize the ops sink and read back the spool
         let (mut file, is_compressed) = self.sink.finish()?;
         let ops_section = {
-            let _span = tracing::info_span!("v2_spool_readback", op_count).entered();
+            let _span = tracing::debug_span!("v2_spool_readback", op_count).entered();
             file.seek(SeekFrom::Start(0))
                 .map_err(CommitV2Error::CompressionFailed)?;
             let mut buf = Vec::new();
@@ -139,7 +139,7 @@ impl StreamingCommitWriter {
 
         // 2. Encode envelope (binary)
         let envelope_bytes = {
-            let _span = tracing::info_span!("v2_encode_envelope").entered();
+            let _span = tracing::debug_span!("v2_encode_envelope").entered();
             let mut buf = Vec::new();
             encode_envelope_fields(envelope, &mut buf)?;
             buf
@@ -147,7 +147,7 @@ impl StreamingCommitWriter {
 
         // 3. Serialize dictionaries
         let dict_bytes = {
-            let _span = tracing::info_span!(
+            let _span = tracing::debug_span!(
                 "v2_serialize_dicts",
                 subject_entries = self.dicts.subject.len(),
                 predicate_entries = self.dicts.predicate.len(),
@@ -221,7 +221,7 @@ impl StreamingCommitWriter {
 
         // 10. Compute SHA-256, append as trailing hash
         let hash = {
-            let _span = tracing::info_span!("v2_sha256_hash", blob_bytes = output.len()).entered();
+            let _span = tracing::debug_span!("v2_sha256_hash", blob_bytes = output.len()).entered();
             Sha256::digest(&output)
         };
         let hash_bytes: [u8; 32] = hash.into();
