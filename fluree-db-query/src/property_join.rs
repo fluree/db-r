@@ -38,6 +38,7 @@ use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use tracing::Instrument;
 
 use crate::binary_scan::ScanOperator;
 
@@ -326,240 +327,246 @@ impl Operator for PropertyJoinOperator {
     }
 
     async fn open(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "property_join_open",
             predicates = self.predicates.len(),
             multi_ledger = ctx.is_multi_ledger(),
             has_binary_store = ctx.binary_store.is_some(),
             has_bounds = !self.object_bounds.is_empty(),
         );
-        let _g = span.enter();
+        async {
+            self.state = OperatorState::Open;
+            self.subject_values.clear();
+            self.pending_subjects.clear();
+            self.subject_idx = 0;
 
-        self.state = OperatorState::Open;
-        self.subject_values.clear();
-        self.pending_subjects.clear();
-        self.subject_idx = 0;
+            // For each predicate, scan and collect (subject -> values) mappings.
+            // Key by a join-safe subject key (encoded IDs in single-ledger mode).
+            //
+            // Optimization: if a predicate has object bounds (range filter pushdown),
+            // scan it first to get a selective subject set, then use that as a semi-join
+            // driver for subsequent predicates in single-ledger binary mode.
+            //
+            // This turns a common "date filter + vector predicate" workload from:
+            //   scan(date with bounds) + scan(vec full) + intersect
+            // into:
+            //   scan(date with bounds) + batched probe(vec for matching subjects)
+            //
+            // NOTE: The batched probe path currently requires:
+            // - single-ledger (no dataset)
+            // - binary_store present
+            // - no datatype constraint on the probed predicate (dt=None)
+            let mut all_subject_values: FxHashMap<SubjectKey, (Binding, Vec<Vec<Binding>>)> =
+                FxHashMap::default();
 
-        // For each predicate, scan and collect (subject -> values) mappings.
-        // Key by a join-safe subject key (encoded IDs in single-ledger mode).
-        //
-        // Optimization: if a predicate has object bounds (range filter pushdown),
-        // scan it first to get a selective subject set, then use that as a semi-join
-        // driver for subsequent predicates in single-ledger binary mode.
-        //
-        // This turns a common "date filter + vector predicate" workload from:
-        //   scan(date with bounds) + scan(vec full) + intersect
-        // into:
-        //   scan(date with bounds) + batched probe(vec for matching subjects)
-        //
-        // NOTE: The batched probe path currently requires:
-        // - single-ledger (no dataset)
-        // - binary_store present
-        // - no datatype constraint on the probed predicate (dt=None)
-        let mut all_subject_values: FxHashMap<SubjectKey, (Binding, Vec<Vec<Binding>>)> =
-            FxHashMap::default();
+            let driver_pred_idx = self
+                .predicates
+                .iter()
+                .enumerate()
+                .find(|(_idx, (_p, obj_var, _dt))| self.object_bounds.contains_key(obj_var))
+                .map(|(idx, _)| idx);
+            tracing::debug!(?driver_pred_idx, "property_join: selected driver predicate");
 
-        let driver_pred_idx = self
-            .predicates
-            .iter()
-            .enumerate()
-            .find(|(_idx, (_p, obj_var, _dt))| self.object_bounds.contains_key(obj_var))
-            .map(|(idx, _)| idx);
-        tracing::debug!(?driver_pred_idx, "property_join: selected driver predicate");
+            let mut scan_order: Vec<usize> = (0..self.predicates.len()).collect();
+            if let Some(d) = driver_pred_idx {
+                scan_order.swap(0, d);
+            }
 
-        let mut scan_order: Vec<usize> = (0..self.predicates.len()).collect();
-        if let Some(d) = driver_pred_idx {
-            scan_order.swap(0, d);
-        }
+            let mut driver_subject_ids: Option<Vec<u64>> = None;
+            let mut used_batched_probe = false;
+            let mut probe_chunks: u64 = 0;
+            let mut probe_subjects_total: u64 = 0;
+            let mut scan_rows_total: u64 = 0;
 
-        let mut driver_subject_ids: Option<Vec<u64>> = None;
-        let mut used_batched_probe = false;
-        let mut probe_chunks: u64 = 0;
-        let mut probe_subjects_total: u64 = 0;
-        let mut scan_rows_total: u64 = 0;
+            for (order_pos, pred_idx) in scan_order.iter().copied().enumerate() {
+                let (pred_term, obj_var, dt) = &self.predicates[pred_idx];
 
-        for (order_pos, pred_idx) in scan_order.iter().copied().enumerate() {
-            let (pred_term, obj_var, dt) = &self.predicates[pred_idx];
+                // If we have a driver subject set and we're in the right execution mode,
+                // try a batched subject probe for this predicate.
+                let can_batched_probe = order_pos > 0
+                    && driver_subject_ids.is_some()
+                    && ctx.has_binary_store()
+                    && dt.is_none();
 
-            // If we have a driver subject set and we're in the right execution mode,
-            // try a batched subject probe for this predicate.
-            let can_batched_probe = order_pos > 0
-                && driver_subject_ids.is_some()
-                && ctx.has_binary_store()
-                && dt.is_none();
+                if can_batched_probe {
+                    let store = ctx.binary_store.as_ref().unwrap();
+                    let pred_sid = match pred_term {
+                        Term::Sid(s) => Some(s.clone()),
+                        Term::Iri(iri) => Some(store.encode_iri(iri)),
+                        _ => None,
+                    };
 
-            if can_batched_probe {
-                let store = ctx.binary_store.as_ref().unwrap();
-                let pred_sid = match pred_term {
-                    Term::Sid(s) => Some(s.clone()),
-                    Term::Iri(iri) => Some(store.encode_iri(iri)),
-                    _ => None,
-                };
+                    if let Some(pred_sid) = pred_sid {
+                        let subject_ids = driver_subject_ids.as_ref().unwrap();
+                        if !subject_ids.is_empty() {
+                            // IMPORTANT: Batched join uses the min/max s_id range of the left batch
+                            // to decide which leaf files/leaflets to scan. If the subject IDs are
+                            // sparse across the full id space, a single huge batch can still scan
+                            // nearly the entire predicate partition.
+                            //
+                            // To improve locality, chunk the subject IDs into smaller sorted ranges
+                            // and probe each chunk independently.
+                            const PROBE_CHUNK_SIZE: usize = 256;
 
-                if let Some(pred_sid) = pred_sid {
-                    let subject_ids = driver_subject_ids.as_ref().unwrap();
-                    if !subject_ids.is_empty() {
-                        // IMPORTANT: Batched join uses the min/max s_id range of the left batch
-                        // to decide which leaf files/leaflets to scan. If the subject IDs are
-                        // sparse across the full id space, a single huge batch can still scan
-                        // nearly the entire predicate partition.
-                        //
-                        // To improve locality, chunk the subject IDs into smaller sorted ranges
-                        // and probe each chunk independently.
-                        const PROBE_CHUNK_SIZE: usize = 256;
+                            let mut ids = subject_ids.clone();
+                            ids.sort_unstable();
 
-                        let mut ids = subject_ids.clone();
-                        ids.sort_unstable();
+                            for chunk in ids.chunks(PROBE_CHUNK_SIZE) {
+                                used_batched_probe = true;
+                                probe_chunks += 1;
+                                probe_subjects_total += chunk.len() as u64;
 
-                        for chunk in ids.chunks(PROBE_CHUNK_SIZE) {
-                            used_batched_probe = true;
-                            probe_chunks += 1;
-                            probe_subjects_total += chunk.len() as u64;
+                                let rows: Vec<Vec<Binding>> = chunk
+                                    .iter()
+                                    .map(|&s_id| vec![Binding::EncodedSid { s_id }])
+                                    .collect();
 
-                            let rows: Vec<Vec<Binding>> = chunk
-                                .iter()
-                                .map(|&s_id| vec![Binding::EncodedSid { s_id }])
-                                .collect();
+                                // Seed: VALUES ?s { <subjectIds...> }
+                                let left = Box::new(ValuesOperator::new(
+                                    Box::new(EmptyOperator::new()),
+                                    vec![self.subject_var],
+                                    rows,
+                                ));
+                                let left_schema: Arc<[VarId]> =
+                                    Arc::from(vec![self.subject_var].into_boxed_slice());
 
-                            // Seed: VALUES ?s { <subjectIds...> }
-                            let left = Box::new(ValuesOperator::new(
-                                Box::new(EmptyOperator::new()),
-                                vec![self.subject_var],
-                                rows,
-                            ));
-                            let left_schema: Arc<[VarId]> =
-                                Arc::from(vec![self.subject_var].into_boxed_slice());
+                                // Probe: ?s <pred> ?o
+                                let right_pattern = TriplePattern::new(
+                                    Term::Var(self.subject_var),
+                                    Term::Sid(pred_sid.clone()),
+                                    Term::Var(TEMP_OBJECT_VAR),
+                                );
 
-                            // Probe: ?s <pred> ?o
-                            let right_pattern = TriplePattern::new(
-                                Term::Var(self.subject_var),
-                                Term::Sid(pred_sid.clone()),
-                                Term::Var(TEMP_OBJECT_VAR),
-                            );
-
-                            let mut join = NestedLoopJoinOperator::new(
-                                left,
-                                left_schema,
-                                right_pattern,
-                                None, // bounds already applied in driver; keep probe unconstrained
-                                Vec::new(),
-                            );
-                            join.open(ctx).await?;
-
-                            while let Some(batch) = join.next_batch(ctx).await? {
-                                let subject_col = batch.column_by_idx(0);
-                                let object_col = batch.column_by_idx(1);
-                                if let (Some(subjects), Some(objects)) = (subject_col, object_col) {
-                                    scan_rows_total += batch.len() as u64;
-                                    for (subject, object) in subjects.iter().zip(objects.iter()) {
-                                        if let Some(key) = Self::subject_key(ctx, subject) {
-                                            if let Some(entry) = all_subject_values.get_mut(&key) {
-                                                entry.1[pred_idx].push(object.clone());
+                                let mut join = NestedLoopJoinOperator::new(
+                                    left,
+                                    left_schema,
+                                    right_pattern,
+                                    None, // bounds already applied in driver; keep probe unconstrained
+                                    Vec::new(),
+                                );
+                                join.open(ctx).await?;
+                                while let Some(batch) = join.next_batch(ctx).await? {
+                                    let subject_col = batch.column_by_idx(0);
+                                    let object_col = batch.column_by_idx(1);
+                                    if let (Some(subjects), Some(objects)) =
+                                        (subject_col, object_col)
+                                    {
+                                        scan_rows_total += batch.len() as u64;
+                                        for (subject, object) in subjects.iter().zip(objects.iter())
+                                        {
+                                            if let Some(key) = Self::subject_key(ctx, subject) {
+                                                if let Some(entry) =
+                                                    all_subject_values.get_mut(&key)
+                                                {
+                                                    entry.1[pred_idx].push(object.clone());
+                                                }
                                             }
                                         }
                                     }
                                 }
+                                join.close();
                             }
-                            join.close();
-                        }
 
-                        continue;
+                            continue;
+                        }
                     }
                 }
-            }
 
-            // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
-            // pred_term is already a Term (Sid or Iri) so use it directly
-            let pattern = if let Some(dt) = dt {
-                TriplePattern::with_dt(
-                    Term::Var(self.subject_var),
-                    pred_term.clone(),
-                    Term::Var(TEMP_OBJECT_VAR),
-                    dt.clone(),
-                )
-            } else {
-                TriplePattern::new(
-                    Term::Var(self.subject_var),
-                    pred_term.clone(),
-                    Term::Var(TEMP_OBJECT_VAR),
-                )
-            };
+                // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
+                // pred_term is already a Term (Sid or Iri) so use it directly
+                let pattern = if let Some(dt) = dt {
+                    TriplePattern::with_dt(
+                        Term::Var(self.subject_var),
+                        pred_term.clone(),
+                        Term::Var(TEMP_OBJECT_VAR),
+                        dt.clone(),
+                    )
+                } else {
+                    TriplePattern::new(
+                        Term::Var(self.subject_var),
+                        pred_term.clone(),
+                        Term::Var(TEMP_OBJECT_VAR),
+                    )
+                };
 
-            // Create scan with optional bounds pushdown for this object variable.
-            //
-            // `ScanOperator` selects between binary cursor and range fallback
-            // at open() time based on the execution context.
-            let bounds = self.object_bounds.get(obj_var).cloned();
-            let mut scan: BoxedOperator = make_property_join_scan(pattern, bounds);
-            scan.open(ctx).await?;
+                // Create scan with optional bounds pushdown for this object variable.
+                //
+                // `ScanOperator` selects between binary cursor and range fallback
+                // at open() time based on the execution context.
+                let bounds = self.object_bounds.get(obj_var).cloned();
+                let mut scan: BoxedOperator = make_property_join_scan(pattern, bounds);
+                scan.open(ctx).await?;
 
-            while let Some(batch) = scan.next_batch(ctx).await? {
-                // Schema for this scan is [subject_var, temp_obj_var]
-                let subject_col = batch.column_by_idx(0);
-                let object_col = batch.column_by_idx(1);
+                while let Some(batch) = scan.next_batch(ctx).await? {
+                    // Schema for this scan is [subject_var, temp_obj_var]
+                    let subject_col = batch.column_by_idx(0);
+                    let object_col = batch.column_by_idx(1);
 
-                if let (Some(subjects), Some(objects)) = (subject_col, object_col) {
-                    scan_rows_total += batch.len() as u64;
-                    for (subject, object) in subjects.iter().zip(objects.iter()) {
-                        // Extract join-safe subject key for keying, preserving original binding for output.
-                        if let Some(key) = Self::subject_key(ctx, subject) {
-                            // If we've already built a driver subject set, don't insert new subjects.
-                            // This prevents the unbounded predicate scan from ballooning the map.
-                            if order_pos > 0 && !all_subject_values.is_empty() {
-                                if let Some(entry) = all_subject_values.get_mut(&key) {
-                                    entry.1[pred_idx].push(object.clone());
+                    if let (Some(subjects), Some(objects)) = (subject_col, object_col) {
+                        scan_rows_total += batch.len() as u64;
+                        for (subject, object) in subjects.iter().zip(objects.iter()) {
+                            // Extract join-safe subject key for keying, preserving original binding for output.
+                            if let Some(key) = Self::subject_key(ctx, subject) {
+                                // If we've already built a driver subject set, don't insert new subjects.
+                                // This prevents the unbounded predicate scan from ballooning the map.
+                                if order_pos > 0 && !all_subject_values.is_empty() {
+                                    if let Some(entry) = all_subject_values.get_mut(&key) {
+                                        entry.1[pred_idx].push(object.clone());
+                                    }
+                                    continue;
                                 }
-                                continue;
-                            }
 
-                            let entry = all_subject_values.entry(key).or_insert_with(|| {
-                                // Initialize with the subject binding and empty vecs for each predicate
-                                (subject.clone(), vec![Vec::new(); self.predicates.len()])
-                            });
-                            entry.1[pred_idx].push(object.clone());
+                                let entry = all_subject_values.entry(key).or_insert_with(|| {
+                                    // Initialize with the subject binding and empty vecs for each predicate
+                                    (subject.clone(), vec![Vec::new(); self.predicates.len()])
+                                });
+                                entry.1[pred_idx].push(object.clone());
+                            }
                         }
                     }
                 }
-            }
 
-            scan.close();
+                scan.close();
 
-            // After the first scan (driver), capture the subject IDs for batched probing.
-            if order_pos == 0 && driver_pred_idx.is_some() && ctx.has_binary_store() {
-                let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
-                for k in all_subject_values.keys() {
-                    if let SubjectKey::Id(s_id) = k {
-                        ids.push(*s_id);
-                    } else {
-                        ids.clear();
-                        break;
+                // After the first scan (driver), capture the subject IDs for batched probing.
+                if order_pos == 0 && driver_pred_idx.is_some() && ctx.has_binary_store() {
+                    let mut ids: Vec<u64> = Vec::with_capacity(all_subject_values.len());
+                    for k in all_subject_values.keys() {
+                        if let SubjectKey::Id(s_id) = k {
+                            ids.push(*s_id);
+                        } else {
+                            ids.clear();
+                            break;
+                        }
+                    }
+                    if !ids.is_empty() {
+                        driver_subject_ids = Some(ids);
                     }
                 }
-                if !ids.is_empty() {
-                    driver_subject_ids = Some(ids);
-                }
             }
+
+            // Filter to only subjects that have values for ALL predicates
+            self.subject_values = all_subject_values
+                .into_iter()
+                .filter(|(_, (_, values))| values.iter().all(|v| !v.is_empty()))
+                .collect();
+
+            // Collect subjects for iteration
+            self.pending_subjects = self.subject_values.keys().cloned().collect();
+
+            tracing::debug!(
+                subjects = self.pending_subjects.len(),
+                used_batched_probe,
+                probe_chunks,
+                probe_subjects_total,
+                scan_rows_total,
+                "property_join: open complete"
+            );
+
+            Ok(())
         }
-
-        // Filter to only subjects that have values for ALL predicates
-        self.subject_values = all_subject_values
-            .into_iter()
-            .filter(|(_, (_, values))| values.iter().all(|v| !v.is_empty()))
-            .collect();
-
-        // Collect subjects for iteration
-        self.pending_subjects = self.subject_values.keys().cloned().collect();
-
-        tracing::info!(
-            subjects = self.pending_subjects.len(),
-            used_batched_probe,
-            probe_chunks,
-            probe_subjects_total,
-            scan_rows_total,
-            "property_join: open complete"
-        );
-
-        Ok(())
+        .instrument(span)
+        .await
     }
 
     async fn next_batch(&mut self, ctx: &ExecutionContext<'_>) -> Result<Option<Batch>> {

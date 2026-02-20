@@ -122,7 +122,7 @@ curl -X POST "http://localhost:8090/v1/fluree/insert" \
 ### Query Data
 
 ```bash
-curl -X POST "http://localhost:8090/fluree/query" \
+curl -X POST "http://localhost:8090/v1/fluree/query" \
   -H "Content-Type: application/json" \
   -d '{
     "from": "test:main",

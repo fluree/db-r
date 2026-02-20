@@ -81,7 +81,9 @@ pub fn current_stats(indexed: &IndexStats, novelty: &Novelty) -> IndexStats {
     }
 
     // Convert back to IndexStats format
-    finalize_stats(indexed, property_counts, class_data)
+    let mut stats = finalize_stats(indexed, property_counts, class_data);
+    stats.size = indexed.size + novelty.size as u64;
+    stats
 }
 
 /// Property count by (namespace_code, name)

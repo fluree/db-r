@@ -92,6 +92,7 @@ pub use spool::{
 pub use spot_cursor::SpotCursor;
 pub use streaming_reader::StreamingRunReader;
 pub use types::{sort_overlay_ops, OverlayOp};
+pub use vector_arena::{LazyVectorArena, VectorSlice};
 
 use std::collections::HashMap;
 use std::io;

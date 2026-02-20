@@ -246,7 +246,7 @@ pub fn build_index(config: IndexBuildConfig) -> Result<IndexBuildResult, IndexBu
     let order = config.sort_order;
     let order_name = order.dir_name();
     let start = Instant::now();
-    let _span = tracing::info_span!("build_index", order = order_name).entered();
+    let _span = tracing::debug_span!("build_index", order = order_name).entered();
 
     // ---- Step 1: Discover run files ----
     let mut run_paths = discover_run_files(&config.run_dir)?;
@@ -280,7 +280,7 @@ pub fn build_index_from_run_paths(
     let order = config.sort_order;
     let order_name = order.dir_name();
     let start = Instant::now();
-    let _span = tracing::info_span!("build_index", order = order_name).entered();
+    let _span = tracing::debug_span!("build_index", order = order_name).entered();
 
     tracing::info!(
         run_files = run_paths.len(),
@@ -976,7 +976,7 @@ pub fn build_spot_from_sorted_commits<
     let order = RunSortOrder::Spot;
     let order_name = "spot";
     let start = Instant::now();
-    let _span = tracing::info_span!("build_spot_from_commits").entered();
+    let _span = tracing::debug_span!("build_spot_from_commits").entered();
 
     if inputs.is_empty() {
         return Err(IndexBuildError::NoRunFiles);
@@ -1361,7 +1361,7 @@ pub fn build_all_indexes(
     skip_dedup: bool,
     skip_region3: bool,
 ) -> Result<Vec<(RunSortOrder, IndexBuildResult)>, IndexBuildError> {
-    let _span = tracing::info_span!("build_all_indexes").entered();
+    let _span = tracing::debug_span!("build_all_indexes").entered();
     let start = Instant::now();
 
     // Pre-compute unified language dict (skips if already done).
@@ -1370,7 +1370,8 @@ pub fn build_all_indexes(
         precompute_language_dict(base_run_dir)?;
     }
 
-    // Spawn one thread per order
+    // Spawn one thread per order — propagate tracing context into each thread
+    let parent_span = tracing::Span::current();
     let results = std::thread::scope(|s| {
         let handles: Vec<_> = orders
             .iter()
@@ -1413,10 +1414,12 @@ pub fn build_all_indexes(
                 } else {
                     None
                 };
+                let thread_span = parent_span.clone();
 
                 Some((
                     order,
                     s.spawn(move || {
+                        let _guard = thread_span.enter(); // safe: sync OS thread
                         let config = IndexBuildConfig {
                             run_dir,
                             dicts_dir: base,

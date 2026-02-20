@@ -66,6 +66,7 @@ use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarRegistry;
 use fluree_db_core::{Db, StatsView, Tracker};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Data source for query execution.
 ///
@@ -142,118 +143,127 @@ pub async fn execute(db: &Db, vars: &VarRegistry, query: &ExecutableQuery) -> Re
         db_t = db.t,
         pattern_count = query.query.patterns.len()
     );
-    let _guard = span.enter();
+    // Use an async block with .instrument() so the span is NOT held
+    // across .await via a thread-local guard (which would cause cross-request
+    // trace contamination in tokio's multi-threaded runtime).
+    async move {
+        tracing::debug!("starting query execution");
 
-    tracing::debug!("starting query execution");
+        let ctx = ExecutionContext::new(db, vars).with_strict_bind_errors();
+        let hierarchy = db.schema_hierarchy();
 
-    let ctx = ExecutionContext::new(db, vars).with_strict_bind_errors();
-    let hierarchy = db.schema_hierarchy();
+        // Compute effective reasoning modes (auto-RDFS when hierarchy exists)
+        let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
 
-    // Compute effective reasoning modes (auto-RDFS when hierarchy exists)
-    let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
-
-    if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl {
-        tracing::debug!(
-            rdfs = reasoning.rdfs,
-            owl2ql = reasoning.owl2ql,
-            owl2rl = reasoning.owl2rl,
-            "reasoning enabled"
-        );
-    }
-
-    // Build ontology for OWL2-QL mode (if enabled)
-    let ontology = if reasoning.owl2ql {
-        tracing::debug!("building OWL2-QL ontology");
-        Some(crate::rewrite_owl_ql::Ontology::from_db(db, db.t as u64).await?)
-    } else {
-        None
-    };
-
-    // Apply pattern rewriting for reasoning (RDFS/OWL expansion)
-    fn encode_term(db: &Db, t: &Term) -> Term {
-        match t {
-            Term::Iri(iri) => db
-                .encode_iri(iri)
-                .map(Term::Sid)
-                .unwrap_or_else(|| t.clone()),
-            _ => t.clone(),
+        if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl {
+            tracing::debug!(
+                rdfs = reasoning.rdfs,
+                owl2ql = reasoning.owl2ql,
+                owl2rl = reasoning.owl2rl,
+                "reasoning enabled"
+            );
         }
-    }
 
-    fn encode_patterns_for_reasoning(db: &Db, patterns: &[Pattern]) -> Vec<Pattern> {
-        patterns
-            .iter()
-            .map(|p| match p {
-                Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                    s: encode_term(db, &tp.s),
-                    p: encode_term(db, &tp.p),
-                    o: encode_term(db, &tp.o),
-                    dt: tp.dt.clone(),
-                    lang: tp.lang.clone(),
-                }),
-                Pattern::Optional(inner) => {
-                    Pattern::Optional(encode_patterns_for_reasoning(db, inner))
-                }
-                Pattern::Union(branches) => Pattern::Union(
-                    branches
-                        .iter()
-                        .map(|b| encode_patterns_for_reasoning(db, b))
-                        .collect(),
-                ),
-                Pattern::Minus(inner) => Pattern::Minus(encode_patterns_for_reasoning(db, inner)),
-                Pattern::Exists(inner) => Pattern::Exists(encode_patterns_for_reasoning(db, inner)),
-                Pattern::NotExists(inner) => {
-                    Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
-                }
-                Pattern::Graph { name, patterns } => Pattern::Graph {
-                    name: name.clone(),
-                    patterns: encode_patterns_for_reasoning(db, patterns),
-                },
-                _ => p.clone(),
-            })
-            .collect()
-    }
+        // Build ontology for OWL2-QL mode (if enabled)
+        let ontology = if reasoning.owl2ql {
+            tracing::debug!("building OWL2-QL ontology");
+            Some(crate::rewrite_owl_ql::Ontology::from_db(db, db.t as u64).await?)
+        } else {
+            None
+        };
 
-    let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-        encode_patterns_for_reasoning(db, &query.query.patterns)
-    } else {
-        query.query.patterns.clone()
-    };
-    let (rewritten_patterns, _diag) = rewrite_query_patterns(
-        &patterns_for_rewrite,
-        hierarchy,
-        &reasoning,
-        ontology.as_ref(),
-    );
+        // Apply pattern rewriting for reasoning (RDFS/OWL expansion)
+        fn encode_term(db: &Db, t: &Term) -> Term {
+            match t {
+                Term::Iri(iri) => db
+                    .encode_iri(iri)
+                    .map(Term::Sid)
+                    .unwrap_or_else(|| t.clone()),
+                _ => t.clone(),
+            }
+        }
 
-    if rewritten_patterns.len() != query.query.patterns.len() {
-        tracing::debug!(
-            original_count = query.query.patterns.len(),
-            rewritten_count = rewritten_patterns.len(),
-            "patterns rewritten for reasoning"
+        fn encode_patterns_for_reasoning(db: &Db, patterns: &[Pattern]) -> Vec<Pattern> {
+            patterns
+                .iter()
+                .map(|p| match p {
+                    Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
+                        s: encode_term(db, &tp.s),
+                        p: encode_term(db, &tp.p),
+                        o: encode_term(db, &tp.o),
+                        dt: tp.dt.clone(),
+                        lang: tp.lang.clone(),
+                    }),
+                    Pattern::Optional(inner) => {
+                        Pattern::Optional(encode_patterns_for_reasoning(db, inner))
+                    }
+                    Pattern::Union(branches) => Pattern::Union(
+                        branches
+                            .iter()
+                            .map(|b| encode_patterns_for_reasoning(db, b))
+                            .collect(),
+                    ),
+                    Pattern::Minus(inner) => {
+                        Pattern::Minus(encode_patterns_for_reasoning(db, inner))
+                    }
+                    Pattern::Exists(inner) => {
+                        Pattern::Exists(encode_patterns_for_reasoning(db, inner))
+                    }
+                    Pattern::NotExists(inner) => {
+                        Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
+                    }
+                    Pattern::Graph { name, patterns } => Pattern::Graph {
+                        name: name.clone(),
+                        patterns: encode_patterns_for_reasoning(db, patterns),
+                    },
+                    _ => p.clone(),
+                })
+                .collect()
+        }
+
+        let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
+            encode_patterns_for_reasoning(db, &query.query.patterns)
+        } else {
+            query.query.patterns.clone()
+        };
+        let (rewritten_patterns, _diag) = rewrite_query_patterns(
+            &patterns_for_rewrite,
+            hierarchy,
+            &reasoning,
+            ontology.as_ref(),
         );
+
+        if rewritten_patterns.len() != query.query.patterns.len() {
+            tracing::debug!(
+                original_count = query.query.patterns.len(),
+                rewritten_count = rewritten_patterns.len(),
+                "patterns rewritten for reasoning"
+            );
+        }
+
+        // Build query with rewritten patterns
+        let rewritten_query = query.query.with_patterns(rewritten_patterns);
+
+        // Build stats view for selectivity-based optimization
+        //
+        // Note: lowering may keep IRIs as `Term::Iri` (cross-ledger). Build an IRI-keyed
+        // stats view so planning can still consult stats for IRI predicates.
+        let stats_view = db.stats.as_ref().map(|s| {
+            Arc::new(StatsView::from_db_stats_with_namespaces(
+                s,
+                &db.namespace_codes,
+            ))
+        });
+
+        // Build the operator tree
+        tracing::debug!("building operator tree");
+        let operator = build_operator_tree(&rewritten_query, &query.options, stats_view)?;
+
+        // Execute: open, drain batches, close
+        run_operator(operator, &ctx).await
     }
-
-    // Build query with rewritten patterns
-    let rewritten_query = query.query.with_patterns(rewritten_patterns);
-
-    // Build stats view for selectivity-based optimization
-    //
-    // Note: lowering may keep IRIs as `Term::Iri` (cross-ledger). Build an IRI-keyed
-    // stats view so planning can still consult stats for IRI predicates.
-    let stats_view = db.stats.as_ref().map(|s| {
-        Arc::new(StatsView::from_db_stats_with_namespaces(
-            s,
-            &db.namespace_codes,
-        ))
-    });
-
-    // Build the operator tree
-    tracing::debug!("building operator tree");
-    let operator = build_operator_tree(&rewritten_query, &query.options, stats_view)?;
-
-    // Execute: open, drain batches, close
-    run_operator(operator, &ctx).await
+    .instrument(span)
+    .await
 }
 
 /// Execute a parsed query with default options

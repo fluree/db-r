@@ -128,7 +128,7 @@ mod inner {
 
         // 1. Create ImportSink + parse TTL
         let ns_codes_before = state.ns_registry.code_count();
-        let _parse_span = tracing::info_span!(
+        let _parse_span = tracing::debug_span!(
             "import_parse",
             t = new_t,
             ttl_bytes = ttl.len(),
@@ -151,7 +151,7 @@ mod inner {
 
         // 2. Retrieve writer, get namespace delta, build envelope
         let (writer, op_count, spool_result, envelope) = {
-            let _span = tracing::info_span!("import_build_envelope", t = new_t).entered();
+            let _span = tracing::debug_span!("import_build_envelope", t = new_t).entered();
             let (writer, chunk_prefix_map, spool_ctx) = sink
                 .finish()
                 .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
@@ -162,7 +162,7 @@ mod inner {
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
 
-            tracing::info!(
+            tracing::debug!(
                 op_count,
                 ns_delta_size = ns_delta.len(),
                 ns_codes = ns_codes_after,
@@ -189,7 +189,7 @@ mod inner {
 
         // 4. Finalize blob
         let result = {
-            let _span = tracing::info_span!("import_finish_blob", t = new_t, op_count).entered();
+            let _span = tracing::debug_span!("import_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
         let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
@@ -198,7 +198,7 @@ mod inner {
 
         // 5. Store
         let write_res = {
-            let _span = tracing::info_span!("import_store", t = new_t, blob_bytes).entered();
+            let _span = tracing::debug_span!("import_store", t = new_t, blob_bytes).entered();
             storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
@@ -209,7 +209,7 @@ mod inner {
                 .await?
         };
 
-        tracing::info!(
+        tracing::debug!(
             t = new_t,
             flakes = op_count,
             blob_bytes,
@@ -264,7 +264,7 @@ mod inner {
         let txn_id = format!("{}-{}", ledger_id, new_t);
 
         let ns_codes_before = state.ns_registry.code_count();
-        let _parse_span = tracing::info_span!(
+        let _parse_span = tracing::debug_span!(
             "import_parse",
             t = new_t,
             ttl_bytes = ttl.len(),
@@ -291,7 +291,7 @@ mod inner {
         drop(_parse_span);
 
         let (writer, op_count, spool_result, envelope) = {
-            let _span = tracing::info_span!("import_build_envelope", t = new_t).entered();
+            let _span = tracing::debug_span!("import_build_envelope", t = new_t).entered();
             let (writer, _chunk_prefix_map, spool_ctx) = sink
                 .finish()
                 .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
@@ -301,7 +301,7 @@ mod inner {
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
 
-            tracing::info!(
+            tracing::debug!(
                 op_count,
                 ns_delta_size = ns_delta.len(),
                 ns_codes = ns_codes_after,
@@ -326,7 +326,7 @@ mod inner {
         };
 
         let result = {
-            let _span = tracing::info_span!("import_finish_blob", t = new_t, op_count).entered();
+            let _span = tracing::debug_span!("import_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
         let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
@@ -334,7 +334,7 @@ mod inner {
         let blob_bytes = result.bytes.len();
 
         let write_res = {
-            let _span = tracing::info_span!("import_store", t = new_t, blob_bytes).entered();
+            let _span = tracing::debug_span!("import_store", t = new_t, blob_bytes).entered();
             storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
@@ -345,7 +345,7 @@ mod inner {
                 .await?
         };
 
-        tracing::info!(
+        tracing::debug!(
             t = new_t,
             flakes = op_count,
             blob_bytes,
@@ -419,7 +419,7 @@ mod inner {
             .await;
         }
 
-        let _parse_span = tracing::info_span!(
+        let _parse_span = tracing::debug_span!(
             "import_trig_parse",
             t = new_t,
             trig_bytes = trig.len(),
@@ -521,7 +521,7 @@ mod inner {
         let ns_delta = state.ns_registry.take_delta();
         let named_graph_count = graph_delta.len();
 
-        tracing::info!(
+        tracing::debug!(
             op_count,
             ns_delta_size = ns_delta.len(),
             graph_delta_size = named_graph_count,
@@ -546,7 +546,7 @@ mod inner {
         // 7. Finalize blob
         let result = {
             let _span =
-                tracing::info_span!("import_trig_finish_blob", t = new_t, op_count).entered();
+                tracing::debug_span!("import_trig_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
         let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
@@ -555,7 +555,7 @@ mod inner {
 
         // 8. Store
         let write_res = {
-            let _span = tracing::info_span!("import_trig_store", t = new_t, blob_bytes).entered();
+            let _span = tracing::debug_span!("import_trig_store", t = new_t, blob_bytes).entered();
             storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
@@ -566,7 +566,7 @@ mod inner {
                 .await?
         };
 
-        tracing::info!(
+        tracing::debug!(
             t = new_t,
             flakes = op_count,
             blob_bytes,
@@ -724,7 +724,7 @@ mod inner {
     ) -> Result<ParsedChunk> {
         let txn_id = format!("{}-{}", ledger_id, t);
 
-        let _parse_span = tracing::info_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
+        let _parse_span = tracing::debug_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
 
         let mut worker_cache = WorkerCache::new(Arc::clone(alloc));
         let mut sink = ImportSink::new_cached(&mut worker_cache, t, txn_id, compress)
@@ -778,7 +778,7 @@ mod inner {
         chunk_idx: usize,
     ) -> Result<ParsedChunk> {
         let txn_id = format!("{}-{}", ledger_id, t);
-        let _parse_span = tracing::info_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
+        let _parse_span = tracing::debug_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
 
         let mut worker_cache = WorkerCache::new(Arc::clone(alloc));
 
@@ -845,7 +845,7 @@ mod inner {
     {
         let new_t = state.t + 1;
 
-        let _span = tracing::info_span!("finalize_parsed_chunk", t = new_t).entered();
+        let _span = tracing::debug_span!("finalize_parsed_chunk", t = new_t).entered();
 
         // Merge published namespaces into serial registry to keep it in sync
         // (needed for TriG serial paths and the final namespace snapshot).
@@ -883,7 +883,7 @@ mod inner {
             )
             .await?;
 
-        tracing::info!(
+        tracing::debug!(
             t = new_t,
             flakes = parsed.op_count,
             blob_bytes,
