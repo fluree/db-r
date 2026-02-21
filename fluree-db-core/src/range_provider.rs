@@ -14,6 +14,7 @@
 
 use crate::comparator::IndexType;
 use crate::flake::Flake;
+use crate::ids::GraphId;
 use crate::overlay::OverlayProvider;
 use crate::query_bounds::{RangeMatch, RangeOptions, RangeTest};
 use crate::sid::Sid;
@@ -31,6 +32,7 @@ pub trait RangeProvider: Send + Sync {
     ///
     /// # Arguments
     ///
+    /// * `g_id` — graph to query (0 = default graph)
     /// * `index` — which index order to scan (SPOT, PSOT, POST, OPST)
     /// * `test` — comparison operator (Eq, Lt, Le, Gt, Ge)
     /// * `match_val` — components to match (subject, predicate, object)
@@ -43,6 +45,7 @@ pub trait RangeProvider: Send + Sync {
     /// translated to the index's internal representation.
     fn range(
         &self,
+        g_id: GraphId,
         index: IndexType,
         test: RangeTest,
         match_val: &RangeMatch,
@@ -60,6 +63,7 @@ pub trait RangeProvider: Send + Sync {
     /// support arbitrary interval scans should override this method.
     fn range_bounded(
         &self,
+        _g_id: GraphId,
         _index: IndexType,
         _start_bound: &Flake,
         _end_bound: &Flake,
@@ -83,6 +87,7 @@ pub trait RangeProvider: Send + Sync {
     /// Default implementation returns `Unsupported`.
     fn lookup_subject_predicate_refs_batched(
         &self,
+        _g_id: GraphId,
         _index: IndexType,
         _predicate: &Sid,
         _subjects: &[Sid],

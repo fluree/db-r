@@ -7,7 +7,7 @@ use crate::constraints::{Constraint, NestedShape, NodeConstraint};
 use crate::error::Result;
 use crate::predicates;
 use fluree_db_core::{
-    range_with_overlay, Db, Flake, FlakeValue, IndexType, OverlayProvider, RangeMatch,
+    range_with_overlay, Db, Flake, FlakeValue, GraphId, IndexType, OverlayProvider, RangeMatch,
     RangeOptions, RangeTest, Sid,
 };
 use fluree_vocab::namespaces::{RDF, SHACL};
@@ -167,6 +167,7 @@ impl ShapeCompiler {
     /// may be defined in the same transaction as the data they validate.
     pub async fn compile_from_db<O: OverlayProvider>(
         db: &Db,
+        g_id: GraphId,
         overlay: &O,
     ) -> Result<Vec<CompiledShape>> {
         let mut compiler = Self::new();
@@ -233,6 +234,7 @@ impl ShapeCompiler {
             let pred = Sid::new(SHACL, pred_name);
             let flakes = range_with_overlay(
                 db,
+                g_id,
                 overlay,
                 IndexType::Psot,
                 RangeTest::Eq,
@@ -247,13 +249,18 @@ impl ShapeCompiler {
         }
 
         // Also query for rdf:first/rdf:rest to handle RDF lists (for sh:in, sh:ignoredProperties)
-        compiler.expand_rdf_lists(db, overlay).await?;
+        compiler.expand_rdf_lists(db, g_id, overlay).await?;
 
         compiler.finalize()
     }
 
     /// Expand RDF lists that were referenced by sh:in, sh:and, sh:or, sh:xone
-    async fn expand_rdf_lists<O: OverlayProvider>(&mut self, db: &Db, overlay: &O) -> Result<()> {
+    async fn expand_rdf_lists<O: OverlayProvider>(
+        &mut self,
+        db: &Db,
+        g_id: GraphId,
+        overlay: &O,
+    ) -> Result<()> {
         let rdf_first = Sid::new(RDF, rdf_names::FIRST);
         let rdf_rest = Sid::new(RDF, rdf_names::REST);
         let rdf_nil = Sid::new(RDF, rdf_names::NIL);
@@ -273,8 +280,10 @@ impl ShapeCompiler {
 
         // Expand RDF list references
         for (ps_id, list_head) in in_list_expansions {
-            let values =
-                traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
+            let values = traverse_rdf_list(
+                db, g_id, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil,
+            )
+            .await?;
             if !values.is_empty() {
                 if let Some(ps_data) = self.property_shapes.get_mut(&ps_id) {
                     // Replace the single Ref with the expanded values
@@ -302,8 +311,10 @@ impl ShapeCompiler {
 
         // Expand sh:and lists
         for (shape_id, list_head) in and_lists {
-            let values =
-                traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
+            let values = traverse_rdf_list(
+                db, g_id, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil,
+            )
+            .await?;
             let shape_refs: Vec<Sid> = values
                 .into_iter()
                 .filter_map(|v| {
@@ -321,8 +332,10 @@ impl ShapeCompiler {
 
         // Expand sh:or lists
         for (shape_id, list_head) in or_lists {
-            let values =
-                traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
+            let values = traverse_rdf_list(
+                db, g_id, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil,
+            )
+            .await?;
             let shape_refs: Vec<Sid> = values
                 .into_iter()
                 .filter_map(|v| {
@@ -340,8 +353,10 @@ impl ShapeCompiler {
 
         // Expand sh:xone lists
         for (shape_id, list_head) in xone_lists {
-            let values =
-                traverse_rdf_list(db, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
+            let values = traverse_rdf_list(
+                db, g_id, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil,
+            )
+            .await?;
             let shape_refs: Vec<Sid> = values
                 .into_iter()
                 .filter_map(|v| {
@@ -791,6 +806,7 @@ impl ShapeCompiler {
 /// Traverse an RDF list and collect all values
 async fn traverse_rdf_list<O: OverlayProvider>(
     db: &Db,
+    g_id: GraphId,
     overlay: &O,
     list_head: &Sid,
     rdf_first: &Sid,
@@ -815,6 +831,7 @@ async fn traverse_rdf_list<O: OverlayProvider>(
         // Get rdf:first value
         let first_flakes = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Spot,
             RangeTest::Eq,
@@ -830,6 +847,7 @@ async fn traverse_rdf_list<O: OverlayProvider>(
         // Get rdf:rest to continue traversal
         let rest_flakes = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Spot,
             RangeTest::Eq,

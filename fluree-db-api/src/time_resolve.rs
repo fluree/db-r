@@ -84,6 +84,7 @@ where
     let earliest_flakes = if let Some(ovl) = overlay {
         range_with_overlay(
             db,
+            0,
             ovl,
             IndexType::Post,
             RangeTest::Eq,
@@ -94,6 +95,7 @@ where
     } else {
         range_with_overlay(
             db,
+            0,
             &fluree_db_core::NoOverlay,
             IndexType::Post,
             RangeTest::Eq,
@@ -140,6 +142,7 @@ where
     let after_flakes = if let Some(ovl) = overlay {
         range_with_overlay(
             db,
+            0,
             ovl,
             IndexType::Post,
             RangeTest::Eq,
@@ -150,6 +153,7 @@ where
     } else {
         range_with_overlay(
             db,
+            0,
             &fluree_db_core::NoOverlay,
             IndexType::Post,
             RangeTest::Eq,
@@ -254,10 +258,12 @@ where
         .with_flake_limit(32);
 
     let flakes = if let Some(ovl) = overlay {
-        range_bounded_with_overlay(db, ovl, IndexType::Spot, start_bound, end_bound, opts).await?
+        range_bounded_with_overlay(db, 0, ovl, IndexType::Spot, start_bound, end_bound, opts)
+            .await?
     } else {
         range_bounded_with_overlay(
             db,
+            0,
             &fluree_db_core::NoOverlay,
             IndexType::Spot,
             start_bound,

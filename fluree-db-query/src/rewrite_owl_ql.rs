@@ -246,6 +246,7 @@ impl Ontology {
         let inverse_of_pred = Sid::new(OWL, "inverseOf");
         let inverse_flakes = range(
             db,
+            0,
             IndexType::Psot,
             RangeTest::Eq,
             RangeMatch::predicate(inverse_of_pred),
@@ -270,6 +271,7 @@ impl Ontology {
         let equivalent_prop_pred = Sid::new(OWL, "equivalentProperty");
         let equivalent_flakes = range(
             db,
+            0,
             IndexType::Psot,
             RangeTest::Eq,
             RangeMatch::predicate(equivalent_prop_pred),
@@ -288,6 +290,7 @@ impl Ontology {
         let domain_pred = Sid::new(RDFS, "domain");
         let domain_flakes = range(
             db,
+            0,
             IndexType::Psot,
             RangeTest::Eq,
             RangeMatch::predicate(domain_pred),
@@ -308,6 +311,7 @@ impl Ontology {
         let range_pred = Sid::new(RDFS, "range");
         let range_flakes = range(
             db,
+            0,
             IndexType::Psot,
             RangeTest::Eq,
             RangeMatch::predicate(range_pred),

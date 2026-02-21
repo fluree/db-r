@@ -26,7 +26,7 @@ use fluree_db_core::namespaces::is_rdf_type;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Sid};
+use fluree_db_core::{Db, GraphId, Sid};
 use fluree_vocab::namespaces::OWL;
 use fluree_vocab::owl_names::*;
 use hashbrown::HashMap;
@@ -481,6 +481,7 @@ impl RestrictionIndex {
 /// 3. Builds a RestrictionIndex for efficient lookup during rule application
 pub async fn extract_restrictions(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<RestrictionIndex> {
@@ -497,6 +498,7 @@ pub async fn extract_restrictions(
 
     let restriction_flakes: Vec<Flake> = range_with_overlay(
         db,
+        g_id,
         overlay,
         IndexType::Opst,
         RangeTest::Eq,
@@ -528,6 +530,7 @@ pub async fn extract_restrictions(
     // Query for owl:intersectionOf subjects
     let int_flakes: Vec<Flake> = range_with_overlay(
         db,
+        g_id,
         overlay,
         IndexType::Psot,
         RangeTest::Eq,
@@ -549,6 +552,7 @@ pub async fn extract_restrictions(
     // Query for owl:unionOf subjects
     let union_flakes: Vec<Flake> = range_with_overlay(
         db,
+        g_id,
         overlay,
         IndexType::Psot,
         RangeTest::Eq,
@@ -570,6 +574,7 @@ pub async fn extract_restrictions(
     // Query for owl:oneOf subjects
     let one_of_flakes_pre: Vec<Flake> = range_with_overlay(
         db,
+        g_id,
         overlay,
         IndexType::Psot,
         RangeTest::Eq,
@@ -611,6 +616,7 @@ pub async fn extract_restrictions(
         // Query all properties of this restriction using SPOT index
         let restriction_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Spot,
             RangeTest::Eq,
@@ -666,7 +672,7 @@ pub async fn extract_restrictions(
 
         // Resolve property expression (handles owl:inverseOf and owl:propertyChainAxiom)
         let property = if let Some(prop_sid) = on_property_raw {
-            Some(resolve_property_expression(db, overlay, &prop_sid, to_t).await?)
+            Some(resolve_property_expression(db, g_id, overlay, &prop_sid, to_t).await?)
         } else {
             None
         };
@@ -734,7 +740,7 @@ pub async fn extract_restrictions(
 
     for flake in int_flakes {
         if let FlakeValue::Ref(list_head) = &flake.o {
-            if let Ok(members) = collect_list_elements(db, overlay, list_head, to_t).await {
+            if let Ok(members) = collect_list_elements(db, g_id, overlay, list_head, to_t).await {
                 if !members.is_empty() {
                     // Use to_class_ref to properly identify nested class expressions
                     let class_refs: Vec<ClassRef> =
@@ -752,7 +758,7 @@ pub async fn extract_restrictions(
 
     for flake in union_flakes {
         if let FlakeValue::Ref(list_head) = &flake.o {
-            if let Ok(members) = collect_list_elements(db, overlay, list_head, to_t).await {
+            if let Ok(members) = collect_list_elements(db, g_id, overlay, list_head, to_t).await {
                 if !members.is_empty() {
                     // Use to_class_ref to properly identify nested class expressions
                     let class_refs: Vec<ClassRef> =
@@ -771,7 +777,8 @@ pub async fn extract_restrictions(
     // Note: We reuse one_of_flakes_pre from the pre-pass above
     for flake in one_of_flakes_pre {
         if let FlakeValue::Ref(list_head) = &flake.o {
-            if let Ok(individuals) = collect_list_elements(db, overlay, list_head, to_t).await {
+            if let Ok(individuals) = collect_list_elements(db, g_id, overlay, list_head, to_t).await
+            {
                 if !individuals.is_empty() {
                     index.add_restriction(ParsedRestriction {
                         restriction_id: flake.s.clone(),

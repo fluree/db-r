@@ -6,7 +6,8 @@
 use fluree_db_core::namespaces::is_rdf_type;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::{
-    range_with_overlay, Db, FlakeValue, IndexType, RangeMatch, RangeOptions, RangeTest, Sid,
+    range_with_overlay, Db, FlakeValue, GraphId, IndexType, RangeMatch, RangeOptions, RangeTest,
+    Sid,
 };
 use fluree_vocab::namespaces::OWL;
 use fluree_vocab::owl_names::*;
@@ -145,6 +146,7 @@ pub fn one_of_sid() -> Sid {
 /// Returns flakes of the form: (?entity rdf:type owl:Class)
 pub async fn find_owl_typed_entities(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     owl_class: &str,
     to_t: i64,
@@ -157,6 +159,7 @@ pub async fn find_owl_typed_entities(
 
     let flakes = range_with_overlay(
         db,
+        g_id,
         overlay,
         IndexType::Opst,
         RangeTest::Eq,

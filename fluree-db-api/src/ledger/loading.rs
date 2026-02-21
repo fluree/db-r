@@ -76,7 +76,6 @@ where
                     let provider = BinaryRangeProvider::new(
                         Arc::clone(&arc_store),
                         state.dict_novelty.clone(),
-                        0,
                     );
                     state.db.range_provider = Some(Arc::new(provider));
                 }

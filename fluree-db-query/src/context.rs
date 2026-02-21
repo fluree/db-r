@@ -557,6 +557,16 @@ impl<'a> ExecutionContext<'a> {
         self.dict_novelty = Some(dict_novelty);
         self
     }
+
+    /// Set the graph ID for range queries.
+    ///
+    /// This sets `binary_g_id` independently of `binary_store`, which is needed
+    /// for the `range_with_overlay()` fallback path (RangeScanOperator) where
+    /// the graph ID must reach the range provider even without a local binary store.
+    pub fn with_graph_id(mut self, g_id: GraphId) -> Self {
+        self.binary_g_id = g_id;
+        self
+    }
 }
 
 /// Well-known datatype SIDs

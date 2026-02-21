@@ -246,6 +246,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     // Sanity check: core range_with_overlay can see the schema axioms in overlay.
     let domain_flakes = range_with_overlay(
         &db,
+        0,
         &overlay,
         IndexType::Psot,
         RangeTest::Eq,
@@ -314,7 +315,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
 
     // Sanity check: reasoner itself produces derived facts from this overlay.
     let cache = ReasoningCache::with_default_capacity();
-    let reasoner_res = reason_owl2rl(&db, &overlay, 10, &ReasoningOptions::default(), &cache)
+    let reasoner_res = reason_owl2rl(&db, 0, &overlay, 10, &ReasoningOptions::default(), &cache)
         .await
         .unwrap();
     assert!(

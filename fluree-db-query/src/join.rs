@@ -475,15 +475,10 @@ impl NestedLoopJoinOperator {
                         Binding::Lit { val, .. } => {
                             pattern.o = Term::Value(val.clone());
                         }
-                        Binding::EncodedLit {
-                            o_kind,
-                            o_key,
-                            p_id,
-                            ..
-                        } => {
+                        Binding::EncodedLit { o_kind, o_key, .. } => {
                             // Decode encoded literal if store available
                             if let Some(store) = store {
-                                if let Ok(val) = store.decode_value(*o_kind, *o_key, *p_id) {
+                                if let Ok(val) = store.decode_value_no_graph(*o_kind, *o_key) {
                                     pattern.o = Term::Value(val);
                                 }
                             }

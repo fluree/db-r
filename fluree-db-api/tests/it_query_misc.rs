@@ -984,6 +984,7 @@ async fn index_range_scans() {
     // Slice for subject id only
     let alice_flakes = range_with_overlay(
         &ledger.db,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
@@ -1013,6 +1014,7 @@ async fn index_range_scans() {
 
     let alice_favnums_flakes = range_with_overlay(
         &ledger.db,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
@@ -1044,6 +1046,7 @@ async fn index_range_scans() {
     // Slice for subject + predicate + value
     let alice_favnum_42_flakes = range_with_overlay(
         &ledger.db,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
@@ -1073,6 +1076,7 @@ async fn index_range_scans() {
 
     let alice_favnum_42_typed_flakes = range_with_overlay(
         &ledger.db,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,
@@ -1098,6 +1102,7 @@ async fn index_range_scans() {
 
     let alice_favnum_42_wrong_type_flakes = range_with_overlay(
         &ledger.db,
+        0,
         ledger.novelty.as_ref(),
         IndexType::Spot,
         RangeTest::Eq,

@@ -142,7 +142,7 @@ pub use var_registry::{VarId, VarRegistry};
 pub use parse::{parse_query, ParsedQuery, SelectMode};
 
 use execute::build_where_operators_seeded;
-use fluree_db_core::{Db, OverlayProvider};
+use fluree_db_core::{Db, GraphId, OverlayProvider};
 use std::sync::Arc;
 
 /// Execute a single triple pattern query
@@ -157,10 +157,11 @@ use std::sync::Arc;
 ///
 pub async fn execute_pattern(
     db: &Db,
+    g_id: GraphId,
     vars: &VarRegistry,
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
-    let ctx = ExecutionContext::new(db, vars);
+    let ctx = ExecutionContext::new(db, vars).with_graph_id(g_id);
     let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
@@ -179,10 +180,11 @@ pub async fn execute_pattern(
 /// Convenience function when you want all results at once.
 pub async fn execute_pattern_all(
     db: &Db,
+    g_id: GraphId,
     vars: &VarRegistry,
     pattern: TriplePattern,
 ) -> Result<Option<Batch>> {
-    let batches = execute_pattern(db, vars, pattern).await?;
+    let batches = execute_pattern(db, g_id, vars, pattern).await?;
 
     if batches.is_empty() {
         return Ok(None);
@@ -214,12 +216,13 @@ pub async fn execute_pattern_all(
 /// Execute a pattern with time-travel settings
 pub async fn execute_pattern_at(
     db: &Db,
+    g_id: GraphId,
     vars: &VarRegistry,
     pattern: TriplePattern,
     to_t: i64,
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
-    let ctx = ExecutionContext::with_time(db, vars, to_t, from_t);
+    let ctx = ExecutionContext::with_time(db, vars, to_t, from_t).with_graph_id(g_id);
     let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
@@ -248,11 +251,12 @@ pub async fn execute_pattern_at(
 ///
 pub async fn execute_pattern_with_overlay(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
-    let ctx = ExecutionContext::with_overlay(db, vars, overlay);
+    let ctx = ExecutionContext::with_overlay(db, vars, overlay).with_graph_id(g_id);
     let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
@@ -273,13 +277,15 @@ pub async fn execute_pattern_with_overlay(
 /// enables history range queries.
 pub async fn execute_pattern_with_overlay_at(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
     pattern: TriplePattern,
     to_t: i64,
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
-    let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay);
+    let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay)
+        .with_graph_id(g_id);
     let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
@@ -314,6 +320,7 @@ pub async fn execute_pattern_with_overlay_at(
 ///
 pub async fn execute_where_with_overlay_at(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
     patterns: &[Pattern],
@@ -326,7 +333,8 @@ pub async fn execute_where_with_overlay_at(
         return Ok(vec![Batch::empty(schema)?]);
     }
 
-    let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay);
+    let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay)
+        .with_graph_id(g_id);
     let mut operator = build_where_operators_seeded(None, patterns, None)?;
 
     operator.open(&ctx).await?;
@@ -342,6 +350,7 @@ pub async fn execute_where_with_overlay_at(
 /// Execute WHERE patterns with strict bind error handling.
 pub async fn execute_where_with_overlay_at_strict(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
     patterns: &[Pattern],
@@ -354,6 +363,7 @@ pub async fn execute_where_with_overlay_at_strict(
     }
 
     let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay)
+        .with_graph_id(g_id)
         .with_strict_bind_errors();
     let mut operator = build_where_operators_seeded(None, patterns, None)?;
 

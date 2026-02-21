@@ -449,10 +449,14 @@ where
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
-            let engine =
-                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
-                    .await
-                    .map_err(fluree_db_transact::TransactError::from)?;
+            let engine = ShaclEngine::from_db_with_overlay(
+                &ledger.db,
+                0,
+                &*ledger.novelty,
+                ledger.ledger_id(),
+            )
+            .await
+            .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
             let mut options = match index_config {
                 Some(cfg) => StageOptions::new().with_index_config(cfg),
@@ -500,10 +504,14 @@ where
 
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
-            let engine =
-                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
-                    .await
-                    .map_err(fluree_db_transact::TransactError::from)?;
+            let engine = ShaclEngine::from_db_with_overlay(
+                &ledger.db,
+                0,
+                &*ledger.novelty,
+                ledger.ledger_id(),
+            )
+            .await
+            .map_err(fluree_db_transact::TransactError::from)?;
             let shacl_cache = engine.cache().clone();
             let options = match index_config {
                 Some(cfg) => StageOptions::new().with_index_config(cfg),
@@ -565,10 +573,14 @@ where
         #[cfg(feature = "shacl")]
         let (view, ns_registry) = {
             // Use from_db_with_overlay to include novelty flakes (shapes committed but not yet indexed)
-            let engine =
-                ShaclEngine::from_db_with_overlay(&ledger.db, &*ledger.novelty, ledger.ledger_id())
-                    .await
-                    .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
+            let engine = ShaclEngine::from_db_with_overlay(
+                &ledger.db,
+                0,
+                &*ledger.novelty,
+                ledger.ledger_id(),
+            )
+            .await
+            .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
             let shacl_cache = engine.cache().clone();
             stage_with_shacl(ledger, txn, ns_registry, options, &shacl_cache)
                 .await

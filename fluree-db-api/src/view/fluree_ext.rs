@@ -210,7 +210,7 @@ where
                     }
                     let store = view.binary_store.clone().unwrap();
                     let dict_novelty = view.dict_novelty.clone().unwrap();
-                    let provider = BinaryRangeProvider::new(store, dict_novelty, graph_id);
+                    let provider = BinaryRangeProvider::new(store, dict_novelty);
                     let mut db = (*view.db).clone();
                     db.range_provider = Some(Arc::new(provider));
                     view.db = Arc::new(db);
@@ -234,7 +234,7 @@ where
                     }
                     let store = view.binary_store.clone().unwrap();
                     let dict_novelty = view.dict_novelty.clone().unwrap();
-                    let provider = BinaryRangeProvider::new(store, dict_novelty, graph_id);
+                    let provider = BinaryRangeProvider::new(store, dict_novelty);
                     let mut db = (*view.db).clone();
                     db.range_provider = Some(Arc::new(provider));
                     view.db = Arc::new(db);
@@ -296,7 +296,7 @@ where
 
                 let arc_store = Arc::new(store);
                 let dn = snapshot.dict_novelty.clone();
-                let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
+                let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
                 snapshot.db.range_provider = Some(Arc::new(provider));
                 snapshot.binary_store = Some(arc_store);
             }

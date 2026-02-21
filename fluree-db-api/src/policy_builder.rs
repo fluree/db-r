@@ -52,7 +52,7 @@ async fn augment_class_property_stats_from_novelty(
 
     // Look up each subject's current classes as-of (db + overlay, to_t).
     let subjects: Vec<Sid> = subject_props.keys().cloned().collect();
-    let subject_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t)
+    let subject_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t, 0)
         .await
         .map_err(|e| ApiError::Internal(format!("policy class lookup failed: {}", e)))?;
 
@@ -273,7 +273,8 @@ async fn load_policies_by_identity(
         Term::Var(class_var),
     );
 
-    let batches = execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
+    let batches =
+        execute_pattern_with_overlay_at(db, 0, overlay, &vars, pattern, to_t, None).await?;
 
     // Collect class SIDs
     let mut class_sids: Vec<Sid> = Vec::new();
@@ -349,7 +350,7 @@ async fn load_policies_of_classes(
         );
 
         let batches =
-            execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
+            execute_pattern_with_overlay_at(db, 0, overlay, &vars, pattern, to_t, None).await?;
 
         for batch in &batches {
             for row in 0..batch.len() {
@@ -617,7 +618,8 @@ async fn query_predicate(
         Term::Var(obj_var),
     );
 
-    let batches = execute_pattern_with_overlay_at(db, overlay, &vars, pattern, to_t, None).await?;
+    let batches =
+        execute_pattern_with_overlay_at(db, 0, overlay, &vars, pattern, to_t, None).await?;
 
     let mut results = Vec::new();
     for batch in &batches {

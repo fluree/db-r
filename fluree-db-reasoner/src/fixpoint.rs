@@ -9,7 +9,7 @@ use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
-use fluree_db_core::{Db, Sid};
+use fluree_db_core::{Db, GraphId, Sid};
 use fluree_vocab::jsonld_names::ID as JSONLD_ID;
 use fluree_vocab::namespaces::{JSON_LD, RDF};
 use fluree_vocab::predicates::RDF_TYPE;
@@ -40,6 +40,7 @@ use crate::{FrozenSameAs, ReasoningDiagnostics, Result};
 /// 4. Returns derived facts and diagnostics
 pub async fn run_fixpoint(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     budget: &ReasoningBudget,
@@ -48,15 +49,15 @@ pub async fn run_fixpoint(
     let mut diagnostics = ReasoningDiagnostics::default();
 
     // Extract OWL2-RL ontology (symmetric, transitive, inverse properties)
-    let ontology = OntologyRL::from_db_with_overlay(db, overlay, db.t as u64, to_t).await?;
+    let ontology = OntologyRL::from_db_with_overlay(db, g_id, overlay, db.t as u64, to_t).await?;
 
     // Extract OWL restrictions (hasValue, someValuesFrom, etc.)
-    let restrictions = extract_restrictions(db, overlay, to_t).await?;
+    let restrictions = extract_restrictions(db, g_id, overlay, to_t).await?;
 
     // Load sameAs assertions BEFORE checking if we have work to do
     // sameAs can exist even without symmetric/transitive/inverse declarations
     let mut same_as_tracker = SameAsTracker::new();
-    let same_as_pairs = load_same_as_assertions(db, overlay, to_t).await?;
+    let same_as_pairs = load_same_as_assertions(db, g_id, overlay, to_t).await?;
     let has_same_as = !same_as_pairs.is_empty();
     for (x, y) in &same_as_pairs {
         same_as_tracker.union(x, y);
@@ -86,7 +87,7 @@ pub async fn run_fixpoint(
     }
 
     // Seed initial delta with all base facts for relevant predicates
-    let mut delta = seed_initial_delta(db, overlay, &ontology, &restrictions, to_t).await?;
+    let mut delta = seed_initial_delta(db, g_id, overlay, &ontology, &restrictions, to_t).await?;
 
     // Accumulated derived facts
     let mut derived = DerivedSet::new();
@@ -318,6 +319,7 @@ pub async fn run_fixpoint(
 /// - owl:sameAs facts
 async fn seed_initial_delta(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     ontology: &OntologyRL,
     restrictions: &RestrictionIndex,
@@ -423,6 +425,7 @@ async fn seed_initial_delta(
     for p in predicates_to_query {
         let flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Psot,
             RangeTest::Eq,
@@ -447,6 +450,7 @@ async fn seed_initial_delta(
         let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
         let type_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Psot,
             RangeTest::Eq,
@@ -470,6 +474,7 @@ async fn seed_initial_delta(
     let owl_same_as_sid = owl::same_as_sid();
     let same_as_flakes: Vec<Flake> = range_with_overlay(
         db,
+        g_id,
         overlay,
         IndexType::Psot,
         RangeTest::Eq,

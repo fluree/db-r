@@ -25,7 +25,7 @@ use crate::QueryResult;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Flake, NoOverlay, OverlayProvider, Sid, Tracker};
+use fluree_db_core::{Db, Flake, GraphId, NoOverlay, OverlayProvider, Sid, Tracker};
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::ir::{GraphSelectSpec, NestedSelectSpec, Root, SelectionSpec};
@@ -197,7 +197,7 @@ pub async fn format_async(
         .unwrap_or(&no_overlay);
 
     let formatter =
-        GraphCrawlFormatter::new(db, overlay, compactor, spec, result.t, policy, tracker);
+        GraphCrawlFormatter::new(db, 0, overlay, compactor, spec, result.t, policy, tracker);
 
     // Shared cache across all rows
     let mut cache: HashMap<CacheKey, JsonValue> = HashMap::new();
@@ -298,6 +298,7 @@ pub async fn format_async(
 /// Graph crawl formatter with async DB access
 struct GraphCrawlFormatter<'a> {
     db: &'a Db,
+    g_id: GraphId,
     overlay: &'a dyn OverlayProvider,
     compactor: &'a IriCompactor,
     spec: &'a GraphSelectSpec,
@@ -310,8 +311,10 @@ struct GraphCrawlFormatter<'a> {
 }
 
 impl<'a> GraphCrawlFormatter<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         db: &'a Db,
+        g_id: GraphId,
         overlay: &'a dyn OverlayProvider,
         compactor: &'a IriCompactor,
         spec: &'a GraphSelectSpec,
@@ -321,6 +324,7 @@ impl<'a> GraphCrawlFormatter<'a> {
     ) -> Self {
         Self {
             db,
+            g_id,
             overlay,
             compactor,
             spec,
@@ -907,6 +911,7 @@ impl<'a> GraphCrawlFormatter<'a> {
     async fn fetch_subject_properties(&self, sid: &Sid) -> Result<Vec<Flake>> {
         let flakes = range_with_overlay(
             self.db,
+            self.g_id,
             self.overlay,
             IndexType::Spot,
             RangeTest::Eq,
@@ -937,6 +942,7 @@ impl<'a> GraphCrawlFormatter<'a> {
     async fn fetch_reverse_properties(&self, object_sid: &Sid, pred: &Sid) -> Result<Vec<Flake>> {
         let flakes = range_with_overlay(
             self.db,
+            self.g_id,
             self.overlay,
             IndexType::Post,
             RangeTest::Eq,

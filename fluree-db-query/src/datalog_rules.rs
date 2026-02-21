@@ -20,7 +20,7 @@ use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Sid};
+use fluree_db_core::{Db, GraphId, Sid};
 use fluree_db_reasoner::{
     BindingValue, Bindings, CompareOp, DatalogRule, DatalogRuleSet, DerivedFactsBuilder,
     FrozenSameAs, RuleFilter, RuleTerm, RuleTriplePattern, RuleValue,
@@ -51,6 +51,7 @@ const RULE_LOCAL_NAME: &str = "rule";
 /// Returns a `DatalogRuleSet` ready for execution in the reasoning loop.
 pub async fn extract_datalog_rules(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<DatalogRuleSet> {
@@ -67,6 +68,7 @@ pub async fn extract_datalog_rules(
 
     let rule_flakes: Vec<Flake> = range_with_overlay(
         db,
+        g_id,
         overlay,
         IndexType::Psot,
         RangeTest::Eq,
@@ -532,6 +534,7 @@ fn resolve_iri(iri: &str, db: &Db) -> Result<Sid> {
 pub async fn execute_rule_matching(
     rule: &DatalogRule,
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<Vec<Bindings>> {
@@ -540,7 +543,8 @@ pub async fn execute_rule_matching(
     }
 
     // Start with the first pattern to get initial bindings
-    let mut binding_rows = match_pattern(&rule.where_patterns[0], db, overlay, to_t, &[]).await?;
+    let mut binding_rows =
+        match_pattern(&rule.where_patterns[0], db, g_id, overlay, to_t, &[]).await?;
 
     // Join with subsequent patterns
     for pattern in rule.where_patterns.iter().skip(1) {
@@ -553,6 +557,7 @@ pub async fn execute_rule_matching(
             let extended = match_pattern(
                 pattern,
                 db,
+                g_id,
                 overlay,
                 to_t,
                 std::slice::from_ref(existing_bindings),
@@ -677,6 +682,7 @@ fn compare_values(left: &FilterValue, right: &FilterValue, op: CompareOp) -> boo
 async fn match_pattern(
     pattern: &RuleTriplePattern,
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     existing_bindings: &[Bindings],
@@ -687,14 +693,14 @@ async fn match_pattern(
     if !existing_bindings.is_empty() {
         for bindings in existing_bindings {
             let extended =
-                match_pattern_with_bindings(pattern, db, overlay, to_t, bindings).await?;
+                match_pattern_with_bindings(pattern, db, g_id, overlay, to_t, bindings).await?;
             results.extend(extended);
         }
     } else {
         // No existing bindings - match freely
         let empty_bindings = Bindings::new();
         let extended =
-            match_pattern_with_bindings(pattern, db, overlay, to_t, &empty_bindings).await?;
+            match_pattern_with_bindings(pattern, db, g_id, overlay, to_t, &empty_bindings).await?;
         results.extend(extended);
     }
 
@@ -705,6 +711,7 @@ async fn match_pattern(
 async fn match_pattern_with_bindings(
     pattern: &RuleTriplePattern,
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     bindings: &Bindings,
@@ -727,30 +734,37 @@ async fn match_pattern_with_bindings(
     };
 
     // Query the index
-    let flakes: Vec<Flake> =
-        range_with_overlay(db, overlay, index_type, RangeTest::Eq, range_match, opts)
-            .await
-            .map_err(|e| QueryError::Internal(format!("Pattern matching failed: {}", e)))?
-            .into_iter()
-            .filter(|f| {
-                if !f.op {
-                    return false;
-                } // Only active assertions
-                  // Post-filter: range provider may return a superset; ensure
-                  // subject and predicate actually match the requested pattern.
-                if let Some(ref s) = subject_sid {
-                    if &f.s != s {
-                        return false;
-                    }
-                }
-                if let Some(ref p) = predicate_sid {
-                    if &f.p != p {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
+    let flakes: Vec<Flake> = range_with_overlay(
+        db,
+        g_id,
+        overlay,
+        index_type,
+        RangeTest::Eq,
+        range_match,
+        opts,
+    )
+    .await
+    .map_err(|e| QueryError::Internal(format!("Pattern matching failed: {}", e)))?
+    .into_iter()
+    .filter(|f| {
+        if !f.op {
+            return false;
+        } // Only active assertions
+          // Post-filter: range provider may return a superset; ensure
+          // subject and predicate actually match the requested pattern.
+        if let Some(ref s) = subject_sid {
+            if &f.s != s {
+                return false;
+            }
+        }
+        if let Some(ref p) = predicate_sid {
+            if &f.p != p {
+                return false;
+            }
+        }
+        true
+    })
+    .collect();
 
     // Build binding rows from results
     let mut results = Vec::new();
@@ -1016,11 +1030,12 @@ pub struct DatalogExecutionResult {
 /// * `query_time_rules` - Optional rules provided at query time (JSON-LD format)
 pub async fn execute_datalog_rules(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     max_iterations: usize,
 ) -> Result<DatalogExecutionResult> {
-    execute_datalog_rules_with_query_rules(db, overlay, to_t, max_iterations, &[]).await
+    execute_datalog_rules_with_query_rules(db, g_id, overlay, to_t, max_iterations, &[]).await
 }
 
 /// Execute datalog rules with optional query-time rules
@@ -1029,13 +1044,14 @@ pub async fn execute_datalog_rules(
 /// and query-time rules passed as JSON-LD.
 pub async fn execute_datalog_rules_with_query_rules(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     max_iterations: usize,
     query_time_rules: &[serde_json::Value],
 ) -> Result<DatalogExecutionResult> {
     // Extract rules from database
-    let mut rule_set = extract_datalog_rules(db, overlay, to_t).await?;
+    let mut rule_set = extract_datalog_rules(db, g_id, overlay, to_t).await?;
 
     // Parse and add query-time rules
     for (idx, rule_json) in query_time_rules.iter().enumerate() {
@@ -1105,7 +1121,7 @@ pub async fn execute_datalog_rules_with_query_rules(
             // Find all bindings matching the where patterns
             // Use effective_overlay which includes derived facts from previous iterations
             let binding_rows =
-                execute_rule_matching(rule, db, effective_overlay.as_ref(), to_t).await?;
+                execute_rule_matching(rule, db, g_id, effective_overlay.as_ref(), to_t).await?;
 
             if binding_rows.is_empty() {
                 continue;

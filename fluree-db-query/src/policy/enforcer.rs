@@ -190,9 +190,10 @@ impl QueryPolicyEnforcer {
         db: &Db,
         overlay: &dyn OverlayProvider,
         to_t: i64,
+        g_id: fluree_db_core::GraphId,
         subjects: &[fluree_db_core::Sid],
     ) -> Result<()> {
-        fluree_db_policy::populate_class_cache(subjects, db, overlay, to_t, &self.policy)
+        fluree_db_policy::populate_class_cache(subjects, db, overlay, to_t, g_id, &self.policy)
             .await
             .map_err(|e| crate::error::QueryError::Policy(e.to_string()))?;
         Ok(())
@@ -202,9 +203,10 @@ impl QueryPolicyEnforcer {
     pub async fn populate_class_cache_for_view(
         &self,
         view: &ResolvedGraphView<'_>,
+        g_id: fluree_db_core::GraphId,
         subjects: &[fluree_db_core::Sid],
     ) -> Result<()> {
-        self.populate_class_cache_for_graph(view.db, view.overlay, view.to_t, subjects)
+        self.populate_class_cache_for_graph(view.db, view.overlay, view.to_t, g_id, subjects)
             .await
     }
 }

@@ -63,8 +63,14 @@ where
             .as_ref()
             .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
 
-        let prepared =
-            prepare_execution(&ledger.db, ledger.novelty.as_ref(), executable, ledger.t()).await?;
+        let prepared = prepare_execution(
+            &ledger.db,
+            0,
+            ledger.novelty.as_ref(),
+            executable,
+            ledger.t(),
+        )
+        .await?;
 
         let r2rml_provider = NoOpR2rmlProvider::new();
         let spatial_map = binary_store.as_ref().map(|s| s.spatial_provider_map());
@@ -266,6 +272,7 @@ where
     ) -> Result<Vec<crate::Batch>> {
         let batches = crate::execute_pattern_with_overlay_at(
             &ledger.db,
+            0,
             ledger.novelty.as_ref(),
             vars,
             pattern,

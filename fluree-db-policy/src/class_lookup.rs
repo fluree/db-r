@@ -4,7 +4,8 @@
 //! from the database. This is needed for f:onClass policy enforcement.
 
 use fluree_db_core::{
-    range_with_overlay, Db, FlakeValue, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
+    range_with_overlay, Db, FlakeValue, GraphId, OverlayProvider, RangeMatch, RangeOptions,
+    RangeTest, Sid,
 };
 use fluree_vocab::namespaces::RDF;
 use fluree_vocab::predicates::RDF_TYPE;
@@ -34,6 +35,7 @@ pub async fn lookup_subject_classes(
     db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
+    g_id: GraphId,
 ) -> Result<HashMap<Sid, Vec<Sid>>> {
     if subjects.is_empty() {
         return Ok(HashMap::new());
@@ -46,6 +48,7 @@ pub async fn lookup_subject_classes(
     if let Some(provider) = db.range_provider.as_ref() {
         let opts = RangeOptions::new().with_to_t(to_t);
         match provider.lookup_subject_predicate_refs_batched(
+            g_id,
             fluree_db_core::IndexType::Psot,
             &rdf_type,
             subjects,
@@ -73,6 +76,7 @@ pub async fn lookup_subject_classes(
         let opts = RangeOptions::new().with_to_t(to_t);
         let flakes = range_with_overlay(
             db,
+            g_id,
             overlay,
             fluree_db_core::IndexType::Spot,
             RangeTest::Eq,
@@ -117,6 +121,7 @@ pub async fn populate_class_cache(
     db: &Db,
     overlay: &dyn OverlayProvider,
     to_t: i64,
+    g_id: GraphId,
     policy_ctx: &crate::evaluate::PolicyContext,
 ) -> Result<()> {
     // Skip if no class policies need checking
@@ -124,7 +129,7 @@ pub async fn populate_class_cache(
         return Ok(());
     }
 
-    let class_map = lookup_subject_classes(subjects, db, overlay, to_t).await?;
+    let class_map = lookup_subject_classes(subjects, db, overlay, to_t, g_id).await?;
 
     for (subject, classes) in class_map {
         policy_ctx.cache_subject_classes(subject, classes);

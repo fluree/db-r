@@ -17,7 +17,7 @@ use fluree_db_core::namespaces::{
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Sid};
+use fluree_db_core::{Db, GraphId, Sid};
 use fluree_vocab::namespaces::{OWL, RDFS};
 use fluree_vocab::owl_names::*;
 use fluree_vocab::predicates::{RDFS_DOMAIN, RDFS_RANGE};
@@ -173,6 +173,7 @@ impl OntologyRL {
     /// - `?p rdfs:range ?c`
     pub async fn from_db_with_overlay(
         db: &Db,
+        g_id: GraphId,
         overlay: &dyn OverlayProvider,
         epoch: u64,
         to_t: i64,
@@ -196,6 +197,7 @@ impl OntologyRL {
 
         let symmetric_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Opst,
             RangeTest::Eq,
@@ -217,6 +219,7 @@ impl OntologyRL {
         // Query for all ?p rdf:type owl:TransitiveProperty
         let transitive_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Opst,
             RangeTest::Eq,
@@ -240,6 +243,7 @@ impl OntologyRL {
 
         let inverse_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Psot,
             RangeTest::Eq,
@@ -279,6 +283,7 @@ impl OntologyRL {
 
         let domain_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Psot,
             RangeTest::Eq,
@@ -306,6 +311,7 @@ impl OntologyRL {
 
         let range_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Psot,
             RangeTest::Eq,
@@ -393,6 +399,7 @@ impl OntologyRL {
 
         let equiv_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Psot,
             RangeTest::Eq,
@@ -441,6 +448,7 @@ impl OntologyRL {
 
         let chain_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Psot,
             RangeTest::Eq,
@@ -462,7 +470,7 @@ impl OntologyRL {
             if let FlakeValue::Ref(list_head) = &flake.o {
                 // Traverse the RDF list to get chain elements, resolving owl:inverseOf to ChainElements
                 if let Ok(chain_elements) =
-                    collect_chain_elements(db, overlay, list_head, to_t).await
+                    collect_chain_elements(db, g_id, overlay, list_head, to_t).await
                 {
                     // Only store chains with at least 2 elements
                     if chain_elements.len() >= 2 {
@@ -484,6 +492,7 @@ impl OntologyRL {
 
         let functional_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Opst,
             RangeTest::Eq,
@@ -509,6 +518,7 @@ impl OntologyRL {
 
         let inv_functional_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Opst,
             RangeTest::Eq,
@@ -538,6 +548,7 @@ impl OntologyRL {
 
         let has_key_flakes: Vec<Flake> = range_with_overlay(
             db,
+            g_id,
             overlay,
             IndexType::Psot,
             RangeTest::Eq,
@@ -559,7 +570,7 @@ impl OntologyRL {
             if let FlakeValue::Ref(list_head) = &flake.o {
                 // Traverse the RDF list to get key properties
                 if let Ok(key_properties) =
-                    collect_list_elements(db, overlay, list_head, to_t).await
+                    collect_list_elements(db, g_id, overlay, list_head, to_t).await
                 {
                     // Only store non-empty key lists
                     if !key_properties.is_empty() {
@@ -876,6 +887,7 @@ impl OntologyRL {
 /// Returns pairs of SIDs that are asserted to be the same.
 pub async fn load_same_as_assertions(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
 ) -> Result<Vec<(Sid, Sid)>> {
@@ -888,6 +900,7 @@ pub async fn load_same_as_assertions(
 
     let same_as_flakes: Vec<Flake> = range_with_overlay(
         db,
+        g_id,
         overlay,
         IndexType::Psot,
         RangeTest::Eq,

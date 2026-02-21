@@ -194,6 +194,7 @@ where
             {
                 let engine = ShaclEngine::from_db_with_overlay(
                     &base_state.db,
+                    0,
                     &evolving_novelty,
                     base_state.ledger_id(),
                 )
@@ -521,6 +522,7 @@ async fn is_currently_asserted(
 
     let found = range_with_overlay(
         db,
+        0,
         overlay,
         IndexType::Spot,
         RangeTest::Eq,

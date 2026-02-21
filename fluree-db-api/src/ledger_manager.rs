@@ -370,7 +370,7 @@ impl LedgerHandle {
         let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
         let te_store = TypeErasedStore(te_store);
         let dn = Arc::new(DictNovelty::new_uninitialized());
-        let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
+        let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
 
         // Build metadata-only Db from IRB1 root.
         let v5 = fluree_db_indexer::run_index::IndexRootV5::decode(&bytes)
@@ -558,7 +558,7 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
 
     let arc_store = Arc::new(store);
     let dn = Arc::new(DictNovelty::new_uninitialized());
-    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
+    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
     state.db.range_provider = Some(Arc::new(provider));
     // Also attach the type-erased store to the state so transaction staging
     // (which clones LedgerState under the write lock) can construct

@@ -255,9 +255,15 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
-        let prepared = prepare_execution(&view.db, view.overlay.as_ref(), executable, view.to_t)
-            .await
-            .map_err(query_error_to_api_error)?;
+        let prepared = prepare_execution(
+            &view.db,
+            view.graph_id,
+            view.overlay.as_ref(),
+            executable,
+            view.to_t,
+        )
+        .await
+        .map_err(query_error_to_api_error)?;
 
         let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
 
@@ -293,8 +299,14 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
-        let prepared =
-            prepare_execution(&view.db, view.overlay.as_ref(), executable, view.to_t).await?;
+        let prepared = prepare_execution(
+            &view.db,
+            view.graph_id,
+            view.overlay.as_ref(),
+            executable,
+            view.to_t,
+        )
+        .await?;
 
         let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
 

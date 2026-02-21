@@ -25,6 +25,7 @@ use crate::db::Db;
 use crate::dt_compatible;
 use crate::error::Result;
 use crate::flake::Flake;
+use crate::ids::GraphId;
 use crate::overlay::{NoOverlay, OverlayProvider};
 use crate::sid::Sid;
 use crate::value::FlakeValue;
@@ -48,12 +49,13 @@ pub const BATCHED_JOIN_SIZE: usize = 100_000;
 /// * `opts` - Query options (limits, offset)
 pub async fn range(
     db: &Db,
+    g_id: GraphId,
     index: IndexType,
     test: RangeTest,
     match_val: RangeMatch,
     opts: RangeOptions,
 ) -> Result<Vec<Flake>> {
-    range_with_overlay(db, &NoOverlay, index, test, match_val, opts).await
+    range_with_overlay(db, g_id, &NoOverlay, index, test, match_val, opts).await
 }
 
 /// Execute a range query with an overlay provider (novelty).
@@ -62,6 +64,7 @@ pub async fn range(
 /// databases (t=0, no provider), returns overlay-only flakes.
 pub async fn range_with_overlay<O>(
     db: &Db,
+    g_id: GraphId,
     overlay: &O,
     index: IndexType,
     test: RangeTest,
@@ -75,11 +78,18 @@ where
         Some(provider) => {
             let overlay_ref = SizedOverlayRef(overlay);
             provider
-                .range(index, test, &match_val, &opts, &overlay_ref)
+                .range(g_id, index, test, &match_val, &opts, &overlay_ref)
                 .map_err(|e| crate::error::Error::Io(e.to_string()))
         }
         None if db.t == 0 => {
             // Genesis Db: no base data, return overlay flakes only.
+            // Strict: only default graph (g_id=0) is supported without an index.
+            if g_id != 0 {
+                return Err(crate::error::Error::invalid_index(
+                    "named-graph range queries require a loaded binary index \
+                     (graph routing dictionaries are not available at genesis)",
+                ));
+            }
             let to_t = opts.to_t.unwrap_or(db.t);
             let mut flakes = collect_overlay_only(overlay, index, to_t);
             // Apply RangeMatch filtering — collect_overlay_only returns all
@@ -108,6 +118,7 @@ where
 /// Delegates to `RangeProvider::range_bounded`.
 pub async fn range_bounded_with_overlay<O>(
     db: &Db,
+    g_id: GraphId,
     overlay: &O,
     index: IndexType,
     start_bound: Flake,
@@ -121,10 +132,17 @@ where
         Some(provider) => {
             let overlay_ref = SizedOverlayRef(overlay);
             provider
-                .range_bounded(index, &start_bound, &end_bound, &opts, &overlay_ref)
+                .range_bounded(g_id, index, &start_bound, &end_bound, &opts, &overlay_ref)
                 .map_err(|e| crate::error::Error::Io(e.to_string()))
         }
         None if db.t == 0 => {
+            // Strict: only default graph (g_id=0) is supported without an index.
+            if g_id != 0 {
+                return Err(crate::error::Error::invalid_index(
+                    "named-graph range queries require a loaded binary index \
+                     (graph routing dictionaries are not available at genesis)",
+                ));
+            }
             let to_t = opts.to_t.unwrap_or(db.t);
             let cmp = index.comparator();
             let mut flakes = collect_overlay_only(overlay, index, to_t);

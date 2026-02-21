@@ -14,19 +14,17 @@ use crate::generate::{apply_cancellation, infer_datatype, FlakeGenerator};
 use crate::ir::InlineValues;
 use crate::ir::{TemplateTerm, Txn, TxnType};
 use crate::namespace::NamespaceRegistry;
-use fluree_db_core::ids::GraphId;
 use fluree_db_core::OverlayProvider;
 use fluree_db_core::Tracker;
 use fluree_db_core::{Flake, FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_policy::{
     is_schema_flake, populate_class_cache, PolicyContext, PolicyDecision, PolicyError,
 };
 use fluree_db_query::parse::{lower_unresolved_patterns, UnresolvedPattern};
 use fluree_db_query::{
-    execute_pattern_with_overlay_at, Batch, BinaryRangeProvider, Binding, Pattern,
-    QueryPolicyExecutor, Term, TriplePattern, VarId, VarRegistry,
+    execute_pattern_with_overlay_at, Batch, Binding, Pattern, QueryPolicyExecutor, Term,
+    TriplePattern, VarId, VarRegistry,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -345,6 +343,7 @@ async fn hydrate_list_index_meta_for_retractions(
 
         let found = fluree_db_core::range_with_overlay(
             &ledger.db,
+            0,
             ledger.novelty.as_ref(),
             fluree_db_core::IndexType::Spot,
             fluree_db_core::RangeTest::Eq,
@@ -394,6 +393,7 @@ async fn enforce_modify_policies(
             &ledger.db,
             ledger.novelty.as_ref(),
             ledger.t(),
+            0,
             policy,
         )
         .await
@@ -505,6 +505,7 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     // IMPORTANT: Execute "as of" the ledger's current t (which may be ahead of db.t when novelty exists).
     let batches = fluree_db_query::execute_where_with_overlay_at_strict(
         &ledger.db,
+        0,
         ledger.novelty.as_ref(),
         &txn.vars,
         &query_patterns,
@@ -687,11 +688,12 @@ async fn generate_upsert_deletions(
         );
 
         let batches = if let Some(g_id) = graph_id {
-            // Named graph: attach a graph-scoped BinaryRangeProvider (if available)
-            // so we see *indexed* values in that graph and generate retractions.
-            if let Some(db) = db_with_graph_range_provider(ledger, g_id) {
+            // Named graph: pass g_id explicitly — the range provider is graph-agnostic,
+            // so no db clone/swap is needed.
+            if ledger.db.range_provider.is_some() {
                 execute_pattern_with_overlay_at(
-                    &db,
+                    &ledger.db,
+                    g_id,
                     ledger.novelty.as_ref(),
                     &query_vars,
                     pattern,
@@ -707,6 +709,7 @@ async fn generate_upsert_deletions(
             // Default graph: use standard query path through range_provider
             execute_pattern_with_overlay_at(
                 &ledger.db,
+                0,
                 ledger.novelty.as_ref(),
                 &query_vars,
                 pattern,
@@ -751,20 +754,6 @@ async fn generate_upsert_deletions(
     }
 
     Ok(retractions)
-}
-
-/// Build a cloned `Db` with a BinaryRangeProvider scoped to the given graph id.
-///
-/// Returns None if no binary store is attached (genesis / not yet indexed) or if
-/// the attached store isn't a `BinaryIndexStore`.
-fn db_with_graph_range_provider(ledger: &LedgerState, g_id: GraphId) -> Option<fluree_db_core::Db> {
-    let store: Arc<BinaryIndexStore> = ledger
-        .binary_store
-        .as_ref()
-        .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok())?;
-
-    let provider = BinaryRangeProvider::new(store, Arc::clone(&ledger.dict_novelty), g_id);
-    Some(ledger.db.clone().with_range_provider(Arc::new(provider)))
 }
 
 /// Query novelty directly for a specific named graph
@@ -930,6 +919,7 @@ async fn validate_staged_nodes(
         let rdf_type = Sid::new(RDF, rdf_names::TYPE);
         let type_flakes = fluree_db_core::range_with_overlay(
             db,
+            0,
             view, // LedgerView implements OverlayProvider
             fluree_db_core::IndexType::Spot,
             fluree_db_core::RangeTest::Eq,
@@ -951,7 +941,7 @@ async fn validate_staged_nodes(
 
         // Validate this node (view implements OverlayProvider)
         let report = engine
-            .validate_node(db, view, &subject, &node_types)
+            .validate_node(db, 0, view, &subject, &node_types)
             .await?;
 
         all_results.extend(report.results);

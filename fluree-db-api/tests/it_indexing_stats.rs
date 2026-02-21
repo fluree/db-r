@@ -54,7 +54,7 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         .expect("load binary index");
     let arc_store = Arc::new(store);
     let dn = Arc::new(DictNovelty::new_uninitialized());
-    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn, 0);
+    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
 
     // Extract metadata from IRB1 root
     let v5 = fluree_db_indexer::run_index::IndexRootV5::decode(&bytes).expect("decode IRB1 root");

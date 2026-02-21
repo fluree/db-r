@@ -189,6 +189,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
                     &ledger.db,
                     ledger.novelty.as_ref(),
                     ledger.t(),
+                    g_id,
                     graph_entry,
                     &ledger.db.namespace_codes,
                     graph_iri.as_deref(),
@@ -593,17 +594,11 @@ fn merge_graph_property_novelty(
 /// attributed using the *current* (novelty-aware) rdf:type of both the
 /// subject and the referenced object.
 ///
-/// **Limitation:** Class attribution via `lookup_subject_classes` uses the
-/// PSOT/SPOT indexes which are not graph-scoped. If a subject has different
-/// rdf:type assertions in different named graphs, all classes will be used
-/// for attribution regardless of which graph is being reported. This is
-/// correct for single-graph ledgers and approximately correct for multi-graph
-/// ledgers where subjects have consistent types across graphs. A proper fix
-/// requires graph-scoped range queries in `RangeProvider`.
 async fn merge_graph_class_ref_edges_from_novelty(
     db: &Db,
     novelty: &Novelty,
     to_t: i64,
+    g_id: GraphId,
     graph_entry: &mut GraphStatsEntry,
     namespace_codes: &HashMap<u16, String>,
     graph_iri: Option<&str>,
@@ -649,11 +644,11 @@ async fn merge_graph_class_ref_edges_from_novelty(
     let mut objects: Vec<Sid> = obj_set.into_iter().collect();
     objects.sort();
 
-    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t)
+    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t, g_id)
         .await
         .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
 
-    let obj_classes = fluree_db_policy::lookup_subject_classes(&objects, db, overlay, to_t)
+    let obj_classes = fluree_db_policy::lookup_subject_classes(&objects, db, overlay, to_t, g_id)
         .await
         .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
 

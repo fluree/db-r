@@ -1634,9 +1634,17 @@ impl RangeScanOperator {
     ) -> Result<Vec<Flake>> {
         let range_match = self.build_range_match(db);
         let opts = self.build_range_opts(to_t, ctx);
-        let flakes = range_with_overlay(db, overlay, index, RangeTest::Eq, range_match, opts)
-            .await
-            .map_err(|e| QueryError::execution(e.to_string()))?;
+        let flakes = range_with_overlay(
+            db,
+            ctx.binary_g_id,
+            overlay,
+            index,
+            RangeTest::Eq,
+            range_match,
+            opts,
+        )
+        .await
+        .map_err(|e| QueryError::execution(e.to_string()))?;
 
         // Policy filter (skip for root policies).
         let flakes = match policy_enforcer {
@@ -1648,7 +1656,7 @@ impl RangeScanOperator {
                     .into_iter()
                     .collect();
                 enforcer
-                    .populate_class_cache_for_graph(db, overlay, to_t, &subjects)
+                    .populate_class_cache_for_graph(db, overlay, to_t, ctx.binary_g_id, &subjects)
                     .await?;
                 enforcer
                     .filter_flakes_for_graph(db, overlay, to_t, &ctx.tracker, flakes)

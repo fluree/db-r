@@ -6,8 +6,8 @@
 use crate::reasoning::{global_reasoning_cache, reason_owl2rl, ReasoningOverlay};
 use crate::rewrite::ReasoningModes;
 use fluree_db_core::{
-    is_rdfs_subclass_of, is_rdfs_subproperty_of, overlay::OverlayProvider, Db, IndexSchema,
-    SchemaHierarchy, SchemaPredicateInfo,
+    is_rdfs_subclass_of, is_rdfs_subproperty_of, overlay::OverlayProvider, Db, GraphId,
+    IndexSchema, SchemaHierarchy, SchemaPredicateInfo,
 };
 use fluree_db_reasoner::{
     DerivedFactsBuilder, DerivedFactsOverlay, FrozenSameAs, ReasoningOptions,
@@ -165,6 +165,7 @@ pub fn effective_reasoning_modes(
 /// When both are enabled, derived facts from both sources are combined into a single overlay.
 pub async fn compute_derived_facts(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     reasoning: &ReasoningModes,
@@ -179,7 +180,7 @@ pub async fn compute_derived_facts(
         tracing::debug!("computing OWL2-RL derived facts");
         let reasoning_opts = ReasoningOptions::default();
         let cache = global_reasoning_cache();
-        match reason_owl2rl(db, overlay, to_t, &reasoning_opts, cache).await {
+        match reason_owl2rl(db, g_id, overlay, to_t, &reasoning_opts, cache).await {
             Ok(result) => {
                 tracing::debug!(
                     derived_facts = result.diagnostics.facts_derived,
@@ -225,6 +226,7 @@ pub async fn compute_derived_facts(
             let combined = ReasoningOverlay::new(overlay, temp_overlay);
             execute_datalog_rules_with_query_rules(
                 db,
+                g_id,
                 &combined,
                 to_t,
                 MAX_DATALOG_ITERATIONS,
@@ -234,6 +236,7 @@ pub async fn compute_derived_facts(
         } else {
             execute_datalog_rules_with_query_rules(
                 db,
+                g_id,
                 overlay,
                 to_t,
                 MAX_DATALOG_ITERATIONS,

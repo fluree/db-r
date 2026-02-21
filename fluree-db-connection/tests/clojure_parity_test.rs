@@ -127,7 +127,7 @@ async fn test_connection_parity() {
     let o = vars.get_or_insert("?o");
 
     let pattern = TriplePattern::new(Term::Var(s), Term::Var(p), Term::Var(o));
-    let batches = execute_pattern(&db, &vars, pattern).await.unwrap();
+    let batches = execute_pattern(&db, 0, &vars, pattern).await.unwrap();
 
     assert!(!batches.is_empty(), "Should have at least one batch");
     let total: usize = batches.iter().map(|b| b.len()).sum();

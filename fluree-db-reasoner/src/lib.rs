@@ -61,7 +61,7 @@ pub use rdf_list::{
 pub use same_as::{FrozenSameAs, SameAsTracker};
 
 use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::Db;
+use fluree_db_core::{Db, GraphId};
 use std::sync::Arc;
 pub use types::{ChainElement, PropertyChain, PropertyExpression, ReasoningModes};
 
@@ -124,6 +124,7 @@ impl ReasoningOptions {
 /// Cache hits return immediately without recomputation.
 pub async fn reason_owl2rl(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     opts: &ReasoningOptions,
@@ -150,7 +151,7 @@ pub async fn reason_owl2rl(
 
     // Run fixpoint reasoning
     let (derived_flakes, same_as, diagnostics) =
-        fixpoint::run_fixpoint(db, overlay, to_t, &opts.budget).await?;
+        fixpoint::run_fixpoint(db, g_id, overlay, to_t, &opts.budget).await?;
 
     // Build the derived facts overlay
     let mut builder = DerivedFactsBuilder::with_capacity(derived_flakes.len());

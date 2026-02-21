@@ -303,7 +303,7 @@ pub async fn execute_with_overlay(
     vars: &VarRegistry,
     query: &ExecutableQuery,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_overlay(source, vars, prepared).await
 }
 
@@ -316,7 +316,7 @@ pub async fn execute_with_overlay_tracked<'a>(
     query: &ExecutableQuery,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_overlay_tracked(source, vars, prepared, tracker).await
 }
 
@@ -330,7 +330,7 @@ pub async fn execute_with_policy<'a>(
     query: &ExecutableQuery,
     policy: &'a fluree_db_policy::PolicyContext,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_policy(source, vars, prepared, policy, None).await
 }
 
@@ -344,7 +344,7 @@ pub async fn execute_with_policy_tracked(
     policy: &fluree_db_policy::PolicyContext,
     tracker: &Tracker,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_policy(source, vars, prepared, policy, Some(tracker)).await
 }
 
@@ -357,7 +357,7 @@ pub async fn execute_with_r2rml<'a, 'b>(
     r2rml_provider: &'b dyn crate::r2rml::R2rmlProvider,
     r2rml_table_provider: &'b dyn crate::r2rml::R2rmlTableProvider,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_r2rml(
         source,
         vars,
@@ -376,7 +376,7 @@ pub async fn execute_with_dataset<'a>(
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset(source, vars, prepared, dataset, None).await
 }
 
@@ -388,7 +388,7 @@ pub async fn execute_with_dataset_tracked<'a>(
     dataset: &'a DataSet<'a>,
     tracker: &'a Tracker,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset(source, vars, prepared, dataset, Some(tracker)).await
 }
 
@@ -400,7 +400,7 @@ pub async fn execute_with_dataset_history<'a>(
     dataset: &'a DataSet<'a>,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_history(source, vars, prepared, dataset, tracker, true).await
 }
 
@@ -412,7 +412,7 @@ pub async fn execute_with_dataset_and_policy<'a>(
     dataset: &'a DataSet<'a>,
     policy: &'a fluree_db_policy::PolicyContext,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_policy(source, vars, prepared, dataset, policy, None).await
 }
 
@@ -425,7 +425,7 @@ pub async fn execute_with_dataset_and_policy_tracked<'a>(
     policy: &'a fluree_db_policy::PolicyContext,
     tracker: &'a Tracker,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_policy(source, vars, prepared, dataset, policy, Some(tracker))
         .await
 }
@@ -443,7 +443,7 @@ pub async fn execute_with_dataset_and_bm25<'a>(
     bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_bm25(source, vars, prepared, dataset, bm25_provider, tracker)
         .await
 }
@@ -462,7 +462,7 @@ pub async fn execute_with_dataset_and_policy_and_bm25<'a>(
     bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_policy_and_bm25(
         source,
         vars,
@@ -489,7 +489,7 @@ pub async fn execute_with_dataset_and_providers<'a, 'b>(
     vector_provider: &'b dyn crate::vector::VectorIndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_providers(
         source,
         vars,
@@ -512,7 +512,7 @@ pub async fn execute_with_dataset_and_policy_and_providers<'a, 'b>(
     query: &ExecutableQuery,
     params: QueryContextParams<'a, 'b>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, source.overlay, query, source.to_t).await?;
+    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_policy_and_providers(source, vars, prepared, params).await
 }
 

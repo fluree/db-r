@@ -94,6 +94,7 @@ pub struct PreparedExecution {
 /// The result can then be executed with any ExecutionContext.
 pub async fn prepare_execution(
     db: &Db,
+    g_id: GraphId,
     overlay: &dyn fluree_db_core::OverlayProvider,
     query: &ExecutableQuery,
     to_t: i64,
@@ -131,7 +132,7 @@ pub async fn prepare_execution(
             }
 
             // Step 3: Compute derived facts from OWL2-RL and/or datalog rules
-            let derived_overlay = compute_derived_facts(db, overlay, to_t, &reasoning).await;
+            let derived_overlay = compute_derived_facts(db, g_id, overlay, to_t, &reasoning).await;
 
             // Step 4: Build ontology for OWL2-QL mode (if enabled)
             let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> = derived_overlay

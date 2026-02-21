@@ -265,6 +265,7 @@ where
 
         let prepared = prepare_execution(
             &primary.db,
+            primary.graph_id,
             primary.overlay.as_ref(),
             executable,
             primary.to_t,
@@ -328,6 +329,7 @@ where
 
         let prepared = prepare_execution(
             &primary.db,
+            primary.graph_id,
             primary.overlay.as_ref(),
             executable,
             primary.to_t,
