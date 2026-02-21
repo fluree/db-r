@@ -5,7 +5,7 @@
 //! namespace codes, while WASM/offline implementations can use stubs or
 //! context-only encoders.
 
-use fluree_db_core::{Db, Sid};
+use fluree_db_core::{LedgerSnapshot, Sid};
 use fluree_vocab::{rdf, xsd};
 
 /// Trait for encoding IRIs to SIDs
@@ -19,11 +19,11 @@ pub trait IriEncoder {
     fn encode_iri(&self, iri: &str) -> Option<Sid>;
 }
 
-// Native: Db implements IriEncoder
-impl IriEncoder for Db {
+// Native: LedgerSnapshot implements IriEncoder
+impl IriEncoder for LedgerSnapshot {
     fn encode_iri(&self, iri: &str) -> Option<Sid> {
-        // Delegates to the existing Db::encode_iri method
-        Db::encode_iri(self, iri)
+        // Delegates to the existing LedgerSnapshot::encode_iri method
+        LedgerSnapshot::encode_iri(self, iri)
     }
 }
 

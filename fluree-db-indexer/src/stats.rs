@@ -1973,7 +1973,7 @@ impl ClassPropertyExtractor {
 // =============================================================================
 
 use fluree_db_core::comparator::IndexType;
-use fluree_db_core::db::Db;
+use fluree_db_core::db::LedgerSnapshot;
 use fluree_db_core::range::{range, RangeMatch, RangeOptions, RangeTest};
 use fluree_vocab::predicates::RDF_TYPE;
 
@@ -1992,7 +1992,7 @@ pub struct ClassPropertyStatsResult {
 ///
 /// Returns {subject_sid -> HashSet<class_sid>} mapping.
 pub async fn batch_lookup_subject_classes(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     subjects: &HashSet<Sid>,
 ) -> crate::error::Result<std::collections::HashMap<Sid, HashSet<Sid>>> {
@@ -2072,7 +2072,7 @@ pub async fn batch_lookup_subject_classes(
 ///
 /// Returns class statistics ready for inclusion in db-root.
 pub async fn compute_class_property_stats_parallel(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     prior_stats: Option<&fluree_db_core::IndexStats>,
     novelty_flakes: &[Flake],

@@ -916,7 +916,7 @@ async fn test_txn_meta_time_travel_filtering() {
 
             // Query at t=1: should only see batch-1
             let view_t1 = fluree
-                .view_at_t(&format!("{}#txn-meta", ledger_id), 1)
+                .db_at_t(&format!("{}#txn-meta", ledger_id), 1)
                 .await
                 .expect("view at t=1");
 
@@ -957,7 +957,7 @@ async fn test_txn_meta_time_travel_filtering() {
 
             // Query at t=2: should see both batch-1 and batch-2
             let view_t2 = fluree
-                .view_at_t(&format!("{}#txn-meta", ledger_id), 2)
+                .db_at_t(&format!("{}#txn-meta", ledger_id), 2)
                 .await
                 .expect("view at t=2");
             let query_t2 = json!({

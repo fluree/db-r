@@ -15,8 +15,8 @@ use crate::constraints::value::{
 use crate::constraints::{Constraint, ConstraintViolation, NestedShape};
 use crate::error::Result;
 use fluree_db_core::{
-    range_with_overlay, Db, FlakeValue, GraphId, IndexType, NoOverlay, OverlayProvider, RangeMatch,
-    RangeOptions, RangeTest, SchemaHierarchy, Sid,
+    range_with_overlay, FlakeValue, GraphId, IndexType, LedgerSnapshot, NoOverlay, OverlayProvider,
+    RangeMatch, RangeOptions, RangeTest, SchemaHierarchy, Sid,
 };
 use fluree_vocab::namespaces::RDF;
 use fluree_vocab::rdf_names;
@@ -75,7 +75,7 @@ impl ShaclEngine {
     ///
     /// Automatically extracts the schema hierarchy for RDFS reasoning.
     pub async fn from_db_with_overlay<O: OverlayProvider>(
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
         overlay: &O,
         ledger_id: impl Into<String>,
@@ -96,7 +96,11 @@ impl ShaclEngine {
     /// such as when loading from a fully indexed database.
     ///
     /// Automatically extracts the schema hierarchy for RDFS reasoning.
-    pub async fn from_db(db: &Db, g_id: GraphId, ledger_id: impl Into<String>) -> Result<Self> {
+    pub async fn from_db(
+        db: &LedgerSnapshot,
+        g_id: GraphId,
+        ledger_id: impl Into<String>,
+    ) -> Result<Self> {
         Self::from_db_with_overlay(db, g_id, &fluree_db_core::NoOverlay, ledger_id).await
     }
 
@@ -108,7 +112,7 @@ impl ShaclEngine {
     /// 3. Returns a validation report
     pub async fn validate_node<O: OverlayProvider>(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
         overlay: &O,
         focus_node: &Sid,
@@ -153,7 +157,7 @@ impl ShaclEngine {
     /// Validate a focus node without an overlay
     pub async fn validate_node_no_overlay(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
         focus_node: &Sid,
         node_types: &[Sid],
@@ -165,7 +169,7 @@ impl ShaclEngine {
     /// Validate all focus nodes targeted by shapes
     pub async fn validate_all<O: OverlayProvider>(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
         overlay: &O,
     ) -> Result<ValidationReport> {
@@ -203,7 +207,7 @@ impl ShaclEngine {
     /// Validate all focus nodes without an overlay
     pub async fn validate_all_no_overlay(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
     ) -> Result<ValidationReport> {
         self.validate_all(db, g_id, &NoOverlay).await
@@ -256,7 +260,7 @@ impl ShaclEngine {
     /// * `ValidationReport` - conforming if no violations, or containing all violations
     pub async fn validate_staged<O: OverlayProvider>(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
         overlay: &O,
         modified_subjects: &HashSet<Sid>,
@@ -324,7 +328,7 @@ impl ShaclEngine {
     /// validation failures into errors, suitable for use in transaction staging.
     pub async fn validate_staged_or_error<O: OverlayProvider>(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
         overlay: &O,
         modified_subjects: &HashSet<Sid>,
@@ -369,7 +373,7 @@ impl ShaclEngine {
 /// to include instances of all subclasses. For example, a shape targeting
 /// `Animal` will also match instances of `Dog` (if `Dog rdfs:subClassOf Animal`).
 async fn get_focus_nodes<O: OverlayProvider>(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &O,
     shape: &CompiledShape,
@@ -458,7 +462,7 @@ async fn get_focus_nodes<O: OverlayProvider>(
 ///
 /// Note: This function uses `Box::pin` for recursive calls to avoid infinitely-sized futures.
 fn validate_shape<'a, O: OverlayProvider>(
-    db: &'a Db,
+    db: &'a LedgerSnapshot,
     g_id: GraphId,
     overlay: &'a O,
     focus_node: &'a Sid,
@@ -493,7 +497,7 @@ fn validate_shape<'a, O: OverlayProvider>(
 ///
 /// Note: This function uses `Box::pin` for recursive calls to avoid infinitely-sized futures.
 fn validate_structural_constraint<'a, O: OverlayProvider>(
-    db: &'a Db,
+    db: &'a LedgerSnapshot,
     g_id: GraphId,
     overlay: &'a O,
     focus_node: &'a Sid,
@@ -729,7 +733,7 @@ fn validate_structural_constraint<'a, O: OverlayProvider>(
 /// Unlike `validate_shape` which validates against a `CompiledShape`, this validates
 /// directly against the constraints embedded in a `NestedShape`.
 fn validate_nested_shape<'a, O: OverlayProvider>(
-    db: &'a Db,
+    db: &'a LedgerSnapshot,
     g_id: GraphId,
     overlay: &'a O,
     focus_node: &'a Sid,
@@ -840,7 +844,7 @@ fn validate_nested_shape<'a, O: OverlayProvider>(
 
 /// Validate a focus node against a property shape
 async fn validate_property_shape<O: OverlayProvider>(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &O,
     focus_node: &Sid,
@@ -1166,9 +1170,9 @@ mod tests {
         // When there are no shapes, validate_staged should return immediately
         // without doing any database work.
 
-        use fluree_db_core::Db;
+        use fluree_db_core::LedgerSnapshot;
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
 
         // Empty cache (no shapes)
         let key = ShaclCacheKey::new("test", 1);
@@ -1192,9 +1196,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_staged_empty_subjects_returns_conforming() {
-        use fluree_db_core::Db;
+        use fluree_db_core::LedgerSnapshot;
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
 
         // Even with shapes, if no subjects modified, should return conforming
         use crate::compile::{CompiledShape, TargetType};

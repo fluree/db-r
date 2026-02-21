@@ -10,7 +10,7 @@ use fluree_db_api::{
     Fluree, FlureeBuilder, IndexConfig, IndexingMode, LedgerState, Novelty, ReindexOptions,
     TriggerIndexOptions,
 };
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 use fluree_db_nameservice::NameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
@@ -22,7 +22,7 @@ async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/indexing-disabled-metadata:main";
 
-    let db0 = Db::genesis(ledger_id);
+    let db0 = LedgerSnapshot::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({
@@ -85,7 +85,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -185,7 +185,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
     local
         .run_until(async move {
             let ledger_id = "it/indexing-workflow:main";
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -294,7 +294,7 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
     local
         .run_until(async move {
             let ledger_id = "it/indexing-file-load:main";
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -354,7 +354,7 @@ async fn automatic_indexing_disabled_mode_allows_novelty_to_accumulate_without_i
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/indexing-disabled-accumulate:main";
 
-    let db0 = Db::genesis(ledger_id);
+    let db0 = LedgerSnapshot::genesis(ledger_id);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     // Insert multiple transactions to build up novelty
@@ -403,7 +403,7 @@ async fn seed_some_commits(
     ledger_id: &str,
     n: usize,
 ) -> LedgerState {
-    let db0 = Db::genesis(ledger_id);
+    let db0 = LedgerSnapshot::genesis(ledger_id);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -606,7 +606,7 @@ async fn reindex_populates_statistics() {
     let a = admin_alias("reindex-stats");
 
     // Create some structured data with types
-    let db0 = Db::genesis(&a);
+    let db0 = LedgerSnapshot::genesis(&a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -802,7 +802,7 @@ async fn reindex_preserves_filter_queries() {
     let a = admin_alias("reindex-filters");
 
     // Create ledger with salary data
-    let db0 = Db::genesis(&a);
+    let db0 = LedgerSnapshot::genesis(&a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -889,7 +889,7 @@ async fn reindex_uses_provided_indexer_config() {
     let fluree = FlureeBuilder::memory().build_memory();
     let a = admin_alias("reindex-config");
 
-    let db0 = Db::genesis(&a);
+    let db0 = LedgerSnapshot::genesis(&a);
     let ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -961,7 +961,7 @@ async fn reindex_default_from_t_includes_all_data() {
     let fluree = FlureeBuilder::memory().build_memory();
     let a = admin_alias("reindex-from-t");
 
-    let db0 = Db::genesis(&a);
+    let db0 = LedgerSnapshot::genesis(&a);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
     let idx_cfg = IndexConfig {
@@ -1033,7 +1033,7 @@ async fn graph_crawl_select_works_after_indexing() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -1151,7 +1151,7 @@ async fn construct_works_after_indexing() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let mut ledger = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -1243,7 +1243,7 @@ async fn new_namespace_after_indexing_is_queryable() {
     local
         .run_until(async move {
             let ledger_id = "it/new-ns-after-index:main";
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let index_cfg = IndexConfig {
@@ -1322,24 +1322,24 @@ async fn new_namespace_after_indexing_is_queryable() {
                 "index time should still be 1 (only first commit was indexed)"
             );
 
-            // Verify Db.namespace_codes has the new prefix.
+            // Verify LedgerSnapshot.namespace_codes has the new prefix.
             assert!(
                 loaded
                     .db
                     .namespace_codes
                     .values()
                     .any(|p| p == "http://newprefix.org/"),
-                "Db.namespace_codes should include the new prefix from novelty"
+                "LedgerSnapshot.namespace_codes should include the new prefix from novelty"
             );
 
-            // Verify the Db.namespace_codes includes the new prefix (sanity check).
+            // Verify the LedgerSnapshot.namespace_codes includes the new prefix (sanity check).
             assert!(
                 loaded
                     .db
                     .namespace_codes
                     .values()
                     .any(|p| p == "http://newprefix.org/"),
-                "Db.namespace_codes should include the new prefix from novelty"
+                "LedgerSnapshot.namespace_codes should include the new prefix from novelty"
             );
 
             // Step 4: Query that forces resolution of a subject IRI using the new

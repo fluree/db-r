@@ -1,15 +1,15 @@
 //! Dataset view for multi-ledger queries
 //!
-//! Provides `FlureeDataSetView`, a collection of `FlureeView`s representing
+//! Provides `DataSetDb`, a collection of `GraphDb`s representing
 //! a SPARQL-style dataset with default and named graphs.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::view::FlureeView;
+use crate::view::GraphDb;
 use crate::OverlayProvider;
 
-/// A dataset view composed of multiple `FlureeView`s.
+/// A dataset view composed of multiple `GraphDb`s.
 ///
 /// This mirrors SPARQL dataset semantics:
 /// - `default`: graphs merged for the default graph (FROM clauses)
@@ -19,10 +19,10 @@ use crate::OverlayProvider;
 ///
 /// ```ignore
 /// // Build dataset from multiple views
-/// let view1 = fluree.view("ledger1:main").await?;
-/// let view2 = fluree.view("ledger2:main").await?;
+/// let view1 = fluree.db("ledger1:main").await?;
+/// let view2 = fluree.db("ledger2:main").await?;
 ///
-/// let dataset = FlureeDataSetView::new()
+/// let dataset = DataSetDb::new()
 ///     .with_default(view1)
 ///     .with_named("http://example.org/graph2", view2);
 ///
@@ -30,11 +30,11 @@ use crate::OverlayProvider;
 /// let result = fluree.query_dataset_view(&dataset, sparql_query).await?;
 /// ```
 #[derive(Clone)]
-pub struct FlureeDataSetView {
+pub struct DataSetDb {
     /// Default graph views (merged for queries without GRAPH clause)
-    pub default: Vec<FlureeView>,
+    pub default: Vec<GraphDb>,
     /// Named graph views (accessed via GRAPH clause)
-    pub named: HashMap<Arc<str>, FlureeView>,
+    pub named: HashMap<Arc<str>, GraphDb>,
     /// Deterministic named graph insertion order (for primary selection).
     ///
     /// We keep this because `HashMap` does not preserve insertion order, but
@@ -48,7 +48,7 @@ pub struct FlureeDataSetView {
     pub history_range: Option<(i64, i64)>,
 }
 
-impl FlureeDataSetView {
+impl DataSetDb {
     /// Create an empty dataset view.
     pub fn new() -> Self {
         Self {
@@ -60,7 +60,7 @@ impl FlureeDataSetView {
     }
 
     /// Create a dataset view with a single default graph.
-    pub fn single(view: FlureeView) -> Self {
+    pub fn single(view: GraphDb) -> Self {
         Self {
             default: vec![view],
             named: HashMap::new(),
@@ -70,13 +70,13 @@ impl FlureeDataSetView {
     }
 
     /// Add a view to the default graph.
-    pub fn with_default(mut self, view: FlureeView) -> Self {
+    pub fn with_default(mut self, view: GraphDb) -> Self {
         self.default.push(view);
         self
     }
 
     /// Add a view as a named graph.
-    pub fn with_named(mut self, name: impl Into<Arc<str>>, view: FlureeView) -> Self {
+    pub fn with_named(mut self, name: impl Into<Arc<str>>, view: GraphDb) -> Self {
         let key: Arc<str> = name.into();
         if !self.named.contains_key(&key) {
             self.named_order.push(Arc::clone(&key));
@@ -102,7 +102,7 @@ impl FlureeDataSetView {
     }
 
     /// Add multiple views to the default graph.
-    pub fn with_defaults(mut self, views: impl IntoIterator<Item = FlureeView>) -> Self {
+    pub fn with_defaults(mut self, views: impl IntoIterator<Item = GraphDb>) -> Self {
         self.default.extend(views);
         self
     }
@@ -118,7 +118,7 @@ impl FlureeDataSetView {
     /// - first default if present
     /// - else first named (in insertion order)
     /// - else None
-    pub fn primary(&self) -> Option<&FlureeView> {
+    pub fn primary(&self) -> Option<&GraphDb> {
         if let Some(v) = self.default.first() {
             return Some(v);
         }
@@ -127,7 +127,7 @@ impl FlureeDataSetView {
     }
 
     /// Get the "primary" graph view, mutably.
-    pub fn primary_mut(&mut self) -> Option<&mut FlureeView> {
+    pub fn primary_mut(&mut self) -> Option<&mut GraphDb> {
         if let Some(v) = self.default.first_mut() {
             return Some(v);
         }
@@ -136,7 +136,7 @@ impl FlureeDataSetView {
     }
 
     /// Get a named graph by IRI.
-    pub fn get_named(&self, name: &str) -> Option<&FlureeView> {
+    pub fn get_named(&self, name: &str) -> Option<&GraphDb> {
         self.named.get(name)
     }
 
@@ -221,7 +221,7 @@ impl FlureeDataSetView {
     /// Unwrap a single-ledger dataset into its view.
     ///
     /// Returns `None` if this is a multi-ledger dataset.
-    pub fn into_single(mut self) -> Option<FlureeView> {
+    pub fn into_single(mut self) -> Option<GraphDb> {
         if self.is_single_ledger() {
             self.default.pop()
         } else {
@@ -230,15 +230,15 @@ impl FlureeDataSetView {
     }
 }
 
-impl Default for FlureeDataSetView {
+impl Default for DataSetDb {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for FlureeDataSetView {
+impl std::fmt::Debug for DataSetDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FlureeDataSetView")
+        f.debug_struct("DataSetDb")
             .field("default_count", &self.default.len())
             .field("named_graphs", &self.named_order)
             .finish()
@@ -255,8 +255,8 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let view = fluree.view("testdb:main").await.unwrap();
-        let dataset = FlureeDataSetView::single(view);
+        let view = fluree.db("testdb:main").await.unwrap();
+        let dataset = DataSetDb::single(view);
 
         assert!(dataset.is_single_ledger());
         assert_eq!(dataset.len(), 1);
@@ -269,10 +269,10 @@ mod tests {
         let _ledger1 = fluree.create_ledger("db1").await.unwrap();
         let _ledger2 = fluree.create_ledger("db2").await.unwrap();
 
-        let view1 = fluree.view("db1:main").await.unwrap();
-        let view2 = fluree.view("db2:main").await.unwrap();
+        let view1 = fluree.db("db1:main").await.unwrap();
+        let view2 = fluree.db("db2:main").await.unwrap();
 
-        let dataset = FlureeDataSetView::new()
+        let dataset = DataSetDb::new()
             .with_default(view1)
             .with_named("http://example.org/graph2", view2);
 
@@ -286,9 +286,9 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
         let expected_ledger_id = view.ledger_id.clone();
-        let dataset = FlureeDataSetView::single(view);
+        let dataset = DataSetDb::single(view);
 
         let unwrapped = dataset.into_single();
         assert!(unwrapped.is_some());
@@ -308,19 +308,13 @@ mod tests {
 
         // Use explicit t values to test max_t logic
         // (view_at_t uses historical loading which correctly sets to_t)
-        let view_t1 = fluree
-            .view_at_t("dataset_max_t_test:main", 1)
-            .await
-            .unwrap();
-        let view_t0 = fluree
-            .view_at_t("dataset_max_t_test:main", 0)
-            .await
-            .unwrap();
+        let view_t1 = fluree.db_at_t("dataset_max_t_test:main", 1).await.unwrap();
+        let view_t0 = fluree.db_at_t("dataset_max_t_test:main", 0).await.unwrap();
 
         assert_eq!(view_t1.to_t, 1);
         assert_eq!(view_t0.to_t, 0);
 
-        let dataset = FlureeDataSetView::new()
+        let dataset = DataSetDb::new()
             .with_default(view_t1)
             .with_named("http://example.org/old", view_t0);
 

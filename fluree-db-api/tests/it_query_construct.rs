@@ -5,7 +5,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, LedgerState, Novelty};
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 use serde_json::{json, Map, Value as JsonValue};
 
 fn context_people() -> JsonValue {
@@ -46,7 +46,7 @@ async fn seed_people() -> (
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/construct:people";
 
-    let db0 = Db::genesis(ledger_id);
+    let db0 = LedgerSnapshot::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
     let tx = json!({

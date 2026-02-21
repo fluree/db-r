@@ -7,7 +7,7 @@ use crate::{
     SelectMode, Tracker, TrackingOptions, VarRegistry,
 };
 
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 use fluree_db_indexer::run_index::GraphView;
 use fluree_db_query::parse::{parse_query, ParsedQuery};
 
@@ -26,7 +26,7 @@ use super::QueryResult;
 /// Returns the variable registry and parsed query.
 pub(crate) fn parse_jsonld_query(
     query_json: &JsonValue,
-    db: &Db,
+    db: &LedgerSnapshot,
     default_context: Option<&JsonValue>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let has_context = query_json.get("@context").is_some() || query_json.get("context").is_some();
@@ -64,7 +64,7 @@ pub(crate) fn parse_jsonld_query(
 /// Returns the variable registry and parsed query.
 pub(crate) fn parse_sparql_to_ir(
     sparql: &str,
-    db: &Db,
+    db: &LedgerSnapshot,
     default_context: Option<&JsonValue>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let mut ast = parse_and_validate_sparql(sparql)?;

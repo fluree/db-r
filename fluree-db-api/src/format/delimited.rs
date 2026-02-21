@@ -21,7 +21,7 @@ use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::value_id::ObjKind;
-use fluree_db_core::{Db, FlakeValue, Sid};
+use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
 use fluree_db_indexer::run_index::GraphView;
 use fluree_db_query::binding::Binding;
 use fluree_db_query::{SelectMode, VarId};
@@ -61,26 +61,30 @@ impl Delimiter {
 // ---------------------------------------------------------------------------
 
 /// Format query results as TSV bytes.
-pub fn format_tsv_bytes(result: &QueryResult, db: &Db) -> Result<Vec<u8>> {
+pub fn format_tsv_bytes(result: &QueryResult, db: &LedgerSnapshot) -> Result<Vec<u8>> {
     format_delimited_bytes(result, db, Delimiter::Tab)
 }
 
 /// Format query results as a TSV string.
-pub fn format_tsv(result: &QueryResult, db: &Db) -> Result<String> {
+pub fn format_tsv(result: &QueryResult, db: &LedgerSnapshot) -> Result<String> {
     format_delimited(result, db, Delimiter::Tab)
 }
 
 /// Format TSV with a row limit. Returns `(tsv_bytes, total_row_count)`.
 pub fn format_tsv_bytes_limited(
     result: &QueryResult,
-    db: &Db,
+    db: &LedgerSnapshot,
     limit: usize,
 ) -> Result<(Vec<u8>, usize)> {
     format_delimited_bytes_limited(result, db, Delimiter::Tab, limit)
 }
 
 /// Format TSV string with a row limit. Returns `(tsv_string, total_row_count)`.
-pub fn format_tsv_limited(result: &QueryResult, db: &Db, limit: usize) -> Result<(String, usize)> {
+pub fn format_tsv_limited(
+    result: &QueryResult,
+    db: &LedgerSnapshot,
+    limit: usize,
+) -> Result<(String, usize)> {
     format_delimited_limited(result, db, Delimiter::Tab, limit)
 }
 
@@ -89,26 +93,30 @@ pub fn format_tsv_limited(result: &QueryResult, db: &Db, limit: usize) -> Result
 // ---------------------------------------------------------------------------
 
 /// Format query results as CSV bytes.
-pub fn format_csv_bytes(result: &QueryResult, db: &Db) -> Result<Vec<u8>> {
+pub fn format_csv_bytes(result: &QueryResult, db: &LedgerSnapshot) -> Result<Vec<u8>> {
     format_delimited_bytes(result, db, Delimiter::Comma)
 }
 
 /// Format query results as a CSV string.
-pub fn format_csv(result: &QueryResult, db: &Db) -> Result<String> {
+pub fn format_csv(result: &QueryResult, db: &LedgerSnapshot) -> Result<String> {
     format_delimited(result, db, Delimiter::Comma)
 }
 
 /// Format CSV with a row limit. Returns `(csv_bytes, total_row_count)`.
 pub fn format_csv_bytes_limited(
     result: &QueryResult,
-    db: &Db,
+    db: &LedgerSnapshot,
     limit: usize,
 ) -> Result<(Vec<u8>, usize)> {
     format_delimited_bytes_limited(result, db, Delimiter::Comma, limit)
 }
 
 /// Format CSV string with a row limit. Returns `(csv_string, total_row_count)`.
-pub fn format_csv_limited(result: &QueryResult, db: &Db, limit: usize) -> Result<(String, usize)> {
+pub fn format_csv_limited(
+    result: &QueryResult,
+    db: &LedgerSnapshot,
+    limit: usize,
+) -> Result<(String, usize)> {
     format_delimited_limited(result, db, Delimiter::Comma, limit)
 }
 
@@ -116,7 +124,11 @@ pub fn format_csv_limited(result: &QueryResult, db: &Db, limit: usize) -> Result
 // Shared implementation
 // ---------------------------------------------------------------------------
 
-fn format_delimited_bytes(result: &QueryResult, db: &Db, delimiter: Delimiter) -> Result<Vec<u8>> {
+fn format_delimited_bytes(
+    result: &QueryResult,
+    db: &LedgerSnapshot,
+    delimiter: Delimiter,
+) -> Result<Vec<u8>> {
     reject_non_tabular(result, delimiter)?;
 
     let compactor = IriCompactor::new(db.namespaces(), &result.context);
@@ -144,7 +156,11 @@ fn format_delimited_bytes(result: &QueryResult, db: &Db, delimiter: Delimiter) -
     Ok(out)
 }
 
-fn format_delimited(result: &QueryResult, db: &Db, delimiter: Delimiter) -> Result<String> {
+fn format_delimited(
+    result: &QueryResult,
+    db: &LedgerSnapshot,
+    delimiter: Delimiter,
+) -> Result<String> {
     let bytes = format_delimited_bytes(result, db, delimiter)?;
     #[cfg(debug_assertions)]
     {
@@ -161,7 +177,7 @@ fn format_delimited(result: &QueryResult, db: &Db, delimiter: Delimiter) -> Resu
 
 fn format_delimited_bytes_limited(
     result: &QueryResult,
-    db: &Db,
+    db: &LedgerSnapshot,
     delimiter: Delimiter,
     limit: usize,
 ) -> Result<(Vec<u8>, usize)> {
@@ -195,7 +211,7 @@ fn format_delimited_bytes_limited(
 
 fn format_delimited_limited(
     result: &QueryResult,
-    db: &Db,
+    db: &LedgerSnapshot,
     delimiter: Delimiter,
     limit: usize,
 ) -> Result<(String, usize)> {
@@ -556,8 +572,8 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    fn make_test_db() -> Db {
-        let mut db = Db::genesis("test:main");
+    fn make_test_db() -> LedgerSnapshot {
+        let mut db = LedgerSnapshot::genesis("test:main");
         db.namespace_codes
             .insert(100, "http://example.org/".to_string());
         db

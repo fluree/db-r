@@ -11,7 +11,7 @@ use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{Db, GraphId, NoOverlay, OverlayProvider, Sid, Tracker};
+use fluree_db_core::{GraphId, LedgerSnapshot, NoOverlay, OverlayProvider, Sid, Tracker};
 use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
 use fluree_db_spatial::SpatialIndexProvider;
 use fluree_vocab::namespaces::{FLUREE_DB, JSON_LD, OGC_GEO, RDF, XSD};
@@ -32,7 +32,7 @@ use std::sync::Arc;
 ///
 pub struct ExecutionContext<'a> {
     /// Reference to the primary database (for encoding/decoding, single-db fallback)
-    pub db: &'a Db,
+    pub db: &'a LedgerSnapshot,
     /// Variable registry for this query
     pub vars: &'a VarRegistry,
     /// Target transaction time (for time-travel queries)
@@ -97,7 +97,7 @@ pub struct ExecutionContext<'a> {
 
 impl<'a> ExecutionContext<'a> {
     /// Create a new execution context
-    pub fn new(db: &'a Db, vars: &'a VarRegistry) -> Self {
+    pub fn new(db: &'a LedgerSnapshot, vars: &'a VarRegistry) -> Self {
         Self {
             db,
             vars,
@@ -124,7 +124,12 @@ impl<'a> ExecutionContext<'a> {
     }
 
     /// Create context with specific time-travel settings
-    pub fn with_time(db: &'a Db, vars: &'a VarRegistry, to_t: i64, from_t: Option<i64>) -> Self {
+    pub fn with_time(
+        db: &'a LedgerSnapshot,
+        vars: &'a VarRegistry,
+        to_t: i64,
+        from_t: Option<i64>,
+    ) -> Self {
         Self {
             db,
             vars,
@@ -158,7 +163,7 @@ impl<'a> ExecutionContext<'a> {
 
     /// Create a new execution context with an overlay provider (novelty)
     pub fn with_overlay(
-        db: &'a Db,
+        db: &'a LedgerSnapshot,
         vars: &'a VarRegistry,
         overlay: &'a dyn OverlayProvider,
     ) -> Self {
@@ -189,7 +194,7 @@ impl<'a> ExecutionContext<'a> {
 
     /// Create context with time-travel settings and an overlay provider
     pub fn with_time_and_overlay(
-        db: &'a Db,
+        db: &'a LedgerSnapshot,
         vars: &'a VarRegistry,
         to_t: i64,
         from_t: Option<i64>,
@@ -402,7 +407,7 @@ impl<'a> ExecutionContext<'a> {
     /// `QueryError::InvalidQuery` if multiple graphs are active.
     pub fn require_single_graph(
         &self,
-    ) -> Result<(&'a Db, &'a dyn OverlayProvider, i64), QueryError> {
+    ) -> Result<(&'a LedgerSnapshot, &'a dyn OverlayProvider, i64), QueryError> {
         match self.active_graphs() {
             ActiveGraphs::Single => Ok((self.db, self.overlay(), self.to_t)),
             ActiveGraphs::Many(graphs) if graphs.len() == 1 => {

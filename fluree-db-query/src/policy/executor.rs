@@ -5,7 +5,7 @@
 use crate::context::ExecutionContext;
 use crate::execute::build_where_operators_seeded;
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{Db, OverlayProvider, Sid};
+use fluree_db_core::{LedgerSnapshot, OverlayProvider, Sid};
 use fluree_db_policy::{
     PolicyQuery, PolicyQueryExecutor, PolicyQueryFut, Result as PolicyResult,
     UNBOUND_IDENTITY_PREFIX,
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 /// executes with a root context (no policy filtering).
 pub struct QueryPolicyExecutor<'a> {
     /// The database to query
-    pub db: &'a Db,
+    pub db: &'a LedgerSnapshot,
     /// Optional overlay provider (for staged flakes)
     pub overlay: Option<&'a dyn OverlayProvider>,
     /// Target transaction time
@@ -27,7 +27,7 @@ pub struct QueryPolicyExecutor<'a> {
 
 impl<'a> QueryPolicyExecutor<'a> {
     /// Create a new query executor
-    pub fn new(db: &'a Db) -> Self {
+    pub fn new(db: &'a LedgerSnapshot) -> Self {
         Self {
             db,
             overlay: None,
@@ -36,7 +36,11 @@ impl<'a> QueryPolicyExecutor<'a> {
     }
 
     /// Create a query executor with overlay support
-    pub fn with_overlay(db: &'a Db, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
+    pub fn with_overlay(
+        db: &'a LedgerSnapshot,
+        overlay: &'a dyn OverlayProvider,
+        to_t: i64,
+    ) -> Self {
         Self {
             db,
             overlay: Some(overlay),

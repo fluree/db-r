@@ -2,7 +2,7 @@
 //!
 //! This module provides `LedgerView` for staging transactions before commit.
 //! A LedgerView combines:
-//! - Base LedgerState (indexed Db + committed novelty)
+//! - Base LedgerState (indexed LedgerSnapshot + committed novelty)
 //! - Staged flakes (not yet committed)
 //!
 //! This enables query against staged changes without committing them.
@@ -133,7 +133,7 @@ impl StagedOverlay {
 /// A view of a ledger with staged (uncommitted) changes
 ///
 /// This combines:
-/// - Base LedgerState (indexed Db + committed novelty)
+/// - Base LedgerState (indexed LedgerSnapshot + committed novelty)
 /// - Staged flakes (not yet committed)
 ///
 /// Queries against a LedgerView will see the staged changes.
@@ -190,7 +190,7 @@ impl LedgerView {
     }
 
     /// Get a reference to the underlying database
-    pub fn db(&self) -> &fluree_db_core::Db {
+    pub fn db(&self) -> &fluree_db_core::LedgerSnapshot {
         &self.base.db
     }
 
@@ -308,9 +308,9 @@ mod tests {
 
     #[test]
     fn test_ledger_view_overlay_provider() {
-        use fluree_db_core::Db;
+        use fluree_db_core::LedgerSnapshot;
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
 
         // Create base novelty with some flakes
         let mut novelty = Novelty::new(0);
@@ -336,9 +336,9 @@ mod tests {
 
     #[test]
     fn test_ledger_view_epoch() {
-        use fluree_db_core::Db;
+        use fluree_db_core::LedgerSnapshot;
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
@@ -356,9 +356,9 @@ mod tests {
 
     #[test]
     fn test_ledger_view_into_parts() {
-        use fluree_db_core::Db;
+        use fluree_db_core::LedgerSnapshot;
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let state = LedgerState::new(db, novelty);
 

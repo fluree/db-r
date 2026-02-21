@@ -4,8 +4,7 @@
 
 use super::QueryPolicyExecutor;
 use crate::error::Result;
-use crate::graph_view::ResolvedGraphView;
-use fluree_db_core::{Db, Flake, OverlayProvider, Tracker};
+use fluree_db_core::{Flake, LedgerSnapshot, OverlayProvider, Tracker};
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use std::sync::Arc;
 
@@ -61,7 +60,7 @@ impl QueryPolicyEnforcer {
     /// Filtered flakes that pass policy checks
     pub async fn filter_flakes_for_graph(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         tracker: &Tracker,
@@ -112,26 +111,12 @@ impl QueryPolicyEnforcer {
         Ok(result)
     }
 
-    /// Filter flakes using a resolved graph view.
-    ///
-    /// Convenience method that extracts db/overlay/to_t from a `ResolvedGraphView`.
-    /// This is the preferred API for Phase 2 dataset integration.
-    pub async fn filter_flakes_for_view(
-        &self,
-        view: &ResolvedGraphView<'_>,
-        tracker: &Tracker,
-        flakes: Vec<Flake>,
-    ) -> Result<Vec<Flake>> {
-        self.filter_flakes_for_graph(view.db, view.overlay, view.to_t, tracker, flakes)
-            .await
-    }
-
     /// Check if a single flake is allowed by policy using explicit graph parameters.
     ///
     /// This is the correct method for dataset mode.
     pub async fn allow_flake_for_graph(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         tracker: &Tracker,
@@ -170,24 +155,13 @@ impl QueryPolicyEnforcer {
             .map_err(|e| crate::error::QueryError::Policy(e.to_string()))
     }
 
-    /// Check if a single flake is allowed using a resolved graph view.
-    pub async fn allow_flake_for_view(
-        &self,
-        view: &ResolvedGraphView<'_>,
-        tracker: &Tracker,
-        flake: &Flake,
-    ) -> Result<bool> {
-        self.allow_flake_for_graph(view.db, view.overlay, view.to_t, tracker, flake)
-            .await
-    }
-
     /// Populate the class cache for subjects using explicit graph parameters.
     ///
     /// Call this before filtering to ensure class lookups are cached.
     /// Uses the graph's snapshot for class membership lookups.
     pub async fn populate_class_cache_for_graph(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         g_id: fluree_db_core::GraphId,
@@ -197,17 +171,6 @@ impl QueryPolicyEnforcer {
             .await
             .map_err(|e| crate::error::QueryError::Policy(e.to_string()))?;
         Ok(())
-    }
-
-    /// Populate the class cache using a resolved graph view.
-    pub async fn populate_class_cache_for_view(
-        &self,
-        view: &ResolvedGraphView<'_>,
-        g_id: fluree_db_core::GraphId,
-        subjects: &[fluree_db_core::Sid],
-    ) -> Result<()> {
-        self.populate_class_cache_for_graph(view.db, view.overlay, view.to_t, g_id, subjects)
-            .await
     }
 }
 

@@ -10,7 +10,7 @@
 mod support;
 
 use fluree_db_api::TimeSpec;
-use fluree_db_api::{DatasetSpec, FlureeBuilder, FlureeDataSetView, FlureeView, GraphSource};
+use fluree_db_api::{DataSetDb, DatasetSpec, FlureeBuilder, GraphDb, GraphSource};
 use fluree_db_core::StorageContentStore;
 use fluree_db_novelty::load_commit_by_id;
 use serde_json::json;
@@ -313,10 +313,10 @@ async fn dataset_composed_across_connections_selecting_variables() {
     let books = seed_books_ledger(&fluree_books, "test/books:main").await;
     let movies = seed_movies_ledger(&fluree_movies, "test/movies:main").await;
 
-    let dataset = FlureeDataSetView::new()
-        .with_default(FlureeView::from_ledger_state(&movies))
-        .with_default(FlureeView::from_ledger_state(&books))
-        .with_default(FlureeView::from_ledger_state(&authors));
+    let dataset = DataSetDb::new()
+        .with_default(GraphDb::from_ledger_state(&movies))
+        .with_default(GraphDb::from_ledger_state(&books))
+        .with_default(GraphDb::from_ledger_state(&authors));
 
     let query = json!({
         "@context": "https://schema.org",
@@ -362,10 +362,10 @@ async fn dataset_composed_across_connections_selecting_subgraph_depth_3() {
     let books = seed_books_ledger(&fluree_books, "test/books:main").await;
     let movies = seed_movies_ledger(&fluree_movies, "test/movies:main").await;
 
-    let dataset = FlureeDataSetView::new()
-        .with_default(FlureeView::from_ledger_state(&movies))
-        .with_default(FlureeView::from_ledger_state(&books))
-        .with_default(FlureeView::from_ledger_state(&authors));
+    let dataset = DataSetDb::new()
+        .with_default(GraphDb::from_ledger_state(&movies))
+        .with_default(GraphDb::from_ledger_state(&books))
+        .with_default(GraphDb::from_ledger_state(&authors));
 
     let query = json!({
         "@context": ctx_schema_value(),

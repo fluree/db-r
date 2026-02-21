@@ -64,7 +64,7 @@ use crate::ir::Pattern;
 use crate::parse::ParsedQuery;
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{Db, StatsView, Tracker};
+use fluree_db_core::{LedgerSnapshot, StatsView, Tracker};
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -75,7 +75,7 @@ use tracing::Instrument;
 #[derive(Clone, Copy)]
 pub struct DataSource<'a> {
     /// The database to query
-    pub db: &'a Db,
+    pub db: &'a LedgerSnapshot,
     /// Overlay provider for novelty data
     pub overlay: &'a dyn fluree_db_core::OverlayProvider,
     /// Upper time bound (inclusive)
@@ -86,7 +86,11 @@ pub struct DataSource<'a> {
 
 impl<'a> DataSource<'a> {
     /// Create a new data source with no lower time bound.
-    pub fn new(db: &'a Db, overlay: &'a dyn fluree_db_core::OverlayProvider, to_t: i64) -> Self {
+    pub fn new(
+        db: &'a LedgerSnapshot,
+        overlay: &'a dyn fluree_db_core::OverlayProvider,
+        to_t: i64,
+    ) -> Self {
         Self {
             db,
             overlay,
@@ -97,7 +101,7 @@ impl<'a> DataSource<'a> {
 
     /// Create a new data source with a time range.
     pub fn with_range(
-        db: &'a Db,
+        db: &'a LedgerSnapshot,
         overlay: &'a dyn fluree_db_core::OverlayProvider,
         to_t: i64,
         from_t: i64,
@@ -137,7 +141,11 @@ use runner::{
 /// # Returns
 ///
 /// Vector of result batches. Empty vector if no results.
-pub async fn execute(db: &Db, vars: &VarRegistry, query: &ExecutableQuery) -> Result<Vec<Batch>> {
+pub async fn execute(
+    db: &LedgerSnapshot,
+    vars: &VarRegistry,
+    query: &ExecutableQuery,
+) -> Result<Vec<Batch>> {
     let span = tracing::debug_span!(
         "query_execute",
         db_t = db.t,
@@ -173,7 +181,7 @@ pub async fn execute(db: &Db, vars: &VarRegistry, query: &ExecutableQuery) -> Re
         };
 
         // Apply pattern rewriting for reasoning (RDFS/OWL expansion)
-        fn encode_term(db: &Db, t: &Term) -> Term {
+        fn encode_term(db: &LedgerSnapshot, t: &Term) -> Term {
             match t {
                 Term::Iri(iri) => db
                     .encode_iri(iri)
@@ -183,7 +191,10 @@ pub async fn execute(db: &Db, vars: &VarRegistry, query: &ExecutableQuery) -> Re
             }
         }
 
-        fn encode_patterns_for_reasoning(db: &Db, patterns: &[Pattern]) -> Vec<Pattern> {
+        fn encode_patterns_for_reasoning(
+            db: &LedgerSnapshot,
+            patterns: &[Pattern],
+        ) -> Vec<Pattern> {
             patterns
                 .iter()
                 .map(|p| match p {
@@ -279,7 +290,11 @@ pub async fn execute(db: &Db, vars: &VarRegistry, query: &ExecutableQuery) -> Re
 /// # Returns
 ///
 /// Vector of result batches.
-pub async fn execute_query(db: &Db, vars: &VarRegistry, query: &ParsedQuery) -> Result<Vec<Batch>> {
+pub async fn execute_query(
+    db: &LedgerSnapshot,
+    vars: &VarRegistry,
+    query: &ParsedQuery,
+) -> Result<Vec<Batch>> {
     execute(db, vars, &ExecutableQuery::simple(query.clone())).await
 }
 
@@ -526,13 +541,13 @@ mod tests {
     use crate::planner::reorder_patterns;
     use crate::sort::SortSpec;
     use crate::var_registry::VarId;
-    use fluree_db_core::{Db, FlakeValue, PropertyStatData, Sid, StatsView};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, PropertyStatData, Sid, StatsView};
     use fluree_graph_json_ld::ParsedContext;
     use std::collections::HashSet;
     use where_plan::collect_inner_join_block;
 
-    fn make_test_db() -> Db {
-        Db::genesis("test/main")
+    fn make_test_db() -> LedgerSnapshot {
+        LedgerSnapshot::genesis("test/main")
     }
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {

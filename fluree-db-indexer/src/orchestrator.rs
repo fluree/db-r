@@ -1643,7 +1643,8 @@ mod tests {
 mod embedded_tests {
     use super::*;
     use fluree_db_core::{
-        ContentAddressedWrite, ContentId, ContentKind, Db, Flake, FlakeValue, MemoryStorage, Sid,
+        ContentAddressedWrite, ContentId, ContentKind, Flake, FlakeValue, LedgerSnapshot,
+        MemoryStorage, Sid,
     };
     use fluree_db_ledger::LedgerState;
     use fluree_db_nameservice::memory::MemoryNameService;
@@ -1786,7 +1787,7 @@ mod embedded_tests {
     #[tokio::test]
     async fn test_maybe_refresh_below_threshold_returns_not_attempted() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1811,7 +1812,7 @@ mod embedded_tests {
     #[tokio::test]
     async fn test_maybe_refresh_empty_novelty_returns_not_attempted() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0); // empty
         let ledger = LedgerState::new(db, novelty);
 
@@ -1853,7 +1854,7 @@ mod embedded_tests {
         ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         // Create a LedgerState with enough novelty to trigger threshold
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let mut novelty = Novelty::new(0);
         let large_flake = make_large_flake(2, 2000);
         novelty.apply_commit(vec![large_flake], 2).unwrap();
@@ -1902,7 +1903,7 @@ mod embedded_tests {
         let cid = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let mut novelty = Novelty::new(0);
         let flake = make_flake(1, "ex:bob", 1, "ex:age", 25, 2);
         novelty.apply_commit(vec![flake], 2).unwrap();
@@ -1924,7 +1925,7 @@ mod embedded_tests {
     #[tokio::test]
     async fn test_require_refresh_no_commits_returns_error() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 

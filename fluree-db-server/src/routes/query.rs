@@ -19,7 +19,7 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use fluree_db_api::{FlureeView, FreshnessCheck, FreshnessSource, LedgerState, TrackingTally};
+use fluree_db_api::{FreshnessCheck, FreshnessSource, GraphDb, LedgerState, TrackingTally};
 use serde_json::Value as JsonValue;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -569,7 +569,7 @@ async fn execute_query(
 
     // Shared storage mode: use load_ledger_for_query with freshness checking
     let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
-    let graph = FlureeView::from_ledger_state(&ledger);
+    let graph = GraphDb::from_ledger_state(&ledger);
     let fluree = state.fluree.as_file();
 
     // Check if tracking is requested
@@ -834,7 +834,7 @@ async fn execute_sparql_ledger(
             .inspect_err(|_| {
                 set_span_error_code(&span, "error:LedgerLoad");
             })?;
-        let graph = FlureeView::from_ledger_state(&ledger);
+        let graph = GraphDb::from_ledger_state(&ledger);
         let fluree = state.fluree.as_file();
 
         // Delimited fast path: execute raw query and format as TSV/CSV bytes

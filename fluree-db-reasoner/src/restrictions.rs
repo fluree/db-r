@@ -26,7 +26,7 @@ use fluree_db_core::namespaces::is_rdf_type;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, GraphId, Sid};
+use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
 use fluree_vocab::namespaces::OWL;
 use fluree_vocab::owl_names::*;
 use hashbrown::HashMap;
@@ -480,7 +480,7 @@ impl RestrictionIndex {
 ///    - owl:hasValue / owl:someValuesFrom / owl:allValuesFrom / etc.
 /// 3. Builds a RestrictionIndex for efficient lookup during rule application
 pub async fn extract_restrictions(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,

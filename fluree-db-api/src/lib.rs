@@ -109,8 +109,8 @@ pub use import::{
 };
 pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{
-    FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager, LedgerManagerConfig,
-    LedgerSnapshot, LedgerWriteGuard, NotifyResult, NsNotify, RemoteWatermark, UpdatePlan,
+    CachedLedgerState, FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager,
+    LedgerManagerConfig, LedgerWriteGuard, NotifyResult, NsNotify, RemoteWatermark, UpdatePlan,
 };
 pub use pack::{
     compute_missing_index_artifacts, validate_pack_request, PackChunk, PackStreamError,
@@ -130,7 +130,7 @@ pub use tx::{
     TransactResultRef,
 };
 pub use tx_builder::{OwnedTransactBuilder, RefTransactBuilder, Staged};
-pub use view::{FlureeDataSetView, FlureeView, QueryInput, ReasoningModePrecedence};
+pub use view::{DataSetDb, GraphDb, QueryInput, ReasoningModePrecedence};
 
 #[cfg(feature = "iceberg")]
 pub use graph_source::{
@@ -2278,7 +2278,7 @@ where
     ///     .await?;
     ///
     /// // Query normally after import
-    /// let view = fluree.view("mydb").await?;
+    /// let view = fluree.db("mydb").await?;
     /// let qr = fluree.query_view(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10").await?;
     /// ```
     pub fn create(&self, ledger_id: &str) -> import::CreateBuilder<'_, S, N> {

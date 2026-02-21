@@ -9,7 +9,7 @@ use crate::error::BuilderErrors;
 use crate::format::FormatterConfig;
 use crate::graph::Graph;
 use crate::query::builder::QueryCore;
-use crate::view::FlureeView;
+use crate::view::GraphDb;
 use crate::{
     ApiError, Fluree, NameService, QueryResult, Result, Storage, TrackedErrorResponse,
     TrackedQueryResponse, TrackingOptions,
@@ -121,7 +121,7 @@ where
         let view = self
             .graph
             .fluree
-            .load_view_at(&self.graph.ledger_id, self.graph.time_spec.clone())
+            .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await?;
         let input = self.core.input.unwrap();
         self.graph.fluree.query_view(&view, input).await
@@ -137,7 +137,7 @@ where
         let view = self
             .graph
             .fluree
-            .load_view_at(&self.graph.ledger_id, self.graph.time_spec.clone())
+            .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await?;
         let format_config = self
             .core
@@ -168,7 +168,7 @@ where
         let view = self
             .graph
             .fluree
-            .load_view_at(&self.graph.ledger_id, self.graph.time_spec.clone())
+            .load_graph_db_at(&self.graph.ledger_id, self.graph.time_spec.clone())
             .await
             .map_err(|e| TrackedErrorResponse::new(404, e.to_string(), None))?;
         let input = self.core.input.unwrap();
@@ -192,7 +192,7 @@ where
 /// ```
 pub struct GraphSnapshotQueryBuilder<'a, 'v, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    view: &'v FlureeView,
+    view: &'v GraphDb,
     core: QueryCore<'v>,
 }
 
@@ -202,7 +202,7 @@ where
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder from a fluree reference and a view.
-    pub(crate) fn new_from_parts(fluree: &'a Fluree<S, N>, view: &'v FlureeView) -> Self {
+    pub(crate) fn new_from_parts(fluree: &'a Fluree<S, N>, view: &'v GraphDb) -> Self {
         Self {
             fluree,
             view,

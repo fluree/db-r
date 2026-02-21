@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use fluree_db_core::{Db, OverlayProvider};
+use fluree_db_core::{LedgerSnapshot, OverlayProvider};
 
 use crate::policy::QueryPolicyEnforcer;
 
@@ -41,7 +41,7 @@ use crate::policy::QueryPolicyEnforcer;
 /// policy-wrapped before being assembled into a dataset.
 pub struct GraphRef<'a> {
     /// The database for this graph
-    pub db: &'a Db,
+    pub db: &'a LedgerSnapshot,
     /// Overlay provider (novelty) - NOT optional, LedgerState always has novelty
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time for this graph
@@ -70,7 +70,7 @@ impl<'a> GraphRef<'a> {
     /// * `to_t` - Target transaction time
     /// * `ledger_id` - Ledger ID for provenance tracking (e.g., "orders:main")
     pub fn new(
-        db: &'a Db,
+        db: &'a LedgerSnapshot,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_id: impl Into<Arc<str>>,
@@ -94,7 +94,7 @@ impl<'a> GraphRef<'a> {
     /// * `ledger_id` - Ledger ID for provenance tracking
     /// * `policy_enforcer` - Policy enforcer for this graph
     pub fn with_policy(
-        db: &'a Db,
+        db: &'a LedgerSnapshot,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_id: impl Into<Arc<str>>,
@@ -112,7 +112,7 @@ impl<'a> GraphRef<'a> {
     /// Create a graph reference using the db's address as the ledger ID
     ///
     /// Convenience method when the db's address is the appropriate identifier.
-    pub fn from_db(db: &'a Db, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
+    pub fn from_db(db: &'a LedgerSnapshot, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
         Self {
             db,
             overlay,
@@ -134,30 +134,12 @@ impl<'a> GraphRef<'a> {
 impl<'a> fmt::Debug for GraphRef<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GraphRef")
-            .field("db", &"<Db>")
+            .field("db", &"<LedgerSnapshot>")
             .field("overlay", &"<dyn OverlayProvider>")
             .field("to_t", &self.to_t)
             .field("ledger_id", &self.ledger_id)
             .field("has_policy", &self.policy_enforcer.is_some())
             .finish()
-    }
-}
-
-// Implement GraphView for GraphRef to enable composability
-impl<'a> crate::graph_view::GraphView for GraphRef<'a> {
-    fn resolve(&self) -> crate::graph_view::ResolvedGraphView<'_> {
-        crate::graph_view::ResolvedGraphView {
-            db: self.db,
-            overlay: self.overlay,
-            to_t: self.to_t,
-            // Convert Option<Arc<T>> to Option<&T>
-            policy_enforcer: self.policy_enforcer.as_deref(),
-            ledger_id: &self.ledger_id,
-        }
-    }
-
-    fn ledger_id(&self) -> &Arc<str> {
-        &self.ledger_id
     }
 }
 

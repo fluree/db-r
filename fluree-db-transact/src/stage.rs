@@ -484,7 +484,7 @@ async fn enforce_modify_policy_per_flake(
 /// This function lowers the `UnresolvedPattern` patterns (which use string IRIs)
 /// to `Pattern` (with encoded Sids), then executes them against the ledger.
 async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
-    // Lower UnresolvedPattern to Pattern using the ledger's Db as the IRI encoder.
+    // Lower UnresolvedPattern to Pattern using the ledger's LedgerSnapshot as the IRI encoder.
     // This also assigns VarIds to any variables referenced in WHERE patterns.
     let mut query_patterns = lower_where_patterns(&txn.where_patterns, &ledger.db, &mut txn.vars)?;
 
@@ -525,7 +525,7 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
 /// VarIds to variables using the provided VarRegistry (shared with INSERT/DELETE).
 fn lower_where_patterns(
     patterns: &[UnresolvedPattern],
-    db: &fluree_db_core::Db,
+    db: &fluree_db_core::LedgerSnapshot,
     vars: &mut VarRegistry,
 ) -> Result<Vec<Pattern>> {
     let mut pp_counter: u32 = 0;
@@ -1001,7 +1001,7 @@ fn format_shacl_report(report: &ValidationReport) -> String {
 mod tests {
     use super::*;
     use crate::ir::{TemplateTerm, TripleTemplate, Txn};
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, MemoryStorage, Sid};
     use fluree_db_novelty::Novelty;
     use fluree_db_query::parse::{UnresolvedTerm, UnresolvedTriplePattern};
 
@@ -1012,7 +1012,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_simple_insert() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_insert_multiple_triples() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1060,7 +1060,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stage_with_blank_nodes() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1085,7 +1085,7 @@ mod tests {
     async fn test_stage_backpressure_at_max() {
         use fluree_db_core::Flake;
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
 
         // Create novelty that's at max size
         let mut novelty = Novelty::new(0);
@@ -1128,7 +1128,7 @@ mod tests {
     async fn test_insert_with_blank_node_always_succeeds() {
         // Blank nodes are always new, so insert should succeed even if
         // the blank node was used before (it gets a new skolemized ID)
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1150,7 +1150,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1216,7 +1216,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_on_nonexistent_subject() {
         // Upsert on a subject that doesn't exist should just insert
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1245,7 +1245,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1314,7 +1314,7 @@ mod tests {
 
         let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
         // Ensure schema.org prefix is present in the registry used for lowering.
-        // (Should already be in Db.namespace_codes via commit delta, but this makes the test robust.)
+        // (Should already be in LedgerSnapshot.namespace_codes via commit delta, but this makes the test robust.)
         let _ = ns_registry2.sid_for_iri("http://schema.org/alice");
         let _ = ns_registry2.sid_for_iri("http://schema.org/name");
         let (view2, _ns2) = stage(state1, txn2, ns_registry2, StageOptions::default())
@@ -1347,7 +1347,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1492,7 +1492,7 @@ mod tests {
         // Which should create two triples with different subjects and names.
         use crate::ir::InlineValues;
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -1562,7 +1562,7 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 

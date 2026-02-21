@@ -14,7 +14,7 @@
 //! Fluree uses predefined codes for common namespaces to ensure compatibility
 //! with existing databases. User-supplied namespaces start at `USER_START`.
 
-use fluree_db_core::{Db, PrefixTrie, Sid};
+use fluree_db_core::{LedgerSnapshot, PrefixTrie, Sid};
 use fluree_vocab::namespaces::{BLANK_NODE, OVERFLOW, USER_START};
 use parking_lot::RwLock;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -104,7 +104,7 @@ pub struct NamespaceRegistry {
     /// Prefix → code mapping (for exact lookups in get_or_allocate)
     codes: HashMap<String, u16>,
 
-    /// Code → prefix mapping (for encoding, matches Db.namespace_codes)
+    /// Code → prefix mapping (for encoding, matches LedgerSnapshot.namespace_codes)
     names: HashMap<u16, String>,
 
     /// Next available code for allocation (>= USER_NS_START)
@@ -155,7 +155,7 @@ impl NamespaceRegistry {
     ///
     /// This merges the database's codes with the predefined defaults,
     /// with the database taking precedence for any conflicts.
-    pub fn from_db(db: &Db) -> Self {
+    pub fn from_db(db: &LedgerSnapshot) -> Self {
         // Start with defaults
         let mut names = default_namespaces();
 
@@ -861,7 +861,7 @@ pub fn is_blank_node_id(iri: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
     use fluree_vocab::namespaces::{DID_KEY, EMPTY, JSON_LD, XSD};
 
     #[test]
@@ -992,7 +992,7 @@ mod tests {
     fn test_registry_from_db_enables_host_only_after_budget_crossed() {
         // Simulate a DB that has already allocated beyond the u8-ish namespace budget,
         // as would happen for outlier datasets after an import + index publish.
-        let mut db = Db::genesis("test:main");
+        let mut db = LedgerSnapshot::genesis("test:main");
         db.namespace_codes
             .insert(300, "http://already-allocated.example/".to_string());
 
@@ -1011,7 +1011,7 @@ mod tests {
     #[test]
     fn test_registry_from_db_defaults_to_last_slash_under_budget() {
         // Simulate a normal DB (no namespace explosion): fallback remains last-slash-or-hash.
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let mut registry = NamespaceRegistry::from_db(&db);
         assert_eq!(registry.fallback_mode(), NsFallbackMode::LastSlashOrHash);
 

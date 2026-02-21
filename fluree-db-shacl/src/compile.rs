@@ -7,8 +7,8 @@ use crate::constraints::{Constraint, NestedShape, NodeConstraint};
 use crate::error::Result;
 use crate::predicates;
 use fluree_db_core::{
-    range_with_overlay, Db, Flake, FlakeValue, GraphId, IndexType, OverlayProvider, RangeMatch,
-    RangeOptions, RangeTest, Sid,
+    range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot, OverlayProvider,
+    RangeMatch, RangeOptions, RangeTest, Sid,
 };
 use fluree_vocab::namespaces::{RDF, SHACL};
 use fluree_vocab::rdf_names;
@@ -166,7 +166,7 @@ impl ShapeCompiler {
     /// novelty flakes to find SHACL shapes. This is important because shapes
     /// may be defined in the same transaction as the data they validate.
     pub async fn compile_from_db<O: OverlayProvider>(
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
         overlay: &O,
     ) -> Result<Vec<CompiledShape>> {
@@ -257,7 +257,7 @@ impl ShapeCompiler {
     /// Expand RDF lists that were referenced by sh:in, sh:and, sh:or, sh:xone
     async fn expand_rdf_lists<O: OverlayProvider>(
         &mut self,
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
         overlay: &O,
     ) -> Result<()> {
@@ -805,7 +805,7 @@ impl ShapeCompiler {
 
 /// Traverse an RDF list and collect all values
 async fn traverse_rdf_list<O: OverlayProvider>(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &O,
     list_head: &Sid,

@@ -297,10 +297,10 @@ mod tests {
     fn test_values_operator_compatibility_check() {
         // Test the compatibility logic directly
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::Db;
+        use fluree_db_core::LedgerSnapshot;
 
         let vars = VarRegistry::new();
-        let db = Db::genesis("values-test/main");
+        let db = LedgerSnapshot::genesis("values-test/main");
         let ctx = ExecutionContext::new(&db, &vars);
 
         let child_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());

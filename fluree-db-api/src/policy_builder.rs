@@ -15,7 +15,7 @@
 use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
 use fluree_db_core::{is_rdf_type, ClassPropertyUsage, ClassStatEntry, IndexStats};
-use fluree_db_core::{Db, FlakeValue, IndexType, Sid};
+use fluree_db_core::{FlakeValue, IndexType, LedgerSnapshot, Sid};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::{
     build_policy_set, PolicyAction, PolicyContext, PolicyQuery, PolicyRestriction, PolicyValue,
@@ -27,7 +27,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 
 async fn augment_class_property_stats_from_novelty(
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     mut stats: IndexStats,
@@ -140,7 +140,7 @@ use fluree_vocab::{fluree, policy_iris};
 /// * `to_t` - Time bound for queries
 /// * `opts` - Query connection options with policy configuration
 pub async fn build_policy_context_from_opts(
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     novelty_for_stats: Option<&Novelty>,
     to_t: i64,
@@ -254,7 +254,7 @@ pub async fn build_policy_context_from_opts(
 /// }
 /// ```
 async fn load_policies_by_identity(
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     identity_iri: &str,
@@ -304,7 +304,7 @@ async fn load_policies_by_identity(
 ///
 /// Clojure equivalent: `wrap-class-policy`
 async fn load_policies_by_class(
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     class_iris: &[String],
@@ -328,7 +328,7 @@ async fn load_policies_by_class(
 /// ```
 /// Then load each policy's properties.
 async fn load_policies_of_classes(
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     class_sids: &[Sid],
@@ -381,7 +381,7 @@ async fn load_policies_of_classes(
 /// when the predicate is a variable. Since all policy vocabulary predicates
 /// are in the `fluree:ledger` namespace, we must query them explicitly.
 async fn load_policy_restriction(
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     policy_sid: &Sid,
@@ -603,7 +603,7 @@ async fn load_policy_restriction(
 /// Uses an explicit predicate SID (not a variable) to avoid the scan layer's
 /// filtering of internal `fluree:ledger` predicates.
 async fn query_predicate(
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     subject_sid: &Sid,
@@ -640,7 +640,10 @@ async fn query_predicate(
 /// Parse inline policy JSON-LD into restrictions.
 ///
 /// Clojure equivalent: `wrap-policy` with inline policy
-fn parse_inline_policy(db: &Db, policy_json: &JsonValue) -> Result<Vec<PolicyRestriction>> {
+fn parse_inline_policy(
+    db: &LedgerSnapshot,
+    policy_json: &JsonValue,
+) -> Result<Vec<PolicyRestriction>> {
     // The inline policy can be a single object or an array of objects
     let policies = match policy_json {
         JsonValue::Array(arr) => arr.clone(),
@@ -880,14 +883,14 @@ fn parse_inline_policy(db: &Db, policy_json: &JsonValue) -> Result<Vec<PolicyRes
 // full feature support (e.g., FILTER patterns) in f:query policies.
 
 /// Resolve an IRI string to a SID using the database's encoding.
-fn resolve_iri_to_sid(db: &Db, iri: &str) -> Result<Sid> {
+fn resolve_iri_to_sid(db: &LedgerSnapshot, iri: &str) -> Result<Sid> {
     db.encode_iri(iri)
         .ok_or_else(|| ApiError::query(format!("Failed to resolve IRI '{}'", iri)))
 }
 
 /// Build policy values map from JSON values.
 fn build_policy_values(
-    db: &Db,
+    db: &LedgerSnapshot,
     values: &Option<HashMap<String, JsonValue>>,
 ) -> Result<HashMap<String, Sid>> {
     let mut result = HashMap::new();

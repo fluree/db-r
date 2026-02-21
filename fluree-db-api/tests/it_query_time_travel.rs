@@ -86,7 +86,7 @@ async fn seed_time_travel_ledger(
 
 async fn query_names_at(
     fluree: &MemoryFluree,
-    db_for_formatting: &fluree_db_core::Db,
+    db_for_formatting: &fluree_db_core::LedgerSnapshot,
     from_spec: &str,
 ) -> Vec<Vec<JsonValue>> {
     let q = json!({

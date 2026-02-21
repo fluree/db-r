@@ -1,12 +1,12 @@
 //! Core view types
 //!
-//! Defines `FlureeView`, `ReasoningModePrecedence`, and `DerivedFactsHandle`.
+//! Defines `GraphDb`, `ReasoningModePrecedence`, and `DerivedFactsHandle`.
 
 use std::sync::Arc;
 
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::ids::GraphId;
-use fluree_db_core::{Db, NoOverlay, OverlayProvider};
+use fluree_db_core::{LedgerSnapshot, NoOverlay, OverlayProvider};
 use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
@@ -49,7 +49,7 @@ pub enum ReasoningModePrecedence {
 /// Views support Clojure-style wrapper composition via builder methods:
 ///
 /// ```ignore
-/// let view = FlureeView::from_ledger_state(&ledger)
+/// let view = GraphDb::from_ledger_state(&ledger)
 ///     .with_policy(policy)
 ///     .with_reasoning(ReasoningModes::owl2ql());
 /// ```
@@ -59,15 +59,15 @@ pub enum ReasoningModePrecedence {
 ///
 /// # Clone Semantics
 ///
-/// `FlureeView` is cheap to clone (all fields are `Arc`-wrapped or `Copy`).
+/// `GraphDb` is cheap to clone (all fields are `Arc`-wrapped or `Copy`).
 /// Cloning a view creates a new handle to the same underlying data.
 #[derive(Clone)]
-pub struct FlureeView {
+pub struct GraphDb {
     // ========================================================================
     // Core components (required)
     // ========================================================================
     /// The indexed database snapshot.
-    pub db: Arc<Db>,
+    pub db: Arc<LedgerSnapshot>,
 
     /// Overlay provider for uncommitted/derived flakes.
     ///
@@ -143,9 +143,9 @@ pub struct FlureeView {
     pub default_context: Option<serde_json::Value>,
 }
 
-impl std::fmt::Debug for FlureeView {
+impl std::fmt::Debug for GraphDb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FlureeView")
+        f.debug_struct("GraphDb")
             .field("ledger_id", &self.ledger_id)
             .field("graph_id", &self.graph_id)
             .field("to_t", &self.to_t)
@@ -162,7 +162,7 @@ impl std::fmt::Debug for FlureeView {
 // Constructors
 // ============================================================================
 
-impl FlureeView {
+impl GraphDb {
     /// Create a base view from components.
     ///
     /// This is the low-level constructor. Prefer `from_ledger_state` or
@@ -176,7 +176,7 @@ impl FlureeView {
     /// * `to_t` - Time bound for queries
     /// * `ledger_id` - Ledger ID (e.g., "mydb:main")
     pub fn new(
-        db: Arc<Db>,
+        db: Arc<LedgerSnapshot>,
         overlay: Arc<dyn OverlayProvider>,
         novelty: Option<Arc<Novelty>>,
         to_t: i64,
@@ -207,7 +207,7 @@ impl FlureeView {
     ///
     /// ```ignore
     /// let ledger = fluree.ledger("mydb:main").await?;
-    /// let view = FlureeView::from_ledger_state(&ledger);
+    /// let view = GraphDb::from_ledger_state(&ledger);
     /// ```
     pub fn from_ledger_state(ledger: &LedgerState) -> Self {
         let novelty = ledger.novelty.clone();
@@ -236,15 +236,11 @@ impl FlureeView {
     ///
     /// ```ignore
     /// let historical = fluree.ledger_view_at("mydb:main", 50).await?;
-    /// let view = FlureeView::from_historical(&historical);
+    /// let view = GraphDb::from_historical(&historical);
     /// ```
     pub fn from_historical(view: &HistoricalLedgerView) -> Self {
         let has_overlay = view.overlay().is_some();
-        tracing::trace!(
-            to_t = view.to_t(),
-            has_overlay,
-            "FlureeView::from_historical"
-        );
+        tracing::trace!(to_t = view.to_t(), has_overlay, "GraphDb::from_historical");
         let (overlay, novelty): (Arc<dyn OverlayProvider>, Option<Arc<Novelty>>) =
             match view.overlay() {
                 Some(nov) => (nov.clone() as Arc<dyn OverlayProvider>, Some(nov.clone())),
@@ -261,7 +257,7 @@ impl FlureeView {
     }
 }
 
-impl FlureeView {
+impl GraphDb {
     /// Create a view from a [`Staged`](crate::tx_builder::Staged) transaction
     /// that includes the staged (uncommitted) changes.
     ///
@@ -272,7 +268,7 @@ impl FlureeView {
     ///
     /// ```ignore
     /// let staged = fluree.stage_owned(ledger).insert(&data).stage().await?;
-    /// let preview = FlureeView::from_staged(&staged)?;
+    /// let preview = GraphDb::from_staged(&staged)?;
     /// let result = preview.query(&fluree).jsonld(&q).execute().await?;
     /// ```
     pub fn from_staged(
@@ -318,8 +314,8 @@ impl FlureeView {
     ///
     /// ```ignore
     /// let staged = fluree.stage_owned(ledger).insert(&data).stage().await?;
-    /// let before = FlureeView::from_staged_base(&staged);
-    /// let after  = FlureeView::from_staged(&staged);
+    /// let before = GraphDb::from_staged_base(&staged);
+    /// let after  = GraphDb::from_staged(&staged);
     /// ```
     pub fn from_staged_base(staged: &crate::tx_builder::Staged) -> Self {
         let base = staged.view.base();
@@ -338,7 +334,7 @@ impl FlureeView {
 // Time Travel
 // ============================================================================
 
-impl FlureeView {
+impl GraphDb {
     /// Adjust the view's time bound.
     ///
     /// **Important**: This only adjusts the `to_t` filter; it doesn't reload
@@ -361,12 +357,12 @@ impl FlureeView {
 // Graph selection
 // ============================================================================
 
-impl FlureeView {
+impl GraphDb {
     /// Select a graph ID within this ledger view.
     ///
     /// This does **not** reload the underlying ledger; it only adjusts the
     /// internal graph selector used by binary scans. Callers that rely on
-    /// `range_with_overlay()` must ensure the underlying `Db.range_provider`
+    /// `range_with_overlay()` must ensure the underlying `LedgerSnapshot.range_provider`
     /// is scoped appropriately for the chosen graph.
     pub fn with_graph_id(mut self, graph_id: GraphId) -> Self {
         self.graph_id = graph_id;
@@ -378,7 +374,7 @@ impl FlureeView {
 // Binary Store
 // ============================================================================
 
-impl FlureeView {
+impl GraphDb {
     /// Attach a binary index store for `BinaryScanOperator`.
     pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>) -> Self {
         self.binary_store = Some(store);
@@ -404,7 +400,7 @@ impl FlureeView {
 // Policy Wrapper
 // ============================================================================
 
-impl FlureeView {
+impl GraphDb {
     /// Attach a policy context to the view.
     ///
     /// Policy is enforced during query execution and result formatting.
@@ -464,7 +460,7 @@ impl FlureeView {
 // Reasoning Wrapper
 // ============================================================================
 
-impl FlureeView {
+impl GraphDb {
     /// Apply default reasoning modes to queries on this view.
     ///
     /// This mirrors Clojure's `wrap-reasoning`. The reasoning modes apply
@@ -563,7 +559,7 @@ impl FlureeView {
 // Accessors
 // ============================================================================
 
-impl FlureeView {
+impl GraphDb {
     /// Get the concrete novelty overlay (if available).
     ///
     /// This is needed for policy stats (`f:onClass`) and some time resolution
@@ -623,8 +619,8 @@ impl std::fmt::Debug for DerivedFactsHandle {
 mod tests {
     use super::*;
 
-    fn make_test_db() -> Db {
-        Db::genesis("test:main")
+    fn make_test_db() -> LedgerSnapshot {
+        LedgerSnapshot::genesis("test:main")
     }
 
     #[test]
@@ -633,7 +629,7 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
+        let view = GraphDb::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
 
         assert_eq!(view.to_t, 5);
         assert_eq!(&*view.ledger_id, "test:main");
@@ -648,7 +644,7 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 10, "test:main");
+        let view = GraphDb::new(Arc::new(db), overlay, Some(novelty), 10, "test:main");
         assert_eq!(view.to_t, 10);
 
         let view = view.as_of(5);
@@ -661,7 +657,7 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
+        let view = GraphDb::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
         assert!(view.reasoning().is_none());
 
         let view = view.with_reasoning(ReasoningModes::owl2ql());
@@ -682,7 +678,7 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
+        let view = GraphDb::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
 
         let view = view.with_reasoning_precedence(
             ReasoningModes::default().with_owl2rl(),
@@ -698,7 +694,7 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main")
+        let view = GraphDb::new(Arc::new(db), overlay, Some(novelty), 5, "test:main")
             .with_reasoning(ReasoningModes::owl2ql());
 
         // No query reasoning: wrapper wins
@@ -717,7 +713,7 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main")
+        let view = GraphDb::new(Arc::new(db), overlay, Some(novelty), 5, "test:main")
             .with_reasoning_precedence(ReasoningModes::owl2ql(), ReasoningModePrecedence::Force);
 
         // Force: wrapper always wins
@@ -732,7 +728,7 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
+        let view = GraphDb::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
 
         // No policy = root
         assert!(view.is_root());
@@ -744,10 +740,10 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
+        let view = GraphDb::new(Arc::new(db), overlay, Some(novelty), 5, "test:main");
         let debug = format!("{:?}", view);
 
-        assert!(debug.contains("FlureeView"));
+        assert!(debug.contains("GraphDb"));
         assert!(debug.contains("test:main"));
         assert!(debug.contains("to_t: 5"));
     }
@@ -758,7 +754,7 @@ mod tests {
         let novelty = Arc::new(Novelty::new(0));
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
-        let view1 = FlureeView::new(Arc::new(db), overlay, Some(novelty), 5, "test:main")
+        let view1 = GraphDb::new(Arc::new(db), overlay, Some(novelty), 5, "test:main")
             .with_reasoning(ReasoningModes::rdfs());
 
         let view2 = view1.clone();

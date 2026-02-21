@@ -109,7 +109,7 @@ async fn test_connection_parity() {
 
     let db = match conn {
         ConnectionHandle::File(c) => c
-            .load_db_fresh_cache(&root_id, TEST_LEDGER_ID)
+            .load_ledger_snapshot_fresh_cache(&root_id, TEST_LEDGER_ID)
             .await
             .unwrap(),
         _ => panic!("Expected FileConnection"),

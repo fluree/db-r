@@ -113,14 +113,14 @@ mod tests {
     use super::*;
     use crate::binding::Binding;
     use crate::seed::SeedOperator;
-    use fluree_db_core::{Db, FlakeValue, Sid};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
 
     fn xsd_long() -> Sid {
         Sid::new(2, "long")
     }
 
-    fn make_test_db() -> Db {
-        Db::genesis("test/main")
+    fn make_test_db() -> LedgerSnapshot {
+        LedgerSnapshot::genesis("test/main")
     }
 
     #[tokio::test]

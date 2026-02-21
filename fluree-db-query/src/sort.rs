@@ -507,7 +507,7 @@ mod tests {
     use super::*;
     use crate::error::QueryError;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
 
     /// Mock operator that emits predefined batches
     struct MockOperator {
@@ -735,7 +735,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_single_column_asc() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -756,7 +756,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_single_column_desc() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -777,7 +777,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_multi_column() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -805,7 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_with_unbound() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -846,7 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_across_batches() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -868,7 +868,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_emits_in_batches() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         // Use small batch size
         let ctx = ExecutionContext::new(&db, &vars).with_batch_size(3);
@@ -897,7 +897,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_empty_input() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -912,7 +912,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_preserves_schema() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -943,7 +943,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sort_state_transitions() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 

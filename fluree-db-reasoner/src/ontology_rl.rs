@@ -17,7 +17,7 @@ use fluree_db_core::namespaces::{
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, GraphId, Sid};
+use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
 use fluree_vocab::namespaces::{OWL, RDFS};
 use fluree_vocab::owl_names::*;
 use fluree_vocab::predicates::{RDFS_DOMAIN, RDFS_RANGE};
@@ -172,7 +172,7 @@ impl OntologyRL {
     /// - `?p rdfs:domain ?c`
     /// - `?p rdfs:range ?c`
     pub async fn from_db_with_overlay(
-        db: &Db,
+        db: &LedgerSnapshot,
         g_id: GraphId,
         overlay: &dyn OverlayProvider,
         epoch: u64,
@@ -886,7 +886,7 @@ impl OntologyRL {
 ///
 /// Returns pairs of SIDs that are asserted to be the same.
 pub async fn load_same_as_assertions(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,

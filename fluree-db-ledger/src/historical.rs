@@ -7,7 +7,7 @@
 //! # Design
 //!
 //! A historical view consists of:
-//! - A `Db` loaded from the head index (or genesis if no index exists)
+//! - A `LedgerSnapshot` loaded from the head index (or genesis if no index exists)
 //! - An optional `Novelty` overlay for commits between `index_t` and `target_t`
 //! - A `to_t` field that bounds all queries
 //!
@@ -27,8 +27,8 @@
 
 use crate::error::{LedgerError, Result};
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, Db, Flake, FlakeMeta, FlakeValue, IndexType,
-    OverlayProvider, Sid, Storage,
+    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, IndexType,
+    LedgerSnapshot, OverlayProvider, Sid, Storage,
 };
 use fluree_db_nameservice::NameService;
 
@@ -55,7 +55,7 @@ const TXN_META_GRAPH_LOCAL_NAME: &str = "txn-meta";
 #[derive(Debug)]
 pub struct HistoricalLedgerView {
     /// The indexed database (head index or genesis)
-    pub db: Db,
+    pub db: LedgerSnapshot,
     /// Optional novelty overlay (commits between index_t and to_t)
     overlay: Option<Arc<Novelty>>,
     /// Time bound for all queries
@@ -103,7 +103,7 @@ impl HistoricalLedgerView {
         // If the requested time is *before* the latest index_t, we cannot assume the
         // binary index can answer time-travel purely via the index. Until the index
         // format guarantees history coverage for all updates, we fall back to an
-        // overlay-only reconstruction (genesis Db + commit replay up to target_t).
+        // overlay-only reconstruction (genesis LedgerSnapshot + commit replay up to target_t).
         //
         // When target_t >= index_t, we can use the head index and only replay commits
         // after index_t (normal fast path).
@@ -113,10 +113,10 @@ impl HistoricalLedgerView {
         let (mut db, index_t) = if use_index {
             let index_cid = record.index_head_id.as_ref().unwrap();
             let root_bytes = store.get(index_cid).await?;
-            let loaded = Db::from_root_bytes(&root_bytes)?;
+            let loaded = LedgerSnapshot::from_root_bytes(&root_bytes)?;
             (loaded, record.index_t)
         } else {
-            (Db::genesis(&record.ledger_id), 0)
+            (LedgerSnapshot::genesis(&record.ledger_id), 0)
         };
 
         // Build novelty from commits between index_t and target_t.
@@ -309,7 +309,7 @@ impl HistoricalLedgerView {
     /// Create a historical view directly from components
     ///
     /// This is useful for testing or when you've already loaded the components.
-    pub fn new(db: Db, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
+    pub fn new(db: LedgerSnapshot, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
         Self { db, overlay, to_t }
     }
 
@@ -393,7 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_new() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
 
         let view = HistoricalLedgerView::new(db, None, 10);
 
@@ -405,7 +405,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_with_overlay() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
@@ -421,7 +421,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_overlay_provider() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty

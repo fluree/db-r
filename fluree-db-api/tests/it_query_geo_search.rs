@@ -18,7 +18,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, LedgerState, Novelty};
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 use serde_json::{json, Value as JsonValue};
 use support::start_background_indexer_local;
 
@@ -215,7 +215,7 @@ async fn geo_search_time_travel_different_results_at_different_t() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert Paris (lat=48.8566, lng=2.3522)
@@ -272,7 +272,7 @@ async fn geo_search_retraction_removes_point_from_results() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // t=1: Insert Paris
@@ -333,7 +333,7 @@ async fn geo_search_dedup_returns_min_distance_per_subject() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert Paris with two locations: city center and a point 100km away
@@ -418,7 +418,7 @@ async fn geo_search_returns_correct_distances() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert cities
@@ -497,7 +497,7 @@ async fn geo_search_respects_limit_returns_nearest() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert cities at increasing distances from Paris
@@ -595,7 +595,7 @@ async fn geo_search_respects_named_graph_boundaries() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert cities in default graph (France)
@@ -737,7 +737,7 @@ async fn sparql_geof_distance_uses_geo_index() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(alias);
+            let db0 = LedgerSnapshot::genesis(alias);
             let ledger = LedgerState::new(db0, Novelty::new(0));
 
             // Insert cities

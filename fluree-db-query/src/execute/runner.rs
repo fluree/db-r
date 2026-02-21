@@ -17,7 +17,7 @@ use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
 use crate::var_registry::VarRegistry;
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{Db, GraphId, StatsView, Tracker};
+use fluree_db_core::{GraphId, LedgerSnapshot, StatsView, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_reasoner::DerivedFactsOverlay;
 use fluree_db_spatial::SpatialIndexProvider;
@@ -93,7 +93,7 @@ pub struct PreparedExecution {
 ///
 /// The result can then be executed with any ExecutionContext.
 pub async fn prepare_execution(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn fluree_db_core::OverlayProvider,
     query: &ExecutableQuery,
@@ -170,7 +170,7 @@ pub async fn prepare_execution(
         // OWL2-QL rewriting (and current RDFS expansion) require SIDs for ontology/hierarchy lookup.
         // Lowering may produce `Term::Iri` to support cross-ledger joins; for single-ledger execution
         // we can safely encode IRIs to SIDs here.
-        fn encode_term(db: &Db, t: &Term) -> Term {
+        fn encode_term(db: &LedgerSnapshot, t: &Term) -> Term {
             match t {
                 Term::Iri(iri) => db
                     .encode_iri(iri)
@@ -180,7 +180,10 @@ pub async fn prepare_execution(
             }
         }
 
-        fn encode_patterns_for_reasoning(db: &Db, patterns: &[Pattern]) -> Vec<Pattern> {
+        fn encode_patterns_for_reasoning(
+            db: &LedgerSnapshot,
+            patterns: &[Pattern],
+        ) -> Vec<Pattern> {
             patterns
                 .iter()
                 .map(|p| match p {
@@ -406,7 +409,7 @@ pub struct ContextConfig<'a, 'b> {
     pub strict_bind_errors: bool,
     /// Binary columnar index store for `BinaryScanOperator`.
     ///
-    /// This is the explicit path — separate from `Db.range_provider` which
+    /// This is the explicit path — separate from `LedgerSnapshot.range_provider` which
     /// serves the transparent `range_with_overlay()` callers.
     pub binary_store: Option<Arc<BinaryIndexStore>>,
     /// Graph ID for binary index lookups (default 0 = default graph).

@@ -10,7 +10,7 @@
 //!
 //! ## Quick Start
 //!
-//! Build a `TriplePattern` with a `VarRegistry`, then call `execute_pattern` with a `Db` reference to get result batches.
+//! Build a `TriplePattern` with a `VarRegistry`, then call `execute_pattern` with a `LedgerSnapshot` reference to get result batches.
 
 pub mod aggregate;
 pub mod binary_range;
@@ -32,7 +32,6 @@ pub mod filter;
 pub mod geo_rewrite;
 pub mod geo_search;
 pub mod graph;
-pub mod graph_view;
 pub mod group_aggregate;
 pub mod groupby;
 pub mod having;
@@ -95,7 +94,6 @@ pub use explain::{
 pub use filter::FilterOperator;
 pub use geo_rewrite::rewrite_geo_patterns;
 pub use graph::GraphOperator;
-pub use graph_view::{AsOf, BaseView, GraphView, ResolvedGraphView, WithPolicy, WithReasoning};
 pub use group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
 pub use groupby::GroupByOperator;
 pub use having::HavingOperator;
@@ -142,7 +140,7 @@ pub use var_registry::{VarId, VarRegistry};
 pub use parse::{parse_query, ParsedQuery, SelectMode};
 
 use execute::build_where_operators_seeded;
-use fluree_db_core::{Db, GraphId, OverlayProvider};
+use fluree_db_core::{GraphId, LedgerSnapshot, OverlayProvider};
 use std::sync::Arc;
 
 /// Execute a single triple pattern query
@@ -156,7 +154,7 @@ use std::sync::Arc;
 /// * `pattern` - Triple pattern to match
 ///
 pub async fn execute_pattern(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     vars: &VarRegistry,
     pattern: TriplePattern,
@@ -179,7 +177,7 @@ pub async fn execute_pattern(
 ///
 /// Convenience function when you want all results at once.
 pub async fn execute_pattern_all(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     vars: &VarRegistry,
     pattern: TriplePattern,
@@ -215,7 +213,7 @@ pub async fn execute_pattern_all(
 
 /// Execute a pattern with time-travel settings
 pub async fn execute_pattern_at(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     vars: &VarRegistry,
     pattern: TriplePattern,
@@ -250,7 +248,7 @@ pub async fn execute_pattern_at(
 /// * `pattern` - Triple pattern to match
 ///
 pub async fn execute_pattern_with_overlay(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
@@ -276,7 +274,7 @@ pub async fn execute_pattern_with_overlay(
 /// limits results to flakes with `t <= to_t`, and the optional `from_t`
 /// enables history range queries.
 pub async fn execute_pattern_with_overlay_at(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
@@ -319,7 +317,7 @@ pub async fn execute_pattern_with_overlay_at(
 /// with one empty solution (row with no columns).
 ///
 pub async fn execute_where_with_overlay_at(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,
@@ -349,7 +347,7 @@ pub async fn execute_where_with_overlay_at(
 
 /// Execute WHERE patterns with strict bind error handling.
 pub async fn execute_where_with_overlay_at_strict(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     vars: &VarRegistry,

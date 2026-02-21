@@ -2,8 +2,8 @@ use serde_json::Value as JsonValue;
 
 use crate::query::helpers::{parse_dataset_spec, tracker_for_limits};
 use crate::{
-    ApiError, DataSource, ExecutableQuery, Fluree, FlureeDataSetView, FlureeIndexProvider,
-    QueryResult, Result, Storage, StorageWrite, VarRegistry,
+    ApiError, DataSetDb, DataSource, ExecutableQuery, Fluree, FlureeIndexProvider, QueryResult,
+    Result, Storage, StorageWrite, VarRegistry,
 };
 
 use fluree_db_query::parse::parse_query;
@@ -25,7 +25,7 @@ where
     /// in queries against graph sources.
     pub async fn query_dataset_with_bm25(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
         // Get the primary graph for parsing/encoding

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use chrono::DateTime;
 
-use crate::view::{FlureeView, ReasoningModePrecedence};
+use crate::view::{GraphDb, ReasoningModePrecedence};
 use crate::{
     time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
 };
@@ -171,7 +171,7 @@ where
     /// For `Named` graphs, the IRI must be an exact match in the binary index.
     /// No prefix expansion or guessing is performed - use the structured
     /// `graph` field in dataset specs for cleaner IRI handling.
-    fn resolve_graph_ref(view: &FlureeView, graph_ref: GraphRef) -> Result<GraphId> {
+    fn resolve_graph_ref(view: &GraphDb, graph_ref: GraphRef) -> Result<GraphId> {
         match graph_ref {
             GraphRef::Default => Ok(0),
             GraphRef::TxnMeta => Ok(1),
@@ -196,7 +196,7 @@ where
     /// Resolves the `GraphRef` to a concrete g_id, then re-scopes the view's
     /// `Db.range_provider` and sets `view.graph_id` so both range queries
     /// and binary scans use the same graph.
-    fn select_graph(mut view: FlureeView, graph_ref: GraphRef) -> Result<FlureeView> {
+    fn select_graph(mut view: GraphDb, graph_ref: GraphRef) -> Result<GraphDb> {
         match graph_ref {
             GraphRef::Default => Ok(view),
             GraphRef::TxnMeta => {
@@ -261,7 +261,7 @@ where
     ///
     /// This is the internal loading method. For the public API, use
     /// [`graph()`](Self::graph) which returns a lazy [`Graph`](crate::Graph) handle.
-    pub(crate) async fn load_view(&self, ledger_id: &str) -> Result<FlureeView> {
+    pub(crate) async fn load_graph_db(&self, ledger_id: &str) -> Result<GraphDb> {
         let handle = self.ledger_cached(ledger_id).await?;
         let mut snapshot = handle.snapshot().await;
 
@@ -323,7 +323,7 @@ where
 
         let binary_store = snapshot.binary_store.clone();
         let ledger = snapshot.to_ledger_state();
-        let view = FlureeView::from_ledger_state(&ledger);
+        let view = GraphDb::from_ledger_state(&ledger);
         Ok(match binary_store {
             Some(store) => view.with_binary_store(store),
             None => view,
@@ -334,13 +334,13 @@ where
     ///
     /// For named graph queries (e.g., `#txn-meta`), this also loads the binary
     /// index store if available, enabling graph-scoped queries.
-    pub(crate) async fn load_view_at_t(
+    pub(crate) async fn load_graph_db_at_t(
         &self,
         ledger_id: &str,
         target_t: i64,
-    ) -> Result<FlureeView> {
+    ) -> Result<GraphDb> {
         let historical = self.ledger_view_at(ledger_id, target_t).await?;
-        let mut view = FlureeView::from_historical(&historical);
+        let mut view = GraphDb::from_historical(&historical);
 
         // Attach a dict_novelty derived from the historical Db's watermarks.
         // This avoids relying on potentially-stale cached handle state and is
@@ -396,10 +396,14 @@ where
     /// Load a view at a flexible time specification.
     ///
     /// Resolves `@t:`, `@iso:`, `@commit:`, or `latest` time specifications.
-    pub(crate) async fn load_view_at(&self, ledger_id: &str, spec: TimeSpec) -> Result<FlureeView> {
+    pub(crate) async fn load_graph_db_at(
+        &self,
+        ledger_id: &str,
+        spec: TimeSpec,
+    ) -> Result<GraphDb> {
         match spec {
-            TimeSpec::Latest => self.load_view(ledger_id).await,
-            TimeSpec::AtT(t) => self.load_view_at_t(ledger_id, t).await,
+            TimeSpec::Latest => self.load_graph_db(ledger_id).await,
+            TimeSpec::AtT(t) => self.load_graph_db_at_t(ledger_id, t).await,
             TimeSpec::AtTime(iso) => {
                 let handle = self.ledger_cached(ledger_id).await?;
                 let snapshot = handle.snapshot().await;
@@ -427,7 +431,7 @@ where
                     current_t,
                 )
                 .await?;
-                self.load_view_at_t(ledger_id, resolved_t).await
+                self.load_graph_db_at_t(ledger_id, resolved_t).await
             }
             TimeSpec::AtCommit(commit_prefix) => {
                 let handle = self.ledger_cached(ledger_id).await?;
@@ -441,32 +445,32 @@ where
                     current_t,
                 )
                 .await?;
-                self.load_view_at_t(ledger_id, resolved_t).await
+                self.load_graph_db_at_t(ledger_id, resolved_t).await
             }
         }
     }
 
     /// Load the current snapshot from a ledger.
     ///
-    /// Returns a [`FlureeView`] — an immutable, point-in-time snapshot.
+    /// Returns a [`GraphDb`] — an immutable, point-in-time snapshot.
     /// For the lazy API, use [`graph()`](Self::graph) instead.
-    pub async fn view(&self, ledger_id: &str) -> Result<FlureeView> {
+    pub async fn db(&self, ledger_id: &str) -> Result<GraphDb> {
         let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
-        let view = self.load_view(ledger_id).await?;
+        let view = self.load_graph_db(ledger_id).await?;
         Self::select_graph(view, graph_ref)
     }
 
     /// Load a historical snapshot at a specific transaction time.
-    pub async fn view_at_t(&self, ledger_id: &str, target_t: i64) -> Result<FlureeView> {
+    pub async fn db_at_t(&self, ledger_id: &str, target_t: i64) -> Result<GraphDb> {
         let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
-        let view = self.load_view_at_t(ledger_id, target_t).await?;
+        let view = self.load_graph_db_at_t(ledger_id, target_t).await?;
         Self::select_graph(view, graph_ref)
     }
 
     /// Load a snapshot at a flexible time specification.
-    pub async fn view_at(&self, ledger_id: &str, spec: TimeSpec) -> Result<FlureeView> {
+    pub async fn db_at(&self, ledger_id: &str, spec: TimeSpec) -> Result<GraphDb> {
         let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
-        let view = self.load_view_at(ledger_id, spec).await?;
+        let view = self.load_graph_db_at(ledger_id, spec).await?;
         Self::select_graph(view, graph_ref)
     }
 
@@ -478,9 +482,9 @@ where
     /// This is called by `load_view_from_source` when a `GraphSource` has
     /// an explicit `graph_selector` set.
     pub(crate) fn apply_graph_selector(
-        view: FlureeView,
+        view: GraphDb,
         selector: &crate::dataset::GraphSelector,
-    ) -> Result<FlureeView> {
+    ) -> Result<GraphDb> {
         let graph_ref = match selector {
             crate::dataset::GraphSelector::Default => GraphRef::Default,
             crate::dataset::GraphSelector::TxnMeta => GraphRef::TxnMeta,
@@ -510,7 +514,7 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// let view = fluree.view("mydb:main").await?;
+    /// let view = fluree.db("mydb:main").await?;
     /// let opts = QueryConnectionOptions {
     ///     identity: Some("did:example:user".into()),
     ///     ..Default::default()
@@ -519,9 +523,9 @@ where
     /// ```
     pub async fn wrap_policy(
         &self,
-        view: FlureeView,
+        view: GraphDb,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView> {
+    ) -> Result<GraphDb> {
         let policy_ctx = crate::policy_builder::build_policy_context_from_opts(
             &view.db,
             view.overlay.as_ref(),
@@ -536,23 +540,23 @@ where
     /// Load a view at head with policy applied.
     ///
     /// Convenience method that combines `view()` + `wrap_policy()`.
-    pub async fn view_with_policy(
+    pub async fn db_with_policy(
         &self,
         ledger_id: &str,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView> {
-        let view = self.view(ledger_id).await?;
+    ) -> Result<GraphDb> {
+        let view = self.db(ledger_id).await?;
         self.wrap_policy(view, opts).await
     }
 
-    /// Load a view at a specific time with policy applied.
-    pub async fn view_at_t_with_policy(
+    /// Load a db at a specific time with policy applied.
+    pub async fn db_at_t_with_policy(
         &self,
         ledger_id: &str,
         target_t: i64,
         opts: &QueryConnectionOptions,
-    ) -> Result<FlureeView> {
-        let view = self.view_at_t(ledger_id, target_t).await?;
+    ) -> Result<GraphDb> {
+        let view = self.db_at_t(ledger_id, target_t).await?;
         self.wrap_policy(view, opts).await
     }
 }
@@ -570,17 +574,17 @@ where
     ///
     /// This is a pure function (no async) since it just attaches metadata.
     /// Uses `DefaultUnlessQueryOverrides` precedence.
-    pub fn wrap_reasoning(&self, view: FlureeView, modes: ReasoningModes) -> FlureeView {
+    pub fn wrap_reasoning(&self, view: GraphDb, modes: ReasoningModes) -> GraphDb {
         view.with_reasoning(modes)
     }
 
     /// Wrap a view with reasoning modes and explicit precedence.
     pub fn wrap_reasoning_with_precedence(
         &self,
-        view: FlureeView,
+        view: GraphDb,
         modes: ReasoningModes,
         precedence: ReasoningModePrecedence,
-    ) -> FlureeView {
+    ) -> GraphDb {
         view.with_reasoning_precedence(modes, precedence)
     }
 }
@@ -594,7 +598,7 @@ mod tests {
     async fn test_view_not_found() {
         let fluree = FlureeBuilder::memory().build_memory();
 
-        let result = fluree.view("nonexistent:main").await;
+        let result = fluree.db("nonexistent:main").await;
         assert!(result.is_err());
     }
 
@@ -606,7 +610,7 @@ mod tests {
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
         // Load as view
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
 
         assert_eq!(&*view.ledger_id, "testdb:main");
         assert_eq!(view.to_t, 0); // Genesis
@@ -625,11 +629,11 @@ mod tests {
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
         // Load at t=0 (before transaction)
-        let view = fluree.view_at_t("testdb:main", 0).await.unwrap();
+        let view = fluree.db_at_t("testdb:main", 0).await.unwrap();
         assert_eq!(view.to_t, 0);
 
         // Load at t=1 (after transaction)
-        let view = fluree.view_at_t("testdb:main", 1).await.unwrap();
+        let view = fluree.db_at_t("testdb:main", 1).await.unwrap();
         assert_eq!(view.to_t, 1);
     }
 
@@ -641,7 +645,7 @@ mod tests {
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
         // Try to load at t=100 (future)
-        let result = fluree.view_at_t("testdb:main", 100).await;
+        let result = fluree.db_at_t("testdb:main", 100).await;
         assert!(result.is_err());
     }
 
@@ -650,7 +654,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
         assert!(view.reasoning().is_none());
 
         let view = fluree.wrap_reasoning(view, ReasoningModes::owl2ql());

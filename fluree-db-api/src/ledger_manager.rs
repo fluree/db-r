@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
-use fluree_db_core::db::{Db, DbMetadata};
+use fluree_db_core::db::{LedgerSnapshot, LedgerSnapshotMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{ledger_id::normalize_ledger_id, ContentId, ContentStore, Storage};
 use fluree_db_indexer::run_index::{BinaryIndexStore, LeafletCache};
@@ -57,16 +57,16 @@ fn monotonic_secs() -> u64 {
 }
 
 // ============================================================================
-// LedgerSnapshot - Read-only view (no lock held)
+// CachedLedgerState - Read-only view (no lock held)
 // ============================================================================
 
 /// Read-only snapshot of ledger state - does NOT hold any lock
 ///
 /// Safe to pass around and use for queries without blocking other operations.
-/// This is a cheap clone of the underlying state (Db clone is cheap via Arc fields).
-pub struct LedgerSnapshot {
+/// This is a cheap clone of the underlying state (LedgerSnapshot clone is cheap via Arc fields).
+pub struct CachedLedgerState {
     /// The indexed database (cheap clone - Arc fields)
-    pub db: Db,
+    pub db: LedgerSnapshot,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
     /// Dictionary novelty layer (subjects and strings since last index build)
@@ -88,7 +88,7 @@ pub struct LedgerSnapshot {
     pub default_context: Option<serde_json::Value>,
 }
 
-impl LedgerSnapshot {
+impl CachedLedgerState {
     /// Create a snapshot from ledger state
     ///
     /// Note: `binary_store` is set to `None` here — callers that have a
@@ -125,7 +125,7 @@ impl LedgerSnapshot {
         self.ns_record.as_ref().map(|r| r.ledger_id.as_str())
     }
 
-    /// Get index_t from the underlying Db
+    /// Get index_t from the underlying LedgerSnapshot
     pub fn index_t(&self) -> i64 {
         self.db.t
     }
@@ -247,11 +247,11 @@ impl LedgerHandle {
     ///
     /// IMPORTANT: Queries must NOT execute while holding the internal lock.
     /// The snapshot is a cheap clone; the lock is released immediately after.
-    pub async fn snapshot(&self) -> LedgerSnapshot {
+    pub async fn snapshot(&self) -> CachedLedgerState {
         self.touch();
         let state = self.inner.state.lock().await;
         let binary_store = self.inner.binary_store.lock().await.clone();
-        let mut snap = LedgerSnapshot::from_state(&state);
+        let mut snap = CachedLedgerState::from_state(&state);
         snap.binary_store = binary_store;
         debug_assert!(
             snap.db.range_provider.is_some() == snap.binary_store.is_some(),
@@ -372,10 +372,10 @@ impl LedgerHandle {
         let dn = Arc::new(DictNovelty::new_uninitialized());
         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
 
-        // Build metadata-only Db from IRB1 root.
+        // Build metadata-only LedgerSnapshot from IRB1 root.
         let v5 = fluree_db_indexer::run_index::IndexRootV5::decode(&bytes)
             .map_err(|e| ApiError::internal(format!("failed to decode IRB1 root: {}", e)))?;
-        let meta = DbMetadata {
+        let meta = LedgerSnapshotMetadata {
             ledger_id: v5.ledger_id,
             t: v5.index_t,
             namespace_codes: v5.namespace_codes.into_iter().collect(),
@@ -384,7 +384,7 @@ impl LedgerHandle {
             subject_watermarks: v5.subject_watermarks,
             string_watermark: v5.string_watermark,
         };
-        let mut db = Db::new_meta(meta);
+        let mut db = LedgerSnapshot::new_meta(meta);
         db.range_provider = Some(Arc::new(provider));
 
         // Brief lock: swap state + binary_store atomically.
@@ -521,7 +521,7 @@ impl Default for LedgerManagerConfig {
 use fluree_db_query::BinaryRangeProvider;
 
 /// Load BinaryIndexStore from a v2 index root, attach range_provider
-/// to the LedgerState's Db, and return the Arc'd store.
+/// to the LedgerState's LedgerSnapshot, and return the Arc'd store.
 ///
 /// Returns `Ok(None)` if no index_head_id is present or the root is not v2.
 async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(

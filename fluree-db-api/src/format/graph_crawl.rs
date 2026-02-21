@@ -25,7 +25,7 @@ use crate::QueryResult;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, Flake, GraphId, NoOverlay, OverlayProvider, Sid, Tracker};
+use fluree_db_core::{Flake, GraphId, LedgerSnapshot, NoOverlay, OverlayProvider, Sid, Tracker};
 use fluree_db_policy::{is_schema_flake, PolicyContext};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::ir::{GraphSelectSpec, NestedSelectSpec, Root, SelectionSpec};
@@ -179,7 +179,7 @@ pub fn format(result: &QueryResult, _compactor: &IriCompactor) -> Result<JsonVal
 /// When `policy` is `None`, no filtering is applied (zero overhead).
 pub async fn format_async(
     result: &QueryResult,
-    db: &Db,
+    db: &LedgerSnapshot,
     compactor: &IriCompactor,
     _config: &FormatterConfig,
     policy: Option<&PolicyContext>,
@@ -297,7 +297,7 @@ pub async fn format_async(
 
 /// Graph crawl formatter with async DB access
 struct GraphCrawlFormatter<'a> {
-    db: &'a Db,
+    db: &'a LedgerSnapshot,
     g_id: GraphId,
     overlay: &'a dyn OverlayProvider,
     compactor: &'a IriCompactor,
@@ -313,7 +313,7 @@ struct GraphCrawlFormatter<'a> {
 impl<'a> GraphCrawlFormatter<'a> {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        db: &'a Db,
+        db: &'a LedgerSnapshot,
         g_id: GraphId,
         overlay: &'a dyn OverlayProvider,
         compactor: &'a IriCompactor,

@@ -388,7 +388,7 @@ mod tests {
     use crate::seed::EmptyOperator;
     use crate::var_registry::VarRegistry;
     use crate::vector::DistanceMetric;
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
     use std::sync::Mutex;
 
     #[derive(Debug)]
@@ -446,8 +446,8 @@ mod tests {
         }
     }
 
-    fn make_test_db() -> Db {
-        let mut db = Db::genesis("test/main");
+    fn make_test_db() -> LedgerSnapshot {
+        let mut db = LedgerSnapshot::genesis("test/main");
         // Ensure example IRIs used by tests are encodable to SIDs.
         db.namespace_codes
             .insert(100, "http://example.org/".to_string());

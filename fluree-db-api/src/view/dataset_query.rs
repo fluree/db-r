@@ -1,4 +1,4 @@
-//! Query execution against FlureeDataSetView
+//! Query execution against DataSetDb
 //!
 //! Provides `query_dataset_view` for multi-ledger queries.
 
@@ -7,7 +7,7 @@ use crate::query::helpers::{
     prepare_for_execution, status_for_query_error, tracker_for_limits,
     tracker_for_tracked_endpoint,
 };
-use crate::view::{FlureeDataSetView, QueryInput};
+use crate::view::{DataSetDb, QueryInput};
 use crate::{
     ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
     TrackingOptions,
@@ -31,10 +31,10 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// let view1 = fluree.view("ledger1:main").await?;
-    /// let view2 = fluree.view("ledger2:main").await?;
+    /// let view1 = fluree.db("ledger1:main").await?;
+    /// let view2 = fluree.db("ledger2:main").await?;
     ///
-    /// let dataset = FlureeDataSetView::new()
+    /// let dataset = DataSetDb::new()
     ///     .with_default(view1)
     ///     .with_default(view2);
     ///
@@ -42,7 +42,7 @@ where
     /// ```
     pub async fn query_dataset_view(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         q: impl Into<QueryInput<'_>>,
     ) -> Result<QueryResult> {
         let input = q.into();
@@ -125,7 +125,7 @@ where
     /// Execute a dataset query with tracking.
     pub(crate) async fn query_dataset_view_tracked(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         q: impl Into<QueryInput<'_>>,
     ) -> std::result::Result<crate::query::TrackedQueryResponse, crate::query::TrackedErrorResponse>
     {
@@ -217,7 +217,7 @@ where
     /// Applies reasoning from the primary view if set.
     fn build_executable_for_dataset(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         parsed: &fluree_db_query::parse::ParsedQuery,
     ) -> Result<ExecutableQuery> {
         let mut executable = prepare_for_execution(parsed);
@@ -246,7 +246,7 @@ where
     /// `ExecutionContext` for `BinaryScanOperator`.
     async fn execute_dataset_internal(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -316,7 +316,7 @@ where
     /// Threads `binary_store` from the primary view into the execution context.
     async fn execute_dataset_tracked(
         &self,
-        dataset: &FlureeDataSetView,
+        dataset: &DataSetDb,
         vars: &crate::VarRegistry,
         executable: &ExecutableQuery,
         tracker: &Tracker,
@@ -376,7 +376,7 @@ fn query_error_to_api_error(err: fluree_db_query::QueryError) -> ApiError {
 #[cfg(test)]
 mod tests {
 
-    use crate::view::FlureeDataSetView;
+    use crate::view::DataSetDb;
     use crate::FlureeBuilder;
     use serde_json::json;
 
@@ -395,8 +395,8 @@ mod tests {
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
         // Query via dataset view (single ledger)
-        let view = fluree.view("testdb:main").await.unwrap();
-        let dataset = FlureeDataSetView::single(view);
+        let view = fluree.db("testdb:main").await.unwrap();
+        let dataset = DataSetDb::single(view);
 
         let query = json!({
             "select": ["?name"],
@@ -420,8 +420,8 @@ mod tests {
         });
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
-        let view = fluree.view("testdb:main").await.unwrap();
-        let dataset = FlureeDataSetView::single(view);
+        let view = fluree.db("testdb:main").await.unwrap();
+        let dataset = DataSetDb::single(view);
 
         let query = json!({
             "select": ["?name"],
@@ -461,12 +461,10 @@ mod tests {
         });
         let _ledger2 = fluree.update(ledger2, &txn2).await.unwrap().ledger;
 
-        let view1 = fluree.view("db1:main").await.unwrap();
-        let view2 = fluree.view("db2:main").await.unwrap();
+        let view1 = fluree.db("db1:main").await.unwrap();
+        let view2 = fluree.db("db2:main").await.unwrap();
 
-        let dataset = FlureeDataSetView::new()
-            .with_default(view1)
-            .with_default(view2);
+        let dataset = DataSetDb::new().with_default(view1).with_default(view2);
 
         let query = json!({
             "select": ["?s", "?name"],
@@ -486,7 +484,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let dataset: FlureeDataSetView = FlureeDataSetView::new();
+        let dataset: DataSetDb = DataSetDb::new();
         let query = json!({ "select": ["?s"], "where": {"@id": "?s"} });
 
         let result = fluree.query_dataset_view(&dataset, &query).await;

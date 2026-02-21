@@ -36,8 +36,8 @@ use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::ListIndex;
 use fluree_db_core::{
-    dt_compatible, range_with_overlay, Db, Flake, FlakeValue, GraphId, IndexType, ObjectBounds,
-    OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
+    dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
+    ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
 };
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
@@ -1505,7 +1505,7 @@ impl Operator for ScanOperator {
 /// - History mode queries
 /// - Time-travel before `base_t`
 ///
-/// When a `RangeProvider` is attached to the `Db` (the normal post-index
+/// When a `RangeProvider` is attached to the `LedgerSnapshot` (the normal post-index
 /// state), `range_with_overlay()` routes through it, so queries still
 /// execute against the binary index — just via materialized collection
 /// rather than streaming cursors.
@@ -1564,7 +1564,7 @@ impl RangeScanOperator {
     }
 
     /// Build a `RangeMatch` from the pattern's bound terms.
-    fn build_range_match(&self, db: &Db) -> RangeMatch {
+    fn build_range_match(&self, db: &LedgerSnapshot) -> RangeMatch {
         let mut rm = RangeMatch::new();
 
         match &self.pattern.s {
@@ -1625,7 +1625,7 @@ impl RangeScanOperator {
     /// Shared by the default-graphs, named-graphs, and single-db paths in `open()`.
     async fn scan_one_graph(
         &self,
-        db: &Db,
+        db: &LedgerSnapshot,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         index: IndexType,
@@ -1676,7 +1676,7 @@ impl RangeScanOperator {
     ///
     /// `range_with_overlay` may return a superset (especially in the
     /// overlay-only genesis path), so we post-filter here.
-    fn flake_matches(&self, f: &Flake, db: &Db) -> bool {
+    fn flake_matches(&self, f: &Flake, db: &LedgerSnapshot) -> bool {
         match &self.pattern.s {
             Term::Sid(sid) if &f.s != sid => return false,
             Term::Iri(iri) => match db.encode_iri(iri) {

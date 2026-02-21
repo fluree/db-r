@@ -28,7 +28,7 @@
 use crate::dataset::QueryConnectionOptions;
 use crate::error::Result;
 use crate::policy_builder;
-use fluree_db_core::{Db, OverlayProvider};
+use fluree_db_core::{LedgerSnapshot, OverlayProvider};
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::PolicyContext;
@@ -52,7 +52,7 @@ use std::sync::Arc;
 /// - `from_historical()` for `HistoricalLedgerView`
 pub struct PolicyWrappedView<'a> {
     /// Reference to the database
-    pub db: &'a Db,
+    pub db: &'a LedgerSnapshot,
     /// Overlay provider (novelty layer)
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time
@@ -69,7 +69,7 @@ impl<'a> PolicyWrappedView<'a> {
     /// This is the low-level constructor. Prefer using `wrap_policy_view()`
     /// which handles policy context creation from options.
     pub fn new(
-        db: &'a Db,
+        db: &'a LedgerSnapshot,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         policy: Arc<PolicyContext>,
@@ -199,7 +199,7 @@ pub async fn wrap_policy_view_historical<'a>(
 /// * `to_t` - Time bound for queries
 /// * `opts` - Query connection options with policy configuration
 pub async fn build_policy_context(
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn OverlayProvider,
     novelty_for_stats: Option<&Novelty>,
     to_t: i64,

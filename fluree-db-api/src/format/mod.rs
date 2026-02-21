@@ -54,7 +54,7 @@ pub use config::{FormatterConfig, JsonLdRowShape, OutputFormat, SelectMode};
 pub use iri::IriCompactor;
 
 use crate::QueryResult;
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 use fluree_db_core::{FuelExceededError, Tracker};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::Value as JsonValue;
@@ -100,7 +100,7 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 pub fn format_results(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db,
+    db: &LedgerSnapshot,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
     // Delimited-text formats produce bytes/String, not JsonValue. Reject early.
@@ -161,7 +161,7 @@ pub fn format_results(
 pub fn format_results_string(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db,
+    db: &LedgerSnapshot,
     config: &FormatterConfig,
 ) -> Result<String> {
     // Delimited-text fast-path: skip JSON DOM and JSON serialization entirely
@@ -210,7 +210,7 @@ pub fn format_results_string(
 pub async fn format_results_async(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db,
+    db: &LedgerSnapshot,
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
     tracker: Option<&Tracker>,
@@ -285,7 +285,7 @@ pub async fn format_results_async(
 pub async fn format_results_string_async(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &Db,
+    db: &LedgerSnapshot,
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
 ) -> Result<String> {

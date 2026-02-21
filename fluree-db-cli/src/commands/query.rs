@@ -143,9 +143,9 @@ pub async fn run(
             let view = match at {
                 Some(at_str) => {
                     let spec = parse_time_spec(at_str);
-                    fluree.view_at(&alias, spec).await?
+                    fluree.db_at(&alias, spec).await?
                 }
-                None => fluree.view(&alias).await?,
+                None => fluree.db(&alias).await?,
             };
 
             // Benchmark mode should measure query execution only (not view loading or result formatting).

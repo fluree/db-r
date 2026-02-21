@@ -9,7 +9,7 @@ use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
-use fluree_db_core::{Db, GraphId, Sid};
+use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
 use fluree_vocab::jsonld_names::ID as JSONLD_ID;
 use fluree_vocab::namespaces::{JSON_LD, RDF};
 use fluree_vocab::predicates::RDF_TYPE;
@@ -39,7 +39,7 @@ use crate::{FrozenSameAs, ReasoningDiagnostics, Result};
 /// 3. Iteratively applies rules until fixpoint or budget exhausted
 /// 4. Returns derived facts and diagnostics
 pub async fn run_fixpoint(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,
@@ -318,7 +318,7 @@ pub async fn run_fixpoint(
 /// - Facts with restricted properties (hasValue, someValuesFrom, etc.)
 /// - owl:sameAs facts
 async fn seed_initial_delta(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     ontology: &OntologyRL,

@@ -488,7 +488,7 @@ async fn stage_commit_flakes(
 }
 
 async fn assert_retractions_exist(
-    db: &fluree_db_core::Db,
+    db: &fluree_db_core::LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     flakes: &[Flake],
@@ -509,7 +509,7 @@ async fn assert_retractions_exist(
 }
 
 async fn is_currently_asserted(
-    db: &fluree_db_core::Db,
+    db: &fluree_db_core::LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     target: &Flake,
@@ -646,10 +646,10 @@ fn apply_pushed_commits_to_state(
     accepted_all_flakes: &[(i64, Vec<Flake>)],
     stored_commits: &[StoredCommit],
 ) -> LedgerState {
-    // Apply namespace deltas from commits to in-memory Db (Clojure parity).
+    // Apply namespace deltas from commits to in-memory LedgerSnapshot (Clojure parity).
     //
     // NOTE: We only have access to the full commit structs during validation; the
-    // committed SIDs in flakes do not require namespace_codes, but keeping Db updated
+    // committed SIDs in flakes do not require namespace_codes, but keeping LedgerSnapshot updated
     // is important for subsequent API calls that encode IRIs.
     //
     // For now, we conservatively reload namespace deltas by decoding the stored commits

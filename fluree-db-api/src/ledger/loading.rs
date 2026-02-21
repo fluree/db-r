@@ -28,9 +28,9 @@ where
 
         // If nameservice has an index address, require that the binary index root is
         // readable and loadable. This ensures `fluree.ledger()` always returns a
-        // queryable, indexed Db after (re)indexing.
+        // queryable, indexed LedgerSnapshot after (re)indexing.
         //
-        // Note: we may already have a `Db.range_provider` (e.g. attached after `load_db`),
+        // Note: we may already have a `LedgerSnapshot.range_provider` (e.g. attached after `load_ledger_snapshot`),
         // but we still want `binary_store` so query execution can use `BinaryScanOperator`.
         if let Some(index_cid) = state
             .ns_record
@@ -68,7 +68,7 @@ where
                 // Augment namespace codes with entries from novelty commits.
                 // The index root only contains namespaces known at index time, but
                 // subsequent transactions may introduce new namespace prefixes.
-                // Db.namespace_codes already has the merged set (index + novelty).
+                // LedgerSnapshot.namespace_codes already has the merged set (index + novelty).
                 store.augment_namespace_codes(&state.db.namespace_codes);
 
                 let arc_store = Arc::new(store);
@@ -179,8 +179,8 @@ where
             }
         }
 
-        // 3. Create genesis Db with empty state at t=0
-        let db = fluree_db_core::Db::genesis(&ledger_id);
+        // 3. Create genesis LedgerSnapshot with empty state at t=0
+        let db = fluree_db_core::LedgerSnapshot::genesis(&ledger_id);
 
         // 4. Create LedgerState with empty Novelty (t=0)
         let ledger = LedgerState::new(db, Novelty::new(0));

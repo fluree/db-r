@@ -4,8 +4,8 @@
 //! from the database. This is needed for f:onClass policy enforcement.
 
 use fluree_db_core::{
-    range_with_overlay, Db, FlakeValue, GraphId, OverlayProvider, RangeMatch, RangeOptions,
-    RangeTest, Sid,
+    range_with_overlay, FlakeValue, GraphId, LedgerSnapshot, OverlayProvider, RangeMatch,
+    RangeOptions, RangeTest, Sid,
 };
 use fluree_vocab::namespaces::RDF;
 use fluree_vocab::predicates::RDF_TYPE;
@@ -32,7 +32,7 @@ use crate::Result;
 /// rdf:type assertions will not be present in the map.
 pub async fn lookup_subject_classes(
     subjects: &[Sid],
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     g_id: GraphId,
@@ -118,7 +118,7 @@ pub async fn lookup_subject_classes(
 /// * `policy_ctx` - The policy context whose cache to populate
 pub async fn populate_class_cache(
     subjects: &[Sid],
-    db: &Db,
+    db: &LedgerSnapshot,
     overlay: &dyn OverlayProvider,
     to_t: i64,
     g_id: GraphId,

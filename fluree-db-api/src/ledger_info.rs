@@ -25,8 +25,8 @@ use fluree_db_core::ids::GraphId;
 use fluree_db_core::ledger_id::{format_ledger_id, split_ledger_id};
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{
-    is_rdf_type, ClassPropertyUsage, ClassRefCount, Db, Flake, FlakeValue, OverlayProvider, Sid,
-    Storage,
+    is_rdf_type, ClassPropertyUsage, ClassRefCount, Flake, FlakeValue, LedgerSnapshot,
+    OverlayProvider, Sid, Storage,
 };
 use fluree_db_core::{
     ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexSchema, IndexStats,
@@ -595,7 +595,7 @@ fn merge_graph_property_novelty(
 /// subject and the referenced object.
 ///
 async fn merge_graph_class_ref_edges_from_novelty(
-    db: &Db,
+    db: &LedgerSnapshot,
     novelty: &Novelty,
     to_t: i64,
     g_id: GraphId,

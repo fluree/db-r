@@ -76,7 +76,7 @@ pub use content_kind::{
     CODEC_FLUREE_TXN,
 };
 pub use datatypes::dt_compatible;
-pub use db::{load_db, Db, DbMetadata};
+pub use db::{load_ledger_snapshot, LedgerSnapshot, LedgerSnapshotMetadata};
 pub use dict_novelty::DictNovelty;
 pub use error::{Error, Result};
 pub use flake::{Flake, FlakeMeta};

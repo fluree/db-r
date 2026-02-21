@@ -1761,10 +1761,10 @@ mod tests {
     async fn test_join_substituted_var_no_unification() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::{Db, FlakeValue};
+        use fluree_db_core::{FlakeValue, LedgerSnapshot};
 
         // Minimal context (db is unused here; only batch_size matters).
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let mut vars = VarRegistry::new();
         let x = vars.get_or_insert("?x"); // VarId(0)
         let v = vars.get_or_insert("?v"); // VarId(1)
@@ -1863,9 +1863,9 @@ mod tests {
     async fn test_join_multiple_new_vars() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
-        use fluree_db_core::{Db, FlakeValue};
+        use fluree_db_core::{FlakeValue, LedgerSnapshot};
 
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let mut vars = VarRegistry::new();
         let s = vars.get_or_insert("?s"); // VarId(0)
         let x = vars.get_or_insert("?x"); // VarId(1)
@@ -1952,7 +1952,7 @@ mod tests {
         use crate::var_registry::VarRegistry;
         use fluree_db_core::value_id::{ObjKey, ObjKind};
         use fluree_db_core::DatatypeDictId;
-        use fluree_db_core::Db;
+        use fluree_db_core::LedgerSnapshot;
         use fluree_db_indexer::run_index::dict_io::{
             write_language_dict, write_predicate_dict, write_subject_index,
         };
@@ -2228,7 +2228,7 @@ mod tests {
         let exec = ExecutableQuery::simple(pq.clone());
         let operator = build_operator_tree(&pq, &exec.options, None).unwrap();
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let mut ctx = crate::context::ExecutionContext::new(&db, &vars).with_binary_store(store, 0);
         ctx.to_t = 1;
 

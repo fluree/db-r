@@ -14,7 +14,7 @@ use fluree_db_core::namespaces::is_rdf_nil;
 use fluree_db_core::overlay::OverlayProvider;
 use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{Db, GraphId, Sid};
+use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
 use fluree_vocab::namespaces::RDF;
 use fluree_vocab::predicates::{RDF_FIRST, RDF_REST};
 
@@ -59,7 +59,7 @@ const MAX_LIST_LENGTH: usize = 10_000;
 ///
 /// `collect_list_elements(db, overlay, &_:list1, to_t)` returns `[ex:A, ex:B]`
 pub async fn collect_list_elements(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     list_head: &Sid,
@@ -173,7 +173,7 @@ pub async fn collect_list_elements(
 ///
 /// A vector of FlakeValues representing the list elements.
 pub async fn collect_list_values(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     list_head: &Sid,
@@ -289,7 +289,7 @@ pub async fn collect_list_values(
 ///
 /// Returns: `[ChainElement::direct(ex:hasParent), ChainElement::inverse(ex:hasChild)]`
 pub async fn collect_chain_elements(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     list_head: &Sid,
@@ -393,7 +393,7 @@ pub async fn collect_chain_elements(
 ///
 /// The `depth` parameter tracks recursion to prevent infinite loops on malformed data.
 fn resolve_chain_element<'a>(
-    db: &'a Db,
+    db: &'a LedgerSnapshot,
     g_id: GraphId,
     overlay: &'a dyn OverlayProvider,
     element_sid: &'a Sid,
@@ -472,7 +472,7 @@ fn resolve_chain_element<'a>(
 ///
 /// A PropertyExpression representing the resolved property.
 pub async fn resolve_property_expression(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     property_sid: &Sid,
@@ -483,7 +483,7 @@ pub async fn resolve_property_expression(
 
 /// Inner implementation with depth tracking for recursion safety.
 fn resolve_property_expression_inner<'a>(
-    db: &'a Db,
+    db: &'a LedgerSnapshot,
     g_id: GraphId,
     overlay: &'a dyn OverlayProvider,
     property_sid: &'a Sid,

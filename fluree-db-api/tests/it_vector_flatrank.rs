@@ -469,7 +469,7 @@ async fn vector_search_mixed_datatypes() {
 #[tokio::test]
 async fn vector_search_post_indexing() {
     use fluree_db_api::{IndexConfig, LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
     use fluree_db_nameservice::NameService;
     use fluree_db_transact::{CommitOpts, TxnOpts};
     use support::start_background_indexer_local;
@@ -485,7 +485,7 @@ async fn vector_search_post_indexing() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let ctx = json!([
@@ -591,7 +591,7 @@ async fn vector_search_post_indexing() {
 #[tokio::test]
 async fn vector_search_novelty_plus_indexed() {
     use fluree_db_api::{IndexConfig, LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
     use fluree_db_transact::{CommitOpts, TxnOpts};
     use support::start_background_indexer_local;
 
@@ -606,7 +606,7 @@ async fn vector_search_novelty_plus_indexed() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let ctx = json!([
@@ -776,7 +776,7 @@ async fn vector_at_type_shorthand() {
 #[tokio::test]
 async fn vector_cosine_normalized_optimization() {
     use fluree_db_api::{IndexConfig, LedgerState, Novelty};
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
     use fluree_db_transact::{CommitOpts, TxnOpts};
     use support::start_background_indexer_local;
 
@@ -791,7 +791,7 @@ async fn vector_cosine_normalized_optimization() {
 
     local
         .run_until(async move {
-            let db0 = Db::genesis(ledger_id);
+            let db0 = LedgerSnapshot::genesis(ledger_id);
             let ledger0 = LedgerState::new(db0, Novelty::new(0));
 
             let ctx = json!([

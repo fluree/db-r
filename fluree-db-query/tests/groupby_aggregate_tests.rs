@@ -6,7 +6,7 @@
 //! - HAVING filter on aggregated results
 //! - Full pipeline execution
 
-use fluree_db_core::{Db, FlakeValue, Sid};
+use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
 use fluree_db_query::aggregate::{AggregateFn, AggregateSpec};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
@@ -20,8 +20,8 @@ use fluree_db_query::var_registry::{VarId, VarRegistry};
 use fluree_graph_json_ld::ParsedContext;
 use std::sync::Arc;
 
-fn make_test_db() -> Db {
-    Db::genesis("test/main")
+fn make_test_db() -> LedgerSnapshot {
+    LedgerSnapshot::genesis("test/main")
 }
 
 fn xsd_long() -> Sid {

@@ -417,7 +417,7 @@ mod tests {
     use crate::var_registry::VarRegistry;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
-    use fluree_db_core::{DatatypeDictId, Db, Sid};
+    use fluree_db_core::{DatatypeDictId, LedgerSnapshot, Sid};
     use fluree_db_indexer::run_index::dict_io::{
         write_language_dict, write_predicate_dict, write_subject_index,
     };
@@ -757,7 +757,7 @@ mod tests {
 
         let op = build_operator_tree(&query, &options, None).unwrap();
 
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let mut ctx = ExecutionContext::new(&db, &vars).with_binary_store(store, 0);
         ctx.to_t = 1;
 

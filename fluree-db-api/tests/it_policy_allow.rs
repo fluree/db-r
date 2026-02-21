@@ -678,7 +678,7 @@ async fn policy_onclass_and_onproperty_combined() {
 #[tokio::test]
 async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
     use fluree_db_api::dataset::QueryConnectionOptions;
-    use fluree_db_api::{build_policy_context, CommitOpts, FlureeView, IndexConfig, TxnOpts};
+    use fluree_db_api::{build_policy_context, CommitOpts, GraphDb, IndexConfig, TxnOpts};
     use std::sync::Arc;
 
     assert_index_defaults();
@@ -801,7 +801,7 @@ async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
             .await
             .expect("build_policy_context");
 
-            let view = FlureeView::from_ledger_state(&ledger2).with_policy(Arc::new(policy_ctx));
+            let view = GraphDb::from_ledger_state(&ledger2).with_policy(Arc::new(policy_ctx));
 
             // Query for ssn — should be denied (empty), despite default-allow true.
             let query_ssn = json!({

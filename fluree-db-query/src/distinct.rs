@@ -150,7 +150,7 @@ mod tests {
     use super::*;
     use crate::error::QueryError;
     use crate::var_registry::VarRegistry;
-    use fluree_db_core::{Db, FlakeValue, Sid};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
 
     /// Mock operator that emits predefined batches
     struct MockOperator {
@@ -234,7 +234,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_all_unique() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -257,7 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_all_duplicates() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -276,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_mixed() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -313,7 +313,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_across_batches() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -346,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_batch_all_dupes_skipped() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -374,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_multi_column() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -394,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_with_unbound() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -419,7 +419,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_with_poisoned() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -444,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_preserves_schema() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 
@@ -475,7 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_state_transitions() {
-        let db = Db::genesis("test/main");
+        let db = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
         let ctx = ExecutionContext::new(&db, &vars);
 

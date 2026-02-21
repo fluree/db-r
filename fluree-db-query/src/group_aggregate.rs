@@ -778,10 +778,10 @@ fn is_int_binding(binding: &Binding) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::Db;
+    use fluree_db_core::LedgerSnapshot;
 
-    fn make_test_db() -> Db {
-        Db::genesis("test/main")
+    fn make_test_db() -> LedgerSnapshot {
+        LedgerSnapshot::genesis("test/main")
     }
 
     #[tokio::test]

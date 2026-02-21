@@ -224,7 +224,7 @@ where
 
         // Capture namespace delta once:
         // - write into commit record for persistence
-        // - apply to returned in-memory Db so subsequent operations (e.g., SPARQL/JSON-LD queries)
+        // - apply to returned in-memory LedgerSnapshot so subsequent operations (e.g., SPARQL/JSON-LD queries)
         //   can encode IRIs without requiring a reload.
         let ns_delta = {
             let span = tracing::debug_span!("commit_namespace_delta");
@@ -232,7 +232,7 @@ where
             ns_registry.take_delta()
         };
 
-        // Apply namespace delta to the in-memory Db immediately (Clojure parity).
+        // Apply namespace delta to the in-memory LedgerSnapshot immediately (Clojure parity).
         for (code, prefix) in &ns_delta {
             base.db.namespace_codes.insert(*code, prefix.clone());
         }
@@ -495,14 +495,14 @@ mod tests {
     use super::*;
     use crate::ir::{TemplateTerm, TripleTemplate, Txn};
     use crate::stage::{stage, StageOptions};
-    use fluree_db_core::{Db, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::Novelty;
 
     #[tokio::test]
     async fn test_commit_simple_insert() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -544,7 +544,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_empty_transaction() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -575,7 +575,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_sequence() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 
@@ -641,7 +641,7 @@ mod tests {
     #[tokio::test]
     async fn test_commit_predictive_sizing() {
         let storage = MemoryStorage::new();
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
         let ledger = LedgerState::new(db, novelty);
 

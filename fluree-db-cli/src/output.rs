@@ -3,7 +3,7 @@ use crate::error::CliResult;
 use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::format::{IriCompactor, SelectMode};
 use fluree_db_api::QueryResult;
-use fluree_db_core::{Db, FlakeValue};
+use fluree_db_core::{FlakeValue, LedgerSnapshot};
 use fluree_db_query::binding::Binding;
 
 /// Output format for query results.
@@ -29,7 +29,7 @@ pub struct FormatOutput {
 ///   callers should fall back to the JSON-based formatter for correctness.
 pub fn format_sparql_table_from_result(
     result: &QueryResult,
-    db: &Db,
+    db: &LedgerSnapshot,
     limit: Option<usize>,
 ) -> CliResult<Option<FormatOutput>> {
     // Grouped bindings require cartesian disaggregation (SPARQL formatter logic).

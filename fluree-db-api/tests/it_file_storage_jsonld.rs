@@ -10,7 +10,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, LedgerState, Novelty};
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 use serde_json::json;
 
 #[tokio::test]
@@ -26,7 +26,7 @@ async fn file_storage_jsonld_insert_then_query_roundtrip() {
     let ledger_id = "rust-port/jsonld-insert-query:main";
 
     // Create a brand-new ledger state (genesis).
-    let db = Db::genesis(ledger_id);
+    let db = LedgerSnapshot::genesis(ledger_id);
     let ledger0 = LedgerState::new(db, Novelty::new(0));
 
     // Insert JSON-LD data.

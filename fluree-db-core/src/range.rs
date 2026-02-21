@@ -1,7 +1,7 @@
 //! Range query implementation
 //!
 //! This module provides the public `range` API for querying flakes from an index.
-//! All queries delegate to the `RangeProvider` attached to the `Db`.
+//! All queries delegate to the `RangeProvider` attached to the `LedgerSnapshot`.
 //!
 //! ## Example
 //!
@@ -21,7 +21,7 @@
 pub use crate::query_bounds::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
 
 use crate::comparator::IndexType;
-use crate::db::Db;
+use crate::db::LedgerSnapshot;
 use crate::dt_compatible;
 use crate::error::Result;
 use crate::flake::Flake;
@@ -48,7 +48,7 @@ pub const BATCHED_JOIN_SIZE: usize = 100_000;
 /// * `match_val` - Components to match
 /// * `opts` - Query options (limits, offset)
 pub async fn range(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     index: IndexType,
     test: RangeTest,
@@ -60,10 +60,10 @@ pub async fn range(
 
 /// Execute a range query with an overlay provider (novelty).
 ///
-/// Delegates to the `RangeProvider` attached to the `Db`.  For genesis
+/// Delegates to the `RangeProvider` attached to the `LedgerSnapshot`.  For genesis
 /// databases (t=0, no provider), returns overlay-only flakes.
 pub async fn range_with_overlay<O>(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &O,
     index: IndexType,
@@ -117,7 +117,7 @@ where
 ///
 /// Delegates to `RangeProvider::range_bounded`.
 pub async fn range_bounded_with_overlay<O>(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &O,
     index: IndexType,
@@ -192,13 +192,13 @@ impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
 
 /// Apply range match filtering to overlay flakes.
 ///
-/// The genesis Db path collects all overlay flakes; this narrows them
+/// The genesis LedgerSnapshot path collects all overlay flakes; this narrows them
 /// to the requested range.  For `RangeTest::Eq` every specified component
 /// of `match_val` must match exactly.  Other test modes currently pass
 /// through unfiltered (callers post-filter as needed).
 fn apply_range_filter(flakes: &mut Vec<Flake>, test: RangeTest, match_val: &RangeMatch) {
     if test != RangeTest::Eq {
-        // Non-equality tests are uncommon on genesis Db; callers
+        // Non-equality tests are uncommon on genesis LedgerSnapshot; callers
         // post-filter so returning the full set is safe.
         return;
     }
@@ -232,7 +232,7 @@ fn apply_range_filter(flakes: &mut Vec<Flake>, test: RangeTest, match_val: &Rang
     });
 }
 
-/// Apply RangeOptions to the overlay-only (genesis Db) path.
+/// Apply RangeOptions to the overlay-only (genesis LedgerSnapshot) path.
 ///
 /// The overlay-only path bypasses the index `RangeProvider`, so we must manually
 /// apply options that providers typically enforce (object bounds, offset, limits).
@@ -258,10 +258,10 @@ fn apply_overlay_only_options(flakes: &mut Vec<Flake>, opts: &RangeOptions) {
 }
 
 // ============================================================================
-// Overlay-only collection (genesis Db fallback)
+// Overlay-only collection (genesis LedgerSnapshot fallback)
 // ============================================================================
 
-/// Collect overlay flakes for a genesis Db (no base data).
+/// Collect overlay flakes for a genesis LedgerSnapshot (no base data).
 ///
 /// Queries the overlay for all flakes matching the index, applies time
 /// filtering, sorts by index comparator, and removes stale flakes.

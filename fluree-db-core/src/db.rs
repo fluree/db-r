@@ -1,6 +1,6 @@
 //! Database struct
 //!
-//! The `Db` struct represents a database value at a specific point in time.
+//! The `LedgerSnapshot` struct represents a database value at a specific point in time.
 //! It is a pure value type — no storage backend reference.
 
 use crate::content_id::ContentId;
@@ -20,8 +20,8 @@ use std::sync::Arc;
 /// Metadata for creating a database from its index root.
 ///
 /// Bundles all the metadata fields extracted from a v2 BinaryIndexRoot
-/// for constructing a metadata-only `Db`.
-pub struct DbMetadata {
+/// for constructing a metadata-only `LedgerSnapshot`.
+pub struct LedgerSnapshotMetadata {
     /// Ledger ID (e.g., "mydb:main")
     pub ledger_id: String,
     /// Current transaction time
@@ -42,7 +42,7 @@ pub struct DbMetadata {
 ///
 /// A pure value type — no storage backend reference. All I/O (loading,
 /// writing) happens at the call site, not inside `Db`.
-pub struct Db {
+pub struct LedgerSnapshot {
     /// Ledger ID (e.g., "mydb:main")
     pub ledger_id: String,
     /// Current transaction time
@@ -79,7 +79,7 @@ pub struct Db {
     pub range_provider: Option<Arc<dyn RangeProvider>>,
 }
 
-impl Clone for Db {
+impl Clone for LedgerSnapshot {
     fn clone(&self) -> Self {
         Self {
             ledger_id: self.ledger_id.clone(),
@@ -96,9 +96,9 @@ impl Clone for Db {
     }
 }
 
-impl std::fmt::Debug for Db {
+impl std::fmt::Debug for LedgerSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Db")
+        f.debug_struct("LedgerSnapshot")
             .field("ledger_id", &self.ledger_id)
             .field("t", &self.t)
             .field("version", &self.version)
@@ -110,12 +110,12 @@ impl std::fmt::Debug for Db {
     }
 }
 
-impl Db {
+impl LedgerSnapshot {
     /// Create a genesis (empty) database for a new ledger.
     ///
     /// Used when a nameservice has a commit but no index yet.
     /// The database starts at t=0 with no base data.  Queries against
-    /// a genesis Db return overlay (novelty) flakes only.
+    /// a genesis LedgerSnapshot return overlay (novelty) flakes only.
     pub fn genesis(ledger_id: &str) -> Self {
         Self {
             ledger_id: ledger_id.to_string(),
@@ -138,7 +138,7 @@ impl Db {
     /// The Db carries namespace codes, stats, and schema for callers
     /// that need ledger metadata, while all actual range queries go
     /// through `BinaryIndexStore` / `BinaryScanOperator`.
-    pub fn new_meta(meta: DbMetadata) -> Self {
+    pub fn new_meta(meta: LedgerSnapshotMetadata) -> Self {
         Self {
             ledger_id: meta.ledger_id,
             t: meta.t,
@@ -425,7 +425,7 @@ impl Db {
 
         let _ = pos; // remaining optional sections (prev_index, garbage, sketch) not needed
 
-        let meta = DbMetadata {
+        let meta = LedgerSnapshotMetadata {
             ledger_id,
             t: index_t,
             namespace_codes,
@@ -498,11 +498,11 @@ impl Db {
 ///
 /// The storage address is derived internally from the `ContentId` and
 /// `ledger_id` using the storage backend's method identifier.
-pub async fn load_db(
+pub async fn load_ledger_snapshot(
     storage: &(impl StorageRead + crate::storage::StorageMethod),
     root_id: &ContentId,
     ledger_id: &str,
-) -> Result<Db> {
+) -> Result<LedgerSnapshot> {
     let root_address = crate::content_address(
         storage.storage_method(),
         ContentKind::IndexRoot,
@@ -510,7 +510,7 @@ pub async fn load_db(
         &root_id.digest_hex(),
     );
     let bytes = storage.read_bytes(&root_address).await?;
-    Db::from_root_bytes(&bytes)
+    LedgerSnapshot::from_root_bytes(&bytes)
 }
 
 #[cfg(test)]
@@ -520,13 +520,13 @@ mod tests {
     #[test]
     fn test_from_root_bytes_rejects_non_irb1() {
         let json = b"{\"ledger_id\": \"test:main\"}";
-        let err = Db::from_root_bytes(json).unwrap_err();
+        let err = LedgerSnapshot::from_root_bytes(json).unwrap_err();
         assert!(err.to_string().contains("IRB1"));
     }
 
     #[test]
     fn test_from_root_bytes_rejects_truncated() {
-        let err = Db::from_root_bytes(b"IRB1").unwrap_err();
+        let err = LedgerSnapshot::from_root_bytes(b"IRB1").unwrap_err();
         assert!(err.to_string().contains("truncated"));
     }
 
@@ -535,7 +535,7 @@ mod tests {
         let mut ns = HashMap::new();
         ns.insert(0u16, String::new());
         ns.insert(100u16, "http://example.org/".to_string());
-        let db = Db::new_meta(DbMetadata {
+        let db = LedgerSnapshot::new_meta(LedgerSnapshotMetadata {
             ledger_id: "test:main".into(),
             t: 1,
             namespace_codes: ns,
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn test_genesis_db() {
-        let db = Db::genesis("test:main");
+        let db = LedgerSnapshot::genesis("test:main");
         assert_eq!(db.t, 0);
         assert_eq!(db.ledger_id, "test:main");
         assert!(db.range_provider.is_none());

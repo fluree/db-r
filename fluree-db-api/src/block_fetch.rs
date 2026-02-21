@@ -31,7 +31,7 @@ use crate::policy_builder;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::storage::content_address;
-use fluree_db_core::{ContentId, Db, NoOverlay, OverlayProvider, Storage, Tracker};
+use fluree_db_core::{ContentId, LedgerSnapshot, NoOverlay, OverlayProvider, Storage, Tracker};
 use fluree_db_indexer::run_index::leaf::read_leaf_header;
 use fluree_db_indexer::run_index::leaflet::{
     decode_leaflet, decode_leaflet_region1, LeafletHeader,
@@ -58,7 +58,7 @@ pub enum BlockFetchError {
     #[error("No binary index store loaded for this ledger")]
     MissingBinaryStore,
 
-    /// Leaf policy filtering requires a Db context but none was provided
+    /// Leaf policy filtering requires a LedgerSnapshot context but none was provided
     #[error("No database context provided for policy filtering")]
     MissingDbContext,
 
@@ -175,10 +175,10 @@ pub enum EnforcementMode {
 /// Ledger context needed for leaf decoding and policy filtering.
 ///
 /// Groups the database snapshot, time horizon, and binary index store to avoid
-/// parameter drift. Constructed from a `LedgerSnapshot` at the call site.
+/// parameter drift. Constructed from a `CachedLedgerState` at the call site.
 pub struct LedgerBlockContext<'a> {
     /// Database snapshot.
-    pub db: &'a Db,
+    pub db: &'a LedgerSnapshot,
     /// Time horizon for policy filtering (not always `db.t`).
     pub to_t: i64,
     /// Binary index store for leaf decoding (None if not yet indexed).
@@ -342,7 +342,7 @@ fn detect_leaf_sort_order(
 /// If neither `identity` nor `policy_class` is provided, returns all flakes
 /// unfiltered (equivalent to root policy).
 pub async fn apply_policy_filter(
-    db: &Db,
+    db: &LedgerSnapshot,
     to_t: i64,
     flakes: Vec<Flake>,
     identity: Option<&str>,

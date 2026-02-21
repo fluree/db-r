@@ -19,7 +19,7 @@ use serde_json::Value as JsonValue;
 use crate::error::{BuilderError, BuilderErrors};
 use crate::format::FormatterConfig;
 use crate::query::helpers::parse_dataset_spec;
-use crate::view::{FlureeDataSetView, FlureeView, QueryInput};
+use crate::view::{DataSetDb, GraphDb, QueryInput};
 use crate::{
     ApiError, Fluree, NameService, PolicyContext, QueryResult, Result, Storage,
     TrackedErrorResponse, TrackedQueryResponse, TrackingOptions,
@@ -149,19 +149,19 @@ impl<'a> QueryCore<'a> {
 
 /// Builder for queries against a single graph/view.
 ///
-/// Created via [`FlureeView::query()`].
+/// Created via [`GraphDb::query()`].
 ///
 /// # Example
 ///
 /// ```ignore
-/// let graph = fluree.view("mydb:main").await?;
+/// let graph = fluree.db("mydb:main").await?;
 /// let result = graph.query(&fluree)
 ///     .jsonld(&query)
 ///     .execute().await?;
 /// ```
 pub struct ViewQueryBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    view: &'a FlureeView,
+    view: &'a GraphDb,
     core: QueryCore<'a>,
 }
 
@@ -170,8 +170,8 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
-    /// Create a new builder (called by `FlureeView::query()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: &'a FlureeView) -> Self {
+    /// Create a new builder (called by `GraphDb::query()`).
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: &'a GraphDb) -> Self {
         Self {
             fluree,
             view,
@@ -332,12 +332,12 @@ where
 
 /// Builder for queries against a composed dataset (multiple graphs/views).
 ///
-/// Created via [`FlureeDataSetView::query()`].
+/// Created via [`DataSetDb::query()`].
 ///
 /// # Example
 ///
 /// ```ignore
-/// let dataset = FlureeDataSetView::new()
+/// let dataset = DataSetDb::new()
 ///     .with_default(view_a)
 ///     .with_named("other", view_b);
 /// let result = dataset.query(&fluree)
@@ -346,7 +346,7 @@ where
 /// ```
 pub struct DatasetQueryBuilder<'a, S: Storage + 'static, N> {
     fluree: &'a Fluree<S, N>,
-    dataset: &'a FlureeDataSetView,
+    dataset: &'a DataSetDb,
     core: QueryCore<'a>,
 }
 
@@ -355,8 +355,8 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
-    /// Create a new builder (called by `FlureeDataSetView::query()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, dataset: &'a FlureeDataSetView) -> Self {
+    /// Create a new builder (called by `DataSetDb::query()`).
+    pub(crate) fn new(fluree: &'a Fluree<S, N>, dataset: &'a DataSetDb) -> Self {
         Self {
             fluree,
             dataset,
@@ -681,7 +681,7 @@ where
                 };
                 let (spec, _) = parse_dataset_spec(json)?;
                 if let Some(alias) = spec.default_graphs.first() {
-                    let view = self.fluree.view(alias.identifier.as_str()).await?;
+                    let view = self.fluree.db(alias.identifier.as_str()).await?;
                     let config = format_config.with_select_mode(result.select_mode);
                     Ok(result.format_async(&view.db, &config).await?)
                 } else {
@@ -700,7 +700,7 @@ where
                 let ast = crate::query::helpers::parse_and_validate_sparql(sparql)?;
                 let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
                 if let Some(alias) = spec.default_graphs.first() {
-                    let view = self.fluree.view(alias.identifier.as_str()).await?;
+                    let view = self.fluree.db(alias.identifier.as_str()).await?;
                     let config = format_config.with_select_mode(result.select_mode);
                     Ok(result.format_async(&view.db, &config).await?)
                 } else {
@@ -739,7 +739,7 @@ where
                 };
                 let (spec, _) = parse_dataset_spec(json)?;
                 if let Some(alias) = spec.default_graphs.first() {
-                    let view = self.fluree.view(alias.identifier.as_str()).await?;
+                    let view = self.fluree.db(alias.identifier.as_str()).await?;
                     let config = format_config.with_select_mode(result.select_mode);
                     crate::format::format_results_string_async(
                         &result,
@@ -766,7 +766,7 @@ where
                 let ast = crate::query::helpers::parse_and_validate_sparql(sparql)?;
                 let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
                 if let Some(alias) = spec.default_graphs.first() {
-                    let view = self.fluree.view(alias.identifier.as_str()).await?;
+                    let view = self.fluree.db(alias.identifier.as_str()).await?;
                     let config = format_config.with_select_mode(result.select_mode);
                     crate::format::format_results_string_async(
                         &result,
@@ -962,7 +962,7 @@ mod tests {
         let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
         let _result = fluree.update(ledger, &data).await.unwrap();
 
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
         let query = json!({
             "select": ["?s"],
             "where": [{"@id": "?s", "ex:name": "?name"}]
@@ -981,7 +981,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
         let result = view
             .query(&fluree)
             .sparql("SELECT ?s WHERE { ?s ?p ?o }")
@@ -995,7 +995,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
         // No .jsonld() or .sparql() call
         let result = view.query(&fluree).execute().await;
         assert!(result.is_err());
@@ -1047,7 +1047,7 @@ mod tests {
         let result_convenience = fluree.query(&ledger, &query).await.unwrap();
 
         // Via builder
-        let view = fluree.view("testdb:main").await.unwrap();
+        let view = fluree.db("testdb:main").await.unwrap();
         let result_builder = view.query(&fluree).jsonld(&query).execute().await.unwrap();
 
         // Both should produce results at the same t

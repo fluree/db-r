@@ -8,7 +8,7 @@
 mod support;
 
 use fluree_db_api::FlureeBuilder;
-use fluree_db_core::{Db, Sid};
+use fluree_db_core::{LedgerSnapshot, Sid};
 use serde_json::json;
 use std::io::Write;
 
@@ -222,7 +222,7 @@ async fn import_pre_split_chunks_then_query() {
 // ============================================================================
 
 /// Look up the count for a property IRI in db.stats.
-fn property_count(db: &Db, iri: &str) -> Option<u64> {
+fn property_count(db: &LedgerSnapshot, iri: &str) -> Option<u64> {
     let stats = db.stats.as_ref()?;
     let props = stats.properties.as_ref()?;
     for p in props {
@@ -282,7 +282,7 @@ ex:bob a ex:User ;
     // Load and verify stats are populated
     let ledger = fluree.ledger("test/import-stats:main").await.expect("load");
 
-    // Stats should be present in the loaded Db
+    // Stats should be present in the loaded LedgerSnapshot
     assert!(
         ledger.db.stats.is_some(),
         "stats should be populated after import with collect_id_stats=true"

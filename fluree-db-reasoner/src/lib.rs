@@ -61,7 +61,7 @@ pub use rdf_list::{
 pub use same_as::{FrozenSameAs, SameAsTracker};
 
 use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::{Db, GraphId};
+use fluree_db_core::{GraphId, LedgerSnapshot};
 use std::sync::Arc;
 pub use types::{ChainElement, PropertyChain, PropertyExpression, ReasoningModes};
 
@@ -123,7 +123,7 @@ impl ReasoningOptions {
 /// Results are cached by (ledger_id, db_epoch, to_t, overlay_epoch, ontology_epoch, config).
 /// Cache hits return immediately without recomputation.
 pub async fn reason_owl2rl(
-    db: &Db,
+    db: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn OverlayProvider,
     to_t: i64,

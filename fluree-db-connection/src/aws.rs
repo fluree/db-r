@@ -36,7 +36,7 @@
 //! };
 //!
 //! let conn = connect_aws(config).await?;
-//! let db = conn.load_db("mydb:main").await?; // does NS lookup, then `load_db`
+//! let db = conn.load_ledger_snapshot("mydb:main").await?; // does NS lookup, then `load_ledger_snapshot`
 //! ```
 //!
 //! # Example with S3 storage-backed nameservice
@@ -59,13 +59,13 @@
 //! };
 //!
 //! let conn = connect_aws(config).await?;
-//! let db = conn.load_db("mydb:main").await?;
+//! let db = conn.load_ledger_snapshot("mydb:main").await?;
 //! ```
 
 use crate::config::ConnectionConfig;
 use crate::error::{ConnectionError, Result};
 use async_trait::async_trait;
-use fluree_db_core::Db;
+use fluree_db_core::LedgerSnapshot;
 use fluree_db_nameservice::{
     AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher,
     GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NsLookupResult, NsRecord,
@@ -540,9 +540,9 @@ impl AwsConnectionHandle {
     ///
     /// # Returns
     ///
-    /// A `Db` instance backed by S3 storage, or an error if the ledger
+    /// A `LedgerSnapshot` instance backed by S3 storage, or an error if the ledger
     /// is not found or has no index.
-    pub async fn load_db(&self, ledger_id: &str) -> Result<Db> {
+    pub async fn load_ledger_snapshot(&self, ledger_id: &str) -> Result<LedgerSnapshot> {
         let record = self
             .nameservice
             .lookup(ledger_id)
@@ -564,7 +564,7 @@ impl AwsConnectionHandle {
         })?;
 
         let storage = self.index_storage.clone();
-        Ok(fluree_db_core::load_db(&storage, &index_id, ledger_id).await?)
+        Ok(fluree_db_core::load_ledger_snapshot(&storage, &index_id, ledger_id).await?)
     }
 
     /// Look up a ledger record by ledger ID
@@ -633,7 +633,7 @@ impl AwsConnectionHandle {
 /// };
 ///
 /// let conn = connect_aws(config).await?;
-/// let db = conn.load_db("mydb").await?; // does NS lookup, then `load_db`
+/// let db = conn.load_ledger_snapshot("mydb").await?; // does NS lookup, then `load_ledger_snapshot`
 /// ```
 ///
 /// # Example with S3 storage-backed nameservice

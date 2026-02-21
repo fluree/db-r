@@ -15,7 +15,9 @@ mod support;
 use std::sync::Arc;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState};
-use fluree_db_core::{load_db, Db, DbMetadata, DictNovelty, Storage};
+use fluree_db_core::{
+    load_ledger_snapshot, DictNovelty, LedgerSnapshot, LedgerSnapshotMetadata, Storage,
+};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_query::BinaryRangeProvider;
 use fluree_db_transact::{CommitOpts, TxnOpts};
@@ -58,7 +60,7 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
 
     // Extract metadata from IRB1 root
     let v5 = fluree_db_indexer::run_index::IndexRootV5::decode(&bytes).expect("decode IRB1 root");
-    let meta = DbMetadata {
+    let meta = LedgerSnapshotMetadata {
         ledger_id: v5.ledger_id,
         t: v5.index_t,
         namespace_codes: v5.namespace_codes.into_iter().collect(),
@@ -67,7 +69,7 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         subject_watermarks: v5.subject_watermarks,
         string_watermark: v5.string_watermark,
     };
-    let mut db = Db::new_meta(meta);
+    let mut db = LedgerSnapshot::new_meta(meta);
     db.range_provider = Some(Arc::new(provider));
 
     ledger
@@ -75,7 +77,7 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         .expect("apply_loaded_db");
 }
 
-fn property_count(db: &Db, iri: &str) -> Option<u64> {
+fn property_count(db: &LedgerSnapshot, iri: &str) -> Option<u64> {
     let stats = db.stats.as_ref()?;
     let props = stats.properties.as_ref()?;
     for p in props {
@@ -89,7 +91,7 @@ fn property_count(db: &Db, iri: &str) -> Option<u64> {
     None
 }
 
-fn class_count(db: &Db, iri: &str) -> Option<u64> {
+fn class_count(db: &LedgerSnapshot, iri: &str) -> Option<u64> {
     let stats = db.stats.as_ref()?;
     let classes = stats.classes.as_ref()?;
     for c in classes {
@@ -162,9 +164,9 @@ async fn property_and_class_statistics_persist_in_db_root() {
             assert!(index_t >= commit_t);
             let root_cid = root_id.expect("expected root_id after indexing");
 
-            let loaded = load_db(fluree.storage(), &root_cid, ledger_id)
+            let loaded = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
             .await
-            .expect("load_db(root_cid)");
+            .expect("load_ledger_snapshot(root_cid)");
 
             let loaded_stats = loaded.stats.as_ref().expect("db.stats should be Some after indexing");
             assert!(loaded_stats.properties.is_some(), "expected db.stats.properties");
@@ -256,9 +258,9 @@ async fn class_statistics_decrement_after_delete_refresh() {
             };
             let root_cid = root_id.expect("expected root_id");
 
-            let loaded2 = load_db(fluree.storage(), &root_cid, ledger_id)
+            let loaded2 = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
                 .await
-                .expect("load_db(root_cid)");
+                .expect("load_ledger_snapshot(root_cid)");
             assert_eq!(class_count(&loaded2, "http://example.org/Person"), Some(2));
         })
         .await;
@@ -311,9 +313,9 @@ async fn statistics_work_with_memory_storage_when_indexed() {
             };
             let root_cid = root_id.expect("expected root_id");
 
-            let loaded = load_db(fluree.storage(), &root_cid, ledger_id)
+            let loaded = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
                 .await
-                .expect("load_db(root_cid)");
+                .expect("load_ledger_snapshot(root_cid)");
 
             assert_eq!(property_count(&loaded, "http://example.org/name"), Some(2));
             assert_eq!(property_count(&loaded, "http://example.org/age"), Some(1));
@@ -1292,9 +1294,9 @@ async fn ndv_cardinality_estimates_are_accurate() {
             };
             let root_cid = root_id.expect("expected root_id");
 
-            let loaded = load_db(fluree.storage(), &root_cid, ledger_id)
+            let loaded = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
                 .await
-                .expect("load_db(root_cid)");
+                .expect("load_ledger_snapshot(root_cid)");
 
             let name_ndv_values = loaded
                 .stats
@@ -1805,9 +1807,9 @@ async fn large_dataset_statistics_accuracy() {
             };
             let root_cid = root_id.expect("expected root_id");
 
-            let loaded = load_db(fluree.storage(), &root_cid, ledger_id)
+            let loaded = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
                 .await
-                .expect("load_db(root_cid)");
+                .expect("load_ledger_snapshot(root_cid)");
 
             let name_prop = loaded
                 .stats
