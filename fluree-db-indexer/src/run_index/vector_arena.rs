@@ -266,7 +266,7 @@ pub fn write_vector_shard_to_bytes(dims: u16, data: &[f32]) -> io::Result<Vec<u8
             "vector shard dims must be > 0",
         ));
     }
-    if data.len() % dims as usize != 0 {
+    if !data.len().is_multiple_of(dims as usize) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -298,7 +298,7 @@ pub fn write_vector_shards_from_raw(
     if raw_values.is_empty() {
         return Ok(Vec::new());
     }
-    if raw_values.len() % dims as usize != 0 {
+    if !raw_values.len().is_multiple_of(dims as usize) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(

@@ -805,6 +805,24 @@ impl IdStatsHook {
         self.flake_count
     }
 
+    /// Mutable access to per-graph flake totals.
+    ///
+    /// Used by incremental indexing to seed base-root flake counts before
+    /// feeding novelty records, so `finalize()` produces correct totals
+    /// (base + delta) rather than delta-only.
+    pub fn graph_flakes_mut(&mut self) -> &mut HashMap<GraphId, i64> {
+        &mut self.graph_flakes
+    }
+
+    /// Read-only access to class membership count deltas.
+    ///
+    /// Used by incremental indexing to extract novelty-only class count deltas
+    /// (before finalize consumes the hook). Keyed by class sid64, values are
+    /// signed deltas: +1 per rdf:type assertion, -1 per retraction.
+    pub fn class_count_deltas(&self) -> &HashMap<u64, i64> {
+        &self.class_counts
+    }
+
     /// Produce per-graph stats and aggregate property stats.
     ///
     /// Excludes txn-meta graph (g_id=1) from both `graphs` and aggregate

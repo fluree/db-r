@@ -967,7 +967,34 @@ where
             let uploaded_indexes =
                 upload_indexes_to_cas(&storage, &ledger_id, &build_results).await?;
 
-            // F.4: Build IndexStats directly from IdStatsHook + class stats.
+            // F.4: Build HLL sketch blob and IndexStats from IdStatsHook + class stats.
+
+            // Create sketch blob BEFORE finalize_with_aggregate_properties() consumes
+            // the hook. This borrows properties() which is consumed by finalize.
+            let sketch_blob = crate::stats::HllSketchBlob::from_properties(
+                store.max_t(),
+                stats_hook.properties(),
+            );
+            let sketch_ref = if !sketch_blob.entries.is_empty() {
+                let sketch_bytes = sketch_blob
+                    .to_json_bytes()
+                    .map_err(|e| IndexerError::StorageWrite(format!("sketch serialize: {e}")))?;
+                let sketch_wr = storage
+                    .content_write_bytes(ContentKind::StatsSketch, &ledger_id, &sketch_bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let cid = cid_from_write(ContentKind::StatsSketch, &sketch_wr);
+                tracing::debug!(
+                    %cid,
+                    bytes = sketch_wr.size_bytes,
+                    entries = sketch_blob.entries.len(),
+                    "HLL sketch blob uploaded"
+                );
+                Some(cid)
+            } else {
+                None
+            };
+
             let index_stats: fluree_db_core::index_stats::IndexStats = {
                 let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
                     stats_hook.finalize_with_aggregate_properties();
@@ -1136,7 +1163,7 @@ where
                 schema: None, // schema: requires predicate definitions (future)
                 prev_index: None,
                 garbage: None,
-                sketch_ref: None,
+                sketch_ref,
             };
 
             // F.7: Compute garbage and link prev_index for GC chain.
@@ -1363,15 +1390,6 @@ where
         max_t = novelty.max_t,
         "Phase 1 complete: incremental resolve"
     );
-    // Bail to full rebuild when the base root carries stats or schema.
-    // The incremental path does not recompute these, so carrying stale
-    // values would return incorrect counts/property-lists to callers.
-    if novelty.base_root.stats.is_some() || novelty.base_root.schema.is_some() {
-        return Err(IndexerError::IncrementalAbort(
-            "base root has stats/schema that require full rebuild to update".into(),
-        ));
-    }
-
     // Bail if novelty touched spatial predicates (non-POINT geometries).
     // Spatial indexes are not updated incrementally — results would be silently
     // stale for geo queries until the next full rebuild.
@@ -2129,20 +2147,19 @@ where
                         // Extending an existing vector arena.
                         let existing = &ga.vectors[pos];
 
-                        let old_manifest_bytes = content_store
-                            .get(&existing.manifest)
-                            .await
-                            .map_err(|e| {
-                                IndexerError::StorageRead(format!("read existing vector manifest: {e}"))
+                        let old_manifest_bytes =
+                            content_store.get(&existing.manifest).await.map_err(|e| {
+                                IndexerError::StorageRead(format!(
+                                    "read existing vector manifest: {e}"
+                                ))
                             })?;
                         let old_manifest =
-                            run_index::vector_arena::read_vector_manifest(&old_manifest_bytes).map_err(
-                                |e| {
+                            run_index::vector_arena::read_vector_manifest(&old_manifest_bytes)
+                                .map_err(|e| {
                                     IndexerError::StorageRead(format!(
                                         "decode existing vector manifest: {e}"
                                     ))
-                                },
-                            )?;
+                                })?;
 
                         if old_manifest.dims != arena.dims() {
                             return Err(IndexerError::IncrementalAbort(format!(
@@ -2192,11 +2209,12 @@ where
                                     let last_idx = combined_shard_infos.len() - 1;
                                     let old_last_cid = combined_shards[last_idx].clone();
 
-                                    let old_last_bytes = content_store.get(&old_last_cid).await.map_err(|e| {
-                                        IndexerError::StorageRead(format!(
-                                            "read existing vector last shard: {e}"
-                                        ))
-                                    })?;
+                                    let old_last_bytes =
+                                        content_store.get(&old_last_cid).await.map_err(|e| {
+                                            IndexerError::StorageRead(format!(
+                                                "read existing vector last shard: {e}"
+                                            ))
+                                        })?;
                                     let old_last_shard =
                                         run_index::vector_arena::read_vector_shard_from_bytes(
                                             &old_last_bytes,
@@ -2220,9 +2238,8 @@ where
                                     }
 
                                     let take_f32 = take as usize * dims_usize;
-                                    let mut merged: Vec<f32> = Vec::with_capacity(
-                                        old_last_shard.values.len() + take_f32,
-                                    );
+                                    let mut merged: Vec<f32> =
+                                        Vec::with_capacity(old_last_shard.values.len() + take_f32);
                                     merged.extend_from_slice(&old_last_shard.values);
                                     merged.extend_from_slice(&arena.raw_values()[0..take_f32]);
 
@@ -2261,14 +2278,13 @@ where
                         // consumed filling the prior last shard).
                         let start_f32 = consumed_new as usize * dims_usize;
                         let remaining_raw = &arena.raw_values()[start_f32..];
-                        let shard_results =
-                            run_index::vector_arena::write_vector_shards_from_raw(
-                                arena.dims(),
-                                remaining_raw,
-                            )
-                            .map_err(|e| {
-                                IndexerError::StorageWrite(format!("vector shard serialize: {e}"))
-                            })?;
+                        let shard_results = run_index::vector_arena::write_vector_shards_from_raw(
+                            arena.dims(),
+                            remaining_raw,
+                        )
+                        .map_err(|e| {
+                            IndexerError::StorageWrite(format!("vector shard serialize: {e}"))
+                        })?;
 
                         let mut new_shard_cids = Vec::with_capacity(shard_results.len());
                         let mut new_shard_infos = Vec::with_capacity(shard_results.len());
@@ -2335,10 +2351,12 @@ where
                             )));
                         }
 
-                        let shard_results =
-                            run_index::vector_arena::write_vector_shards_to_bytes(arena).map_err(
-                                |e| IndexerError::StorageWrite(format!("vector shard serialize: {e}")),
-                            )?;
+                        let shard_results = run_index::vector_arena::write_vector_shards_to_bytes(
+                            arena,
+                        )
+                        .map_err(|e| {
+                            IndexerError::StorageWrite(format!("vector shard serialize: {e}"))
+                        })?;
 
                         let mut new_shard_cids = Vec::with_capacity(shard_results.len());
                         let mut new_shard_infos = Vec::with_capacity(shard_results.len());
@@ -2401,16 +2419,9 @@ where
         }
     }
 
-    // ---- Phase 5: Root assembly ----
-    root_builder.set_dict_refs(new_dict_refs);
-    root_builder.set_watermarks(
-        novelty.updated_watermarks.clone(),
-        novelty.updated_string_watermark,
-    );
-
-    // Update inline dicts if they changed.
-    // Use the updated namespace codes (from resolver state, which includes any
-    // new namespaces from incremental commits) rather than the base root's codes.
+    // ---- Phase 4.6: Incremental stats refresh ----
+    //
+    // Build predicate SIDs first (needed for stats p_id → SID conversion).
     let new_ns_codes: std::collections::BTreeMap<u16, String> = novelty
         .shared
         .ns_prefixes
@@ -2418,6 +2429,277 @@ where
         .map(|(&k, v)| (k, v.clone()))
         .collect();
     let new_pred_sids = build_predicate_sids(&novelty.shared, &new_ns_codes);
+
+    {
+        use crate::stats::{
+            load_sketch_blob, value_hash, GraphPropertyKey, HllSketchBlob, IdPropertyHll,
+            IdStatsHook, StatsRecord,
+        };
+        use fluree_db_core::value_id::ValueTypeTag;
+        use std::collections::HashMap;
+
+        // 4.6a: Load prior HLL sketches from CAS.
+        //
+        // If the base root has stats but we cannot load sketches, we must NOT
+        // "start fresh" (delta-only), because that would produce inconsistent
+        // totals (base per-graph flakes + delta-only per-property counts/NDV).
+        //
+        // Instead, we fall back to carrying forward base stats unchanged
+        // (optionally applying class-count deltas below).
+        let mut can_refresh_hll = base_root.stats.is_some();
+        let prior_properties: HashMap<GraphPropertyKey, IdPropertyHll> = if let Some(ref cid) =
+            base_root.sketch_ref
+        {
+            match load_sketch_blob(content_store.as_ref(), cid).await {
+                Ok(Some(blob)) => match blob.into_properties() {
+                    Ok(props) => props,
+                    Err(e) => {
+                        tracing::warn!("failed to decode prior sketch blob: {e}; carrying forward base stats");
+                        can_refresh_hll = false;
+                        HashMap::new()
+                    }
+                },
+                Ok(None) => {
+                    tracing::warn!("prior sketch blob not found; carrying forward base stats");
+                    can_refresh_hll = false;
+                    HashMap::new()
+                }
+                Err(e) => {
+                    tracing::warn!("failed to load prior sketch blob: {e}; carrying forward base stats");
+                    can_refresh_hll = false;
+                    HashMap::new()
+                }
+            }
+        } else {
+            tracing::warn!("base root has no sketch_ref; carrying forward base stats");
+            can_refresh_hll = false;
+            HashMap::new()
+        };
+
+        // 4.6b: Seed IdStatsHook with priors + graph_flakes from base root.
+        let rdf_type_p_id = novelty.shared.predicates.get(fluree_vocab::rdf::TYPE);
+
+        let mut stats_hook = IdStatsHook::with_prior_properties(prior_properties);
+        if let Some(pid) = rdf_type_p_id {
+            stats_hook.set_rdf_type_p_id(pid);
+        }
+        // Disable expensive ref-target tracking in incremental path.
+        // Class→property presence still works; ref-class edges require full rebuild.
+        stats_hook.set_track_ref_targets(false);
+
+        // Seed per-graph flake totals from base root so finalize produces
+        // base+delta, not delta-only.
+        if let Some(ref stats) = base_root.stats {
+            if let Some(ref graphs) = stats.graphs {
+                for g in graphs {
+                    *stats_hook.graph_flakes_mut().entry(g.g_id).or_insert(0) += g.flakes as i64;
+                }
+            } else {
+                // Fallback for older roots that only carry sketches (no per-graph stats):
+                // derive base per-graph flake totals from prior per-(g_id, p_id) counts.
+                let mut derived: HashMap<u16, i64> = HashMap::new();
+                for (k, hll) in stats_hook.properties() {
+                    *derived.entry(k.g_id).or_insert(0) += hll.count.max(0);
+                }
+                for (g_id, flakes) in derived {
+                    *stats_hook.graph_flakes_mut().entry(g_id).or_insert(0) += flakes;
+                }
+            }
+        }
+
+        // 4.6c: Feed novelty records into the hook.
+        for record in &novelty.records {
+            let dt = novelty
+                .shared
+                .dt_tags
+                .get(record.dt as usize)
+                .copied()
+                .unwrap_or(ValueTypeTag::UNKNOWN);
+            stats_hook.on_record(&StatsRecord {
+                g_id: record.g_id,
+                p_id: record.p_id,
+                s_id: record.s_id.as_u64(),
+                dt,
+                o_hash: value_hash(record.o_kind, record.o_key),
+                o_kind: record.o_kind,
+                o_key: record.o_key,
+                t: record.t as i64,
+                op: record.op != 0,
+            });
+        }
+
+        // 4.6d: Capture class count deltas + sketch blob BEFORE finalize consumes the hook.
+        let class_deltas: HashMap<u64, i64> = stats_hook.class_count_deltas().clone();
+
+        // Always apply class count deltas when possible (even if sketches are missing),
+        // because class counts live in `IndexStats.classes` and don't require HLL state.
+        let classes = {
+            use crate::dict_tree::reverse_leaf::subject_reverse_key;
+
+            let base_classes = base_root.stats.as_ref().and_then(|s| s.classes.as_ref());
+
+            if class_deltas.is_empty() {
+                base_classes.cloned()
+            } else if let Some(base_cls) = base_classes {
+                let subject_tree = run_index::incremental_resolve::load_reverse_tree(
+                    &content_store,
+                    &base_root.dict_refs.subject_reverse,
+                )
+                .await
+                .map_err(|e| {
+                    IndexerError::StorageRead(format!(
+                        "load subject reverse tree for class stats: {e}"
+                    ))
+                })?;
+
+                let mut entries_by_sid64: HashMap<u64, fluree_db_core::ClassStatEntry> =
+                    HashMap::new();
+                for entry in base_cls {
+                    let key = subject_reverse_key(
+                        entry.class_sid.namespace_code,
+                        entry.class_sid.name.as_bytes(),
+                    );
+                    if let Ok(Some(sid64)) = subject_tree.reverse_lookup(&key) {
+                        entries_by_sid64.insert(sid64, entry.clone());
+                    } else {
+                        entries_by_sid64
+                            .insert(u64::MAX - entries_by_sid64.len() as u64, entry.clone());
+                    }
+                }
+
+                for (&sid64, &delta) in &class_deltas {
+                    if let Some(entry) = entries_by_sid64.get_mut(&sid64) {
+                        entry.count = (entry.count as i64 + delta).max(0) as u64;
+                    }
+                }
+
+                let mut result: Vec<fluree_db_core::ClassStatEntry> = entries_by_sid64
+                    .into_values()
+                    .filter(|e| e.count > 0)
+                    .collect();
+                result.sort_by(|a, b| {
+                    a.class_sid
+                        .namespace_code
+                        .cmp(&b.class_sid.namespace_code)
+                        .then_with(|| a.class_sid.name.cmp(&b.class_sid.name))
+                });
+
+                if result.is_empty() { None } else { Some(result) }
+            } else {
+                None
+            }
+        };
+
+        // If we can't refresh HLL, carry forward base stats (but with updated class counts).
+        if !can_refresh_hll {
+            if let Some(mut base_stats) = base_root.stats.clone() {
+                base_stats.classes = classes;
+                root_builder.set_stats(base_stats);
+            }
+            // Preserve sketch_ref (don't overwrite or GC).
+            root_builder.set_sketch_ref(base_root.sketch_ref.clone());
+            tracing::info!("Phase 4.6 complete: sketches unavailable; carried forward base stats");
+            // Skip the HLL refresh path.
+            // (Remaining root assembly continues below.)
+            //
+            // NOTE: We intentionally do NOT try to "rebuild" HLL from base stats,
+            // because NDV estimates are not reversible from the stored aggregates.
+        } else {
+            let sketch_blob = HllSketchBlob::from_properties(novelty.max_t, stats_hook.properties());
+            let sketch_ref = if !sketch_blob.entries.is_empty() {
+                let sketch_bytes = sketch_blob
+                    .to_json_bytes()
+                    .map_err(|e| IndexerError::StorageWrite(format!("sketch serialize: {e}")))?;
+                let sketch_wr = storage
+                    .content_write_bytes(ContentKind::StatsSketch, ledger_id, &sketch_bytes)
+                    .await
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let cid = cid_from_write(ContentKind::StatsSketch, &sketch_wr);
+                tracing::debug!(
+                    %cid,
+                    bytes = sketch_wr.size_bytes,
+                    entries = sketch_blob.entries.len(),
+                    "incremental HLL sketch blob uploaded"
+                );
+                if let Some(old) = &base_root.sketch_ref {
+                    if old != &cid {
+                        root_builder.add_replaced_cids([old.clone()]);
+                    }
+                }
+                Some(cid)
+            } else {
+                base_root.sketch_ref.clone()
+            };
+
+            // 4.6e: Finalize and build IndexStats.
+            let (id_result, agg_props, _class_counts, _class_properties, _class_ref_targets) =
+                stats_hook.finalize_with_aggregate_properties();
+
+            let graphs: Vec<fluree_db_core::GraphStatsEntry> = {
+                let base_sizes: HashMap<u16, u64> = base_root
+                    .stats
+                    .as_ref()
+                    .and_then(|s| s.graphs.as_ref())
+                    .map(|graphs| graphs.iter().map(|g| (g.g_id, g.size)).collect())
+                    .unwrap_or_default();
+
+                id_result
+                    .graphs
+                    .into_iter()
+                    .map(|mut g| {
+                        if let Some(sz) = base_sizes.get(&g.g_id) {
+                            g.size = *sz;
+                        }
+                        g
+                    })
+                    .collect()
+            };
+
+            let properties: Vec<fluree_db_core::index_stats::PropertyStatEntry> = agg_props
+                .iter()
+                .filter_map(|p| {
+                    let sid = new_pred_sids.get(p.p_id as usize)?;
+                    Some(fluree_db_core::index_stats::PropertyStatEntry {
+                        sid: (sid.0, sid.1.clone()),
+                        count: p.count,
+                        ndv_values: p.ndv_values,
+                        ndv_subjects: p.ndv_subjects,
+                        last_modified_t: p.last_modified_t,
+                        datatypes: p.datatypes.clone(),
+                    })
+                })
+                .collect();
+
+            let base_size = base_root.stats.as_ref().map_or(0, |s| s.size);
+
+            let updated_stats = fluree_db_core::index_stats::IndexStats {
+                flakes: id_result.total_flakes,
+                size: base_size,
+                properties: if properties.is_empty() { None } else { Some(properties) },
+                classes,
+                graphs: if graphs.is_empty() { None } else { Some(graphs) },
+            };
+
+            tracing::info!(
+                total_flakes = updated_stats.flakes,
+                property_count = updated_stats.properties.as_ref().map_or(0, |p| p.len()),
+                graph_count = updated_stats.graphs.as_ref().map_or(0, |g| g.len()),
+                class_count = updated_stats.classes.as_ref().map_or(0, |c| c.len()),
+                "Phase 4.6 complete: incremental stats refresh"
+            );
+
+            root_builder.set_stats(updated_stats);
+            root_builder.set_sketch_ref(sketch_ref);
+        }
+    }
+
+    // ---- Phase 5: Root assembly ----
+    root_builder.set_dict_refs(new_dict_refs);
+    root_builder.set_watermarks(
+        novelty.updated_watermarks.clone(),
+        novelty.updated_string_watermark,
+    );
+
     root_builder.set_predicate_sids(new_pred_sids);
     root_builder.set_namespace_codes(new_ns_codes);
 

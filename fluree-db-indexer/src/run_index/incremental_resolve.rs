@@ -371,7 +371,7 @@ async fn walk_commit_chain(
 /// Load a reverse dict tree (DLR1 leaves + DTB1 branch) from CAS.
 ///
 /// Builds a `DictTreeReader` with demand-loading leaf source.
-async fn load_reverse_tree(
+pub(crate) async fn load_reverse_tree(
     cs: &Arc<dyn ContentStore>,
     refs: &DictTreeRefs,
 ) -> Result<DictTreeReader, IncrementalResolveError> {

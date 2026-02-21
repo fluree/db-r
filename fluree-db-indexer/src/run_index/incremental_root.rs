@@ -152,6 +152,16 @@ impl IncrementalRootBuilder {
         self.root.garbage = Some(garbage);
     }
 
+    /// Replace index statistics.
+    pub fn set_stats(&mut self, stats: fluree_db_core::index_stats::IndexStats) {
+        self.root.stats = Some(stats);
+    }
+
+    /// Replace the sketch blob CID (HLL per-property sketches).
+    pub fn set_sketch_ref(&mut self, sketch_ref: Option<ContentId>) {
+        self.root.sketch_ref = sketch_ref;
+    }
+
     // ---- Build ----
 
     /// Consume the builder and return the new root + all replaced CIDs.
