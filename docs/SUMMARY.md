@@ -51,6 +51,7 @@
   - [Storage-agnostic commits and sync](design/storage-agnostic-commits-and-sync.md)
   - [ContentId and ContentStore](design/content-id-and-contentstore.md)
   - [Index format](design/index-format.md)
+  - [Namespace allocation and fallback modes](design/namespace-allocation.md)
   - [Storage traits](design/storage-traits.md)
 
 - [HTTP API (fluree-db-server)](api/README.md)

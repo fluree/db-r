@@ -1,16 +1,20 @@
-//! CoW B-tree dictionary storage for subject and string dictionaries.
+//! Dictionary storage for subject and string dictionaries.
 //!
-//! Replaces the flat forward/index/reverse file format with 4 CoW trees:
+//! Forward lookups (id → value) use **FPK1 packs** — flat, paged files with
+//! O(1) offset-indexed pages and pre-parsed metadata for zero-alloc lookups.
+//! See [`forward_pack`] for the binary format.
 //!
-//! - **Subject forward**: `sid64 → suffix` (sorted by sid64, ns-compressed)
-//! - **Subject reverse**: `[ns_code BE][suffix] → sid64` (sorted lexicographically, ns-compressed)
-//! - **String forward**: `string_id → value` (sorted by string_id)
-//! - **String reverse**: `value → string_id` (sorted by value)
+//! Reverse lookups (value → id) use **CoW B-trees**: one branch manifest
+//! pointing to multiple leaf files, all content-addressed for CAS storage.
 //!
-//! Each tree is a single-level structure: one branch manifest pointing to
-//! multiple leaf files, all content-addressed for CAS storage.
+//! ## Dictionaries
 //!
-//! ## Leaf Format
+//! - **Subject forward** (packs): `sid64 → suffix` per namespace, ns-compressed
+//! - **Subject reverse** (tree): `[ns_code BE][suffix] → sid64`, sorted lexicographically
+//! - **String forward** (packs): `string_id → value`
+//! - **String reverse** (tree): `value → string_id`
+//!
+//! ## Reverse Leaf Format
 //!
 //! Leaves use an offset-table design for O(log n) binary search on
 //! variable-length entries. Each leaf is a self-contained blob:
@@ -18,9 +22,6 @@
 //! ```text
 //! [magic: 4B][entry_count: u32][offset_table: u32 × entry_count][entries...]
 //! ```
-//!
-//! The offset table stores the byte offset of each entry relative to the
-//! start of the entries section, enabling random access for binary search.
 //!
 //! ## Branch Format
 //!
@@ -32,11 +33,15 @@
 
 pub mod branch;
 pub mod builder;
-pub mod forward_leaf;
+pub mod forward_pack;
+pub mod pack_builder;
+pub mod pack_reader;
 pub mod reader;
 pub mod reverse_leaf;
 pub mod varint;
 
 pub use branch::DictBranch;
 pub use builder::TreeBuildResult;
+pub use forward_pack::ForwardPack;
+pub use pack_reader::ForwardPackReader;
 pub use reader::DictTreeReader;

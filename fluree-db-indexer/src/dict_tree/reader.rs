@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::branch::DictBranch;
-use super::forward_leaf::ForwardLeaf;
 use super::reverse_leaf::ReverseLeaf;
 
 use crate::run_index::leaflet_cache::LeafletCache;
@@ -114,56 +113,6 @@ impl DictTreeReader {
     pub fn branch(&self) -> &DictBranch {
         &self.branch
     }
-
-    /// Forward lookup: find value by u64 ID.
-    pub fn forward_lookup(&self, id: u64) -> io::Result<Option<Vec<u8>>> {
-        let leaf_idx = match self.branch.find_leaf_by_id(id) {
-            Some(idx) => idx,
-            None => return Ok(None),
-        };
-
-        let address = &self.branch.leaves[leaf_idx].address;
-        let leaf_data = self.load_leaf(address)?;
-        let leaf = ForwardLeaf::from_bytes(&leaf_data)?;
-
-        Ok(leaf.lookup(id).map(|v| v.to_vec()))
-    }
-
-    /// Forward lookup returning a string (convenience for IRI/value resolution).
-    pub fn forward_lookup_str(&self, id: u64) -> io::Result<Option<String>> {
-        match self.forward_lookup(id)? {
-            Some(bytes) => {
-                let s = String::from_utf8(bytes)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                Ok(Some(s))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Forward lookup that appends value bytes directly into a caller-provided
-    /// buffer, avoiding the intermediate `Vec<u8>` allocation.
-    ///
-    /// Returns `true` if the ID was found (and bytes were appended), `false` otherwise.
-    pub fn forward_lookup_into(&self, id: u64, out: &mut Vec<u8>) -> io::Result<bool> {
-        let leaf_idx = match self.branch.find_leaf_by_id(id) {
-            Some(idx) => idx,
-            None => return Ok(false),
-        };
-
-        let address = &self.branch.leaves[leaf_idx].address;
-        let leaf_data = self.load_leaf(address)?;
-        let leaf = ForwardLeaf::from_bytes(&leaf_data)?;
-
-        match leaf.lookup(id) {
-            Some(v) => {
-                out.extend_from_slice(v);
-                Ok(true)
-            }
-            None => Ok(false),
-        }
-    }
-
     /// Reverse lookup: find ID by key bytes.
     pub fn reverse_lookup(&self, key: &[u8]) -> io::Result<Option<u64>> {
         let leaf_idx = match self.branch.find_leaf(key) {
@@ -337,21 +286,7 @@ impl std::fmt::Debug for DictTreeReader {
 mod tests {
     use super::*;
     use crate::dict_tree::builder;
-    use crate::dict_tree::forward_leaf::ForwardEntry;
     use crate::dict_tree::reverse_leaf::ReverseEntry;
-
-    fn build_forward_reader(entries: Vec<ForwardEntry>) -> DictTreeReader {
-        let result =
-            builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES).unwrap();
-
-        // Simulate CAS: use pending hash as the address key
-        let mut leaf_map = HashMap::new();
-        for (leaf_artifact, branch_leaf) in result.leaves.iter().zip(result.branch.leaves.iter()) {
-            leaf_map.insert(branch_leaf.address.clone(), leaf_artifact.bytes.clone());
-        }
-
-        DictTreeReader::from_memory(result.branch, leaf_map)
-    }
 
     fn build_reverse_reader(entries: Vec<ReverseEntry>) -> DictTreeReader {
         let result =
@@ -363,28 +298,6 @@ mod tests {
         }
 
         DictTreeReader::from_memory(result.branch, leaf_map)
-    }
-
-    #[test]
-    fn test_forward_lookup() {
-        let entries: Vec<ForwardEntry> = (0..100)
-            .map(|i| ForwardEntry {
-                id: i * 10,
-                value: format!("http://example.org/{}", i).into_bytes(),
-            })
-            .collect();
-
-        let reader = build_forward_reader(entries);
-
-        assert_eq!(
-            reader.forward_lookup_str(0).unwrap(),
-            Some("http://example.org/0".to_string())
-        );
-        assert_eq!(
-            reader.forward_lookup_str(500).unwrap(),
-            Some("http://example.org/50".to_string())
-        );
-        assert_eq!(reader.forward_lookup_str(5).unwrap(), None);
     }
 
     #[test]
@@ -401,39 +314,5 @@ mod tests {
 
         assert_eq!(reader.reverse_lookup(b"key_0050").unwrap(), Some(50));
         assert_eq!(reader.reverse_lookup(b"nonexistent").unwrap(), None);
-    }
-
-    #[test]
-    fn test_forward_multi_leaf() {
-        // Force multiple leaves with small target
-        let entries: Vec<ForwardEntry> = (0..2000)
-            .map(|i| ForwardEntry {
-                id: i,
-                value: format!("http://example.org/entity/long/path/{}", i).into_bytes(),
-            })
-            .collect();
-
-        let result = builder::build_forward_tree(entries, 4096).unwrap();
-        assert!(result.leaves.len() > 1);
-
-        let mut leaf_map = HashMap::new();
-        for (artifact, bl) in result.leaves.iter().zip(result.branch.leaves.iter()) {
-            leaf_map.insert(bl.address.clone(), artifact.bytes.clone());
-        }
-        let reader = DictTreeReader::from_memory(result.branch, leaf_map);
-
-        // Look up entries that span different leaves
-        for id in [0, 500, 999, 1500, 1999] {
-            let val = reader.forward_lookup_str(id).unwrap();
-            assert!(val.is_some(), "should find id={}", id);
-            assert!(val.unwrap().contains(&id.to_string()));
-        }
-    }
-
-    #[test]
-    fn test_empty_tree() {
-        let reader = build_forward_reader(vec![]);
-        assert_eq!(reader.forward_lookup(0).unwrap(), None);
-        assert_eq!(reader.total_entries(), 0);
     }
 }
