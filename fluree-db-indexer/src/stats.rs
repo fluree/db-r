@@ -621,9 +621,10 @@ pub struct IdStatsHook {
     /// When disabled, class counts + class→property presence still work, but
     /// `finalize_with_aggregate_properties()` will return an empty `class_ref_targets`.
     track_ref_targets: bool,
-    /// Class membership counts: class sid64 → signed delta count
-    class_counts: HashMap<u64, i64>,
-    /// Subject → class sid64 → signed delta count (net rdf:type membership).
+    /// Class membership counts: (g_id, class_sid64) → signed delta count.
+    /// Graph-scoped so per-graph ClassStatEntry can be derived.
+    class_counts: HashMap<(GraphId, u64), i64>,
+    /// (g_id, subject) → class_sid64 → signed delta count (net rdf:type membership).
     ///
     /// This is used at finalize-time to derive the subject's current class set,
     /// which is then used to compute:
@@ -631,14 +632,15 @@ pub struct IdStatsHook {
     /// - class→property→target-class ref-edge counts
     ///
     /// Keeping deltas (rather than a set) makes this merge-safe across commits.
-    subject_class_deltas: HashMap<u64, HashMap<u64, i64>>,
-    /// Per-subject property tracking (for retroactive class attribution)
-    subject_props: HashMap<u64, HashSet<u32>>,
-    /// Per-subject ref history: subject sid64 → property → object sid64 → signed delta count.
+    subject_class_deltas: HashMap<(GraphId, u64), HashMap<u64, i64>>,
+    /// Per-subject property tracking (for retroactive class attribution).
+    /// Graph-scoped: (g_id, subject_sid64) → set of p_ids.
+    subject_props: HashMap<(GraphId, u64), HashSet<u32>>,
+    /// Per-subject ref history: (g_id, subject sid64) → property → object sid64 → signed delta count.
     ///
     /// At finalize-time, this is combined with derived subject/object class sets
     /// to produce class→property→target-class ref-edge counts.
-    subject_ref_history: HashMap<u64, HashMap<u32, HashMap<u64, i64>>>,
+    subject_ref_history: HashMap<(GraphId, u64), HashMap<u32, HashMap<u64, i64>>>,
 }
 
 impl IdStatsHook {
@@ -708,21 +710,21 @@ impl IdStatsHook {
         // Track datatype usage
         *hll.datatypes.entry(rec.dt.as_u8()).or_insert(0) += delta;
 
-        // Track class membership and class→property attribution.
+        // Track class membership and class→property attribution (graph-scoped).
         if let Some(rdf_type_pid) = self.rdf_type_p_id {
             if rec.p_id == rdf_type_pid && rec.o_kind == 0x05 {
                 // ObjKind::REF_ID == 0x05: this is an rdf:type assertion/retraction
-                *self.class_counts.entry(rec.o_key).or_insert(0) += delta;
+                *self.class_counts.entry((rec.g_id, rec.o_key)).or_insert(0) += delta;
                 *self
                     .subject_class_deltas
-                    .entry(rec.s_id)
+                    .entry((rec.g_id, rec.s_id))
                     .or_default()
                     .entry(rec.o_key)
                     .or_insert(0) += delta;
             } else if rec.op {
                 // Non-rdf:type property assertion: track per-subject and per-class
                 self.subject_props
-                    .entry(rec.s_id)
+                    .entry((rec.g_id, rec.s_id))
                     .or_default()
                     .insert(rec.p_id);
             }
@@ -735,7 +737,7 @@ impl IdStatsHook {
                 // Record per-subject ref history (for retroactive attribution on rdf:type)
                 *self
                     .subject_ref_history
-                    .entry(rec.s_id)
+                    .entry((rec.g_id, rec.s_id))
                     .or_default()
                     .entry(rec.p_id)
                     .or_default()
@@ -769,22 +771,22 @@ impl IdStatsHook {
         if !self.track_ref_targets {
             self.track_ref_targets = other.track_ref_targets;
         }
-        for (class_sid, delta) in other.class_counts {
-            *self.class_counts.entry(class_sid).or_insert(0) += delta;
+        for (key, delta) in other.class_counts {
+            *self.class_counts.entry(key).or_insert(0) += delta;
         }
-        for (subject, class_map) in other.subject_class_deltas {
-            let entry = self.subject_class_deltas.entry(subject).or_default();
+        for (key, class_map) in other.subject_class_deltas {
+            let entry = self.subject_class_deltas.entry(key).or_default();
             for (class_sid64, delta) in class_map {
                 *entry.entry(class_sid64).or_insert(0) += delta;
             }
         }
-        for (subject, props) in other.subject_props {
-            self.subject_props.entry(subject).or_default().extend(props);
+        for (key, props) in other.subject_props {
+            self.subject_props.entry(key).or_default().extend(props);
         }
         // Merge per-subject ref history.
         if self.track_ref_targets {
-            for (subj, per_prop) in other.subject_ref_history {
-                let entry = self.subject_ref_history.entry(subj).or_default();
+            for (key, per_prop) in other.subject_ref_history {
+                let entry = self.subject_ref_history.entry(key).or_default();
                 for (p_id, objs) in per_prop {
                     let o_entry = entry.entry(p_id).or_default();
                     for (obj, d) in objs {
@@ -817,28 +819,38 @@ impl IdStatsHook {
     /// Read-only access to class membership count deltas.
     ///
     /// Used by incremental indexing to extract novelty-only class count deltas
-    /// (before finalize consumes the hook). Keyed by class sid64, values are
-    /// signed deltas: +1 per rdf:type assertion, -1 per retraction.
-    pub fn class_count_deltas(&self) -> &HashMap<u64, i64> {
+    /// (before finalize consumes the hook). Keyed by `(g_id, class_sid64)`,
+    /// values are signed deltas: +1 per rdf:type assertion, -1 per retraction.
+    pub fn class_count_deltas(&self) -> &HashMap<(GraphId, u64), i64> {
         &self.class_counts
     }
 
     /// Read-only access to per-subject rdf:type deltas.
     ///
-    /// Keyed by subject sid64, values are `class_sid64 -> signed delta`.
+    /// Keyed by `(g_id, subject_sid64)`, values are `class_sid64 -> signed delta`.
     /// Used by incremental indexing to merge novelty rdf:type deltas with
     /// base class memberships from the PSOT index.
-    pub fn subject_class_deltas(&self) -> &HashMap<u64, HashMap<u64, i64>> {
+    pub fn subject_class_deltas(&self) -> &HashMap<(GraphId, u64), HashMap<u64, i64>> {
         &self.subject_class_deltas
     }
 
     /// Read-only access to per-subject property sets.
     ///
-    /// Keyed by subject sid64, values are the set of predicate IDs
+    /// Keyed by `(g_id, subject_sid64)`, values are the set of predicate IDs
     /// that subject has in novelty. Used by incremental indexing for
     /// class-property attribution.
-    pub fn subject_props(&self) -> &HashMap<u64, HashSet<u32>> {
+    pub fn subject_props(&self) -> &HashMap<(GraphId, u64), HashSet<u32>> {
         &self.subject_props
+    }
+
+    /// Read-only access to per-subject ref history.
+    ///
+    /// Keyed by `(g_id, subject_sid64)`, values are
+    /// `property_p_id -> object_sid64 -> signed delta`.
+    /// Used by incremental indexing for computing ref-class edges.
+    #[allow(clippy::type_complexity)]
+    pub fn subject_ref_history(&self) -> &HashMap<(GraphId, u64), HashMap<u32, HashMap<u64, i64>>> {
+        &self.subject_ref_history
     }
 
     /// Produce per-graph stats and aggregate property stats.
@@ -894,6 +906,7 @@ impl IdStatsHook {
                 flakes: graph_flake_count,
                 size: 0, // Populated by index build, not available here
                 properties: props,
+                classes: None, // Populated by caller after finalize
             });
         }
 
@@ -915,13 +928,16 @@ impl IdStatsHook {
     }
 
     /// Finalize into per-graph stats plus a ledger-wide aggregate property view
-    /// and class membership counts.
+    /// and graph-scoped class membership counts.
     ///
     /// The aggregate view is keyed only by `p_id` (across all graphs), with HLL sketches
     /// merged across graphs so NDV estimates remain meaningful. Datatype counts are summed
     /// across graphs.
     ///
-    /// Class counts are keyed by class sid64 (only populated when `set_rdf_type_p_id` was called).
+    /// Class outputs are graph-scoped:
+    /// - `class_counts`: `(g_id, class_sid64, count)` triples
+    /// - `class_properties`: `(g_id, class_sid64) -> HashSet<p_id>`
+    /// - `class_ref_targets`: `(g_id, class_sid64) -> p_id -> target_class_sid64 -> delta`
     ///
     /// Excludes txn-meta graph (g_id=1) from both per-graph and aggregate results.
     #[allow(clippy::type_complexity)]
@@ -930,9 +946,9 @@ impl IdStatsHook {
     ) -> (
         IdStatsResult,
         Vec<GraphPropertyStatEntry>,
-        Vec<(u64, u64)>,
-        HashMap<u64, HashSet<u32>>,
-        HashMap<u64, HashMap<u32, HashMap<u64, i64>>>,
+        Vec<(GraphId, u64, u64)>,
+        HashMap<(GraphId, u64), HashSet<u32>>,
+        HashMap<(GraphId, u64), HashMap<u32, HashMap<u64, i64>>>,
     ) {
         // Aggregate by p_id across all graphs (excluding txn-meta g_id=1)
         let mut agg: HashMap<u32, IdPropertyHll> = HashMap::new();
@@ -970,18 +986,21 @@ impl IdStatsHook {
         // Deterministic ordering
         properties.sort_by_key(|p| p.p_id);
 
-        // Extract class counts (sid64 → count), clamped to 0
-        let mut class_counts: Vec<(u64, u64)> = self
+        // Extract class counts ((g_id, sid64) → count), clamped to 0, excluding g_id=1
+        let mut class_counts: Vec<(GraphId, u64, u64)> = self
             .class_counts
             .iter()
-            .filter(|(_, &delta)| delta > 0)
-            .map(|(&sid64, &delta)| (sid64, delta as u64))
+            .filter(|(&(g_id, _), &delta)| g_id != 1 && delta > 0)
+            .map(|(&(g_id, sid64), &delta)| (g_id, sid64, delta as u64))
             .collect();
-        class_counts.sort_by_key(|(sid64, _)| *sid64);
+        class_counts.sort_by_key(|&(g_id, sid64, _)| (g_id, sid64));
 
-        // Derive current subject→classes from rdf:type deltas (net membership).
-        let mut subject_classes: HashMap<u64, Vec<u64>> = HashMap::new();
-        for (&subj_sid64, class_map) in &self.subject_class_deltas {
+        // Derive current (g_id, subject) → classes from rdf:type deltas (net membership).
+        let mut subject_classes: HashMap<(GraphId, u64), Vec<u64>> = HashMap::new();
+        for (&(g_id, subj_sid64), class_map) in &self.subject_class_deltas {
+            if g_id == 1 {
+                continue;
+            }
             let mut classes: Vec<u64> = class_map
                 .iter()
                 .filter_map(|(&class_sid64, &d)| (d > 0).then_some(class_sid64))
@@ -990,28 +1009,35 @@ impl IdStatsHook {
                 continue;
             }
             classes.sort_unstable();
-            subject_classes.insert(subj_sid64, classes);
+            subject_classes.insert((g_id, subj_sid64), classes);
         }
 
-        // Compute class→property presence from subject_props + current classes.
-        let mut class_properties: HashMap<u64, HashSet<u32>> = HashMap::new();
-        for (&subj_sid64, props) in &self.subject_props {
-            let Some(classes) = subject_classes.get(&subj_sid64) else {
+        // Compute class→property presence from subject_props + current classes (graph-scoped).
+        let mut class_properties: HashMap<(GraphId, u64), HashSet<u32>> = HashMap::new();
+        for (&(g_id, subj_sid64), props) in &self.subject_props {
+            if g_id == 1 {
+                continue;
+            }
+            let Some(classes) = subject_classes.get(&(g_id, subj_sid64)) else {
                 continue;
             };
             for &class_sid64 in classes {
                 class_properties
-                    .entry(class_sid64)
+                    .entry((g_id, class_sid64))
                     .or_default()
                     .extend(props.iter().copied());
             }
         }
 
         // Compute class→property→target-class ref-edge counts from subject_ref_history
-        // and current (net) subject/object class sets.
-        let mut class_ref_targets: HashMap<u64, HashMap<u32, HashMap<u64, i64>>> = HashMap::new();
-        for (&subj_sid64, per_prop) in &self.subject_ref_history {
-            let Some(subj_classes) = subject_classes.get(&subj_sid64) else {
+        // and current (net) subject/object class sets (graph-scoped).
+        let mut class_ref_targets: HashMap<(GraphId, u64), HashMap<u32, HashMap<u64, i64>>> =
+            HashMap::new();
+        for (&(g_id, subj_sid64), per_prop) in &self.subject_ref_history {
+            if g_id == 1 {
+                continue;
+            }
+            let Some(subj_classes) = subject_classes.get(&(g_id, subj_sid64)) else {
                 continue;
             };
             for (&p_id, objs) in per_prop {
@@ -1019,13 +1045,13 @@ impl IdStatsHook {
                     if edge_delta == 0 {
                         continue;
                     }
-                    let Some(obj_classes) = subject_classes.get(&obj_sid64) else {
+                    let Some(obj_classes) = subject_classes.get(&(g_id, obj_sid64)) else {
                         continue;
                     };
                     for &subj_class_sid64 in subj_classes {
                         for &obj_class_sid64 in obj_classes {
                             *class_ref_targets
-                                .entry(subj_class_sid64)
+                                .entry((g_id, subj_class_sid64))
                                 .or_default()
                                 .entry(p_id)
                                 .or_default()
@@ -2326,26 +2352,26 @@ pub fn build_class_stats_json(
         Some((ns_code, suffix.to_string()))
     };
 
-    // Sort class entries by sid64 for deterministic output.
-    let mut class_entries: Vec<(&u64, &u64)> = cs.class_counts.iter().collect();
-    class_entries.sort_by_key(|&(sid, _)| *sid);
+    // Sort class entries by (g_id, class_sid64) for deterministic output.
+    let mut class_entries: Vec<(&(GraphId, u64), &u64)> = cs.class_counts.iter().collect();
+    class_entries.sort_by_key(|&(key, _)| *key);
 
     // Per-class ref-target data (if available).
     let class_refs = &cs.class_prop_refs;
 
     let classes_json: Vec<serde_json::Value> = class_entries
         .iter()
-        .filter_map(|&(&class_sid64, &count)| {
+        .filter_map(|&(&(g_id, class_sid64), &count)| {
             let (ns_code, suffix) = resolve_sid(class_sid64, &mut fwd_file)?;
 
             // Look up this class's ref-target map (if any).
-            let ref_map = class_refs.get(&class_sid64);
+            let ref_map = class_refs.get(&(g_id, class_sid64));
 
             // Build property entries. Each property gets dt breakdown, and
             // optionally ref-target class info using the DB-R extended object
             // format: {"ref-classes": [[[ns, suffix], count], ...]}.
             let prop_json: Vec<serde_json::Value> = if let Some(prop_map) =
-                cs.class_prop_dts.get(&class_sid64)
+                cs.class_prop_dts.get(&(g_id, class_sid64))
             {
                 let mut props: Vec<_> = prop_map.iter().collect();
                 props.sort_by_key(|&(pid, _)| *pid);
@@ -2407,6 +2433,9 @@ pub fn build_class_stats_json(
 
 /// Build `ClassStatEntry` structs from SPOT class stats (struct-based, no JSON).
 ///
+/// Returns a per-graph map: `GraphId → Vec<ClassStatEntry>`. Each graph gets its
+/// own class stats reflecting only the subjects and properties within that graph.
+///
 /// Parallel to `build_class_stats_json` but returns typed structs suitable for
 /// binary stats encoding in `IndexRootV5`.
 pub fn build_class_stat_entries(
@@ -2414,7 +2443,7 @@ pub fn build_class_stat_entries(
     predicate_sids: &[(u16, String)],
     run_dir: &std::path::Path,
     namespace_codes: &HashMap<u16, String>,
-) -> std::io::Result<Vec<fluree_db_core::ClassStatEntry>> {
+) -> std::io::Result<HashMap<GraphId, Vec<fluree_db_core::ClassStatEntry>>> {
     use crate::run_index::dict_io;
     use fluree_db_core::sid::Sid;
     use fluree_db_core::subject_id::SubjectId;
@@ -2422,7 +2451,7 @@ pub fn build_class_stat_entries(
     use std::io::{Read as _, Seek as _, SeekFrom};
 
     if cs.class_counts.is_empty() {
-        return Ok(Vec::new());
+        return Ok(HashMap::new());
     }
 
     let sids_path = run_dir.join("subjects.sids");
@@ -2455,65 +2484,73 @@ pub fn build_class_stat_entries(
         Some(Sid::new(ns_code, suffix))
     };
 
-    let mut class_entries: Vec<(&u64, &u64)> = cs.class_counts.iter().collect();
-    class_entries.sort_by_key(|&(sid, _)| *sid);
+    // Sort by (g_id, class_sid64) for deterministic output.
+    let mut class_entries: Vec<(&(GraphId, u64), &u64)> = cs.class_counts.iter().collect();
+    class_entries.sort_by_key(|&(key, _)| *key);
 
     let class_refs = &cs.class_prop_refs;
 
-    let entries: Vec<ClassStatEntry> = class_entries
-        .iter()
-        .filter_map(|&(&class_sid64, &count)| {
-            let class_sid = resolve_sid(class_sid64, &mut fwd_file)?;
-            let ref_map = class_refs.get(&class_sid64);
+    let mut per_graph: HashMap<GraphId, Vec<ClassStatEntry>> = HashMap::new();
 
-            let properties: Vec<ClassPropertyUsage> =
-                if let Some(prop_map) = cs.class_prop_dts.get(&class_sid64) {
-                    let mut props: Vec<_> = prop_map.iter().collect();
-                    props.sort_by_key(|&(pid, _)| *pid);
+    for &(&(g_id, class_sid64), &count) in &class_entries {
+        let class_sid = match resolve_sid(class_sid64, &mut fwd_file) {
+            Some(s) => s,
+            None => continue,
+        };
+        let ref_map = class_refs.get(&(g_id, class_sid64));
 
-                    props
-                        .iter()
-                        .filter_map(|&(&p_id, _dt_map)| {
-                            let psid_pair = predicate_sids.get(p_id as usize)?;
-                            let property_sid = Sid::new(psid_pair.0, &psid_pair.1);
+        let properties: Vec<ClassPropertyUsage> =
+            if let Some(prop_map) = cs.class_prop_dts.get(&(g_id, class_sid64)) {
+                let mut props: Vec<_> = prop_map.iter().collect();
+                props.sort_by_key(|&(pid, _)| *pid);
 
-                            // Ref-class targets for this property (if any).
-                            let ref_classes: Vec<ClassRefCount> =
-                                if let Some(target_map) = ref_map.and_then(|rm| rm.get(&p_id)) {
-                                    let mut targets: Vec<_> = target_map.iter().collect();
-                                    targets.sort_by_key(|&(sid, _)| *sid);
-                                    targets
-                                        .iter()
-                                        .filter_map(|&(&target_sid, &tcount)| {
-                                            let tsid = resolve_sid(target_sid, &mut fwd_file)?;
-                                            Some(ClassRefCount {
-                                                class_sid: tsid,
-                                                count: tcount,
-                                            })
+                props
+                    .iter()
+                    .filter_map(|&(&p_id, _dt_map)| {
+                        let psid_pair = predicate_sids.get(p_id as usize)?;
+                        let property_sid = Sid::new(psid_pair.0, &psid_pair.1);
+
+                        // Ref-class targets for this property (if any).
+                        let ref_classes: Vec<ClassRefCount> =
+                            if let Some(target_map) = ref_map.and_then(|rm| rm.get(&p_id)) {
+                                let mut targets: Vec<_> = target_map.iter().collect();
+                                targets.sort_by_key(|&(sid, _)| *sid);
+                                targets
+                                    .iter()
+                                    .filter_map(|&(&target_sid, &tcount)| {
+                                        let tsid = resolve_sid(target_sid, &mut fwd_file)?;
+                                        Some(ClassRefCount {
+                                            class_sid: tsid,
+                                            count: tcount,
                                         })
-                                        .collect()
-                                } else {
-                                    Vec::new()
-                                };
+                                    })
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            };
 
-                            Some(ClassPropertyUsage {
-                                property_sid,
-                                ref_classes,
-                            })
+                        Some(ClassPropertyUsage {
+                            property_sid,
+                            ref_classes,
                         })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
-            Some(ClassStatEntry {
-                class_sid,
-                count,
-                properties,
-            })
-        })
-        .collect();
+        per_graph.entry(g_id).or_default().push(ClassStatEntry {
+            class_sid,
+            count,
+            properties,
+        });
+    }
 
-    tracing::info!(classes = entries.len(), "class stats resolved to entries");
-    Ok(entries)
+    let total_classes: usize = per_graph.values().map(|v| v.len()).sum();
+    tracing::info!(
+        classes = total_classes,
+        graphs = per_graph.len(),
+        "class stats resolved to per-graph entries"
+    );
+    Ok(per_graph)
 }

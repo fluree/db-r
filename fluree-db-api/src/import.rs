@@ -3006,7 +3006,7 @@ where
         tracing::info!("post-upload: finalize complete, building IndexStats");
 
         // Per-graph stats (already the correct type).
-        let graphs = id_result.graphs;
+        let mut graphs = id_result.graphs;
 
         // Aggregate properties: convert from p_id-keyed to SID-keyed.
         let mut properties: Vec<fluree_db_core::index_stats::PropertyStatEntry> = agg_props
@@ -3025,23 +3025,26 @@ where
             .collect();
         properties.sort_by(|a, b| a.sid.0.cmp(&b.sid.0).then_with(|| a.sid.1.cmp(&b.sid.1)));
 
-        // Class stats from SPOT merge.
-        let classes = if let Some(ref cs) = spot_class_stats {
-            let entries = fluree_db_indexer::stats::build_class_stat_entries(
+        // Class stats from SPOT merge (per-graph).
+        let mut per_graph_classes = if let Some(ref cs) = spot_class_stats {
+            fluree_db_indexer::stats::build_class_stat_entries(
                 cs,
                 &predicate_sids,
                 input.run_dir,
                 input.namespace_codes,
             )
-            .map_err(ImportError::Io)?;
-            if entries.is_empty() {
-                None
-            } else {
-                Some(entries)
-            }
+            .map_err(ImportError::Io)?
         } else {
-            None
+            HashMap::new()
         };
+
+        // Inject per-graph class stats into each GraphStatsEntry.
+        for g in &mut graphs {
+            g.classes = per_graph_classes.remove(&g.g_id);
+        }
+
+        // Derive root-level classes as union of all per-graph classes.
+        let classes = fluree_db_core::index_stats::union_per_graph_classes(&graphs);
 
         tracing::info!(
             property_stats = properties.len(),
@@ -3089,6 +3092,7 @@ where
                 flakes: g.total_rows,
                 size: 0,
                 properties: Vec::new(),
+                classes: None,
             })
             .collect();
 
@@ -3356,8 +3360,12 @@ fn build_import_summary(
             .clone()
     };
 
-    // ---- Top 5 classes by count ----
-    let mut classes_sorted: Vec<_> = cs.class_counts.iter().collect();
+    // ---- Top 5 classes by count (union across graphs) ----
+    let mut class_totals: HashMap<u64, u64> = HashMap::new();
+    for (&(_g_id, class_sid64), &count) in &cs.class_counts {
+        *class_totals.entry(class_sid64).or_insert(0) += count;
+    }
+    let mut classes_sorted: Vec<_> = class_totals.iter().collect();
     classes_sorted.sort_by(|a, b| b.1.cmp(a.1));
     let top_classes: Vec<(String, u64)> = classes_sorted
         .iter()
@@ -3365,9 +3373,9 @@ fn build_import_summary(
         .filter_map(|(&sid, &count)| Some((compact(&resolve_cached(sid)?), count)))
         .collect();
 
-    // ---- Top 5 connections: Class → property → Class ----
+    // ---- Top 5 connections: Class → property → Class (union across graphs) ----
     let mut connections: Vec<(u64, u32, u64, u64)> = Vec::new();
-    for (&src_class, prop_map) in &cs.class_prop_refs {
+    for (&(_g_id, src_class), prop_map) in &cs.class_prop_refs {
         for (&p_id, target_map) in prop_map {
             for (&target_class, &count) in target_map {
                 connections.push((src_class, p_id, target_class, count));

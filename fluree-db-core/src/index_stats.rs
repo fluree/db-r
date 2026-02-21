@@ -152,4 +152,93 @@ pub struct GraphStatsEntry {
     pub size: u64,
     /// Per-property statistics within this graph (sorted by p_id for determinism).
     pub properties: Vec<GraphPropertyStatEntry>,
+    /// Per-graph class statistics (sorted by class_sid for determinism).
+    /// `None` when class tracking was not enabled or no classes exist in this graph.
+    pub classes: Option<Vec<ClassStatEntry>>,
+}
+
+// === Helpers ===
+
+/// Derive a ledger-wide class stats list from per-graph `GraphStatsEntry`s.
+///
+/// Unions class counts (summed), property lists (unioned), and ref-class
+/// counts (summed) across all graphs. Returns `None` if no graphs contain
+/// class stats.
+///
+/// Used by both the full-build and incremental paths for backward-compatible
+/// root-level `IndexStats.classes`.
+pub fn union_per_graph_classes(graphs: &[GraphStatsEntry]) -> Option<Vec<ClassStatEntry>> {
+    let slices: Vec<&[ClassStatEntry]> =
+        graphs.iter().filter_map(|g| g.classes.as_deref()).collect();
+    union_class_stat_slices(&slices)
+}
+
+/// Union multiple class stats slices into a single ledger-wide list.
+///
+/// Each input slice represents one graph's class stats. The function merges
+/// class counts (summed), property lists (unioned), and per-property ref-class
+/// counts (summed) across all slices.
+///
+/// Canonical sort order: entries by `class_sid`, properties by `property_sid`,
+/// ref_classes by `class_sid`.
+pub fn union_class_stat_slices(slices: &[&[ClassStatEntry]]) -> Option<Vec<ClassStatEntry>> {
+    use std::collections::HashMap;
+
+    let mut merged: HashMap<Sid, ClassStatEntry> = HashMap::new();
+
+    for &slice in slices {
+        for entry in slice {
+            let e = merged
+                .entry(entry.class_sid.clone())
+                .or_insert_with(|| ClassStatEntry {
+                    class_sid: entry.class_sid.clone(),
+                    count: 0,
+                    properties: Vec::new(),
+                });
+            e.count += entry.count;
+
+            for prop in &entry.properties {
+                if let Some(existing) = e
+                    .properties
+                    .iter_mut()
+                    .find(|p| p.property_sid == prop.property_sid)
+                {
+                    for rc in &prop.ref_classes {
+                        if let Some(erc) = existing
+                            .ref_classes
+                            .iter_mut()
+                            .find(|r| r.class_sid == rc.class_sid)
+                        {
+                            erc.count += rc.count;
+                        } else {
+                            existing.ref_classes.push(rc.clone());
+                        }
+                    }
+                } else {
+                    e.properties.push(ClassPropertyUsage {
+                        property_sid: prop.property_sid.clone(),
+                        ref_classes: prop.ref_classes.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Canonical sort for determinism.
+    for e in merged.values_mut() {
+        e.properties
+            .sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
+        for p in &mut e.properties {
+            p.ref_classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+        }
+    }
+
+    let mut entries: Vec<ClassStatEntry> = merged.into_values().collect();
+    entries.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
 }

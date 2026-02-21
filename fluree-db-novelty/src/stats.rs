@@ -47,6 +47,19 @@ pub fn current_stats(indexed: &IndexStats, novelty: &Novelty) -> IndexStats {
         return indexed.clone();
     }
 
+    // Track total flake delta (asserts - retracts) from novelty so callers like
+    // `ledger-info` can report up-to-date flake counts even before indexing.
+    //
+    // Note: This intentionally does not attempt to exclude txn-meta graph flakes.
+    // The novelty layer operates on Sid-keyed flakes and does not currently have
+    // access to the graph-id routing needed to apply the same g_id=1 exclusion
+    // policy as the indexer.
+    let mut flakes_delta: i64 = 0;
+    for flake_id in novelty.iter_index(IndexType::Post) {
+        let flake = novelty.get_flake(flake_id);
+        flakes_delta += if flake.op { 1 } else { -1 };
+    }
+
     // Build a mutable representation for updates
     let mut property_counts = build_property_counts(indexed);
     let mut class_data = build_class_data(indexed);
@@ -82,6 +95,7 @@ pub fn current_stats(indexed: &IndexStats, novelty: &Novelty) -> IndexStats {
 
     // Convert back to IndexStats format
     let mut stats = finalize_stats(indexed, property_counts, class_data);
+    stats.flakes = (indexed.flakes as i64 + flakes_delta).max(0) as u64;
     stats.size = indexed.size + novelty.size as u64;
     stats
 }

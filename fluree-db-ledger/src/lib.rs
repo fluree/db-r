@@ -544,7 +544,7 @@ mod tests {
     fn build_test_irb1(ledger_id: &str, index_t: i64, ns_codes: &[(u16, &str)]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(256);
         buf.extend_from_slice(b"IRB1"); // magic
-        buf.push(2); // version
+        buf.push(3); // version (v3: per-graph arenas)
         buf.push(0); // flags (no optional sections)
         buf.extend_from_slice(&0u16.to_le_bytes()); // pad
         buf.extend_from_slice(&index_t.to_le_bytes()); // index_t
@@ -574,7 +574,7 @@ mod tests {
             buf.extend_from_slice(&0u16.to_le_bytes());
         }
 
-        // Dict refs (v2 format): forward packs + 2 reverse trees
+        // Dict refs (v3 format): forward packs + 2 reverse trees (no flat numbig/vectors)
         let dummy_cid = ContentId::new(ContentKind::IndexRoot, b"dummy");
         let cid_bytes = dummy_cid.to_bytes();
         // String forward packs (0 packs)
@@ -590,9 +590,7 @@ mod tests {
         buf.extend_from_slice(&cid_bytes);
         buf.extend_from_slice(&0u32.to_le_bytes());
 
-        // Numbig (empty)
-        buf.extend_from_slice(&0u16.to_le_bytes());
-        // Vectors (empty)
+        // Per-graph arenas (v3: 0 graphs with arenas)
         buf.extend_from_slice(&0u16.to_le_bytes());
 
         // Watermarks (empty)

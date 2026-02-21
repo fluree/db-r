@@ -633,16 +633,16 @@ pub const DT_REF_ID: u16 = u16::MAX;
 /// [`DT_REF_ID`] (`u16::MAX`) for object references (`@id`).
 #[derive(Debug, Default)]
 pub struct SpotClassStats {
-    /// class sid64 → instance count (number of subjects with this rdf:type)
-    pub class_counts: FxHashMap<u64, u64>,
-    /// class sid64 → p_id → dt → flake count
-    pub class_prop_dts: FxHashMap<u64, FxHashMap<u32, FxHashMap<u16, u64>>>,
-    /// class sid64 → p_id → target_class sid64 → count
+    /// (g_id, class_sid64) → instance count (number of subjects with this rdf:type)
+    pub class_counts: FxHashMap<(GraphId, u64), u64>,
+    /// (g_id, class_sid64) → p_id → dt → flake count
+    pub class_prop_dts: FxHashMap<(GraphId, u64), FxHashMap<u32, FxHashMap<u16, u64>>>,
+    /// (g_id, class_sid64) → p_id → target_class sid64 → count
     ///
     /// For each REF_ID property on a typed subject, records what classes the
     /// *target* subject belongs to. Built using the [`ClassBitsetTable`] which
     /// maps every subject to its class membership bitset.
-    pub class_prop_refs: FxHashMap<u64, FxHashMap<u32, FxHashMap<u64, u64>>>,
+    pub class_prop_refs: FxHashMap<(GraphId, u64), FxHashMap<u32, FxHashMap<u64, u64>>>,
 }
 
 /// Internal streaming collector for class stats during SPOT merge.
@@ -718,9 +718,18 @@ impl SpotClassStatsCollector {
             self.ref_targets.clear();
             return;
         }
+        let g_id = self.current_g_id;
         for &class_sid in &self.classes {
-            *self.result.class_counts.entry(class_sid).or_insert(0) += 1;
-            let class_entry = self.result.class_prop_dts.entry(class_sid).or_default();
+            *self
+                .result
+                .class_counts
+                .entry((g_id, class_sid))
+                .or_insert(0) += 1;
+            let class_entry = self
+                .result
+                .class_prop_dts
+                .entry((g_id, class_sid))
+                .or_default();
             for (&(p_id, dt), &count) in &self.prop_dts {
                 *class_entry.entry(p_id).or_default().entry(dt).or_insert(0) += count;
             }
@@ -731,7 +740,7 @@ impl SpotClassStatsCollector {
         // to source classes.
         if let Some(ref bitset) = self.class_bitset {
             for &(p_id, target_sid) in &self.ref_targets {
-                let target_bits = bitset.get(self.current_g_id, target_sid);
+                let target_bits = bitset.get(g_id, target_sid);
                 if target_bits == 0 {
                     continue; // Target has no known classes.
                 }
@@ -740,7 +749,7 @@ impl SpotClassStatsCollector {
                     let ref_entry = self
                         .result
                         .class_prop_refs
-                        .entry(src_class)
+                        .entry((g_id, src_class))
                         .or_default()
                         .entry(p_id)
                         .or_default();

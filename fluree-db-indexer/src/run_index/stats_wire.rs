@@ -174,6 +174,9 @@ pub fn encode_stats(stats: &IndexStats) -> Vec<u8> {
         for p in &sorted_props {
             encode_graph_property(&mut buf, p);
         }
+
+        // Per-graph classes (optional)
+        encode_optional_classes(&mut buf, g.classes.as_deref());
     }
 
     // Aggregate properties (SID-keyed)
@@ -239,6 +242,117 @@ fn encode_datatypes(buf: &mut Vec<u8>, datatypes: &[(u8, u64)]) {
     }
 }
 
+/// Encode optional per-graph classes.
+///
+/// Wire format:
+/// ```text
+/// [has_classes: u8]  (0 = absent, 1 = present)
+/// if has_classes == 1:
+///     [class_count: u32 LE]
+///     for each class:
+///         [class_sid encoded]
+///         [instance_count: u64 LE]
+///         [property_count: u16 LE]
+///         for each property:
+///             [property_sid encoded]
+///             [ref_class_count: u16 LE]
+///             for each ref_class:
+///                 [ref_class_sid encoded]
+///                 [count: u64 LE]
+/// ```
+fn encode_optional_classes(buf: &mut Vec<u8>, classes: Option<&[ClassStatEntry]>) {
+    match classes {
+        None => buf.push(0),
+        Some(entries) => {
+            buf.push(1);
+
+            let mut sorted: Vec<&ClassStatEntry> = entries.iter().collect();
+            sorted.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+
+            buf.extend_from_slice(&(sorted.len() as u32).to_le_bytes());
+            for c in &sorted {
+                write_sid(buf, &c.class_sid);
+                buf.extend_from_slice(&c.count.to_le_bytes());
+
+                let mut sorted_props: Vec<&ClassPropertyUsage> = c.properties.iter().collect();
+                sorted_props.sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
+
+                buf.extend_from_slice(&(sorted_props.len() as u16).to_le_bytes());
+                for pu in &sorted_props {
+                    write_sid(buf, &pu.property_sid);
+
+                    let mut sorted_refs: Vec<&ClassRefCount> = pu.ref_classes.iter().collect();
+                    sorted_refs.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+
+                    buf.extend_from_slice(&(sorted_refs.len() as u16).to_le_bytes());
+                    for rc in &sorted_refs {
+                        write_sid(buf, &rc.class_sid);
+                        buf.extend_from_slice(&rc.count.to_le_bytes());
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Decode optional per-graph classes.
+///
+/// Returns `None` if `has_classes == 0`, or `Some(vec)` if present.
+/// Empty class lists are returned as `None` for consistency.
+fn decode_optional_classes(
+    data: &[u8],
+    pos: &mut usize,
+) -> io::Result<Option<Vec<ClassStatEntry>>> {
+    let has_classes = read_u8(data, pos)?;
+    if has_classes == 0 {
+        return Ok(None);
+    }
+
+    let class_count = read_u32(data, pos)? as usize;
+    let mut classes = Vec::with_capacity(class_count);
+    for _ in 0..class_count {
+        let (class_sid, new_pos) = read_sid(data, *pos)?;
+        *pos = new_pos;
+        let instance_count = read_u64(data, pos)?;
+
+        let pu_count = read_u16(data, pos)? as usize;
+        let mut properties = Vec::with_capacity(pu_count);
+        for _ in 0..pu_count {
+            let (property_sid, new_pos2) = read_sid(data, *pos)?;
+            *pos = new_pos2;
+
+            let rc_count = read_u16(data, pos)? as usize;
+            let mut ref_classes = Vec::with_capacity(rc_count);
+            for _ in 0..rc_count {
+                let (ref_sid, new_pos3) = read_sid(data, *pos)?;
+                *pos = new_pos3;
+                let ref_count = read_u64(data, pos)?;
+                ref_classes.push(ClassRefCount {
+                    class_sid: ref_sid,
+                    count: ref_count,
+                });
+            }
+
+            properties.push(ClassPropertyUsage {
+                property_sid,
+                ref_classes,
+            });
+        }
+
+        classes.push(ClassStatEntry {
+            class_sid,
+            count: instance_count,
+            properties,
+        });
+    }
+
+    Ok(if classes.is_empty() {
+        None
+    } else {
+        Some(classes)
+    })
+}
+
 // ============================================================================
 // Stats decode
 // ============================================================================
@@ -264,11 +378,15 @@ pub fn decode_stats(data: &[u8]) -> io::Result<IndexStats> {
             properties.push(decode_graph_property(data, &mut pos)?);
         }
 
+        // Per-graph classes (optional section after properties)
+        let graph_classes = decode_optional_classes(data, &mut pos)?;
+
         graphs.push(GraphStatsEntry {
             g_id,
             flakes: g_flakes,
             size: g_size,
             properties,
+            classes: graph_classes,
         });
     }
 
@@ -522,11 +640,15 @@ pub fn decode_stats_with_len(data: &[u8]) -> io::Result<(IndexStats, usize)> {
         for _ in 0..prop_count {
             properties.push(decode_graph_property(data, &mut pos)?);
         }
+        // Per-graph classes (optional section after properties)
+        let graph_classes = decode_optional_classes(data, &mut pos)?;
+
         graphs.push(GraphStatsEntry {
             g_id,
             flakes: g_flakes,
             size: g_size,
             properties,
+            classes: graph_classes,
         });
     }
 
@@ -731,12 +853,14 @@ mod tests {
                             datatypes: vec![(1, 30_000)],
                         },
                     ],
+                    classes: None,
                 },
                 GraphStatsEntry {
                     g_id: 1,
                     flakes: 10_000,
                     size: 200_000,
                     properties: vec![],
+                    classes: None,
                 },
             ]),
         };
@@ -898,6 +1022,7 @@ mod tests {
                 flakes: 42,
                 size: 100,
                 properties: vec![],
+                classes: None,
             }]),
         };
 

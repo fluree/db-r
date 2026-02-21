@@ -155,11 +155,63 @@ pub fn decode_stats(data: &[u8]) -> io::Result<(IndexStats, usize)> {
         for _ in 0..prop_count {
             properties.push(decode_graph_property(data, &mut pos)?);
         }
+        // Per-graph classes (optional section after properties).
+        // Backward compat: if there are remaining bytes in the graph section,
+        // read the has_classes flag. Otherwise default to None.
+        let graph_classes = if pos < data.len() {
+            let has_classes = read_u8(data, &mut pos)?;
+            if has_classes != 0 {
+                let gc_count = read_u32(data, &mut pos)? as usize;
+                let mut gc = Vec::with_capacity(gc_count);
+                for _ in 0..gc_count {
+                    let (class_sid, new_pos) = read_sid(data, pos)?;
+                    pos = new_pos;
+                    let instance_count = read_u64(data, &mut pos)?;
+                    let pu_count = read_u16(data, &mut pos)? as usize;
+                    let mut properties = Vec::with_capacity(pu_count);
+                    for _ in 0..pu_count {
+                        let (property_sid, new_pos2) = read_sid(data, pos)?;
+                        pos = new_pos2;
+                        let rc_count = read_u16(data, &mut pos)? as usize;
+                        let mut ref_classes = Vec::with_capacity(rc_count);
+                        for _ in 0..rc_count {
+                            let (ref_sid, new_pos3) = read_sid(data, pos)?;
+                            pos = new_pos3;
+                            let ref_count = read_u64(data, &mut pos)?;
+                            ref_classes.push(ClassRefCount {
+                                class_sid: ref_sid,
+                                count: ref_count,
+                            });
+                        }
+                        properties.push(ClassPropertyUsage {
+                            property_sid,
+                            ref_classes,
+                        });
+                    }
+                    gc.push(ClassStatEntry {
+                        class_sid,
+                        count: instance_count,
+                        properties,
+                    });
+                }
+                if gc.is_empty() {
+                    None
+                } else {
+                    Some(gc)
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         graphs.push(GraphStatsEntry {
             g_id,
             flakes: g_flakes,
             size: g_size,
             properties,
+            classes: graph_classes,
         });
     }
 

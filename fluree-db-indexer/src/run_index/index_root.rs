@@ -1321,6 +1321,7 @@ mod tests_v5 {
                 flakes: 1000,
                 size: 5000,
                 properties: vec![],
+                classes: None,
             }]),
         });
         root.schema = Some(IndexSchema {

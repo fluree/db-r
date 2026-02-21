@@ -923,6 +923,7 @@ pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphSt
             flakes,
             size,
             properties,
+            classes: None,
         });
     }
 
