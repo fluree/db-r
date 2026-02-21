@@ -110,7 +110,7 @@ impl FlakeStore {
 ///
 /// Stores flakes in an arena with per-index sorted vectors for efficient
 /// range queries and merge operations.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Novelty {
     /// Canonical flake storage (arena)
     store: FlakeStore,
@@ -130,12 +130,6 @@ pub struct Novelty {
 
     /// Epoch for cache invalidation - bumped once per commit
     pub epoch: u64,
-}
-
-impl Default for Novelty {
-    fn default() -> Self {
-        Self::new(0)
-    }
 }
 
 impl Novelty {
@@ -162,7 +156,7 @@ impl Novelty {
             return Ok(());
         }
 
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "novelty_apply_commit",
             commit_t = commit_t,
             flake_count = flakes.len(),
@@ -214,28 +208,28 @@ impl Novelty {
             let parent_spot = parent.clone();
             scope.spawn(move |_| {
                 let _p = parent_spot.enter();
-                let span = tracing::info_span!("novelty_merge_spot", batch_len = batch_ids.len());
+                let span = tracing::debug_span!("novelty_merge_spot", batch_len = batch_ids.len());
                 let _g = span.enter();
                 merge_batch_into_index(store, spot, batch_ids, IndexType::Spot)
             });
             let parent_psot = parent.clone();
             scope.spawn(move |_| {
                 let _p = parent_psot.enter();
-                let span = tracing::info_span!("novelty_merge_psot", batch_len = batch_ids.len());
+                let span = tracing::debug_span!("novelty_merge_psot", batch_len = batch_ids.len());
                 let _g = span.enter();
                 merge_batch_into_index(store, psot, batch_ids, IndexType::Psot)
             });
             let parent_post = parent.clone();
             scope.spawn(move |_| {
                 let _p = parent_post.enter();
-                let span = tracing::info_span!("novelty_merge_post", batch_len = batch_ids.len());
+                let span = tracing::debug_span!("novelty_merge_post", batch_len = batch_ids.len());
                 let _g = span.enter();
                 merge_batch_into_index(store, post, batch_ids, IndexType::Post)
             });
             let parent_opst = parent.clone();
             scope.spawn(move |_| {
                 let _p = parent_opst.enter();
-                let span = tracing::info_span!("novelty_merge_opst", batch_len = batch_ids.len());
+                let span = tracing::debug_span!("novelty_merge_opst", batch_len = batch_ids.len());
                 let _g = span.enter();
                 merge_batch_into_opst_refs_only(store, opst, batch_ids)
             });

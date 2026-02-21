@@ -9,6 +9,7 @@ use axum::http::HeaderMap;
 use axum::Json;
 use serde::Serialize;
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Health check response
 #[derive(Serialize)]
@@ -55,18 +56,20 @@ pub async fn stats(
     State(state): State<Arc<AppState>>,
     _headers: FlureeHeaders,
 ) -> Json<StatsResponse> {
-    let span = tracing::info_span!("stats");
-    let _guard = span.enter();
+    let span = tracing::debug_span!("stats");
+    async move {
+        tracing::info!("server stats requested");
 
-    tracing::info!("server stats requested");
-
-    Json(StatsResponse {
-        uptime_secs: state.uptime_secs(),
-        storage_type: state.config.storage_type_str(),
-        indexing_enabled: state.config.indexing_enabled,
-        cached_ledgers: state.fluree.cached_ledger_count().await,
-        version: env!("CARGO_PKG_VERSION"),
-    })
+        Json(StatsResponse {
+            uptime_secs: state.uptime_secs(),
+            storage_type: state.config.storage_type_str(),
+            indexing_enabled: state.config.indexing_enabled,
+            cached_ledgers: state.fluree.cached_ledger_count().await,
+            version: env!("CARGO_PKG_VERSION"),
+        })
+    }
+    .instrument(span)
+    .await
 }
 
 /// Who-am-I diagnostic endpoint

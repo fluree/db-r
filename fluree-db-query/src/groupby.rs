@@ -31,6 +31,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Type alias for a group entry: (group_key, rows_in_group)
 type GroupEntry = (Vec<Binding>, Vec<Vec<Binding>>);
@@ -161,7 +162,7 @@ impl Operator for GroupByOperator {
 
         // If we haven't consumed all input yet, do so now
         if self.emit_iter.is_none() {
-            let span = tracing::info_span!(
+            let span = tracing::debug_span!(
                 "groupby_blocking",
                 group_key_cols = self.group_key_indices.len(),
                 schema_cols = self.schema.len(),
@@ -172,70 +173,69 @@ impl Operator for GroupByOperator {
                 child_next_ms = tracing::field::Empty,
                 process_rows_ms = tracing::field::Empty
             );
-            let _g = span.enter();
-            let drain_start = Instant::now();
-            let mut input_batches: u64 = 0;
-            let mut input_rows: u64 = 0;
-            let mut child_next_ms: u64 = 0;
-            let mut process_rows_ms: u64 = 0;
+            // Use an async block with .instrument() so the span is NOT held
+            // across .await via a thread-local guard (which would cause cross-request
+            // trace contamination in tokio's multi-threaded runtime).
+            async {
+                let span = tracing::Span::current();
+                let drain_start = Instant::now();
+                let mut input_batches: u64 = 0;
+                let mut input_rows: u64 = 0;
+                let mut child_next_ms: u64 = 0;
+                let mut process_rows_ms: u64 = 0;
 
-            // Drain all input from child
-            loop {
-                // Span around child.next_batch(): captures time spent in upstream operators
-                // (scan/join/filter/etc). This will show up as the "gaps" in OTEL.
-                let child_span = tracing::info_span!("groupby_child_next_batch");
-                let next_start = Instant::now();
-                let next = {
-                    let _cg = child_span.enter();
-                    self.child.next_batch(ctx).await?
-                };
-                child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
+                // Drain all input from child
+                loop {
+                    let next_start = Instant::now();
+                    let next = self
+                        .child
+                        .next_batch(ctx)
+                        .instrument(tracing::trace_span!("groupby_child_next_batch"))
+                        .await?;
+                    child_next_ms += (next_start.elapsed().as_secs_f64() * 1000.0) as u64;
 
-                let Some(batch) = next else {
-                    break;
-                };
-                input_batches += 1;
-                if batch.is_empty() {
-                    continue;
+                    let Some(batch) = next else {
+                        break;
+                    };
+                    input_batches += 1;
+                    if batch.is_empty() {
+                        continue;
+                    }
+
+                    // Process each row
+                    let proc_span = tracing::trace_span!(
+                        "groupby_process_batch",
+                        rows = batch.len(),
+                        schema_cols = self.schema.len()
+                    );
+                    let proc_start = Instant::now();
+                    let _pg = proc_span.enter();
+                    for row_idx in 0..batch.len() {
+                        input_rows += 1;
+                        let row: Vec<Binding> = (0..self.schema.len())
+                            .map(|col| batch.get_by_col(row_idx, col).clone())
+                            .collect();
+
+                        let group_key = self.extract_group_key(&row);
+                        self.groups.entry(group_key).or_default().push(row);
+                    }
+                    process_rows_ms += (proc_start.elapsed().as_secs_f64() * 1000.0) as u64;
                 }
 
-                // Process each row
-                let proc_span = tracing::info_span!(
-                    "groupby_process_batch",
-                    rows = batch.len(),
-                    schema_cols = self.schema.len()
+                span.record("input_batches", input_batches);
+                span.record("input_rows", input_rows);
+                span.record("groups", self.groups.len() as u64);
+                span.record("child_next_ms", child_next_ms);
+                span.record("process_rows_ms", process_rows_ms);
+                span.record(
+                    "drain_ms",
+                    (drain_start.elapsed().as_secs_f64() * 1000.0) as u64,
                 );
-                let proc_start = Instant::now();
-                let _pg = proc_span.enter();
-                for row_idx in 0..batch.len() {
-                    input_rows += 1;
-                    // Extract the complete row
-                    let row: Vec<Binding> = (0..self.schema.len())
-                        .map(|col| batch.get_by_col(row_idx, col).clone())
-                        .collect();
 
-                    // Extract group key
-                    let group_key = self.extract_group_key(&row);
-
-                    // Add row to group
-                    self.groups.entry(group_key).or_default().push(row);
-                }
-                process_rows_ms += (proc_start.elapsed().as_secs_f64() * 1000.0) as u64;
+                Ok::<_, crate::error::QueryError>(())
             }
-
-            span.record("input_batches", input_batches);
-            span.record("input_rows", input_rows);
-            span.record("groups", self.groups.len() as u64);
-            span.record("child_next_ms", child_next_ms);
-            span.record("process_rows_ms", process_rows_ms);
-            span.record(
-                "drain_ms",
-                (drain_start.elapsed().as_secs_f64() * 1000.0) as u64,
-            );
-
-            // Handle empty group case (no group vars = implicit single group)
-            // If there's no input at all, produce no output
-            // If group_vars is empty but we have input, we produce 1 row with all values grouped
+            .instrument(span)
+            .await?;
 
             // Transform groups into output format
             let groups_vec = self.transform_groups();

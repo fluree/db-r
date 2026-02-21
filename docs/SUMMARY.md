@@ -115,6 +115,7 @@
 - [Troubleshooting](troubleshooting/README.md)
   - [Common errors](troubleshooting/common-errors.md)
   - [Debugging queries](troubleshooting/debugging-queries.md)
+  - [Performance investigation with distributed tracing](troubleshooting/performance-tracing.md)
 
 - [Reference](reference/README.md)
   - [Glossary](reference/glossary.md)
@@ -127,5 +128,6 @@
 - [Contributing](contributing/README.md)
   - [Dev setup](contributing/dev-setup.md)
   - [Tests](contributing/tests.md)
+  - [Adding tracing spans](contributing/tracing-guide.md)
   - [Design notes (repo docs)](contributing/design-notes.md)
 

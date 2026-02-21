@@ -2379,6 +2379,9 @@ dependencies = [
  "hex",
  "indicatif",
  "open",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "parking_lot",
  "predicates",
  "rand 0.8.5",
@@ -2391,6 +2394,8 @@ dependencies = [
  "tokio",
  "toml",
  "toml_edit",
+ "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "urlencoding",
 ]

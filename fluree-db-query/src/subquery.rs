@@ -37,6 +37,7 @@ use crate::seed::{EmptyOperator, SeedOperator};
 use crate::sort::SortOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_core::StatsView;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -60,11 +61,17 @@ pub struct SubqueryOperator {
     result_buffer: Vec<Vec<Binding>>,
     /// Current position in result buffer
     buffer_pos: usize,
+    /// Optional stats for selectivity-based pattern reordering in subquery
+    stats: Option<Arc<StatsView>>,
 }
 
 impl SubqueryOperator {
     /// Create a new subquery operator
-    pub fn new(child: BoxedOperator, subquery: SubqueryPattern) -> Self {
+    pub fn new(
+        child: BoxedOperator,
+        subquery: SubqueryPattern,
+        stats: Option<Arc<StatsView>>,
+    ) -> Self {
         let parent_schema: HashSet<VarId> = child.schema().iter().copied().collect();
         // Compute variables referenced by subquery patterns (correlation basis)
         let mut subquery_pattern_vars: HashSet<VarId> = HashSet::new();
@@ -114,6 +121,7 @@ impl SubqueryOperator {
             state: OperatorState::Created,
             result_buffer: Vec::new(),
             buffer_pos: 0,
+            stats,
         }
     }
 }
@@ -281,7 +289,7 @@ impl SubqueryOperator {
 
         // Build full operator tree for subquery patterns (supports filters, optionals, union, etc.)
         let mut operator: BoxedOperator =
-            build_where_operators_seeded(Some(seed), &self.subquery.patterns, None)?;
+            build_where_operators_seeded(Some(seed), &self.subquery.patterns, self.stats.clone())?;
 
         // Apply GROUP BY / aggregates / HAVING for subqueries that use them.
         let needs_grouping =

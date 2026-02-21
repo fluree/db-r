@@ -97,18 +97,22 @@ impl RemoteTrackingStore for FileTrackingStore {
     ) -> Result<Option<TrackingRecord>> {
         let path = self.record_path(remote, ledger_id);
         let path_clone = path.clone();
+        let parent_span = tracing::Span::current();
 
-        tokio::task::spawn_blocking(move || match std::fs::read_to_string(&path_clone) {
-            Ok(contents) => {
-                let record: TrackingRecord = serde_json::from_str(&contents)?;
-                Ok(Some(record))
+        tokio::task::spawn_blocking(move || {
+            let _guard = parent_span.enter();
+            match std::fs::read_to_string(&path_clone) {
+                Ok(contents) => {
+                    let record: TrackingRecord = serde_json::from_str(&contents)?;
+                    Ok(Some(record))
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(NameServiceError::storage(format!(
+                    "Failed to read tracking record {}: {}",
+                    path_clone.display(),
+                    e
+                ))),
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(NameServiceError::storage(format!(
-                "Failed to read tracking record {}: {}",
-                path_clone.display(),
-                e
-            ))),
         })
         .await
         .map_err(|e| NameServiceError::storage(format!("Task join error: {}", e)))?
@@ -117,8 +121,10 @@ impl RemoteTrackingStore for FileTrackingStore {
     async fn set_tracking(&self, record: &TrackingRecord) -> Result<()> {
         let path = self.record_path(&record.remote, &record.ledger_id);
         let json = serde_json::to_string_pretty(record)?;
+        let parent_span = tracing::Span::current();
 
         tokio::task::spawn_blocking(move || {
+            let _guard = parent_span.enter();
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
                     NameServiceError::storage(format!(
@@ -152,8 +158,10 @@ impl RemoteTrackingStore for FileTrackingStore {
 
     async fn list_tracking(&self, remote: &RemoteName) -> Result<Vec<TrackingRecord>> {
         let dir = self.remote_dir(remote);
+        let parent_span = tracing::Span::current();
 
         tokio::task::spawn_blocking(move || {
+            let _guard = parent_span.enter();
             let entries = match std::fs::read_dir(&dir) {
                 Ok(entries) => entries,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
@@ -211,15 +219,19 @@ impl RemoteTrackingStore for FileTrackingStore {
 
     async fn remove_tracking(&self, remote: &RemoteName, ledger_id: &str) -> Result<()> {
         let path = self.record_path(remote, ledger_id);
+        let parent_span = tracing::Span::current();
 
-        tokio::task::spawn_blocking(move || match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), // idempotent
-            Err(e) => Err(NameServiceError::storage(format!(
-                "Failed to remove tracking record {}: {}",
-                path.display(),
-                e
-            ))),
+        tokio::task::spawn_blocking(move || {
+            let _guard = parent_span.enter();
+            match std::fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), // idempotent
+                Err(e) => Err(NameServiceError::storage(format!(
+                    "Failed to remove tracking record {}: {}",
+                    path.display(),
+                    e
+                ))),
+            }
         })
         .await
         .map_err(|e| NameServiceError::storage(format!("Task join error: {}", e)))?

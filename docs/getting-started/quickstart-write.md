@@ -42,22 +42,24 @@ The simplest operation is inserting new entities.
 ### Insert a Single Entity
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:main \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
       "ex": "http://example.org/ns/",
       "schema": "http://schema.org/"
     },
-    "@graph": [
-      {
-        "@id": "ex:alice",
-        "@type": "schema:Person",
-        "schema:name": "Alice",
-        "schema:email": "alice@example.org",
-        "schema:age": 30
-      }
-    ]
+    "insert": {
+      "@graph": [
+        {
+          "@id": "ex:alice",
+          "@type": "schema:Person",
+          "schema:name": "Alice",
+          "schema:email": "alice@example.org",
+          "schema:age": 30
+        }
+      ]
+    }
   }'
 ```
 
@@ -76,53 +78,57 @@ Response:
 ### Insert Multiple Entities
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:main \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
       "ex": "http://example.org/ns/",
       "schema": "http://schema.org/"
     },
-    "@graph": [
-      {
-        "@id": "ex:bob",
-        "@type": "schema:Person",
-        "schema:name": "Bob",
-        "schema:email": "bob@example.org"
-      },
-      {
-        "@id": "ex:carol",
-        "@type": "schema:Person",
-        "schema:name": "Carol",
-        "schema:email": "carol@example.org"
-      }
-    ]
+    "insert": {
+      "@graph": [
+        {
+          "@id": "ex:bob",
+          "@type": "schema:Person",
+          "schema:name": "Bob",
+          "schema:email": "bob@example.org"
+        },
+        {
+          "@id": "ex:carol",
+          "@type": "schema:Person",
+          "schema:name": "Carol",
+          "schema:email": "carol@example.org"
+        }
+      ]
+    }
   }'
 ```
 
 ### Insert with Relationships
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:main \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
       "ex": "http://example.org/ns/",
       "schema": "http://schema.org/"
     },
-    "@graph": [
-      {
-        "@id": "ex:company-a",
-        "@type": "schema:Organization",
-        "schema:name": "Acme Corp"
-      },
-      {
-        "@id": "ex:alice",
-        "@type": "schema:Person",
-        "schema:name": "Alice",
-        "schema:worksFor": {"@id": "ex:company-a"}
-      }
-    ]
+    "insert": {
+      "@graph": [
+        {
+          "@id": "ex:company-a",
+          "@type": "schema:Organization",
+          "schema:name": "Acme Corp"
+        },
+        {
+          "@id": "ex:alice",
+          "@type": "schema:Person",
+          "schema:name": "Alice",
+          "schema:worksFor": {"@id": "ex:company-a"}
+        }
+      ]
+    }
   }'
 ```
 
@@ -132,11 +138,12 @@ Upsert (update/insert) replaces all properties of an entity. If the entity exist
 
 ### Basic Upsert
 
-To enable upsert mode, use the `mode=replace` query parameter:
+Use the dedicated `/upsert` endpoint:
 
 ```bash
-curl -X POST "http://localhost:8090/transact?ledger=mydb:main&mode=replace" \
+curl -X POST http://localhost:8090/v1/fluree/upsert \
   -H "Content-Type: application/json" \
+  -H "fluree-ledger: mydb:main" \
   -d '{
     "@context": {
       "ex": "http://example.org/ns/",
@@ -186,7 +193,7 @@ For targeted changes to existing data, use the UPDATE pattern with WHERE/DELETE/
 ### Basic Update
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:main \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -213,7 +220,7 @@ This pattern:
 ### Update Multiple Properties
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:main \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -237,7 +244,7 @@ curl -X POST http://localhost:8090/transact?ledger=mydb:main \
 Only update if condition is met:
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:main \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
@@ -262,7 +269,7 @@ curl -X POST http://localhost:8090/transact?ledger=mydb:main \
 To add a property without removing existing ones, use INSERT only:
 
 ```bash
-curl -X POST http://localhost:8090/transact?ledger=mydb:main \
+curl -X POST http://localhost:8090/v1/fluree/transact?ledger=mydb:main \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {
