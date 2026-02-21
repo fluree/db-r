@@ -275,6 +275,36 @@ where
         }
     }
 
+    /// Execute and return formatted string output.
+    ///
+    /// For TSV format: produces TSV directly (fast path, no JSON intermediate).
+    /// For JSON formats: produces serialized JSON string via async formatting
+    /// (supports graph crawl and policy-aware queries).
+    pub async fn execute_formatted_string(mut self) -> Result<String> {
+        let errs = self.core.validate();
+        if !errs.is_empty() {
+            return Err(ApiError::Builder(BuilderErrors(errs)));
+        }
+
+        let format_config = self
+            .core
+            .format
+            .take()
+            .unwrap_or_else(|| self.core.default_format());
+        let input = self.core.input.unwrap();
+        let result = self.fluree.query_view(self.view, input).await?;
+        let config = format_config.with_select_mode(result.select_mode);
+        crate::format::format_results_string_async(
+            &result,
+            &result.context,
+            &self.view.db,
+            &config,
+            self.view.policy(),
+        )
+        .await
+        .map_err(ApiError::from)
+    }
+
     /// Execute with tracking (fuel, time, policy stats).
     ///
     /// **Note**: Custom `.tracking()` options are not yet wired through this
@@ -428,6 +458,41 @@ where
                     .await?),
                 None => Ok(result.format_async(&primary.db, &config).await?),
             }
+        } else {
+            Err(ApiError::query("No primary view in dataset for formatting"))
+        }
+    }
+
+    /// Execute and return formatted string output.
+    ///
+    /// For TSV format: produces TSV directly (fast path, no JSON intermediate).
+    /// For JSON formats: produces serialized JSON string via async formatting
+    /// (supports graph crawl and policy-aware queries).
+    pub async fn execute_formatted_string(mut self) -> Result<String> {
+        let errs = self.core.validate();
+        if !errs.is_empty() {
+            return Err(ApiError::Builder(BuilderErrors(errs)));
+        }
+
+        let format_config = self
+            .core
+            .format
+            .take()
+            .unwrap_or_else(|| self.core.default_format());
+        let input = self.core.input.unwrap();
+        let result = self.fluree.query_dataset_view(self.dataset, input).await?;
+
+        if let Some(primary) = self.dataset.primary() {
+            let config = format_config.with_select_mode(result.select_mode);
+            crate::format::format_results_string_async(
+                &result,
+                &result.context,
+                &primary.db,
+                &config,
+                primary.policy(),
+            )
+            .await
+            .map_err(ApiError::from)
         } else {
             Err(ApiError::query("No primary view in dataset for formatting"))
         }
@@ -638,6 +703,80 @@ where
                     let view = self.fluree.view(alias.identifier.as_str()).await?;
                     let config = format_config.with_select_mode(result.select_mode);
                     Ok(result.format_async(&view.db, &config).await?)
+                } else {
+                    Err(ApiError::query("No default graph for formatting"))
+                }
+            }
+        }
+    }
+
+    /// Execute and return formatted string output.
+    ///
+    /// For TSV format: produces TSV directly (fast path, no JSON intermediate).
+    /// For JSON formats: produces serialized JSON string via async formatting
+    /// (supports graph crawl queries).
+    pub async fn execute_formatted_string(mut self) -> Result<String> {
+        let errs = self.core.validate();
+        if !errs.is_empty() {
+            return Err(ApiError::Builder(BuilderErrors(errs)));
+        }
+
+        let format_config = self
+            .core
+            .format
+            .take()
+            .unwrap_or_else(|| self.core.default_format());
+        let input = self.core.input.unwrap();
+        match input {
+            QueryInput::JsonLd(json) => {
+                let result = match &self.policy {
+                    Some(policy) => {
+                        self.fluree
+                            .query_connection_with_policy(json, policy)
+                            .await?
+                    }
+                    None => self.fluree.query_connection(json).await?,
+                };
+                let (spec, _) = parse_dataset_spec(json)?;
+                if let Some(alias) = spec.default_graphs.first() {
+                    let view = self.fluree.view(alias.identifier.as_str()).await?;
+                    let config = format_config.with_select_mode(result.select_mode);
+                    crate::format::format_results_string_async(
+                        &result,
+                        &result.context,
+                        &view.db,
+                        &config,
+                        None,
+                    )
+                    .await
+                    .map_err(ApiError::from)
+                } else {
+                    Err(ApiError::query("No default graph for formatting"))
+                }
+            }
+            QueryInput::Sparql(sparql) => {
+                let result = match &self.policy {
+                    Some(policy) => {
+                        self.fluree
+                            .query_connection_sparql_with_policy(sparql, policy)
+                            .await?
+                    }
+                    None => self.fluree.query_connection_sparql(sparql).await?,
+                };
+                let ast = crate::query::helpers::parse_and_validate_sparql(sparql)?;
+                let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
+                if let Some(alias) = spec.default_graphs.first() {
+                    let view = self.fluree.view(alias.identifier.as_str()).await?;
+                    let config = format_config.with_select_mode(result.select_mode);
+                    crate::format::format_results_string_async(
+                        &result,
+                        &result.context,
+                        &view.db,
+                        &config,
+                        None,
+                    )
+                    .await
+                    .map_err(ApiError::from)
                 } else {
                     Err(ApiError::query("No default graph for formatting"))
                 }

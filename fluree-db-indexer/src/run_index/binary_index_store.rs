@@ -1173,6 +1173,53 @@ impl BinaryIndexStore {
         })
     }
 
+    /// Append a subject IRI directly into `out`, avoiding intermediate String allocation.
+    ///
+    /// Writes `{namespace_prefix}{suffix}` from the subject forward dict tree.
+    pub fn write_subject_iri_bytes(&self, s_id: u64, out: &mut Vec<u8>) -> io::Result<()> {
+        let tree = self.dicts.subject_forward_tree.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "subject forward tree not loaded")
+        })?;
+        let start = out.len();
+        if !tree.forward_lookup_into(s_id, out)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("s_id {} not found in subject forward tree", s_id),
+            ));
+        }
+        let ns_code = SubjectId::from_u64(s_id).ns_code();
+        let prefix = self
+            .dicts
+            .namespace_codes
+            .get(&ns_code)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        // Guard against double-prefixing: if the suffix already starts with
+        // the namespace prefix, the tree stored full IRIs.
+        if !prefix.is_empty() && !out[start..].starts_with(prefix.as_bytes()) {
+            // Insert prefix before the suffix we just appended.
+            let suffix_len = out.len() - start;
+            out.resize(start + prefix.len() + suffix_len, 0);
+            out.copy_within(start..start + suffix_len, start + prefix.len());
+            out[start..start + prefix.len()].copy_from_slice(prefix.as_bytes());
+        }
+        Ok(())
+    }
+
+    /// Append a string dict value directly into `out`, avoiding intermediate allocations.
+    pub fn write_string_value_bytes(&self, str_id: u32, out: &mut Vec<u8>) -> io::Result<()> {
+        let tree = self.dicts.string_forward_tree.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "string forward tree not loaded")
+        })?;
+        if !tree.forward_lookup_into(str_id as u64, out)? {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("str_id {} not found in string forward tree", str_id),
+            ));
+        }
+        Ok(())
+    }
+
     // ========================================================================
     // Sid ↔ integer ID translation (Phase 2: query key translation)
     // ========================================================================
