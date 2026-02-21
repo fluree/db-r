@@ -256,19 +256,62 @@ fn write_vas1_shard(writer: &mut impl io::Write, dims: u16, data: &[f32]) -> io:
     Ok(())
 }
 
-/// Serialize a VectorArena to one or more VAS1 shard byte buffers.
+/// Serialize a single VAS1 shard to a byte buffer.
 ///
-/// Returns `(shard_bytes_vec, shard_infos)` where each element corresponds
-/// to one shard. The `ShardInfo.cas` field is left empty (caller fills it
-/// after CAS upload).
-pub fn write_vector_shards_to_bytes(arena: &VectorArena) -> io::Result<Vec<(Vec<u8>, ShardInfo)>> {
-    if arena.is_empty() {
+/// `data` is a flat slice of `count * dims` f32 values.
+pub fn write_vector_shard_to_bytes(dims: u16, data: &[f32]) -> io::Result<Vec<u8>> {
+    if dims == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "vector shard dims must be > 0",
+        ));
+    }
+    if data.len() % dims as usize != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "vector shard data length {} not divisible by dims {}",
+                data.len(),
+                dims
+            ),
+        ));
+    }
+    let mut buf = Vec::new();
+    write_vas1_shard(&mut buf, dims, data)?;
+    Ok(buf)
+}
+
+/// Serialize raw packed vectors into one or more VAS1 shards.
+///
+/// `raw_values` is a flat slice of `total_count * dims` f32 values.
+/// Returns `(shard_bytes, shard_info)` pairs in shard order.
+pub fn write_vector_shards_from_raw(
+    dims: u16,
+    raw_values: &[f32],
+) -> io::Result<Vec<(Vec<u8>, ShardInfo)>> {
+    if dims == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "vector dims must be > 0",
+        ));
+    }
+    if raw_values.is_empty() {
         return Ok(Vec::new());
     }
+    if raw_values.len() % dims as usize != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "raw vector data length {} not divisible by dims {}",
+                raw_values.len(),
+                dims
+            ),
+        ));
+    }
 
-    let dims = arena.dims() as usize;
+    let dims_usize = dims as usize;
     let cap = SHARD_CAPACITY as usize;
-    let total = arena.len() as usize;
+    let total = raw_values.len() / dims_usize;
     let num_shards = total.div_ceil(cap);
     let mut result = Vec::with_capacity(num_shards);
 
@@ -276,12 +319,10 @@ pub fn write_vector_shards_to_bytes(arena: &VectorArena) -> io::Result<Vec<(Vec<
         let start_vec = shard_idx * cap;
         let end_vec = (start_vec + cap).min(total);
         let count = (end_vec - start_vec) as u32;
-        let start_f32 = start_vec * dims;
-        let end_f32 = end_vec * dims;
-        let shard_data = &arena.raw_values()[start_f32..end_f32];
-
-        let mut buf = Vec::new();
-        write_vas1_shard(&mut buf, arena.dims(), shard_data)?;
+        let start_f32 = start_vec * dims_usize;
+        let end_f32 = end_vec * dims_usize;
+        let shard_data = &raw_values[start_f32..end_f32];
+        let buf = write_vector_shard_to_bytes(dims, shard_data)?;
         result.push((
             buf,
             ShardInfo {
@@ -292,6 +333,18 @@ pub fn write_vector_shards_to_bytes(arena: &VectorArena) -> io::Result<Vec<(Vec<
     }
 
     Ok(result)
+}
+
+/// Serialize a VectorArena to one or more VAS1 shard byte buffers.
+///
+/// Returns `(shard_bytes_vec, shard_infos)` where each element corresponds
+/// to one shard. The `ShardInfo.cas` field is left empty (caller fills it
+/// after CAS upload).
+pub fn write_vector_shards_to_bytes(arena: &VectorArena) -> io::Result<Vec<(Vec<u8>, ShardInfo)>> {
+    if arena.is_empty() {
+        return Ok(Vec::new());
+    }
+    write_vector_shards_from_raw(arena.dims(), arena.raw_values())
 }
 
 /// Write vector arena shards to disk. Returns paths of created shard files.
@@ -1092,6 +1145,92 @@ mod tests {
         );
         // Handle 3 → out of range
         assert!(arena.lookup_vector(3).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lazy_arena_partial_shard_in_middle_breaks_handle_math() {
+        let dir = std::env::temp_dir().join("fluree_lazy_partial_middle");
+        let _ = std::fs::create_dir_all(&dir);
+
+        // shard_capacity=2; create a "partial middle shard" layout:
+        // - shard0: 2 vectors (full)
+        // - shard1: 1 vector (partial, but NOT last)
+        // - shard2: 1 vector (appended)
+        //
+        // With the current handle math (handle / cap), handle 3 maps to shard1 offset 1,
+        // which is out of range (shard1.count=1). Even though shard2 contains the data,
+        // lookup cannot reach it. This is why incremental appends must fill/replace the
+        // last partial shard before appending new shards.
+        let s0_vecs: Vec<&[f32]> = vec![&[1.0, 0.0], &[0.0, 1.0]];
+        let s1_vecs: Vec<&[f32]> = vec![&[2.0, 0.0]];
+        let s2_vecs: Vec<&[f32]> = vec![&[3.0, 0.0]];
+        let (_, s0) = write_test_shard(&dir, "s0.vas", 2, &s0_vecs);
+        let (_, s1) = write_test_shard(&dir, "s1.vas", 2, &s1_vecs);
+        let (_, s2) = write_test_shard(&dir, "s2.vas", 2, &s2_vecs);
+
+        let bad_manifest = VectorManifest {
+            version: 1,
+            dims: 2,
+            dtype: "f32".to_string(),
+            normalized: false,
+            shard_capacity: 2,
+            total_count: 4,
+            shards: vec![
+                ShardInfo {
+                    cas: "s0".to_string(),
+                    count: 2,
+                },
+                ShardInfo {
+                    cas: "s1".to_string(),
+                    count: 1, // partial, but not last
+                },
+                ShardInfo {
+                    cas: "s2".to_string(),
+                    count: 1,
+                },
+            ],
+        };
+        let bad_arena = make_lazy_arena(bad_manifest, vec![s0, s1, s2]);
+
+        assert!(bad_arena.lookup_vector(0).unwrap().is_some());
+        assert!(bad_arena.lookup_vector(1).unwrap().is_some());
+        assert!(bad_arena.lookup_vector(2).unwrap().is_some());
+        assert!(
+            bad_arena.lookup_vector(3).unwrap().is_none(),
+            "handle 3 should be unreachable with a partial middle shard"
+        );
+
+        // Correct layout: fill/replace the partial last shard instead of appending after it.
+        let s0_vecs2: Vec<&[f32]> = vec![&[1.0, 0.0], &[0.0, 1.0]];
+        let s1_fixed_vecs: Vec<&[f32]> = vec![&[2.0, 0.0], &[3.0, 0.0]];
+        let (_, s0b) = write_test_shard(&dir, "s0b.vas", 2, &s0_vecs2);
+        let (_, s1b) = write_test_shard(&dir, "s1b.vas", 2, &s1_fixed_vecs);
+
+        let good_manifest = VectorManifest {
+            version: 1,
+            dims: 2,
+            dtype: "f32".to_string(),
+            normalized: false,
+            shard_capacity: 2,
+            total_count: 4,
+            shards: vec![
+                ShardInfo {
+                    cas: "s0b".to_string(),
+                    count: 2,
+                },
+                ShardInfo {
+                    cas: "s1b".to_string(),
+                    count: 2,
+                },
+            ],
+        };
+        let good_arena = make_lazy_arena(good_manifest, vec![s0b, s1b]);
+        assert_eq!(
+            good_arena.lookup_vector(3).unwrap().unwrap().as_f32(),
+            &[3.0f32, 0.0]
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

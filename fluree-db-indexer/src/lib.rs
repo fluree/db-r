@@ -2125,98 +2125,178 @@ where
                         )));
                     }
 
-                    // Dims/normalization compatibility: if extending an existing arena,
-                    // the new vectors must have the same dimensionality.
-                    if base_count > 0 {
-                        if let Some(existing_ref) = ga.vectors.iter().find(|v| v.p_id == p_id) {
-                            let old_manifest_bytes = content_store
-                                .get(&existing_ref.manifest)
-                                .await
-                                .map_err(|e| {
-                                    IndexerError::StorageRead(format!(
-                                        "read vector manifest for dims check: {e}"
-                                    ))
-                                })?;
-                            let old_manifest =
-                                run_index::vector_arena::read_vector_manifest(&old_manifest_bytes)
-                                    .map_err(|e| {
-                                        IndexerError::StorageRead(format!(
-                                            "decode vector manifest for dims check: {e}"
-                                        ))
-                                    })?;
-                            if old_manifest.dims != arena.dims() {
-                                return Err(IndexerError::IncrementalAbort(format!(
-                                    "vector dims mismatch for g_id={g_id}, p_id={p_id}: \
-                                     existing={}, new={}",
-                                    old_manifest.dims,
-                                    arena.dims()
-                                )));
-                            }
-                        }
-                    }
-
-                    // Serialize new vectors to shard bytes.
-                    let shard_results =
-                        run_index::vector_arena::write_vector_shards_to_bytes(arena).map_err(
-                            |e| IndexerError::StorageWrite(format!("vector shard serialize: {e}")),
-                        )?;
-
-                    let mut new_shard_cids = Vec::with_capacity(shard_results.len());
-                    let mut new_shard_infos = Vec::with_capacity(shard_results.len());
-
-                    for (shard_bytes, mut shard_info) in shard_results {
-                        let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
-                        let (shard_cid, wr) = upload_dict_blob(
-                            storage,
-                            ledger_id,
-                            dict_kind,
-                            &shard_bytes,
-                            "incremental vector shard uploaded",
-                        )
-                        .await?;
-                        shard_info.cas = wr.address;
-                        new_shard_cids.push(shard_cid);
-                        new_shard_infos.push(shard_info);
-                    }
-
-                    // Look up existing vector ref for this (g_id, p_id) to get
-                    // base shards and manifest for combining.
-                    let base_count = novelty
-                        .base_vector_counts
-                        .get(&(g_id, p_id))
-                        .copied()
-                        .unwrap_or(0);
-
                     if let Some(pos) = ga.vectors.iter().position(|v| v.p_id == p_id) {
-                        // Extending existing vector arena: keep old shards, add new.
+                        // Extending an existing vector arena.
                         let existing = &ga.vectors[pos];
-                        let mut combined_shards = existing.shards.clone();
-                        combined_shards.extend(new_shard_cids);
 
-                        // Read old manifest to get old shard_infos for the combined manifest.
-                        let old_manifest_bytes =
-                            content_store.get(&existing.manifest).await.map_err(|e| {
-                                IndexerError::StorageRead(format!(
-                                    "read existing vector manifest: {e}"
-                                ))
+                        let old_manifest_bytes = content_store
+                            .get(&existing.manifest)
+                            .await
+                            .map_err(|e| {
+                                IndexerError::StorageRead(format!("read existing vector manifest: {e}"))
                             })?;
                         let old_manifest =
-                            run_index::vector_arena::read_vector_manifest(&old_manifest_bytes)
-                                .map_err(|e| {
+                            run_index::vector_arena::read_vector_manifest(&old_manifest_bytes).map_err(
+                                |e| {
                                     IndexerError::StorageRead(format!(
                                         "decode existing vector manifest: {e}"
                                     ))
-                                })?;
+                                },
+                            )?;
 
-                        let mut combined_shard_infos = old_manifest.shards;
+                        if old_manifest.dims != arena.dims() {
+                            return Err(IndexerError::IncrementalAbort(format!(
+                                "vector dims mismatch for g_id={g_id}, p_id={p_id}: existing={}, new={}",
+                                old_manifest.dims,
+                                arena.dims()
+                            )));
+                        }
+                        if old_manifest.shard_capacity != run_index::vector_arena::SHARD_CAPACITY {
+                            return Err(IndexerError::IncrementalAbort(format!(
+                                "vector shard_capacity mismatch for g_id={g_id}, p_id={p_id}: existing={}, expected={}",
+                                old_manifest.shard_capacity,
+                                run_index::vector_arena::SHARD_CAPACITY
+                            )));
+                        }
+                        if old_manifest.normalized != arena.is_normalized() {
+                            return Err(IndexerError::IncrementalAbort(format!(
+                                "vector normalization mismatch for g_id={g_id}, p_id={p_id}: existing={}, new={}",
+                                old_manifest.normalized,
+                                arena.is_normalized()
+                            )));
+                        }
+
+                        if existing.shards.len() != old_manifest.shards.len() {
+                            return Err(IndexerError::IncrementalAbort(format!(
+                                "vector shard list length mismatch for g_id={g_id}, p_id={p_id}: shards={}, manifest={}",
+                                existing.shards.len(),
+                                old_manifest.shards.len()
+                            )));
+                        }
+
+                        let shard_cap = old_manifest.shard_capacity;
+                        let dims_usize = arena.dims() as usize;
+
+                        let mut combined_shards = existing.shards.clone();
+                        let mut combined_shard_infos = old_manifest.shards.clone();
+
+                        // If the existing last shard is partially filled, we must fill/replace it
+                        // before appending new shards. Otherwise the handle -> (shard_idx, offset)
+                        // arithmetic breaks (partial shard becomes "middle").
+                        let mut consumed_new: u32 = 0;
+                        if let Some(last_info) = combined_shard_infos.last().cloned() {
+                            if last_info.count < shard_cap {
+                                let remaining = shard_cap - last_info.count;
+                                let take = remaining.min(arena.len());
+                                if take > 0 {
+                                    let last_idx = combined_shard_infos.len() - 1;
+                                    let old_last_cid = combined_shards[last_idx].clone();
+
+                                    let old_last_bytes = content_store.get(&old_last_cid).await.map_err(|e| {
+                                        IndexerError::StorageRead(format!(
+                                            "read existing vector last shard: {e}"
+                                        ))
+                                    })?;
+                                    let old_last_shard =
+                                        run_index::vector_arena::read_vector_shard_from_bytes(
+                                            &old_last_bytes,
+                                        )
+                                        .map_err(|e| {
+                                            IndexerError::StorageRead(format!(
+                                                "decode existing vector last shard: {e}"
+                                            ))
+                                        })?;
+                                    if old_last_shard.dims != old_manifest.dims
+                                        || old_last_shard.count != last_info.count
+                                    {
+                                        return Err(IndexerError::IncrementalAbort(format!(
+                                            "existing vector last shard metadata mismatch for g_id={g_id}, p_id={p_id}: \
+                                             shard(dims={}, count={}) manifest(dims={}, count={})",
+                                            old_last_shard.dims,
+                                            old_last_shard.count,
+                                            old_manifest.dims,
+                                            last_info.count
+                                        )));
+                                    }
+
+                                    let take_f32 = take as usize * dims_usize;
+                                    let mut merged: Vec<f32> = Vec::with_capacity(
+                                        old_last_shard.values.len() + take_f32,
+                                    );
+                                    merged.extend_from_slice(&old_last_shard.values);
+                                    merged.extend_from_slice(&arena.raw_values()[0..take_f32]);
+
+                                    let shard_bytes =
+                                        run_index::vector_arena::write_vector_shard_to_bytes(
+                                            old_manifest.dims,
+                                            &merged,
+                                        )
+                                        .map_err(|e| {
+                                            IndexerError::StorageWrite(format!(
+                                                "vector last shard serialize: {e}"
+                                            ))
+                                        })?;
+
+                                    let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
+                                    let (new_last_cid, wr) = upload_dict_blob(
+                                        storage,
+                                        ledger_id,
+                                        dict_kind,
+                                        &shard_bytes,
+                                        "incremental vector last shard replaced",
+                                    )
+                                    .await?;
+
+                                    // Replace last shard CID + info and collect old CID for GC.
+                                    combined_shards[last_idx] = new_last_cid;
+                                    combined_shard_infos[last_idx].cas = wr.address;
+                                    combined_shard_infos[last_idx].count = last_info.count + take;
+                                    root_builder.add_replaced_cids([old_last_cid]);
+                                    consumed_new = take;
+                                }
+                            }
+                        }
+
+                        // Serialize remaining new vectors to new shards (may be empty if all were
+                        // consumed filling the prior last shard).
+                        let start_f32 = consumed_new as usize * dims_usize;
+                        let remaining_raw = &arena.raw_values()[start_f32..];
+                        let shard_results =
+                            run_index::vector_arena::write_vector_shards_from_raw(
+                                arena.dims(),
+                                remaining_raw,
+                            )
+                            .map_err(|e| {
+                                IndexerError::StorageWrite(format!("vector shard serialize: {e}"))
+                            })?;
+
+                        let mut new_shard_cids = Vec::with_capacity(shard_results.len());
+                        let mut new_shard_infos = Vec::with_capacity(shard_results.len());
+
+                        for (shard_bytes, mut shard_info) in shard_results {
+                            let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
+                            let (shard_cid, wr) = upload_dict_blob(
+                                storage,
+                                ledger_id,
+                                dict_kind,
+                                &shard_bytes,
+                                "incremental vector shard uploaded",
+                            )
+                            .await?;
+                            shard_info.cas = wr.address;
+                            new_shard_cids.push(shard_cid);
+                            new_shard_infos.push(shard_info);
+                        }
+
+                        combined_shards.extend(new_shard_cids);
                         combined_shard_infos.extend(new_shard_infos);
 
                         let combined_manifest = run_index::vector_arena::VectorManifest {
                             version: 1,
-                            dims: arena.dims(),
+                            dims: old_manifest.dims,
                             dtype: "f32".to_string(),
-                            normalized: old_manifest.normalized && arena.is_normalized(),
-                            shard_capacity: run_index::vector_arena::SHARD_CAPACITY,
+                            normalized: old_manifest.normalized,
+                            shard_capacity: old_manifest.shard_capacity,
                             total_count: base_count + arena.len(),
                             shards: combined_shard_infos,
                         };
@@ -2238,7 +2318,8 @@ where
                         )
                         .await?;
 
-                        // GC the old manifest (old shards are still referenced by combined).
+                        // GC the old manifest (old shards are still referenced by combined;
+                        // any replaced shard CIDs were added above).
                         root_builder.add_replaced_cids([existing.manifest.clone()]);
 
                         ga.vectors[pos] = VectorDictRefV5 {
@@ -2248,6 +2329,35 @@ where
                         };
                     } else {
                         // Brand new vector arena for this (g_id, p_id).
+                        if base_count > 0 {
+                            return Err(IndexerError::IncrementalAbort(format!(
+                                "base vector count exists but no prior vector refs found for g_id={g_id}, p_id={p_id}"
+                            )));
+                        }
+
+                        let shard_results =
+                            run_index::vector_arena::write_vector_shards_to_bytes(arena).map_err(
+                                |e| IndexerError::StorageWrite(format!("vector shard serialize: {e}")),
+                            )?;
+
+                        let mut new_shard_cids = Vec::with_capacity(shard_results.len());
+                        let mut new_shard_infos = Vec::with_capacity(shard_results.len());
+
+                        for (shard_bytes, mut shard_info) in shard_results {
+                            let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
+                            let (shard_cid, wr) = upload_dict_blob(
+                                storage,
+                                ledger_id,
+                                dict_kind,
+                                &shard_bytes,
+                                "incremental vector shard uploaded",
+                            )
+                            .await?;
+                            shard_info.cas = wr.address;
+                            new_shard_cids.push(shard_cid);
+                            new_shard_infos.push(shard_info);
+                        }
+
                         let manifest = run_index::vector_arena::VectorManifest {
                             version: 1,
                             dims: arena.dims(),
