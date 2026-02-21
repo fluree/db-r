@@ -256,6 +256,44 @@ fn write_vas1_shard(writer: &mut impl io::Write, dims: u16, data: &[f32]) -> io:
     Ok(())
 }
 
+/// Serialize a VectorArena to one or more VAS1 shard byte buffers.
+///
+/// Returns `(shard_bytes_vec, shard_infos)` where each element corresponds
+/// to one shard. The `ShardInfo.cas` field is left empty (caller fills it
+/// after CAS upload).
+pub fn write_vector_shards_to_bytes(arena: &VectorArena) -> io::Result<Vec<(Vec<u8>, ShardInfo)>> {
+    if arena.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let dims = arena.dims() as usize;
+    let cap = SHARD_CAPACITY as usize;
+    let total = arena.len() as usize;
+    let num_shards = total.div_ceil(cap);
+    let mut result = Vec::with_capacity(num_shards);
+
+    for shard_idx in 0..num_shards {
+        let start_vec = shard_idx * cap;
+        let end_vec = (start_vec + cap).min(total);
+        let count = (end_vec - start_vec) as u32;
+        let start_f32 = start_vec * dims;
+        let end_f32 = end_vec * dims;
+        let shard_data = &arena.raw_values()[start_f32..end_f32];
+
+        let mut buf = Vec::new();
+        write_vas1_shard(&mut buf, arena.dims(), shard_data)?;
+        result.push((
+            buf,
+            ShardInfo {
+                cas: String::new(),
+                count,
+            },
+        ));
+    }
+
+    Ok(result)
+}
+
 /// Write vector arena shards to disk. Returns paths of created shard files.
 pub fn write_vector_shards(
     dir: &Path,

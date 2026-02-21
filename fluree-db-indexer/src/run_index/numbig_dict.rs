@@ -196,7 +196,7 @@ const NBA_MAGIC: [u8; 4] = *b"NBA1";
 const REPR_TAG_BIGINT: u8 = 0;
 const REPR_TAG_BIGDEC: u8 = 1;
 
-/// Write a NumBigArena to a binary NBA1 file.
+/// Serialize a NumBigArena to an in-memory NBA1 byte buffer.
 ///
 /// Format:
 /// ```text
@@ -207,33 +207,38 @@ const REPR_TAG_BIGDEC: u8 = 1;
 ///   repr_len: u32 LE
 ///   repr_bytes: [u8; repr_len]
 /// ```
-pub fn write_numbig_arena(path: &std::path::Path, arena: &NumBigArena) -> io::Result<()> {
+pub fn write_numbig_arena_to_bytes(arena: &NumBigArena) -> io::Result<Vec<u8>> {
     use std::io::Write;
 
-    let mut file = io::BufWriter::new(std::fs::File::create(path)?);
-    file.write_all(&NBA_MAGIC)?;
-    file.write_all(&(arena.values().len() as u32).to_le_bytes())?;
+    let mut buf = Vec::new();
+    buf.write_all(&NBA_MAGIC)?;
+    buf.write_all(&(arena.values().len() as u32).to_le_bytes())?;
 
     for entry in arena.values() {
         match entry {
             StoredBigValue::BigInt(bytes) => {
-                file.write_all(&[REPR_TAG_BIGINT])?;
-                file.write_all(&(bytes.len() as u32).to_le_bytes())?;
-                file.write_all(bytes)?;
+                buf.write_all(&[REPR_TAG_BIGINT])?;
+                buf.write_all(&(bytes.len() as u32).to_le_bytes())?;
+                buf.write_all(bytes)?;
             }
             StoredBigValue::BigDec { unscaled, scale } => {
-                file.write_all(&[REPR_TAG_BIGDEC])?;
+                buf.write_all(&[REPR_TAG_BIGDEC])?;
                 let repr_len = 4 + unscaled.len() + 8;
-                file.write_all(&(repr_len as u32).to_le_bytes())?;
-                file.write_all(&(unscaled.len() as u32).to_le_bytes())?;
-                file.write_all(unscaled)?;
-                file.write_all(&scale.to_le_bytes())?;
+                buf.write_all(&(repr_len as u32).to_le_bytes())?;
+                buf.write_all(&(unscaled.len() as u32).to_le_bytes())?;
+                buf.write_all(unscaled)?;
+                buf.write_all(&scale.to_le_bytes())?;
             }
         }
     }
 
-    file.flush()?;
-    Ok(())
+    Ok(buf)
+}
+
+/// Write a NumBigArena to a binary NBA1 file.
+pub fn write_numbig_arena(path: &std::path::Path, arena: &NumBigArena) -> io::Result<()> {
+    let bytes = write_numbig_arena_to_bytes(arena)?;
+    std::fs::write(path, &bytes)
 }
 
 /// Parse a NumBigArena from a byte buffer (NBA1 format).

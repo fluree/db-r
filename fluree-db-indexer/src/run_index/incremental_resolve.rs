@@ -66,6 +66,13 @@ pub struct IncrementalNovelty {
     pub delta_asserts: u64,
     /// Total retractions across resolved commits.
     pub delta_retracts: u64,
+    /// Base vector arena counts per (g_id, p_id) for handle offsetting.
+    /// Only populated when the base root has vector arenas.
+    pub base_vector_counts: HashMap<(u16, u32), u32>,
+    /// Base numbig arena counts per (g_id, p_id) for no-op detection.
+    /// If arena.len() == base count, no new entries were added and we can
+    /// reuse the existing CID instead of re-uploading.
+    pub base_numbig_counts: HashMap<(u16, u32), usize>,
 }
 
 /// Errors specific to incremental resolution.
@@ -155,6 +162,54 @@ pub async fn resolve_incremental_commits(
     // 3. Seed SharedResolverState from root
     let mut shared = SharedResolverState::from_index_root(&root)?;
 
+    // Enable spatial hook so we can detect non-POINT geometries in novelty.
+    // If any are collected, the incremental path bails (spatial index updates
+    // are not yet supported incrementally — results would be silently stale).
+    shared.spatial_hook = Some(crate::spatial_hook::SpatialHook::new());
+
+    // 3a. Pre-seed numbig arenas so handles continue from existing values.
+    // NumBig arenas are small (kilobytes), so loading them fully is cheap.
+    // Record base counts so the upload phase can detect no-op (no new entries).
+    let mut base_numbig_counts: HashMap<(u16, u32), usize> = HashMap::new();
+    for ga in &root.graph_arenas {
+        if ga.numbig.is_empty() {
+            continue;
+        }
+        let nb_map = shared.numbigs.entry(ga.g_id).or_default();
+        for (p_id, cid) in &ga.numbig {
+            let bytes = cs.get(cid).await.map_err(|e| {
+                IncrementalResolveError::RootLoad(format!(
+                    "numbig arena load for g_id={}, p_id={}: {}",
+                    ga.g_id, p_id, e
+                ))
+            })?;
+            let arena = super::numbig_dict::read_numbig_arena_from_bytes(&bytes).map_err(|e| {
+                IncrementalResolveError::RootLoad(format!("numbig arena decode: {}", e))
+            })?;
+            base_numbig_counts.insert((ga.g_id, *p_id), arena.len());
+            nb_map.insert(*p_id, arena);
+        }
+    }
+
+    // 3b. Collect base vector counts per (g_id, p_id) for handle offsetting.
+    // We only need the total_count from each manifest, not the shard data.
+    let mut base_vector_counts: HashMap<(u16, u32), u32> = HashMap::new();
+    for ga in &root.graph_arenas {
+        for vref in &ga.vectors {
+            let manifest_bytes = cs.get(&vref.manifest).await.map_err(|e| {
+                IncrementalResolveError::RootLoad(format!(
+                    "vector manifest load for g_id={}, p_id={}: {}",
+                    ga.g_id, vref.p_id, e
+                ))
+            })?;
+            let manifest =
+                super::vector_arena::read_vector_manifest(&manifest_bytes).map_err(|e| {
+                    IncrementalResolveError::RootLoad(format!("vector manifest decode: {}", e))
+                })?;
+            base_vector_counts.insert((ga.g_id, vref.p_id), manifest.total_count);
+        }
+    }
+
     // 4. Walk commit chain backward from head, collect CIDs
     let commit_cids = walk_commit_chain(cs.as_ref(), &config.head_commit_id).await?;
 
@@ -221,6 +276,8 @@ pub async fn resolve_incremental_commits(
             delta_commit_size,
             delta_asserts,
             delta_retracts,
+            base_vector_counts,
+            base_numbig_counts,
         });
     }
 
@@ -239,6 +296,20 @@ pub async fn resolve_incremental_commits(
         remap_record(record, &reconcile.subject_remap, &reconcile.string_remap)?;
     }
 
+    // 7a. Offset vector handles: new vectors got handles 0..N during
+    // resolution, but the base root already has vectors 0..base_count.
+    // Shift new handles by base_count so they don't collide.
+    if !base_vector_counts.is_empty() {
+        for record in &mut records {
+            if ObjKind::from_u8(record.o_kind) == ObjKind::VECTOR_ID {
+                let key = (record.g_id, record.p_id);
+                if let Some(&base_count) = base_vector_counts.get(&key) {
+                    record.o_key += base_count as u64;
+                }
+            }
+        }
+    }
+
     // 8. Sort by (g_id, SPOT)
     let spot_cmp = cmp_for_order(RunSortOrder::Spot);
     records.sort_unstable_by(|a, b| a.g_id.cmp(&b.g_id).then_with(|| spot_cmp(a, b)));
@@ -255,6 +326,8 @@ pub async fn resolve_incremental_commits(
         delta_commit_size,
         delta_asserts,
         delta_retracts,
+        base_vector_counts,
+        base_numbig_counts,
     })
 }
 

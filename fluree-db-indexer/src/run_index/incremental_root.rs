@@ -114,6 +114,13 @@ impl IncrementalRootBuilder {
         self.root.language_tags = tags;
     }
 
+    // ---- Arenas ----
+
+    /// Replace per-graph specialty arena refs (numbig, vectors, spatial).
+    pub fn set_graph_arenas(&mut self, arenas: Vec<super::index_root::GraphArenaRefsV5>) {
+        self.root.graph_arenas = arenas;
+    }
+
     // ---- Metadata ----
 
     /// Set the index_t to the new value.

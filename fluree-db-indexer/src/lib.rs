@@ -1363,19 +1363,6 @@ where
         max_t = novelty.max_t,
         "Phase 1 complete: incremental resolve"
     );
-    // Bail to full rebuild if specialty arenas were populated.
-    // Incremental update of numbig/vector/spatial arenas is not yet implemented.
-    if !novelty.shared.numbigs.is_empty() {
-        return Err(IndexerError::IncrementalAbort(
-            "new numbig values require full rebuild".into(),
-        ));
-    }
-    if !novelty.shared.vectors.is_empty() {
-        return Err(IndexerError::IncrementalAbort(
-            "new vector values require full rebuild".into(),
-        ));
-    }
-
     // Bail to full rebuild when the base root carries stats or schema.
     // The incremental path does not recompute these, so carrying stale
     // values would return incorrect counts/property-lists to callers.
@@ -1383,6 +1370,18 @@ where
         return Err(IndexerError::IncrementalAbort(
             "base root has stats/schema that require full rebuild to update".into(),
         ));
+    }
+
+    // Bail if novelty touched spatial predicates (non-POINT geometries).
+    // Spatial indexes are not updated incrementally — results would be silently
+    // stale for geo queries until the next full rebuild.
+    if let Some(ref spatial) = novelty.shared.spatial_hook {
+        if !spatial.is_empty() {
+            return Err(IndexerError::IncrementalAbort(format!(
+                "novelty contains {} non-POINT geometries; spatial index requires full rebuild",
+                spatial.entry_count()
+            )));
+        }
     }
 
     let base_root = &novelty.base_root;
@@ -2019,6 +2018,278 @@ where
         new_subjects = novelty.new_subjects.len(),
         "Phase 2-4 complete: branch + dict updates"
     );
+
+    // ---- Phase 4.5: Arena updates (numbig + vectors) ----
+    //
+    // Build updated graph_arenas by starting from the base root's arenas
+    // and patching any (g_id, p_id) that have new/extended data.
+    {
+        use run_index::index_root::{GraphArenaRefsV5, VectorDictRefV5};
+        use std::collections::BTreeMap;
+
+        // Index base arenas by g_id for efficient lookup.
+        let mut arenas_by_gid: BTreeMap<u16, GraphArenaRefsV5> = BTreeMap::new();
+        for ga in &base_root.graph_arenas {
+            arenas_by_gid.insert(ga.g_id, ga.clone());
+        }
+
+        // Track which (g_id, p_id) have new numbig arenas from the resolver.
+        // The resolver's numbigs include pre-seeded arenas (old + new entries)
+        // when the base root had numbigs, and fresh arenas when the base root
+        // had none. We re-serialize the full arena in both cases because
+        // numbig arenas are small (kilobytes).
+        let has_new_numbigs = !novelty.shared.numbigs.is_empty();
+        let has_new_vectors = !novelty.shared.vectors.is_empty();
+
+        if has_new_numbigs || has_new_vectors {
+            // ---- NumBig arena upload ----
+            for (&g_id, per_pred) in &novelty.shared.numbigs {
+                let ga = arenas_by_gid
+                    .entry(g_id)
+                    .or_insert_with(|| GraphArenaRefsV5 {
+                        g_id,
+                        numbig: Vec::new(),
+                        vectors: Vec::new(),
+                        spatial: Vec::new(),
+                    });
+
+                for (&p_id, arena) in per_pred {
+                    if arena.is_empty() {
+                        continue;
+                    }
+                    // No-op guard: if arena.len() == base count, no new entries were
+                    // added during resolution (the arena was pre-seeded but not extended).
+                    // Reuse the existing CID to avoid GC churn.
+                    let base_nb_count = novelty
+                        .base_numbig_counts
+                        .get(&(g_id, p_id))
+                        .copied()
+                        .unwrap_or(0);
+                    if arena.len() == base_nb_count {
+                        continue; // Unchanged — existing CID already in ga.numbig
+                    }
+
+                    let bytes = run_index::numbig_dict::write_numbig_arena_to_bytes(arena)
+                        .map_err(|e| {
+                            IndexerError::StorageWrite(format!("numbig arena serialize: {e}"))
+                        })?;
+                    let dict_kind = fluree_db_core::DictKind::NumBig { p_id };
+                    let (cid, _) = upload_dict_blob(
+                        storage,
+                        ledger_id,
+                        dict_kind,
+                        &bytes,
+                        "incremental numbig arena uploaded",
+                    )
+                    .await?;
+
+                    // Replace or insert the (p_id, cid) entry, collecting old CID for GC.
+                    if let Some(pos) = ga.numbig.iter().position(|(pid, _)| *pid == p_id) {
+                        let old_cid = ga.numbig[pos].1.clone();
+                        root_builder.add_replaced_cids([old_cid]);
+                        ga.numbig[pos].1 = cid;
+                    } else {
+                        ga.numbig.push((p_id, cid));
+                        ga.numbig.sort_by_key(|(pid, _)| *pid);
+                    }
+                }
+            }
+
+            // ---- Vector arena upload ----
+            for (&g_id, per_pred) in &novelty.shared.vectors {
+                let ga = arenas_by_gid
+                    .entry(g_id)
+                    .or_insert_with(|| GraphArenaRefsV5 {
+                        g_id,
+                        numbig: Vec::new(),
+                        vectors: Vec::new(),
+                        spatial: Vec::new(),
+                    });
+
+                for (&p_id, arena) in per_pred {
+                    if arena.is_empty() {
+                        continue;
+                    }
+
+                    // Handle space overflow guard.
+                    let base_count = novelty
+                        .base_vector_counts
+                        .get(&(g_id, p_id))
+                        .copied()
+                        .unwrap_or(0);
+                    if (base_count as u64) + (arena.len() as u64) > u32::MAX as u64 {
+                        return Err(IndexerError::IncrementalAbort(format!(
+                            "vector handle overflow for g_id={g_id}, p_id={p_id}: \
+                             base={base_count} + new={} exceeds u32::MAX",
+                            arena.len()
+                        )));
+                    }
+
+                    // Dims/normalization compatibility: if extending an existing arena,
+                    // the new vectors must have the same dimensionality.
+                    if base_count > 0 {
+                        if let Some(existing_ref) = ga.vectors.iter().find(|v| v.p_id == p_id) {
+                            let old_manifest_bytes = content_store
+                                .get(&existing_ref.manifest)
+                                .await
+                                .map_err(|e| {
+                                    IndexerError::StorageRead(format!(
+                                        "read vector manifest for dims check: {e}"
+                                    ))
+                                })?;
+                            let old_manifest =
+                                run_index::vector_arena::read_vector_manifest(&old_manifest_bytes)
+                                    .map_err(|e| {
+                                        IndexerError::StorageRead(format!(
+                                            "decode vector manifest for dims check: {e}"
+                                        ))
+                                    })?;
+                            if old_manifest.dims != arena.dims() {
+                                return Err(IndexerError::IncrementalAbort(format!(
+                                    "vector dims mismatch for g_id={g_id}, p_id={p_id}: \
+                                     existing={}, new={}",
+                                    old_manifest.dims,
+                                    arena.dims()
+                                )));
+                            }
+                        }
+                    }
+
+                    // Serialize new vectors to shard bytes.
+                    let shard_results =
+                        run_index::vector_arena::write_vector_shards_to_bytes(arena).map_err(
+                            |e| IndexerError::StorageWrite(format!("vector shard serialize: {e}")),
+                        )?;
+
+                    let mut new_shard_cids = Vec::with_capacity(shard_results.len());
+                    let mut new_shard_infos = Vec::with_capacity(shard_results.len());
+
+                    for (shard_bytes, mut shard_info) in shard_results {
+                        let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
+                        let (shard_cid, wr) = upload_dict_blob(
+                            storage,
+                            ledger_id,
+                            dict_kind,
+                            &shard_bytes,
+                            "incremental vector shard uploaded",
+                        )
+                        .await?;
+                        shard_info.cas = wr.address;
+                        new_shard_cids.push(shard_cid);
+                        new_shard_infos.push(shard_info);
+                    }
+
+                    // Look up existing vector ref for this (g_id, p_id) to get
+                    // base shards and manifest for combining.
+                    let base_count = novelty
+                        .base_vector_counts
+                        .get(&(g_id, p_id))
+                        .copied()
+                        .unwrap_or(0);
+
+                    if let Some(pos) = ga.vectors.iter().position(|v| v.p_id == p_id) {
+                        // Extending existing vector arena: keep old shards, add new.
+                        let existing = &ga.vectors[pos];
+                        let mut combined_shards = existing.shards.clone();
+                        combined_shards.extend(new_shard_cids);
+
+                        // Read old manifest to get old shard_infos for the combined manifest.
+                        let old_manifest_bytes =
+                            content_store.get(&existing.manifest).await.map_err(|e| {
+                                IndexerError::StorageRead(format!(
+                                    "read existing vector manifest: {e}"
+                                ))
+                            })?;
+                        let old_manifest =
+                            run_index::vector_arena::read_vector_manifest(&old_manifest_bytes)
+                                .map_err(|e| {
+                                    IndexerError::StorageRead(format!(
+                                        "decode existing vector manifest: {e}"
+                                    ))
+                                })?;
+
+                        let mut combined_shard_infos = old_manifest.shards;
+                        combined_shard_infos.extend(new_shard_infos);
+
+                        let combined_manifest = run_index::vector_arena::VectorManifest {
+                            version: 1,
+                            dims: arena.dims(),
+                            dtype: "f32".to_string(),
+                            normalized: old_manifest.normalized && arena.is_normalized(),
+                            shard_capacity: run_index::vector_arena::SHARD_CAPACITY,
+                            total_count: base_count + arena.len(),
+                            shards: combined_shard_infos,
+                        };
+
+                        let manifest_json =
+                            serde_json::to_vec_pretty(&combined_manifest).map_err(|e| {
+                                IndexerError::StorageWrite(format!(
+                                    "serialize combined vector manifest: {e}"
+                                ))
+                            })?;
+
+                        let dict_kind = fluree_db_core::DictKind::VectorManifest { p_id };
+                        let (manifest_cid, _) = upload_dict_blob(
+                            storage,
+                            ledger_id,
+                            dict_kind,
+                            &manifest_json,
+                            "incremental vector manifest uploaded",
+                        )
+                        .await?;
+
+                        // GC the old manifest (old shards are still referenced by combined).
+                        root_builder.add_replaced_cids([existing.manifest.clone()]);
+
+                        ga.vectors[pos] = VectorDictRefV5 {
+                            p_id,
+                            manifest: manifest_cid,
+                            shards: combined_shards,
+                        };
+                    } else {
+                        // Brand new vector arena for this (g_id, p_id).
+                        let manifest = run_index::vector_arena::VectorManifest {
+                            version: 1,
+                            dims: arena.dims(),
+                            dtype: "f32".to_string(),
+                            normalized: arena.is_normalized(),
+                            shard_capacity: run_index::vector_arena::SHARD_CAPACITY,
+                            total_count: arena.len(),
+                            shards: new_shard_infos,
+                        };
+
+                        let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(|e| {
+                            IndexerError::StorageWrite(format!(
+                                "serialize new vector manifest: {e}"
+                            ))
+                        })?;
+
+                        let dict_kind = fluree_db_core::DictKind::VectorManifest { p_id };
+                        let (manifest_cid, _) = upload_dict_blob(
+                            storage,
+                            ledger_id,
+                            dict_kind,
+                            &manifest_json,
+                            "incremental vector manifest uploaded",
+                        )
+                        .await?;
+
+                        ga.vectors.push(VectorDictRefV5 {
+                            p_id,
+                            manifest: manifest_cid,
+                            shards: new_shard_cids,
+                        });
+                        ga.vectors.sort_by_key(|v| v.p_id);
+                    }
+                }
+            }
+
+            let updated_arenas: Vec<GraphArenaRefsV5> = arenas_by_gid.into_values().collect();
+            root_builder.set_graph_arenas(updated_arenas);
+
+            tracing::info!("Phase 4.5 complete: arena updates (numbig + vectors)");
+        }
+    }
 
     // ---- Phase 5: Root assembly ----
     root_builder.set_dict_refs(new_dict_refs);
