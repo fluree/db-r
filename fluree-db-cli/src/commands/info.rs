@@ -7,13 +7,19 @@ pub async fn run(
     ledger: Option<&str>,
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
+    direct: bool,
 ) -> CliResult<()> {
-    // Resolve ledger mode: --remote flag, local, or tracked
+    // Resolve ledger mode: --remote flag, local, tracked, or auto-route to local server
     let mode = if let Some(remote_name) = remote_flag {
         let alias = context::resolve_ledger(ledger, dirs)?;
         context::build_remote_mode(remote_name, &alias, dirs).await?
     } else {
-        context::resolve_ledger_mode(ledger, dirs).await?
+        let mode = context::resolve_ledger_mode(ledger, dirs).await?;
+        if direct {
+            mode
+        } else {
+            context::try_server_route(mode, dirs)
+        }
     };
 
     match mode {

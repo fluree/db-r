@@ -2480,10 +2480,21 @@ where
         match &self.ledger_manager {
             Some(mgr) => mgr.get_or_load(ledger_id).await,
             None => {
-                // Caching disabled: load fresh, wrap in ephemeral handle
+                // Caching disabled: load fresh, wrap in ephemeral handle.
                 // Note: This handle is NOT cached; each call loads fresh.
+                // Extract the concrete BinaryIndexStore from the state's TypeErasedStore
+                // so the handle's binary_store stays coherent with db.range_provider.
                 let state = self.ledger(ledger_id).await?;
-                Ok(LedgerHandle::ephemeral(ledger_id.to_string(), state))
+                let binary_store = state.binary_store.as_ref().and_then(|te| {
+                    te.0.clone()
+                        .downcast::<fluree_db_indexer::run_index::BinaryIndexStore>()
+                        .ok()
+                });
+                Ok(LedgerHandle::new(
+                    ledger_id.to_string(),
+                    state,
+                    binary_store,
+                ))
             }
         }
     }

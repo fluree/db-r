@@ -26,6 +26,7 @@
   - [push](cli/push.md)
   - [clone](cli/clone.md)
   - [track](cli/track.md)
+  - [server](cli/server.md)
   - [completions](cli/completions.md)
 
 - [Getting started](getting-started/README.md)

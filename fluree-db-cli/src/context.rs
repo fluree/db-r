@@ -1,6 +1,7 @@
 use crate::config::{self, TomlSyncConfigStore, TrackedLedgerConfig};
 use crate::error::{CliError, CliResult};
 use crate::remote_client::{RefreshConfig, RemoteLedgerClient};
+use colored::Colorize;
 use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::{FileStorage, Fluree, FlureeBuilder};
 use fluree_db_nameservice::file::FileNameService;
@@ -8,6 +9,8 @@ use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{
     RemoteAuth, RemoteAuthType, RemoteConfig, RemoteEndpoint, SyncConfigStore,
 };
+use serde::Deserialize;
+use std::fs;
 
 /// Resolved ledger mode: either local or tracked (remote-only).
 pub enum LedgerMode {
@@ -341,4 +344,149 @@ pub async fn persist_refreshed_tokens(
     if store.set_remote(&updated).await.is_err() {
         eprintln!("  warning: failed to persist refreshed token to config");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Local server auto-routing
+// ---------------------------------------------------------------------------
+
+/// Sentinel remote name for local server auto-routing.
+/// Token persistence is skipped for this value.
+pub const LOCAL_SERVER_REMOTE: &str = "";
+
+/// Minimal mirror of `ServerMeta` from `commands/server.rs`.
+/// Only the fields needed for auto-routing are included.
+#[derive(Deserialize)]
+struct ServerMeta {
+    pid: u32,
+    listen_addr: String,
+}
+
+/// Attempt to route a `LedgerMode::Local` through a locally-running server.
+///
+/// If `server.meta.json` exists, the PID is alive, and the server process
+/// looks like a Fluree server, this returns `LedgerMode::Tracked` pointing
+/// to `http://{listen_addr}/fluree`. Otherwise returns the original mode.
+///
+/// A hint is printed to stderr so the user knows the request was routed.
+pub fn try_server_route(mode: LedgerMode, dirs: &FlureeDir) -> LedgerMode {
+    let alias = match &mode {
+        LedgerMode::Local { alias, .. } => alias.clone(),
+        // Already tracked/remote — nothing to do
+        LedgerMode::Tracked { .. } => return mode,
+    };
+
+    let meta_path = dirs.data_dir().join("server.meta.json");
+    let meta: ServerMeta = match fs::read_to_string(&meta_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(m) => m,
+        None => return mode, // No server.meta.json or can't parse it
+    };
+
+    // Verify the server process is alive
+    if !is_process_alive(meta.pid) {
+        // Server crashed or was killed — warn and fall back to direct
+        eprintln!(
+            "  {} local server (pid {}) is no longer running; executing directly",
+            "notice:".yellow().bold(),
+            meta.pid
+        );
+        return mode;
+    }
+
+    if !is_fluree_process(meta.pid) {
+        // PID is alive but not a Fluree server — stale meta file
+        eprintln!(
+            "  {} pid {} is not a Fluree server; executing directly",
+            "notice:".yellow().bold(),
+            meta.pid
+        );
+        return mode;
+    }
+
+    // Build HTTP client pointing to the local server.
+    // The server mounts its API at /v1/fluree (matches the discovery endpoint's
+    // api_base_url). This is the same path that `fluree remote add` resolves via
+    // /.well-known/fluree.json.
+    let base_url = format!("http://{}/v1/fluree", meta.listen_addr);
+    let client = RemoteLedgerClient::new(&base_url, None);
+
+    eprintln!(
+        "  {} routing through local server at {} (use {} to bypass)",
+        "server:".cyan().bold(),
+        meta.listen_addr,
+        "--direct".bold()
+    );
+
+    LedgerMode::Tracked {
+        client,
+        remote_alias: alias.clone(),
+        local_alias: alias,
+        remote_name: LOCAL_SERVER_REMOTE.to_string(),
+    }
+}
+
+/// Check if a local server is running and return a client for it.
+///
+/// Used by commands like `list` that don't operate on a specific ledger
+/// but can still benefit from server routing.
+pub fn try_server_route_client(dirs: &FlureeDir) -> Option<RemoteLedgerClient> {
+    let meta_path = dirs.data_dir().join("server.meta.json");
+    let meta: ServerMeta = fs::read_to_string(&meta_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+
+    if !is_process_alive(meta.pid) || !is_fluree_process(meta.pid) {
+        return None;
+    }
+
+    let base_url = format!("http://{}/v1/fluree", meta.listen_addr);
+
+    eprintln!(
+        "  {} routing through local server at {} (use {} to bypass)",
+        "server:".cyan().bold(),
+        meta.listen_addr,
+        "--direct".bold()
+    );
+
+    Some(RemoteLedgerClient::new(&base_url, None))
+}
+
+// ---------------------------------------------------------------------------
+// Process liveness helpers (mirrored from commands/server.rs)
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+fn is_process_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn is_process_alive(_pid: u32) -> bool {
+    true
+}
+
+#[cfg(unix)]
+fn is_fluree_process(pid: u32) -> bool {
+    if let Ok(raw) = fs::read(format!("/proc/{pid}/cmdline")) {
+        let cmdline = String::from_utf8_lossy(&raw);
+        return cmdline.contains("fluree") && cmdline.contains("server");
+    }
+    if let Ok(output) = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+    {
+        if output.status.success() {
+            let cmd = String::from_utf8_lossy(&output.stdout);
+            return cmd.contains("fluree") && cmd.contains("server");
+        }
+    }
+    true
+}
+
+#[cfg(not(unix))]
+fn is_fluree_process(_pid: u32) -> bool {
+    true
 }

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -18,6 +19,12 @@ pub struct Cli {
     /// Disable colored output (also respects NO_COLOR env var)
     #[arg(long, global = true)]
     pub no_color: bool,
+
+    /// Execute directly via the CLI, bypassing auto-routing through a local server.
+    /// By default, if a local server is running (started via `fluree server start`),
+    /// commands like query/insert/upsert are automatically routed through it.
+    #[arg(long, global = true)]
+    pub direct: bool,
 
     /// Path to config file
     #[arg(long, global = true)]
@@ -387,6 +394,119 @@ pub enum Commands {
     Track {
         #[command(subcommand)]
         action: TrackAction,
+    },
+
+    /// Manage the Fluree HTTP server
+    Server {
+        #[command(subcommand)]
+        action: ServerAction,
+    },
+}
+
+/// Server lifecycle subcommands.
+#[derive(Subcommand)]
+pub enum ServerAction {
+    /// Run the server in the foreground (Ctrl-C to stop)
+    Run {
+        /// Listen address (e.g., "0.0.0.0:8090")
+        #[arg(long)]
+        listen_addr: Option<SocketAddr>,
+
+        /// Storage path override
+        #[arg(long)]
+        storage_path: Option<PathBuf>,
+
+        /// Log level (trace, debug, info, warn, error)
+        #[arg(long)]
+        log_level: Option<String>,
+
+        /// Configuration profile to activate
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Additional server arguments (passed through to server config)
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Start the server as a background process
+    Start {
+        /// Listen address (e.g., "0.0.0.0:8090")
+        #[arg(long)]
+        listen_addr: Option<SocketAddr>,
+
+        /// Storage path override
+        #[arg(long)]
+        storage_path: Option<PathBuf>,
+
+        /// Log level (trace, debug, info, warn, error)
+        #[arg(long)]
+        log_level: Option<String>,
+
+        /// Configuration profile to activate
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Print resolved configuration without starting the server
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Additional server arguments (passed through to server config)
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// Stop a backgrounded server
+    Stop {
+        /// Force kill (SIGKILL) after timeout
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Show server status
+    Status,
+
+    /// Restart a backgrounded server
+    Restart {
+        /// Listen address (e.g., "0.0.0.0:8090")
+        #[arg(long)]
+        listen_addr: Option<SocketAddr>,
+
+        /// Storage path override
+        #[arg(long)]
+        storage_path: Option<PathBuf>,
+
+        /// Log level (trace, debug, info, warn, error)
+        #[arg(long)]
+        log_level: Option<String>,
+
+        /// Configuration profile to activate
+        #[arg(long)]
+        profile: Option<String>,
+
+        /// Additional server arguments (passed through to server config)
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+
+    /// View server logs
+    Logs {
+        /// Follow log output (like tail -f)
+        #[arg(long, short = 'f')]
+        follow: bool,
+
+        /// Number of lines to show (default: 50)
+        #[arg(long, short = 'n', default_value_t = 50)]
+        lines: usize,
+    },
+
+    /// Internal: child process entry point for background server.
+    /// Do not invoke directly.
+    #[command(hide = true)]
+    Child {
+        /// Serialized server arguments
+        #[arg(last = true)]
+        args: Vec<String>,
     },
 }
 

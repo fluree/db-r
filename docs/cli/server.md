@@ -1,0 +1,199 @@
+# server
+
+Manage the Fluree HTTP server from the CLI. The server inherits the same `.fluree/` context (config file, storage path) as the CLI — one directory, two modes of interaction.
+
+## Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `run`      | Run the server in the foreground (Ctrl-C to stop) |
+| `start`    | Start the server as a background process |
+| `stop`     | Stop a backgrounded server |
+| `status`   | Show server status (PID, address, health) |
+| `restart`  | Stop and restart a backgrounded server |
+| `logs`     | View server logs |
+
+## Common Options
+
+These options are available on `run`, `start`, and `restart`:
+
+| Option | Description |
+|--------|-------------|
+| `--listen-addr <ADDR>` | Listen address (e.g., `0.0.0.0:8090`) |
+| `--storage-path <PATH>` | Storage path override |
+| `--log-level <LEVEL>` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
+| `--profile <NAME>` | Configuration profile to activate |
+| `-- <ARGS>...` | Additional server flags (passed through to server config) |
+
+When no flags are provided, the server reads its configuration from the `[server]` section of `.fluree/config.toml` (or the global config). The CLI's `--config` flag is also honored.
+
+## run
+
+Run the server in the foreground. Logs go to stderr. Press Ctrl-C for graceful shutdown.
+
+```bash
+# Start with defaults from config.toml
+fluree server run
+
+# Override listen address
+fluree server run --listen-addr 127.0.0.1:9090
+
+# Pass through advanced server flags
+fluree server run -- --cors-enabled --indexing-enabled
+```
+
+## start
+
+Start the server as a background daemon. Writes PID and metadata to `.fluree/` and redirects output to `.fluree/server.log`.
+
+```bash
+# Start in background
+fluree server start
+
+# Preview resolved config without starting
+fluree server start --dry-run
+
+# Start with overrides
+fluree server start --listen-addr 0.0.0.0:8090 --log-level debug
+```
+
+The `--dry-run` flag prints the fully resolved configuration (config file + env + flag overrides merged) without actually starting the server. Useful for debugging "why is it using port X?".
+
+## stop
+
+Stop a backgrounded server by sending SIGTERM and waiting for graceful shutdown (up to 10 seconds).
+
+```bash
+fluree server stop
+
+# Force kill after timeout
+fluree server stop --force
+```
+
+## status
+
+Check whether the server is running. Shows PID, listen address, uptime, storage path, and performs an HTTP health check.
+
+```bash
+fluree server status
+```
+
+Example output:
+
+```
+ok: Server is running
+  pid:          12345
+  listen_addr:  0.0.0.0:8090
+  storage_path: /path/to/.fluree/storage
+  started_at:   2026-02-16T10:30:00Z
+  uptime:       2h 15m 30s
+  health:       ok
+  log:          /path/to/.fluree/server.log
+```
+
+## restart
+
+Stop and restart a backgrounded server. Recovers the original arguments from `.fluree/server.meta.json`. New flag overrides can be applied on restart.
+
+```bash
+fluree server restart
+
+# Restart with a different log level
+fluree server restart --log-level debug
+```
+
+## logs
+
+View server log output from `.fluree/server.log`.
+
+```bash
+# Last 50 lines (default)
+fluree server logs
+
+# Last 100 lines
+fluree server logs -n 100
+
+# Follow (like tail -f)
+fluree server logs -f
+```
+
+## Auto-Routing
+
+When a local server is running (started via `fluree server start`), CLI commands that support remote execution are **automatically routed through the server's HTTP API**. This applies to:
+
+- `fluree query`
+- `fluree insert`
+- `fluree upsert`
+- `fluree list`
+- `fluree info`
+
+The CLI detects the running server by checking `.fluree/server.meta.json` and verifying the PID is alive. When auto-routing is active, you'll see a hint on stderr:
+
+```
+  server: routing through local server at 0.0.0.0:8090 (use --direct to bypass)
+```
+
+### Opting out
+
+Use the `--direct` global flag to bypass auto-routing and execute directly via the CLI's file-based path:
+
+```bash
+# Route through server (default when server is running)
+fluree query -e 'SELECT * WHERE { ?s ?p ?o } LIMIT 10'
+
+# Bypass server, execute directly
+fluree query --direct -e 'SELECT * WHERE { ?s ?p ?o } LIMIT 10'
+```
+
+### Crash detection
+
+If the server has crashed or been killed, the CLI detects the stale PID and falls back to direct execution with a notice:
+
+```
+  notice: local server (pid 12345) is no longer running; executing directly
+```
+
+Use `fluree server status` to check server health, or `fluree server logs` to view crash output.
+
+## Runtime Files
+
+When a background server is running, these files are created in the `.fluree/` data directory:
+
+| File | Description |
+|------|-------------|
+| `server.pid` | PID of the background server process |
+| `server.log` | stdout + stderr from the background server |
+| `server.meta.json` | Metadata for `restart` and `status` (PID, address, args, start time) |
+
+These files are cleaned up automatically by `fluree server stop`.
+
+## Configuration
+
+The server uses the same `config.toml` as the CLI. Server-specific settings live under the `[server]` section:
+
+```toml
+[server]
+listen_addr = "0.0.0.0:8090"
+storage_path = "/var/lib/fluree"
+log_level = "info"
+cors_enabled = true
+cache_max_entries = 10000
+
+[server.indexing]
+enabled = true
+reindex_min_bytes = 100_000
+reindex_max_bytes = 1_000_000
+```
+
+Indexing settings live under the `[server.indexing]` subsection, not directly on `[server]`. Authentication settings similarly use `[server.auth.events]`, `[server.auth.data]`, etc.
+
+See [Configuration](../operations/configuration.md) for the full list of server options.
+
+## Feature Flag
+
+The `server` subcommand requires the `server` Cargo feature (enabled by default). If compiled without it:
+
+```bash
+fluree server run
+# error: server support not compiled. Rebuild with `--features server`.
+```

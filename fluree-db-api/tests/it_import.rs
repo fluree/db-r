@@ -453,3 +453,77 @@ ex:bob a ex:User ;
     let high_scorers = extract_sorted_strings(&json4);
     assert_eq!(high_scorers, vec!["Alice"], "only Alice scores above 80");
 }
+
+// ============================================================================
+// txn-meta graph queries after import
+// ============================================================================
+
+#[tokio::test]
+async fn import_txn_meta_queryable() {
+    // After bulk import, the txn-meta graph (g_id=1) should contain
+    // commit metadata: db:address, db:time, db:t, db:size, db:asserts, db:retracts.
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let ttl = r#"
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+
+ex:alice a ex:User ;
+    schema:name "Alice" .
+
+ex:bob a ex:User ;
+    schema:name "Bob" .
+"#;
+
+    let ttl_path = write_ttl(data_dir.path(), "people.ttl", ttl);
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let result = fluree
+        .create("test/import-txn-meta:main")
+        .import(&ttl_path)
+        .threads(2)
+        .memory_budget_mb(256)
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("import should succeed");
+
+    assert!(result.t > 0, "should have at least one commit");
+    assert!(result.root_id.is_some(), "index should have been built");
+
+    // Query the txn-meta graph via view (same path as CLI: fluree.view("alias#txn-meta"))
+    let view = fluree
+        .view("test/import-txn-meta:main#txn-meta")
+        .await
+        .expect("load txn-meta view");
+
+    assert_eq!(view.graph_id, 1, "txn-meta should use g_id=1");
+    assert!(
+        view.binary_store().is_some(),
+        "binary store should be loaded"
+    );
+
+    // Query all triples in the txn-meta graph
+    let sparql = "SELECT ?s ?p ?o WHERE { ?s ?p ?o }";
+    let qr = fluree
+        .query_view(&view, sparql)
+        .await
+        .expect("query txn-meta");
+
+    assert!(
+        qr.row_count() > 0,
+        "txn-meta graph should have commit metadata rows, got 0"
+    );
+
+    // Each chunk produces one commit subject with db:t, db:address, etc.
+    // Small TTL = 1 chunk = at least 6 properties (db:t, db:address, db:time, db:size, db:asserts, db:retracts)
+    assert!(
+        qr.row_count() >= 6,
+        "expected >= 6 txn-meta triples, got {}",
+        qr.row_count()
+    );
+}

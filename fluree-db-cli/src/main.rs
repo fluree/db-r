@@ -203,7 +203,25 @@ async fn main() {
         colored::control::set_override(false);
     }
 
-    init_tracing(&cli);
+    // Skip CLI tracing for server subcommands that run the server in-process
+    // (Run, Child). The server has its own telemetry initialization (init_logging)
+    // that must own the global tracing subscriber. If we install the CLI's "off"
+    // filter first, the server's init_logging() no-ops (has_been_set() == true).
+    // Other server subcommands (start, stop, status, etc.) are just process
+    // management and use normal CLI tracing.
+    #[cfg(feature = "server")]
+    let skip_tracing = matches!(
+        cli.command,
+        Commands::Server {
+            action: cli::ServerAction::Run { .. } | cli::ServerAction::Child { .. }
+        }
+    );
+    #[cfg(not(feature = "server"))]
+    let skip_tracing = false;
+
+    if !skip_tracing {
+        init_tracing(&cli);
+    }
 
     let result = run(cli).await;
     shutdown_tracer().await;
@@ -215,6 +233,7 @@ async fn main() {
 
 async fn run(cli: Cli) -> error::CliResult<()> {
     let config_path = cli.config.as_deref();
+    let direct = cli.direct;
 
     match cli.command {
         Commands::Init { global, format } => {
@@ -269,12 +288,12 @@ async fn run(cli: Cli) -> error::CliResult<()> {
 
         Commands::List { remote } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::list::run(&fluree_dir, remote.as_deref()).await
+            commands::list::run(&fluree_dir, remote.as_deref(), direct).await
         }
 
         Commands::Info { ledger, remote } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::info::run(ledger.as_deref(), &fluree_dir, remote.as_deref()).await
+            commands::info::run(ledger.as_deref(), &fluree_dir, remote.as_deref(), direct).await
         }
 
         Commands::Drop { name, force } => {
@@ -297,6 +316,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 format.as_deref(),
                 &fluree_dir,
                 remote.as_deref(),
+                direct,
             )
             .await
         }
@@ -316,6 +336,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 format.as_deref(),
                 &fluree_dir,
                 remote.as_deref(),
+                direct,
             )
             .await
         }
@@ -341,6 +362,7 @@ async fn run(cli: Cli) -> error::CliResult<()> {
                 at.as_deref(),
                 &fluree_dir,
                 remote.as_deref(),
+                direct,
             )
             .await
         }
@@ -478,5 +500,13 @@ async fn run(cli: Cli) -> error::CliResult<()> {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::track::run(action, &fluree_dir).await
         }
+
+        #[cfg(feature = "server")]
+        Commands::Server { action } => commands::server::run(action, config_path).await,
+
+        #[cfg(not(feature = "server"))]
+        Commands::Server { .. } => Err(error::CliError::Server(
+            "server support not compiled. Rebuild with `--features server`.".into(),
+        )),
     }
 }
