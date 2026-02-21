@@ -2712,11 +2712,15 @@ where
                                         //
                                         // First try this incremental window's new subjects (no IRI parse).
                                         // Otherwise fall back to base-root forward dict resolution.
-                                        let sid = fluree_db_core::subject_id::SubjectId::from_u64(sid64);
+                                        let sid =
+                                            fluree_db_core::subject_id::SubjectId::from_u64(sid64);
                                         let ns_code = sid.ns_code();
                                         let local_id = sid.local_id();
-                                        if let Some(suffix) = new_subject_suffix.get(&(ns_code, local_id)) {
-                                            entry.class_sid = fluree_db_core::sid::Sid::new(ns_code, suffix);
+                                        if let Some(suffix) =
+                                            new_subject_suffix.get(&(ns_code, local_id))
+                                        {
+                                            entry.class_sid =
+                                                fluree_db_core::sid::Sid::new(ns_code, suffix);
                                         } else {
                                             match store.resolve_subject_iri(sid64) {
                                                 Ok(iri) => {
@@ -2958,6 +2962,134 @@ where
 
             root_builder.set_stats(updated_stats);
             root_builder.set_sketch_ref(sketch_ref);
+        }
+    }
+
+    // ---- Phase 4.7: Incremental schema (rdfs:subClassOf / rdfs:subPropertyOf) ----
+    //
+    // SchemaExtractor tracks class/property hierarchy from schema-relevant flakes.
+    // We seed it from the base root's schema, then feed only novelty records that
+    // match rdfs:subClassOf or rdfs:subPropertyOf. These are rare in typical novelty.
+    //
+    // Sid resolution for subject/object requires the subject forward dict (via
+    // BinaryIndexStore), so we only attempt schema extraction when the base store
+    // is available. Schema changes are extremely rare in incremental batches.
+    {
+        use crate::stats::SchemaExtractor;
+        use fluree_db_core::subject_id::SubjectId;
+        use fluree_db_core::{Flake, FlakeValue, Sid};
+        use std::collections::HashMap;
+
+        let rdfs_subclass_iri = format!("{}subClassOf", fluree_vocab::rdfs::NS);
+        let rdfs_subprop_iri = format!("{}subPropertyOf", fluree_vocab::rdfs::NS);
+
+        let subclass_p_id = novelty.shared.predicates.get(&rdfs_subclass_iri);
+        let subprop_p_id = novelty.shared.predicates.get(&rdfs_subprop_iri);
+
+        // Only run schema extraction if the schema predicates exist in the dict
+        // AND there are novelty records that match them.
+        let has_schema_records = novelty.records.iter().any(|r| {
+            (subclass_p_id == Some(r.p_id) || subprop_p_id == Some(r.p_id))
+                && r.o_kind == fluree_db_core::value_id::ObjKind::REF_ID.as_u8()
+        });
+
+        if has_schema_records {
+            // Load a BinaryIndexStore for Sid resolution (subject/object IRIs).
+            let cache_dir = config
+                .data_dir
+                .as_ref()
+                .map(|d| d.join("schema_cache"))
+                .unwrap_or_else(|| std::env::temp_dir().join("fluree_schema_cache"));
+            let _ = std::fs::create_dir_all(&cache_dir);
+
+            match run_index::BinaryIndexStore::load_from_root_v5(
+                content_store.clone(),
+                base_root,
+                &cache_dir,
+                None,
+            )
+            .await
+            {
+                Ok(store) => {
+                    // Map new subjects in this incremental window for local sid64 -> Sid resolution.
+                    // Base-root forward dicts won't include these until the new root is published.
+                    let new_subject_suffix: HashMap<(u16, u64), String> = novelty
+                        .new_subjects
+                        .iter()
+                        .filter_map(|(ns_code, local_id, suffix)| {
+                            let s = std::str::from_utf8(suffix).ok()?.to_string();
+                            Some(((*ns_code, *local_id), s))
+                        })
+                        .collect();
+
+                    let resolve_sid64 = |sid64: u64| -> Option<Sid> {
+                        let sid = SubjectId::from_u64(sid64);
+                        let ns_code = sid.ns_code();
+                        let local_id = sid.local_id();
+                        if let Some(suffix) = new_subject_suffix.get(&(ns_code, local_id)) {
+                            return Some(Sid::new(ns_code, suffix));
+                        }
+                        store
+                            .resolve_subject_iri(sid64)
+                            .ok()
+                            .map(|iri| store.encode_iri(&iri))
+                    };
+
+                    let mut extractor = SchemaExtractor::from_prior(base_root.schema.as_ref());
+
+                    for record in &novelty.records {
+                        let is_subclass = subclass_p_id == Some(record.p_id);
+                        let is_subprop = subprop_p_id == Some(record.p_id);
+                        if !is_subclass && !is_subprop {
+                            continue;
+                        }
+                        if record.o_kind != fluree_db_core::value_id::ObjKind::REF_ID.as_u8() {
+                            continue;
+                        }
+
+                        let Some(s_sid) = resolve_sid64(record.s_id.as_u64()) else {
+                            continue;
+                        };
+                        let Some(o_sid) = resolve_sid64(record.o_key) else {
+                            continue;
+                        };
+
+                        // Build predicate Sid
+                        let p_sid = if is_subclass {
+                            fluree_db_core::Sid::new(fluree_vocab::namespaces::RDFS, "subClassOf")
+                        } else {
+                            fluree_db_core::Sid::new(
+                                fluree_vocab::namespaces::RDFS,
+                                "subPropertyOf",
+                            )
+                        };
+
+                        let flake = Flake::new(
+                            s_sid,
+                            p_sid,
+                            FlakeValue::Ref(o_sid),
+                            Sid::new(0, ""),
+                            record.t as i64,
+                            record.op != 0,
+                            None,
+                        );
+                        extractor.on_flake(&flake);
+                    }
+
+                    // finalize() returns None when all relationships were removed.
+                    // In that case we must clear the schema section.
+                    let updated_schema = extractor.finalize(novelty.max_t);
+                    root_builder.set_schema_opt(updated_schema);
+                    tracing::info!("Phase 4.7: incremental schema refreshed");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        %e,
+                        "Phase 4.7: failed to load store for schema extraction; \
+                         carrying forward base schema"
+                    );
+                }
+            }
         }
     }
 

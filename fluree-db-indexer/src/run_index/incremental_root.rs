@@ -162,6 +162,16 @@ impl IncrementalRootBuilder {
         self.root.sketch_ref = sketch_ref;
     }
 
+    /// Replace the schema (class/property hierarchy).
+    pub fn set_schema(&mut self, schema: fluree_db_core::index_schema::IndexSchema) {
+        self.root.schema = Some(schema);
+    }
+
+    /// Replace the schema section (or clear it).
+    pub fn set_schema_opt(&mut self, schema: Option<fluree_db_core::index_schema::IndexSchema>) {
+        self.root.schema = schema;
+    }
+
     // ---- Build ----
 
     /// Consume the builder and return the new root + all replaced CIDs.
