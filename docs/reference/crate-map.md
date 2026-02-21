@@ -176,17 +176,23 @@ fluree-db/
 
 **Responsibilities:**
 - Query parsing and planning
+- Statistics-driven pattern reordering across all WHERE-clause pattern types
+  (triples, UNION, OPTIONAL, MINUS, search patterns, Graph, Service, etc.)
+- Bound-variable-aware selectivity estimation using HLL-derived property
+  statistics (with heuristic fallbacks)
 - Query execution
-- Join optimization
-- Filter evaluation
+- Filter pushdown (index-level range filters, inline join evaluation,
+  dependency-based placement)
 - Aggregations
 - BM25 and vector search integration
+- Explain plan generation for optimization debugging
 
 **Key Types:**
 - `Query` - Parsed query
 - `VarRegistry` - Variable management
 - `Pattern` - Query patterns
 - `Term` - Query terms
+- `PatternEstimate` - Cardinality classification (Source, Reducer, Expander, Deferred)
 
 **Dependencies:**
 - fluree-db-core

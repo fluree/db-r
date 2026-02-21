@@ -163,7 +163,7 @@ impl BinaryIndexStore {
     /// Loads per-order manifests (`index_manifest_spot.json`, `index_manifest_psot.json`,
     /// etc.) and builds per-graph, per-order branch manifests.
     pub fn load(run_dir: &Path, index_dir: &Path) -> io::Result<Self> {
-        let _span = tracing::info_span!("BinaryIndexStore::load", ?run_dir, ?index_dir).entered();
+        let _span = tracing::debug_span!("BinaryIndexStore::load", ?run_dir, ?index_dir).entered();
 
         // ---- Load per-order index manifests ----
         let mut graphs: HashMap<GraphId, GraphIndex> = HashMap::new();

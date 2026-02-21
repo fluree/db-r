@@ -19,6 +19,9 @@ The `docs/` directory is the canonical source of truth. **Before inventing an ap
 | PR workflow & code style           | `docs/contributing/README.md`               |
 | HTTP API endpoints                 | `docs/api/endpoints.md`                     |
 | Configuration & env vars           | `docs/operations/configuration.md`          |
+| Tracing & span conventions         | `docs/contributing/tracing-guide.md`        |
+| Telemetry & OTEL configuration     | `docs/operations/telemetry.md`              |
+| Performance investigation          | `docs/troubleshooting/performance-tracing.md` |
 | Full table of contents             | `docs/SUMMARY.md`                           |
 
 **Docs maintenance mandate:** If your work changes or extends behavior covered by `docs/`, you MUST update the relevant doc files in the same changeset. Conversely, if you produce significant new documentation, update `docs/SUMMARY.md` and add a pointer here if it represents a new top-level concern.
@@ -47,7 +50,7 @@ Generic over `S: Storage + 'static` and `N: NameService`. See `docs/reference/cr
 | `iceberg` | Iceberg REST catalog graph sources | api |
 | `vector` | Embedded HNSW vector search (usearch) | api, query |
 | `import` | Turtle bulk import support | transact |
-| `otel` | OpenTelemetry tracing export | server |
+| `otel` | OpenTelemetry tracing export | server, cli |
 | `aws-testcontainers` | LocalStack Docker integration tests | api, connection |
 
 **CI runs:** `cargo fmt --all -- --check`, `cargo clippy --all --all-features --all-targets`, and `cargo nextest run --workspace --all-features --no-fail-fast`.
@@ -142,6 +145,39 @@ If the code is obsolete, redundant, or from an abandoned approach — delete it.
 - **Tests**: Integration tests named `it_*.rs`. `#[tokio::test]` for async. Shared helpers in `fluree-db-api/tests/support/`. Clojure parity comments where applicable.
 - **Dependencies**: Workspace-level dep declarations in root `Cargo.toml`. Feature-gate optional deps.
 - **Modern idioms**: Prefer post-2018 Rust idioms over legacy alternatives. Examples: `&self.field` over `ref` in patterns, `?` over `try!`, `impl Trait` over `Box<dyn>` where appropriate, inclusive ranges (`..=`) over deprecated `...`.
+
+## Tracing & OTEL Spans
+
+All operation spans use `debug_span!` (not `info_span!`). The only `info_span!` in the codebase is `request` in `telemetry.rs::create_request_span()`. This ensures **true zero overhead** at `RUST_LOG=info` without the `otel` feature — `debug_span!` short-circuits to a single atomic load (~1-2ns).
+
+**Do not add new `info_span!` calls.** See `docs/contributing/tracing-guide.md` for the full decision guide.
+
+### When modifying code paths (queries, transactions, indexing, imports)
+
+1. Verify the span hierarchy remains correct — use `/trace-inspect` on a Jaeger export
+2. Never use `span.enter()` across `.await` points — use `.instrument(span).await`
+3. For `spawn_blocking` / `thread::scope`, propagate the parent span into the closure
+
+### When adding or renaming spans, update ALL of these
+
+- `.claude/skills/trace-inspect/references/span-hierarchy.md` (BOTH copies)
+- `.claude/skills/trace-overview/references/span-hierarchy.md`
+- `.claude/skills/*/scripts/trace_common.py` (`EXPECTED_CHILDREN`, `EXPECTED_CROSS_THREAD`, `KNOWN_ZERO_DURATION`)
+- `docs/operations/telemetry.md` (span tree section)
+- `docs/contributing/tracing-guide.md` (if new patterns are introduced)
+- `fluree-db-api/tests/it_tracing_spans.rs` (add or update acceptance tests)
+
+### OTEL init code lives in two places (kept in sync)
+
+- `fluree-db-server/src/telemetry.rs` — server binary
+- `fluree-db-cli/src/main.rs` — CLI binary (import pipeline)
+
+Both files have `// SYNC:` comments pointing to each other. If you change the OTEL exporter, sampler, batch processor, or `Targets` filter in one, apply the same change to the other.
+
+### Available skills for trace analysis
+
+- `/trace-inspect <file>` — drill into a single trace's span tree and timing
+- `/trace-overview <file>` — aggregate stats and anomaly detection across all traces
 
 ## Pre-existing Warnings
 

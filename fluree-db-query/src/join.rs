@@ -8,6 +8,8 @@ use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::dataset::ActiveGraphs;
 use crate::error::{QueryError, Result};
+use crate::expression::passes_filters;
+use crate::ir::Expression;
 use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -19,6 +21,7 @@ use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::Instrument;
 
 /// Create a right-side scan operator for a join.
 ///
@@ -169,9 +172,25 @@ pub struct NestedLoopJoinOperator {
     ///
     /// This prevents storing/cloning the same `current_left_batch` repeatedly.
     current_left_batch_stored_idx: Option<usize>,
+    /// Inline filter expressions evaluated on combined rows during the join.
+    ///
+    /// These filters have all required variables bound by the combined (left + right)
+    /// schema, so they can be evaluated immediately on each combined row rather than
+    /// requiring a separate FilterOperator wrapper. This eliminates per-batch allocation
+    /// overhead for filters whose last required variable is bound by this join.
+    filters: Vec<Expression>,
 }
 
 impl NestedLoopJoinOperator {
+    /// Check whether a combined row should be skipped due to inline filters.
+    fn should_skip_bindings(
+        &self,
+        bindings: &[Binding],
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> bool {
+        !passes_filters(&self.filters, &self.combined_schema, bindings, ctx)
+    }
+
     /// Create a new bind-join operator
     ///
     /// # Arguments
@@ -180,11 +199,13 @@ impl NestedLoopJoinOperator {
     /// * `left_schema` - Schema of the left operator
     /// * `right_pattern` - Pattern to execute for each left row
     /// * `object_bounds` - Optional range bounds for object variable (filter pushdown)
+    /// * `filters` - Inline filter expressions evaluated on combined rows during the join
     pub fn new(
         left: Box<dyn Operator>,
         left_schema: Arc<[VarId]>,
         right_pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
+        filters: Vec<Expression>,
     ) -> Self {
         // Build bind instructions: which left columns bind which right pattern positions
         let mut bind_instructions = Vec::new();
@@ -325,6 +346,7 @@ impl NestedLoopJoinOperator {
             stored_left_batches: Vec::new(),
             batched_output: VecDeque::new(),
             current_left_batch_stored_idx: None,
+            filters,
         }
     }
 
@@ -599,7 +621,11 @@ impl Operator for NestedLoopJoinOperator {
 
             // 2. Pending output from per-row path
             if !self.pending_output.is_empty() {
-                return self.build_output_batch(ctx).await;
+                if let Some(batch) = self.build_output_batch(ctx).await? {
+                    return Ok(Some(batch));
+                }
+                // All pending rows were filtered out — continue to process more left rows
+                continue;
             }
 
             // 3. Need to process more left rows
@@ -621,6 +647,33 @@ impl Operator for NestedLoopJoinOperator {
                         return Ok(None);
                     }
                 }
+            }
+
+            // Non-batched bulk path: process all remaining rows of the current
+            // left batch in one instrumented span, rather than one-at-a-time.
+            // This gives visibility into per-row join work that was previously
+            // invisible (97-100% gap in query_run traces).
+            if let (false, Some(left_batch), true) = (
+                use_batched,
+                self.current_left_batch.as_ref(),
+                self.pending_output.is_empty(),
+            ) {
+                let batch_len = left_batch.len();
+                let remaining = batch_len.saturating_sub(self.current_left_row);
+                if remaining > 0 {
+                    let span = tracing::debug_span!(
+                        "join_resolve_per_row",
+                        left_rows = remaining,
+                        right_scans = tracing::field::Empty,
+                        matched_rows = tracing::field::Empty,
+                    );
+                    self.resolve_left_batch_per_row(ctx)
+                        .instrument(span)
+                        .await?;
+                }
+                self.current_left_batch = None;
+                self.current_left_batch_stored_idx = None;
+                continue;
             }
 
             // Check if we've exhausted the current left batch
@@ -780,6 +833,13 @@ impl NestedLoopJoinOperator {
                 if self.unify_check(left_batch, left_row, right_batch, right_row) {
                     // Combine and add to output
                     let combined = self.combine_rows(left_batch, left_row, right_batch, right_row);
+
+                    // Inline filter evaluation on the combined row
+                    if self.should_skip_bindings(&combined, Some(ctx)) {
+                        right_row += 1;
+                        continue;
+                    }
+
                     for (col, val) in combined.into_iter().enumerate() {
                         output_columns[col].push(val);
                     }
@@ -829,6 +889,62 @@ impl NestedLoopJoinOperator {
         idx
     }
 
+    /// Process all remaining rows of the current left batch using per-row scans.
+    ///
+    /// This is the non-batched join path where each left row triggers a separate
+    /// right scan against the index. The method processes the entire left batch
+    /// at once (rather than one row per `next_batch()` call) so that it can be
+    /// wrapped in a single instrumented span for observability.
+    ///
+    /// The left batch is stored in `stored_left_batches` so that `BatchRef::Stored`
+    /// references remain valid after `current_left_batch` is cleared.
+    async fn resolve_left_batch_per_row(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
+        let batch_idx = self.ensure_current_batch_stored();
+        let batch_len = self.stored_left_batches[batch_idx].len();
+        let mut right_scans = 0usize;
+        let mut matched_rows = 0usize;
+
+        while self.current_left_row < batch_len {
+            let left_row = self.current_left_row;
+            self.current_left_row += 1;
+
+            // Check for poisoned/invalid bindings
+            {
+                let left_batch = &self.stored_left_batches[batch_idx];
+                if self.has_poisoned_binding(left_batch, left_row) {
+                    continue;
+                }
+                if self.has_invalid_binding_type(left_batch, left_row) {
+                    continue;
+                }
+            }
+
+            let bound_pattern = {
+                let left_batch = &self.stored_left_batches[batch_idx];
+                self.substitute_pattern_with_store(left_batch, left_row, ctx.graph_view().as_ref())
+            };
+            let mut right_scan = make_right_scan(bound_pattern, &self.object_bounds, ctx);
+            right_scan.open(ctx).await?;
+            right_scans += 1;
+            while let Some(right_batch) = right_scan.next_batch(ctx).await? {
+                if !right_batch.is_empty() {
+                    matched_rows += right_batch.len();
+                    self.pending_output.push_back((
+                        BatchRef::Stored(batch_idx),
+                        left_row,
+                        right_batch,
+                    ));
+                }
+            }
+            right_scan.close();
+        }
+
+        let span = tracing::Span::current();
+        span.record("right_scans", right_scans);
+        span.record("matched_rows", matched_rows);
+        Ok(())
+    }
+
     /// Flush batched accumulator using the appropriate db/overlay/to_t for the current context.
     ///
     /// - Single-db mode: uses ctx.db/ctx.overlay()/ctx.to_t
@@ -843,14 +959,15 @@ impl NestedLoopJoinOperator {
             ));
         }
 
-        let span = tracing::info_span!(
-            "join_flush_batched_binary",
-            accum_len = self.batched_accumulator.len(),
-            batch_size = ctx.batch_size,
-            to_t = ctx.to_t
-        );
-        let _g = span.enter();
-        self.flush_batched_accumulator_binary(ctx).await
+        let accum_len = self.batched_accumulator.len();
+        self.flush_batched_accumulator_binary(ctx)
+            .instrument(tracing::debug_span!(
+                "join_flush_batched_binary",
+                accum_len,
+                batch_size = ctx.batch_size,
+                to_t = ctx.to_t,
+            ))
+            .await
     }
 
     /// Clear all batched accumulator state after a flush or early return.
@@ -958,7 +1075,7 @@ impl NestedLoopJoinOperator {
         let cache = store.leaflet_cache();
         let total_leaf_count: usize = leaf_range.end.saturating_sub(leaf_range.start);
 
-        let scan_span = tracing::info_span!(
+        let scan_span = tracing::debug_span!(
             "join_flush_scan_spot",
             unique_subjects = unique_s_ids.len(),
             s_id_min = unique_s_ids.first().copied().unwrap_or(0),
@@ -1273,6 +1390,11 @@ impl NestedLoopJoinOperator {
                                 combined.push(obj_binding.clone());
                             }
 
+                            // Inline filter evaluation before scatter
+                            if self.should_skip_bindings(&combined, Some(ctx)) {
+                                continue;
+                            }
+
                             scatter[accum_idx].push(combined);
                         }
                     }
@@ -1385,25 +1507,35 @@ impl NestedLoopJoinOperator {
             }
         };
 
-        // Phase 2: Group by subject
-        let (s_id_to_accum, unique_s_ids) = self.group_accumulator_by_subject();
-        if unique_s_ids.is_empty() {
-            self.clear_batched_state();
-            return Ok(());
-        }
-
-        // Phase 3: Find leaf range
-        let branch = gv
-            .store()
-            .branch_for_order(gv.g_id(), RunSortOrder::Psot)
-            .expect("PSOT index must exist for every graph");
-        let leaf_range = Self::find_psot_leaf_range(
-            branch,
-            gv.g_id(),
-            p_id,
-            unique_s_ids[0],
-            *unique_s_ids.last().unwrap(),
+        // Phase 2+3: Group by subject and find PSOT leaf range
+        let group_span = tracing::debug_span!(
+            "join_group_subjects",
+            total_accumulated = self.batched_accumulator.len(),
+            unique_subjects = tracing::field::Empty,
         );
+        let (s_id_to_accum, unique_s_ids, branch, leaf_range) = {
+            let _guard = group_span.enter();
+            let (s_id_to_accum, unique_s_ids) = self.group_accumulator_by_subject();
+            if unique_s_ids.is_empty() {
+                self.clear_batched_state();
+                return Ok(());
+            }
+
+            tracing::Span::current().record("unique_subjects", unique_s_ids.len());
+
+            let branch = gv
+                .store()
+                .branch_for_order(gv.g_id(), RunSortOrder::Psot)
+                .expect("PSOT index must exist for every graph");
+            let leaf_range = Self::find_psot_leaf_range(
+                branch,
+                gv.g_id(),
+                p_id,
+                unique_s_ids[0],
+                *unique_s_ids.last().unwrap(),
+            );
+            (s_id_to_accum, unique_s_ids, branch, leaf_range)
+        };
 
         // Phase 4: Scan leaves → scatter buffer
         let mut scatter: Vec<Vec<Vec<Binding>>> = vec![Vec::new(); self.batched_accumulator.len()];
@@ -1419,7 +1551,19 @@ impl NestedLoopJoinOperator {
         )?;
 
         // Phase 5: Emit output batches
-        self.emit_scatter_to_output(scatter, ctx.batch_size)?;
+        {
+            let emit_span = tracing::debug_span!(
+                "join_scatter_emit",
+                scatter_len = scatter.len(),
+                emitted_rows = tracing::field::Empty,
+            );
+            let _guard = emit_span.enter();
+            self.emit_scatter_to_output(scatter, ctx.batch_size)?;
+            tracing::Span::current().record(
+                "emitted_rows",
+                self.batched_output.iter().map(|b| b.len()).sum::<usize>(),
+            );
+        }
 
         tracing::debug!(
             total_ms = (overall_start.elapsed().as_secs_f64() * 1000.0) as u64,
@@ -1569,6 +1713,7 @@ mod tests {
             left_schema.clone(),
             right_pattern,
             None, // No object bounds
+            Vec::new(),
         );
 
         // Create a batch with one row that has Poisoned in position 0 (used for binding)
@@ -1656,6 +1801,7 @@ mod tests {
             left_schema.clone(),
             right_pattern,
             None, // No object bounds
+            Vec::new(),
         );
 
         // Verify that ?v is NOT in unify_instructions (it's substituted, not unified)
@@ -1757,6 +1903,7 @@ mod tests {
             left_schema.clone(),
             right_pattern,
             None, // No object bounds
+            Vec::new(),
         );
 
         // No unify_instructions since no shared vars between left [?s] and right [?x, ?y]

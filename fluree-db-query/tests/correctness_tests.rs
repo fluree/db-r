@@ -134,6 +134,7 @@ async fn test_optional_poison_blocks_subsequent() {
         left_schema,
         right_pattern,
         None, // No object bounds
+        Vec::new(),
     );
 
     join.open(&ctx).await.unwrap();

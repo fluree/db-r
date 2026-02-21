@@ -6,10 +6,7 @@
 //! Call `explain_patterns` with a set of patterns and optional stats to get an `ExplainPlan`.
 
 use crate::pattern::{Term, TriplePattern};
-use crate::planner::{
-    calculate_selectivity, classify_pattern, compare_patterns_tiebreaker, shares_variables,
-    PatternType,
-};
+use crate::planner::{classify_pattern, estimate_triple_row_count, PatternType};
 use crate::var_registry::VarId;
 use fluree_db_core::StatsView;
 use std::collections::HashSet;
@@ -127,8 +124,8 @@ pub fn explain_patterns(patterns: &[TriplePattern], stats: Option<&StatsView>) -
 
 /// Build display info for a single pattern
 fn build_pattern_display(pattern: &TriplePattern, stats: Option<&StatsView>) -> PatternDisplay {
-    let pattern_type = classify_pattern(pattern);
-    let selectivity_score = calculate_selectivity(pattern, stats);
+    let pattern_type = classify_pattern(pattern, &HashSet::new());
+    let selectivity_score = estimate_triple_row_count(pattern, &HashSet::new(), stats) as i64;
     let inputs = capture_selectivity_inputs(pattern, pattern_type, stats);
 
     PatternDisplay {
@@ -255,7 +252,7 @@ fn reorder_for_explain(
     // Clojure parity: if *all* patterns are using fallback scoring (no relevant stats),
     // don't reorder (optimization would be arbitrary/noisy).
     let all_fallback = patterns.iter().all(|p| {
-        let ty = classify_pattern(p);
+        let ty = classify_pattern(p, &HashSet::new());
         let inputs = capture_selectivity_inputs(p, ty, stats);
         inputs.fallback.is_some()
     });
@@ -267,7 +264,7 @@ fn reorder_for_explain(
     let mut first_score: Option<i64> = None;
     let mut all_equal = true;
     for p in &patterns {
-        let s = calculate_selectivity(p, stats);
+        let s = estimate_triple_row_count(p, &HashSet::new(), stats) as i64;
         match first_score {
             None => first_score = Some(s),
             Some(fs) if fs == s => {}
@@ -291,7 +288,7 @@ fn reorder_for_explain(
                 if !has_bound {
                     true
                 } else {
-                    shares_variables(p, &bound_vars)
+                    p.variables().iter().any(|v| bound_vars.contains(v))
                 }
             })
             .map(|(i, _)| i)
@@ -306,14 +303,11 @@ fn reorder_for_explain(
         let best_idx = pool
             .into_iter()
             .min_by(|&i, &j| {
-                let score_i = calculate_selectivity(&remaining[i], stats);
-                let score_j = calculate_selectivity(&remaining[j], stats);
-                match score_i.cmp(&score_j) {
-                    std::cmp::Ordering::Equal => {
-                        compare_patterns_tiebreaker(&remaining[i], &remaining[j])
-                    }
-                    other => other,
-                }
+                let score_i =
+                    estimate_triple_row_count(&remaining[i], &HashSet::new(), stats) as i64;
+                let score_j =
+                    estimate_triple_row_count(&remaining[j], &HashSet::new(), stats) as i64;
+                score_i.cmp(&score_j).then_with(|| i.cmp(&j))
             })
             .unwrap();
 
@@ -401,6 +395,233 @@ impl fmt::Display for PatternDisplay {
 
         if let Some(cc) = self.inputs.class_count {
             write!(f, " class_count={}", cc)?;
+        }
+
+        Ok(())
+    }
+}
+
+// =============================================================================
+// Generalized explain for all pattern types
+// =============================================================================
+
+use crate::ir::Pattern;
+use crate::planner::{estimate_pattern, reorder_patterns, PatternEstimate};
+
+/// Display information for any pattern type (generalized)
+#[derive(Debug, Clone)]
+pub struct GeneralPatternDisplay {
+    /// Human-readable pattern representation
+    pub pattern: String,
+    /// Cardinality estimate (variant encodes the category)
+    pub cardinality: PatternEstimate,
+    /// Variables in this pattern
+    pub variables: Vec<VarId>,
+    /// For triple patterns, the detailed triple display info
+    pub triple_detail: Option<PatternDisplay>,
+}
+
+/// Explanation of generalized pattern optimization
+#[derive(Debug, Clone)]
+pub struct GeneralExplainPlan {
+    /// Whether patterns were reordered
+    pub optimization: OptimizationStatus,
+    /// Whether statistics were available
+    pub statistics_available: bool,
+    /// Original pattern order
+    pub original_patterns: Vec<GeneralPatternDisplay>,
+    /// Optimized pattern order
+    pub optimized_patterns: Vec<GeneralPatternDisplay>,
+}
+
+/// Generate an explanation for all pattern types (generalized)
+///
+/// Unlike `explain_patterns` which only handles triples, this handles
+/// UNION, OPTIONAL, MINUS, EXISTS, Subquery, and all other pattern types.
+pub fn explain_all_patterns(patterns: &[Pattern], stats: Option<&StatsView>) -> GeneralExplainPlan {
+    let statistics_available = stats
+        .map(|s| s.has_property_stats() || s.has_class_stats())
+        .unwrap_or(false);
+
+    let original_patterns: Vec<GeneralPatternDisplay> = patterns
+        .iter()
+        .map(|p| build_general_pattern_display(p, stats))
+        .collect();
+
+    let reordered = reorder_patterns(patterns, stats, &HashSet::new());
+    let optimized_patterns: Vec<GeneralPatternDisplay> = reordered
+        .iter()
+        .map(|p| build_general_pattern_display(p, stats))
+        .collect();
+
+    let optimization = if patterns.len() <= 1 {
+        OptimizationStatus::Unchanged
+    } else {
+        let same = original_patterns
+            .iter()
+            .zip(optimized_patterns.iter())
+            .all(|(a, b)| a.pattern == b.pattern);
+        if same {
+            OptimizationStatus::Unchanged
+        } else {
+            OptimizationStatus::Reordered
+        }
+    };
+
+    GeneralExplainPlan {
+        optimization,
+        statistics_available,
+        original_patterns,
+        optimized_patterns,
+    }
+}
+
+/// Build display info for any pattern type
+fn build_general_pattern_display(
+    pattern: &Pattern,
+    stats: Option<&StatsView>,
+) -> GeneralPatternDisplay {
+    let cardinality = estimate_pattern(pattern, &HashSet::new(), stats);
+    let variables = pattern.variables();
+
+    let triple_detail = if let Pattern::Triple(tp) = pattern {
+        Some(build_pattern_display(tp, stats))
+    } else {
+        None
+    };
+
+    GeneralPatternDisplay {
+        pattern: format_general_pattern(pattern),
+        cardinality,
+        variables,
+        triple_detail,
+    }
+}
+
+/// Format any pattern type as a human-readable string
+pub fn format_general_pattern(pattern: &Pattern) -> String {
+    match pattern {
+        Pattern::Triple(tp) => format_pattern(tp),
+        Pattern::Filter(expr) => format!("FILTER({:?})", expr),
+        Pattern::Bind { var, expr } => format!("BIND({:?} AS ?v{})", expr, var.0),
+        Pattern::Values { vars, rows } => {
+            let var_names: Vec<String> = vars.iter().map(|v| format!("?v{}", v.0)).collect();
+            format!("VALUES ({}) {{ {} rows }}", var_names.join(" "), rows.len())
+        }
+        Pattern::Union(branches) => {
+            let branch_strs: Vec<String> = branches
+                .iter()
+                .map(|b| format!("{} patterns", b.len()))
+                .collect();
+            format!("UNION {{ {} }}", branch_strs.join(" | "))
+        }
+        Pattern::Optional(inner) => {
+            if inner.len() == 1 {
+                if let Some(tp) = inner[0].as_triple() {
+                    return format!("OPTIONAL {{ {} }}", format_pattern(tp));
+                }
+            }
+            format!("OPTIONAL {{ {} patterns }}", inner.len())
+        }
+        Pattern::Minus(inner) => format!("MINUS {{ {} patterns }}", inner.len()),
+        Pattern::Exists(inner) => format!("EXISTS {{ {} patterns }}", inner.len()),
+        Pattern::NotExists(inner) => format!("NOT EXISTS {{ {} patterns }}", inner.len()),
+        Pattern::Subquery(sq) => {
+            let var_names: Vec<String> = sq.select.iter().map(|v| format!("?v{}", v.0)).collect();
+            format!("SUBQUERY SELECT {} {{ ... }}", var_names.join(" "))
+        }
+        Pattern::PropertyPath(pp) => format!(
+            "PROPERTY PATH {} {:?}",
+            format_term(&pp.subject),
+            pp.modifier
+        ),
+        Pattern::IndexSearch(isp) => {
+            format!("INDEX SEARCH {}", isp.graph_source_id)
+        }
+        Pattern::VectorSearch(vsp) => {
+            format!("VECTOR SEARCH {}", vsp.graph_source_id)
+        }
+        Pattern::R2rml(r2rml) => {
+            format!("R2RML SCAN {}", r2rml.graph_source_id)
+        }
+        Pattern::GeoSearch(_) => "GEO SEARCH".to_string(),
+        Pattern::S2Search(_) => "S2 SEARCH".to_string(),
+        Pattern::Graph { name, patterns } => {
+            format!("GRAPH {:?} {{ {} patterns }}", name, patterns.len())
+        }
+        Pattern::Service(sp) => {
+            format!(
+                "SERVICE {:?} {{ {} patterns }}",
+                sp.endpoint,
+                sp.patterns.len()
+            )
+        }
+    }
+}
+
+impl fmt::Display for GeneralPatternDisplay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.pattern)?;
+
+        match &self.cardinality {
+            PatternEstimate::Source { row_count } => {
+                write!(f, " | category=Source row_count={row_count:.0}")?;
+            }
+            PatternEstimate::Reducer { multiplier } => {
+                write!(f, " | category=Reducer multiplier={multiplier:.2}")?;
+            }
+            PatternEstimate::Expander { multiplier } => {
+                write!(f, " | category=Expander multiplier={multiplier:.2}")?;
+            }
+            PatternEstimate::Deferred => {
+                write!(f, " | category=Deferred")?;
+            }
+        }
+
+        if let Some(detail) = &self.triple_detail {
+            write!(
+                f,
+                " type={:?} score={}",
+                detail.pattern_type, detail.selectivity_score
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Display for GeneralExplainPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "=== Query Optimization Explain (Generalized) ===")?;
+        writeln!(f)?;
+        writeln!(
+            f,
+            "Statistics available: {}",
+            if self.statistics_available {
+                "yes"
+            } else {
+                "no (using fallback estimates)"
+            }
+        )?;
+        writeln!(
+            f,
+            "Optimization: {}",
+            match self.optimization {
+                OptimizationStatus::Reordered => "patterns reordered",
+                OptimizationStatus::Unchanged => "order unchanged",
+            }
+        )?;
+        writeln!(f)?;
+
+        writeln!(f, "--- Original Pattern Order ---")?;
+        for (i, p) in self.original_patterns.iter().enumerate() {
+            writeln!(f, "  [{}] {}", i + 1, p)?;
+        }
+        writeln!(f)?;
+
+        writeln!(f, "--- Optimized Pattern Order ---")?;
+        for (i, p) in self.optimized_patterns.iter().enumerate() {
+            writeln!(f, "  [{}] {}", i + 1, p)?;
         }
 
         Ok(())
@@ -541,11 +762,17 @@ mod tests {
     fn test_pattern_type_classification() {
         // PropertyScan: ?s :p ?o
         let p1 = make_pattern(VarId(0), "name", VarId(1));
-        assert_eq!(classify_pattern(&p1), PatternType::PropertyScan);
+        assert_eq!(
+            classify_pattern(&p1, &HashSet::new()),
+            PatternType::PropertyScan
+        );
 
         // BoundSubject: s :p ?o
         let p2 = make_bound_subject_pattern(Sid::new(50, "person1"), "name", VarId(1));
-        assert_eq!(classify_pattern(&p2), PatternType::BoundSubject);
+        assert_eq!(
+            classify_pattern(&p2, &HashSet::new()),
+            PatternType::BoundSubject
+        );
 
         // BoundObject: ?s :p o
         let p3 = TriplePattern::new(
@@ -553,7 +780,10 @@ mod tests {
             Term::Sid(Sid::new(100, "name")),
             Term::Value(fluree_db_core::FlakeValue::String("Alice".into())),
         );
-        assert_eq!(classify_pattern(&p3), PatternType::BoundObject);
+        assert_eq!(
+            classify_pattern(&p3, &HashSet::new()),
+            PatternType::BoundObject
+        );
 
         // ExactMatch: s :p o
         let p4 = TriplePattern::new(
@@ -561,7 +791,10 @@ mod tests {
             Term::Sid(Sid::new(100, "name")),
             Term::Value(fluree_db_core::FlakeValue::String("Alice".into())),
         );
-        assert_eq!(classify_pattern(&p4), PatternType::ExactMatch);
+        assert_eq!(
+            classify_pattern(&p4, &HashSet::new()),
+            PatternType::ExactMatch
+        );
     }
 
     #[test]

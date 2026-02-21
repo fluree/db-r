@@ -15,6 +15,7 @@ use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::generate_commit_flakes;
 use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
 use std::sync::Arc;
+use tracing::Instrument;
 
 /// Receipt returned after a successful commit
 #[derive(Debug, Clone)]
@@ -168,7 +169,7 @@ where
         graph_delta,
     } = opts;
 
-    let commit_span = tracing::info_span!(
+    let commit_span = tracing::debug_span!(
         "txn_commit",
         alias = base.ledger_id(),
         base_t = base.t(),
@@ -178,213 +179,214 @@ where
         max_novelty_bytes = index_config.reindex_max_bytes,
         has_raw_txn = raw_txn.is_some(),
     );
-    let _commit_guard = commit_span.enter();
+    async move {
+        let commit_span = tracing::Span::current();
 
-    // 2. Check for empty transaction
-    if flakes.is_empty() {
-        return Err(TransactError::EmptyTransaction);
-    }
+        // 2. Check for empty transaction
+        if flakes.is_empty() {
+            return Err(TransactError::EmptyTransaction);
+        }
 
-    // 3. Check backpressure - current novelty at max
-    if base.at_max_novelty(index_config) {
-        return Err(TransactError::NoveltyAtMax);
-    }
+        // 3. Check backpressure - current novelty at max
+        if base.at_max_novelty(index_config) {
+            return Err(TransactError::NoveltyAtMax);
+        }
 
-    // 4. Predictive sizing - would these flakes reach or exceed max?
-    let delta_bytes: usize = flakes.iter().map(|f| f.size_bytes()).sum();
-    let current_bytes = base.novelty_size();
-    let max_bytes = index_config.reindex_max_bytes;
-    commit_span.record("flake_count", flakes.len());
-    commit_span.record("delta_bytes", delta_bytes);
-    commit_span.record("current_novelty_bytes", current_bytes);
-    if current_bytes + delta_bytes >= max_bytes {
-        return Err(TransactError::NoveltyWouldExceed {
-            current_bytes,
-            delta_bytes,
-            max_bytes,
-        });
-    }
+        // 4. Predictive sizing - would these flakes reach or exceed max?
+        let delta_bytes: usize = flakes.iter().map(|f| f.size_bytes()).sum();
+        let current_bytes = base.novelty_size();
+        let max_bytes = index_config.reindex_max_bytes;
+        commit_span.record("flake_count", flakes.len());
+        commit_span.record("delta_bytes", delta_bytes);
+        commit_span.record("current_novelty_bytes", current_bytes);
+        if current_bytes + delta_bytes >= max_bytes {
+            return Err(TransactError::NoveltyWouldExceed {
+                current_bytes,
+                delta_bytes,
+                max_bytes,
+            });
+        }
 
-    // 5. Verify sequencing
-    let current = {
-        let span = tracing::info_span!("commit_nameservice_lookup");
-        let _g = span.enter();
-        nameservice.lookup(base.ledger_id()).await?
-    };
-    {
-        let span = tracing::info_span!("commit_verify_sequencing");
-        let _g = span.enter();
-        verify_sequencing(&base, current.as_ref())?;
-    }
-
-    // 6. Build commit record
-    let new_t = base.t() + 1;
-    let flake_count = flakes.len();
-
-    // Capture namespace delta once:
-    // - write into commit record for persistence
-    // - apply to returned in-memory Db so subsequent operations (e.g., SPARQL/JSON-LD queries)
-    //   can encode IRIs without requiring a reload.
-    let ns_delta = {
-        let span = tracing::info_span!("commit_namespace_delta");
-        let _g = span.enter();
-        ns_registry.take_delta()
-    };
-
-    // Apply namespace delta to the in-memory Db immediately (Clojure parity).
-    for (code, prefix) in &ns_delta {
-        base.db.namespace_codes.insert(*code, prefix.clone());
-    }
-
-    // Generate ISO 8601 timestamp
-    // TODO: Refactor to accept an optional timestamp via CommitOpts instead of calling
-    // Utc::now() directly. This would enable deterministic commit hashes for testing
-    // (see fluree-db-api/tests/it_stable_hashes.rs) and allow callers to provide
-    // externally-sourced timestamps when needed.
-    let timestamp = Utc::now().to_rfc3339();
-
-    // Store original transaction JSON if provided (Clojure parity)
-    let txn_id: Option<ContentId> = if let Some(txn_json) = &raw_txn {
-        let (txn_bytes, res) = {
-            let span = tracing::info_span!("commit_write_raw_txn");
+        // 5. Verify sequencing
+        let current = nameservice
+            .lookup(base.ledger_id())
+            .instrument(tracing::debug_span!("commit_nameservice_lookup"))
+            .await?;
+        {
+            let span = tracing::debug_span!("commit_verify_sequencing");
             let _g = span.enter();
-            let txn_bytes = serde_json::to_vec(txn_json)?;
-            let res = storage
-                .content_write_bytes(ContentKind::Txn, base.ledger_id(), &txn_bytes)
-                .await?;
-            (txn_bytes, res)
+            verify_sequencing(&base, current.as_ref())?;
+        }
+
+        // 6. Build commit record
+        let new_t = base.t() + 1;
+        let flake_count = flakes.len();
+
+        // Capture namespace delta once:
+        // - write into commit record for persistence
+        // - apply to returned in-memory Db so subsequent operations (e.g., SPARQL/JSON-LD queries)
+        //   can encode IRIs without requiring a reload.
+        let ns_delta = {
+            let span = tracing::debug_span!("commit_namespace_delta");
+            let _g = span.enter();
+            ns_registry.take_delta()
         };
-        tracing::info!(raw_txn_bytes = txn_bytes.len(), "raw txn stored");
-        // Derive ContentId from the content hash in the write result
-        ContentId::from_hex_digest(CODEC_FLUREE_TXN, &res.content_hash)
-    } else {
-        None
-    };
 
-    let mut commit_record = {
-        let span = tracing::info_span!("commit_build_record");
-        let _g = span.enter();
-        Commit::new(new_t, flakes)
-            .with_namespace_delta(ns_delta)
-            .with_time(timestamp)
-    };
+        // Apply namespace delta to the in-memory Db immediately (Clojure parity).
+        for (code, prefix) in &ns_delta {
+            base.db.namespace_codes.insert(*code, prefix.clone());
+        }
 
-    // Add txn CID to commit record (must be before computing commit ID)
-    if let Some(txn_cid) = txn_id {
-        commit_record = commit_record.with_txn(txn_cid);
-    }
+        // Generate ISO 8601 timestamp
+        // TODO: Refactor to accept an optional timestamp via CommitOpts instead of calling
+        // Utc::now() directly. This would enable deterministic commit hashes for testing
+        // (see fluree-db-api/tests/it_stable_hashes.rs) and allow callers to provide
+        // externally-sourced timestamps when needed.
+        let timestamp = Utc::now().to_rfc3339();
 
-    // Add txn signature if provided (audit metadata)
-    if let Some(txn_sig) = txn_signature {
-        commit_record = commit_record.with_txn_signature(txn_sig);
-    }
+        // Store original transaction JSON if provided (Clojure parity)
+        let txn_id: Option<ContentId> = if let Some(txn_json) = &raw_txn {
+            let (txn_bytes, res) = async {
+                let txn_bytes = serde_json::to_vec(txn_json)?;
+                let res = storage
+                    .content_write_bytes(ContentKind::Txn, base.ledger_id(), &txn_bytes)
+                    .await?;
+                Ok::<_, TransactError>((txn_bytes, res))
+            }
+            .instrument(tracing::debug_span!("commit_write_raw_txn"))
+            .await?;
+            tracing::info!(raw_txn_bytes = txn_bytes.len(), "raw txn stored");
+            // Derive ContentId from the content hash in the write result
+            ContentId::from_hex_digest(CODEC_FLUREE_TXN, &res.content_hash)
+        } else {
+            None
+        };
 
-    // Add user-provided transaction metadata
-    if !txn_meta.is_empty() {
-        commit_record = commit_record.with_txn_meta(txn_meta);
-    }
+        let mut commit_record = {
+            let span = tracing::debug_span!("commit_build_record");
+            let _g = span.enter();
+            Commit::new(new_t, flakes)
+                .with_namespace_delta(ns_delta)
+                .with_time(timestamp)
+        };
 
-    // Add named graph delta (g_id -> IRI mappings)
-    if !graph_delta.is_empty() {
-        commit_record.graph_delta = graph_delta;
-    }
+        // Add txn CID to commit record (must be before computing commit ID)
+        if let Some(txn_cid) = txn_id {
+            commit_record = commit_record.with_txn(txn_cid);
+        }
 
-    // Build previous commit reference from the head commit's ContentId.
-    if let Some(cid) = base.head_commit_id.clone() {
-        commit_record = commit_record.with_previous_ref(CommitRef::new(cid));
-    }
+        // Add txn signature if provided (audit metadata)
+        if let Some(txn_sig) = txn_signature {
+            commit_record = commit_record.with_txn_signature(txn_sig);
+        }
 
-    // 7. Content-address + write (storage-owned)
-    //
-    // The on-disk commit blob is written *without* `id` set (to avoid
-    // self-reference). We derive the ContentId from the blob's trailing
-    // SHA-256 hash after writing.
+        // Add user-provided transaction metadata
+        if !txn_meta.is_empty() {
+            commit_record = commit_record.with_txn_meta(txn_meta);
+        }
 
-    let (commit_cid, commit_hash_hex, bytes) = {
-        let span = tracing::info_span!("commit_write_commit_blob");
-        let _g = span.enter();
-        let signing = signing_key
-            .as_ref()
-            .map(|key| (key.as_ref(), base.ledger_id()));
-        let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
-        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
-            .expect("valid SHA-256 hex from commit writer");
-        (commit_cid, result.content_hash_hex, result.bytes)
-    };
+        // Add named graph delta (g_id -> IRI mappings)
+        if !graph_delta.is_empty() {
+            commit_record.graph_delta = graph_delta;
+        }
 
-    storage
-        .content_write_bytes_with_hash(
-            ContentKind::Commit,
-            base.ledger_id(),
-            &commit_hash_hex,
-            &bytes,
-        )
-        .await?;
-    tracing::info!(commit_bytes = bytes.len(), "commit blob stored");
+        // Build previous commit reference from the head commit's ContentId.
+        if let Some(cid) = base.head_commit_id.clone() {
+            commit_record = commit_record.with_previous_ref(CommitRef::new(cid));
+        }
 
-    // Update in-memory commit with its ContentId
-    commit_record.id = Some(commit_cid.clone());
+        // 7. Content-address + write (storage-owned)
+        //
+        // The on-disk commit blob is written *without* `id` set (to avoid
+        // self-reference). We derive the ContentId from the blob's trailing
+        // SHA-256 hash after writing.
 
-    // 8. Publish to nameservice
-    {
-        let span = tracing::info_span!("commit_publish_nameservice");
-        let _g = span.enter();
+        let (commit_cid, commit_hash_hex, bytes) = {
+            let span = tracing::debug_span!("commit_write_commit_blob");
+            let _g = span.enter();
+            let signing = signing_key
+                .as_ref()
+                .map(|key| (key.as_ref(), base.ledger_id()));
+            let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
+            let commit_cid =
+                ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
+                    .expect("valid SHA-256 hex from commit writer");
+            (commit_cid, result.content_hash_hex, result.bytes)
+        };
+
+        storage
+            .content_write_bytes_with_hash(
+                ContentKind::Commit,
+                base.ledger_id(),
+                &commit_hash_hex,
+                &bytes,
+            )
+            .await?;
+        tracing::info!(commit_bytes = bytes.len(), "commit blob stored");
+
+        // Update in-memory commit with its ContentId
+        commit_record.id = Some(commit_cid.clone());
+
+        // 8. Publish to nameservice
         nameservice
             .publish_commit(base.ledger_id(), new_t, &commit_cid)
+            .instrument(tracing::debug_span!("commit_publish_nameservice"))
             .await?;
+
+        // 9. Generate commit metadata flakes (Clojure parity)
+        // Note: We merge these into novelty only, not into commit_record.flakes
+        // (matching Clojure's behavior where metadata flakes are derived separately)
+        let commit_metadata_flakes = {
+            let span = tracing::debug_span!("commit_generate_metadata_flakes");
+            let _g = span.enter();
+            generate_commit_flakes(&commit_record, base.ledger_id(), new_t)
+        };
+        tracing::info!(
+            metadata_flakes = commit_metadata_flakes.len(),
+            "commit metadata flakes generated"
+        );
+
+        // 10. Build new state - merge commit_metadata_flakes with transaction flakes
+        let mut all_flakes = std::mem::take(&mut commit_record.flakes);
+        all_flakes.extend(commit_metadata_flakes);
+
+        // 10.1 Populate DictNovelty with subjects/strings from this commit
+        let mut dict_novelty = base.dict_novelty.clone();
+        {
+            let span = tracing::debug_span!("commit_populate_dict_novelty");
+            let _g = span.enter();
+            populate_dict_novelty(Arc::make_mut(&mut dict_novelty), &all_flakes);
+        }
+
+        let mut new_novelty = Arc::clone(&base.novelty);
+        {
+            let span = tracing::debug_span!("commit_apply_to_novelty");
+            let _g = span.enter();
+            Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t)?;
+        }
+
+        let new_state = LedgerState {
+            db: base.db,
+            novelty: new_novelty,
+            dict_novelty,
+            head_commit_id: Some(commit_cid.clone()),
+            head_index_id: base.head_index_id,
+            ns_record: base.ns_record,
+            binary_store: base.binary_store,
+            default_context: base.default_context,
+            spatial_indexes: base.spatial_indexes,
+        };
+
+        let receipt = CommitReceipt {
+            commit_id: commit_cid,
+            t: new_t,
+            flake_count,
+        };
+
+        Ok((receipt, new_state))
     }
-
-    // 9. Generate commit metadata flakes (Clojure parity)
-    // Note: We merge these into novelty only, not into commit_record.flakes
-    // (matching Clojure's behavior where metadata flakes are derived separately)
-    let commit_metadata_flakes = {
-        let span = tracing::info_span!("commit_generate_metadata_flakes");
-        let _g = span.enter();
-        generate_commit_flakes(&commit_record, base.ledger_id(), new_t)
-    };
-    tracing::info!(
-        metadata_flakes = commit_metadata_flakes.len(),
-        "commit metadata flakes generated"
-    );
-
-    // 10. Build new state - merge commit_metadata_flakes with transaction flakes
-    let mut all_flakes = std::mem::take(&mut commit_record.flakes);
-    all_flakes.extend(commit_metadata_flakes);
-
-    // 10.1 Populate DictNovelty with subjects/strings from this commit
-    let mut dict_novelty = base.dict_novelty.clone();
-    {
-        let span = tracing::info_span!("commit_populate_dict_novelty");
-        let _g = span.enter();
-        populate_dict_novelty(Arc::make_mut(&mut dict_novelty), &all_flakes);
-    }
-
-    let mut new_novelty = Arc::clone(&base.novelty);
-    {
-        let span = tracing::info_span!("commit_apply_to_novelty");
-        let _g = span.enter();
-        Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t)?;
-    }
-
-    let new_state = LedgerState {
-        db: base.db,
-        novelty: new_novelty,
-        dict_novelty,
-        head_commit_id: Some(commit_cid.clone()),
-        head_index_id: base.head_index_id,
-        ns_record: base.ns_record,
-        binary_store: base.binary_store,
-        default_context: base.default_context,
-        spatial_indexes: base.spatial_indexes,
-    };
-
-    let receipt = CommitReceipt {
-        commit_id: commit_cid,
-        t: new_t,
-        flake_count,
-    };
-
-    Ok((receipt, new_state))
+    .instrument(commit_span)
+    .await
 }
 
 /// Populate DictNovelty with subjects and strings from committed flakes.

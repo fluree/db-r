@@ -903,8 +903,8 @@ curl -X POST http://localhost:8090/fluree/transact \
 ## Best Practices
 
 1. **Use PREFIX Declarations**: Makes queries readable
-2. **Optimize Patterns**: Order patterns for efficient execution
-3. **Flexible FILTER Placement**: Filters can be placed anywhere in the WHERE clause - the query engine automatically applies each filter as soon as all its required variables are bound
+2. **Automatic Pattern Optimization**: The query planner automatically reorders patterns for efficient execution using statistics-driven cardinality estimates
+3. **Flexible FILTER Placement**: Filters can be placed anywhere in the WHERE clause — the query engine automatically applies each filter as soon as all its required variables are bound
 4. **Limit Results**: Use LIMIT for large result sets
 5. **Avoid Cartesian Products**: Structure queries to avoid large joins
 

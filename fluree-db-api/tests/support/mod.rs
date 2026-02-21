@@ -7,6 +7,8 @@
 // don't reference every helper.
 #![allow(dead_code)]
 
+pub mod span_capture;
+
 use fluree_db_api::{IndexConfig, LedgerState, Novelty};
 use fluree_db_core::{Db, MemoryStorage};
 use serde_json::{json, Value as JsonValue};

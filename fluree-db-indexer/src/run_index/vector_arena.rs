@@ -571,7 +571,9 @@ impl VectorSlice {
     #[inline]
     pub fn as_f32(&self) -> &[f32] {
         // Safety: offset was validated at construction time in lookup_vector().
-        self.shard.get_f32(self.offset).unwrap()
+        self.shard
+            .get_f32(self.offset)
+            .expect("offset validated at construction in lookup_vector()")
     }
 }
 
