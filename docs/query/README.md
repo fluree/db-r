@@ -190,9 +190,20 @@ WHERE {
 ## Query Performance
 
 Fluree's query engine is optimized for:
-- **Index Selection**: Automatically chooses optimal indexes
-- **Join Optimization**: Efficient join algorithms
-- **Filter Optimization**: Filters are automatically applied as soon as their required variables are bound, regardless of where they appear in the query
+- **Automatic Join Ordering**: The planner reorders all WHERE-clause patterns
+  (triples, UNION, OPTIONAL, MINUS, search patterns, and more) using
+  statistics-driven cardinality estimates. When database statistics are
+  available, it uses HLL-derived property counts; otherwise it falls back to
+  heuristic constants. Estimates are context-aware — the planner tracks which
+  variables are already bound and adjusts costs accordingly, so a triple
+  whose subject is bound from an earlier pattern is scored as a cheap
+  per-subject lookup rather than a full scan.
+- **Index Selection**: Automatically chooses optimal indexes (SPOT, POST,
+  OPST, PSOT) based on which triple components are bound.
+- **Filter Optimization**: Filters are automatically applied as soon as their
+  required variables are bound, regardless of where they appear in the query.
+  Range-safe filters are pushed down to index scans, and filters are
+  evaluated inline during joins when possible.
 - **Streaming Execution**: Results stream as they're computed
 - **Parallel Processing**: Parallel execution where possible
 

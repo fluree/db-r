@@ -172,6 +172,10 @@ enum CacheKey {
     /// BM25 posting leaflet. Key = xxh3_128(CAS CID bytes).
     /// Content-addressed → immutable, no epoch/time dimension needed.
     Bm25Leaflet(u128),
+    /// Parsed vector shard. Key = xxh3_128(shard identity bytes).
+    /// For CAS-loaded stores: CID bytes. For local builds: CAS address
+    /// string from the manifest. Immutable once written.
+    VectorShard(u128),
 }
 
 // ============================================================================
@@ -256,6 +260,7 @@ enum CachedEntry {
     R2(CachedRegion2),
     DictLeaf(Arc<[u8]>),
     Bm25Leaflet(Arc<[u8]>),
+    VectorShard(Arc<super::vector_arena::VectorShard>),
 }
 
 impl CachedEntry {
@@ -266,6 +271,12 @@ impl CachedEntry {
             CachedEntry::R2(r2) => r2.byte_size(),
             CachedEntry::DictLeaf(bytes) => bytes.len(),
             CachedEntry::Bm25Leaflet(bytes) => bytes.len(),
+            CachedEntry::VectorShard(shard) => {
+                // Use capacity() for conservative accounting — correct even if
+                // the parser's allocation strategy changes over time.
+                std::mem::size_of::<super::vector_arena::VectorShard>()
+                    + shard.values.capacity() * std::mem::size_of::<f32>()
+            }
         }
     }
 }
@@ -414,6 +425,43 @@ impl LeafletCache {
     pub fn insert_bm25_leaflet(&self, key: u128, bytes: Arc<[u8]>) {
         self.inner
             .insert(CacheKey::Bm25Leaflet(key), CachedEntry::Bm25Leaflet(bytes));
+    }
+
+    // ========================================================================
+    // Vector shard cache
+    // ========================================================================
+
+    /// Check if a parsed vector shard is cached (read-only, no insertion).
+    pub fn get_vector_shard(&self, key: u128) -> Option<Arc<super::vector_arena::VectorShard>> {
+        match self.inner.get(&CacheKey::VectorShard(key)) {
+            Some(CachedEntry::VectorShard(shard)) => Some(shard),
+            _ => None,
+        }
+    }
+
+    /// Get or load a parsed vector shard with single-flight and error propagation.
+    ///
+    /// Uses `try_get_with` so that only one thread loads a given shard;
+    /// concurrent callers block on the same initializer. If the load
+    /// fails, nothing is cached and the error propagates.
+    ///
+    /// Key should be `xxh3_128(cas_cid.as_bytes())`.
+    pub fn try_get_or_load_vector_shard<F>(
+        &self,
+        key: u128,
+        load_fn: F,
+    ) -> io::Result<Arc<super::vector_arena::VectorShard>>
+    where
+        F: FnOnce() -> io::Result<Arc<super::vector_arena::VectorShard>>,
+    {
+        let result = self.inner.try_get_with(CacheKey::VectorShard(key), || {
+            load_fn().map(CachedEntry::VectorShard)
+        });
+        match result {
+            Ok(CachedEntry::VectorShard(shard)) => Ok(shard),
+            Ok(_) => unreachable!("VectorShard key always maps to VectorShard entry"),
+            Err(arc_err) => Err(io::Error::new(arc_err.kind(), arc_err.to_string())),
+        }
     }
 
     // ========================================================================
@@ -655,6 +703,102 @@ mod tests {
         let other = b"sha256:xyz789";
         let key3 = LeafletCache::cid_cache_key(other);
         assert_ne!(key1, key3);
+    }
+
+    #[test]
+    fn test_vector_shard_insert_get() {
+        let cache = LeafletCache::with_max_bytes(10 * 1024 * 1024);
+
+        // Miss on empty cache.
+        assert!(cache.get_vector_shard(42).is_none());
+
+        // Load and retrieve via try_get_or_load.
+        let shard = Arc::new(super::super::vector_arena::VectorShard {
+            dims: 3,
+            count: 2,
+            values: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        });
+        let shard_clone = shard.clone();
+        let got = cache
+            .try_get_or_load_vector_shard(42, move || Ok(shard_clone))
+            .unwrap();
+        assert_eq!(got.dims, 3);
+        assert_eq!(got.count, 2);
+        assert_eq!(got.get_f32(0).unwrap(), &[1.0f32, 2.0, 3.0]);
+        assert_eq!(got.get_f32(1).unwrap(), &[4.0f32, 5.0, 6.0]);
+
+        // Hit — should not call load fn.
+        let got2 = cache
+            .try_get_or_load_vector_shard(42, || {
+                panic!("should not be called on cache hit");
+            })
+            .unwrap();
+        assert_eq!(got2.count, 2);
+
+        // Read-only get also works.
+        assert!(cache.get_vector_shard(42).is_some());
+
+        // Different key → miss.
+        assert!(cache.get_vector_shard(99).is_none());
+    }
+
+    #[test]
+    fn test_vector_shard_coexists_with_other_types() {
+        let cache = LeafletCache::with_max_bytes(10 * 1024 * 1024);
+        let r1_key = make_key(42, 0, 100, 0);
+
+        // Insert R1, DictLeaf, BM25Leaflet, and VectorShard — all share one pool.
+        cache.get_or_decode_r1(r1_key.clone(), || make_r1(50));
+
+        let dict_data: Arc<[u8]> = Arc::from(vec![1u8; 256].into_boxed_slice());
+        cache
+            .try_get_or_load_dict_leaf(999, || Ok(dict_data))
+            .unwrap();
+
+        let bm25_data: Arc<[u8]> = vec![2u8; 512].into_boxed_slice().into();
+        cache.insert_bm25_leaflet(888, bm25_data);
+
+        let shard = Arc::new(super::super::vector_arena::VectorShard {
+            dims: 2,
+            count: 1,
+            values: vec![0.5, 0.5],
+        });
+        cache
+            .try_get_or_load_vector_shard(777, move || Ok(shard))
+            .unwrap();
+
+        // All four retrievable from the same pool.
+        assert!(cache.get_r1(&r1_key).is_some());
+        assert!(cache.get_dict_leaf(999).is_some());
+        assert!(cache.get_bm25_leaflet(888).is_some());
+        assert!(cache.get_vector_shard(777).is_some());
+
+        // No cross-contamination: VectorShard key 999 is not the same as DictLeaf key 999.
+        assert!(cache.get_vector_shard(999).is_none());
+    }
+
+    #[test]
+    fn test_vector_shard_load_error_not_cached() {
+        let cache = LeafletCache::with_max_bytes(10 * 1024 * 1024);
+
+        // Fallible load that fails → nothing cached.
+        let result = cache.try_get_or_load_vector_shard(42, || {
+            Err(io::Error::new(io::ErrorKind::NotFound, "shard read failed"))
+        });
+        assert!(result.is_err());
+        assert!(cache.get_vector_shard(42).is_none());
+
+        // Subsequent successful load → now cached.
+        let shard = Arc::new(super::super::vector_arena::VectorShard {
+            dims: 2,
+            count: 1,
+            values: vec![1.0, 2.0],
+        });
+        let got = cache
+            .try_get_or_load_vector_shard(42, move || Ok(shard))
+            .unwrap();
+        assert_eq!(got.dims, 2);
+        assert!(cache.get_vector_shard(42).is_some());
     }
 
     #[test]

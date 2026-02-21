@@ -52,6 +52,7 @@
   - [Storage-agnostic commits and sync](design/storage-agnostic-commits-and-sync.md)
   - [ContentId and ContentStore](design/content-id-and-contentstore.md)
   - [Index format](design/index-format.md)
+  - [Namespace allocation and fallback modes](design/namespace-allocation.md)
   - [Storage traits](design/storage-traits.md)
 
 - [HTTP API (fluree-db-server)](api/README.md)
@@ -115,6 +116,7 @@
 - [Troubleshooting](troubleshooting/README.md)
   - [Common errors](troubleshooting/common-errors.md)
   - [Debugging queries](troubleshooting/debugging-queries.md)
+  - [Performance investigation with distributed tracing](troubleshooting/performance-tracing.md)
 
 - [Reference](reference/README.md)
   - [Glossary](reference/glossary.md)
@@ -127,5 +129,6 @@
 - [Contributing](contributing/README.md)
   - [Dev setup](contributing/dev-setup.md)
   - [Tests](contributing/tests.md)
+  - [Adding tracing spans](contributing/tracing-guide.md)
   - [Design notes (repo docs)](contributing/design-notes.md)
 

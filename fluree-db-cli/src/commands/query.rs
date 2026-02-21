@@ -5,10 +5,6 @@ use crate::error::{CliError, CliResult};
 use crate::input;
 use crate::output::{self, OutputFormatKind};
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_api::QueryResult;
-use fluree_db_core::{Db, FlakeValue};
-use fluree_db_indexer::run_index::BinaryIndexStore;
-use fluree_db_query::binding::Binding;
 use std::time::Instant;
 
 /// Parse a `--at` value into a `TimeSpec`.
@@ -58,106 +54,6 @@ fn format_count(n: usize) -> String {
     result
 }
 
-fn sanitize_tsv_cell(s: &str) -> String {
-    // Keep TSV one-row-per-line even when values contain whitespace.
-    s.replace(['\t', '\n', '\r'], " ")
-}
-
-fn sid_to_iri(db: &Db, sid: &fluree_db_core::Sid) -> String {
-    match db.namespace_codes.get(&sid.namespace_code) {
-        Some(prefix) => format!("{}{}", prefix, sid.name),
-        None => format!("{}:{}", sid.namespace_code, sid.name),
-    }
-}
-
-fn flake_value_to_cell(v: &FlakeValue, db: &Db) -> String {
-    match v {
-        FlakeValue::String(s) => sanitize_tsv_cell(s),
-        FlakeValue::Ref(sid) => sanitize_tsv_cell(&sid_to_iri(db, sid)),
-        other => sanitize_tsv_cell(&other.to_string()),
-    }
-}
-
-fn binding_to_tsv_cell(b: &Binding, db: &Db, store: Option<&BinaryIndexStore>) -> String {
-    match b {
-        Binding::Unbound | Binding::Poisoned => String::new(),
-        Binding::Sid(sid) => sanitize_tsv_cell(&sid_to_iri(db, sid)),
-        Binding::IriMatch { iri, .. } => sanitize_tsv_cell(iri),
-        Binding::Iri(iri) => sanitize_tsv_cell(iri),
-        Binding::Lit { val, .. } => flake_value_to_cell(val, db),
-        Binding::EncodedSid { s_id } => {
-            if let Some(store) = store {
-                match store.resolve_subject_iri(*s_id) {
-                    Ok(iri) => sanitize_tsv_cell(&iri),
-                    Err(_) => sanitize_tsv_cell(&format!("{b:?}")),
-                }
-            } else {
-                sanitize_tsv_cell(&format!("{b:?}"))
-            }
-        }
-        Binding::EncodedPid { p_id } => {
-            if let Some(store) = store {
-                match store.resolve_predicate_iri(*p_id) {
-                    Some(iri) => sanitize_tsv_cell(iri),
-                    None => sanitize_tsv_cell(&format!("{b:?}")),
-                }
-            } else {
-                sanitize_tsv_cell(&format!("{b:?}"))
-            }
-        }
-        Binding::EncodedLit {
-            o_kind,
-            o_key,
-            p_id,
-            ..
-        } => {
-            if let Some(store) = store {
-                match store.decode_value(*o_kind, *o_key, *p_id) {
-                    Ok(v) => flake_value_to_cell(&v, db),
-                    Err(_) => sanitize_tsv_cell(&format!("{b:?}")),
-                }
-            } else {
-                sanitize_tsv_cell(&format!("{b:?}"))
-            }
-        }
-        // Any remaining exotic variants: show debug without materializing full result JSON.
-        other => sanitize_tsv_cell(&format!("{other:?}")),
-    }
-}
-
-fn format_bench_tsv(result: &QueryResult, db: &Db, limit: usize) -> (String, usize) {
-    let total_rows = result.row_count();
-    let store = result.binary_store.as_deref();
-    let headers: Vec<&str> = result.select.iter().map(|&v| result.vars.name(v)).collect();
-
-    let mut out = String::new();
-    out.push_str(&headers.join("\t"));
-    out.push('\n');
-
-    let mut printed = 0usize;
-    'batches: for batch in &result.batches {
-        for row in 0..batch.len() {
-            for (i, &var) in result.select.iter().enumerate() {
-                if i > 0 {
-                    out.push('\t');
-                }
-                let cell = batch
-                    .get(row, var)
-                    .map(|b| binding_to_tsv_cell(b, db, store))
-                    .unwrap_or_default();
-                out.push_str(&cell);
-            }
-            out.push('\n');
-            printed += 1;
-            if printed >= limit {
-                break 'batches;
-            }
-        }
-    }
-
-    (out, total_rows)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     args: &[String],
@@ -188,9 +84,10 @@ pub async fn run(
         "json" => OutputFormatKind::Json,
         "table" => OutputFormatKind::Table,
         "csv" => OutputFormatKind::Csv,
+        "tsv" => OutputFormatKind::Tsv,
         other => {
             return Err(CliError::Usage(format!(
-                "unknown output format '{other}'; valid formats: json, table, csv"
+                "unknown output format '{other}'; valid formats: json, table, csv, tsv"
             )));
         }
     };
@@ -218,6 +115,13 @@ pub async fn run(
             if at.is_some() {
                 return Err(CliError::Usage(
                     "time-travel (--at) is not supported for tracked ledgers".to_string(),
+                ));
+            }
+            if matches!(output_format, OutputFormatKind::Tsv | OutputFormatKind::Csv) {
+                return Err(CliError::Usage(
+                    "--format tsv/csv is not supported for tracked (remote) ledgers; \
+                     use json or table instead"
+                        .to_string(),
                 ));
             }
 
@@ -307,11 +211,35 @@ pub async fn run(
                     }
                     detect::QueryFormat::JsonLd => {
                         // JSON-LD can be nested; keep bench output in the lightweight TSV form.
-                        let (text, total_rows) = format_bench_tsv(&result, &view.db, BENCH_ROWS);
+                        let (text, total_rows) = result.to_tsv_limited(&view.db, BENCH_ROWS)?;
                         print!("{text}");
                         print_footer(total_rows, Some(BENCH_ROWS), elapsed);
                     }
                 }
+            } else if matches!(output_format, OutputFormatKind::Tsv | OutputFormatKind::Csv) {
+                // Delimited fast path: write bytes directly to stdout (no JSON intermediate).
+                let fmt_name = if output_format == OutputFormatKind::Tsv {
+                    "tsv"
+                } else {
+                    "csv"
+                };
+                let total_rows = result.row_count();
+                let fmt_timer = Instant::now();
+                let bytes = if output_format == OutputFormatKind::Tsv {
+                    result.to_tsv_bytes(&view.db)?
+                } else {
+                    result.to_csv_bytes(&view.db)?
+                };
+                let fmt_elapsed = fmt_timer.elapsed();
+                use std::io::Write;
+                std::io::stdout().write_all(&bytes)?;
+                eprintln!(
+                    "({} rows, query: {}, {}: {})",
+                    format_count(total_rows),
+                    format_duration(elapsed),
+                    fmt_name,
+                    format_duration(fmt_elapsed),
+                );
             } else {
                 // JSON-LD queries can produce nested graph crawl results; always render as JSON.
                 let output_format = if query_format == detect::QueryFormat::JsonLd {
@@ -325,24 +253,38 @@ pub async fn run(
                     && output_format == OutputFormatKind::Table
                     && limit.is_none()
                 {
+                    let render_timer = Instant::now();
                     if let Some(output) =
                         output::format_sparql_table_from_result(&result, &view.db, None)?
                     {
+                        let render_elapsed = render_timer.elapsed();
                         println!("{}", output.text);
-                        print_footer(output.total_rows, limit, elapsed);
+                        eprintln!(
+                            "({} rows, query: {}, render: {})",
+                            format_count(output.total_rows),
+                            format_duration(elapsed),
+                            format_duration(render_elapsed),
+                        );
                         return Ok(());
                     }
                 }
 
                 // Full formatting path
+                let render_timer = Instant::now();
                 let formatted_json = match query_format {
                     detect::QueryFormat::Sparql => result.to_sparql_json(&view.db)?,
                     detect::QueryFormat::JsonLd => result.to_jsonld_async(&view.db).await?,
                 };
                 let output =
                     output::format_result(&formatted_json, output_format, query_format, limit)?;
+                let render_elapsed = render_timer.elapsed();
                 println!("{}", output.text);
-                print_footer(output.total_rows, limit, elapsed);
+                eprintln!(
+                    "({} rows, query: {}, render: {})",
+                    format_count(output.total_rows),
+                    format_duration(elapsed),
+                    format_duration(render_elapsed),
+                );
             }
         }
     }

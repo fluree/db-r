@@ -1,16 +1,27 @@
 //! Query result formatting
 //!
-//! This module provides formatters for converting `QueryResult` to various JSON formats:
+//! This module provides formatters for converting `QueryResult` to various output formats:
 //!
+//! **JSON formats** (produce `serde_json::Value`):
 //! - **JSON-LD Query** (`OutputFormat::JsonLd`): Simple JSON with compact IRIs
 //! - **SPARQL JSON** (`OutputFormat::SparqlJson`): W3C SPARQL 1.1 Query Results JSON
 //! - **TypedJson** (`OutputFormat::TypedJson`): Always includes explicit datatypes
+//!
+//! **Delimited-text formats** (produce `String` / `Vec<u8>` directly):
+//! - **TSV** (`OutputFormat::Tsv`): Tab-separated values
+//! - **CSV** (`OutputFormat::Csv`): Comma-separated values (RFC 4180)
 //!
 //! # Sync vs Async Formatting
 //!
 //! Most queries can use the synchronous `format_results()` function. However, **graph crawl
 //! queries** require async database access for property expansion and must use
 //! `format_results_async()` instead.
+//!
+//! # Delimited-Text Fast Path
+//!
+//! TSV and CSV bypass JSON DOM construction and JSON serialization.
+//! Use `format_results_string()` or `QueryResult::to_tsv()` / `to_csv()` —
+//! **not** `format_results()` (which returns `JsonValue`).
 //!
 //! # Example
 //!
@@ -22,11 +33,16 @@
 //!
 //! // For graph crawl queries (async)
 //! let json = format_results_async(&result, &parsed.context, &ledger.db, &FormatterConfig::jsonld()).await?;
+//!
+//! // For TSV/CSV (high-performance)
+//! let tsv = result.to_tsv(&ledger.db)?;
+//! let csv = result.to_csv(&ledger.db)?;
 //! ```
 
 pub mod config;
 mod construct;
 pub mod datatype;
+pub mod delimited;
 mod graph_crawl;
 pub mod iri;
 mod jsonld;
@@ -87,6 +103,15 @@ pub fn format_results(
     db: &Db,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
+    // Delimited-text formats produce bytes/String, not JsonValue. Reject early.
+    if matches!(config.format, OutputFormat::Tsv | OutputFormat::Csv) {
+        return Err(FormatError::InvalidBinding(format!(
+            "{:?} format produces bytes/String, not JsonValue. \
+             Use format_results_string() or QueryResult::to_tsv()/to_csv() instead.",
+            config.format
+        )));
+    }
+
     let compactor = IriCompactor::new(db.namespaces(), context);
 
     // CONSTRUCT queries have dedicated output format
@@ -121,6 +146,9 @@ pub fn format_results(
         OutputFormat::JsonLd => jsonld::format(result, &compactor, config),
         OutputFormat::SparqlJson => sparql::format(result, &compactor, config),
         OutputFormat::TypedJson => typed::format(result, &compactor, config),
+        OutputFormat::Tsv | OutputFormat::Csv => {
+            unreachable!("Delimited formats rejected before dispatch")
+        }
     }
 }
 
@@ -136,6 +164,13 @@ pub fn format_results_string(
     db: &Db,
     config: &FormatterConfig,
 ) -> Result<String> {
+    // Delimited-text fast-path: skip JSON DOM and JSON serialization entirely
+    match config.format {
+        OutputFormat::Tsv => return delimited::format_tsv(result, db),
+        OutputFormat::Csv => return delimited::format_csv(result, db),
+        _ => {}
+    }
+
     let value = format_results(result, context, db, config)?;
 
     if config.pretty {
@@ -180,6 +215,15 @@ pub async fn format_results_async(
     policy: Option<&fluree_db_policy::PolicyContext>,
     tracker: Option<&Tracker>,
 ) -> Result<JsonValue> {
+    // Delimited-text formats produce bytes/String, not JsonValue. Reject early.
+    if matches!(config.format, OutputFormat::Tsv | OutputFormat::Csv) {
+        return Err(FormatError::InvalidBinding(format!(
+            "{:?} format produces bytes/String, not JsonValue. \
+             Use format_results_string() or QueryResult::to_tsv()/to_csv() instead.",
+            config.format
+        )));
+    }
+
     let compactor = IriCompactor::new(db.namespaces(), context);
 
     // CONSTRUCT queries have dedicated output format (sync, no DB access needed)
@@ -221,6 +265,9 @@ pub async fn format_results_async(
         OutputFormat::JsonLd => jsonld::format(result, &compactor, config),
         OutputFormat::SparqlJson => sparql::format(result, &compactor, config),
         OutputFormat::TypedJson => typed::format(result, &compactor, config),
+        OutputFormat::Tsv | OutputFormat::Csv => {
+            unreachable!("Delimited formats rejected before dispatch")
+        }
     }
 }
 
@@ -242,6 +289,13 @@ pub async fn format_results_string_async(
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
 ) -> Result<String> {
+    // Delimited-text fast-path: skip JSON DOM and JSON serialization entirely
+    match config.format {
+        OutputFormat::Tsv => return delimited::format_tsv(result, db),
+        OutputFormat::Csv => return delimited::format_csv(result, db),
+        _ => {}
+    }
+
     let value = format_results_async(result, context, db, config, policy, None).await?;
 
     if config.pretty {

@@ -24,9 +24,10 @@
 //! - **Overlay merge** — translates Flake overlay ops to integer-ID space
 //!   and merges with decoded leaflet columns at query time
 
-use crate::binding::{Batch, Binding, BindingRow};
+use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
+use crate::expression::passes_filters;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
@@ -171,6 +172,15 @@ pub struct BinaryScanOperator {
 }
 
 impl BinaryScanOperator {
+    /// Check whether a row should be skipped due to inline filters.
+    fn should_skip_bindings(
+        &self,
+        bindings: &[Binding],
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> bool {
+        !passes_filters(&self.filters, &self.schema, bindings, ctx)
+    }
+
     /// Create a new BinaryScanOperator for a triple pattern.
     ///
     /// The `store` must be loaded with indexes for the relevant sort orders.
@@ -611,7 +621,6 @@ impl BinaryScanOperator {
         ctx: Option<&ExecutionContext<'_>>,
     ) -> Result<usize> {
         let mut produced = 0;
-        let has_filters = !self.filters.is_empty();
 
         for row in 0..decoded.row_count {
             if self.should_skip_row(decoded, row)? {
@@ -635,17 +644,8 @@ impl BinaryScanOperator {
                 count += 1;
             }
 
-            // Evaluate filters if present
-            if has_filters {
-                let binding_row = BindingRow::new(&self.schema, &bindings[..count]);
-                let passes = self
-                    .filters
-                    .iter()
-                    .all(|expr| expr.eval_to_bool::<_>(&binding_row, ctx).unwrap_or(false));
-
-                if !passes {
-                    continue;
-                }
+            if self.should_skip_bindings(&bindings[..count], ctx) {
+                continue;
             }
 
             // Push to columns
@@ -1523,6 +1523,15 @@ struct RangeScanOperator {
 }
 
 impl RangeScanOperator {
+    /// Check whether a row should be skipped due to inline filters.
+    fn should_skip_bindings(
+        &self,
+        bindings: &[Binding],
+        ctx: Option<&ExecutionContext<'_>>,
+    ) -> bool {
+        !passes_filters(&self.filters, &self.schema, bindings, ctx)
+    }
+
     fn new(
         pattern: TriplePattern,
         object_bounds: Option<ObjectBounds>,
@@ -1842,8 +1851,6 @@ impl Operator for RangeScanOperator {
                 (0..ncols).map(|_| Vec::with_capacity(batch_size)).collect();
             let mut row_count = 0;
 
-            let has_filters = !self.filters.is_empty();
-
             for f in &flakes {
                 // Filter internal predicates (commit metadata) for wildcard predicate patterns.
                 // Only applies to default graph (g_id=0); txn-meta and named graphs
@@ -1854,16 +1861,8 @@ impl Operator for RangeScanOperator {
 
                 let row = self.flake_to_row(f, ctx.history_mode);
 
-                // Apply inline filters before adding to batch
-                if has_filters {
-                    let binding_row = BindingRow::new(&self.schema, &row);
-                    let passes = self.filters.iter().all(|expr| {
-                        expr.eval_to_bool::<_>(&binding_row, Some(ctx))
-                            .unwrap_or(false)
-                    });
-                    if !passes {
-                        continue;
-                    }
+                if self.should_skip_bindings(&row, Some(ctx)) {
+                    continue;
                 }
 
                 ctx.tracker.consume_fuel_one()?;

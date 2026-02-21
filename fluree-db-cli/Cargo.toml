@@ -13,6 +13,12 @@ path = "src/main.rs"
 [features]
 default = ["server"]
 server = ["dep:fluree-db-server"]
+otel = [
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry_sdk",
+]
 
 [dependencies]
 fluree-db-api = { path = "../fluree-db-api" }
@@ -38,11 +44,23 @@ comfy-table = "7"
 colored = "2"
 clap_complete = "4"
 indicatif = "0.17"
-tracing-subscriber = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Unix process management (server subcommand)
 libc = "0.2"
+
+# OpenTelemetry (optional, enabled by `otel` feature)
+tracing-opentelemetry = { version = "0.32.1", optional = true }
+opentelemetry = { version = "0.31.0", optional = true }
+opentelemetry-otlp = { version = "0.31.0", optional = true, features = [
+    "grpc-tonic",
+    "http-proto",
+] }
+opentelemetry_sdk = { version = "0.31.0", optional = true, features = [
+    "rt-tokio",
+    "experimental_trace_batch_span_processor_with_async_runtime",
+] }
 
 # Token command dependencies
 fluree-db-credential = { path = "../fluree-db-credential" }

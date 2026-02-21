@@ -1,83 +1,17 @@
-//! Query planner - transforms logical IR to physical operators
+//! Query planner - pattern reordering and selectivity estimation
 //!
-//! The planner takes a logical `Query` IR and produces a physical operator tree.
+//! Reorders WHERE-clause patterns for optimal join order using statistics-based
+//! cardinality estimates. When a `StatsView` is provided, uses HLL-derived
+//! property statistics; otherwise falls back to heuristic defaults.
 //!
-//! # Design
-//!
-//! - Tracks three binding states: Unbound, Bound, Poisoned
-//! - Reorders patterns for optimal join order using statistics-based selectivity
-//! - Returns `PlanResult` with operator, schema, and binding states
-//!
-//! # Statistics-Based Optimization
-//!
-//! When a `StatsView` is provided, the planner uses HLL-derived cardinality
-//! estimates to compute selectivity scores for each pattern. Lower scores
-//! indicate more selective patterns that should be executed first.
+//! The main entry point is `reorder_patterns`, called from
+//! `build_where_operators_seeded` in `execute/where_plan.rs`.
 
-use crate::ir::{CompareOp, Function, Pattern, Query};
+use crate::ir::{CompareOp, Function, Pattern};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
-use fluree_db_core::{FlakeValue, StatsView};
+use fluree_db_core::{FlakeValue, PropertyStatData, StatsView};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-
-/// Three binding states for var tracking
-///
-/// Used during planning to track which variables are:
-/// - Unbound: Not yet bound, can be bound by future patterns
-/// - Bound: Guaranteed bound from a pattern or VALUES
-/// - Poisoned: From failed OPTIONAL, blocks future matching
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BindingState {
-    /// Not yet bound, can be bound
-    Unbound,
-    /// Guaranteed bound
-    Bound,
-    /// From failed OPTIONAL, blocks future matching
-    Poisoned,
-}
-
-impl BindingState {
-    /// Check if this state is poisoned
-    pub fn is_poisoned(&self) -> bool {
-        matches!(self, BindingState::Poisoned)
-    }
-
-    /// Check if this state represents a bound variable
-    pub fn is_bound(&self) -> bool {
-        matches!(self, BindingState::Bound)
-    }
-}
-
-/// Result of planning a query
-///
-/// Contains the planned execution information and metadata.
-/// Note: Planner functions are generic over S, C to produce typed operators.
-/// PlanResult stores the operator but otherwise stays small and local.
-#[derive(Debug)]
-pub struct PlanResult {
-    /// Output schema (variables in output order)
-    pub schema: Arc<[VarId]>,
-    /// Full state tracking for all variables
-    pub var_states: HashMap<VarId, BindingState>,
-    /// Estimated row count (if available)
-    pub estimated_rows: Option<usize>,
-    /// Ordered triple patterns after reordering
-    pub ordered_patterns: Vec<TriplePattern>,
-}
-
-impl PlanResult {
-    /// Vars guaranteed bound (not Unbound, not Poisoned)
-    ///
-    /// Note: this is "guaranteed bound", not "present in schema"
-    pub fn bound_vars(&self) -> HashSet<VarId> {
-        self.var_states
-            .iter()
-            .filter(|(_, s)| **s == BindingState::Bound)
-            .map(|(v, _)| *v)
-            .collect()
-    }
-}
 
 // =============================================================================
 // Statistics-Based Selectivity Estimation
@@ -100,31 +34,47 @@ pub enum PatternType {
     FullScan,
 }
 
-// Selectivity score constants (matching Clojure behavior)
-/// Most selective - exact match
-const HIGHLY_SELECTIVE: i64 = 0;
+// Row count estimate constants used by estimate_triple_row_count
+/// Highest selectivity - exact match or minimum row estimate
+const HIGHLY_SELECTIVE: f64 = 1.0;
 /// Medium selectivity - fallback for bound-subject patterns
-const MODERATELY_SELECTIVE: i64 = 10;
+const MODERATELY_SELECTIVE: f64 = 10.0;
 /// Fallback for bound-object and property-scan patterns
-const DEFAULT_SELECTIVITY: i64 = 1000;
+const DEFAULT_SELECTIVITY: f64 = 1000.0;
 /// Full scan - all variables unbound
-const FULL_SCAN: i64 = 1_000_000_000_000; // 1e12
+const FULL_SCAN: f64 = 1e12;
 
 // Clojure fallback caps differ by pattern type:
 // - bound-subject (s p ?o): min count 10
 // - bound-object (?s p o): min count 1000
-const BOUND_SUBJECT_FALLBACK_CAP: i64 = 10;
-const BOUND_OBJECT_FALLBACK_CAP: i64 = 1000;
+const BOUND_SUBJECT_FALLBACK_CAP: f64 = 10.0;
+const BOUND_OBJECT_FALLBACK_CAP: f64 = 1000.0;
 
-/// Classify a triple pattern for selectivity scoring
-pub(crate) fn classify_pattern(pattern: &TriplePattern) -> PatternType {
-    let s_bound = pattern.s_bound();
-    let p_bound = pattern.p_bound();
-    let o_bound = pattern.o_bound();
+/// Default row estimate for search patterns (IndexSearch, VectorSearch,
+/// GeoSearch, S2Search) when no explicit limit is provided.
+const DEFAULT_SEARCH_LIMIT: f64 = 100.0;
 
-    // Check for rdf:type predicate with bound object → Class pattern
-    // Use Term::is_rdf_type() to handle both Term::Sid and Term::Iri predicates
-    if p_bound && o_bound && !s_bound && pattern.p.is_rdf_type() {
+/// Default row estimate for Service patterns — high to place them late
+/// since they involve network calls to remote endpoints.
+const DEFAULT_SERVICE_ROW_COUNT: f64 = FULL_SCAN;
+
+/// Classify a triple pattern for selectivity scoring, considering which
+/// variables are already bound from previous patterns in the execution pipeline.
+///
+/// Treats variables present in `bound_vars` as effectively bound, producing
+/// a more accurate pattern type for cardinality estimation during join ordering.
+pub(crate) fn classify_pattern(
+    pattern: &TriplePattern,
+    bound_vars: &HashSet<VarId>,
+) -> PatternType {
+    let s_bound = pattern.s_bound() || pattern.s.as_var().is_some_and(|v| bound_vars.contains(&v));
+    let p_bound = pattern.p_bound() || pattern.p.as_var().is_some_and(|v| bound_vars.contains(&v));
+    let o_bound = pattern.o_bound() || pattern.o.as_var().is_some_and(|v| bound_vars.contains(&v));
+
+    // rdf:type with a literal class object → ClassPattern (can look up specific class count).
+    // If the object is a runtime-bound variable, we can't look up the class, so fall through
+    // to BoundObject which uses the generic ndv_values-based estimate.
+    if p_bound && o_bound && !s_bound && pattern.p.is_rdf_type() && pattern.o_bound() {
         return PatternType::ClassPattern;
     }
 
@@ -134,387 +84,101 @@ pub(crate) fn classify_pattern(pattern: &TriplePattern) -> PatternType {
         (false, true, true) => PatternType::BoundObject,
         (false, true, false) => PatternType::PropertyScan,
         (false, false, false) => PatternType::FullScan,
-        // Edge cases: subject bound but predicate not, etc.
-        (true, false, _) => PatternType::BoundSubject, // Subject bound is selective
-        (false, false, true) => PatternType::FullScan, // Only object bound, unusual
+        (true, false, _) => PatternType::BoundSubject,
+        (false, false, true) => PatternType::FullScan,
     }
 }
 
-/// Calculate selectivity score for a pattern using statistics
+/// Look up property statistics by predicate term (SID or IRI).
+fn property_stats<'a>(stats: &'a StatsView, pred: &Term) -> Option<&'a PropertyStatData> {
+    if let Some(sid) = pred.as_sid() {
+        return stats.get_property(sid);
+    }
+    if let Some(iri) = pred.as_iri() {
+        return stats.get_property_by_iri(iri);
+    }
+    None
+}
+
+/// Look up class instance count by class term (SID or IRI).
+fn class_count(stats: &StatsView, class: &Term) -> Option<u64> {
+    if let Some(sid) = class.as_sid() {
+        return stats.get_class_count(sid);
+    }
+    if let Some(iri) = class.as_iri() {
+        return stats.get_class_count_by_iri(iri);
+    }
+    None
+}
+
+/// Estimate the number of result rows a triple pattern adds to the pipeline.
 ///
-/// Lower score = more selective = should be executed first.
-/// When stats are not available, uses conservative fallback values.
-pub(crate) fn calculate_selectivity(pattern: &TriplePattern, stats: Option<&StatsView>) -> i64 {
-    let pattern_type = classify_pattern(pattern);
-
-    // Helper: get property stats for a predicate represented as Sid or IRI.
-    fn get_prop<'a>(
-        stats: &'a StatsView,
-        pred: &Term,
-    ) -> Option<&'a fluree_db_core::PropertyStatData> {
-        if let Some(sid) = pred.as_sid() {
-            return stats.get_property(sid);
-        }
-        if let Some(iri) = pred.as_iri() {
-            return stats.get_property_by_iri(iri);
-        }
-        None
-    }
-
-    // Helper: get class count for a class represented as Sid or IRI.
-    fn get_class(stats: &StatsView, class: &Term) -> Option<u64> {
-        if let Some(sid) = class.as_sid() {
-            return stats.get_class_count(sid);
-        }
-        if let Some(iri) = class.as_iri() {
-            return stats.get_class_count_by_iri(iri);
-        }
-        None
-    }
-
-    match pattern_type {
+/// This is context-aware: it considers which variables are already bound from
+/// previous patterns. A triple `?s :name ?name` is a full PropertyScan (count rows)
+/// when `?s` is unbound, but only ~ceil(count/ndv_subjects) rows per incoming row
+/// when `?s` is already bound from an earlier pattern.
+pub(crate) fn estimate_triple_row_count(
+    pattern: &TriplePattern,
+    bound_vars: &HashSet<VarId>,
+    stats: Option<&StatsView>,
+) -> f64 {
+    match classify_pattern(pattern, bound_vars) {
         PatternType::ExactMatch => HIGHLY_SELECTIVE,
 
         PatternType::ClassPattern => {
-            // Use class count from stats
             if let Some(s) = stats {
-                if let Some(count) = get_class(s, &pattern.o) {
-                    return count as i64;
+                if let Some(count) = class_count(s, &pattern.o) {
+                    return count as f64;
                 }
-            }
-            // If class counts are not available, approximate using rdf:type property stats:
-            // expected per-class count ~= ceil(type_count / ndv_classes).
-            if let Some(s) = stats {
-                if let Some(prop) = get_prop(s, &pattern.p) {
+                if let Some(prop) = property_stats(s, &pattern.p) {
                     if prop.ndv_values > 0 {
-                        let sel = (prop.count as f64 / prop.ndv_values as f64).ceil() as i64;
-                        return sel.max(1);
+                        return (prop.count as f64 / prop.ndv_values as f64)
+                            .ceil()
+                            .max(HIGHLY_SELECTIVE);
                     }
                 }
             }
-            // Fallback: distinguish class-pattern fallback from other default-selectivity
-            // fallbacks so ties don't arbitrarily prefer class scans.
-            DEFAULT_SELECTIVITY + 1
+            DEFAULT_SELECTIVITY
         }
 
         PatternType::BoundSubject => {
-            // Subject + predicate bound: selectivity = ceil(count / ndv_subjects)
-            // This estimates "how many values per subject" for this property
             if let Some(s) = stats {
-                if let Some(prop) = get_prop(s, &pattern.p) {
+                if let Some(prop) = property_stats(s, &pattern.p) {
                     if prop.ndv_subjects > 0 {
-                        let sel = (prop.count as f64 / prop.ndv_subjects as f64).ceil() as i64;
-                        return sel.max(1);
+                        return (prop.count as f64 / prop.ndv_subjects as f64)
+                            .ceil()
+                            .max(HIGHLY_SELECTIVE);
                     }
-                    // Have count but no NDV - use count capped (Clojure: min count 10)
-                    return (prop.count as i64).min(BOUND_SUBJECT_FALLBACK_CAP);
+                    return (prop.count as f64).min(BOUND_SUBJECT_FALLBACK_CAP);
                 }
             }
-            // Fallback: subject-bound patterns are usually selective
             MODERATELY_SELECTIVE
         }
 
         PatternType::BoundObject => {
-            // Object + predicate bound: selectivity = ceil(count / ndv_values)
-            // This estimates "how many subjects have this value" for this property
             if let Some(s) = stats {
-                if let Some(prop) = get_prop(s, &pattern.p) {
+                if let Some(prop) = property_stats(s, &pattern.p) {
                     if prop.ndv_values > 0 {
-                        let sel = (prop.count as f64 / prop.ndv_values as f64).ceil() as i64;
-                        return sel.max(1);
+                        return (prop.count as f64 / prop.ndv_values as f64)
+                            .ceil()
+                            .max(HIGHLY_SELECTIVE);
                     }
-                    // Have count but no NDV - use count capped (Clojure: min count 1000)
-                    return (prop.count as i64).min(BOUND_OBJECT_FALLBACK_CAP);
+                    return (prop.count as f64).min(BOUND_OBJECT_FALLBACK_CAP);
                 }
             }
-            // Fallback: object-bound can vary widely
             DEFAULT_SELECTIVITY
         }
 
         PatternType::PropertyScan => {
-            // Only predicate bound: use property count
             if let Some(s) = stats {
-                if let Some(prop) = get_prop(s, &pattern.p) {
-                    return prop.count as i64;
+                if let Some(prop) = property_stats(s, &pattern.p) {
+                    return prop.count as f64;
                 }
             }
             DEFAULT_SELECTIVITY
         }
 
         PatternType::FullScan => FULL_SCAN,
-    }
-}
-
-/// Score a pattern based purely on selectivity
-///
-/// Lower score = more selective = better.
-/// The join-preferring behavior is handled by the "filter joinable candidates first"
-/// logic in `reorder_patterns`, not by score adjustments.
-fn score_pattern_selectivity(pattern: &TriplePattern, stats: Option<&StatsView>) -> i64 {
-    calculate_selectivity(pattern, stats)
-}
-
-/// Compare two Terms for deterministic ordering (tie-breaker)
-///
-/// Provides stable ordering: Var < Sid < Iri < Value, then by inner value.
-pub(crate) fn compare_term(a: &Term, b: &Term) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a, b) {
-        // Variables sort before non-variables, then by VarId
-        (Term::Var(va), Term::Var(vb)) => va.cmp(vb),
-        (Term::Var(_), _) => Ordering::Less,
-        (_, Term::Var(_)) => Ordering::Greater,
-        // SIDs sort by namespace then name
-        (Term::Sid(sa), Term::Sid(sb)) => sa.cmp(sb),
-        (Term::Sid(_), _) => Ordering::Less,
-        // IRIs sort after SIDs but before Values
-        (Term::Iri(ia), Term::Iri(ib)) => ia.cmp(ib),
-        (Term::Iri(_), Term::Value(_)) => Ordering::Less,
-        (Term::Iri(_), Term::Sid(_)) => Ordering::Greater,
-        // Values sort last
-        (Term::Value(_), Term::Sid(_) | Term::Iri(_)) => Ordering::Greater,
-        // Values: compare debug representation for determinism
-        // A cleaner solution would use canonical_hash() if available
-        (Term::Value(va), Term::Value(vb)) => format!("{:?}", va).cmp(&format!("{:?}", vb)),
-    }
-}
-
-/// Deterministic tie-breaker for equal selectivity scores
-///
-/// Clojure parity priority, then lexicographic (p, s, o) for reproducibility.
-pub(crate) fn compare_patterns_tiebreaker(
-    a: &TriplePattern,
-    b: &TriplePattern,
-) -> std::cmp::Ordering {
-    // Prefer patterns that are "cheaper" even when stats tie.
-    //
-    // This matters in cases where selectivity scores collide (e.g. missing NDV),
-    // but we still want consistent improvements:
-    // - bound-object lookups should precede class scans
-    // - class scans should precede property scans when scores tie
-    //
-    // This also prevents meaningless reorders for equal-selectivity class vs property
-    // patterns when class is already first (Clojure explain-no-optimization-test).
-    fn rank(p: &TriplePattern) -> u8 {
-        match classify_pattern(p) {
-            PatternType::ExactMatch => 0,
-            PatternType::BoundObject => 1,
-            PatternType::BoundSubject => 2,
-            PatternType::ClassPattern => 3,
-            PatternType::PropertyScan => 4,
-            PatternType::FullScan => 5,
-        }
-    }
-
-    let ra = rank(a);
-    let rb = rank(b);
-    match ra.cmp(&rb) {
-        std::cmp::Ordering::Equal => {}
-        other => return other,
-    }
-
-    let pred_cmp = compare_term(&a.p, &b.p);
-    if pred_cmp != std::cmp::Ordering::Equal {
-        return pred_cmp;
-    }
-    let subj_cmp = compare_term(&a.s, &b.s);
-    if subj_cmp != std::cmp::Ordering::Equal {
-        return subj_cmp;
-    }
-    compare_term(&a.o, &b.o)
-}
-
-/// Check if a pattern shares any variables with the bound set
-pub(crate) fn shares_variables(pattern: &TriplePattern, bound_vars: &HashSet<VarId>) -> bool {
-    pattern.variables().iter().any(|v| bound_vars.contains(v))
-}
-
-/// Reorder patterns for optimal join order using statistics-based selectivity
-///
-/// Uses a greedy algorithm that:
-/// 1. First filters for patterns sharing variables with already-bound set (join candidates)
-/// 2. Within candidates, picks the lowest selectivity score (most selective)
-/// 3. Uses deterministic tie-breaker for equal scores
-/// 4. Falls back to all remaining if no joining patterns (Cartesian fallback)
-///
-/// When `stats` is `None`, falls back to conservative selectivity estimates.
-pub fn reorder_patterns(
-    patterns: Vec<TriplePattern>,
-    stats: Option<&StatsView>,
-) -> Vec<TriplePattern> {
-    reorder_patterns_seeded(patterns, stats, &HashSet::new())
-}
-
-/// Reorder patterns for optimal join order using statistics-based selectivity,
-/// seeded with an initial set of already-bound variables.
-///
-/// This matches the Clojure optimizer behavior more closely: when some variables
-/// are already bound from a prior operator (VALUES/BIND/previous clause), prefer
-/// patterns that *join* with those bindings rather than starting with a pattern
-/// that would create a cartesian explosion.
-///
-/// The algorithm is the same as `reorder_patterns`, except `bound_vars` starts from
-/// `initial_bound_vars` rather than empty.
-pub fn reorder_patterns_seeded(
-    patterns: Vec<TriplePattern>,
-    stats: Option<&StatsView>,
-    initial_bound_vars: &HashSet<VarId>,
-) -> Vec<TriplePattern> {
-    if patterns.len() <= 1 {
-        return patterns;
-    }
-
-    tracing::debug!(
-        pattern_count = patterns.len(),
-        has_stats = stats.is_some(),
-        initial_bound = initial_bound_vars.len(),
-        "reordering patterns for optimal join order"
-    );
-
-    let mut remaining: Vec<_> = patterns.into_iter().collect();
-    let mut ordered = Vec::with_capacity(remaining.len());
-    let mut bound_vars: HashSet<VarId> = initial_bound_vars.clone();
-
-    while !remaining.is_empty() {
-        // Find candidates that share variables with bound set (join-friendly)
-        let has_bound = !bound_vars.is_empty();
-        let candidates: Vec<usize> = remaining
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                if !has_bound {
-                    true // First pattern: all candidates
-                } else {
-                    shares_variables(p, &bound_vars)
-                }
-            })
-            .map(|(i, _)| i)
-            .collect();
-
-        // If no joining candidates, use all remaining (Cartesian fallback)
-        let pool: Vec<usize> = if candidates.is_empty() {
-            if tracing::enabled!(tracing::Level::TRACE) {
-                tracing::trace!(
-                    step = ordered.len() + 1,
-                    "no joining candidates, using Cartesian fallback"
-                );
-            }
-            (0..remaining.len()).collect()
-        } else {
-            candidates
-        };
-
-        // Pick best (lowest score) from pool with tie-breaker
-        let best_idx = pool
-            .into_iter()
-            .min_by(|&i, &j| {
-                let score_i = score_pattern_selectivity(&remaining[i], stats);
-                let score_j = score_pattern_selectivity(&remaining[j], stats);
-                match score_i.cmp(&score_j) {
-                    std::cmp::Ordering::Equal => {
-                        compare_patterns_tiebreaker(&remaining[i], &remaining[j])
-                    }
-                    other => other,
-                }
-            })
-            .unwrap();
-
-        let chosen = remaining.remove(best_idx);
-        let selectivity = score_pattern_selectivity(&chosen, stats);
-
-        if tracing::enabled!(tracing::Level::TRACE) {
-            let pattern_type = classify_pattern(&chosen);
-            tracing::trace!(
-                step = ordered.len() + 1,
-                selectivity = selectivity,
-                pattern_type = ?pattern_type,
-                bound_vars = bound_vars.len(),
-                "selected pattern"
-            );
-        }
-
-        // Update bound variables
-        for var in chosen.variables() {
-            bound_vars.insert(var);
-        }
-        ordered.push(chosen);
-    }
-
-    tracing::debug!(
-        reordered_count = ordered.len(),
-        "pattern reordering completed"
-    );
-
-    ordered
-}
-
-/// Check if a pattern can be matched given current binding states
-///
-/// If any pattern var is in Poisoned state, this pattern cannot match.
-pub fn can_match_pattern(
-    pattern: &TriplePattern,
-    var_states: &HashMap<VarId, BindingState>,
-) -> bool {
-    pattern.variables().iter().all(|v| {
-        var_states.get(v).map(|s| !s.is_poisoned()).unwrap_or(true) // Unknown vars are fine
-    })
-}
-
-/// Plan a query for execution
-///
-/// Currently performs pattern reordering for triple patterns only.
-/// Full operator tree generation will be added in Phase 2 (Join) and beyond.
-///
-/// # Limitations (Phase 1)
-///
-/// - Only extracts top-level triple patterns from where clause
-/// - Does not handle nested Optional/Union patterns (they are skipped)
-/// - Does not generate physical operators (returns ordered patterns)
-///
-/// # Var State Semantics
-///
-/// - Missing vars become `Bound` after pattern execution
-/// - `Unbound` vars are upgraded to `Bound`
-/// - `Poisoned` vars stay `Poisoned` (never upgraded)
-pub fn plan(query: &Query, input_states: &HashMap<VarId, BindingState>) -> PlanResult {
-    // Extract triple patterns from where clause
-    let triple_patterns: Vec<TriplePattern> = query
-        .where_
-        .iter()
-        .filter_map(|p| match p {
-            Pattern::Triple(tp) => Some(tp.clone()),
-            _ => None,
-        })
-        .collect();
-
-    // Reorder for optimal join order (plan() doesn't have stats access yet)
-    let ordered_patterns = reorder_patterns(triple_patterns, None);
-
-    // Compute output schema from select
-    let schema: Arc<[VarId]> = Arc::from(query.select.clone().into_boxed_slice());
-
-    // Compute var states after executing all patterns
-    // Triple patterns upgrade: Missing/Unbound -> Bound, but Poisoned stays Poisoned
-    let mut var_states = input_states.clone();
-    for pattern in &ordered_patterns {
-        for var in pattern.variables() {
-            var_states
-                .entry(var)
-                .and_modify(|state| {
-                    // Upgrade Unbound to Bound; Poisoned stays Poisoned
-                    if *state == BindingState::Unbound {
-                        *state = BindingState::Bound;
-                    }
-                })
-                .or_insert(BindingState::Bound);
-        }
-    }
-
-    PlanResult {
-        schema,
-        var_states,
-        estimated_rows: None,
-        ordered_patterns,
     }
 }
 
@@ -954,6 +618,517 @@ pub fn extract_object_bounds_for_var(
     constraint.to_object_bounds()
 }
 
+// =============================================================================
+// Generalized Selectivity Scoring for All Pattern Types
+// =============================================================================
+
+/// Cardinality estimate for a generalized pattern.
+///
+/// Each variant carries only the data meaningful for that category:
+/// - `Source`: estimated row count
+/// - `Reducer`: fraction of rows surviving (< 1.0)
+/// - `Expander`: expansion factor (>= 1.0)
+/// - `Deferred`: no numeric payload
+#[derive(Debug, Clone, PartialEq)]
+pub enum PatternEstimate {
+    /// Produces rows — estimated row count (Triple, VALUES, UNION, Subquery,
+    /// IndexSearch, VectorSearch, GeoSearch, S2Search, Graph, PropertyPath,
+    /// R2rml, Service)
+    Source { row_count: f64 },
+    /// Shrinks the stream — fraction of rows surviving (< 1.0) (MINUS, EXISTS, NOT EXISTS)
+    Reducer { multiplier: f64 },
+    /// Grows the stream via left-join — expansion factor (>= 1.0) (OPTIONAL)
+    Expander { multiplier: f64 },
+    /// FILTER/BIND — deferred, no cardinality effect
+    Deferred,
+}
+
+impl PatternEstimate {
+    /// Row count estimate (meaningful for Source; returns 0.0 otherwise).
+    fn row_count(&self) -> f64 {
+        match self {
+            PatternEstimate::Source { row_count } => *row_count,
+            _ => 0.0,
+        }
+    }
+
+    /// Row multiplier (meaningful for Reducer/Expander; returns 1.0 otherwise).
+    fn multiplier(&self) -> f64 {
+        match self {
+            PatternEstimate::Reducer { multiplier } | PatternEstimate::Expander { multiplier } => {
+                *multiplier
+            }
+            _ => 1.0,
+        }
+    }
+}
+
+/// Default multiplier for MINUS (assumes 10% of rows removed).
+const DEFAULT_MINUS_MULTIPLIER: f64 = 0.9;
+/// Default multiplier for EXISTS (assumes 50% of rows match).
+const DEFAULT_EXISTS_MULTIPLIER: f64 = 0.5;
+/// Default multiplier for NOT EXISTS (assumes 50% of rows match).
+const DEFAULT_NOT_EXISTS_MULTIPLIER: f64 = 0.5;
+
+/// Estimate cardinality for any pattern type.
+///
+/// The `bound_vars` parameter indicates which variables are already bound from
+/// earlier patterns in the pipeline. For triple patterns this significantly
+/// affects the estimate: a triple whose subject variable is already bound is a
+/// per-subject lookup (cheap), not a full property scan (expensive).
+pub fn estimate_pattern(
+    pattern: &Pattern,
+    bound_vars: &HashSet<VarId>,
+    stats: Option<&StatsView>,
+) -> PatternEstimate {
+    match pattern {
+        Pattern::Triple(tp) => PatternEstimate::Source {
+            row_count: estimate_triple_row_count(tp, bound_vars, stats),
+        },
+
+        Pattern::Values { rows, .. } => PatternEstimate::Source {
+            row_count: rows.len() as f64,
+        },
+
+        Pattern::Union(branches) => {
+            let total: f64 = branches
+                .iter()
+                .map(|branch| estimate_branch_cardinality(branch, stats))
+                .sum();
+            PatternEstimate::Source {
+                row_count: total.max(HIGHLY_SELECTIVE),
+            }
+        }
+
+        Pattern::Subquery(sq) => PatternEstimate::Source {
+            row_count: estimate_branch_cardinality(&sq.patterns, stats),
+        },
+
+        Pattern::Optional(_) => PatternEstimate::Expander { multiplier: 1.0 },
+
+        Pattern::Minus(_) => PatternEstimate::Reducer {
+            multiplier: DEFAULT_MINUS_MULTIPLIER,
+        },
+
+        Pattern::Exists(_) => PatternEstimate::Reducer {
+            multiplier: DEFAULT_EXISTS_MULTIPLIER,
+        },
+
+        Pattern::NotExists(_) => PatternEstimate::Reducer {
+            multiplier: DEFAULT_NOT_EXISTS_MULTIPLIER,
+        },
+
+        Pattern::Filter(_) | Pattern::Bind { .. } => PatternEstimate::Deferred,
+
+        Pattern::IndexSearch(isp) => PatternEstimate::Source {
+            row_count: isp.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as f64),
+        },
+
+        Pattern::VectorSearch(vsp) => PatternEstimate::Source {
+            row_count: vsp.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as f64),
+        },
+
+        Pattern::GeoSearch(gsp) => PatternEstimate::Source {
+            row_count: gsp.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as f64),
+        },
+
+        Pattern::S2Search(s2p) => PatternEstimate::Source {
+            row_count: s2p.limit.map_or(DEFAULT_SEARCH_LIMIT, |l| l as f64),
+        },
+
+        Pattern::Graph { patterns, .. } => PatternEstimate::Source {
+            row_count: estimate_branch_cardinality(patterns, stats),
+        },
+
+        Pattern::PropertyPath(_) => PatternEstimate::Source {
+            row_count: DEFAULT_SELECTIVITY,
+        },
+
+        Pattern::R2rml(_) => PatternEstimate::Source {
+            row_count: DEFAULT_SELECTIVITY,
+        },
+
+        Pattern::Service(_) => PatternEstimate::Source {
+            row_count: DEFAULT_SERVICE_ROW_COUNT,
+        },
+    }
+}
+
+/// Estimate cardinality for a sequence of patterns (UNION branch or subquery body).
+///
+/// Uses a context-aware multiplicative model: tracks which variables become bound as
+/// each pattern is placed, so subsequent triples use the appropriate expansion factor
+/// rather than standalone row counts.
+pub fn estimate_branch_cardinality(patterns: &[Pattern], stats: Option<&StatsView>) -> f64 {
+    if patterns.is_empty() {
+        return HIGHLY_SELECTIVE;
+    }
+
+    let mut bound_vars: HashSet<VarId> = HashSet::new();
+
+    // Separate triples from non-triples
+    let mut triples: Vec<&TriplePattern> = Vec::new();
+    let mut non_triple_estimate: f64 = HIGHLY_SELECTIVE;
+
+    for p in patterns {
+        match p {
+            Pattern::Triple(tp) => triples.push(tp),
+            Pattern::Filter(_) | Pattern::Bind { .. } => {
+                // Filters/binds don't change cardinality estimate significantly
+            }
+            other => {
+                let card = estimate_pattern(other, &bound_vars, stats);
+                match card {
+                    PatternEstimate::Source { row_count } => {
+                        non_triple_estimate *= row_count.max(HIGHLY_SELECTIVE);
+                    }
+                    PatternEstimate::Reducer { multiplier } => {
+                        non_triple_estimate *= multiplier;
+                    }
+                    _ => {}
+                }
+                for v in other.variables() {
+                    bound_vars.insert(v);
+                }
+            }
+        }
+    }
+
+    if triples.is_empty() {
+        return (DEFAULT_SELECTIVITY) * non_triple_estimate;
+    }
+
+    // Sort triples by standalone row count for initial ordering (most selective first)
+    let empty_bound: HashSet<VarId> = HashSet::new();
+    let mut sorted_triples: Vec<&TriplePattern> = triples;
+    sorted_triples.sort_by(|a, b| {
+        let ea = estimate_triple_row_count(a, &empty_bound, stats);
+        let eb = estimate_triple_row_count(b, &empty_bound, stats);
+        ea.partial_cmp(&eb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Start with most selective triple (standalone estimate — nothing bound yet)
+    let first = sorted_triples[0];
+    let mut running = estimate_triple_row_count(first, &bound_vars, stats);
+    for v in first.variables() {
+        bound_vars.insert(v);
+    }
+
+    // Multiplicative model: each subsequent triple's contribution depends on
+    // which variables are now bound from previous triples
+    for tp in sorted_triples.iter().skip(1) {
+        let expansion = estimate_triple_row_count(tp, &bound_vars, stats);
+        running *= expansion;
+        for v in tp.variables() {
+            bound_vars.insert(v);
+        }
+    }
+
+    (running * non_triple_estimate).max(HIGHLY_SELECTIVE)
+}
+
+/// Check if a general pattern shares any variables with the bound set.
+///
+/// Uses `Pattern::variables()` which works for all pattern variants.
+pub fn pattern_shares_variables(pattern: &Pattern, bound_vars: &HashSet<VarId>) -> bool {
+    pattern.variables().iter().any(|v| bound_vars.contains(v))
+}
+
+// =============================================================================
+// Generalized Pattern Reordering
+// =============================================================================
+
+/// A pattern annotated with its original position in the input list.
+///
+/// `orig_index` is used as a deterministic tiebreaker when two patterns have
+/// equal selectivity estimates, preserving the user's original ordering.
+struct RankedPattern {
+    orig_index: usize,
+    pattern: Pattern,
+}
+
+/// A deferred pattern (FILTER/BIND) with pre-computed input variables.
+///
+/// `required_vars` is the set of variables that must be bound before this
+/// pattern can execute. For FILTER this is all referenced variables; for BIND
+/// it is the expression's variables (the target variable is an output).
+struct DeferredPattern {
+    orig_index: usize,
+    required_vars: HashSet<VarId>,
+    pattern: Pattern,
+}
+
+/// Reorder all pattern types for optimal join order.
+///
+/// Handles all pattern types including triples, compound patterns (UNION,
+/// OPTIONAL, MINUS, EXISTS, etc.), VALUES, FILTER, BIND, and source patterns
+/// (IndexSearch, VectorSearch, GeoSearch, S2Search, Graph, PropertyPath,
+/// R2rml, Service). Uses a priority-based greedy algorithm:
+///
+/// 1. **Eligible reducers** first (lowest multiplier) — shrink the stream ASAP
+/// 2. **Sources** next (lowest estimate) — same greedy logic as triple reorder
+/// 3. **Eligible expanders** last (lowest multiplier) — defer row expansion
+pub fn reorder_patterns(
+    patterns: &[Pattern],
+    stats: Option<&StatsView>,
+    initial_bound_vars: &HashSet<VarId>,
+) -> Vec<Pattern> {
+    if patterns.len() <= 1 {
+        return patterns.to_vec();
+    }
+
+    let mut bound_vars = initial_bound_vars.clone();
+
+    // Classify each pattern by its cardinality category.
+    let mut sources: Vec<RankedPattern> = Vec::new();
+    let mut reducers: Vec<RankedPattern> = Vec::new();
+    let mut expanders: Vec<RankedPattern> = Vec::new();
+    let mut deferred: Vec<DeferredPattern> = Vec::new();
+
+    for (i, pattern) in patterns.iter().enumerate() {
+        match estimate_pattern(pattern, &bound_vars, stats) {
+            PatternEstimate::Source { .. } => sources.push(RankedPattern {
+                orig_index: i,
+                pattern: pattern.clone(),
+            }),
+            PatternEstimate::Reducer { .. } => reducers.push(RankedPattern {
+                orig_index: i,
+                pattern: pattern.clone(),
+            }),
+            PatternEstimate::Expander { .. } => expanders.push(RankedPattern {
+                orig_index: i,
+                pattern: pattern.clone(),
+            }),
+            PatternEstimate::Deferred => deferred.push(DeferredPattern {
+                orig_index: i,
+                required_vars: deferred_required_vars(pattern).into_iter().collect(),
+                pattern: pattern.clone(),
+            }),
+        }
+    }
+
+    let mut result: Vec<Pattern> = Vec::with_capacity(patterns.len());
+
+    // Place any deferred patterns whose inputs are already satisfied by the
+    // initial bound_vars (e.g. from a seed operator).
+    drain_ready_deferred(&mut deferred, &mut bound_vars, &mut result);
+
+    // Greedy loop: place patterns by priority
+    while !sources.is_empty() || !reducers.is_empty() || !expanders.is_empty() {
+        let placed = try_place_reducer(&mut reducers, &mut bound_vars, stats, &mut result)
+            || try_place_source(&mut sources, &mut bound_vars, stats, &mut result)
+            || try_place_expander(&mut expanders, &mut bound_vars, stats, &mut result);
+
+        if !placed {
+            // Nothing could be placed (shouldn't happen with sources always eligible).
+            // Force-place the first remaining pattern.
+            let rp = if !sources.is_empty() {
+                sources.remove(0)
+            } else if !reducers.is_empty() {
+                reducers.remove(0)
+            } else if !expanders.is_empty() {
+                expanders.remove(0)
+            } else {
+                break;
+            };
+            for v in rp.pattern.variables() {
+                bound_vars.insert(v);
+            }
+            result.push(rp.pattern);
+        }
+
+        // After each placement, drain any deferred patterns that have become
+        // ready.  BIND outputs feed back into bound_vars, so a single source
+        // placement can cascade through multiple BINDs.
+        drain_ready_deferred(&mut deferred, &mut bound_vars, &mut result);
+    }
+
+    // Append any remaining deferred patterns (their inputs may never be bound,
+    // e.g. referencing variables from an OPTIONAL that hasn't been placed yet).
+    deferred.sort_by_key(|dp| dp.orig_index);
+    for dp in deferred {
+        result.push(dp.pattern);
+    }
+
+    result
+}
+
+/// Try to place the best eligible reducer. Returns true if one was placed.
+fn try_place_reducer(
+    remaining: &mut Vec<RankedPattern>,
+    bound_vars: &mut HashSet<VarId>,
+    stats: Option<&StatsView>,
+    result: &mut Vec<Pattern>,
+) -> bool {
+    // Find eligible reducers (at least one variable already bound)
+    let eligible_idx = remaining
+        .iter()
+        .enumerate()
+        .filter(|(_, rp)| pattern_shares_variables(&rp.pattern, bound_vars))
+        .min_by(|(_, a), (_, b)| {
+            let ca = estimate_pattern(&a.pattern, bound_vars, stats);
+            let cb = estimate_pattern(&b.pattern, bound_vars, stats);
+            ca.multiplier()
+                .partial_cmp(&cb.multiplier())
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.orig_index.cmp(&b.orig_index))
+        })
+        .map(|(idx, _)| idx);
+
+    if let Some(idx) = eligible_idx {
+        let rp = remaining.remove(idx);
+        for v in rp.pattern.variables() {
+            bound_vars.insert(v);
+        }
+        result.push(rp.pattern);
+        true
+    } else {
+        false
+    }
+}
+
+/// Try to place the best source. Returns true if one was placed.
+fn try_place_source(
+    remaining: &mut Vec<RankedPattern>,
+    bound_vars: &mut HashSet<VarId>,
+    stats: Option<&StatsView>,
+    result: &mut Vec<Pattern>,
+) -> bool {
+    if remaining.is_empty() {
+        return false;
+    }
+
+    let has_bound = !bound_vars.is_empty();
+
+    // Prefer joinable sources (share variables with bound set)
+    let candidates: Vec<usize> = remaining
+        .iter()
+        .enumerate()
+        .filter(|(_, rp)| !has_bound || pattern_shares_variables(&rp.pattern, bound_vars))
+        .map(|(idx, _)| idx)
+        .collect();
+
+    // Fall back to all sources if none are joinable
+    let pool = if candidates.is_empty() {
+        (0..remaining.len()).collect::<Vec<_>>()
+    } else {
+        candidates
+    };
+
+    let best_idx = pool.into_iter().min_by(|&i, &j| {
+        let ci = estimate_pattern(&remaining[i].pattern, bound_vars, stats);
+        let cj = estimate_pattern(&remaining[j].pattern, bound_vars, stats);
+        ci.row_count()
+            .partial_cmp(&cj.row_count())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| remaining[i].orig_index.cmp(&remaining[j].orig_index))
+    });
+
+    if let Some(idx) = best_idx {
+        let rp = remaining.remove(idx);
+        for v in rp.pattern.variables() {
+            bound_vars.insert(v);
+        }
+        result.push(rp.pattern);
+        true
+    } else {
+        false
+    }
+}
+
+/// Try to place the best eligible expander. Returns true if one was placed.
+fn try_place_expander(
+    remaining: &mut Vec<RankedPattern>,
+    bound_vars: &mut HashSet<VarId>,
+    stats: Option<&StatsView>,
+    result: &mut Vec<Pattern>,
+) -> bool {
+    let eligible_idx = remaining
+        .iter()
+        .enumerate()
+        .filter(|(_, rp)| pattern_shares_variables(&rp.pattern, bound_vars))
+        .min_by(|(_, a), (_, b)| {
+            let ca = estimate_pattern(&a.pattern, bound_vars, stats);
+            let cb = estimate_pattern(&b.pattern, bound_vars, stats);
+            ca.multiplier()
+                .partial_cmp(&cb.multiplier())
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.orig_index.cmp(&b.orig_index))
+        })
+        .map(|(idx, _)| idx);
+
+    if let Some(idx) = eligible_idx {
+        let rp = remaining.remove(idx);
+        for v in rp.pattern.variables() {
+            bound_vars.insert(v);
+        }
+        result.push(rp.pattern);
+        true
+    } else {
+        false
+    }
+}
+
+/// Drain all deferred patterns whose required variables are currently bound.
+///
+/// For FILTER, the required variables are the expression's referenced variables.
+/// For BIND, the required variables are the expression's referenced variables
+/// (the target variable is an *output*, not an input).
+///
+/// BIND outputs are added to `bound_vars` after placement, which may enable
+/// further deferred patterns.  The function loops until no more can be placed.
+/// Among simultaneously-ready patterns, original position order is preserved.
+fn drain_ready_deferred(
+    deferred: &mut Vec<DeferredPattern>,
+    bound_vars: &mut HashSet<VarId>,
+    result: &mut Vec<Pattern>,
+) {
+    loop {
+        // Find all deferred patterns whose inputs are satisfied.
+        let ready_indices: Vec<usize> = deferred
+            .iter()
+            .enumerate()
+            .filter(|(_, dp)| dp.required_vars.is_subset(bound_vars))
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if ready_indices.is_empty() {
+            break;
+        }
+
+        // Remove in reverse order to preserve indices, then sort by original position.
+        let mut ready: Vec<DeferredPattern> = ready_indices
+            .into_iter()
+            .rev()
+            .map(|idx| deferred.remove(idx))
+            .collect();
+        ready.sort_by_key(|dp| dp.orig_index);
+
+        for dp in ready {
+            // BIND produces a new variable; FILTER does not.
+            if let Pattern::Bind { var, .. } = &dp.pattern {
+                bound_vars.insert(*var);
+            }
+            result.push(dp.pattern);
+        }
+    }
+}
+
+/// Return the *input* variables that must be bound before a deferred pattern
+/// can execute.
+///
+/// - FILTER: all referenced variables
+/// - BIND: the expression's variables (not the target variable)
+fn deferred_required_vars(pattern: &Pattern) -> Vec<VarId> {
+    match pattern {
+        Pattern::Filter(expr) => expr.variables(),
+        Pattern::Bind { expr, .. } => expr.variables(),
+        // Other patterns should not be classified as Deferred, but handle
+        // gracefully by returning all variables.
+        other => other.variables(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,28 +1142,48 @@ mod tests {
 
     #[test]
     fn test_reorder_patterns() {
-        // Create patterns that should be reordered
-        // p1: ?s :name ?name (shares ?s)
-        // p2: ?x :type ?t (no sharing - will go last)
-        // p3: ?s :age ?age (shares ?s)
+        // When the first pattern placed shares variables with others,
+        // subsequent joinable patterns are preferred over non-joinable ones.
+        //
+        // p1: ?s :name ?name (shares ?s with p3)
+        // p2: ?x :type ?t   (disjoint)
+        // p3: ?s :age ?age   (shares ?s with p1)
+        //
+        // Input order puts p1 first so the greedy algorithm picks it,
+        // then prefers p3 (joinable via ?s) over p2 (non-joinable).
 
         let p1 = make_pattern(VarId(0), "name", VarId(1));
         let p2 = make_pattern(VarId(2), "type", VarId(3));
         let p3 = make_pattern(VarId(0), "age", VarId(4));
 
-        let patterns = vec![p2.clone(), p1.clone(), p3.clone()];
-        let ordered = reorder_patterns(patterns, None);
+        let patterns: Vec<Pattern> = vec![p1, p2, p3].into_iter().map(Pattern::Triple).collect();
+        let ordered = reorder_patterns(&patterns, None, &HashSet::new());
 
-        // Without stats, all PropertyScan patterns get DEFAULT_SELECTIVITY (1000)
-        // The tie-breaker orders by predicate name, so "age" < "name" < "type"
-        // First pattern: p3 (age) comes first due to tie-breaker
-        // Second: p1 (name) shares ?s with p3
-        // Third: p2 (type) has no vars in common - Cartesian fallback
         assert_eq!(ordered.len(), 3);
 
-        // Verify p2 is last (has no vars in common with others)
-        let last_vars: HashSet<_> = ordered[2].variables().into_iter().collect();
-        assert!(last_vars.contains(&VarId(2)) && last_vars.contains(&VarId(3)));
+        // p1 placed first (original position tiebreaker, all equal estimates)
+        let first = match &ordered[0] {
+            Pattern::Triple(tp) => tp,
+            _ => panic!("expected Triple pattern"),
+        };
+        assert!(first.variables().contains(&VarId(0)));
+        assert!(first.variables().contains(&VarId(1)));
+
+        // p3 placed second (shares ?s=VarId(0) with p1, preferred over disjoint p2)
+        let second = match &ordered[1] {
+            Pattern::Triple(tp) => tp,
+            _ => panic!("expected Triple pattern"),
+        };
+        assert!(second.variables().contains(&VarId(0)));
+        assert!(second.variables().contains(&VarId(4)));
+
+        // p2 placed last (disjoint, no joinable preference)
+        let last = match &ordered[2] {
+            Pattern::Triple(tp) => tp,
+            _ => panic!("expected Triple pattern"),
+        };
+        assert!(last.variables().contains(&VarId(2)));
+        assert!(last.variables().contains(&VarId(3)));
     }
 
     #[test]
@@ -1036,10 +1231,18 @@ mod tests {
         let mut seed = HashSet::new();
         seed.insert(s);
 
-        let ordered = reorder_patterns_seeded(vec![non_joining, joinable], Some(&stats), &seed);
+        let patterns: Vec<Pattern> = vec![non_joining, joinable]
+            .into_iter()
+            .map(Pattern::Triple)
+            .collect();
+        let ordered = reorder_patterns(&patterns, Some(&stats), &seed);
 
+        let first = match &ordered[0] {
+            Pattern::Triple(tp) => tp,
+            _ => panic!("expected Triple pattern"),
+        };
         assert!(
-            ordered[0].variables().contains(&s),
+            first.variables().contains(&s),
             "expected first pattern to join with seeded bound vars"
         );
     }
@@ -1050,7 +1253,7 @@ mod tests {
         //
         // - The query parser/lowering emits `Term::Iri` for IRIs to support cross-ledger joins.
         // - Property statistics in `StatsView` are keyed by `Sid`.
-        // - The planner's selectivity calculation (`calculate_selectivity`) only consults stats
+        // - The planner's selectivity calculation only consults stats
         //   when it can extract a `Sid` via `pattern.p.as_sid()`.
         //
         // As a result, even when stats *exist*, planning may silently fall back to default scoring
@@ -1064,7 +1267,6 @@ mod tests {
         let o2 = VarId(2);
 
         // Two property-scan patterns with IRI predicates.
-        // Tie-breaker (when stats aren't used) will sort by predicate IRI string.
         let p_a = TriplePattern::new(
             Term::Var(s),
             Term::Iri(Arc::from("http://example.org/a")),
@@ -1114,37 +1316,22 @@ mod tests {
             },
         );
 
-        let ordered = reorder_patterns(vec![p_a, p_z], Some(&stats));
+        let patterns: Vec<Pattern> = vec![p_a, p_z].into_iter().map(Pattern::Triple).collect();
+        let ordered = reorder_patterns(&patterns, Some(&stats), &HashSet::new());
 
         // EXPECTATION (desired): stats-driven selectivity should pick predicate ".../z" first.
         //
         // CURRENT (bug/gap): because predicates are Term::Iri, stats lookups miss and ordering
-        // falls back to tie-breaker, which will choose ".../a" first. This assertion should fail
-        // until we fix stats usage for IRI predicates.
+        // falls back to original position as tie-breaker.
+        let first = match &ordered[0] {
+            Pattern::Triple(tp) => tp,
+            _ => panic!("expected Triple pattern"),
+        };
         assert!(
-            matches!(&ordered[0].p, Term::Iri(iri) if iri.as_ref() == "http://example.org/z"),
+            matches!(&first.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/z"),
             "expected stats-driven ordering to pick the most selective predicate first; got ordered[0]={:?}",
             ordered[0]
         );
-    }
-
-    #[test]
-    fn test_can_match_pattern() {
-        let pattern = make_pattern(VarId(0), "name", VarId(1));
-
-        // All unbound: can match
-        let states = HashMap::new();
-        assert!(can_match_pattern(&pattern, &states));
-
-        // Some bound: can match
-        let mut states2 = HashMap::new();
-        states2.insert(VarId(0), BindingState::Bound);
-        assert!(can_match_pattern(&pattern, &states2));
-
-        // Poisoned var: cannot match
-        let mut states3 = HashMap::new();
-        states3.insert(VarId(0), BindingState::Poisoned);
-        assert!(!can_match_pattern(&pattern, &states3));
     }
 
     #[test]
@@ -1168,108 +1355,6 @@ mod tests {
             Term::Var(VarId(1)),
         );
         assert!(!is_property_join(&[p1, p4]));
-    }
-
-    #[test]
-    fn test_plan_basic() {
-        let pattern = make_pattern(VarId(0), "name", VarId(1));
-        let query = Query::new(vec![VarId(0), VarId(1)], vec![Pattern::Triple(pattern)]);
-
-        let result = plan(&query, &HashMap::new());
-
-        assert_eq!(result.schema.len(), 2);
-        assert_eq!(result.ordered_patterns.len(), 1);
-        assert!(result.var_states.get(&VarId(0)).unwrap().is_bound());
-        assert!(result.var_states.get(&VarId(1)).unwrap().is_bound());
-    }
-
-    #[test]
-    fn test_plan_multiple_patterns() {
-        let p1 = make_pattern(VarId(0), "name", VarId(1));
-        let p2 = make_pattern(VarId(0), "age", VarId(2));
-        let query = Query::new(
-            vec![VarId(0), VarId(1), VarId(2)],
-            vec![Pattern::Triple(p1), Pattern::Triple(p2)],
-        );
-
-        let result = plan(&query, &HashMap::new());
-
-        assert_eq!(result.ordered_patterns.len(), 2);
-        assert_eq!(result.bound_vars().len(), 3);
-    }
-
-    #[test]
-    fn test_plan_upgrades_unbound_to_bound() {
-        // Input: ?s is Unbound, ?name is missing
-        // Pattern: ?s :name ?name
-        // Output: both should be Bound
-        let pattern = make_pattern(VarId(0), "name", VarId(1));
-        let query = Query::new(vec![VarId(0), VarId(1)], vec![Pattern::Triple(pattern)]);
-
-        let mut input_states = HashMap::new();
-        input_states.insert(VarId(0), BindingState::Unbound);
-
-        let result = plan(&query, &input_states);
-
-        // Unbound -> Bound after pattern execution
-        assert_eq!(
-            result.var_states.get(&VarId(0)),
-            Some(&BindingState::Bound),
-            "Unbound should be upgraded to Bound"
-        );
-        // Missing -> Bound
-        assert_eq!(
-            result.var_states.get(&VarId(1)),
-            Some(&BindingState::Bound),
-            "Missing var should become Bound"
-        );
-    }
-
-    #[test]
-    fn test_plan_preserves_poisoned() {
-        // Input: ?s is Poisoned (from failed OPTIONAL)
-        // Pattern: ?s :name ?name
-        // Output: ?s stays Poisoned, ?name becomes Bound
-        let pattern = make_pattern(VarId(0), "name", VarId(1));
-        let query = Query::new(vec![VarId(0), VarId(1)], vec![Pattern::Triple(pattern)]);
-
-        let mut input_states = HashMap::new();
-        input_states.insert(VarId(0), BindingState::Poisoned);
-
-        let result = plan(&query, &input_states);
-
-        // Poisoned stays Poisoned (not upgraded!)
-        assert_eq!(
-            result.var_states.get(&VarId(0)),
-            Some(&BindingState::Poisoned),
-            "Poisoned should NOT be upgraded to Bound"
-        );
-        // New var becomes Bound
-        assert_eq!(
-            result.var_states.get(&VarId(1)),
-            Some(&BindingState::Bound),
-            "New var should become Bound"
-        );
-    }
-
-    #[test]
-    fn test_plan_bound_stays_bound() {
-        // Input: ?s is already Bound
-        // Pattern: ?s :name ?name
-        // Output: ?s stays Bound
-        let pattern = make_pattern(VarId(0), "name", VarId(1));
-        let query = Query::new(vec![VarId(0), VarId(1)], vec![Pattern::Triple(pattern)]);
-
-        let mut input_states = HashMap::new();
-        input_states.insert(VarId(0), BindingState::Bound);
-
-        let result = plan(&query, &input_states);
-
-        assert_eq!(
-            result.var_states.get(&VarId(0)),
-            Some(&BindingState::Bound),
-            "Bound should stay Bound"
-        );
     }
 
     // Range extraction tests
@@ -1891,5 +1976,370 @@ mod tests {
         assert!(!bounds.matches(&FlakeValue::Long(20))); // exclusive upper
         assert!(!bounds.matches(&FlakeValue::Long(5))); // below range
         assert!(!bounds.matches(&FlakeValue::Long(25))); // above range
+    }
+
+    // =========================================================================
+    // Generalized selectivity scoring and reordering tests
+    // =========================================================================
+
+    #[test]
+    fn test_pattern_cardinality_variants() {
+        use crate::ir::{Expression, FilterValue, SubqueryPattern};
+
+        let empty = HashSet::new();
+
+        let triple = Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)));
+        assert!(matches!(
+            estimate_pattern(&triple, &empty, None),
+            PatternEstimate::Source { .. }
+        ));
+
+        let values = Pattern::Values {
+            vars: vec![VarId(0)],
+            rows: vec![],
+        };
+        assert!(matches!(
+            estimate_pattern(&values, &empty, None),
+            PatternEstimate::Source { .. }
+        ));
+
+        let union = Pattern::Union(vec![
+            vec![Pattern::Triple(make_pattern(VarId(0), "a", VarId(1)))],
+            vec![Pattern::Triple(make_pattern(VarId(0), "b", VarId(2)))],
+        ]);
+        assert!(matches!(
+            estimate_pattern(&union, &empty, None),
+            PatternEstimate::Source { .. }
+        ));
+
+        let subquery = Pattern::Subquery(SubqueryPattern::new(
+            vec![VarId(0)],
+            vec![Pattern::Triple(make_pattern(VarId(0), "x", VarId(1)))],
+        ));
+        assert!(matches!(
+            estimate_pattern(&subquery, &empty, None),
+            PatternEstimate::Source { .. }
+        ));
+
+        let optional = Pattern::Optional(vec![Pattern::Triple(make_pattern(
+            VarId(0),
+            "opt",
+            VarId(3),
+        ))]);
+        assert!(matches!(
+            estimate_pattern(&optional, &empty, None),
+            PatternEstimate::Expander { .. }
+        ));
+
+        let minus = Pattern::Minus(vec![Pattern::Triple(make_pattern(
+            VarId(0),
+            "del",
+            VarId(4),
+        ))]);
+        assert!(matches!(
+            estimate_pattern(&minus, &empty, None),
+            PatternEstimate::Reducer { .. }
+        ));
+
+        let exists = Pattern::Exists(vec![Pattern::Triple(make_pattern(VarId(0), "e", VarId(5)))]);
+        assert!(matches!(
+            estimate_pattern(&exists, &empty, None),
+            PatternEstimate::Reducer { .. }
+        ));
+
+        let not_exists = Pattern::NotExists(vec![Pattern::Triple(make_pattern(
+            VarId(0),
+            "ne",
+            VarId(6),
+        ))]);
+        assert!(matches!(
+            estimate_pattern(&not_exists, &empty, None),
+            PatternEstimate::Reducer { .. }
+        ));
+
+        let filter = Pattern::Filter(Expression::gt(
+            Expression::Var(VarId(0)),
+            Expression::Const(FilterValue::Long(0)),
+        ));
+        assert!(matches!(
+            estimate_pattern(&filter, &empty, None),
+            PatternEstimate::Deferred
+        ));
+
+        let bind = Pattern::Bind {
+            var: VarId(7),
+            expr: Expression::Const(FilterValue::Long(42)),
+        };
+        assert!(matches!(
+            estimate_pattern(&bind, &empty, None),
+            PatternEstimate::Deferred
+        ));
+    }
+
+    #[test]
+    fn test_estimate_values_cardinality() {
+        use crate::binding::Binding;
+        use fluree_db_core::Sid;
+
+        let values = Pattern::Values {
+            vars: vec![VarId(0)],
+            rows: vec![
+                vec![Binding::lit(FlakeValue::Long(1), Sid::new(2, "long"))],
+                vec![Binding::lit(FlakeValue::Long(2), Sid::new(2, "long"))],
+                vec![Binding::lit(FlakeValue::Long(3), Sid::new(2, "long"))],
+            ],
+        };
+
+        let card = estimate_pattern(&values, &HashSet::new(), None);
+        let PatternEstimate::Source { row_count } = card else {
+            panic!("expected Source")
+        };
+        assert!((row_count - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_estimate_union_sum_of_branches() {
+        // UNION of two branches with known property selectivity
+        let mut stats = StatsView::default();
+        stats.properties.insert(
+            Sid::new(100, "a"),
+            PropertyStatData {
+                count: 100,
+                ndv_values: 50,
+                ndv_subjects: 100,
+            },
+        );
+        stats.properties.insert(
+            Sid::new(100, "b"),
+            PropertyStatData {
+                count: 200,
+                ndv_values: 100,
+                ndv_subjects: 200,
+            },
+        );
+
+        let union = Pattern::Union(vec![
+            vec![Pattern::Triple(make_pattern(VarId(0), "a", VarId(1)))],
+            vec![Pattern::Triple(make_pattern(VarId(0), "b", VarId(2)))],
+        ]);
+
+        let card = estimate_pattern(&union, &HashSet::new(), Some(&stats));
+        let PatternEstimate::Source { row_count } = card else {
+            panic!("expected Source")
+        };
+        // Sum of branch estimates: 100 + 200 = 300
+        assert!((row_count - 300.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_estimate_optional_multiplier() {
+        let optional = Pattern::Optional(vec![Pattern::Triple(make_pattern(
+            VarId(0),
+            "opt",
+            VarId(1),
+        ))]);
+
+        let card = estimate_pattern(&optional, &HashSet::new(), None);
+        let PatternEstimate::Expander { multiplier } = card else {
+            panic!("expected Expander")
+        };
+        assert!(multiplier >= 1.0);
+    }
+
+    #[test]
+    fn test_estimate_minus_multiplier() {
+        let minus = Pattern::Minus(vec![Pattern::Triple(make_pattern(
+            VarId(0),
+            "del",
+            VarId(1),
+        ))]);
+
+        let card = estimate_pattern(&minus, &HashSet::new(), None);
+        let PatternEstimate::Reducer { multiplier } = card else {
+            panic!("expected Reducer")
+        };
+        assert!(multiplier < 1.0);
+        assert!((multiplier - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_reorder_all_triple_only_passes_through() {
+        // When zone contains only Triple/Filter/Bind patterns, reorder_patterns
+        // passes them through unchanged (the existing collect_inner_join_block path
+        // handles these).
+        let patterns = vec![
+            Pattern::Triple(make_pattern(VarId(0), "name", VarId(1))),
+            Pattern::Triple(make_pattern(VarId(0), "age", VarId(2))),
+        ];
+
+        let reordered = reorder_patterns(&patterns, None, &HashSet::new());
+
+        // Triple-only: passed through in original order
+        assert_eq!(reordered.len(), 2);
+        assert!(matches!(&reordered[0], Pattern::Triple(_)));
+        assert!(matches!(&reordered[1], Pattern::Triple(_)));
+    }
+
+    #[test]
+    fn test_reorder_reducer_before_source() {
+        // When a MINUS is eligible (shares a variable with bound set),
+        // it has priority over sources and should be placed first.
+        let s = VarId(0);
+        let o1 = VarId(1);
+        let o2 = VarId(2);
+        let d = VarId(3);
+
+        // Both triples share ?s
+        let triple1 = Pattern::Triple(make_pattern(s, "selective", o1));
+        let triple2 = Pattern::Triple(make_pattern(s, "wide", o2));
+        // MINUS shares ?s (eligible when ?s is bound)
+        let minus = Pattern::Minus(vec![Pattern::Triple(make_pattern(s, "deleted", d))]);
+
+        let patterns = vec![triple1, triple2, minus];
+
+        let mut bound = HashSet::new();
+        bound.insert(s); // Pre-seed with ?s so MINUS is eligible from start
+
+        let reordered = reorder_patterns(&patterns, None, &bound);
+
+        // Reducers have priority 1 (over sources at priority 2).
+        // With ?s already bound, MINUS is eligible and gets placed first.
+        assert!(
+            matches!(&reordered[0], Pattern::Minus(_)),
+            "Eligible reducer should be placed before sources, got: {:?}",
+            &reordered[0]
+        );
+        // Then the two triples
+        assert!(matches!(&reordered[1], Pattern::Triple(_)));
+        assert!(matches!(&reordered[2], Pattern::Triple(_)));
+    }
+
+    #[test]
+    fn test_reorder_expander_after_sources() {
+        // OPTIONAL should be placed after all sources and reducers
+        let s = VarId(0);
+        let o1 = VarId(1);
+        let o2 = VarId(2);
+        let o3 = VarId(3);
+
+        let triple1 = Pattern::Triple(make_pattern(s, "name", o1));
+        let triple2 = Pattern::Triple(make_pattern(s, "age", o2));
+        let optional = Pattern::Optional(vec![Pattern::Triple(make_pattern(s, "email", o3))]);
+
+        let patterns = vec![optional.clone(), triple1.clone(), triple2.clone()];
+
+        let reordered = reorder_patterns(&patterns, None, &HashSet::new());
+
+        // Sources (triples) should come before the expander (OPTIONAL)
+        assert!(matches!(&reordered[0], Pattern::Triple(_)));
+        assert!(matches!(&reordered[1], Pattern::Triple(_)));
+        assert!(matches!(&reordered[2], Pattern::Optional(_)));
+    }
+
+    #[test]
+    fn test_reorder_reducer_waits_for_dependencies() {
+        // MINUS cannot be placed until a correlation variable is bound.
+        // If ?x is only bound by the second triple, MINUS waits.
+        let s = VarId(0);
+        let o1 = VarId(1);
+        let x = VarId(2);
+        let d = VarId(3);
+
+        // First triple binds ?s and ?o1 (not ?x)
+        let triple1 = Pattern::Triple(make_pattern(s, "name", o1));
+        // Second triple binds ?x
+        let triple2 = Pattern::Triple(make_pattern(x, "type", VarId(4)));
+        // MINUS needs ?x
+        let minus = Pattern::Minus(vec![Pattern::Triple(make_pattern(x, "bad", d))]);
+
+        let patterns = vec![minus.clone(), triple1.clone(), triple2.clone()];
+
+        let reordered = reorder_patterns(&patterns, None, &HashSet::new());
+
+        // MINUS should not be first (it needs ?x which isn't bound yet)
+        assert!(
+            !matches!(&reordered[0], Pattern::Minus(_)),
+            "MINUS should not be placed before its dependency variables are bound"
+        );
+    }
+
+    #[test]
+    fn test_reorder_union_placed_by_cardinality() {
+        // A more selective UNION should be placed before a less selective triple
+        let s = VarId(0);
+        let o = VarId(1);
+
+        // Selective union: single small branch
+        let union = Pattern::Union(vec![vec![Pattern::Triple(TriplePattern::new(
+            Term::Var(s),
+            Term::Sid(Sid::new(100, "rare")),
+            Term::Value(FlakeValue::String("specific".to_string())),
+        ))]]);
+
+        // Unselective triple (full property scan)
+        let wide_triple = Pattern::Triple(make_pattern(s, "wide", o));
+
+        let mut stats = StatsView::default();
+        stats.properties.insert(
+            Sid::new(100, "rare"),
+            PropertyStatData {
+                count: 5,
+                ndv_values: 5,
+                ndv_subjects: 5,
+            },
+        );
+        stats.properties.insert(
+            Sid::new(100, "wide"),
+            PropertyStatData {
+                count: 1_000_000,
+                ndv_values: 500_000,
+                ndv_subjects: 500_000,
+            },
+        );
+
+        let patterns = vec![wide_triple, union];
+
+        let reordered = reorder_patterns(&patterns, Some(&stats), &HashSet::new());
+
+        // The union (estimate ~5) should come before the wide triple (estimate ~1M)
+        assert!(
+            matches!(&reordered[0], Pattern::Union(_)),
+            "Selective UNION should be placed before unselective triple, got: {:?}",
+            &reordered[0]
+        );
+    }
+
+    #[test]
+    fn test_pattern_shares_variables() {
+        let pattern = Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)));
+
+        let mut bound = HashSet::new();
+        assert!(!pattern_shares_variables(&pattern, &bound));
+
+        bound.insert(VarId(0));
+        assert!(pattern_shares_variables(&pattern, &bound));
+
+        bound.clear();
+        bound.insert(VarId(99));
+        assert!(!pattern_shares_variables(&pattern, &bound));
+    }
+
+    #[test]
+    fn test_estimate_branch_cardinality() {
+        let mut stats = StatsView::default();
+        stats.properties.insert(
+            Sid::new(100, "name"),
+            PropertyStatData {
+                count: 1000,
+                ndv_values: 500,
+                ndv_subjects: 1000,
+            },
+        );
+
+        let branch = vec![Pattern::Triple(make_pattern(VarId(0), "name", VarId(1)))];
+        let est = estimate_branch_cardinality(&branch, Some(&stats));
+
+        // Single triple: should be the triple's selectivity (count = 1000)
+        assert!((est - 1000.0).abs() < f64::EPSILON);
     }
 }

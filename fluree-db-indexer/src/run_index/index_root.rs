@@ -44,17 +44,16 @@ pub struct VectorDictRef {
 
 /// CID references for all dictionary artifacts stored in CAS.
 ///
-/// Large dictionaries (subjects, strings) use CoW trees with a branch + leaves
-/// structure. Small dictionaries (graphs, datatypes, languages) are embedded
+/// Forward dictionaries use FPK1 packs (DictPackRefs).
+/// Reverse dictionaries use CoW trees (DictTreeRefs).
+/// Small dictionaries (graphs, datatypes, languages) are embedded
 /// inline in the index root and therefore do not appear here.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DictRefs {
-    /// Subject forward tree: sid64 → suffix (ns-compressed, prefix stripped).
-    pub subject_forward: DictTreeRefs,
+    /// Forward dictionary packs (string + subject, FPK1 format).
+    pub forward_packs: DictPackRefs,
     /// Subject reverse tree: [ns_code BE][suffix] → sid64 (ns-compressed).
     pub subject_reverse: DictTreeRefs,
-    /// String forward tree: string_id → value.
-    pub string_forward: DictTreeRefs,
     /// String reverse tree: value → string_id.
     pub string_reverse: DictTreeRefs,
     /// Per-predicate numbig arenas. Key is `p_id` as string.
@@ -62,6 +61,33 @@ pub struct DictRefs {
     /// Per-predicate vector arena metadata. Key is `p_id` as string.
     /// Value contains manifest CID + all shard CIDs.
     pub vectors: BTreeMap<String, VectorDictRef>,
+}
+
+// ============================================================================
+// Forward dict pack types (FPK1)
+// ============================================================================
+
+/// A single entry in the pack branch routing table.
+///
+/// Maps an ID range to a pack CID. Used inline in the index root
+/// to route forward dictionary lookups without an extra fetch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackBranchEntry {
+    pub first_id: u64,
+    pub last_id: u64,
+    pub pack_cid: ContentId,
+}
+
+/// Forward dictionary pack references (replaces tree-based forward dicts).
+///
+/// String forward packs are a flat list (global contiguous IDs).
+/// Subject forward packs are grouped by namespace code (contiguous local IDs within each ns).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DictPackRefs {
+    /// String forward packs, sorted by first_id.
+    pub string_fwd_packs: Vec<PackBranchEntry>,
+    /// Subject forward packs, grouped by ns_code. Sorted by ns_code, then by first_id within.
+    pub subject_fwd_ns_packs: Vec<(u16, Vec<PackBranchEntry>)>,
 }
 
 /// CID references for a single graph + sort order (one branch + its leaves).
@@ -124,7 +150,8 @@ use std::path::Path;
 const ROOT_V5_MAGIC: [u8; 4] = *b"IRB1";
 
 /// Wire format version for IRB1.
-const ROOT_V5_VERSION: u8 = 1;
+/// v2: forward dicts use FPK1 packs instead of DLF1 trees.
+const ROOT_V5_VERSION: u8 = 2;
 
 /// Fixed header size: magic(4) + version(1) + flags(1) + pad(2) + index_t(8) + base_t(8) = 24.
 const ROOT_V5_HEADER_LEN: usize = 24;
@@ -155,11 +182,16 @@ pub struct NamedGraphRouting {
 }
 
 /// Dictionary refs for v5 (u32 p_id keys for numbig/vectors).
+///
+/// Forward dictionaries use packed FPK1 format (DictPackRefs).
+/// Reverse dictionaries use CoW tree format (DictTreeRefs).
 #[derive(Debug, Clone)]
 pub struct DictRefsV5 {
-    pub subject_forward: DictTreeRefs,
+    /// Forward dictionary packs (string + subject, FPK1 format).
+    pub forward_packs: DictPackRefs,
+    /// Subject reverse tree: [ns_code BE][suffix] → sid64 (ns-compressed).
     pub subject_reverse: DictTreeRefs,
-    pub string_forward: DictTreeRefs,
+    /// String reverse tree: value → string_id.
     pub string_reverse: DictTreeRefs,
     /// Per-predicate numbig arenas, sorted by p_id.
     pub numbig: Vec<(u32, ContentId)>,
@@ -285,10 +317,11 @@ impl IndexRootV5 {
         write_string_array(&mut buf, &self.datatype_iris);
         write_string_array(&mut buf, &self.language_tags);
 
-        // ---- Dict refs (CID trees) ----
-        write_dict_tree_refs(&mut buf, &self.dict_refs.subject_forward);
+        // ---- Dict refs ----
+        // Forward packs (FPK1)
+        write_dict_pack_refs(&mut buf, &self.dict_refs.forward_packs);
+        // Reverse trees (DLF1/DTB1)
         write_dict_tree_refs(&mut buf, &self.dict_refs.subject_reverse);
-        write_dict_tree_refs(&mut buf, &self.dict_refs.string_forward);
         write_dict_tree_refs(&mut buf, &self.dict_refs.string_reverse);
 
         // numbig (sorted by p_id)
@@ -448,9 +481,8 @@ impl IndexRootV5 {
         let language_tags = read_string_array(data, &mut pos)?;
 
         // Dict refs
-        let subject_forward = read_dict_tree_refs(data, &mut pos)?;
+        let forward_packs = read_dict_pack_refs(data, &mut pos)?;
         let subject_reverse = read_dict_tree_refs(data, &mut pos)?;
-        let string_forward = read_dict_tree_refs(data, &mut pos)?;
         let string_reverse = read_dict_tree_refs(data, &mut pos)?;
 
         // numbig
@@ -481,9 +513,8 @@ impl IndexRootV5 {
         }
 
         let dict_refs = DictRefsV5 {
-            subject_forward,
+            forward_packs,
             subject_reverse,
-            string_forward,
             string_reverse,
             numbig,
             vectors,
@@ -622,11 +653,19 @@ impl IndexRootV5 {
     pub fn all_cas_ids(&self) -> Vec<ContentId> {
         let mut ids = Vec::new();
 
-        // Dict artifacts: 4 trees
+        // Forward dict pack CIDs
+        for entry in &self.dict_refs.forward_packs.string_fwd_packs {
+            ids.push(entry.pack_cid.clone());
+        }
+        for (_, ns_packs) in &self.dict_refs.forward_packs.subject_fwd_ns_packs {
+            for entry in ns_packs {
+                ids.push(entry.pack_cid.clone());
+            }
+        }
+
+        // Reverse dict tree CIDs
         for tree in [
-            &self.dict_refs.subject_forward,
             &self.dict_refs.subject_reverse,
-            &self.dict_refs.string_forward,
             &self.dict_refs.string_reverse,
         ] {
             ids.push(tree.branch.clone());
@@ -847,6 +886,82 @@ fn read_string_array(data: &[u8], pos: &mut usize) -> io::Result<Vec<String>> {
     Ok(result)
 }
 
+/// Write forward dictionary pack refs (FPK1 packs).
+///
+/// Wire format:
+/// ```text
+/// [string_fwd_pack_count: u16 LE]
+///   For each: [first_id: u64] [last_id: u64] [pack_cid: len_prefixed]
+/// [subject_fwd_ns_count: u16 LE]
+///   For each ns: [ns_code: u16] [pack_count: u16]
+///     For each: [first_id: u64] [last_id: u64] [pack_cid: len_prefixed]
+/// ```
+fn write_dict_pack_refs(buf: &mut Vec<u8>, packs: &DictPackRefs) {
+    // String forward packs
+    buf.extend_from_slice(&(packs.string_fwd_packs.len() as u16).to_le_bytes());
+    for entry in &packs.string_fwd_packs {
+        buf.extend_from_slice(&entry.first_id.to_le_bytes());
+        buf.extend_from_slice(&entry.last_id.to_le_bytes());
+        write_cid(buf, &entry.pack_cid);
+    }
+
+    // Subject forward packs (per namespace)
+    let mut sorted_ns = packs.subject_fwd_ns_packs.clone();
+    sorted_ns.sort_by_key(|(ns_code, _)| *ns_code);
+    buf.extend_from_slice(&(sorted_ns.len() as u16).to_le_bytes());
+    for (ns_code, ns_packs) in &sorted_ns {
+        buf.extend_from_slice(&ns_code.to_le_bytes());
+        buf.extend_from_slice(&(ns_packs.len() as u16).to_le_bytes());
+        for entry in ns_packs {
+            buf.extend_from_slice(&entry.first_id.to_le_bytes());
+            buf.extend_from_slice(&entry.last_id.to_le_bytes());
+            write_cid(buf, &entry.pack_cid);
+        }
+    }
+}
+
+/// Read forward dictionary pack refs.
+fn read_dict_pack_refs(data: &[u8], pos: &mut usize) -> io::Result<DictPackRefs> {
+    // String forward packs
+    let str_count = read_u16_at(data, pos)? as usize;
+    let mut string_fwd_packs = Vec::with_capacity(str_count);
+    for _ in 0..str_count {
+        let first_id = read_u64_at(data, pos)?;
+        let last_id = read_u64_at(data, pos)?;
+        let pack_cid = read_cid(data, pos)?;
+        string_fwd_packs.push(PackBranchEntry {
+            first_id,
+            last_id,
+            pack_cid,
+        });
+    }
+
+    // Subject forward packs (per namespace)
+    let ns_count = read_u16_at(data, pos)? as usize;
+    let mut subject_fwd_ns_packs = Vec::with_capacity(ns_count);
+    for _ in 0..ns_count {
+        let ns_code = read_u16_at(data, pos)?;
+        let pack_count = read_u16_at(data, pos)? as usize;
+        let mut ns_packs = Vec::with_capacity(pack_count);
+        for _ in 0..pack_count {
+            let first_id = read_u64_at(data, pos)?;
+            let last_id = read_u64_at(data, pos)?;
+            let pack_cid = read_cid(data, pos)?;
+            ns_packs.push(PackBranchEntry {
+                first_id,
+                last_id,
+                pack_cid,
+            });
+        }
+        subject_fwd_ns_packs.push((ns_code, ns_packs));
+    }
+
+    Ok(DictPackRefs {
+        string_fwd_packs,
+        subject_fwd_ns_packs,
+    })
+}
+
 /// Write dict tree refs: branch CID + leaf_count:u32 + leaf CIDs.
 fn write_dict_tree_refs(buf: &mut Vec<u8>, tree: &DictTreeRefs) {
     write_cid(buf, &tree.branch);
@@ -922,17 +1037,24 @@ mod tests_v5 {
 
     fn sample_dict_refs_v5() -> DictRefsV5 {
         DictRefsV5 {
-            subject_forward: DictTreeRefs {
-                branch: test_cid(DICT, "sf_branch"),
-                leaves: vec![test_cid(DICT, "sf_l0")],
+            forward_packs: DictPackRefs {
+                string_fwd_packs: vec![PackBranchEntry {
+                    first_id: 0,
+                    last_id: 999,
+                    pack_cid: test_cid(DICT, "str_fwd_pack0"),
+                }],
+                subject_fwd_ns_packs: vec![(
+                    0,
+                    vec![PackBranchEntry {
+                        first_id: 0,
+                        last_id: 499,
+                        pack_cid: test_cid(DICT, "subj_fwd_ns0_pack0"),
+                    }],
+                )],
             },
             subject_reverse: DictTreeRefs {
                 branch: test_cid(DICT, "sr_branch"),
                 leaves: vec![test_cid(DICT, "sr_l0")],
-            },
-            string_forward: DictTreeRefs {
-                branch: test_cid(DICT, "stf_branch"),
-                leaves: vec![test_cid(DICT, "stf_l0")],
             },
             string_reverse: DictTreeRefs {
                 branch: test_cid(DICT, "str_branch"),
@@ -1153,7 +1275,7 @@ mod tests_v5 {
         let bytes = root.encode();
 
         assert_eq!(&bytes[0..4], b"IRB1");
-        assert_eq!(bytes[4], 1); // version
+        assert_eq!(bytes[4], 2); // version
         assert_eq!(bytes[5], 0); // flags (no optional sections)
         assert_eq!(bytes[6], 0); // pad
         assert_eq!(bytes[7], 0); // pad
@@ -1184,12 +1306,14 @@ mod tests_v5 {
 
         let ids = root.all_cas_ids();
 
-        // 4 tree branches + 4 tree leaves + 1 numbig + 1 inline leaf + 1 named branch + 1 sketch = 12
-        assert_eq!(ids.len(), 12);
+        // 1 str_fwd pack + 1 subj_fwd pack + 2 reverse tree (branch+leaf each = 4) + 1 numbig + 1 inline leaf + 1 named branch + 1 sketch = 10
+        assert_eq!(ids.len(), 10);
         assert!(ids.contains(&test_cid(DICT, "numbig_5")));
         assert!(ids.contains(&make_leaf_cid(0)));
         assert!(ids.contains(&test_cid(ContentKind::IndexBranch, "g1_spot")));
         assert!(ids.contains(&test_cid(ContentKind::StatsSketch, "sketch")));
+        assert!(ids.contains(&test_cid(DICT, "str_fwd_pack0")));
+        assert!(ids.contains(&test_cid(DICT, "subj_fwd_ns0_pack0")));
 
         // Verify sorted
         for w in ids.windows(2) {

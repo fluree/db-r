@@ -1,14 +1,16 @@
 //! Result formatting configuration types
 //!
 //! This module provides configuration for controlling how query results
-//! are formatted into JSON output.
+//! are formatted. Supports JSON-based formats (JSON-LD, SPARQL JSON, TypedJson)
+//! and high-performance delimited-text formats (TSV, CSV).
 
 // Re-export SelectMode from fluree-db-query (canonical source)
 pub use fluree_db_query::SelectMode;
 
 /// Output format selection
 ///
-/// Determines which JSON format to use for query results.
+/// Determines which format to use for query results. JSON formats produce
+/// `serde_json::Value`; TSV produces bytes/strings directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
     /// JSON-LD Query format (default)
@@ -37,6 +39,28 @@ pub enum OutputFormat {
     /// [{"?s": {"@id": "ex:alice"}, "?name": {"@value": "Alice", "@type": "xsd:string"}}]
     /// ```
     TypedJson,
+
+    /// Tab-separated values (high-performance path)
+    ///
+    /// Produces a header row of variable names followed by tab-separated values.
+    /// IRIs are compacted via `@context`. Bypasses JSON DOM construction and JSON
+    /// serialization entirely — writes directly to a byte buffer.
+    ///
+    /// **Note**: TSV produces `Vec<u8>` / `String`, not `JsonValue`. Use
+    /// `format_results_string()`, `QueryResult::to_tsv()`, or `to_tsv_bytes()`
+    /// instead of `format_results()`.
+    Tsv,
+
+    /// Comma-separated values (high-performance path)
+    ///
+    /// Same approach as TSV but with comma delimiter and RFC 4180 quoting.
+    /// IRIs are compacted via `@context`. Bypasses JSON DOM construction and JSON
+    /// serialization entirely — writes directly to a byte buffer.
+    ///
+    /// **Note**: CSV produces `Vec<u8>` / `String`, not `JsonValue`. Use
+    /// `format_results_string()`, `QueryResult::to_csv()`, or `to_csv_bytes()`
+    /// instead of `format_results()`.
+    Csv,
 }
 
 /// JSON-LD Query row shape
@@ -115,6 +139,22 @@ impl FormatterConfig {
         }
     }
 
+    /// Create a TSV config (high-performance path)
+    pub fn tsv() -> Self {
+        Self {
+            format: OutputFormat::Tsv,
+            ..Default::default()
+        }
+    }
+
+    /// Create a CSV config (high-performance path)
+    pub fn csv() -> Self {
+        Self {
+            format: OutputFormat::Csv,
+            ..Default::default()
+        }
+    }
+
     /// Set the select mode
     pub fn with_select_mode(mut self, mode: SelectMode) -> Self {
         self.select_mode = mode;
@@ -164,6 +204,18 @@ mod tests {
     fn test_typed_json_config() {
         let config = FormatterConfig::typed_json();
         assert_eq!(config.format, OutputFormat::TypedJson);
+    }
+
+    #[test]
+    fn test_tsv_config() {
+        let config = FormatterConfig::tsv();
+        assert_eq!(config.format, OutputFormat::Tsv);
+    }
+
+    #[test]
+    fn test_csv_config() {
+        let config = FormatterConfig::csv();
+        assert_eq!(config.format, OutputFormat::Csv);
     }
 
     #[test]

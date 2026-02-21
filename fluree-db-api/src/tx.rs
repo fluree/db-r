@@ -420,6 +420,8 @@ where
                 TxnType::Update => Txn::update().with_opts(txn_opts),
             }
         } else {
+            let parse_span = tracing::debug_span!("txn_parse", txn_type = ?txn_type);
+            let _guard = parse_span.enter();
             parse_transaction(txn_json, txn_type, txn_opts, &mut ns_registry)?
         };
 
@@ -536,13 +538,17 @@ where
         tracker: &Tracker,
     ) -> std::result::Result<StageResult, TrackedErrorResponse> {
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
-        let txn = parse_transaction(
-            input.txn_json,
-            input.txn_type,
-            input.txn_opts,
-            &mut ns_registry,
-        )
-        .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?;
+        let txn = {
+            let parse_span = tracing::debug_span!("txn_parse", txn_type = ?input.txn_type);
+            let _guard = parse_span.enter();
+            parse_transaction(
+                input.txn_json,
+                input.txn_type,
+                input.txn_opts,
+                &mut ns_registry,
+            )
+            .map_err(|e| TrackedErrorResponse::new(400, e.to_string(), tracker.tally()))?
+        };
 
         // Extract txn_meta and graph_delta before staging consumes the Txn
         let txn_meta = txn.txn_meta.clone();
@@ -1097,7 +1103,7 @@ where
     ) -> Result<StageResult> {
         use fluree_db_transact::{generate_txn_id, stage_flakes, FlakeSink};
 
-        let span = tracing::info_span!(
+        let span = tracing::debug_span!(
             "stage_turtle_insert",
             ledger_t = ledger.t(),
             new_t = ledger.t() + 1,
@@ -1110,7 +1116,8 @@ where
         let txn_id = generate_txn_id();
 
         // Parse Turtle directly to flakes
-        let parse_span = tracing::info_span!("turtle_parse_to_flakes", turtle_bytes = turtle.len());
+        let parse_span =
+            tracing::debug_span!("turtle_parse_to_flakes", turtle_bytes = turtle.len());
         let flakes = {
             let _g = parse_span.enter();
             let mut sink = FlakeSink::new(&mut ns_registry, new_t, txn_id);

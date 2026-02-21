@@ -18,7 +18,9 @@ use super::leaflet_cache::LeafletCache;
 use super::run_record::{RunRecord, RunSortOrder};
 use super::types::DecodedRow;
 use crate::dict_tree::builder;
-use crate::dict_tree::forward_leaf::ForwardEntry;
+use crate::dict_tree::forward_pack::{KIND_STRING_FWD, KIND_SUBJECT_FWD};
+use crate::dict_tree::pack_builder;
+use crate::dict_tree::pack_reader::ForwardPackReader;
 use crate::dict_tree::reader::LeafSource;
 use crate::dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
 use crate::dict_tree::{DictBranch, DictTreeReader};
@@ -105,18 +107,24 @@ struct DictionarySet {
     predicate_reverse: HashMap<String, u32>,
     /// Graph IRI → dict_index (0-based). g_id = dict_index + 1.
     graphs_reverse: HashMap<String, GraphId>,
-    subject_forward_tree: Option<DictTreeReader>,
+    /// Subject forward packs keyed by ns_code.
+    subject_forward_packs: std::collections::BTreeMap<u16, ForwardPackReader>,
     subject_reverse_tree: Option<DictTreeReader>,
-    string_forward_tree: Option<DictTreeReader>,
+    /// String forward pack reader (all string IDs in one stream).
+    string_forward_packs: ForwardPackReader,
     string_reverse_tree: Option<DictTreeReader>,
+    /// Total subject count across all namespaces (for DictOverlay watermark).
+    subject_count: u32,
+    /// Total string count (for DictOverlay watermark).
+    string_count: u32,
     namespace_codes: HashMap<u16, String>,
     namespace_reverse: HashMap<String, u16>,
     prefix_trie: PrefixTrie,
     language_tags: LanguageTagDict,
     dt_sids: Vec<Sid>,
     numbig_forward: HashMap<u32, super::numbig_dict::NumBigArena>,
-    /// Per-predicate vector arenas (packed f32). Key = p_id.
-    vector_forward: HashMap<u32, super::vector_arena::VectorArena>,
+    /// Per-predicate lazy vector arenas (on-demand shard loading). Key = p_id.
+    vector_forward: HashMap<u32, super::vector_arena::LazyVectorArena>,
 }
 
 /// Per-graph, per-order branch manifests and leaf directories.
@@ -152,7 +160,7 @@ impl BinaryIndexStore {
     /// Loads per-order manifests (`index_manifest_spot.json`, `index_manifest_psot.json`,
     /// etc.) and builds per-graph, per-order branch manifests.
     pub fn load(run_dir: &Path, index_dir: &Path) -> io::Result<Self> {
-        let _span = tracing::info_span!("BinaryIndexStore::load", ?run_dir, ?index_dir).entered();
+        let _span = tracing::debug_span!("BinaryIndexStore::load", ?run_dir, ?index_dir).entered();
 
         // ---- Load per-order index manifests ----
         let mut graphs: HashMap<GraphId, GraphIndex> = HashMap::new();
@@ -267,13 +275,13 @@ impl BinaryIndexStore {
             "loaded namespace codes + built prefix trie"
         );
 
-        // ---- Build subject trees from flat files ----
-        // Forward tree stores suffix only (ns_code is in sid64).
+        // ---- Build subject packs + reverse tree from flat files ----
+        // Forward packs store suffix only (ns_code is in sid64), grouped by ns_code.
         // Reverse tree keys are [ns_code BE][suffix] for namespace compression.
         let subject_fwd_path = run_dir.join("subjects.fwd");
         let subject_idx_path = run_dir.join("subjects.idx");
         let sids_path = run_dir.join("subjects.sids");
-        let (subject_forward_tree, subject_reverse_tree) =
+        let (subject_forward_packs, subject_reverse_tree, subject_count) =
             if subject_idx_path.exists() && subject_fwd_path.exists() {
                 let (offsets, lens) = read_forward_index(&subject_idx_path)?;
                 let fwd_data = std::fs::read(&subject_fwd_path)?;
@@ -282,8 +290,9 @@ impl BinaryIndexStore {
                 } else {
                     (0..offsets.len() as u64).collect()
                 };
-                // Build forward entries with suffix-only values (strip namespace prefix)
-                let mut fwd_entries: Vec<ForwardEntry> = Vec::with_capacity(sids.len());
+                // Collect entries per namespace for forward packs, and reverse entries.
+                let mut ns_entries: std::collections::BTreeMap<u16, Vec<(u64, Vec<u8>)>> =
+                    std::collections::BTreeMap::new();
                 let mut rev_entries: Vec<ReverseEntry> = Vec::with_capacity(sids.len());
                 for (&sid, (&off, &len)) in sids.iter().zip(offsets.iter().zip(lens.iter())) {
                     let iri = &fwd_data[off as usize..(off as usize + len as usize)];
@@ -298,62 +307,103 @@ impl BinaryIndexStore {
                     } else {
                         iri
                     };
-                    fwd_entries.push(ForwardEntry {
-                        id: sid,
-                        value: suffix.to_vec(),
-                    });
+                    let local_id = SubjectId::from_u64(sid).local_id();
+                    ns_entries
+                        .entry(ns_code)
+                        .or_default()
+                        .push((local_id, suffix.to_vec()));
                     rev_entries.push(ReverseEntry {
                         key: subject_reverse_key(ns_code, suffix),
                         id: sid,
                     });
                 }
-                fwd_entries.sort_by_key(|e| e.id);
+                // Build forward packs per namespace.
+                let mut subject_packs = std::collections::BTreeMap::new();
+                for (ns_code, mut entries) in ns_entries {
+                    entries.sort_by_key(|(id, _)| *id);
+                    let refs: Vec<(u64, &[u8])> =
+                        entries.iter().map(|(id, v)| (*id, v.as_slice())).collect();
+                    let result = pack_builder::build_subject_forward_packs_for_ns(
+                        ns_code,
+                        &refs,
+                        pack_builder::DEFAULT_TARGET_PAGE_BYTES,
+                        pack_builder::DEFAULT_TARGET_PACK_BYTES,
+                    )?;
+                    let pack_bytes: Vec<Arc<[u8]>> = result
+                        .packs
+                        .into_iter()
+                        .map(|p| Arc::from(p.bytes.into_boxed_slice()))
+                        .collect();
+                    let reader = ForwardPackReader::from_memory(pack_bytes)?;
+                    subject_packs.insert(ns_code, reader);
+                }
+                // Build reverse tree.
                 rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
-                let fwd_reader = build_dict_reader_forward(fwd_entries)?;
                 let rev_reader = build_dict_reader_reverse(rev_entries)?;
+                let count = sids.len() as u32;
                 tracing::info!(
-                    subjects = sids.len(),
-                    "built subject trees from flat files (ns-compressed)"
+                    subjects = count,
+                    namespaces = subject_packs.len(),
+                    "built subject packs + reverse tree from flat files"
                 );
-                (Some(fwd_reader), Some(rev_reader))
+                (subject_packs, Some(rev_reader), count)
             } else {
-                (None, None)
+                (std::collections::BTreeMap::new(), None, 0)
             };
 
-        // ---- Build string trees from flat files ----
+        // ---- Build string packs + reverse tree from flat files ----
         // Strings use raw value bytes (no namespace compression).
         let string_fwd_path = run_dir.join("strings.fwd");
         let string_idx_path = run_dir.join("strings.idx");
-        let (string_forward_tree, string_reverse_tree) =
+        let (string_forward_packs, string_reverse_tree, string_count) =
             if string_idx_path.exists() && string_fwd_path.exists() {
                 let (offsets, lens) = read_forward_index(&string_idx_path)?;
                 let fwd_data = std::fs::read(&string_fwd_path)?;
-                let fwd_entries: Vec<ForwardEntry> = offsets
+                // Build pack entries: (str_id, value_bytes).
+                let pack_entries: Vec<(u32, Vec<u8>)> = offsets
                     .iter()
                     .zip(lens.iter())
                     .enumerate()
-                    .map(|(i, (&off, &len))| ForwardEntry {
-                        id: i as u64,
-                        value: fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
+                    .map(|(i, (&off, &len))| {
+                        (
+                            i as u32,
+                            fwd_data[off as usize..(off as usize + len as usize)].to_vec(),
+                        )
                     })
                     .collect();
-                let mut rev_entries: Vec<ReverseEntry> = fwd_entries
+                let pack_refs: Vec<(u32, &[u8])> = pack_entries
                     .iter()
-                    .map(|e| ReverseEntry {
-                        key: e.value.clone(),
-                        id: e.id,
+                    .map(|(id, v)| (*id, v.as_slice()))
+                    .collect();
+                let result = pack_builder::build_string_forward_packs(
+                    &pack_refs,
+                    pack_builder::DEFAULT_TARGET_PAGE_BYTES,
+                    pack_builder::DEFAULT_TARGET_PACK_BYTES,
+                )?;
+                let pack_bytes: Vec<Arc<[u8]>> = result
+                    .packs
+                    .into_iter()
+                    .map(|p| Arc::from(p.bytes.into_boxed_slice()))
+                    .collect();
+                let fwd_reader = ForwardPackReader::from_memory(pack_bytes)?;
+                // Build reverse entries for the reverse tree.
+                let mut rev_entries: Vec<ReverseEntry> = pack_entries
+                    .iter()
+                    .map(|(id, v)| ReverseEntry {
+                        key: v.clone(),
+                        id: *id as u64,
                     })
                     .collect();
                 rev_entries.sort_by(|a, b| a.key.cmp(&b.key));
-                let fwd_reader = build_dict_reader_forward(fwd_entries)?;
                 let rev_reader = build_dict_reader_reverse(rev_entries)?;
+                let count = offsets.len() as u32;
                 tracing::info!(
-                    strings = offsets.len(),
-                    "built string trees from flat files"
+                    strings = count,
+                    "built string packs + reverse tree from flat files"
                 );
-                (Some(fwd_reader), Some(rev_reader))
+                (fwd_reader, Some(rev_reader), count)
             } else {
-                (None, None)
+                (ForwardPackReader::empty(), None, 0)
             };
 
         // ---- Load language tag dict ----
@@ -423,9 +473,17 @@ impl BinaryIndexStore {
             }
         }
 
-        // ---- Load vector arenas ----
+        // ---- Load vector arena metadata (lazy — shards loaded on demand) ----
         let vec_dir = run_dir.join("vectors");
-        let mut vector_forward: HashMap<u32, super::vector_arena::VectorArena> = HashMap::new();
+        let mut vector_forward: HashMap<u32, super::vector_arena::LazyVectorArena> = HashMap::new();
+        // Leaflet cache is created below; we build arenas after that.
+        // Collect manifest + shard sources first.
+        struct PendingArena {
+            p_id: u32,
+            manifest: super::vector_arena::VectorManifest,
+            shard_sources: Vec<super::vector_arena::ShardSource>,
+        }
+        let mut pending_arenas: Vec<PendingArena> = Vec::new();
         if vec_dir.exists() && vec_dir.is_dir() {
             for entry in std::fs::read_dir(&vec_dir)? {
                 let entry = entry?;
@@ -438,31 +496,30 @@ impl BinaryIndexStore {
                             let manifest =
                                 super::vector_arena::read_vector_manifest(&manifest_bytes)?;
 
-                            // Load all shards from disk (local reads are fast)
-                            let mut shards = Vec::with_capacity(manifest.shards.len());
-                            for (shard_idx, _) in manifest.shards.iter().enumerate() {
+                            let mut shard_sources = Vec::with_capacity(manifest.shards.len());
+                            for (shard_idx, shard_info) in manifest.shards.iter().enumerate() {
                                 let shard_path =
                                     vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                                let shard = super::vector_arena::read_vector_shard(&shard_path)?;
-                                shards.push(shard);
+                                // Local builds don't have CIDs — use the manifest's
+                                // CAS address as a stable identity for cache keying.
+                                let cid_hash =
+                                    LeafletCache::cid_cache_key(shard_info.cas.as_bytes());
+                                let exists = shard_path.exists();
+                                shard_sources.push(super::vector_arena::ShardSource {
+                                    cid_hash,
+                                    cid: None, // local FileStorage
+                                    path: shard_path,
+                                    on_disk: std::sync::atomic::AtomicBool::new(exists),
+                                });
                             }
-
-                            let arena =
-                                super::vector_arena::load_arena_from_shards(&manifest, shards)?;
-                            vector_forward.insert(p_id, arena);
+                            pending_arenas.push(PendingArena {
+                                p_id,
+                                manifest,
+                                shard_sources,
+                            });
                         }
                     }
                 }
-            }
-            if !vector_forward.is_empty() {
-                tracing::info!(
-                    predicates = vector_forward.len(),
-                    total_vectors = vector_forward
-                        .values()
-                        .map(|a| a.len() as usize)
-                        .sum::<usize>(),
-                    "loaded vector arenas"
-                );
             }
         }
 
@@ -497,15 +554,41 @@ impl BinaryIndexStore {
         );
         let leaflet_cache = Some(Arc::new(LeafletCache::with_max_bytes(leaflet_cache_bytes)));
 
+        // ---- Finalize lazy vector arenas (need cache handle) ----
+        for pa in pending_arenas {
+            let total = pa.manifest.total_count;
+            let dims = pa.manifest.dims;
+            let arena = super::vector_arena::LazyVectorArena::new(
+                pa.manifest,
+                pa.shard_sources,
+                Arc::clone(leaflet_cache.as_ref().unwrap()),
+                None, // FileStorage: all shards already on disk
+            );
+            vector_forward.insert(pa.p_id, arena);
+            tracing::debug!(p_id = pa.p_id, total, dims, "registered lazy vector arena");
+        }
+        if !vector_forward.is_empty() {
+            tracing::info!(
+                predicates = vector_forward.len(),
+                total_vectors = vector_forward
+                    .values()
+                    .map(|a| a.len() as usize)
+                    .sum::<usize>(),
+                "registered lazy vector arenas"
+            );
+        }
+
         Ok(Self {
             dicts: DictionarySet {
                 predicates,
                 predicate_reverse,
                 graphs_reverse,
-                subject_forward_tree,
+                subject_forward_packs,
                 subject_reverse_tree,
-                string_forward_tree,
+                string_forward_packs,
                 string_reverse_tree,
+                subject_count,
+                string_count,
                 namespace_codes,
                 namespace_reverse,
                 prefix_trie,
@@ -628,17 +711,19 @@ impl BinaryIndexStore {
             (dict, rev)
         };
 
-        // ---- Load subject dict trees from CAS ----
-        let subject_forward_tree = Some(
-            load_dict_tree_from_cas(
+        // ---- Load subject forward packs + reverse tree from CAS ----
+        let mut subject_forward_packs = std::collections::BTreeMap::new();
+        for (ns_code, ns_refs) in &root.dict_refs.forward_packs.subject_fwd_ns_packs {
+            let reader = ForwardPackReader::from_pack_refs(
                 Arc::clone(&cs),
-                &root.dict_refs.subject_forward,
                 cache_dir,
-                "sdl",
-                leaflet_cache.as_ref(),
+                ns_refs,
+                KIND_SUBJECT_FWD,
+                *ns_code,
             )
-            .await?,
-        );
+            .await?;
+            subject_forward_packs.insert(*ns_code, reader);
+        }
         let subject_reverse_tree = Some(
             load_dict_tree_from_cas(
                 Arc::clone(&cs),
@@ -650,22 +735,24 @@ impl BinaryIndexStore {
             .await?,
         );
         tracing::info!(
-            subj_fwd_entries = subject_forward_tree.as_ref().unwrap().total_entries(),
+            subj_fwd_ns = subject_forward_packs.len(),
+            subj_fwd_packs = subject_forward_packs
+                .values()
+                .map(|r| r.pack_count())
+                .sum::<usize>(),
             subj_rev_entries = subject_reverse_tree.as_ref().unwrap().total_entries(),
-            "loaded subject dict trees"
+            "loaded subject dict packs + reverse tree"
         );
 
-        // ---- Load string dict trees from CAS ----
-        let string_forward_tree = Some(
-            load_dict_tree_from_cas(
-                Arc::clone(&cs),
-                &root.dict_refs.string_forward,
-                cache_dir,
-                "tfl",
-                leaflet_cache.as_ref(),
-            )
-            .await?,
-        );
+        // ---- Load string forward packs + reverse tree from CAS ----
+        let string_forward_packs = ForwardPackReader::from_pack_refs(
+            Arc::clone(&cs),
+            cache_dir,
+            &root.dict_refs.forward_packs.string_fwd_packs,
+            KIND_STRING_FWD,
+            0,
+        )
+        .await?;
         let string_reverse_tree = Some(
             load_dict_tree_from_cas(
                 Arc::clone(&cs),
@@ -677,9 +764,9 @@ impl BinaryIndexStore {
             .await?,
         );
         tracing::info!(
-            str_fwd_entries = string_forward_tree.as_ref().unwrap().total_entries(),
+            str_fwd_packs = string_forward_packs.pack_count(),
             str_rev_entries = string_reverse_tree.as_ref().unwrap().total_entries(),
-            "loaded string dict trees"
+            "loaded string dict packs + reverse tree"
         );
 
         // ---- Namespace codes ----
@@ -753,22 +840,43 @@ impl BinaryIndexStore {
             );
         }
 
-        // ---- Vector arenas (u32 keys, no string parsing) ----
-        let mut vector_forward: HashMap<u32, super::vector_arena::VectorArena> = HashMap::new();
+        // ---- Vector arenas (lazy — only manifest loaded, shards on demand) ----
+        let mut vector_forward: HashMap<u32, super::vector_arena::LazyVectorArena> = HashMap::new();
         for entry in &root.dict_refs.vectors {
             let manifest_bytes =
                 fetch_cached_bytes(cs.as_ref(), &entry.manifest, cache_dir, "vam").await?;
             let manifest = super::vector_arena::read_vector_manifest(&manifest_bytes)?;
 
-            let mut shards = Vec::with_capacity(entry.shards.len());
+            let mut shard_sources = Vec::with_capacity(entry.shards.len());
             for shard_cid in &entry.shards {
-                let shard_bytes =
-                    fetch_cached_bytes(cs.as_ref(), shard_cid, cache_dir, "vas").await?;
-                let shard = super::vector_arena::read_vector_shard_from_bytes(&shard_bytes)?;
-                shards.push(shard);
+                let cid_hash = LeafletCache::cid_cache_key(&shard_cid.to_bytes());
+                if let Some(local) = cs.resolve_local_path(shard_cid) {
+                    // FileStorage: direct path, on disk
+                    shard_sources.push(super::vector_arena::ShardSource {
+                        cid_hash,
+                        cid: None,
+                        path: local,
+                        on_disk: std::sync::atomic::AtomicBool::new(true),
+                    });
+                } else {
+                    // Remote: derive cache path, check if already cached
+                    let cache_path = cache_dir.join(format!("{}.vas", shard_cid));
+                    let exists = cache_path.exists();
+                    shard_sources.push(super::vector_arena::ShardSource {
+                        cid_hash,
+                        cid: Some(shard_cid.clone()),
+                        path: cache_path,
+                        on_disk: std::sync::atomic::AtomicBool::new(exists),
+                    });
+                }
             }
 
-            let arena = super::vector_arena::load_arena_from_shards(&manifest, shards)?;
+            let arena = super::vector_arena::LazyVectorArena::new(
+                manifest,
+                shard_sources,
+                Arc::clone(leaflet_cache.as_ref().unwrap()),
+                Some(Arc::clone(&cs)),
+            );
             vector_forward.insert(entry.p_id, arena);
         }
         if !vector_forward.is_empty() {
@@ -778,7 +886,7 @@ impl BinaryIndexStore {
                     .values()
                     .map(|a| a.len() as usize)
                     .sum::<usize>(),
-                "loaded vector arenas"
+                "registered lazy vector arenas"
             );
         }
 
@@ -909,15 +1017,24 @@ impl BinaryIndexStore {
             "BinaryIndexStore loaded from IRB1 root"
         );
 
+        // Derive counts from root watermarks for DictOverlay watermark tracking.
+        let subject_count = subject_reverse_tree
+            .as_ref()
+            .map(|t| t.total_entries() as u32)
+            .unwrap_or(0);
+        let string_count = root.string_watermark;
+
         Ok(Self {
             dicts: DictionarySet {
                 predicates,
                 predicate_reverse,
                 graphs_reverse,
-                subject_forward_tree,
+                subject_forward_packs,
                 subject_reverse_tree,
-                string_forward_tree,
+                string_forward_packs,
                 string_reverse_tree,
+                subject_count,
+                string_count,
                 namespace_codes,
                 namespace_reverse,
                 prefix_trie,
@@ -934,27 +1051,13 @@ impl BinaryIndexStore {
         })
     }
 
-    /// Log dictionary tree I/O stats (disk reads vs cache hits).
+    /// Log dictionary I/O stats (reverse tree disk reads vs cache hits).
     pub fn log_dict_stats(&self) {
-        if let Some(tree) = &self.dicts.subject_forward_tree {
-            tracing::info!(
-                disk_reads = tree.disk_reads(),
-                cache_hits = tree.cache_hits(),
-                "dict_stats: subject_forward"
-            );
-        }
         if let Some(tree) = &self.dicts.subject_reverse_tree {
             tracing::info!(
                 disk_reads = tree.disk_reads(),
                 cache_hits = tree.cache_hits(),
                 "dict_stats: subject_reverse"
-            );
-        }
-        if let Some(tree) = &self.dicts.string_forward_tree {
-            tracing::info!(
-                disk_reads = tree.disk_reads(),
-                cache_hits = tree.cache_hits(),
-                "dict_stats: string_forward"
             );
         }
         if let Some(tree) = &self.dicts.string_reverse_tree {
@@ -973,13 +1076,7 @@ impl BinaryIndexStore {
     /// I/O penalties on the first query. Returns total leaves loaded.
     pub fn preload_dict_leaves(&self) -> std::io::Result<usize> {
         let mut total = 0;
-        if let Some(tree) = &self.dicts.subject_forward_tree {
-            total += tree.preload_all_leaves()?;
-        }
         if let Some(tree) = &self.dicts.subject_reverse_tree {
-            total += tree.preload_all_leaves()?;
-        }
-        if let Some(tree) = &self.dicts.string_forward_tree {
             total += tree.preload_all_leaves()?;
         }
         if let Some(tree) = &self.dicts.string_reverse_tree {
@@ -994,14 +1091,8 @@ impl BinaryIndexStore {
     /// disable caching by passing `None`. Propagates to dict tree readers
     /// so they share the same global budget.
     pub fn set_leaflet_cache(&mut self, cache: Option<Arc<LeafletCache>>) {
-        // Propagate to dict tree readers
-        if let Some(tree) = &mut self.dicts.subject_forward_tree {
-            tree.set_cache(cache.clone());
-        }
+        // Propagate to reverse dict tree readers (forward dicts use packs, no cache).
         if let Some(tree) = &mut self.dicts.subject_reverse_tree {
-            tree.set_cache(cache.clone());
-        }
-        if let Some(tree) = &mut self.dicts.string_forward_tree {
             tree.set_cache(cache.clone());
         }
         if let Some(tree) = &mut self.dicts.string_reverse_tree {
@@ -1086,37 +1177,70 @@ impl BinaryIndexStore {
         format!("{}{}", prefix, sid.name)
     }
 
-    /// Resolve s_id → full IRI string via the forward dict tree.
+    /// Resolve s_id → full IRI string via the forward dictionary pack.
     ///
-    /// The forward tree stores only the suffix (namespace prefix stripped).
-    /// Reconstructs the full IRI by prepending the namespace prefix looked
-    /// up from `namespace_codes` using the ns_code embedded in the sid64.
+    /// The forward pack stores only the suffix (namespace prefix stripped),
+    /// keyed by local_id within each namespace. Reconstructs the full IRI
+    /// by prepending the namespace prefix using the ns_code from the sid64.
     pub fn resolve_subject_iri(&self, s_id: u64) -> io::Result<String> {
-        let tree = self.dicts.subject_forward_tree.as_ref().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "subject forward tree not loaded")
-        })?;
-        let suffix_bytes = tree.forward_lookup(s_id)?.ok_or_else(|| {
+        let sid = SubjectId::from_u64(s_id);
+        let ns_code = sid.ns_code();
+        let reader = self
+            .dicts
+            .subject_forward_packs
+            .get(&ns_code)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no subject forward pack for ns_code {}", ns_code),
+                )
+            })?;
+        let suffix = reader.forward_lookup_str(sid.local_id())?.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("s_id {} not found in subject forward tree", s_id),
+                format!(
+                    "s_id {} (ns={}, local={}) not found in subject forward pack",
+                    s_id,
+                    ns_code,
+                    sid.local_id()
+                ),
             )
         })?;
-        let suffix = String::from_utf8(suffix_bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let ns_code = SubjectId::from_u64(s_id).ns_code();
         let prefix = self
             .dicts
             .namespace_codes
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
-        // The forward tree may store full IRIs (including namespace prefix) rather
-        // than just suffixes. Guard against double-prefixing by checking if the
-        // suffix already starts with the namespace prefix.
-        if !prefix.is_empty() && suffix.starts_with(prefix) {
-            Ok(suffix)
+        Ok(format!("{}{}", prefix, suffix))
+    }
+
+    /// Append the full IRI bytes for s_id to `out` (zero-copy hot path).
+    ///
+    /// Writes namespace prefix + suffix directly to the buffer without
+    /// intermediate String allocation. Returns `Err` if the ID is not found.
+    pub fn write_subject_iri_bytes(&self, s_id: u64, out: &mut Vec<u8>) -> io::Result<()> {
+        let sid = SubjectId::from_u64(s_id);
+        let ns_code = sid.ns_code();
+        let prefix = self.namespace_prefix(ns_code)?;
+        out.extend_from_slice(prefix.as_bytes());
+        let reader = self
+            .dicts
+            .subject_forward_packs
+            .get(&ns_code)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no subject forward pack for ns_code {}", ns_code),
+                )
+            })?;
+        if reader.forward_lookup_into(sid.local_id(), out)? {
+            Ok(())
         } else {
-            Ok(format!("{}{}", prefix, suffix))
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("s_id {} not found in subject forward pack", s_id),
+            ))
         }
     }
 
@@ -1130,17 +1254,35 @@ impl BinaryIndexStore {
         self.dicts.predicate_reverse.get(iri).copied()
     }
 
-    /// Resolve a string dict entry by ID via the forward dict tree.
+    /// Resolve a string dict entry by ID via the forward dictionary pack.
     pub fn resolve_string_value(&self, str_id: u32) -> io::Result<String> {
-        let tree = self.dicts.string_forward_tree.as_ref().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "string forward tree not loaded")
-        })?;
-        tree.forward_lookup_str(str_id as u64)?.ok_or_else(|| {
-            io::Error::new(
+        self.dicts
+            .string_forward_packs
+            .forward_lookup_str(str_id as u64)?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("str_id {} not found in string forward pack", str_id),
+                )
+            })
+    }
+
+    /// Append the string value bytes for str_id to `out` (zero-copy hot path).
+    ///
+    /// Returns `Err` if the ID is not found.
+    pub fn write_string_value_bytes(&self, str_id: u32, out: &mut Vec<u8>) -> io::Result<()> {
+        if self
+            .dicts
+            .string_forward_packs
+            .forward_lookup_into(str_id as u64, out)?
+        {
+            Ok(())
+        } else {
+            Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("str_id {} not found in string forward tree", str_id),
-            )
-        })
+                format!("str_id {} not found in string forward pack", str_id),
+            ))
+        }
     }
 
     // ========================================================================
@@ -1494,11 +1636,7 @@ impl BinaryIndexStore {
 
     /// Number of subjects in the forward dictionary.
     pub fn subject_count(&self) -> u32 {
-        self.dicts
-            .subject_forward_tree
-            .as_ref()
-            .map(|t| t.total_entries() as u32)
-            .unwrap_or(0)
+        self.dicts.subject_count
     }
 
     /// Number of predicates in the dictionary.
@@ -1508,11 +1646,7 @@ impl BinaryIndexStore {
 
     /// Number of strings in the forward dictionary.
     pub fn string_count(&self) -> u32 {
-        self.dicts
-            .string_forward_tree
-            .as_ref()
-            .map(|t| t.total_entries() as u32)
-            .unwrap_or(0)
+        self.dicts.string_count
     }
 
     /// Number of language tags in the dictionary.
@@ -1725,16 +1859,23 @@ impl BinaryIndexStore {
     }
 
     /// Get the vector arena for a predicate (for arena-direct f32 scoring).
-    pub fn vector_arena(&self, p_id: u32) -> Option<&super::vector_arena::VectorArena> {
+    pub fn vector_arena(&self, p_id: u32) -> Option<&super::vector_arena::LazyVectorArena> {
         self.dicts.vector_forward.get(&p_id)
     }
 
-    /// Get an f32 vector slice directly from the arena (zero-copy hot path).
-    pub fn get_vector_f32(&self, p_id: u32, handle: u32) -> Option<&[f32]> {
-        self.dicts
-            .vector_forward
-            .get(&p_id)
-            .and_then(|arena| arena.get_f32(handle))
+    /// Look up a single vector by predicate and handle.
+    ///
+    /// Returns a `VectorSlice` that borrows the shard through the cache.
+    /// The shard is loaded on demand if not already cached.
+    pub fn get_vector_f32(
+        &self,
+        p_id: u32,
+        handle: u32,
+    ) -> io::Result<Option<super::vector_arena::VectorSlice>> {
+        match self.dicts.vector_forward.get(&p_id) {
+            Some(arena) => arena.lookup_vector(handle),
+            None => Ok(None),
+        }
     }
 
     /// Check whether vectors for a predicate are all unit-normalized.
@@ -1870,7 +2011,7 @@ impl BinaryIndexStore {
                     format!("no vector arena for p_id={}", p_id),
                 )
             })?;
-            let f32_slice = arena.get_f32(handle).ok_or_else(|| {
+            let vs = arena.lookup_vector(handle)?.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("VECTOR_ID handle {} not found for p_id={}", handle, p_id),
@@ -1878,7 +2019,7 @@ impl BinaryIndexStore {
             })?;
             // Upcast f32→f64 for FlakeValue::Vector. Because f:vector values are
             // quantized to f32 at ingest, this upcast is lossless.
-            let f64_vec: Vec<f64> = f32_slice.iter().map(|&x| x as f64).collect();
+            let f64_vec: Vec<f64> = vs.as_f32().iter().map(|&x| x as f64).collect();
             return Ok(FlakeValue::Vector(f64_vec));
         }
         if o_kind == ObjKind::G_YEAR.as_u8() {
@@ -2247,19 +2388,6 @@ async fn fetch_cached_bytes_cid(
     std::fs::create_dir_all(cache_dir)?;
     std::fs::write(&cached, &bytes)?;
     Ok(bytes)
-}
-
-/// Build an in-memory `DictTreeReader` from forward entries (id → value).
-///
-/// Entries are partitioned into leaves, each leaf serialized and kept in memory.
-/// Used by `load()` to convert flat dict files into tree readers.
-fn build_dict_reader_forward(entries: Vec<ForwardEntry>) -> io::Result<DictTreeReader> {
-    let result = builder::build_forward_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES)?;
-    let mut leaf_map = HashMap::new();
-    for (artifact, bl) in result.leaves.iter().zip(result.branch.leaves.iter()) {
-        leaf_map.insert(bl.address.clone(), artifact.bytes.clone());
-    }
-    Ok(DictTreeReader::from_memory(result.branch, leaf_map))
 }
 
 /// Build an in-memory `DictTreeReader` from reverse entries (key → id).

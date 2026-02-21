@@ -257,7 +257,7 @@ impl Db {
 
         // Validate version (caller already checked len >= 24 and magic)
         let version = data[4];
-        if version != 1 {
+        if version != 2 {
             return Err(Error::invalid_index(format!(
                 "IRB1: unsupported version {version}"
             )));
@@ -295,11 +295,29 @@ impl Db {
         skip_string_array(data, &mut pos)?;
         skip_string_array(data, &mut pos)?;
 
-        // Dict refs: 4 trees + numbig + vectors (skip all)
-        skip_dict_tree_refs(data, &mut pos)?; // subject_forward
-        skip_dict_tree_refs(data, &mut pos)?; // subject_reverse
-        skip_dict_tree_refs(data, &mut pos)?; // string_forward
-        skip_dict_tree_refs(data, &mut pos)?; // string_reverse
+        // Dict refs: forward packs (string_fwd + subject_fwd per ns) + 2 reverse trees.
+        // String forward packs
+        let str_pack_count = read_u16(data, &mut pos)? as usize;
+        for _ in 0..str_pack_count {
+            let _first_id = read_u64(data, &mut pos)?;
+            let _last_id = read_u64(data, &mut pos)?;
+            skip_cid(data, &mut pos)?;
+        }
+        // Subject forward packs (grouped by namespace)
+        let ns_count = read_u16(data, &mut pos)? as usize;
+        for _ in 0..ns_count {
+            let _ns_code = read_u16(data, &mut pos)?;
+            let pack_count = read_u16(data, &mut pos)? as usize;
+            for _ in 0..pack_count {
+                let _first_id = read_u64(data, &mut pos)?;
+                let _last_id = read_u64(data, &mut pos)?;
+                skip_cid(data, &mut pos)?;
+            }
+        }
+        // Subject reverse tree
+        skip_dict_tree_refs(data, &mut pos)?;
+        // String reverse tree
+        skip_dict_tree_refs(data, &mut pos)?;
         let numbig_count = read_u16(data, &mut pos)? as usize;
         for _ in 0..numbig_count {
             let _p_id = read_u32(data, &mut pos)?;
