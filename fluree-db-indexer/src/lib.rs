@@ -2436,7 +2436,7 @@ where
             IdStatsHook, StatsRecord,
         };
         use fluree_db_core::value_id::ValueTypeTag;
-        use std::collections::HashMap;
+        use std::collections::{HashMap, HashSet};
 
         // 4.6a: Load prior HLL sketches from CAS.
         //
@@ -2451,21 +2451,25 @@ where
             base_root.sketch_ref
         {
             match load_sketch_blob(content_store.as_ref(), cid).await {
-                Ok(Some(blob)) => match blob.into_properties() {
-                    Ok(props) => props,
-                    Err(e) => {
-                        tracing::warn!("failed to decode prior sketch blob: {e}; carrying forward base stats");
-                        can_refresh_hll = false;
-                        HashMap::new()
+                Ok(Some(blob)) => {
+                    match blob.into_properties() {
+                        Ok(props) => props,
+                        Err(e) => {
+                            tracing::warn!("failed to decode prior sketch blob: {e}; carrying forward base stats");
+                            can_refresh_hll = false;
+                            HashMap::new()
+                        }
                     }
-                },
+                }
                 Ok(None) => {
                     tracing::warn!("prior sketch blob not found; carrying forward base stats");
                     can_refresh_hll = false;
                     HashMap::new()
                 }
                 Err(e) => {
-                    tracing::warn!("failed to load prior sketch blob: {e}; carrying forward base stats");
+                    tracing::warn!(
+                        "failed to load prior sketch blob: {e}; carrying forward base stats"
+                    );
                     can_refresh_hll = false;
                     HashMap::new()
                 }
@@ -2528,19 +2532,38 @@ where
             });
         }
 
-        // 4.6d: Capture class count deltas + sketch blob BEFORE finalize consumes the hook.
+        // 4.6d: Class-property attribution via batched PSOT lookup.
+        //
+        // Replaces the simpler "carry forward + count deltas" approach with full
+        // class-property attribution: for each class, we compute both instance
+        // counts and which properties appear on instances of that class.
+        //
+        // Strategy:
+        //   1. Capture subject_class_deltas and subject_props from the hook
+        //      BEFORE finalize consumes them.
+        //   2. Load a BinaryIndexStore from the base root for PSOT scans.
+        //   3. Batched PSOT lookup for base class memberships of novelty subjects.
+        //   4. Merge base classes + novelty rdf:type deltas -> subject->classes.
+        //   5. Cross-reference with subject->properties -> class->properties.
+        //   6. Merge with prior class stats and convert to ClassStatEntry.
         let class_deltas: HashMap<u64, i64> = stats_hook.class_count_deltas().clone();
+        let novelty_subject_class_deltas: HashMap<u64, HashMap<u64, i64>> =
+            stats_hook.subject_class_deltas().clone();
+        let novelty_subject_props: HashMap<u64, HashSet<u32>> = stats_hook.subject_props().clone();
 
-        // Always apply class count deltas when possible (even if sketches are missing),
-        // because class counts live in `IndexStats.classes` and don't require HLL state.
         let classes = {
             use crate::dict_tree::reverse_leaf::subject_reverse_key;
+            use crate::run_index::batched_lookup::batched_lookup_predicate_refs;
 
             let base_classes = base_root.stats.as_ref().and_then(|s| s.classes.as_ref());
+            let has_novelty_class_changes =
+                !class_deltas.is_empty() || !novelty_subject_class_deltas.is_empty();
 
-            if class_deltas.is_empty() {
+            if !has_novelty_class_changes && novelty_subject_props.is_empty() {
+                // No class or property changes in novelty — carry forward base stats.
                 base_classes.cloned()
-            } else if let Some(base_cls) = base_classes {
+            } else {
+                // Load the subject reverse tree for Sid<->sid64 conversion.
                 let subject_tree = run_index::incremental_resolve::load_reverse_tree(
                     &content_store,
                     &base_root.dict_refs.subject_reverse,
@@ -2552,30 +2575,264 @@ where
                     ))
                 })?;
 
+                // Build sid64 -> ClassStatEntry map from base stats.
                 let mut entries_by_sid64: HashMap<u64, fluree_db_core::ClassStatEntry> =
                     HashMap::new();
-                for entry in base_cls {
-                    let key = subject_reverse_key(
-                        entry.class_sid.namespace_code,
-                        entry.class_sid.name.as_bytes(),
-                    );
-                    if let Ok(Some(sid64)) = subject_tree.reverse_lookup(&key) {
-                        entries_by_sid64.insert(sid64, entry.clone());
-                    } else {
-                        entries_by_sid64
-                            .insert(u64::MAX - entries_by_sid64.len() as u64, entry.clone());
+                if let Some(base_cls) = base_classes {
+                    for entry in base_cls {
+                        let key = subject_reverse_key(
+                            entry.class_sid.namespace_code,
+                            entry.class_sid.name.as_bytes(),
+                        );
+                        if let Ok(Some(sid64)) = subject_tree.reverse_lookup(&key) {
+                            entries_by_sid64.insert(sid64, entry.clone());
+                        } else {
+                            // Fallback: assign a synthetic key for unresolvable Sids.
+                            entries_by_sid64
+                                .insert(u64::MAX - entries_by_sid64.len() as u64, entry.clone());
+                        }
                     }
                 }
 
+                // Apply class count deltas to existing entries.
                 for (&sid64, &delta) in &class_deltas {
                     if let Some(entry) = entries_by_sid64.get_mut(&sid64) {
                         entry.count = (entry.count as i64 + delta).max(0) as u64;
+                    } else if delta > 0 {
+                        // New class not in base stats — create a placeholder entry.
+                        // Sid will be resolved below from the store.
+                        entries_by_sid64.insert(
+                            sid64,
+                            fluree_db_core::ClassStatEntry {
+                                class_sid: fluree_db_core::sid::Sid::new(0, ""),
+                                count: delta as u64,
+                                properties: Vec::new(),
+                            },
+                        );
                     }
                 }
 
+                // ---- Batched PSOT lookup for base class memberships ----
+                //
+                // Subjects in novelty may have rdf:type assertions from prior commits
+                // that are not in the novelty itself. We scan PSOT for those.
+                let mut subject_classes: HashMap<u64, HashSet<u64>> = HashMap::new();
+
+                if let Some(rdf_type_pid) = rdf_type_p_id {
+                    // Collect distinct novelty subjects that might have class memberships.
+                    let novelty_s_ids: Vec<u64> = {
+                        let mut ids: Vec<u64> =
+                            novelty.records.iter().map(|r| r.s_id.as_u64()).collect();
+                        ids.sort_unstable();
+                        ids.dedup();
+                        ids
+                    };
+
+                    if !novelty_s_ids.is_empty() {
+                        // Load BinaryIndexStore from base root for PSOT scan.
+                        let cache_dir = config
+                            .data_dir
+                            .as_deref()
+                            .map(|d| d.join("_class_cache"))
+                            .unwrap_or_else(|| std::env::temp_dir().join("fluree-class-cache"));
+
+                        // Map of new subject IDs (introduced in this incremental window) to their
+                        // suffix strings. This lets us resolve "new class" Sids without relying
+                        // on the base-root forward dictionary, which won't include new subjects.
+                        let new_subject_suffix: HashMap<(u16, u64), String> = novelty
+                            .new_subjects
+                            .iter()
+                            .filter_map(|(ns_code, local_id, suffix)| {
+                                let s = std::str::from_utf8(suffix).ok()?.to_string();
+                                Some(((*ns_code, *local_id), s))
+                            })
+                            .collect();
+
+                        match run_index::BinaryIndexStore::load_from_root_v5(
+                            content_store.clone(),
+                            base_root,
+                            &cache_dir,
+                            None, // no leaflet cache needed for one-shot scan
+                        )
+                        .await
+                        {
+                            Ok(store) => {
+                                let store = Arc::new(store);
+                                // Scan default graph + all named graphs, unioning memberships.
+                                // Class stats are ledger-wide (not graph-scoped), and the Rust
+                                // IdStatsHook currently tracks rdf:type without a graph dimension,
+                                // so we treat class membership as a union across graphs here.
+                                let mut graphs_to_scan: Vec<u16> = Vec::new();
+                                graphs_to_scan.push(0);
+                                for ng in &base_root.named_graphs {
+                                    if ng.g_id != 1 {
+                                        graphs_to_scan.push(ng.g_id);
+                                    }
+                                }
+                                graphs_to_scan.sort_unstable();
+                                graphs_to_scan.dedup();
+
+                                for scan_g_id in graphs_to_scan {
+                                    match batched_lookup_predicate_refs(
+                                        &store,
+                                        scan_g_id,
+                                        rdf_type_pid,
+                                        &novelty_s_ids,
+                                        base_root.index_t,
+                                    ) {
+                                        Ok(base_map) => {
+                                            for (s_id, classes) in base_map {
+                                                subject_classes
+                                                    .entry(s_id)
+                                                    .or_default()
+                                                    .extend(classes);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                g_id = scan_g_id,
+                                                %e,
+                                                "batched PSOT class lookup failed for graph; continuing"
+                                            );
+                                        }
+                                    }
+                                }
+                                tracing::debug!(
+                                    subjects = novelty_s_ids.len(),
+                                    classes_found = subject_classes.len(),
+                                    "batched PSOT class lookup complete"
+                                );
+
+                                // Resolve Sids for new class entries using the loaded store.
+                                for (&sid64, entry) in entries_by_sid64.iter_mut() {
+                                    if entry.class_sid.name.is_empty()
+                                        && entry.class_sid.namespace_code == 0
+                                    {
+                                        // Placeholder entry from new class — resolve.
+                                        //
+                                        // First try this incremental window's new subjects (no IRI parse).
+                                        // Otherwise fall back to base-root forward dict resolution.
+                                        let sid = fluree_db_core::subject_id::SubjectId::from_u64(sid64);
+                                        let ns_code = sid.ns_code();
+                                        let local_id = sid.local_id();
+                                        if let Some(suffix) = new_subject_suffix.get(&(ns_code, local_id)) {
+                                            entry.class_sid = fluree_db_core::sid::Sid::new(ns_code, suffix);
+                                        } else {
+                                            match store.resolve_subject_iri(sid64) {
+                                                Ok(iri) => {
+                                                    entry.class_sid = store.encode_iri(&iri);
+                                                }
+                                                Err(e) => {
+                                                    tracing::trace!(
+                                                        sid64,
+                                                        %e,
+                                                        "failed to resolve class IRI"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    %e,
+                                    "failed to load BinaryIndexStore for class lookup; \
+                                     using novelty-only class data"
+                                );
+                            }
+                        }
+                    }
+
+                    // Apply novelty rdf:type deltas on top of base memberships.
+                    for (&subj_sid64, class_map) in &novelty_subject_class_deltas {
+                        let classes = subject_classes.entry(subj_sid64).or_default();
+                        for (&class_sid64, &delta) in class_map {
+                            if delta > 0 {
+                                classes.insert(class_sid64);
+                            } else {
+                                classes.remove(&class_sid64);
+                            }
+                        }
+                    }
+                }
+
+                // ---- Class-property attribution ----
+                //
+                // For each subject with known classes, attribute its novelty properties
+                // to those classes. This extends prior class stats with new property
+                // associations discovered in the novelty window.
+                let mut class_properties: HashMap<u64, HashSet<u32>> = HashMap::new();
+
+                // Reverse lookup for property Sid -> p_id (used for seeding prior associations).
+                let pred_sid_to_pid: HashMap<(u16, String), u32> = new_pred_sids
+                    .iter()
+                    .enumerate()
+                    .map(|(p_id, (ns_code, suffix))| ((*ns_code, suffix.clone()), p_id as u32))
+                    .collect();
+
+                // Seed from prior class stats: track existing property associations.
+                for (&sid64, entry) in &entries_by_sid64 {
+                    if !entry.properties.is_empty() {
+                        let props = class_properties.entry(sid64).or_default();
+                        for prop_usage in &entry.properties {
+                            let key = (
+                                prop_usage.property_sid.namespace_code,
+                                prop_usage.property_sid.name.to_string(),
+                            );
+                            if let Some(&p_id) = pred_sid_to_pid.get(&key) {
+                                props.insert(p_id);
+                            }
+                        }
+                    }
+                }
+
+                // Attribute novelty properties to classes.
+                for (&subj_sid64, props) in &novelty_subject_props {
+                    if let Some(classes) = subject_classes.get(&subj_sid64) {
+                        for &class_sid64 in classes {
+                            let entry: &mut HashSet<u32> =
+                                class_properties.entry(class_sid64).or_default();
+                            for &p_id in props {
+                                entry.insert(p_id);
+                            }
+                        }
+                    }
+                }
+
+                // ---- Build final ClassStatEntry list ----
+                //
+                // Merge updated properties into entries_by_sid64.
+                for (&class_sid64, prop_ids) in &class_properties {
+                    let entry: &mut fluree_db_core::ClassStatEntry = entries_by_sid64
+                        .entry(class_sid64)
+                        .or_insert_with(|| fluree_db_core::ClassStatEntry {
+                            class_sid: fluree_db_core::sid::Sid::new(0, ""),
+                            count: 0,
+                            properties: Vec::new(),
+                        });
+
+                    // Convert p_id set to ClassPropertyUsage list.
+                    let mut props: Vec<fluree_db_core::ClassPropertyUsage> = Vec::new();
+                    for &p_id in prop_ids {
+                        if let Some((ns_code, suffix)) = new_pred_sids.get(p_id as usize) {
+                            props.push(fluree_db_core::ClassPropertyUsage {
+                                property_sid: fluree_db_core::sid::Sid::new(*ns_code, suffix),
+                                ref_classes: Vec::new(), // Ref-class tracking requires full rebuild
+                            });
+                        }
+                    }
+                    props.sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
+                    entry.properties = props;
+                }
+
+                // Filter out entries with zero count and empty properties,
+                // and entries whose Sid was never resolved.
                 let mut result: Vec<fluree_db_core::ClassStatEntry> = entries_by_sid64
                     .into_values()
-                    .filter(|e| e.count > 0)
+                    .filter(|e| {
+                        (e.count > 0 || !e.properties.is_empty()) && !e.class_sid.name.is_empty()
+                    })
                     .collect();
                 result.sort_by(|a, b| {
                     a.class_sid
@@ -2584,9 +2841,11 @@ where
                         .then_with(|| a.class_sid.name.cmp(&b.class_sid.name))
                 });
 
-                if result.is_empty() { None } else { Some(result) }
-            } else {
-                None
+                if result.is_empty() {
+                    None
+                } else {
+                    Some(result)
+                }
             }
         };
 
@@ -2605,7 +2864,8 @@ where
             // NOTE: We intentionally do NOT try to "rebuild" HLL from base stats,
             // because NDV estimates are not reversible from the stored aggregates.
         } else {
-            let sketch_blob = HllSketchBlob::from_properties(novelty.max_t, stats_hook.properties());
+            let sketch_blob =
+                HllSketchBlob::from_properties(novelty.max_t, stats_hook.properties());
             let sketch_ref = if !sketch_blob.entries.is_empty() {
                 let sketch_bytes = sketch_blob
                     .to_json_bytes()
@@ -2675,9 +2935,17 @@ where
             let updated_stats = fluree_db_core::index_stats::IndexStats {
                 flakes: id_result.total_flakes,
                 size: base_size,
-                properties: if properties.is_empty() { None } else { Some(properties) },
+                properties: if properties.is_empty() {
+                    None
+                } else {
+                    Some(properties)
+                },
                 classes,
-                graphs: if graphs.is_empty() { None } else { Some(graphs) },
+                graphs: if graphs.is_empty() {
+                    None
+                } else {
+                    Some(graphs)
+                },
             };
 
             tracing::info!(

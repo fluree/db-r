@@ -19,6 +19,7 @@ pub mod run_record;
 pub mod run_writer;
 pub mod spool;
 
+pub mod batched_lookup;
 pub mod binary_cursor;
 pub mod binary_index_store;
 pub mod branch;
@@ -51,6 +52,7 @@ pub mod vector_arena;
 pub mod vocab_file;
 pub mod vocab_merge;
 
+pub use batched_lookup::batched_lookup_predicate_refs;
 pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
 pub use binary_index_store::{BinaryIndexStore, GraphView};
 pub use chunk_dict::{hash_subject, ChunkStringDict, ChunkSubjectDict};

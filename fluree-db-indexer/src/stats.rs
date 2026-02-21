@@ -823,6 +823,24 @@ impl IdStatsHook {
         &self.class_counts
     }
 
+    /// Read-only access to per-subject rdf:type deltas.
+    ///
+    /// Keyed by subject sid64, values are `class_sid64 -> signed delta`.
+    /// Used by incremental indexing to merge novelty rdf:type deltas with
+    /// base class memberships from the PSOT index.
+    pub fn subject_class_deltas(&self) -> &HashMap<u64, HashMap<u64, i64>> {
+        &self.subject_class_deltas
+    }
+
+    /// Read-only access to per-subject property sets.
+    ///
+    /// Keyed by subject sid64, values are the set of predicate IDs
+    /// that subject has in novelty. Used by incremental indexing for
+    /// class-property attribution.
+    pub fn subject_props(&self) -> &HashMap<u64, HashSet<u32>> {
+        &self.subject_props
+    }
+
     /// Produce per-graph stats and aggregate property stats.
     ///
     /// Excludes txn-meta graph (g_id=1) from both `graphs` and aggregate
