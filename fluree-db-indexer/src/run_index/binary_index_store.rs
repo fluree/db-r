@@ -1809,8 +1809,8 @@ impl BinaryIndexStore {
     /// Base t from the initial full index build.
     ///
     /// Time-travel via the binary path is only valid for `t_target >= base_t`.
-    /// Before this time, Region 3 history is unavailable and the caller
-    /// should fall back to the B-tree path.
+    /// Before this time, Region 3 history is unavailable and the requested
+    /// time range is not covered by the binary index.
     pub fn base_t(&self) -> i64 {
         self.base_t
     }

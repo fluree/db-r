@@ -1,14 +1,16 @@
 //! Abstract range query provider.
 //!
 //! `RangeProvider` decouples callers of `range_with_overlay()` from the
-//! underlying index implementation.  When a `RangeProvider` is present on
-//! a `Db`, `range_with_overlay()` delegates to it instead of traversing the
-//! b-tree.  This allows the binary columnar index to serve all range queries
-//! without modifying the 25+ callers across the reasoner, API, policy, and
-//! SHACL crates.
+//! underlying index implementation. When a `RangeProvider` is present on a `Db`,
+//! `range_with_overlay()` delegates to it. This allows the binary columnar index
+//! to serve all range queries without modifying the 25+ callers across the
+//! reasoner, API, policy, and SHACL crates.
 //!
 //! The trait is defined in `fluree-db-core` (where the callers live) and
-//! implemented for `BinaryIndexStore` in `fluree-db-query`.
+//! implemented by the binary index shim in `fluree-db-query`.
+//!
+//! Note: When no provider is attached, `range_with_overlay()` only supports an
+//! overlay-only genesis path (`db.t == 0`). There is no legacy index fallback.
 
 use crate::comparator::IndexType;
 use crate::flake::Flake;

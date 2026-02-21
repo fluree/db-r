@@ -443,7 +443,7 @@ pub struct DecodedBatch {
 /// **Overlay merge:** When overlay ops are set via `set_overlay_ops()`, the
 /// cursor merges in-memory novelty operations into decoded leaflet rows at
 /// read time. Overlay ops that cannot be translated to integer IDs should
-/// cause the caller to fall back to the B-tree path.
+/// cause the cursor to return an error. There is no legacy index fallback.
 pub struct BinaryCursor {
     store: Arc<BinaryIndexStore>,
     order: RunSortOrder,
@@ -612,7 +612,7 @@ impl BinaryCursor {
     /// time-travel (needed for replay even if the caller doesn't bind metadata).
     ///
     /// If a leaflet has no Region 3 history and `to_t < max_t`, the cursor
-    /// returns an error — the caller should fall back to the B-tree path.
+    /// returns an error — the caller must handle the uncovered time range.
     pub fn set_to_t(&mut self, to_t: i64) {
         self.to_t = to_t;
     }

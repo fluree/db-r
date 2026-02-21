@@ -319,7 +319,7 @@ impl Operator for GeoSearchOperator {
         };
 
         // Check time-travel coverage: GeoSearch requires to_t >= base_t
-        // For historical queries before base_t, caller must use B-tree fallback.
+        // For historical queries before base_t, the binary index does not have coverage.
         let base_t = store.base_t();
         if ctx.to_t < base_t {
             return Err(QueryError::TimeRangeNotCovered {

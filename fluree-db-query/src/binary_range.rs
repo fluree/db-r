@@ -15,8 +15,7 @@
 //!
 //! Currently supports `RangeTest::Eq` (the only variant used by the reasoner
 //! and the majority of callers).  Inequality tests (Lt, Le, Gt, Ge) and
-//! bounded-range queries will be added when callers migrate from the b-tree
-//! `range()` path.
+//! bounded-range queries can be added as new callers require them.
 
 use crate::binary_scan::index_type_to_sort_order;
 use crate::dict_overlay::DictOverlay;
@@ -41,7 +40,7 @@ use std::sync::Arc;
 ///
 /// This is the binary equivalent of `fluree_db_core::range_with_overlay()`.
 /// Returns `Vec<Flake>` in index order, matching the same contract as the
-/// b-tree `range()` functions.
+/// `RangeProvider` trait used by `range_with_overlay()`.
 ///
 /// # Arguments
 ///

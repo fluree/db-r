@@ -799,7 +799,7 @@ async fn decimal_equality_across_types() {
     // Test that querying for 3 (Long) matches 3.0 (Double) and "3.00" (BigDecimal)
     // This works because:
     // - FlakeValue::Ord uses numeric_cmp for cross-type comparison
-    // - The B-tree index uses this ordering, so Long(3), Double(3.0), BigDecimal(3) are adjacent
+    // - Range scans use this ordering, so Long(3), Double(3.0), BigDecimal(3) are adjacent
     // - trim_to_range includes all flakes where cmp(flake, bound) == Equal
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = genesis_ledger(&fluree, "decimal-test:equality");
