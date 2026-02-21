@@ -2697,6 +2697,7 @@ where
     let remap_remap_dir = remap_dir.clone();
     let sorted_commit_infos = input.sorted_commit_infos;
     let dt_tags = input.dt_tags;
+    let dt_tags_for_classes = dt_tags.clone();
     let collect_id_stats = input.collect_id_stats;
     let run_budget_mb = config.effective_run_budget_mb();
     let worker_cap = config.effective_heavy_workers();
@@ -3026,10 +3027,17 @@ where
         properties.sort_by(|a, b| a.sid.0.cmp(&b.sid.0).then_with(|| a.sid.1.cmp(&b.sid.1)));
 
         // Class stats from SPOT merge (per-graph).
+        let language_tags: Vec<String> = input
+            .unified_lang_dict
+            .iter()
+            .map(|(_, tag)| tag.to_string())
+            .collect();
         let mut per_graph_classes = if let Some(ref cs) = spot_class_stats {
             fluree_db_indexer::stats::build_class_stat_entries(
                 cs,
                 &predicate_sids,
+                &dt_tags_for_classes,
+                &language_tags,
                 input.run_dir,
                 input.namespace_codes,
             )

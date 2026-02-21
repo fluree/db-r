@@ -92,10 +92,18 @@ pub struct ClassStatEntry {
 /// This structure is meant for:
 /// - class-policy indexing (which properties appear on instances of a class)
 /// - ontology / schema visualization (class→property edges, ref target classes)
+/// - datatype distribution (which datatypes appear for this property on instances of this class)
+/// - language tag distribution (which language tags appear for this property on instances of this class)
 #[derive(Debug, Clone)]
 pub struct ClassPropertyUsage {
     /// The property SID.
     pub property_sid: Sid,
+    /// Per-datatype flake counts. `u8` = `ValueTypeTag::as_u8()`.
+    /// `JSON_LD_ID` (16) for `@id` references. Sorted by tag.
+    pub datatypes: Vec<(u8, u64)>,
+    /// Per-language-tag flake counts. Strings stored directly.
+    /// Sorted by lang string.
+    pub langs: Vec<(String, u64)>,
     /// For reference-valued properties, counts by target class.
     ///
     /// Each entry indicates how many reference assertions of this property (from
@@ -203,6 +211,23 @@ pub fn union_class_stat_slices(slices: &[&[ClassStatEntry]]) -> Option<Vec<Class
                     .iter_mut()
                     .find(|p| p.property_sid == prop.property_sid)
                 {
+                    // Merge datatypes: sum counts per tag.
+                    for &(tag, count) in &prop.datatypes {
+                        if let Some(edt) = existing.datatypes.iter_mut().find(|d| d.0 == tag) {
+                            edt.1 += count;
+                        } else {
+                            existing.datatypes.push((tag, count));
+                        }
+                    }
+                    // Merge langs: sum counts per lang string.
+                    for (lang, count) in &prop.langs {
+                        if let Some(el) = existing.langs.iter_mut().find(|l| &l.0 == lang) {
+                            el.1 += count;
+                        } else {
+                            existing.langs.push((lang.clone(), *count));
+                        }
+                    }
+                    // Merge ref_classes: sum counts per target class.
                     for rc in &prop.ref_classes {
                         if let Some(erc) = existing
                             .ref_classes
@@ -217,6 +242,8 @@ pub fn union_class_stat_slices(slices: &[&[ClassStatEntry]]) -> Option<Vec<Class
                 } else {
                     e.properties.push(ClassPropertyUsage {
                         property_sid: prop.property_sid.clone(),
+                        datatypes: prop.datatypes.clone(),
+                        langs: prop.langs.clone(),
                         ref_classes: prop.ref_classes.clone(),
                     });
                 }
@@ -229,6 +256,8 @@ pub fn union_class_stat_slices(slices: &[&[ClassStatEntry]]) -> Option<Vec<Class
         e.properties
             .sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
         for p in &mut e.properties {
+            p.datatypes.sort_by_key(|d| d.0);
+            p.langs.sort_by(|a, b| a.0.cmp(&b.0));
             p.ref_classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
         }
     }

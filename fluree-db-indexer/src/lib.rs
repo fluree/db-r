@@ -1023,6 +1023,8 @@ where
                     crate::stats::build_class_stat_entries(
                         cs,
                         &predicate_sids,
+                        &shared.dt_tags,
+                        &dict_addresses.language_tags,
                         &run_dir,
                         store.namespace_codes(),
                     )
@@ -2753,6 +2755,7 @@ where
                 o_key: record.o_key,
                 t: record.t as i64,
                 op: record.op != 0,
+                lang_id: record.lang_id,
             });
         }
 
@@ -2775,6 +2778,18 @@ where
             stats_hook.subject_class_deltas().clone();
         let novelty_subject_props: HashMap<(u16, u64), HashSet<u32>> =
             stats_hook.subject_props().clone();
+        let novelty_subject_prop_dts: HashMap<(u16, u64), HashMap<u32, HashMap<u8, i64>>> =
+            stats_hook.subject_prop_dts().clone();
+        let novelty_subject_prop_langs: HashMap<(u16, u64), HashMap<u32, HashMap<u16, i64>>> =
+            stats_hook.subject_prop_langs().clone();
+
+        // Build language tag list for resolving lang_id → string in class stats.
+        let incr_language_tags: Vec<String> = novelty
+            .shared
+            .languages
+            .iter()
+            .map(|(_, tag)| tag.to_string())
+            .collect();
 
         // per_graph_classes: HashMap<GraphId, Vec<ClassStatEntry>> — graph-scoped class stats
         // root_classes: Option<Vec<ClassStatEntry>> — union for backward compat
@@ -3137,6 +3152,59 @@ where
                     }
                 }
 
+                // ---- Compute class-scoped datatype/lang deltas (graph-scoped) ----
+                // Attribute per-subject dt/lang observations to their classes
+                // using the PSOT-built subject_classes map (base + novelty).
+                let mut class_prop_dt_deltas: HashMap<(u16, u64), HashMap<u32, HashMap<u8, i64>>> =
+                    HashMap::new();
+                for (&(g_id, subj), per_prop) in &novelty_subject_prop_dts {
+                    let Some(subj_classes) = subject_classes.get(&(g_id, subj)) else {
+                        continue;
+                    };
+                    for (&p_id, dt_map) in per_prop {
+                        for (&dt_tag, &delta) in dt_map {
+                            if delta == 0 {
+                                continue;
+                            }
+                            for &sc in subj_classes {
+                                *class_prop_dt_deltas
+                                    .entry((g_id, sc))
+                                    .or_default()
+                                    .entry(p_id)
+                                    .or_default()
+                                    .entry(dt_tag)
+                                    .or_insert(0) += delta;
+                            }
+                        }
+                    }
+                }
+
+                let mut class_prop_lang_deltas: HashMap<
+                    (u16, u64),
+                    HashMap<u32, HashMap<u16, i64>>,
+                > = HashMap::new();
+                for (&(g_id, subj), per_prop) in &novelty_subject_prop_langs {
+                    let Some(subj_classes) = subject_classes.get(&(g_id, subj)) else {
+                        continue;
+                    };
+                    for (&p_id, lang_map) in per_prop {
+                        for (&lang_id, &delta) in lang_map {
+                            if delta == 0 {
+                                continue;
+                            }
+                            for &sc in subj_classes {
+                                *class_prop_lang_deltas
+                                    .entry((g_id, sc))
+                                    .or_default()
+                                    .entry(p_id)
+                                    .or_default()
+                                    .entry(lang_id)
+                                    .or_insert(0) += delta;
+                            }
+                        }
+                    }
+                }
+
                 // ---- Build per-graph ClassStatEntry lists ----
 
                 // Pre-build sid64 → Sid lookup map from all known entries.
@@ -3146,8 +3214,11 @@ where
                     .map(|(&(_g, sid64), e)| (sid64, e.class_sid.clone()))
                     .collect();
 
-                // Pre-extract prior ref_classes keyed by (g_id, class_sid64, p_id) → Vec<(target_sid64, count)>.
+                // Pre-extract prior ref_classes, datatypes, and langs keyed by (g_id, class_sid64, p_id).
                 let mut prior_ref_counts: HashMap<(u16, u64, u32), Vec<(u64, i64)>> =
+                    HashMap::new();
+                let mut prior_dt_counts: HashMap<(u16, u64, u32), Vec<(u8, i64)>> = HashMap::new();
+                let mut prior_lang_counts: HashMap<(u16, u64, u32), Vec<(String, i64)>> =
                     HashMap::new();
                 for (&(g_id, _class_sid64), entry) in &entries_by_key {
                     let class_key = subject_reverse_key(
@@ -3164,6 +3235,7 @@ where
                             pu.property_sid.namespace_code,
                             pu.property_sid.name.to_string(),
                         )) {
+                            // Prior ref_classes
                             let prior = prior_ref_counts
                                 .entry((g_id, class_sid64, p_id))
                                 .or_default();
@@ -3174,6 +3246,24 @@ where
                                 );
                                 if let Ok(Some(rc_sid64)) = subject_tree.reverse_lookup(&rc_key) {
                                     prior.push((rc_sid64, rc.count as i64));
+                                }
+                            }
+                            // Prior datatypes
+                            if !pu.datatypes.is_empty() {
+                                let prior_dts = prior_dt_counts
+                                    .entry((g_id, class_sid64, p_id))
+                                    .or_default();
+                                for &(tag, count) in &pu.datatypes {
+                                    prior_dts.push((tag, count as i64));
+                                }
+                            }
+                            // Prior langs
+                            if !pu.langs.is_empty() {
+                                let prior_langs = prior_lang_counts
+                                    .entry((g_id, class_sid64, p_id))
+                                    .or_default();
+                                for (lang, count) in &pu.langs {
+                                    prior_langs.push((lang.clone(), *count as i64));
                                 }
                             }
                         }
@@ -3227,8 +3317,62 @@ where
                                 .collect();
                             ref_classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
 
+                            // Build datatypes: merge prior + novelty deltas, clamp to >= 0.
+                            let mut dt_accum: HashMap<u8, i64> = HashMap::new();
+                            if let Some(prior_dts) = prior_dt_counts.get(&(g_id, class_sid64, p_id))
+                            {
+                                for &(tag, count) in prior_dts {
+                                    *dt_accum.entry(tag).or_insert(0) += count;
+                                }
+                            }
+                            if let Some(dt_deltas) = class_prop_dt_deltas
+                                .get(&(g_id, class_sid64))
+                                .and_then(|m| m.get(&p_id))
+                            {
+                                for (&tag, &delta) in dt_deltas {
+                                    *dt_accum.entry(tag).or_insert(0) += delta;
+                                }
+                            }
+                            let mut datatypes: Vec<(u8, u64)> = dt_accum
+                                .into_iter()
+                                .filter(|(_, count)| *count > 0)
+                                .map(|(tag, count)| (tag, count as u64))
+                                .collect();
+                            datatypes.sort_by_key(|d| d.0);
+
+                            // Build langs: merge prior + novelty deltas, resolve lang_id → string, clamp to >= 0.
+                            let mut lang_accum: HashMap<String, i64> = HashMap::new();
+                            if let Some(prior_langs) =
+                                prior_lang_counts.get(&(g_id, class_sid64, p_id))
+                            {
+                                for (lang, count) in prior_langs {
+                                    *lang_accum.entry(lang.clone()).or_insert(0) += count;
+                                }
+                            }
+                            if let Some(lang_deltas) = class_prop_lang_deltas
+                                .get(&(g_id, class_sid64))
+                                .and_then(|m| m.get(&p_id))
+                            {
+                                for (&lang_id, &delta) in lang_deltas {
+                                    // Resolve lang_id (1-indexed) to string.
+                                    if let Some(lang_str) =
+                                        incr_language_tags.get((lang_id as usize).wrapping_sub(1))
+                                    {
+                                        *lang_accum.entry(lang_str.clone()).or_insert(0) += delta;
+                                    }
+                                }
+                            }
+                            let mut langs: Vec<(String, u64)> = lang_accum
+                                .into_iter()
+                                .filter(|(_, count)| *count > 0)
+                                .map(|(lang, count)| (lang, count as u64))
+                                .collect();
+                            langs.sort_by(|a, b| a.0.cmp(&b.0));
+
                             props.push(fluree_db_core::ClassPropertyUsage {
                                 property_sid: fluree_db_core::sid::Sid::new(*ns_code, suffix),
+                                datatypes,
+                                langs,
                                 ref_classes,
                             });
                         }

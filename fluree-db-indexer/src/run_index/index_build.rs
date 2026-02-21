@@ -637,6 +637,11 @@ pub struct SpotClassStats {
     pub class_counts: FxHashMap<(GraphId, u64), u64>,
     /// (g_id, class_sid64) → p_id → dt → flake count
     pub class_prop_dts: FxHashMap<(GraphId, u64), FxHashMap<u32, FxHashMap<u16, u64>>>,
+    /// (g_id, class_sid64) → p_id → lang_id → flake count
+    ///
+    /// Tracks per-language-tag usage for each class/property combination.
+    /// `lang_id` is 1-indexed from the unified language dict (0 = no lang).
+    pub class_prop_langs: FxHashMap<(GraphId, u64), FxHashMap<u32, FxHashMap<u16, u64>>>,
     /// (g_id, class_sid64) → p_id → target_class sid64 → count
     ///
     /// For each REF_ID property on a typed subject, records what classes the
@@ -658,6 +663,8 @@ struct SpotClassStatsCollector {
     classes: Vec<u64>,
     /// Per-property datatype counts for current subject: (p_id, dt) → count.
     prop_dts: FxHashMap<(u32, u16), u64>,
+    /// Per-property language tag counts for current subject: (p_id, lang_id) → count.
+    prop_langs: FxHashMap<(u32, u16), u64>,
     /// REF_ID targets per property for the current subject: (p_id, target_sid).
     /// Collected so we can resolve target classes at flush time via the bitset.
     ref_targets: Vec<(u32, u64)>,
@@ -675,6 +682,7 @@ impl SpotClassStatsCollector {
             current_g_id: 0,
             classes: Vec::new(),
             prop_dts: FxHashMap::default(),
+            prop_langs: FxHashMap::default(),
             ref_targets: Vec::new(),
             class_bitset,
             result: SpotClassStats::default(),
@@ -704,6 +712,13 @@ impl SpotClassStatsCollector {
             let dt = if is_ref { DT_REF_ID } else { rec.dt };
             *self.prop_dts.entry((rec.p_id, dt)).or_insert(0) += 1;
 
+            // Track language tag usage when lang_id is non-zero and value is not a ref.
+            // Guard: lang_id should be 0 for non-langString by upstream invariant,
+            // but !is_ref avoids silent pollution if invariant drifts.
+            if rec.lang_id != 0 && !is_ref {
+                *self.prop_langs.entry((rec.p_id, rec.lang_id)).or_insert(0) += 1;
+            }
+
             // Collect REF_ID targets for ref-target class resolution at flush time.
             if is_ref && self.class_bitset.is_some() {
                 self.ref_targets.push((rec.p_id, rec.o_key));
@@ -715,6 +730,7 @@ impl SpotClassStatsCollector {
     fn flush_subject(&mut self) {
         if self.classes.is_empty() {
             self.prop_dts.clear();
+            self.prop_langs.clear();
             self.ref_targets.clear();
             return;
         }
@@ -732,6 +748,21 @@ impl SpotClassStatsCollector {
                 .or_default();
             for (&(p_id, dt), &count) in &self.prop_dts {
                 *class_entry.entry(p_id).or_default().entry(dt).or_insert(0) += count;
+            }
+            // Flush per-subject prop_langs into global accumulators.
+            if !self.prop_langs.is_empty() {
+                let lang_entry = self
+                    .result
+                    .class_prop_langs
+                    .entry((g_id, class_sid))
+                    .or_default();
+                for (&(p_id, lang_id), &count) in &self.prop_langs {
+                    *lang_entry
+                        .entry(p_id)
+                        .or_default()
+                        .entry(lang_id)
+                        .or_insert(0) += count;
+                }
             }
         }
 
@@ -766,6 +797,7 @@ impl SpotClassStatsCollector {
 
         self.classes.clear();
         self.prop_dts.clear();
+        self.prop_langs.clear();
         self.ref_targets.clear();
     }
 

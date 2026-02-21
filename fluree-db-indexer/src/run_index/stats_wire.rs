@@ -210,19 +210,43 @@ pub fn encode_stats(stats: &IndexStats) -> Vec<u8> {
         buf.extend_from_slice(&(sorted_props.len() as u16).to_le_bytes());
         for pu in &sorted_props {
             write_sid(&mut buf, &pu.property_sid);
-
-            let mut sorted_refs: Vec<&ClassRefCount> = pu.ref_classes.iter().collect();
-            sorted_refs.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
-
-            buf.extend_from_slice(&(sorted_refs.len() as u16).to_le_bytes());
-            for rc in &sorted_refs {
-                write_sid(&mut buf, &rc.class_sid);
-                buf.extend_from_slice(&rc.count.to_le_bytes());
-            }
+            encode_class_property_payload(&mut buf, pu);
         }
     }
 
     buf
+}
+
+/// Encode the per-property payload within a class section: datatypes, langs, ref_classes.
+fn encode_class_property_payload(buf: &mut Vec<u8>, pu: &ClassPropertyUsage) {
+    // Datatypes: sorted by tag.
+    let mut sorted_dts: Vec<&(u8, u64)> = pu.datatypes.iter().collect();
+    sorted_dts.sort_by_key(|d| d.0);
+    buf.extend_from_slice(&(sorted_dts.len() as u16).to_le_bytes());
+    for &&(tag, count) in &sorted_dts {
+        buf.push(tag);
+        buf.extend_from_slice(&count.to_le_bytes());
+    }
+
+    // Langs: sorted by lang string.
+    let mut sorted_langs: Vec<&(String, u64)> = pu.langs.iter().collect();
+    sorted_langs.sort_by(|a, b| a.0.cmp(&b.0));
+    buf.extend_from_slice(&(sorted_langs.len() as u16).to_le_bytes());
+    for (lang, count) in &sorted_langs {
+        let lang_bytes = lang.as_bytes();
+        buf.extend_from_slice(&(lang_bytes.len() as u16).to_le_bytes());
+        buf.extend_from_slice(lang_bytes);
+        buf.extend_from_slice(&count.to_le_bytes());
+    }
+
+    // Ref classes: sorted by class_sid.
+    let mut sorted_refs: Vec<&ClassRefCount> = pu.ref_classes.iter().collect();
+    sorted_refs.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
+    buf.extend_from_slice(&(sorted_refs.len() as u16).to_le_bytes());
+    for rc in &sorted_refs {
+        write_sid(buf, &rc.class_sid);
+        buf.extend_from_slice(&rc.count.to_le_bytes());
+    }
 }
 
 fn encode_graph_property(buf: &mut Vec<u8>, p: &GraphPropertyStatEntry) {
@@ -280,19 +304,64 @@ fn encode_optional_classes(buf: &mut Vec<u8>, classes: Option<&[ClassStatEntry]>
                 buf.extend_from_slice(&(sorted_props.len() as u16).to_le_bytes());
                 for pu in &sorted_props {
                     write_sid(buf, &pu.property_sid);
-
-                    let mut sorted_refs: Vec<&ClassRefCount> = pu.ref_classes.iter().collect();
-                    sorted_refs.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
-
-                    buf.extend_from_slice(&(sorted_refs.len() as u16).to_le_bytes());
-                    for rc in &sorted_refs {
-                        write_sid(buf, &rc.class_sid);
-                        buf.extend_from_slice(&rc.count.to_le_bytes());
-                    }
+                    encode_class_property_payload(buf, pu);
                 }
             }
         }
     }
+}
+
+/// Decode the per-property payload within a class section: datatypes, langs, ref_classes.
+fn decode_class_property_payload(
+    data: &[u8],
+    pos: &mut usize,
+    property_sid: Sid,
+) -> io::Result<ClassPropertyUsage> {
+    // Datatypes
+    let dt_count = read_u16(data, pos)? as usize;
+    let mut datatypes = Vec::with_capacity(dt_count);
+    for _ in 0..dt_count {
+        let tag = read_u8(data, pos)?;
+        let count = read_u64(data, pos)?;
+        datatypes.push((tag, count));
+    }
+
+    // Langs
+    let lang_count = read_u16(data, pos)? as usize;
+    let mut langs = Vec::with_capacity(lang_count);
+    for _ in 0..lang_count {
+        let lang_len = read_u16(data, pos)? as usize;
+        ensure_len(data, *pos, lang_len, "lang string")?;
+        let lang = std::str::from_utf8(&data[*pos..*pos + lang_len]).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid UTF-8 in lang tag: {e}"),
+            )
+        })?;
+        *pos += lang_len;
+        let count = read_u64(data, pos)?;
+        langs.push((lang.to_string(), count));
+    }
+
+    // Ref classes
+    let rc_count = read_u16(data, pos)? as usize;
+    let mut ref_classes = Vec::with_capacity(rc_count);
+    for _ in 0..rc_count {
+        let (ref_sid, new_pos) = read_sid(data, *pos)?;
+        *pos = new_pos;
+        let ref_count = read_u64(data, pos)?;
+        ref_classes.push(ClassRefCount {
+            class_sid: ref_sid,
+            count: ref_count,
+        });
+    }
+
+    Ok(ClassPropertyUsage {
+        property_sid,
+        datatypes,
+        langs,
+        ref_classes,
+    })
 }
 
 /// Decode optional per-graph classes.
@@ -320,23 +389,7 @@ fn decode_optional_classes(
         for _ in 0..pu_count {
             let (property_sid, new_pos2) = read_sid(data, *pos)?;
             *pos = new_pos2;
-
-            let rc_count = read_u16(data, pos)? as usize;
-            let mut ref_classes = Vec::with_capacity(rc_count);
-            for _ in 0..rc_count {
-                let (ref_sid, new_pos3) = read_sid(data, *pos)?;
-                *pos = new_pos3;
-                let ref_count = read_u64(data, pos)?;
-                ref_classes.push(ClassRefCount {
-                    class_sid: ref_sid,
-                    count: ref_count,
-                });
-            }
-
-            properties.push(ClassPropertyUsage {
-                property_sid,
-                ref_classes,
-            });
+            properties.push(decode_class_property_payload(data, pos, property_sid)?);
         }
 
         classes.push(ClassStatEntry {
@@ -425,23 +478,7 @@ pub fn decode_stats(data: &[u8]) -> io::Result<IndexStats> {
         for _ in 0..pu_count {
             let (property_sid, new_pos2) = read_sid(data, pos)?;
             pos = new_pos2;
-
-            let rc_count = read_u16(data, &mut pos)? as usize;
-            let mut ref_classes = Vec::with_capacity(rc_count);
-            for _ in 0..rc_count {
-                let (ref_sid, new_pos3) = read_sid(data, pos)?;
-                pos = new_pos3;
-                let ref_count = read_u64(data, &mut pos)?;
-                ref_classes.push(ClassRefCount {
-                    class_sid: ref_sid,
-                    count: ref_count,
-                });
-            }
-
-            properties.push(ClassPropertyUsage {
-                property_sid,
-                ref_classes,
-            });
+            properties.push(decode_class_property_payload(data, &mut pos, property_sid)?);
         }
 
         classes.push(ClassStatEntry {
@@ -683,21 +720,7 @@ pub fn decode_stats_with_len(data: &[u8]) -> io::Result<(IndexStats, usize)> {
         for _ in 0..pu_count {
             let (property_sid, new_pos2) = read_sid(data, pos)?;
             pos = new_pos2;
-            let rc_count = read_u16(data, &mut pos)? as usize;
-            let mut ref_classes = Vec::with_capacity(rc_count);
-            for _ in 0..rc_count {
-                let (ref_sid, new_pos3) = read_sid(data, pos)?;
-                pos = new_pos3;
-                let ref_count = read_u64(data, &mut pos)?;
-                ref_classes.push(ClassRefCount {
-                    class_sid: ref_sid,
-                    count: ref_count,
-                });
-            }
-            properties.push(ClassPropertyUsage {
-                property_sid,
-                ref_classes,
-            });
+            properties.push(decode_class_property_payload(data, &mut pos, property_sid)?);
         }
         classes.push(ClassStatEntry {
             class_sid,
@@ -930,10 +953,14 @@ mod tests {
                 properties: vec![
                     ClassPropertyUsage {
                         property_sid: sid(5, "name"),
+                        datatypes: vec![],
+                        langs: vec![],
                         ref_classes: vec![],
                     },
                     ClassPropertyUsage {
                         property_sid: sid(5, "knows"),
+                        datatypes: vec![],
+                        langs: vec![],
                         ref_classes: vec![
                             ClassRefCount {
                                 class_sid: sid(5, "Person"),

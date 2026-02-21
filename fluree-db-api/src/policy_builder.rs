@@ -90,6 +90,8 @@ async fn augment_class_property_stats_from_novelty(
                 .into_iter()
                 .map(|property_sid| ClassPropertyUsage {
                     property_sid,
+                    datatypes: Vec::new(),
+                    langs: Vec::new(),
                     ref_classes: Vec::new(),
                 })
                 .collect();

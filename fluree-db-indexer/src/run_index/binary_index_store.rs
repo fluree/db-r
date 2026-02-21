@@ -1728,6 +1728,40 @@ impl BinaryIndexStore {
         self.dicts.graphs_reverse.get(iri).map(|&idx| idx + 1)
     }
 
+    /// Resolve a g_id back to its graph IRI.
+    ///
+    /// - g_id = 0 → `None` (default graph has no explicit IRI)
+    /// - g_id >= 1 → looks up in graphs_reverse (inverted)
+    ///
+    /// Returns `None` if the g_id is not in the dictionary.
+    pub fn graph_iri_for_id(&self, g_id: GraphId) -> Option<&str> {
+        if g_id == 0 {
+            return None;
+        }
+        // graphs_reverse stores IRI -> dict_index (0-based), where g_id = dict_index + 1
+        // So we need dict_index = g_id - 1
+        let target_idx = g_id - 1;
+        self.dicts
+            .graphs_reverse
+            .iter()
+            .find(|(_, &idx)| idx == target_idx)
+            .map(|(iri, _)| iri.as_str())
+    }
+
+    /// Return all graph IRIs as (g_id, IRI) pairs, sorted by g_id.
+    ///
+    /// Does not include g_id=0 (default graph).
+    pub fn graph_entries(&self) -> Vec<(GraphId, &str)> {
+        let mut entries: Vec<(GraphId, &str)> = self
+            .dicts
+            .graphs_reverse
+            .iter()
+            .map(|(iri, &idx)| (idx + 1, iri.as_str()))
+            .collect();
+        entries.sort_by_key(|(g_id, _)| *g_id);
+        entries
+    }
+
     // ========================================================================
     // Namespace codes access
     // ========================================================================

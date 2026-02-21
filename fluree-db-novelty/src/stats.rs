@@ -293,6 +293,8 @@ fn finalize_stats(
                     .filter(|(_, prop)| prop.count_delta > 0)
                     .map(|(property_sid, prop)| ClassPropertyUsage {
                         property_sid,
+                        datatypes: Vec::new(),
+                        langs: Vec::new(),
                         ref_classes: prop.ref_classes,
                     })
                     .collect();

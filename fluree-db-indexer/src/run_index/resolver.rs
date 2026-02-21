@@ -144,6 +144,7 @@ impl CommitResolver {
                     o_key: record.o_key,
                     t: record.t as i64,
                     op: record.op != 0,
+                    lang_id: record.lang_id,
                 });
             }
 

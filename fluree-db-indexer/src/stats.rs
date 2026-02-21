@@ -580,6 +580,8 @@ pub struct StatsRecord {
     pub t: i64,
     /// true = assertion, false = retraction
     pub op: bool,
+    /// Language tag dictionary ID (0 = no language tag, >= 1 = lang_id).
+    pub lang_id: u16,
 }
 
 /// Result from `IdStatsHook::finalize()`.
@@ -641,6 +643,16 @@ pub struct IdStatsHook {
     /// At finalize-time, this is combined with derived subject/object class sets
     /// to produce class→property→target-class ref-edge counts.
     subject_ref_history: HashMap<(GraphId, u64), HashMap<u32, HashMap<u64, i64>>>,
+    /// Per-subject, per-property datatype tracking: (g_id, subject sid64) → p_id → dt_tag → signed delta.
+    ///
+    /// Used at finalize-time to derive per-class datatype distributions by
+    /// cross-referencing with subject_classes.
+    subject_prop_dts: HashMap<(GraphId, u64), HashMap<u32, HashMap<u8, i64>>>,
+    /// Per-subject, per-property language tag tracking: (g_id, subject sid64) → p_id → lang_id → signed delta.
+    ///
+    /// Used at finalize-time to derive per-class language distributions by
+    /// cross-referencing with subject_classes.
+    subject_prop_langs: HashMap<(GraphId, u64), HashMap<u32, HashMap<u16, i64>>>,
 }
 
 impl IdStatsHook {
@@ -727,6 +739,30 @@ impl IdStatsHook {
                     .entry((rec.g_id, rec.s_id))
                     .or_default()
                     .insert(rec.p_id);
+            }
+
+            // Track per-subject datatype usage for class→property→datatype attribution.
+            if rec.p_id != rdf_type_pid {
+                *self
+                    .subject_prop_dts
+                    .entry((rec.g_id, rec.s_id))
+                    .or_default()
+                    .entry(rec.p_id)
+                    .or_default()
+                    .entry(rec.dt.as_u8())
+                    .or_insert(0) += delta;
+
+                // Track per-subject language tag usage.
+                if rec.lang_id != 0 && rec.dt == ValueTypeTag::LANG_STRING {
+                    *self
+                        .subject_prop_langs
+                        .entry((rec.g_id, rec.s_id))
+                        .or_default()
+                        .entry(rec.p_id)
+                        .or_default()
+                        .entry(rec.lang_id)
+                        .or_insert(0) += delta;
+                }
             }
 
             // Track reference-valued properties for class→property ref target stats.
@@ -851,6 +887,24 @@ impl IdStatsHook {
     #[allow(clippy::type_complexity)]
     pub fn subject_ref_history(&self) -> &HashMap<(GraphId, u64), HashMap<u32, HashMap<u64, i64>>> {
         &self.subject_ref_history
+    }
+
+    /// Read-only access to per-subject, per-property datatype deltas.
+    ///
+    /// Keyed by `(g_id, subject_sid64)`, values are `p_id -> dt_tag(u8) -> signed delta`.
+    /// Used by incremental indexing for class→property→datatype attribution.
+    #[allow(clippy::type_complexity)]
+    pub fn subject_prop_dts(&self) -> &HashMap<(GraphId, u64), HashMap<u32, HashMap<u8, i64>>> {
+        &self.subject_prop_dts
+    }
+
+    /// Read-only access to per-subject, per-property language tag deltas.
+    ///
+    /// Keyed by `(g_id, subject_sid64)`, values are `p_id -> lang_id(u16) -> signed delta`.
+    /// Used by incremental indexing for class→property→lang attribution.
+    #[allow(clippy::type_complexity)]
+    pub fn subject_prop_langs(&self) -> &HashMap<(GraphId, u64), HashMap<u32, HashMap<u16, i64>>> {
+        &self.subject_prop_langs
     }
 
     /// Produce per-graph stats and aggregate property stats.
@@ -1867,6 +1921,8 @@ impl ClassPropertyExtractor {
                     .filter(|(_, prop_data)| prop_data.count_delta > 0)
                     .map(|(property_sid, _prop_data)| ClassPropertyUsage {
                         property_sid,
+                        datatypes: Vec::new(),
+                        langs: Vec::new(),
                         ref_classes: Vec::new(),
                     })
                     .collect();
@@ -2441,6 +2497,8 @@ pub fn build_class_stats_json(
 pub fn build_class_stat_entries(
     cs: &crate::run_index::SpotClassStats,
     predicate_sids: &[(u16, String)],
+    dt_tags: &[ValueTypeTag],
+    language_tags: &[String],
     run_dir: &std::path::Path,
     namespace_codes: &HashMap<u16, String>,
 ) -> std::io::Result<HashMap<GraphId, Vec<fluree_db_core::ClassStatEntry>>> {
@@ -2506,9 +2564,47 @@ pub fn build_class_stat_entries(
 
                 props
                     .iter()
-                    .filter_map(|&(&p_id, _dt_map)| {
+                    .filter_map(|&(&p_id, dt_map)| {
                         let psid_pair = predicate_sids.get(p_id as usize)?;
                         let property_sid = Sid::new(psid_pair.0, &psid_pair.1);
+
+                        // Build per-datatype counts.
+                        let mut datatypes: Vec<(u8, u64)> = dt_map
+                            .iter()
+                            .map(|(&dt_dict_id, &count)| {
+                                let tag = if dt_dict_id == crate::run_index::DT_REF_ID {
+                                    fluree_db_core::value_id::ValueTypeTag::JSON_LD_ID.as_u8()
+                                } else {
+                                    dt_tags
+                                        .get(dt_dict_id as usize)
+                                        .map(|t| t.as_u8())
+                                        .unwrap_or(
+                                            fluree_db_core::value_id::ValueTypeTag::UNKNOWN.as_u8(),
+                                        )
+                                };
+                                (tag, count)
+                            })
+                            .collect();
+                        datatypes.sort_by_key(|d| d.0);
+
+                        // Build per-language-tag counts.
+                        let lang_map = cs.class_prop_langs.get(&(g_id, class_sid64));
+                        let langs: Vec<(String, u64)> =
+                            if let Some(prop_langs) = lang_map.and_then(|lm| lm.get(&p_id)) {
+                                let mut lv: Vec<(String, u64)> = prop_langs
+                                    .iter()
+                                    .filter_map(|(&lang_id, &count)| {
+                                        // lang_id is 1-indexed; 0 = no language tag.
+                                        let lang_str = language_tags
+                                            .get((lang_id as usize).wrapping_sub(1))?;
+                                        Some((lang_str.clone(), count))
+                                    })
+                                    .collect();
+                                lv.sort_by(|a, b| a.0.cmp(&b.0));
+                                lv
+                            } else {
+                                Vec::new()
+                            };
 
                         // Ref-class targets for this property (if any).
                         let ref_classes: Vec<ClassRefCount> =
@@ -2531,6 +2627,8 @@ pub fn build_class_stat_entries(
 
                         Some(ClassPropertyUsage {
                             property_sid,
+                            datatypes,
+                            langs,
                             ref_classes,
                         })
                     })

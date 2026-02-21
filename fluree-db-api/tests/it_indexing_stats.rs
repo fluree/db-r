@@ -6,7 +6,7 @@
 //! - Property and class statistics persistence
 //! - Statistics decrement after delete
 //! - Memory storage statistics
-//! - `ledger_info` API (basic structure and context compaction)
+//! - `ledger_info` API (graph-scoped response, context compaction)
 
 #![cfg(feature = "native")]
 
@@ -326,7 +326,6 @@ async fn statistics_work_with_memory_storage_when_indexed() {
 
 // ============================================================================
 // ledger-info API tests
-// Clojure: `ledger-info-api-test` and `ledger-info-api-with-context-test`
 // ============================================================================
 
 /// Helper to check that a JSON value at a path exists and is not null
@@ -343,9 +342,8 @@ fn json_path_exists(value: &JsonValue, path: &[&str]) -> bool {
 
 #[tokio::test]
 async fn ledger_info_api_returns_expected_structure() {
-    // Clojure: `ledger-info-api-test`
-    // Tests that ledger_info returns a response with all expected top-level keys
-    // and proper nested structures after indexing.
+    // Tests that ledger_info returns the new graph-scoped response shape
+    // with ledger block, graph key, and graph-scoped stats.
 
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
@@ -371,8 +369,7 @@ async fn ledger_info_api_returns_expected_structure() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            // Insert test data (like Clojure test), including a ref property so we can
-            // validate class→property ref target stats in ledger_info.
+            // Insert test data including a ref property for class->property ref target stats.
             let txn = json!({
                 "@context": { "ex": "http://example.org/" },
                 "@graph": [
@@ -408,13 +405,47 @@ async fn ledger_info_api_returns_expected_structure() {
             // ================================================================
             // Verify top-level keys exist
             // ================================================================
+            assert!(info.get("ledger").is_some(), "should have 'ledger' key");
+            assert!(info.get("graph").is_some(), "should have 'graph' key");
+            assert!(info.get("stats").is_some(), "should have 'stats' key");
             assert!(info.get("commit").is_some(), "should have 'commit' key");
             assert!(
                 info.get("nameservice").is_some(),
                 "should have 'nameservice' key"
             );
-            assert!(info.get("stats").is_some(), "should have 'stats' key");
             assert!(info.get("index").is_some(), "should have 'index' key");
+
+            // ================================================================
+            // Verify ledger block
+            // ================================================================
+            let ledger_block = &info["ledger"];
+            assert!(ledger_block.get("alias").is_some(), "ledger should have alias");
+            assert!(ledger_block.get("t").is_some(), "ledger should have t");
+            assert!(ledger_block.get("commit-t").is_some(), "ledger should have commit-t");
+            assert!(ledger_block.get("index-t").is_some(), "ledger should have index-t");
+            assert!(ledger_block.get("flakes").is_some(), "ledger should have flakes");
+            assert!(ledger_block.get("size").is_some(), "ledger should have size");
+            assert!(
+                ledger_block.get("named-graphs").is_some(),
+                "ledger should have named-graphs"
+            );
+            let named_graphs = ledger_block["named-graphs"]
+                .as_array()
+                .expect("named-graphs should be array");
+            assert!(
+                !named_graphs.is_empty(),
+                "named-graphs should have at least the default graph"
+            );
+            // Default graph should always be present
+            assert!(
+                named_graphs.iter().any(|g| g["iri"] == "urn:default"),
+                "named-graphs should include urn:default"
+            );
+
+            // ================================================================
+            // Verify graph key
+            // ================================================================
+            assert_eq!(info["graph"], "urn:default", "default graph should be urn:default");
 
             // ================================================================
             // Verify commit structure (Clojure parity)
@@ -444,20 +475,9 @@ async fn ledger_info_api_returns_expected_structure() {
                 json_path_exists(commit, &["data", "t"]),
                 "commit.data should have t"
             );
-            assert!(
-                json_path_exists(commit, &["data", "type"]),
-                "commit.data should have type"
-            );
-            assert!(
-                commit["data"]["type"]
-                    .as_array()
-                    .map(|a| a.contains(&json!("DB")))
-                    .unwrap_or(false),
-                "commit.data.type should be ['DB']"
-            );
 
             // ================================================================
-            // Verify nameservice structure (uses @id, @type, @context keywords)
+            // Verify nameservice structure
             // ================================================================
             let ns = &info["nameservice"];
             assert!(
@@ -473,23 +493,16 @@ async fn ledger_info_api_returns_expected_structure() {
             );
 
             // ================================================================
-            // Verify stats structure
+            // Verify graph-scoped stats structure
             // ================================================================
             let stats = &info["stats"];
             assert!(stats.get("flakes").is_some(), "stats should have flakes");
             assert!(stats.get("size").is_some(), "stats should have size");
-            assert!(stats.get("indexed").is_some(), "stats should have indexed");
             assert!(
                 stats.get("properties").is_some(),
                 "stats should have properties"
             );
             assert!(stats.get("classes").is_some(), "stats should have classes");
-
-            // Verify stats.indexed is the index t (integer), not boolean
-            assert!(
-                stats["indexed"].is_i64(),
-                "stats.indexed should be integer (index t)"
-            );
 
             // Verify property stats have expected fields
             let props = &stats["properties"];
@@ -557,17 +570,25 @@ async fn ledger_info_api_returns_expected_structure() {
                         class_props.get("http://example.org/name").is_some(),
                         "Person should have ex:name property"
                     );
-                    // Validate ref stats for worksFor: Person -> Organization count 2
+
+                    // Validate class property structure: types/langs/ref-classes
                     let works_for = class_props
                         .get("http://example.org/worksFor")
                         .expect("Person should have ex:worksFor property");
-                    let refs = works_for
-                        .get("refs")
-                        .or_else(|| works_for.get("ref-classes"))
+                    assert!(
+                        works_for.get("types").is_some(),
+                        "class property should have types"
+                    );
+                    assert!(
+                        works_for.get("langs").is_some(),
+                        "class property should have langs"
+                    );
+                    let ref_classes = works_for
+                        .get("ref-classes")
                         .and_then(|v| v.as_object())
-                        .expect("worksFor should have refs/ref-classes map");
+                        .expect("worksFor should have ref-classes map");
                     assert_eq!(
-                        refs.get("http://example.org/Organization"),
+                        ref_classes.get("http://example.org/Organization"),
                         Some(&json!(2)),
                         "worksFor should point to Organization twice"
                     );
@@ -582,16 +603,12 @@ async fn ledger_info_api_returns_expected_structure() {
             let index = &info["index"];
             assert!(index.get("t").is_some(), "index should have t");
             assert!(index.get("id").is_some(), "index should have id");
-            // index.id is optional but should be present if commit has index.id
         })
         .await;
 }
 
 #[tokio::test]
 async fn ledger_info_api_with_context_compacts_stats_iris() {
-    // Clojure: `ledger-info-api-with-context-test`
-    // Tests that ledger_info with context returns compacted IRIs in stats
-
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
@@ -703,13 +720,10 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
 
             // ================================================================
             // Verify commit and nameservice are NOT compacted
-            // (they use full IRIs regardless of context)
             // ================================================================
             let commit = &info["commit"];
-            // commit.ledger_id should still be full "test/ledger-info-ctx:main" not compacted
             assert_eq!(commit["ledger_id"], "test/ledger-info-ctx:main");
 
-            // nameservice @id should still be full
             let ns = &info["nameservice"];
             assert!(ns["@id"].as_str().map(|s| s.contains("ledger-info-ctx")).unwrap_or(false),
                 "nameservice @id should not be compacted");
@@ -719,9 +733,6 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
 
 #[tokio::test]
 async fn ledger_info_before_commit_returns_null_commit() {
-    // Tests that ledger_info returns commit: null when there's no commit yet
-    // (Clojure parity: commit key is always present)
-
     let fluree = FlureeBuilder::memory().build_memory();
 
     let ledger_id = "test/ledger-info-genesis:main";
@@ -745,6 +756,8 @@ async fn ledger_info_before_commit_returns_null_commit() {
     );
 
     // Other keys should still be present
+    assert!(info.get("ledger").is_some(), "should have ledger block");
+    assert!(info.get("graph").is_some(), "should have graph key");
     assert!(info.get("stats").is_some(), "should have stats");
 }
 
@@ -935,9 +948,9 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
                 .expect("ledger_info base");
 
             let base_refs = base_info["stats"]["classes"]["http://example.org/Person"]
-                ["properties"]["http://example.org/worksFor"]["refs"]
+                ["properties"]["http://example.org/worksFor"]["ref-classes"]
                 .as_object()
-                .expect("expected refs map in base payload");
+                .expect("expected ref-classes map in base payload");
             assert_eq!(
                 base_refs.get("http://example.org/Organization"),
                 Some(&json!(1)),
@@ -953,9 +966,9 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
                 .expect("ledger_info realtime edges");
 
             let rt_refs = rt_info["stats"]["classes"]["http://example.org/Person"]["properties"]
-                ["http://example.org/worksFor"]["refs"]
+                ["http://example.org/worksFor"]["ref-classes"]
                 .as_object()
-                .expect("expected refs map in realtime payload");
+                .expect("expected ref-classes map in realtime payload");
             assert_eq!(
                 rt_refs.get("http://example.org/Organization"),
                 Some(&json!(2)),
@@ -971,12 +984,6 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
 
 #[tokio::test]
 async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
-    // End-to-end: transact -> index -> transact novelty (no index) -> ledger-info
-    // shows updated counts/edges/datatypes but preserves NDV -> transact more ->
-    // index again -> ledger-info shows updated NDV too.
-    //
-    // This intentionally uses a small dataset so HLL estimates are exact
-    // (linear counting correction) and assertions can be strict.
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
@@ -1005,13 +1012,10 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
             let txn1 = json!({
                 "@context": { "ex": "http://example.org/" },
                 "@graph": [
-                    // Organization
                     {"@id":"ex:acme","@type":"ex:Organization","ex:name":"Acme"},
-                    // Persons (each with a unique email so NDV should match count)
                     {"@id":"ex:alice","@type":"ex:Person","ex:email":"alice@example.com","ex:worksFor":{"@id":"ex:acme"}},
                     {"@id":"ex:bob","@type":"ex:Person","ex:email":"bob@example.com","ex:worksFor":{"@id":"ex:acme"}},
                     {"@id":"ex:carol","@type":"ex:Person","ex:email":"carol@example.com","ex:worksFor":{"@id":"ex:acme"}},
-                    // Product with float price (datatype baseline)
                     {"@id":"ex:prod1","@type":"ex:Product","ex:price": 1.25}
                 ]
             });
@@ -1036,9 +1040,11 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
                 .await
                 .expect("ledger_info base");
 
+            let base_ledger = &base_info["ledger"];
+            let base_flakes = base_ledger["flakes"].as_u64().expect("base flakes");
+            let base_size = base_ledger["size"].as_u64().expect("base size");
+
             let base_stats = &base_info["stats"];
-            let base_flakes = base_stats["flakes"].as_u64().expect("base flakes");
-            let base_size = base_stats["size"].as_u64().expect("base size");
 
             let base_email = &base_stats["properties"]["http://example.org/email"];
             let base_email_count = base_email["count"].as_u64().expect("email count");
@@ -1061,9 +1067,9 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
 
             // Indexed refs: Person -> worksFor -> Organization should be 3.
             let base_refs = base_stats["classes"]["http://example.org/Person"]["properties"]
-                ["http://example.org/worksFor"]["refs"]
+                ["http://example.org/worksFor"]["ref-classes"]
                 .as_object()
-                .expect("refs map");
+                .expect("ref-classes map");
             assert_eq!(
                 base_refs.get("http://example.org/Organization"),
                 Some(&json!(3)),
@@ -1071,10 +1077,6 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
             );
 
             // ---- Txn 2: novelty only (do NOT index) ----
-            // Adds:
-            // - 1 new Person with a new unique email (count should rise)
-            // - 1 new worksFor edge (ref count should rise in realtime mode)
-            // - 1 integer price (datatype delta should appear in realtime mode)
             let ledger1 = fluree.ledger(ledger_id).await.expect("reload ledger after indexing");
             let txn2 = json!({
                 "@context": { "ex": "http://example.org/" },
@@ -1095,14 +1097,11 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
                 .execute()
                 .await
                 .expect("ledger_info realtime details");
-            let rt_stats = &rt_info["stats"];
+            let rt_ledger = &rt_info["ledger"];
 
             // Flakes and size should include novelty deltas.
-            let rt_flakes = rt_stats["flakes"].as_u64().expect("rt flakes");
-            let rt_size = rt_stats["size"].as_u64().expect("rt size");
-            // Txn2 contributes 5 asserted flakes:
-            // - dave: rdf:type, email, worksFor (3)
-            // - prod2: rdf:type, price (2)
+            let rt_flakes = rt_ledger["flakes"].as_u64().expect("rt flakes");
+            let rt_size = rt_ledger["size"].as_u64().expect("rt size");
             assert_eq!(
                 rt_flakes,
                 base_flakes + 5,
@@ -1112,6 +1111,8 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
                 rt_size > base_size,
                 "size should increase when novelty is present"
             );
+
+            let rt_stats = &rt_info["stats"];
 
             // Counts should update, but NDV should remain as-of last index.
             let rt_email = &rt_stats["properties"]["http://example.org/email"];
@@ -1148,13 +1149,13 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
 
             // Realtime ref edges should include the novelty Person->Organization edge (4 total).
             let rt_refs = rt_stats["classes"]["http://example.org/Person"]["properties"]
-                ["http://example.org/worksFor"]["refs"]
+                ["http://example.org/worksFor"]["ref-classes"]
                 .as_object()
-                .expect("refs map");
+                .expect("ref-classes map");
             assert_eq!(
                 rt_refs.get("http://example.org/Organization"),
                 Some(&json!(4)),
-                "realtime refs should include novelty edge"
+                "realtime refs should include novelty edge count"
             );
 
             // ---- Txn 3: add more, then build second index refresh ----
@@ -1196,9 +1197,9 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
 
             // Persisted refs after refresh should now be 6 in the base payload.
             let refs = refreshed_stats["classes"]["http://example.org/Person"]["properties"]
-                ["http://example.org/worksFor"]["refs"]
+                ["http://example.org/worksFor"]["ref-classes"]
                 .as_object()
-                .expect("refs map");
+                .expect("ref-classes map");
             assert_eq!(
                 refs.get("http://example.org/Organization"),
                 Some(&json!(6)),
@@ -1229,10 +1230,6 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
 
 #[tokio::test]
 async fn ndv_cardinality_estimates_are_accurate() {
-    // Tests that HLL cardinality estimates (ndv-values, ndv-subjects) are accurate
-    // HLL at precision=8 has ~6.5% standard error, so we allow 10% tolerance for safety.
-    // Clojure parity: ndv (number of distinct values) statistics.
-
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
@@ -1257,9 +1254,6 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            // Create 20 people with:
-            // - 20 distinct names (ndv_values = 20, ndv_subjects = 20)
-            // - 5 distinct status values shared across 20 people (ndv_values = 5, ndv_subjects = 20)
             let mut graph = vec![];
             let statuses = ["active", "pending", "inactive", "archived", "deleted"];
             for i in 0..20 {
@@ -1302,7 +1296,6 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 .await
                 .expect("load_db(root_cid)");
 
-            // Check ex:name: 20 distinct values, 20 distinct subjects
             let name_ndv_values = loaded
                 .stats
                 .as_ref()
@@ -1335,7 +1328,6 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 .map(|p| p.ndv_subjects)
                 .expect("name property should exist");
 
-            // Allow 10% error margin for HLL estimates
             assert!(
                 (18..=22).contains(&name_ndv_values),
                 "ex:name ndv_values should be ~20, got {name_ndv_values}"
@@ -1345,7 +1337,6 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 "ex:name ndv_subjects should be ~20, got {name_ndv_subjects}"
             );
 
-            // Check ex:status: 5 distinct values, 20 distinct subjects
             let status_ndv_values = loaded
                 .stats
                 .as_ref()
@@ -1378,7 +1369,6 @@ async fn ndv_cardinality_estimates_are_accurate() {
                 .map(|p| p.ndv_subjects)
                 .expect("status property should exist");
 
-            // ex:status has 5 distinct values but 20 subjects
             assert!(
                 (4..=6).contains(&status_ndv_values),
                 "ex:status ndv_values should be ~5, got {status_ndv_values}"
@@ -1393,9 +1383,6 @@ async fn ndv_cardinality_estimates_are_accurate() {
 
 #[tokio::test]
 async fn selectivity_calculation_is_correct() {
-    // Tests that selectivity is computed as ceil(count / ndv), minimum 1.
-    // Clojure parity: selectivity statistics for query planning.
-
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
@@ -1420,9 +1407,6 @@ async fn selectivity_calculation_is_correct() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            // Create data where:
-            // - ex:uniqueId: 10 flakes, 10 distinct values, 10 subjects → selectivity = 1
-            // - ex:category: 10 flakes, 2 distinct values, 10 subjects → selectivity-value = 5
             let mut graph = vec![];
             let categories = ["A", "B"];
             for i in 0..10 {
@@ -1457,7 +1441,6 @@ async fn selectivity_calculation_is_correct() {
             )
             .await;
 
-            // Reload to get ledger_info
             let info = fluree
                 .ledger_info(ledger_id)
                 .execute()
@@ -1467,13 +1450,6 @@ async fn selectivity_calculation_is_correct() {
             let stats = &info["stats"];
             let props = &stats["properties"];
 
-            // Verify selectivity formula: selectivity = ceil(count / ndv), minimum 1
-            // HLL at precision=8 can have ~10% variance at small cardinalities,
-            // so we test that selectivity is within expected ranges.
-
-            // ex:uniqueId: 10 flakes, 10 distinct values, 10 subjects
-            // Expected: selectivity-value ≈ 1 (could be 1-2 due to HLL variance)
-            // Expected: selectivity-subject ≈ 1 (could be 1-2 due to HLL variance)
             let unique_id_stats = props
                 .get("http://example.org/uniqueId")
                 .expect("uniqueId property should exist");
@@ -1490,9 +1466,6 @@ async fn selectivity_calculation_is_correct() {
                 uid_sel_sub
             );
 
-            // ex:category: 10 flakes, 2 distinct values, 10 subjects
-            // Expected: selectivity-value ≈ 5 (could be 4-6 due to HLL variance)
-            // Expected: selectivity-subject ≈ 1 (could be 1-2 due to HLL variance)
             let category_stats = props
                 .get("http://example.org/category")
                 .expect("category property should exist");
@@ -1514,9 +1487,6 @@ async fn selectivity_calculation_is_correct() {
 
 #[tokio::test]
 async fn multi_class_entities_tracked_correctly() {
-    // Tests that entities with multiple @type values are counted in each class.
-    // Clojure parity: multi-class instance statistics.
-
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
@@ -1541,10 +1511,6 @@ async fn multi_class_entities_tracked_correctly() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            // Create entities with multiple types:
-            // - alice: Person, Employee (2 classes)
-            // - bob: Person only (1 class)
-            // - acme: Organization, LegalEntity (2 classes)
             let txn = json!({
                 "@context": { "ex": "http://example.org/" },
                 "@graph": [
@@ -1584,7 +1550,6 @@ async fn multi_class_entities_tracked_correctly() {
             )
             .await;
 
-            // Reload to get ledger_info
             let info = fluree
                 .ledger_info(ledger_id)
                 .execute()
@@ -1594,7 +1559,6 @@ async fn multi_class_entities_tracked_correctly() {
             let stats = &info["stats"];
             let classes = &stats["classes"];
 
-            // ex:Person should have count 2 (alice, bob)
             let person_stats = classes
                 .get("http://example.org/Person")
                 .expect("Person class should exist");
@@ -1604,7 +1568,6 @@ async fn multi_class_entities_tracked_correctly() {
                 "Person should have 2 instances (alice, bob)"
             );
 
-            // ex:Employee should have count 1 (alice only)
             let employee_stats = classes
                 .get("http://example.org/Employee")
                 .expect("Employee class should exist");
@@ -1614,7 +1577,6 @@ async fn multi_class_entities_tracked_correctly() {
                 "Employee should have 1 instance (alice)"
             );
 
-            // ex:Organization should have count 1 (acme)
             let org_stats = classes
                 .get("http://example.org/Organization")
                 .expect("Organization class should exist");
@@ -1624,7 +1586,6 @@ async fn multi_class_entities_tracked_correctly() {
                 "Organization should have 1 instance (acme)"
             );
 
-            // ex:LegalEntity should have count 1 (acme)
             let legal_stats = classes
                 .get("http://example.org/LegalEntity")
                 .expect("LegalEntity class should exist");
@@ -1639,11 +1600,6 @@ async fn multi_class_entities_tracked_correctly() {
 
 #[tokio::test]
 async fn class_property_type_distribution_tracked() {
-    // Tests that class→property presence is tracked in class statistics.
-    //
-    // NOTE: DB-R no longer tracks per-class datatype distributions / langs.
-    // Ref target counts are tracked separately for ref-valued properties.
-
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
@@ -1668,11 +1624,6 @@ async fn class_property_type_distribution_tracked() {
                 reindex_max_bytes: 10_000_000,
             };
 
-            // Create entities with various datatypes:
-            // - ex:name: string type
-            // - ex:age: integer type
-            // - ex:salary: decimal type
-            // - ex:active: boolean type
             let txn = json!({
                 "@context": {
                     "ex": "http://example.org/",
@@ -1716,7 +1667,6 @@ async fn class_property_type_distribution_tracked() {
             )
             .await;
 
-            // Reload to get ledger_info
             let info = fluree
                 .ledger_info(ledger_id)
                 .execute()
@@ -1730,7 +1680,6 @@ async fn class_property_type_distribution_tracked() {
                 .get("http://example.org/Person")
                 .expect("Person class should exist");
 
-            // Verify class properties contain the expected properties
             let class_props = person_stats
                 .get("properties")
                 .expect("Person should have properties");
@@ -1751,16 +1700,27 @@ async fn class_property_type_distribution_tracked() {
                 class_props.get("http://example.org/active").is_some(),
                 "Person should include ex:active in class properties"
             );
+
+            // Verify the new class property structure has types/langs/ref-classes
+            let name_usage = class_props.get("http://example.org/name").unwrap();
+            assert!(
+                name_usage.get("types").is_some(),
+                "class property should have types"
+            );
+            assert!(
+                name_usage.get("langs").is_some(),
+                "class property should have langs"
+            );
+            assert!(
+                name_usage.get("ref-classes").is_some(),
+                "class property should have ref-classes"
+            );
         })
         .await;
 }
 
 #[tokio::test]
 async fn large_dataset_statistics_accuracy() {
-    // Tests HLL accuracy with a larger dataset (100 entities) across multiple transactions.
-    // HLL at precision=8 has ~6.5% standard error, so estimates should be close.
-    // Clojure parity: statistics remain accurate at scale.
-
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
     let cache_dir = tmp.path().to_path_buf();
@@ -1781,16 +1741,11 @@ async fn large_dataset_statistics_accuracy() {
             let ledger_id = "test/large-dataset:main";
             let mut ledger = genesis_ledger_for_fluree(&fluree, ledger_id);
 
-            // This test is intentionally about accumulation across *indexes* (Clojure parity),
-            // not about background indexing races. Disable auto-trigger and explicitly
-            // `trigger+wait` after each transaction batch.
             let index_cfg = IndexConfig {
                 reindex_min_bytes: 1_000_000_000,
                 reindex_max_bytes: 1_000_000_000,
             };
 
-            // Insert 100 entities in 5 batches of 20, indexing after each batch,
-            // to test HLL accumulation across 5 index refreshes.
             let departments = ["Engineering", "Sales", "Marketing", "HR", "Finance"];
             for batch in 0..5 {
                 let mut graph = vec![];
@@ -1823,9 +1778,6 @@ async fn large_dataset_statistics_accuracy() {
                 let commit_t = result.receipt.t;
                 ledger = result.ledger;
 
-                // Trigger indexing to at least this commit_t, wait for completion,
-                // then apply the persisted index to the in-memory ledger state so the
-                // next batch starts from the newly indexed db (true "across indexes").
                 let outcome =
                     trigger_index_and_wait_outcome(&handle, ledger.ledger_id(), commit_t).await;
                 let fluree_db_api::IndexOutcome::Completed { index_t, root_id } = outcome else {
@@ -1846,8 +1798,6 @@ async fn large_dataset_statistics_accuracy() {
                 .await;
             }
 
-            // Final sync point (should already be indexed, but keep this to ensure
-            // we load stats from a persisted index root).
             let outcome =
                 trigger_index_and_wait_outcome(&handle, ledger.ledger_id(), ledger.t()).await;
             let fluree_db_api::IndexOutcome::Completed { root_id, .. } = outcome else {
@@ -1859,8 +1809,6 @@ async fn large_dataset_statistics_accuracy() {
                 .await
                 .expect("load_db(root_cid)");
 
-            // Verify counts
-            // ex:name: 100 distinct values, 100 subjects
             let name_prop = loaded
                 .stats
                 .as_ref()
@@ -1877,7 +1825,6 @@ async fn large_dataset_statistics_accuracy() {
                 .expect("name property should exist");
 
             assert_eq!(name_prop.count, 100, "ex:name should have 100 flakes");
-            // Allow 15% error for HLL at this scale
             assert!(
                 (85..=115).contains(&name_prop.ndv_values),
                 "ex:name ndv_values should be ~100, got {}",
@@ -1889,7 +1836,6 @@ async fn large_dataset_statistics_accuracy() {
                 name_prop.ndv_subjects
             );
 
-            // ex:department: 5 distinct values, 100 subjects
             let dept_prop = loaded
                 .stats
                 .as_ref()
@@ -1917,7 +1863,7 @@ async fn large_dataset_statistics_accuracy() {
                 dept_prop.ndv_subjects
             );
 
-            // Verify class count
+            // Verify class count via ledger_info
             let info = fluree
                 .ledger_info(ledger_id)
                 .execute()
