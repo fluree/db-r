@@ -970,6 +970,264 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
 // ============================================================================
 
 #[tokio::test]
+async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
+    // End-to-end: transact -> index -> transact novelty (no index) -> ledger-info
+    // shows updated counts/edges/datatypes but preserves NDV -> transact more ->
+    // index again -> ledger-info shows updated NDV too.
+    //
+    // This intentionally uses a small dataset so HLL estimates are exact
+    // (linear counting correction) and assertions can be strict.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let path = tmp.path().to_string_lossy().to_string();
+
+    let mut fluree = FlureeBuilder::file(path)
+        .build()
+        .expect("build file fluree");
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        fluree.nameservice().clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+    fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
+
+    local
+        .run_until(async move {
+            let ledger_id = "test/ledger-info-stats-refresh:main";
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
+
+            let index_cfg = IndexConfig {
+                reindex_min_bytes: 0,
+                reindex_max_bytes: 10_000_000,
+            };
+
+            // ---- Txn 1: seed + index ----
+            let txn1 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    // Organization
+                    {"@id":"ex:acme","@type":"ex:Organization","ex:name":"Acme"},
+                    // Persons (each with a unique email so NDV should match count)
+                    {"@id":"ex:alice","@type":"ex:Person","ex:email":"alice@example.com","ex:worksFor":{"@id":"ex:acme"}},
+                    {"@id":"ex:bob","@type":"ex:Person","ex:email":"bob@example.com","ex:worksFor":{"@id":"ex:acme"}},
+                    {"@id":"ex:carol","@type":"ex:Person","ex:email":"carol@example.com","ex:worksFor":{"@id":"ex:acme"}},
+                    // Product with float price (datatype baseline)
+                    {"@id":"ex:prod1","@type":"ex:Product","ex:price": 1.25}
+                ]
+            });
+            let r1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &txn1,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("insert txn1");
+            let _ = trigger_index_and_wait_outcome(&handle, r1.ledger.ledger_id(), r1.receipt.t)
+                .await;
+
+            // Base indexed ledger-info (include datatypes, but do NOT merge novelty deltas).
+            let base_info = fluree
+                .ledger_info(ledger_id)
+                .with_property_datatypes(true)
+                .execute()
+                .await
+                .expect("ledger_info base");
+
+            let base_stats = &base_info["stats"];
+            let base_flakes = base_stats["flakes"].as_u64().expect("base flakes");
+            let base_size = base_stats["size"].as_u64().expect("base size");
+
+            let base_email = &base_stats["properties"]["http://example.org/email"];
+            let base_email_count = base_email["count"].as_u64().expect("email count");
+            let base_email_ndv = base_email["ndv-values"].as_u64().expect("email ndv-values");
+            let base_email_nds = base_email["ndv-subjects"]
+                .as_u64()
+                .expect("email ndv-subjects");
+            assert_eq!(base_email_count, 3);
+            assert_eq!(base_email_ndv, 3);
+            assert_eq!(base_email_nds, 3);
+
+            let base_price_dts = base_stats["properties"]["http://example.org/price"]["datatypes"]
+                .as_object()
+                .expect("price datatypes map");
+            assert!(
+                base_price_dts.contains_key("xsd:double") || base_price_dts.contains_key("xsd:float"),
+                "expected indexed price to have float datatype; got keys: {:?}",
+                base_price_dts.keys().collect::<Vec<_>>()
+            );
+
+            // Indexed refs: Person -> worksFor -> Organization should be 3.
+            let base_refs = base_stats["classes"]["http://example.org/Person"]["properties"]
+                ["http://example.org/worksFor"]["refs"]
+                .as_object()
+                .expect("refs map");
+            assert_eq!(
+                base_refs.get("http://example.org/Organization"),
+                Some(&json!(3)),
+                "indexed worksFor refs should be 3"
+            );
+
+            // ---- Txn 2: novelty only (do NOT index) ----
+            // Adds:
+            // - 1 new Person with a new unique email (count should rise)
+            // - 1 new worksFor edge (ref count should rise in realtime mode)
+            // - 1 integer price (datatype delta should appear in realtime mode)
+            let ledger1 = fluree.ledger(ledger_id).await.expect("reload ledger after indexing");
+            let txn2 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id":"ex:dave","@type":"ex:Person","ex:email":"dave@example.com","ex:worksFor":{"@id":"ex:acme"}},
+                    {"@id":"ex:prod2","@type":"ex:Product","ex:price": 3}
+                ]
+            });
+            let _r2 = fluree
+                .insert(ledger1, &txn2)
+                .await
+                .expect("insert txn2 (novelty)");
+
+            // Realtime ledger-info (merge novelty datatype + ref-edge deltas).
+            let rt_info = fluree
+                .ledger_info(ledger_id)
+                .with_realtime_property_details(true)
+                .execute()
+                .await
+                .expect("ledger_info realtime details");
+            let rt_stats = &rt_info["stats"];
+
+            // Flakes and size should include novelty deltas.
+            let rt_flakes = rt_stats["flakes"].as_u64().expect("rt flakes");
+            let rt_size = rt_stats["size"].as_u64().expect("rt size");
+            // Txn2 contributes 5 asserted flakes:
+            // - dave: rdf:type, email, worksFor (3)
+            // - prod2: rdf:type, price (2)
+            assert_eq!(
+                rt_flakes,
+                base_flakes + 5,
+                "flake count should reflect indexed + novelty asserts"
+            );
+            assert!(
+                rt_size > base_size,
+                "size should increase when novelty is present"
+            );
+
+            // Counts should update, but NDV should remain as-of last index.
+            let rt_email = &rt_stats["properties"]["http://example.org/email"];
+            assert_eq!(rt_email["count"].as_u64().unwrap(), 4);
+            assert_eq!(
+                rt_email["ndv-values"].as_u64().unwrap(),
+                base_email_ndv,
+                "NDV should remain indexed-only before refresh"
+            );
+            assert_eq!(
+                rt_email["ndv-subjects"].as_u64().unwrap(),
+                base_email_nds,
+                "NDS should remain indexed-only before refresh"
+            );
+
+            // Realtime datatypes should include integer-like for price.
+            let rt_price_dts = rt_stats["properties"]["http://example.org/price"]["datatypes"]
+                .as_object()
+                .expect("price datatypes map");
+            assert!(
+                rt_price_dts.contains_key("xsd:double") || rt_price_dts.contains_key("xsd:float"),
+                "expected realtime price to keep float datatype; got keys: {:?}",
+                rt_price_dts.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                rt_price_dts.contains_key("xsd:integer")
+                    || rt_price_dts.contains_key("xsd:long")
+                    || rt_price_dts.contains_key("xsd:int")
+                    || rt_price_dts.contains_key("xsd:short")
+                    || rt_price_dts.contains_key("xsd:byte"),
+                "expected realtime price to include integer-like datatype; got keys: {:?}",
+                rt_price_dts.keys().collect::<Vec<_>>()
+            );
+
+            // Realtime ref edges should include the novelty Person->Organization edge (4 total).
+            let rt_refs = rt_stats["classes"]["http://example.org/Person"]["properties"]
+                ["http://example.org/worksFor"]["refs"]
+                .as_object()
+                .expect("refs map");
+            assert_eq!(
+                rt_refs.get("http://example.org/Organization"),
+                Some(&json!(4)),
+                "realtime refs should include novelty edge"
+            );
+
+            // ---- Txn 3: add more, then build second index refresh ----
+            let ledger2 = fluree.ledger(ledger_id).await.expect("reload ledger for tx3");
+            let txn3 = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [
+                    {"@id":"ex:erin","@type":"ex:Person","ex:email":"erin@example.com","ex:worksFor":{"@id":"ex:acme"}},
+                    {"@id":"ex:frank","@type":"ex:Person","ex:email":"frank@example.com","ex:worksFor":{"@id":"ex:acme"}},
+                    {"@id":"ex:prod3","@type":"ex:Product","ex:price": 4}
+                ]
+            });
+            let r3 = fluree.insert(ledger2, &txn3).await.expect("insert txn3");
+
+            // Build the second index (incremental refresh).
+            let _ = trigger_index_and_wait_outcome(&handle, ledger_id, r3.receipt.t).await;
+
+            // Indexed view after refresh: NDV should now reflect all 6 emails.
+            let refreshed = fluree
+                .ledger_info(ledger_id)
+                .with_property_datatypes(true)
+                .execute()
+                .await
+                .expect("ledger_info refreshed");
+            let refreshed_stats = &refreshed["stats"];
+
+            let email = &refreshed_stats["properties"]["http://example.org/email"];
+            assert_eq!(email["count"].as_u64().unwrap(), 6);
+            assert_eq!(
+                email["ndv-values"].as_u64().unwrap(),
+                6,
+                "NDV should update after index refresh"
+            );
+            assert_eq!(
+                email["ndv-subjects"].as_u64().unwrap(),
+                6,
+                "NDS should update after index refresh"
+            );
+
+            // Persisted refs after refresh should now be 6 in the base payload.
+            let refs = refreshed_stats["classes"]["http://example.org/Person"]["properties"]
+                ["http://example.org/worksFor"]["refs"]
+                .as_object()
+                .expect("refs map");
+            assert_eq!(
+                refs.get("http://example.org/Organization"),
+                Some(&json!(6)),
+                "indexed refs should include all edges after refresh"
+            );
+
+            // Indexed datatypes should now include integer-like for price too.
+            let price_dts = refreshed_stats["properties"]["http://example.org/price"]["datatypes"]
+                .as_object()
+                .expect("price datatypes map");
+            assert!(
+                price_dts.contains_key("xsd:double") || price_dts.contains_key("xsd:float"),
+                "expected refreshed price to still include float datatype; got keys: {:?}",
+                price_dts.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                price_dts.contains_key("xsd:integer")
+                    || price_dts.contains_key("xsd:long")
+                    || price_dts.contains_key("xsd:int")
+                    || price_dts.contains_key("xsd:short")
+                    || price_dts.contains_key("xsd:byte"),
+                "expected refreshed price to include integer-like datatype; got keys: {:?}",
+                price_dts.keys().collect::<Vec<_>>()
+            );
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn ndv_cardinality_estimates_are_accurate() {
     // Tests that HLL cardinality estimates (ndv-values, ndv-subjects) are accurate
     // HLL at precision=8 has ~6.5% standard error, so we allow 10% tolerance for safety.
