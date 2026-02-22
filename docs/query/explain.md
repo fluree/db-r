@@ -220,6 +220,10 @@ Filters are automatically optimized by the query engine in three ways:
 - **Inline evaluation**: Filters whose variables are all bound by a join are
   evaluated inside the join operator itself, avoiding the overhead of a
   separate filter pass.
+- **BIND filter fusion**: When a FILTER's last required variable is the output
+  of a BIND, the filter is fused into the BindOperator and evaluated inline
+  after computing each row's BIND value. Failing rows are dropped before
+  materialization, eliminating a separate FilterOperator pass.
 
 ## Best Practices
 

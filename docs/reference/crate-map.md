@@ -181,8 +181,8 @@ fluree-db/
 - Bound-variable-aware selectivity estimation using HLL-derived property
   statistics (with heuristic fallbacks)
 - Query execution
-- Filter pushdown (index-level range filters, inline join evaluation,
-  dependency-based placement)
+- Filter pushdown (index-level range filters, inline join/BIND evaluation,
+  dependency-based placement, compound pattern nesting)
 - Aggregations
 - BM25 and vector search integration
 - Explain plan generation for optimization debugging

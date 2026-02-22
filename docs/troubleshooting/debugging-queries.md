@@ -323,8 +323,10 @@ same optimizations available to top-level filters.
 
 Additionally, filters whose variables are all bound by a join operator are
 evaluated inline during the join itself, avoiding the overhead of a separate
-filter pass. Range-safe filters (comparisons like `>`, `<` on indexed
-properties) are pushed down to the index scan.
+filter pass. Filters that depend on a BIND's output variable are fused into
+the BindOperator and evaluated inline after computing each row's BIND value,
+similarly eliminating a separate filter pass. Range-safe filters (comparisons
+like `>`, `<` on indexed properties) are pushed down to the index scan.
 
 ### Use LIMIT
 
