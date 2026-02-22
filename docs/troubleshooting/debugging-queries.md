@@ -314,6 +314,13 @@ efficiency. For BIND patterns, only the expression's input variables must be
 bound — the target variable is an output that feeds back into the bound set,
 enabling cascading placement of dependent patterns.
 
+When a filter or BIND becomes ready immediately after a compound pattern
+(UNION, Graph, or Service), the planner pushes it *into* the compound
+pattern's inner lists rather than placing it after. For UNION, the filter is
+cloned into every branch. This means filters execute within each branch,
+benefiting from optimal placement, range pushdown, and inline evaluation — the
+same optimizations available to top-level filters.
+
 Additionally, filters whose variables are all bound by a join operator are
 evaluated inline during the join itself, avoiding the overhead of a separate
 filter pass. Range-safe filters (comparisons like `>`, `<` on indexed

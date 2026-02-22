@@ -834,6 +834,60 @@ pub fn pattern_shares_variables(pattern: &Pattern, bound_vars: &HashSet<VarId>) 
     pattern.variables().iter().any(|v| bound_vars.contains(v))
 }
 
+/// Collect the variables that a slice of patterns guarantees to bind.
+fn collect_guaranteed_vars(patterns: &[Pattern]) -> HashSet<VarId> {
+    patterns.iter().flat_map(|p| p.variables()).collect()
+}
+
+/// Try to nest a deferred pattern into a compound pattern's inner lists.
+///
+/// Returns `true` if the pattern was nested, `false` if the pattern is not
+/// a supported compound type or (for UNION) the deferred pattern's required
+/// variables aren't all guaranteed by every branch.
+///
+/// For UNION the deferred pattern is cloned into every branch, but only if
+/// all required variables appear in the intersection of branch variables.
+/// This is necessary because individual branches may bind different variables,
+/// and nesting a filter that references a variable absent from some branch
+/// would be incorrect.
+///
+/// For Graph and Service all inner variables are guaranteed, so the deferred
+/// pattern is nested unconditionally.
+fn try_nest_deferred(compound: &mut Pattern, deferred: &DeferredPattern) -> bool {
+    match compound {
+        Pattern::Union(branches) => {
+            let union_vars = branches
+                .iter()
+                .map(|b| collect_guaranteed_vars(b))
+                .reduce(|mut union_vars, branch_vars| {
+                    union_vars.retain(|v| branch_vars.contains(v));
+                    union_vars
+                })
+                .unwrap_or_default();
+            if !deferred
+                .required_vars
+                .iter()
+                .any(|v| union_vars.contains(v))
+            {
+                return false;
+            }
+            for branch in branches.iter_mut() {
+                branch.push(deferred.pattern.clone());
+            }
+            true
+        }
+        Pattern::Graph { patterns, .. } => {
+            patterns.push(deferred.pattern.clone());
+            true
+        }
+        Pattern::Service(sp) => {
+            sp.patterns.push(deferred.pattern.clone());
+            true
+        }
+        _ => false,
+    }
+}
+
 // =============================================================================
 // Generalized Pattern Reordering
 // =============================================================================
@@ -1078,6 +1132,12 @@ fn try_place_expander(
 /// BIND outputs are added to `bound_vars` after placement, which may enable
 /// further deferred patterns.  The function loops until no more can be placed.
 /// Among simultaneously-ready patterns, original position order is preserved.
+///
+/// When the last element of `result` is a compound pattern (UNION, Graph, or
+/// Service), ready deferred patterns are nested *into* the compound pattern's
+/// inner lists instead of being appended after it. This allows filters and
+/// binds to participate in the compound pattern's inner `reorder_patterns`
+/// pipeline, enabling filter pushdown and inline evaluation within each branch.
 fn drain_ready_deferred(
     deferred: &mut Vec<DeferredPattern>,
     bound_vars: &mut HashSet<VarId>,
@@ -1105,11 +1165,18 @@ fn drain_ready_deferred(
         ready.sort_by_key(|dp| dp.orig_index);
 
         for dp in ready {
+            let nested = result
+                .last_mut()
+                .is_some_and(|last| try_nest_deferred(last, &dp));
+
             // BIND produces a new variable; FILTER does not.
             if let Pattern::Bind { var, .. } = &dp.pattern {
                 bound_vars.insert(*var);
             }
-            result.push(dp.pattern);
+
+            if !nested {
+                result.push(dp.pattern);
+            }
         }
     }
 }
@@ -1132,6 +1199,7 @@ fn deferred_required_vars(pattern: &Pattern) -> Vec<VarId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::GraphName;
     use crate::pattern::Term;
     use fluree_db_core::{PropertyStatData, Sid, StatsView};
     use std::sync::Arc;
@@ -2341,5 +2409,243 @@ mod tests {
 
         // Single triple: should be the triple's selectivity (count = 1000)
         assert!((est - 1000.0).abs() < f64::EPSILON);
+    }
+
+    // =========================================================================
+    // Compound pattern absorption tests
+    // =========================================================================
+
+    #[test]
+    fn test_filter_pushed_into_union_when_all_branches_bind_var() {
+        // Patterns: [Triple(?s :name ?name), Union([?s :age ?age], [?s :years ?age]), Filter(?age > 25)]
+        // Expected: Filter pushed into each UNION branch; not present at top level
+        let s = VarId(0);
+        let name = VarId(1);
+        let age = VarId(2);
+
+        let triple = Pattern::Triple(make_pattern(s, "name", name));
+        let union = Pattern::Union(vec![
+            vec![Pattern::Triple(make_pattern(s, "age", age))],
+            vec![Pattern::Triple(make_pattern(s, "years", age))],
+        ]);
+        let filter = Pattern::Filter(Expression::gt(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(25)),
+        ));
+
+        let patterns = vec![triple, union, filter];
+        let reordered = reorder_patterns(&patterns, None, &HashSet::new());
+
+        // Filter should NOT appear as a top-level pattern
+        let top_level_filters = reordered
+            .iter()
+            .filter(|p| matches!(p, Pattern::Filter(_)))
+            .count();
+        assert_eq!(
+            top_level_filters, 0,
+            "Filter should be pushed into UNION, not at top level"
+        );
+
+        // UNION branches should each contain the filter
+        let union_pattern = reordered
+            .iter()
+            .find(|p| matches!(p, Pattern::Union(_)))
+            .expect("UNION should be in result");
+        if let Pattern::Union(branches) = union_pattern {
+            for (i, branch) in branches.iter().enumerate() {
+                let has_filter = branch.iter().any(|p| matches!(p, Pattern::Filter(_)));
+                assert!(
+                    has_filter,
+                    "UNION branch {i} should contain the pushed-in filter"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_filter_stays_after_union_when_not_all_branches_bind_var() {
+        // Patterns: [Triple(?s :name ?name), Union([?s :age ?age], [?s :label ?l]), Filter(?age > 25)]
+        // Expected: Filter remains after UNION at top level (branch 2 doesn't bind ?age)
+        let s = VarId(0);
+        let name = VarId(1);
+        let age = VarId(2);
+        let label = VarId(3);
+
+        let triple = Pattern::Triple(make_pattern(s, "name", name));
+        let union = Pattern::Union(vec![
+            vec![Pattern::Triple(make_pattern(s, "age", age))],
+            vec![Pattern::Triple(make_pattern(s, "label", label))],
+        ]);
+        let filter = Pattern::Filter(Expression::gt(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(25)),
+        ));
+
+        let patterns = vec![triple, union, filter];
+        let reordered = reorder_patterns(&patterns, None, &HashSet::new());
+
+        // Filter should remain at top level since ?age is not in all branches
+        let top_level_filters = reordered
+            .iter()
+            .filter(|p| matches!(p, Pattern::Filter(_)))
+            .count();
+        assert_eq!(
+            top_level_filters, 1,
+            "Filter should stay at top level when not all UNION branches bind the var"
+        );
+    }
+
+    #[test]
+    fn test_bind_and_filter_cascade_into_union() {
+        // Patterns: [Union([?s :age ?age], [?s :years ?age]), Bind(?double = ?age * 2), Filter(?double > 50)]
+        // Expected: Both BIND and FILTER pushed into each UNION branch
+        let s = VarId(0);
+        let age = VarId(1);
+        let double = VarId(2);
+
+        let union = Pattern::Union(vec![
+            vec![Pattern::Triple(make_pattern(s, "age", age))],
+            vec![Pattern::Triple(make_pattern(s, "years", age))],
+        ]);
+        let bind = Pattern::Bind {
+            var: double,
+            expr: Expression::Call {
+                func: Function::Mul,
+                args: vec![
+                    Expression::Var(age),
+                    Expression::Const(FilterValue::Long(2)),
+                ],
+            },
+        };
+        let filter = Pattern::Filter(Expression::gt(
+            Expression::Var(double),
+            Expression::Const(FilterValue::Long(50)),
+        ));
+
+        let patterns = vec![union, bind, filter];
+        let reordered = reorder_patterns(&patterns, None, &HashSet::new());
+
+        // Neither BIND nor FILTER should appear at top level
+        let top_level_deferred = reordered
+            .iter()
+            .filter(|p| matches!(p, Pattern::Filter(_) | Pattern::Bind { .. }))
+            .count();
+        assert_eq!(
+            top_level_deferred, 0,
+            "Both BIND and FILTER should be pushed into UNION branches"
+        );
+
+        // Each UNION branch should contain both BIND and FILTER
+        let union_pattern = reordered
+            .iter()
+            .find(|p| matches!(p, Pattern::Union(_)))
+            .expect("UNION should be in result");
+        if let Pattern::Union(branches) = union_pattern {
+            for (i, branch) in branches.iter().enumerate() {
+                let has_bind = branch.iter().any(|p| matches!(p, Pattern::Bind { .. }));
+                let has_filter = branch.iter().any(|p| matches!(p, Pattern::Filter(_)));
+                assert!(
+                    has_bind,
+                    "UNION branch {i} should contain the pushed-in BIND"
+                );
+                assert!(
+                    has_filter,
+                    "UNION branch {i} should contain the pushed-in FILTER"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_filter_pushed_into_graph() {
+        // Patterns: [Graph(ex:g, [?s :age ?age]), Filter(?age > 25)]
+        // Expected: Filter pushed into Graph's inner patterns
+        let s = VarId(0);
+        let age = VarId(1);
+
+        let graph = Pattern::Graph {
+            name: GraphName::Iri(Arc::from("http://example.org/g")),
+            patterns: vec![Pattern::Triple(make_pattern(s, "age", age))],
+        };
+        let filter = Pattern::Filter(Expression::gt(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(25)),
+        ));
+
+        let patterns = vec![graph, filter];
+        let reordered = reorder_patterns(&patterns, None, &HashSet::new());
+
+        // Filter should NOT appear at top level
+        let top_level_filters = reordered
+            .iter()
+            .filter(|p| matches!(p, Pattern::Filter(_)))
+            .count();
+        assert_eq!(
+            top_level_filters, 0,
+            "Filter should be pushed into Graph pattern"
+        );
+
+        // Graph's inner patterns should contain the filter
+        let graph_pattern = reordered
+            .iter()
+            .find(|p| matches!(p, Pattern::Graph { .. }))
+            .expect("Graph should be in result");
+        if let Pattern::Graph { patterns, .. } = graph_pattern {
+            let has_filter = patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
+            assert!(has_filter, "Graph inner patterns should contain the filter");
+        }
+    }
+
+    #[test]
+    fn test_multiple_filters_only_relevant_ones_pushed() {
+        // Patterns: [Triple(?s :name ?name), Union([?s :age ?age], [?s :years ?age]), Filter(?age > 25), Filter(?name = "Alice")]
+        // Expected: Filter(?age > 25) pushed into UNION; Filter(?name = "Alice") stays at top level
+        let s = VarId(0);
+        let name = VarId(1);
+        let age = VarId(2);
+
+        let triple = Pattern::Triple(make_pattern(s, "name", name));
+        let union = Pattern::Union(vec![
+            vec![Pattern::Triple(make_pattern(s, "age", age))],
+            vec![Pattern::Triple(make_pattern(s, "years", age))],
+        ]);
+        let age_filter = Pattern::Filter(Expression::gt(
+            Expression::Var(age),
+            Expression::Const(FilterValue::Long(25)),
+        ));
+        let name_filter = Pattern::Filter(Expression::eq(
+            Expression::Var(name),
+            Expression::Const(FilterValue::String("Alice".to_string())),
+        ));
+
+        let patterns = vec![triple, union, age_filter, name_filter];
+        let reordered = reorder_patterns(&patterns, None, &HashSet::new());
+
+        // The name filter's required var (?name) is bound by the triple, not by
+        // the UNION. It becomes ready after the triple is placed, before the
+        // UNION. So it should appear at top level between the triple and UNION.
+        let top_level_filters = reordered
+            .iter()
+            .filter(|p| matches!(p, Pattern::Filter(_)))
+            .count();
+        assert_eq!(
+            top_level_filters, 1,
+            "Only the name filter should be at top level; age filter should be pushed into UNION"
+        );
+
+        // The age filter should be inside each UNION branch
+        let union_pattern = reordered
+            .iter()
+            .find(|p| matches!(p, Pattern::Union(_)))
+            .expect("UNION should be in result");
+        if let Pattern::Union(branches) = union_pattern {
+            for (i, branch) in branches.iter().enumerate() {
+                let has_filter = branch.iter().any(|p| matches!(p, Pattern::Filter(_)));
+                assert!(
+                    has_filter,
+                    "UNION branch {i} should contain the pushed-in age filter"
+                );
+            }
+        }
     }
 }

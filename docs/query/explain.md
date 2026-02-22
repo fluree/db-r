@@ -82,6 +82,36 @@ patterns, only the expression's input variables must be bound — the target
 variable is an output that feeds back into `bound_vars`, potentially enabling
 further deferred patterns to be placed immediately (cascading placement).
 
+### Compound Pattern Nesting
+
+When a deferred pattern (FILTER or BIND) becomes ready and the last placed
+pattern is a compound pattern (UNION, Graph, or Service), the planner nests
+the deferred pattern *into* the compound pattern's inner lists instead of
+appending it after. This enables the deferred pattern to participate in the
+compound pattern's inner `reorder_patterns` pipeline, unlocking:
+
+- Optimal placement after the specific triple that binds its variable
+- Range-safe filter pushdown to index scans
+- Inline evaluation during joins
+
+Nesting occurs only when the compound pattern **guarantees** the deferred
+pattern's required variable is bound:
+
+| Compound     | Nest? | Guarantee                                              |
+| ------------ | ----- | ------------------------------------------------------ |
+| **UNION**    | Yes   | Variable must appear in the intersection of all branches |
+| **Graph**    | Yes   | Variable is in inner patterns or is the graph name variable |
+| **Service**  | Yes   | Variable is in inner patterns or is the endpoint variable |
+| OPTIONAL     | No    | Left-join: inner vars may be Unbound                   |
+| MINUS        | No    | Anti-join: inner vars not exported to outer scope      |
+| EXISTS       | No    | Filter-only: inner vars not exported                   |
+| NOT EXISTS   | No    | Filter-only: inner vars not exported                   |
+
+For UNION, the deferred pattern is cloned into every branch. For Graph and
+Service, it is appended to the inner pattern list. Recursion is handled
+naturally: when a nested filter lands inside a branch containing another
+compound pattern, the branch's `reorder_patterns` call applies the same logic.
+
 ### Bound-Variable-Aware Estimation
 
 The planner tracks which variables become bound as each pattern is placed.
