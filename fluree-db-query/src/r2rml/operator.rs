@@ -155,20 +155,20 @@ impl R2rmlScanOperator {
 
                 // Determine datatype Sid
                 let dt_sid = if let Some(dt_iri) = datatype {
-                    ctx.db.encode_iri(dt_iri).unwrap_or_else(|| {
+                    ctx.snapshot.encode_iri(dt_iri).unwrap_or_else(|| {
                         // Default to xsd:string if datatype not found
-                        ctx.db
+                        ctx.snapshot
                             .encode_iri(xsd::STRING)
                             .unwrap_or(xsd_string_fallback)
                     })
                 } else if language.is_some() {
                     // Language-tagged strings use rdf:langString
-                    ctx.db
+                    ctx.snapshot
                         .encode_iri(rdf::LANG_STRING)
                         .unwrap_or(xsd_string_fallback)
                 } else {
                     // Plain literal defaults to xsd:string
-                    ctx.db
+                    ctx.snapshot
                         .encode_iri(xsd::STRING)
                         .unwrap_or(xsd_string_fallback)
                 };

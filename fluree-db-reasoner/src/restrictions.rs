@@ -23,10 +23,9 @@ use crate::owl;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::is_rdf_type;
-use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
+use fluree_db_core::range::{RangeMatch, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
+use fluree_db_core::{GraphDbRef, Sid};
 use fluree_vocab::namespaces::OWL;
 use fluree_vocab::owl_names::*;
 use hashbrown::HashMap;
@@ -479,39 +478,26 @@ impl RestrictionIndex {
 ///    - owl:onProperty
 ///    - owl:hasValue / owl:someValuesFrom / owl:allValuesFrom / etc.
 /// 3. Builds a RestrictionIndex for efficient lookup during rule application
-pub async fn extract_restrictions(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
-) -> Result<RestrictionIndex> {
+pub async fn extract_restrictions(db: GraphDbRef<'_>) -> Result<RestrictionIndex> {
     let mut index = RestrictionIndex::new();
-
-    let opts = RangeOptions {
-        to_t: Some(to_t),
-        ..Default::default()
-    };
 
     // Step 1: Find all owl:Restriction instances
     // Query OPST for ?x rdf:type owl:Restriction
     let owl_restriction_sid = owl::restriction_sid();
 
-    let restriction_flakes: Vec<Flake> = range_with_overlay(
-        db,
-        g_id,
-        overlay,
-        IndexType::Opst,
-        RangeTest::Eq,
-        RangeMatch {
-            o: Some(FlakeValue::Ref(owl_restriction_sid)),
-            ..Default::default()
-        },
-        opts.clone(),
-    )
-    .await?
-    .into_iter()
-    .filter(|f| is_rdf_type(&f.p) && f.op)
-    .collect();
+    let restriction_flakes: Vec<Flake> = db
+        .range(
+            IndexType::Opst,
+            RangeTest::Eq,
+            RangeMatch {
+                o: Some(FlakeValue::Ref(owl_restriction_sid)),
+                ..Default::default()
+            },
+        )
+        .await?
+        .into_iter()
+        .filter(|f| is_rdf_type(&f.p) && f.op)
+        .collect();
 
     // Collect restriction blank node IDs
     let restriction_ids: Vec<Sid> = restriction_flakes.iter().map(|f| f.s.clone()).collect();
@@ -528,66 +514,57 @@ pub async fn extract_restrictions(
     let one_of_sid = owl::one_of_sid();
 
     // Query for owl:intersectionOf subjects
-    let int_flakes: Vec<Flake> = range_with_overlay(
-        db,
-        g_id,
-        overlay,
-        IndexType::Psot,
-        RangeTest::Eq,
-        RangeMatch {
-            p: Some(intersection_of_sid.clone()),
-            ..Default::default()
-        },
-        opts.clone(),
-    )
-    .await?
-    .into_iter()
-    .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == INTERSECTION_OF && f.op)
-    .collect();
+    let int_flakes: Vec<Flake> = db
+        .range(
+            IndexType::Psot,
+            RangeTest::Eq,
+            RangeMatch {
+                p: Some(intersection_of_sid.clone()),
+                ..Default::default()
+            },
+        )
+        .await?
+        .into_iter()
+        .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == INTERSECTION_OF && f.op)
+        .collect();
 
     for flake in &int_flakes {
         class_expression_sids.insert(flake.s.clone());
     }
 
     // Query for owl:unionOf subjects
-    let union_flakes: Vec<Flake> = range_with_overlay(
-        db,
-        g_id,
-        overlay,
-        IndexType::Psot,
-        RangeTest::Eq,
-        RangeMatch {
-            p: Some(union_of_sid.clone()),
-            ..Default::default()
-        },
-        opts.clone(),
-    )
-    .await?
-    .into_iter()
-    .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == UNION_OF && f.op)
-    .collect();
+    let union_flakes: Vec<Flake> = db
+        .range(
+            IndexType::Psot,
+            RangeTest::Eq,
+            RangeMatch {
+                p: Some(union_of_sid.clone()),
+                ..Default::default()
+            },
+        )
+        .await?
+        .into_iter()
+        .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == UNION_OF && f.op)
+        .collect();
 
     for flake in &union_flakes {
         class_expression_sids.insert(flake.s.clone());
     }
 
     // Query for owl:oneOf subjects
-    let one_of_flakes_pre: Vec<Flake> = range_with_overlay(
-        db,
-        g_id,
-        overlay,
-        IndexType::Psot,
-        RangeTest::Eq,
-        RangeMatch {
-            p: Some(one_of_sid.clone()),
-            ..Default::default()
-        },
-        opts.clone(),
-    )
-    .await?
-    .into_iter()
-    .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == ONE_OF && f.op)
-    .collect();
+    let one_of_flakes_pre: Vec<Flake> = db
+        .range(
+            IndexType::Psot,
+            RangeTest::Eq,
+            RangeMatch {
+                p: Some(one_of_sid.clone()),
+                ..Default::default()
+            },
+        )
+        .await?
+        .into_iter()
+        .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == ONE_OF && f.op)
+        .collect();
 
     for flake in &one_of_flakes_pre {
         class_expression_sids.insert(flake.s.clone());
@@ -614,22 +591,19 @@ pub async fn extract_restrictions(
 
     for restriction_id in &restriction_ids {
         // Query all properties of this restriction using SPOT index
-        let restriction_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch {
-                s: Some(restriction_id.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.op)
-        .collect();
+        let restriction_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch {
+                    s: Some(restriction_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.op)
+            .collect();
 
         // Extract components
         let mut on_property_raw: Option<Sid> = None;
@@ -672,7 +646,7 @@ pub async fn extract_restrictions(
 
         // Resolve property expression (handles owl:inverseOf and owl:propertyChainAxiom)
         let property = if let Some(prop_sid) = on_property_raw {
-            Some(resolve_property_expression(db, g_id, overlay, &prop_sid, to_t).await?)
+            Some(resolve_property_expression(db, &prop_sid).await?)
         } else {
             None
         };
@@ -740,7 +714,7 @@ pub async fn extract_restrictions(
 
     for flake in int_flakes {
         if let FlakeValue::Ref(list_head) = &flake.o {
-            if let Ok(members) = collect_list_elements(db, g_id, overlay, list_head, to_t).await {
+            if let Ok(members) = collect_list_elements(db, list_head).await {
                 if !members.is_empty() {
                     // Use to_class_ref to properly identify nested class expressions
                     let class_refs: Vec<ClassRef> =
@@ -758,7 +732,7 @@ pub async fn extract_restrictions(
 
     for flake in union_flakes {
         if let FlakeValue::Ref(list_head) = &flake.o {
-            if let Ok(members) = collect_list_elements(db, g_id, overlay, list_head, to_t).await {
+            if let Ok(members) = collect_list_elements(db, list_head).await {
                 if !members.is_empty() {
                     // Use to_class_ref to properly identify nested class expressions
                     let class_refs: Vec<ClassRef> =
@@ -777,8 +751,7 @@ pub async fn extract_restrictions(
     // Note: We reuse one_of_flakes_pre from the pre-pass above
     for flake in one_of_flakes_pre {
         if let FlakeValue::Ref(list_head) = &flake.o {
-            if let Ok(individuals) = collect_list_elements(db, g_id, overlay, list_head, to_t).await
-            {
+            if let Ok(individuals) = collect_list_elements(db, list_head).await {
                 if !individuals.is_empty() {
                     index.add_restriction(ParsedRestriction {
                         restriction_id: flake.s.clone(),

@@ -7,9 +7,8 @@ use std::time::Instant;
 
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
-use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
-use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
+use fluree_db_core::range::{RangeMatch, RangeTest};
+use fluree_db_core::{GraphDbRef, Sid};
 use fluree_vocab::jsonld_names::ID as JSONLD_ID;
 use fluree_vocab::namespaces::{JSON_LD, RDF};
 use fluree_vocab::predicates::RDF_TYPE;
@@ -39,25 +38,22 @@ use crate::{FrozenSameAs, ReasoningDiagnostics, Result};
 /// 3. Iteratively applies rules until fixpoint or budget exhausted
 /// 4. Returns derived facts and diagnostics
 pub async fn run_fixpoint(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
+    db: GraphDbRef<'_>,
     budget: &ReasoningBudget,
 ) -> Result<(Vec<Flake>, FrozenSameAs, ReasoningDiagnostics)> {
     let start = Instant::now();
     let mut diagnostics = ReasoningDiagnostics::default();
 
     // Extract OWL2-RL ontology (symmetric, transitive, inverse properties)
-    let ontology = OntologyRL::from_db_with_overlay(db, g_id, overlay, db.t as u64, to_t).await?;
+    let ontology = OntologyRL::from_db_with_overlay(db).await?;
 
     // Extract OWL restrictions (hasValue, someValuesFrom, etc.)
-    let restrictions = extract_restrictions(db, g_id, overlay, to_t).await?;
+    let restrictions = extract_restrictions(db).await?;
 
     // Load sameAs assertions BEFORE checking if we have work to do
     // sameAs can exist even without symmetric/transitive/inverse declarations
     let mut same_as_tracker = SameAsTracker::new();
-    let same_as_pairs = load_same_as_assertions(db, g_id, overlay, to_t).await?;
+    let same_as_pairs = load_same_as_assertions(db).await?;
     let has_same_as = !same_as_pairs.is_empty();
     for (x, y) in &same_as_pairs {
         same_as_tracker.union(x, y);
@@ -77,7 +73,7 @@ pub async fn run_fixpoint(
     if ontology.is_empty() && restrictions.is_empty() {
         let frozen_same_as = same_as_tracker.finalize();
         // Generate explicit sameAs flakes from equivalence classes (eq-sym, eq-trans)
-        let same_as_flakes = generate_same_as_flakes(&frozen_same_as, to_t);
+        let same_as_flakes = generate_same_as_flakes(&frozen_same_as, db.t);
         let flake_count = same_as_flakes.len();
         return Ok((
             same_as_flakes,
@@ -87,7 +83,7 @@ pub async fn run_fixpoint(
     }
 
     // Seed initial delta with all base facts for relevant predicates
-    let mut delta = seed_initial_delta(db, g_id, overlay, &ontology, &restrictions, to_t).await?;
+    let mut delta = seed_initial_delta(db, &ontology, &restrictions).await?;
 
     // Accumulated derived facts
     let mut derived = DerivedSet::new();
@@ -101,11 +97,11 @@ pub async fn run_fixpoint(
     // Reasoning t value - derived facts must be visible at the query's `to_t`.
     //
     // IMPORTANT:
-    // - We compute entailments "as-of" `to_t`, so derived facts must have `t <= to_t`
+    // - We compute entailments "as-of" `db.t`, so derived facts must have `t <= db.t`
     //   to be visible through the normal range filters used by `execute_with_overlay_at`.
     // - For non-time-bounded queries, callers pass `to_t = i64::MAX`, which still
     //   keeps derived facts visible.
-    let reasoning_t = to_t;
+    let reasoning_t = db.t;
 
     let mut iterations = 0;
 
@@ -318,12 +314,9 @@ pub async fn run_fixpoint(
 /// - Facts with restricted properties (hasValue, someValuesFrom, etc.)
 /// - owl:sameAs facts
 async fn seed_initial_delta(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
+    db: GraphDbRef<'_>,
     ontology: &OntologyRL,
     restrictions: &RestrictionIndex,
-    to_t: i64,
 ) -> Result<DeltaSet> {
     let mut delta = DeltaSet::new();
 
@@ -416,29 +409,21 @@ async fn seed_initial_delta(
     let needs_type_facts =
         !key_properties.is_empty() || ontology.has_class_rules() || !restrictions.is_empty();
 
-    let opts = RangeOptions {
-        to_t: Some(to_t),
-        ..Default::default()
-    };
-
     // Query facts for each relevant predicate using PSOT index
     for p in predicates_to_query {
-        let flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch {
-                p: Some(p.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| &f.p == p && f.op)
-        .collect();
+        let flakes: Vec<Flake> = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch {
+                    p: Some(p.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| &f.p == p && f.op)
+            .collect();
 
         for flake in flakes {
             delta.push(flake);
@@ -448,22 +433,19 @@ async fn seed_initial_delta(
     // Load rdf:type facts for hasKey and class hierarchy rules
     if needs_type_facts {
         let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
-        let type_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch {
-                p: Some(rdf_type_sid.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.p == rdf_type_sid && f.op)
-        .collect();
+        let type_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch {
+                    p: Some(rdf_type_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.p == rdf_type_sid && f.op)
+            .collect();
 
         for flake in type_flakes {
             delta.push(flake);
@@ -472,22 +454,19 @@ async fn seed_initial_delta(
 
     // Also seed owl:sameAs facts
     let owl_same_as_sid = owl::same_as_sid();
-    let same_as_flakes: Vec<Flake> = range_with_overlay(
-        db,
-        g_id,
-        overlay,
-        IndexType::Psot,
-        RangeTest::Eq,
-        RangeMatch {
-            p: Some(owl_same_as_sid.clone()),
-            ..Default::default()
-        },
-        opts,
-    )
-    .await?
-    .into_iter()
-    .filter(|f| f.p == owl_same_as_sid && f.op)
-    .collect();
+    let same_as_flakes: Vec<Flake> = db
+        .range(
+            IndexType::Psot,
+            RangeTest::Eq,
+            RangeMatch {
+                p: Some(owl_same_as_sid.clone()),
+                ..Default::default()
+            },
+        )
+        .await?
+        .into_iter()
+        .filter(|f| f.p == owl_same_as_sid && f.op)
+        .collect();
 
     for flake in same_as_flakes {
         delta.push(flake);

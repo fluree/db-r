@@ -18,9 +18,9 @@ use crate::reasoning::ReasoningOverlay;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
+use fluree_db_core::range::{RangeMatch, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
+use fluree_db_core::{GraphDbRef, LedgerSnapshot, Sid};
 use fluree_db_reasoner::{
     BindingValue, Bindings, CompareOp, DatalogRule, DatalogRuleSet, DerivedFactsBuilder,
     FrozenSameAs, RuleFilter, RuleTerm, RuleTriplePattern, RuleValue,
@@ -49,40 +49,27 @@ const RULE_LOCAL_NAME: &str = "rule";
 ///
 /// Queries for all `f:rule` triples and parses the rule definitions.
 /// Returns a `DatalogRuleSet` ready for execution in the reasoning loop.
-pub async fn extract_datalog_rules(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
-) -> Result<DatalogRuleSet> {
+pub async fn extract_datalog_rules(db: GraphDbRef<'_>) -> Result<DatalogRuleSet> {
     let mut rule_set = DatalogRuleSet::new();
 
     // Create the SID for f:rule predicate
     let rule_predicate_sid = Sid::new(FLUREE_DB, RULE_LOCAL_NAME);
 
     // Query PSOT index for all f:rule assertions
-    let opts = RangeOptions {
-        to_t: Some(to_t),
-        ..Default::default()
-    };
-
-    let rule_flakes: Vec<Flake> = range_with_overlay(
-        db,
-        g_id,
-        overlay,
-        IndexType::Psot,
-        RangeTest::Eq,
-        RangeMatch {
-            p: Some(rule_predicate_sid.clone()),
-            ..Default::default()
-        },
-        opts,
-    )
-    .await
-    .map_err(|e| QueryError::Internal(format!("Failed to query for rules: {}", e)))?
-    .into_iter()
-    .filter(|f| f.op) // Only active assertions
-    .collect();
+    let rule_flakes: Vec<Flake> = db
+        .range(
+            IndexType::Psot,
+            RangeTest::Eq,
+            RangeMatch {
+                p: Some(rule_predicate_sid.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| QueryError::Internal(format!("Failed to query for rules: {}", e)))?
+        .into_iter()
+        .filter(|f| f.op) // Only active assertions
+        .collect();
 
     // Parse each rule
     for flake in &rule_flakes {
@@ -91,7 +78,7 @@ pub async fn extract_datalog_rules(
         // The rule value should be a JSON string
         if let FlakeValue::Json(json_str) = &flake.o {
             match serde_json::from_str::<JsonValue>(json_str) {
-                Ok(rule_json) => match parse_rule_definition(&rule_id, &rule_json, db) {
+                Ok(rule_json) => match parse_rule_definition(&rule_id, &rule_json, db.snapshot) {
                     Ok(rule) => {
                         rule_set.add_rule(rule);
                     }
@@ -116,7 +103,7 @@ pub async fn extract_datalog_rules(
 /// 2. Stored rule format: `{"@id": "...", "f:rule": {"@value": {"where": ..., "insert": ...}}}`
 fn parse_query_time_rule(
     json: &JsonValue,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     index: usize,
 ) -> Result<DatalogRule> {
     // Check if this is a stored rule format with f:rule wrapper
@@ -138,20 +125,20 @@ fn parse_query_time_rule(
             Sid::new(0, format!("_:query_rule_{}", index))
         };
 
-        return parse_rule_definition(&rule_id, rule_value, db);
+        return parse_rule_definition(&rule_id, rule_value, snapshot);
     }
 
     // Direct rule format
     // Generate a synthetic rule ID
     let rule_id = Sid::new(0, format!("_:query_rule_{}", index));
-    parse_rule_definition(&rule_id, json, db)
+    parse_rule_definition(&rule_id, json, snapshot)
 }
 
 /// Parse a rule definition JSON into a DatalogRule
 fn parse_rule_definition(
     rule_id: &Sid,
     json: &JsonValue,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
 ) -> Result<DatalogRule> {
     // Extract context for IRI resolution
     let context = json.get("@context").cloned().unwrap_or(JsonValue::Null);
@@ -160,13 +147,13 @@ fn parse_rule_definition(
     let where_json = json
         .get("where")
         .ok_or_else(|| QueryError::InvalidQuery("Rule missing 'where' clause".to_string()))?;
-    let (where_patterns, filters) = parse_where_clause(where_json, &context, db)?;
+    let (where_patterns, filters) = parse_where_clause(where_json, &context, snapshot)?;
 
     // Parse insert clause
     let insert_json = json
         .get("insert")
         .ok_or_else(|| QueryError::InvalidQuery("Rule missing 'insert' clause".to_string()))?;
-    let insert_patterns = parse_insert_patterns(insert_json, &context, db)?;
+    let insert_patterns = parse_insert_patterns(insert_json, &context, snapshot)?;
 
     let mut rule = DatalogRule::new(rule_id.clone(), where_patterns, insert_patterns);
 
@@ -189,7 +176,7 @@ fn parse_rule_definition(
 fn parse_where_clause(
     json: &JsonValue,
     context: &JsonValue,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
 ) -> Result<(Vec<RuleTriplePattern>, Vec<RuleFilter>)> {
     let mut patterns = Vec::new();
     let mut filters = Vec::new();
@@ -197,14 +184,14 @@ fn parse_where_clause(
     match json {
         JsonValue::Object(map) => {
             // Single node pattern
-            parse_node_pattern(map, context, db, &mut patterns)?;
+            parse_node_pattern(map, context, snapshot, &mut patterns)?;
         }
         JsonValue::Array(arr) => {
             // Array of patterns and/or filters
             for item in arr {
                 match item {
                     JsonValue::Object(map) => {
-                        parse_node_pattern(map, context, db, &mut patterns)?;
+                        parse_node_pattern(map, context, snapshot, &mut patterns)?;
                     }
                     JsonValue::Array(filter_arr) if is_filter_expression(filter_arr) => {
                         // Filter expression like ["filter", "(>= ?age 62)"]
@@ -319,12 +306,12 @@ fn parse_filter_term(s: &str) -> Result<RuleTerm> {
 fn parse_node_pattern(
     map: &serde_json::Map<String, JsonValue>,
     context: &JsonValue,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     patterns: &mut Vec<RuleTriplePattern>,
 ) -> Result<()> {
     // Get subject (@id or generate implicit variable)
     let subject = if let Some(id_val) = map.get("@id") {
-        parse_term(id_val, context, db)?
+        parse_term(id_val, context, snapshot)?
     } else {
         // Generate unique implicit variable for anonymous node
         // Use patterns.len() to ensure uniqueness across multiple node patterns
@@ -338,8 +325,8 @@ fn parse_node_pattern(
         if key == "@id" || key == "@context" || key == "@type" {
             if key == "@type" {
                 // Handle @type as rdf:type
-                let type_pred = resolve_iri(fluree_vocab::rdf::TYPE, db)?;
-                let type_obj = parse_term(value, context, db)?;
+                let type_pred = resolve_iri(fluree_vocab::rdf::TYPE, snapshot)?;
+                let type_obj = parse_term(value, context, snapshot)?;
                 patterns.push(RuleTriplePattern {
                     subject: subject.clone(),
                     predicate: RuleTerm::Sid(type_pred),
@@ -351,14 +338,20 @@ fn parse_node_pattern(
 
         // Resolve predicate IRI
         let predicate_iri = expand_iri(key, context)?;
-        let predicate_sid = resolve_iri(&predicate_iri, db)?;
+        let predicate_sid = resolve_iri(&predicate_iri, snapshot)?;
 
         // Parse object(s)
         match value {
             JsonValue::Array(arr) => {
                 for item in arr {
-                    let obj =
-                        parse_object_value(item, context, db, patterns, &subject, &predicate_sid)?;
+                    let obj = parse_object_value(
+                        item,
+                        context,
+                        snapshot,
+                        patterns,
+                        &subject,
+                        &predicate_sid,
+                    )?;
                     patterns.push(RuleTriplePattern {
                         subject: subject.clone(),
                         predicate: RuleTerm::Sid(predicate_sid.clone()),
@@ -369,7 +362,7 @@ fn parse_node_pattern(
             JsonValue::Object(nested) => {
                 // Nested node pattern - create intermediate variable and recurse
                 let nested_subject = if let Some(nested_id) = nested.get("@id") {
-                    parse_term(nested_id, context, db)?
+                    parse_term(nested_id, context, snapshot)?
                 } else {
                     // Generate intermediate variable
                     let var_name = format!("?__nested_{}", patterns.len());
@@ -391,11 +384,11 @@ fn parse_node_pattern(
                         nested_with_id
                             .insert("@id".to_string(), JsonValue::String(var.to_string()));
                     }
-                    parse_node_pattern(&nested_with_id, context, db, patterns)?;
+                    parse_node_pattern(&nested_with_id, context, snapshot, patterns)?;
                 }
             }
             _ => {
-                let obj = parse_term(value, context, db)?;
+                let obj = parse_term(value, context, snapshot)?;
                 patterns.push(RuleTriplePattern {
                     subject: subject.clone(),
                     predicate: RuleTerm::Sid(predicate_sid.clone()),
@@ -412,7 +405,7 @@ fn parse_node_pattern(
 fn parse_object_value(
     value: &JsonValue,
     context: &JsonValue,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     patterns: &mut Vec<RuleTriplePattern>,
     _parent_subject: &RuleTerm,
     _predicate_sid: &Sid,
@@ -420,7 +413,7 @@ fn parse_object_value(
     match value {
         JsonValue::Object(nested) if nested.contains_key("@id") => {
             // Reference to another node
-            parse_term(nested.get("@id").unwrap(), context, db)
+            parse_term(nested.get("@id").unwrap(), context, snapshot)
         }
         JsonValue::Object(nested) => {
             // Nested anonymous node - generate variable and recurse
@@ -430,16 +423,20 @@ fn parse_object_value(
             // Create a map with @id for recursive parsing
             let mut nested_with_id = nested.clone();
             nested_with_id.insert("@id".to_string(), JsonValue::String(var_name.clone()));
-            parse_node_pattern(&nested_with_id, context, db, patterns)?;
+            parse_node_pattern(&nested_with_id, context, snapshot, patterns)?;
 
             Ok(nested_subject)
         }
-        _ => parse_term(value, context, db),
+        _ => parse_term(value, context, snapshot),
     }
 }
 
 /// Parse a JSON value into a RuleTerm
-fn parse_term(value: &JsonValue, context: &JsonValue, db: &LedgerSnapshot) -> Result<RuleTerm> {
+fn parse_term(
+    value: &JsonValue,
+    context: &JsonValue,
+    snapshot: &LedgerSnapshot,
+) -> Result<RuleTerm> {
     match value {
         JsonValue::String(s) => {
             if s.starts_with('?') {
@@ -448,7 +445,7 @@ fn parse_term(value: &JsonValue, context: &JsonValue, db: &LedgerSnapshot) -> Re
             } else if s.contains(':') || s.starts_with("http://") || s.starts_with("https://") {
                 // IRI or compact IRI (CURIE) - contains a colon or is a full URL
                 let expanded = expand_iri(s, context)?;
-                let sid = resolve_iri(&expanded, db)?;
+                let sid = resolve_iri(&expanded, snapshot)?;
                 Ok(RuleTerm::Sid(sid))
             } else {
                 // Plain string literal (no colon, not a variable, not a URL)
@@ -468,10 +465,10 @@ fn parse_term(value: &JsonValue, context: &JsonValue, db: &LedgerSnapshot) -> Re
         JsonValue::Object(obj) => {
             // Could be {"@id": "..."} reference or {"@value": ...} literal
             if let Some(id) = obj.get("@id") {
-                parse_term(id, context, db)
+                parse_term(id, context, snapshot)
             } else if let Some(val) = obj.get("@value") {
                 // Typed literal like {"@value": "senior", "@type": "xsd:string"}
-                parse_term(val, context, db)
+                parse_term(val, context, snapshot)
             } else {
                 Err(QueryError::InvalidQuery(
                     "Object without @id or @value in term position".to_string(),
@@ -489,10 +486,10 @@ fn parse_term(value: &JsonValue, context: &JsonValue, db: &LedgerSnapshot) -> Re
 fn parse_insert_patterns(
     json: &JsonValue,
     context: &JsonValue,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
 ) -> Result<Vec<RuleTriplePattern>> {
     // Insert patterns use the same format as where patterns (but we ignore any filters)
-    let (patterns, _filters) = parse_where_clause(json, context, db)?;
+    let (patterns, _filters) = parse_where_clause(json, context, snapshot)?;
     Ok(patterns)
 }
 
@@ -525,9 +522,10 @@ fn expand_iri(compact: &str, context: &JsonValue) -> Result<String> {
 }
 
 /// Resolve an IRI to a SID
-fn resolve_iri(iri: &str, db: &LedgerSnapshot) -> Result<Sid> {
+fn resolve_iri(iri: &str, snapshot: &LedgerSnapshot) -> Result<Sid> {
     // Use the database's IRI encoding
-    db.encode_iri(iri)
+    snapshot
+        .encode_iri(iri)
         .ok_or_else(|| QueryError::InvalidQuery(format!("Failed to encode IRI '{}'", iri)))
 }
 
@@ -541,18 +539,14 @@ fn resolve_iri(iri: &str, db: &LedgerSnapshot) -> Result<Sid> {
 /// The bindings can then be used with `execute_rule_with_bindings` to generate flakes.
 pub async fn execute_rule_matching(
     rule: &DatalogRule,
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
+    db: GraphDbRef<'_>,
 ) -> Result<Vec<Bindings>> {
     if rule.where_patterns.is_empty() {
         return Ok(Vec::new());
     }
 
     // Start with the first pattern to get initial bindings
-    let mut binding_rows =
-        match_pattern(&rule.where_patterns[0], db, g_id, overlay, to_t, &[]).await?;
+    let mut binding_rows = match_pattern(&rule.where_patterns[0], db, &[]).await?;
 
     // Join with subsequent patterns
     for pattern in rule.where_patterns.iter().skip(1) {
@@ -562,15 +556,8 @@ pub async fn execute_rule_matching(
 
         let mut new_bindings = Vec::new();
         for existing_bindings in &binding_rows {
-            let extended = match_pattern(
-                pattern,
-                db,
-                g_id,
-                overlay,
-                to_t,
-                std::slice::from_ref(existing_bindings),
-            )
-            .await?;
+            let extended =
+                match_pattern(pattern, db, std::slice::from_ref(existing_bindings)).await?;
             new_bindings.extend(extended);
         }
         binding_rows = new_bindings;
@@ -689,10 +676,7 @@ fn compare_values(left: &FilterValue, right: &FilterValue, op: CompareOp) -> boo
 /// Returns all binding rows that satisfy the pattern.
 async fn match_pattern(
     pattern: &RuleTriplePattern,
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
+    db: GraphDbRef<'_>,
     existing_bindings: &[Bindings],
 ) -> Result<Vec<Bindings>> {
     let mut results = Vec::new();
@@ -700,15 +684,13 @@ async fn match_pattern(
     // If we have existing bindings, extend each one
     if !existing_bindings.is_empty() {
         for bindings in existing_bindings {
-            let extended =
-                match_pattern_with_bindings(pattern, db, g_id, overlay, to_t, bindings).await?;
+            let extended = match_pattern_with_bindings(pattern, db, bindings).await?;
             results.extend(extended);
         }
     } else {
         // No existing bindings - match freely
         let empty_bindings = Bindings::new();
-        let extended =
-            match_pattern_with_bindings(pattern, db, g_id, overlay, to_t, &empty_bindings).await?;
+        let extended = match_pattern_with_bindings(pattern, db, &empty_bindings).await?;
         results.extend(extended);
     }
 
@@ -718,10 +700,7 @@ async fn match_pattern(
 /// Match a single pattern with existing bindings, returning extended binding rows
 async fn match_pattern_with_bindings(
     pattern: &RuleTriplePattern,
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
+    db: GraphDbRef<'_>,
     bindings: &Bindings,
 ) -> Result<Vec<Bindings>> {
     // Resolve pattern terms using existing bindings
@@ -736,43 +715,31 @@ async fn match_pattern_with_bindings(
         object_match.as_ref(),
     );
 
-    let opts = RangeOptions {
-        to_t: Some(to_t),
-        ..Default::default()
-    };
-
     // Query the index
-    let flakes: Vec<Flake> = range_with_overlay(
-        db,
-        g_id,
-        overlay,
-        index_type,
-        RangeTest::Eq,
-        range_match,
-        opts,
-    )
-    .await
-    .map_err(|e| QueryError::Internal(format!("Pattern matching failed: {}", e)))?
-    .into_iter()
-    .filter(|f| {
-        if !f.op {
-            return false;
-        } // Only active assertions
-          // Post-filter: range provider may return a superset; ensure
-          // subject and predicate actually match the requested pattern.
-        if let Some(ref s) = subject_sid {
-            if &f.s != s {
+    let flakes: Vec<Flake> = db
+        .range(index_type, RangeTest::Eq, range_match)
+        .await
+        .map_err(|e| QueryError::Internal(format!("Pattern matching failed: {}", e)))?
+        .into_iter()
+        .filter(|f| {
+            if !f.op {
                 return false;
+            } // Only active assertions
+              // Post-filter: range provider may return a superset; ensure
+              // subject and predicate actually match the requested pattern.
+            if let Some(ref s) = subject_sid {
+                if &f.s != s {
+                    return false;
+                }
             }
-        }
-        if let Some(ref p) = predicate_sid {
-            if &f.p != p {
-                return false;
+            if let Some(ref p) = predicate_sid {
+                if &f.p != p {
+                    return false;
+                }
             }
-        }
-        true
-    })
-    .collect();
+            true
+        })
+        .collect();
 
     // Build binding rows from results
     let mut results = Vec::new();
@@ -1031,19 +998,16 @@ pub struct DatalogExecutionResult {
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
+/// * `snapshot` - The database to query
 /// * `overlay` - Overlay provider for novelty/derived facts
 /// * `to_t` - Time point for queries
 /// * `max_iterations` - Maximum number of fixpoint iterations
 /// * `query_time_rules` - Optional rules provided at query time (JSON-LD format)
 pub async fn execute_datalog_rules(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
+    db: GraphDbRef<'_>,
     max_iterations: usize,
 ) -> Result<DatalogExecutionResult> {
-    execute_datalog_rules_with_query_rules(db, g_id, overlay, to_t, max_iterations, &[]).await
+    execute_datalog_rules_with_query_rules(db, max_iterations, &[]).await
 }
 
 /// Execute datalog rules with optional query-time rules
@@ -1051,19 +1015,16 @@ pub async fn execute_datalog_rules(
 /// This is the full implementation that supports both database-stored rules
 /// and query-time rules passed as JSON-LD.
 pub async fn execute_datalog_rules_with_query_rules(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
+    db: GraphDbRef<'_>,
     max_iterations: usize,
     query_time_rules: &[serde_json::Value],
 ) -> Result<DatalogExecutionResult> {
     // Extract rules from database
-    let mut rule_set = extract_datalog_rules(db, g_id, overlay, to_t).await?;
+    let mut rule_set = extract_datalog_rules(db).await?;
 
     // Parse and add query-time rules
     for (idx, rule_json) in query_time_rules.iter().enumerate() {
-        match parse_query_time_rule(rule_json, db, idx) {
+        match parse_query_time_rule(rule_json, db.snapshot, idx) {
             Ok(rule) => {
                 rule_set.add_rule(rule);
             }
@@ -1102,7 +1063,7 @@ pub async fn execute_datalog_rules_with_query_rules(
 
     // Use the same t as the query for derived facts (matching OWL2-RL approach)
     // This is important because the overlay filters with flake.t <= to_t
-    let derived_t = to_t;
+    let derived_t = db.t;
 
     // Track derived overlay for recursive rule support
     let mut derived_overlay: Option<Arc<fluree_db_reasoner::DerivedFactsOverlay>> = None;
@@ -1114,11 +1075,11 @@ pub async fn execute_datalog_rules_with_query_rules(
         // Build combined overlay: base + derived facts from previous iterations
         // This enables recursive rules to match against their own derived facts
         let effective_overlay: Box<dyn OverlayProvider + '_> = match &derived_overlay {
-            Some(derived) => Box::new(ReasoningOverlay::new(overlay, derived.clone())),
+            Some(derived) => Box::new(ReasoningOverlay::new(db.overlay, derived.clone())),
             None => {
                 // First iteration: use base overlay directly
                 // We wrap in a trivial struct that implements OverlayProvider
-                Box::new(OverlayRef(overlay))
+                Box::new(OverlayRef(db.overlay))
             }
         };
 
@@ -1128,8 +1089,8 @@ pub async fn execute_datalog_rules_with_query_rules(
 
             // Find all bindings matching the where patterns
             // Use effective_overlay which includes derived facts from previous iterations
-            let binding_rows =
-                execute_rule_matching(rule, db, g_id, effective_overlay.as_ref(), to_t).await?;
+            let iter_db = GraphDbRef::new(db.snapshot, db.g_id, effective_overlay.as_ref(), db.t);
+            let binding_rows = execute_rule_matching(rule, iter_db).await?;
 
             if binding_rows.is_empty() {
                 continue;
@@ -1172,7 +1133,7 @@ pub async fn execute_datalog_rules_with_query_rules(
         let mut builder = DerivedFactsBuilder::with_capacity(all_derived.len());
         builder.extend(all_derived.values().cloned());
         derived_overlay = Some(Arc::new(
-            builder.build(FrozenSameAs::empty(), overlay.epoch()),
+            builder.build(FrozenSameAs::empty(), db.overlay.epoch()),
         ));
     }
 

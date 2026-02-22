@@ -52,7 +52,7 @@ async fn policy_baseline_allow_true() {
         .await
         .expect("query_connection");
     let ledger = fluree.ledger("policy/baseline:main").await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows(&jsonld),
@@ -145,7 +145,7 @@ async fn policy_fquery_simple_where_pattern() {
         .ledger("policy/fquery-simple:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Only "Public Item" (level=0) should be visible
     assert_eq!(
@@ -205,7 +205,7 @@ async fn policy_fquery_with_filter_expression() {
         .ledger("policy/fquery-filter:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Only "Public Item" (level=0) should be visible; level < 3
     // "Secret Item" (level=5) and "Top Secret Item" (level=10) should be filtered out
@@ -266,7 +266,7 @@ async fn policy_fquery_default_allow_fallback() {
         .ledger("policy/fquery-default:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // The policy APPLIED (it ran its f:query), but the query returned false.
     // Therefore the policy didn't "allow", and default-allow doesn't override this.
@@ -314,7 +314,7 @@ async fn policy_fquery_default_allow_fallback() {
         .query_connection(&query_no_applicable_policy)
         .await
         .expect("query_connection");
-    let jsonld_allow = result_allow.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld_allow = result_allow.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // The policy doesn't apply (targets ex:nonexistent, not ex:name), so default-allow kicks in
     assert_eq!(
@@ -341,7 +341,7 @@ async fn policy_fquery_default_allow_fallback() {
         .query_connection(&query_deny)
         .await
         .expect("query_connection");
-    let jsonld_deny = result_deny.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld_deny = result_deny.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // The policy doesn't apply, and default-allow is false
     assert_eq!(
@@ -395,7 +395,7 @@ async fn policy_fquery_empty_where_allows() {
         .ledger("policy/fquery-empty:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Empty f:query should allow all items
     assert_eq!(

@@ -77,12 +77,12 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         .expect("apply_loaded_db");
 }
 
-fn property_count(db: &LedgerSnapshot, iri: &str) -> Option<u64> {
-    let stats = db.stats.as_ref()?;
+fn property_count(snapshot: &LedgerSnapshot, iri: &str) -> Option<u64> {
+    let stats = snapshot.stats.as_ref()?;
     let props = stats.properties.as_ref()?;
     for p in props {
         let sid = fluree_db_core::Sid::new(p.sid.0, &p.sid.1);
-        if let Some(full) = db.decode_sid(&sid) {
+        if let Some(full) = snapshot.decode_sid(&sid) {
             if full == iri {
                 return Some(p.count);
             }
@@ -91,11 +91,11 @@ fn property_count(db: &LedgerSnapshot, iri: &str) -> Option<u64> {
     None
 }
 
-fn class_count(db: &LedgerSnapshot, iri: &str) -> Option<u64> {
-    let stats = db.stats.as_ref()?;
+fn class_count(snapshot: &LedgerSnapshot, iri: &str) -> Option<u64> {
+    let stats = snapshot.stats.as_ref()?;
     let classes = stats.classes.as_ref()?;
     for c in classes {
-        if let Some(full) = db.decode_sid(&c.class_sid) {
+        if let Some(full) = snapshot.decode_sid(&c.class_sid) {
             if full == iri {
                 return Some(c.count);
             }

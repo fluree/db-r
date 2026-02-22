@@ -40,8 +40,8 @@ use crate::policy::QueryPolicyEnforcer;
 /// the "wrap-first, then compose" model where individual views are
 /// policy-wrapped before being assembled into a dataset.
 pub struct GraphRef<'a> {
-    /// The database for this graph
-    pub db: &'a LedgerSnapshot,
+    /// The database snapshot for this graph
+    pub snapshot: &'a LedgerSnapshot,
     /// Overlay provider (novelty) - NOT optional, LedgerState always has novelty
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time for this graph
@@ -65,18 +65,18 @@ impl<'a> GraphRef<'a> {
     ///
     /// # Arguments
     ///
-    /// * `db` - The database for this graph
+    /// * `snapshot` - The database snapshot for this graph
     /// * `overlay` - Overlay provider (novelty layer)
     /// * `to_t` - Target transaction time
     /// * `ledger_id` - Ledger ID for provenance tracking (e.g., "orders:main")
     pub fn new(
-        db: &'a LedgerSnapshot,
+        snapshot: &'a LedgerSnapshot,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_id: impl Into<Arc<str>>,
     ) -> Self {
         Self {
-            db,
+            snapshot,
             overlay,
             to_t,
             ledger_id: ledger_id.into(),
@@ -88,20 +88,20 @@ impl<'a> GraphRef<'a> {
     ///
     /// # Arguments
     ///
-    /// * `db` - The database for this graph
+    /// * `snapshot` - The database snapshot for this graph
     /// * `overlay` - Overlay provider (novelty layer)
     /// * `to_t` - Target transaction time
     /// * `ledger_id` - Ledger ID for provenance tracking
     /// * `policy_enforcer` - Policy enforcer for this graph
     pub fn with_policy(
-        db: &'a LedgerSnapshot,
+        snapshot: &'a LedgerSnapshot,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_id: impl Into<Arc<str>>,
         policy_enforcer: Arc<QueryPolicyEnforcer>,
     ) -> Self {
         Self {
-            db,
+            snapshot,
             overlay,
             to_t,
             ledger_id: ledger_id.into(),
@@ -112,12 +112,16 @@ impl<'a> GraphRef<'a> {
     /// Create a graph reference using the db's address as the ledger ID
     ///
     /// Convenience method when the db's address is the appropriate identifier.
-    pub fn from_db(db: &'a LedgerSnapshot, overlay: &'a dyn OverlayProvider, to_t: i64) -> Self {
+    pub fn from_db(
+        snapshot: &'a LedgerSnapshot,
+        overlay: &'a dyn OverlayProvider,
+        to_t: i64,
+    ) -> Self {
         Self {
-            db,
+            snapshot,
             overlay,
             to_t,
-            ledger_id: Arc::from(db.ledger_id.as_str()),
+            ledger_id: Arc::from(snapshot.ledger_id.as_str()),
             policy_enforcer: None,
         }
     }
@@ -304,7 +308,7 @@ impl ActiveGraph {
 /// Active graphs for scanning - avoids "empty vec means single" footgun
 ///
 /// This enum explicitly distinguishes between:
-/// - Single-db mode (no dataset) where callers should use `ctx.db`
+/// - Single-db mode (no dataset) where callers should use `ctx.snapshot`
 /// - Dataset mode where callers should use the provided `GraphRef`s
 ///
 /// NOTE: `Many(Vec<...>)` allocates on each call. Future optimization:
@@ -312,7 +316,7 @@ impl ActiveGraph {
 /// Fine for MVP.
 #[derive(Debug)]
 pub enum ActiveGraphs<'a, 'b> {
-    /// Single-db mode (no dataset) - use `ctx.db`/`ctx.overlay()`/`ctx.to_t`
+    /// Single-db mode (no dataset) - use `ctx.snapshot`/`ctx.overlay()`/`ctx.to_t`
     Single,
     /// Multiple graphs from dataset
     Many(Vec<&'b GraphRef<'a>>),

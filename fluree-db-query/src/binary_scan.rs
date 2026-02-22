@@ -42,7 +42,7 @@ use fluree_db_core::{
 use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, DecodedBatch, GraphView, OverlayOp,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, DecodedBatch, OverlayOp,
 };
 use fluree_vocab::namespaces::FLUREE_DB;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -138,7 +138,7 @@ pub struct BinaryScanOperator {
     /// Operator lifecycle state.
     state: OperatorState,
     /// Graph-scoped view of the binary index store (shared, immutable).
-    graph_view: GraphView,
+    graph_view: BinaryGraphView,
     /// Cursor for leaf iteration (created during open).
     cursor: Option<BinaryCursor>,
     /// Pre-computed p_id → Sid (all predicates, done once at open).
@@ -185,7 +185,7 @@ impl BinaryScanOperator {
     /// Filters are evaluated per-row before adding bindings to output columns.
     pub fn new(
         pattern: TriplePattern,
-        graph_view: GraphView,
+        graph_view: BinaryGraphView,
         object_bounds: Option<ObjectBounds>,
         filters: Vec<crate::ir::Expression>,
     ) -> Self {
@@ -230,7 +230,7 @@ impl BinaryScanOperator {
     /// Create with explicit index selection (for testing or forced order).
     pub fn with_index(
         pattern: TriplePattern,
-        graph_view: GraphView,
+        graph_view: BinaryGraphView,
         index: IndexType,
         filters: Vec<crate::ir::Expression>,
     ) -> Self {
@@ -687,7 +687,7 @@ fn numeric_shape_from_db_stats(
     _pred_iri: &str,
     pred_sid_binary: &Sid,
 ) -> Option<NumericShape> {
-    let stats = ctx.db.stats.as_ref()?;
+    let stats = ctx.snapshot.stats.as_ref()?;
 
     // Prefer graph-scoped stats when available (authoritative ID-based view).
     // (Not always present yet; many deployments only have class-property stats.)
@@ -956,14 +956,14 @@ impl Operator for BinaryScanOperator {
                                 .as_ref()
                                 .map(|(v, inc)| (format!("{:?}", v), *inc));
                             let stats_graphs_len = ctx
-                                .db
+                                .snapshot
                                 .stats
                                 .as_ref()
                                 .and_then(|s| s.graphs.as_ref())
                                 .map(|g| g.len())
                                 .unwrap_or(0);
                             let stats_classes_len = ctx
-                                .db
+                                .snapshot
                                 .stats
                                 .as_ref()
                                 .and_then(|s| s.classes.as_ref())
@@ -1417,7 +1417,7 @@ impl Operator for ScanOperator {
         // ephemeral IDs are allocated for entities not in persisted dictionaries).
         let (overlay_data, dict_overlay) = if use_binary && ctx.overlay.is_some() {
             let store = ctx.binary_store.as_ref().unwrap().clone();
-            let gv = GraphView::new(store, ctx.binary_g_id);
+            let gv = BinaryGraphView::new(store, ctx.binary_g_id);
             let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
@@ -1437,7 +1437,7 @@ impl Operator for ScanOperator {
             }
         } else if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
-            let gv = GraphView::new(store, ctx.binary_g_id);
+            let gv = BinaryGraphView::new(store, ctx.binary_g_id);
             let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
@@ -1448,7 +1448,7 @@ impl Operator for ScanOperator {
 
         let mut inner: BoxedOperator = if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
-            let gv = GraphView::new(store, ctx.binary_g_id);
+            let gv = BinaryGraphView::new(store, ctx.binary_g_id);
             let mut op = BinaryScanOperator::new(
                 self.pattern.clone(),
                 gv,
@@ -1564,13 +1564,13 @@ impl RangeScanOperator {
     }
 
     /// Build a `RangeMatch` from the pattern's bound terms.
-    fn build_range_match(&self, db: &LedgerSnapshot) -> RangeMatch {
+    fn build_range_match(&self, snapshot: &LedgerSnapshot) -> RangeMatch {
         let mut rm = RangeMatch::new();
 
         match &self.pattern.s {
             Term::Sid(sid) => rm.s = Some(sid.clone()),
             Term::Iri(iri) => {
-                if let Some(sid) = db.encode_iri(iri) {
+                if let Some(sid) = snapshot.encode_iri(iri) {
                     rm.s = Some(sid);
                 }
             }
@@ -1580,7 +1580,7 @@ impl RangeScanOperator {
         match &self.pattern.p {
             Term::Sid(sid) => rm.p = Some(sid.clone()),
             Term::Iri(iri) => {
-                if let Some(sid) = db.encode_iri(iri) {
+                if let Some(sid) = snapshot.encode_iri(iri) {
                     rm.p = Some(sid);
                 }
             }
@@ -1591,7 +1591,7 @@ impl RangeScanOperator {
             Term::Sid(sid) => rm.o = Some(FlakeValue::Ref(sid.clone())),
             Term::Value(val) => rm.o = Some(val.clone()),
             Term::Iri(iri) => {
-                if let Some(sid) = db.encode_iri(iri) {
+                if let Some(sid) = snapshot.encode_iri(iri) {
                     rm.o = Some(FlakeValue::Ref(sid));
                 }
             }
@@ -1625,17 +1625,17 @@ impl RangeScanOperator {
     /// Shared by the default-graphs, named-graphs, and single-db paths in `open()`.
     async fn scan_one_graph(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         index: IndexType,
         ctx: &ExecutionContext<'_>,
         policy_enforcer: Option<&Arc<QueryPolicyEnforcer>>,
     ) -> Result<Vec<Flake>> {
-        let range_match = self.build_range_match(db);
+        let range_match = self.build_range_match(snapshot);
         let opts = self.build_range_opts(to_t, ctx);
         let flakes = range_with_overlay(
-            db,
+            snapshot,
             ctx.binary_g_id,
             overlay,
             index,
@@ -1655,11 +1655,12 @@ impl RangeScanOperator {
                     .collect::<HashSet<_>>()
                     .into_iter()
                     .collect();
+                let db = fluree_db_core::GraphDbRef::new(snapshot, ctx.binary_g_id, overlay, to_t);
                 enforcer
-                    .populate_class_cache_for_graph(db, overlay, to_t, ctx.binary_g_id, &subjects)
+                    .populate_class_cache_for_graph(db, &subjects)
                     .await?;
                 enforcer
-                    .filter_flakes_for_graph(db, overlay, to_t, &ctx.tracker, flakes)
+                    .filter_flakes_for_graph(snapshot, overlay, to_t, &ctx.tracker, flakes)
                     .await?
             }
             _ => flakes,
@@ -1668,7 +1669,7 @@ impl RangeScanOperator {
         // Post-filter (overlay may return a superset).
         Ok(flakes
             .into_iter()
-            .filter(|f| self.flake_matches(f, db))
+            .filter(|f| self.flake_matches(f, snapshot))
             .collect())
     }
 
@@ -1676,10 +1677,10 @@ impl RangeScanOperator {
     ///
     /// `range_with_overlay` may return a superset (especially in the
     /// overlay-only genesis path), so we post-filter here.
-    fn flake_matches(&self, f: &Flake, db: &LedgerSnapshot) -> bool {
+    fn flake_matches(&self, f: &Flake, snapshot: &LedgerSnapshot) -> bool {
         match &self.pattern.s {
             Term::Sid(sid) if &f.s != sid => return false,
-            Term::Iri(iri) => match db.encode_iri(iri) {
+            Term::Iri(iri) => match snapshot.encode_iri(iri) {
                 Some(sid) if f.s != sid => return false,
                 None => return false,
                 _ => {}
@@ -1689,7 +1690,7 @@ impl RangeScanOperator {
 
         match &self.pattern.p {
             Term::Sid(sid) if &f.p != sid => return false,
-            Term::Iri(iri) => match db.encode_iri(iri) {
+            Term::Iri(iri) => match snapshot.encode_iri(iri) {
                 Some(sid) if f.p != sid => return false,
                 None => return false,
                 _ => {}
@@ -1704,7 +1705,7 @@ impl RangeScanOperator {
                 }
             }
             Term::Value(val) if &f.o != val => return false,
-            Term::Iri(iri) => match db.encode_iri(iri) {
+            Term::Iri(iri) => match snapshot.encode_iri(iri) {
                 Some(sid) if f.o != FlakeValue::Ref(sid.clone()) => return false,
                 None => return false,
                 _ => {}
@@ -1797,7 +1798,7 @@ impl Operator for RangeScanOperator {
         // - ActiveGraph::Named   → scan only the selected named graph(s)
         //
         // Single-db mode:
-        // - scan `ctx.db`
+        // - scan `ctx.snapshot`
         let flakes = if let Some(graphs) = ctx.default_graphs_slice() {
             let mut all_flakes = Vec::new();
             for graph in graphs {
@@ -1806,7 +1807,14 @@ impl Operator for RangeScanOperator {
                     .as_ref()
                     .or(ctx.policy_enforcer.as_ref());
                 let graph_flakes = self
-                    .scan_one_graph(graph.db, graph.overlay, graph.to_t, index, ctx, enforcer)
+                    .scan_one_graph(
+                        graph.snapshot,
+                        graph.overlay,
+                        graph.to_t,
+                        index,
+                        ctx,
+                        enforcer,
+                    )
                     .await?;
                 all_flakes.extend(graph_flakes);
             }
@@ -1822,14 +1830,21 @@ impl Operator for RangeScanOperator {
                     .as_ref()
                     .or(ctx.policy_enforcer.as_ref());
                 let graph_flakes = self
-                    .scan_one_graph(graph.db, graph.overlay, graph.to_t, index, ctx, enforcer)
+                    .scan_one_graph(
+                        graph.snapshot,
+                        graph.overlay,
+                        graph.to_t,
+                        index,
+                        ctx,
+                        enforcer,
+                    )
                     .await?;
                 all_flakes.extend(graph_flakes);
             }
             all_flakes
         } else {
             self.scan_one_graph(
-                ctx.db,
+                ctx.snapshot,
                 ctx.overlay(),
                 ctx.to_t,
                 index,

@@ -11,10 +11,9 @@
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::is_rdf_nil;
-use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
+use fluree_db_core::range::{RangeMatch, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
+use fluree_db_core::{GraphDbRef, Sid};
 use fluree_vocab::namespaces::RDF;
 use fluree_vocab::predicates::{RDF_FIRST, RDF_REST};
 
@@ -31,10 +30,8 @@ const MAX_LIST_LENGTH: usize = 10_000;
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
-/// * `overlay` - Overlay provider for uncommitted data
+/// * `db` - Bundled database reference (snapshot, graph, overlay, as-of time)
 /// * `list_head` - The SID of the list head node (blank node or IRI)
-/// * `to_t` - Maximum transaction time to include
 ///
 /// # Returns
 ///
@@ -57,21 +54,10 @@ const MAX_LIST_LENGTH: usize = 10_000;
 ///         rdf:rest rdf:nil .
 /// ```
 ///
-/// `collect_list_elements(db, overlay, &_:list1, to_t)` returns `[ex:A, ex:B]`
-pub async fn collect_list_elements(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    list_head: &Sid,
-    to_t: i64,
-) -> Result<Vec<Sid>> {
+/// `collect_list_elements(db, &_:list1)` returns `[ex:A, ex:B]`
+pub async fn collect_list_elements(db: GraphDbRef<'_>, list_head: &Sid) -> Result<Vec<Sid>> {
     let mut elements = Vec::new();
     let mut current_node = list_head.clone();
-
-    let opts = RangeOptions {
-        to_t: Some(to_t),
-        ..Default::default()
-    };
 
     // Create SIDs for rdf:first and rdf:rest
     let rdf_first_sid = Sid::new(RDF, RDF_FIRST);
@@ -93,23 +79,20 @@ pub async fn collect_list_elements(
 
         // Query for rdf:first value at current node
         // Using SPOT index: subject = current_node, predicate = rdf:first
-        let first_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch {
-                s: Some(current_node.clone()),
-                p: Some(rdf_first_sid.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.op) // Only assertions, not retractions
-        .collect();
+        let first_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch {
+                    s: Some(current_node.clone()),
+                    p: Some(rdf_first_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.op) // Only assertions, not retractions
+            .collect();
 
         // Extract the first element (should be exactly one)
         if let Some(first_flake) = first_flakes.first() {
@@ -121,23 +104,20 @@ pub async fn collect_list_elements(
         }
 
         // Query for rdf:rest to get next node
-        let rest_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch {
-                s: Some(current_node.clone()),
-                p: Some(rdf_rest_sid.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.op)
-        .collect();
+        let rest_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch {
+                    s: Some(current_node.clone()),
+                    p: Some(rdf_rest_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.op)
+            .collect();
 
         // Move to next node
         if let Some(rest_flake) = rest_flakes.first() {
@@ -164,28 +144,15 @@ pub async fn collect_list_elements(
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
-/// * `overlay` - Overlay provider for uncommitted data
+/// * `db` - Bundled database reference (snapshot, graph, overlay, as-of time)
 /// * `list_head` - The SID of the list head node
-/// * `to_t` - Maximum transaction time to include
 ///
 /// # Returns
 ///
 /// A vector of FlakeValues representing the list elements.
-pub async fn collect_list_values(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    list_head: &Sid,
-    to_t: i64,
-) -> Result<Vec<FlakeValue>> {
+pub async fn collect_list_values(db: GraphDbRef<'_>, list_head: &Sid) -> Result<Vec<FlakeValue>> {
     let mut elements = Vec::new();
     let mut current_node = list_head.clone();
-
-    let opts = RangeOptions {
-        to_t: Some(to_t),
-        ..Default::default()
-    };
 
     let rdf_first_sid = Sid::new(RDF, RDF_FIRST);
     let rdf_rest_sid = Sid::new(RDF, RDF_REST);
@@ -203,46 +170,40 @@ pub async fn collect_list_values(
         }
 
         // Query for rdf:first
-        let first_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch {
-                s: Some(current_node.clone()),
-                p: Some(rdf_first_sid.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.op)
-        .collect();
+        let first_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch {
+                    s: Some(current_node.clone()),
+                    p: Some(rdf_first_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.op)
+            .collect();
 
         if let Some(first_flake) = first_flakes.first() {
             elements.push(first_flake.o.clone());
         }
 
         // Query for rdf:rest
-        let rest_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch {
-                s: Some(current_node.clone()),
-                p: Some(rdf_rest_sid.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.op)
-        .collect();
+        let rest_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch {
+                    s: Some(current_node.clone()),
+                    p: Some(rdf_rest_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.op)
+            .collect();
 
         if let Some(rest_flake) = rest_flakes.first() {
             if let FlakeValue::Ref(next_node) = &rest_flake.o {
@@ -268,10 +229,8 @@ pub async fn collect_list_values(
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
-/// * `overlay` - Overlay provider for uncommitted data
+/// * `db` - Bundled database reference (snapshot, graph, overlay, as-of time)
 /// * `list_head` - The SID of the list head node
-/// * `to_t` - Maximum transaction time to include
 ///
 /// # Returns
 ///
@@ -289,19 +248,11 @@ pub async fn collect_list_values(
 ///
 /// Returns: `[ChainElement::direct(ex:hasParent), ChainElement::inverse(ex:hasChild)]`
 pub async fn collect_chain_elements(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
+    db: GraphDbRef<'_>,
     list_head: &Sid,
-    to_t: i64,
 ) -> Result<Vec<ChainElement>> {
     let mut elements = Vec::new();
     let mut current_node = list_head.clone();
-
-    let opts = RangeOptions {
-        to_t: Some(to_t),
-        ..Default::default()
-    };
 
     let rdf_first_sid = Sid::new(RDF, RDF_FIRST);
     let rdf_rest_sid = Sid::new(RDF, RDF_REST);
@@ -319,51 +270,44 @@ pub async fn collect_chain_elements(
         }
 
         // Query for rdf:first
-        let first_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch {
-                s: Some(current_node.clone()),
-                p: Some(rdf_first_sid.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.op)
-        .collect();
+        let first_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch {
+                    s: Some(current_node.clone()),
+                    p: Some(rdf_first_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.op)
+            .collect();
 
         if let Some(first_flake) = first_flakes.first() {
             if let FlakeValue::Ref(element_sid) = &first_flake.o {
                 // Try to resolve this element - it might be an owl:inverseOf expression
-                let chain_element =
-                    resolve_chain_element(db, g_id, overlay, element_sid, to_t, 0).await?;
+                let chain_element = resolve_chain_element(db, element_sid, 0).await?;
                 elements.push(chain_element);
             }
         }
 
         // Query for rdf:rest
-        let rest_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch {
-                s: Some(current_node.clone()),
-                p: Some(rdf_rest_sid.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.op)
-        .collect();
+        let rest_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch {
+                    s: Some(current_node.clone()),
+                    p: Some(rdf_rest_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.op)
+            .collect();
 
         if let Some(rest_flake) = rest_flakes.first() {
             if let FlakeValue::Ref(next_node) = &rest_flake.o {
@@ -393,11 +337,8 @@ pub async fn collect_chain_elements(
 ///
 /// The `depth` parameter tracks recursion to prevent infinite loops on malformed data.
 fn resolve_chain_element<'a>(
-    db: &'a LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &'a dyn OverlayProvider,
+    db: GraphDbRef<'a>,
     element_sid: &'a Sid,
-    to_t: i64,
     depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ChainElement>> + Send + 'a>> {
     Box::pin(async move {
@@ -410,36 +351,27 @@ fn resolve_chain_element<'a>(
             )));
         }
 
-        let opts = RangeOptions {
-            to_t: Some(to_t),
-            ..Default::default()
-        };
-
         // Check if this element has owl:inverseOf
         let inverse_of_sid = owl::inverse_of_sid();
-        let inverse_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch {
-                s: Some(element_sid.clone()),
-                p: Some(inverse_of_sid),
-                ..Default::default()
-            },
-            opts,
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.op)
-        .collect();
+        let inverse_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch {
+                    s: Some(element_sid.clone()),
+                    p: Some(inverse_of_sid),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.op)
+            .collect();
 
         if let Some(inverse_flake) = inverse_flakes.first() {
             if let FlakeValue::Ref(target_sid) = &inverse_flake.o {
                 // This is an owl:inverseOf expression - recursively resolve the target
-                let inner =
-                    resolve_chain_element(db, g_id, overlay, target_sid, to_t, depth + 1).await?;
+                let inner = resolve_chain_element(db, target_sid, depth + 1).await?;
                 // Toggle the inverse flag (double inverse normalization)
                 return Ok(inner.with_inverse_toggle());
             }
@@ -463,31 +395,23 @@ fn resolve_chain_element<'a>(
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
-/// * `overlay` - Overlay provider for uncommitted data
+/// * `db` - Bundled database reference (snapshot, graph, overlay, as-of time)
 /// * `property_sid` - The SID from owl:onProperty (may be a named property or blank node)
-/// * `to_t` - Maximum transaction time to include
 ///
 /// # Returns
 ///
 /// A PropertyExpression representing the resolved property.
 pub async fn resolve_property_expression(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
+    db: GraphDbRef<'_>,
     property_sid: &Sid,
-    to_t: i64,
 ) -> Result<PropertyExpression> {
-    resolve_property_expression_inner(db, g_id, overlay, property_sid, to_t, 0).await
+    resolve_property_expression_inner(db, property_sid, 0).await
 }
 
 /// Inner implementation with depth tracking for recursion safety.
 fn resolve_property_expression_inner<'a>(
-    db: &'a LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &'a dyn OverlayProvider,
+    db: GraphDbRef<'a>,
     property_sid: &'a Sid,
-    to_t: i64,
     depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<PropertyExpression>> + Send + 'a>> {
     Box::pin(async move {
@@ -500,28 +424,20 @@ fn resolve_property_expression_inner<'a>(
             )));
         }
 
-        let opts = RangeOptions {
-            to_t: Some(to_t),
-            ..Default::default()
-        };
-
         // Query all properties of this node to check for owl:inverseOf or owl:propertyChainAxiom
-        let node_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch {
-                s: Some(property_sid.clone()),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.op)
-        .collect();
+        let node_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch {
+                    s: Some(property_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.op)
+            .collect();
 
         // Check for owl:inverseOf
         let inverse_of_sid = owl::inverse_of_sid();
@@ -529,15 +445,8 @@ fn resolve_property_expression_inner<'a>(
             if flake.p == inverse_of_sid {
                 if let FlakeValue::Ref(target_sid) = &flake.o {
                     // Recursively resolve the target
-                    let inner = resolve_property_expression_inner(
-                        db,
-                        g_id,
-                        overlay,
-                        target_sid,
-                        to_t,
-                        depth + 1,
-                    )
-                    .await?;
+                    let inner =
+                        resolve_property_expression_inner(db, target_sid, depth + 1).await?;
                     // Apply inverse (with double-inverse normalization)
                     return Ok(PropertyExpression::inverse(inner));
                 }
@@ -550,8 +459,7 @@ fn resolve_property_expression_inner<'a>(
             if flake.p == chain_axiom_sid {
                 if let FlakeValue::Ref(list_head) = &flake.o {
                     // Parse the chain using collect_chain_elements
-                    let chain_elements =
-                        collect_chain_elements(db, g_id, overlay, list_head, to_t).await?;
+                    let chain_elements = collect_chain_elements(db, list_head).await?;
                     if chain_elements.len() >= 2 {
                         return Ok(PropertyExpression::chain(chain_elements));
                     }

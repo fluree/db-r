@@ -11,8 +11,10 @@ use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{GraphId, LedgerSnapshot, NoOverlay, OverlayProvider, Sid, Tracker};
-use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
+use fluree_db_core::{
+    GraphDbRef, GraphId, LedgerSnapshot, NoOverlay, OverlayProvider, Sid, Tracker,
+};
+use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_spatial::SpatialIndexProvider;
 use fluree_vocab::namespaces::{FLUREE_DB, JSON_LD, OGC_GEO, RDF, XSD};
 use fluree_vocab::{geo_names, xsd_names};
@@ -28,11 +30,11 @@ use std::sync::Arc;
 /// - `with_active_graph()` creates a new context targeting a specific named graph
 /// - Operators should use `active_graphs()` to get the appropriate graph(s) to scan
 ///
-/// When `dataset` is `None`, this is single-db mode and operators use `db`/`overlay()`/`to_t`.
+/// When `dataset` is `None`, this is single-db mode and operators use `snapshot`/`overlay()`/`to_t`.
 ///
 pub struct ExecutionContext<'a> {
-    /// Reference to the primary database (for encoding/decoding, single-db fallback)
-    pub db: &'a LedgerSnapshot,
+    /// Reference to the primary database snapshot (for encoding/decoding, single-db fallback)
+    pub snapshot: &'a LedgerSnapshot,
     /// Variable registry for this query
     pub vars: &'a VarRegistry,
     /// Target transaction time (for time-travel queries)
@@ -97,11 +99,11 @@ pub struct ExecutionContext<'a> {
 
 impl<'a> ExecutionContext<'a> {
     /// Create a new execution context
-    pub fn new(db: &'a LedgerSnapshot, vars: &'a VarRegistry) -> Self {
+    pub fn new(snapshot: &'a LedgerSnapshot, vars: &'a VarRegistry) -> Self {
         Self {
-            db,
+            snapshot,
             vars,
-            to_t: db.t,
+            to_t: snapshot.t,
             from_t: None,
             overlay: None,
             batch_size: 1000, // Default batch size
@@ -123,15 +125,73 @@ impl<'a> ExecutionContext<'a> {
         }
     }
 
+    /// Create from a `GraphDbRef`, pulling snapshot, graph id, overlay, and `to_t`.
+    pub fn from_graph_db_ref(db: GraphDbRef<'a>, vars: &'a VarRegistry) -> Self {
+        Self {
+            snapshot: db.snapshot,
+            vars,
+            to_t: db.t,
+            from_t: None,
+            overlay: Some(db.overlay),
+            batch_size: 1000,
+            policy_enforcer: None,
+            bm25_provider: None,
+            bm25_search_provider: None,
+            vector_provider: None,
+            r2rml_provider: None,
+            r2rml_table_provider: None,
+            dataset: None,
+            active_graph: ActiveGraph::Default,
+            tracker: Tracker::disabled(),
+            history_mode: false,
+            strict_bind_errors: false,
+            binary_store: None,
+            binary_g_id: db.g_id,
+            dict_novelty: None,
+            spatial_providers: None,
+        }
+    }
+
+    /// Create from a `GraphDbRef` with an explicit `from_t` for history queries.
+    pub fn from_graph_db_ref_with_from_t(
+        db: GraphDbRef<'a>,
+        vars: &'a VarRegistry,
+        from_t: Option<i64>,
+    ) -> Self {
+        Self {
+            snapshot: db.snapshot,
+            vars,
+            to_t: db.t,
+            from_t,
+            overlay: Some(db.overlay),
+            batch_size: 1000,
+            policy_enforcer: None,
+            bm25_provider: None,
+            bm25_search_provider: None,
+            vector_provider: None,
+            r2rml_provider: None,
+            r2rml_table_provider: None,
+            dataset: None,
+            active_graph: ActiveGraph::Default,
+            tracker: Tracker::disabled(),
+            history_mode: false,
+            strict_bind_errors: false,
+            binary_store: None,
+            binary_g_id: db.g_id,
+            dict_novelty: None,
+            spatial_providers: None,
+        }
+    }
+
     /// Create context with specific time-travel settings
     pub fn with_time(
-        db: &'a LedgerSnapshot,
+        snapshot: &'a LedgerSnapshot,
         vars: &'a VarRegistry,
         to_t: i64,
         from_t: Option<i64>,
     ) -> Self {
         Self {
-            db,
+            snapshot,
             vars,
             to_t,
             from_t,
@@ -163,14 +223,14 @@ impl<'a> ExecutionContext<'a> {
 
     /// Create a new execution context with an overlay provider (novelty)
     pub fn with_overlay(
-        db: &'a LedgerSnapshot,
+        snapshot: &'a LedgerSnapshot,
         vars: &'a VarRegistry,
         overlay: &'a dyn OverlayProvider,
     ) -> Self {
         Self {
-            db,
+            snapshot,
             vars,
-            to_t: db.t,
+            to_t: snapshot.t,
             from_t: None,
             overlay: Some(overlay),
             batch_size: 1000,
@@ -194,14 +254,14 @@ impl<'a> ExecutionContext<'a> {
 
     /// Create context with time-travel settings and an overlay provider
     pub fn with_time_and_overlay(
-        db: &'a LedgerSnapshot,
+        snapshot: &'a LedgerSnapshot,
         vars: &'a VarRegistry,
         to_t: i64,
         from_t: Option<i64>,
         overlay: &'a dyn OverlayProvider,
     ) -> Self {
         Self {
-            db,
+            snapshot,
             vars,
             to_t,
             from_t,
@@ -316,12 +376,12 @@ impl<'a> ExecutionContext<'a> {
 
     /// Encode an IRI to a SID using the database's namespace codes
     pub fn encode_iri(&self, iri: &str) -> Option<Sid> {
-        self.db.encode_iri(iri)
+        self.snapshot.encode_iri(iri)
     }
 
     /// Decode a SID to an IRI using the database's namespace codes
     pub fn decode_sid(&self, sid: &Sid) -> Option<String> {
-        self.db.decode_sid(sid)
+        self.snapshot.decode_sid(sid)
     }
 
     /// Check if we're in multi-ledger (dataset) mode
@@ -340,11 +400,11 @@ impl<'a> ExecutionContext<'a> {
         if let Some(ds) = &self.dataset {
             // Search all graphs (default and named) by ledger_id
             if let Some(graph) = ds.find_by_ledger_id(ledger_id) {
-                return graph.db.decode_sid(sid);
+                return graph.snapshot.decode_sid(sid);
             }
         }
         // Fallback to primary db
-        self.db.decode_sid(sid)
+        self.snapshot.decode_sid(sid)
     }
 
     /// Encode an IRI to a SID using a specific ledger's namespace table
@@ -356,11 +416,11 @@ impl<'a> ExecutionContext<'a> {
         if let Some(ds) = &self.dataset {
             // Search all graphs (default and named) by ledger_id
             if let Some(graph) = ds.find_by_ledger_id(ledger_id) {
-                return graph.db.encode_iri(iri);
+                return graph.snapshot.encode_iri(iri);
             }
         }
         // Fallback to primary db
-        self.db.encode_iri(iri)
+        self.snapshot.encode_iri(iri)
     }
 
     /// Get the ledger ID for the currently active graph (if in dataset mode)
@@ -384,7 +444,7 @@ impl<'a> ExecutionContext<'a> {
 
     /// Get active graphs for scanning
     ///
-    /// Returns `Single` when no dataset is present (callers should use `ctx.db`),
+    /// Returns `Single` when no dataset is present (callers should use `ctx.snapshot`),
     /// or `Many` with the active graph(s) from the dataset.
     ///
     /// Returns `Single` when no dataset is present, or `Many` with the relevant graph references to iterate over.
@@ -409,10 +469,10 @@ impl<'a> ExecutionContext<'a> {
         &self,
     ) -> Result<(&'a LedgerSnapshot, &'a dyn OverlayProvider, i64), QueryError> {
         match self.active_graphs() {
-            ActiveGraphs::Single => Ok((self.db, self.overlay(), self.to_t)),
+            ActiveGraphs::Single => Ok((self.snapshot, self.overlay(), self.to_t)),
             ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
                 let g = graphs[0];
-                Ok((g.db, g.overlay, g.to_t))
+                Ok((g.snapshot, g.overlay, g.to_t))
             }
             ActiveGraphs::Many(_) => Err(QueryError::InvalidQuery(
                 "Property paths over multi-graph datasets are not supported; \
@@ -431,13 +491,13 @@ impl<'a> ExecutionContext<'a> {
         !self.is_multi_ledger() && self.binary_store.is_some()
     }
 
-    /// Return a `GraphView` for the current graph, combining the binary store
+    /// Return a `BinaryGraphView` for the current graph, combining the binary store
     /// with `binary_g_id`.
     ///
     /// Returns `None` if no binary store is attached. Callers should grab this
     /// once at operator construction and store it — not call it in tight loops
     /// (each call clones an Arc).
-    pub fn graph_view(&self) -> Option<GraphView> {
+    pub fn graph_view(&self) -> Option<BinaryGraphView> {
         let store = self.binary_store.as_ref()?;
         Some(store.graph(self.binary_g_id))
     }
@@ -461,7 +521,7 @@ impl<'a> ExecutionContext<'a> {
     /// Used by `GraphOperator` to switch graph context during GRAPH pattern execution.
     pub fn with_active_graph(&self, iri: Arc<str>) -> Self {
         Self {
-            db: self.db,
+            snapshot: self.snapshot,
             vars: self.vars,
             to_t: self.to_t,
             from_t: self.from_t,
@@ -490,7 +550,7 @@ impl<'a> ExecutionContext<'a> {
     /// Returns to querying the default graph(s) after a GRAPH pattern.
     pub fn with_default_graph(&self) -> Self {
         Self {
-            db: self.db,
+            snapshot: self.snapshot,
             vars: self.vars,
             to_t: self.to_t,
             from_t: self.from_t,
@@ -520,7 +580,7 @@ impl<'a> ExecutionContext<'a> {
     /// The new context uses the graph's db, overlay, and to_t settings.
     pub fn with_graph_ref(&self, graph: &crate::dataset::GraphRef<'a>) -> Self {
         Self {
-            db: graph.db,
+            snapshot: graph.snapshot,
             vars: self.vars,
             to_t: graph.to_t,
             from_t: self.from_t,

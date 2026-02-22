@@ -269,9 +269,11 @@ where
         let config = format_config.with_select_mode(result.select_mode);
         match self.view.policy() {
             Some(policy) => Ok(result
-                .format_async_with_policy(&self.view.db, &config, policy)
+                .format_async_with_policy(self.view.as_graph_db_ref(), &config, policy)
                 .await?),
-            None => Ok(result.format_async(&self.view.db, &config).await?),
+            None => Ok(result
+                .format_async(self.view.as_graph_db_ref(), &config)
+                .await?),
         }
     }
 
@@ -297,7 +299,7 @@ where
         crate::format::format_results_string_async(
             &result,
             &result.context,
-            &self.view.db,
+            self.view.as_graph_db_ref(),
             &config,
             self.view.policy(),
         )
@@ -454,9 +456,11 @@ where
             let config = format_config.with_select_mode(result.select_mode);
             match primary.policy() {
                 Some(policy) => Ok(result
-                    .format_async_with_policy(&primary.db, &config, policy)
+                    .format_async_with_policy(primary.as_graph_db_ref(), &config, policy)
                     .await?),
-                None => Ok(result.format_async(&primary.db, &config).await?),
+                None => Ok(result
+                    .format_async(primary.as_graph_db_ref(), &config)
+                    .await?),
             }
         } else {
             Err(ApiError::query("No primary view in dataset for formatting"))
@@ -487,7 +491,7 @@ where
             crate::format::format_results_string_async(
                 &result,
                 &result.context,
-                &primary.db,
+                primary.as_graph_db_ref(),
                 &config,
                 primary.policy(),
             )
@@ -683,7 +687,7 @@ where
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
                     let config = format_config.with_select_mode(result.select_mode);
-                    Ok(result.format_async(&view.db, &config).await?)
+                    Ok(result.format_async(view.as_graph_db_ref(), &config).await?)
                 } else {
                     Err(ApiError::query("No default graph for formatting"))
                 }
@@ -702,7 +706,7 @@ where
                 if let Some(alias) = spec.default_graphs.first() {
                     let view = self.fluree.db(alias.identifier.as_str()).await?;
                     let config = format_config.with_select_mode(result.select_mode);
-                    Ok(result.format_async(&view.db, &config).await?)
+                    Ok(result.format_async(view.as_graph_db_ref(), &config).await?)
                 } else {
                     Err(ApiError::query("No default graph for formatting"))
                 }
@@ -744,7 +748,7 @@ where
                     crate::format::format_results_string_async(
                         &result,
                         &result.context,
-                        &view.db,
+                        view.as_graph_db_ref(),
                         &config,
                         None,
                     )
@@ -771,7 +775,7 @@ where
                     crate::format::format_results_string_async(
                         &result,
                         &result.context,
-                        &view.db,
+                        view.as_graph_db_ref(),
                         &config,
                         None,
                     )

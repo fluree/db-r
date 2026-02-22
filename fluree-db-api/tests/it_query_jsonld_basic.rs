@@ -167,7 +167,7 @@ async fn jsonld_basic_wildcard_single_subject_query() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let json = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -194,7 +194,7 @@ async fn jsonld_basic_single_subject_query_explicit_fields() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let json = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -220,7 +220,7 @@ async fn jsonld_basic_single_subject_query_select_one() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let json = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     let obj = json.as_object().expect("object result");
@@ -243,7 +243,7 @@ async fn jsonld_basic_single_subject_query_graph_crawl() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let json = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -279,7 +279,7 @@ async fn jsonld_basic_single_subject_graph_crawl_with_depth() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let json = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -319,7 +319,7 @@ async fn jsonld_basic_single_subject_graph_crawl_with_depth_and_subselection() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let json = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -373,7 +373,7 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
     });
 
     let r1 = fluree.query(&loaded, &q1).await.expect("query select");
-    let mut rows = r1.to_jsonld(&loaded.db).expect("to_jsonld");
+    let mut rows = r1.to_jsonld(&loaded.snapshot).expect("to_jsonld");
     let arr = rows.as_array_mut().expect("rows array");
     arr.sort_by_key(|a| a.to_string());
     assert_eq!(rows, json!([["foaf:bar", "Bar"], ["foo", "Foo"]]));
@@ -385,7 +385,7 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
     });
     let r2 = fluree.query(&loaded, &q2).await.expect("query crawl");
     let json2 = r2
-        .to_jsonld_async(&loaded.db)
+        .to_jsonld_async(loaded.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     let arr2 = json2.as_array().expect("array result");
@@ -412,7 +412,7 @@ async fn jsonld_expanding_literal_nodes_wildcard() {
         .await
         .expect("query expanding literal");
     let json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -448,7 +448,7 @@ async fn jsonld_rdf_type_query_analytical() {
 
     let result = fluree.query(&ledger, &q).await.expect("query rdf type");
     let json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -506,7 +506,7 @@ async fn jsonld_list_order_preservation_context_container() {
         .await
         .expect("query list container");
     let json_result = result
-        .to_jsonld_async(&committed.ledger.db)
+        .to_jsonld_async(committed.ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     assert_eq!(
@@ -545,7 +545,7 @@ async fn jsonld_list_order_preservation_explicit_list() {
         .await
         .expect("query list");
     let json_result = result
-        .to_jsonld_async(&committed.ledger.db)
+        .to_jsonld_async(committed.ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     assert_eq!(
@@ -565,7 +565,7 @@ async fn jsonld_simple_subject_crawl_direct_id() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -596,7 +596,7 @@ async fn jsonld_simple_subject_crawl_where_type() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let mut json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
@@ -661,7 +661,7 @@ async fn jsonld_simple_subject_crawl_tuple_name() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let mut json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 
@@ -693,7 +693,7 @@ async fn jsonld_simple_subject_crawl_tuple_fav_color() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let mut json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
@@ -750,7 +750,7 @@ async fn jsonld_simple_subject_crawl_limit_two() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let mut json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
@@ -794,7 +794,7 @@ async fn jsonld_simple_subject_crawl_age_and_fav_color() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let mut json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
@@ -826,7 +826,7 @@ async fn jsonld_simple_subject_crawl_age_only() {
 
     let result = fluree.query(&ledger, &query).await.expect("query");
     let mut json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     normalize_object_arrays(&mut json_result);
@@ -863,7 +863,7 @@ async fn jsonld_expanding_literal_nodes_specific_properties() {
         .await
         .expect("query expanding literal specific");
     let json_result = result
-        .to_jsonld_async(&ledger.db)
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 

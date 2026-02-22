@@ -36,6 +36,7 @@ pub mod dict_novelty;
 pub mod error;
 pub mod flake;
 pub mod geo;
+pub mod graph_db_ref;
 pub mod ids;
 pub mod index_schema;
 pub mod index_stats;
@@ -80,6 +81,7 @@ pub use db::{load_ledger_snapshot, LedgerSnapshot, LedgerSnapshotMetadata};
 pub use dict_novelty::DictNovelty;
 pub use error::{Error, Result};
 pub use flake::{Flake, FlakeMeta};
+pub use graph_db_ref::GraphDbRef;
 pub use ids::{DatatypeDictId, GraphId, LangId, ListIndex, PredicateId, StringId, TxnT};
 pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 pub use index_stats::{

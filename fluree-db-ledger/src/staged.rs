@@ -8,7 +8,7 @@
 //! This enables query against staged changes without committing them.
 
 use crate::LedgerState;
-use fluree_db_core::{Flake, IndexType, OverlayProvider};
+use fluree_db_core::{Flake, GraphDbRef, GraphId, IndexType, OverlayProvider};
 use fluree_db_novelty::FlakeId;
 use std::cmp::Ordering;
 
@@ -191,12 +191,33 @@ impl LedgerView {
 
     /// Get a reference to the underlying database
     pub fn db(&self) -> &fluree_db_core::LedgerSnapshot {
-        &self.base.db
+        &self.base.snapshot
     }
 
     /// Consume the view and return the base state and staged flakes
     pub fn into_parts(self) -> (LedgerState, Vec<Flake>) {
         (self.base, self.staged.store.flakes)
+    }
+
+    /// The effective as-of time for this staged view.
+    ///
+    /// When staged flakes exist, returns `base.t() + 1` (matching the `t`
+    /// assigned to staged flakes in `stage.rs`). Otherwise returns `base.t()`.
+    pub fn staged_t(&self) -> i64 {
+        if self.has_staged() {
+            self.base.t() + 1
+        } else {
+            self.base.t()
+        }
+    }
+
+    /// Create a `GraphDbRef` bundling snapshot, graph id, overlay, and time.
+    ///
+    /// Uses `self` as the overlay (merges base novelty + staged flakes)
+    /// and `staged_t()` as the time bound — ensuring staged flakes are
+    /// visible through the overlay's `to_t` filtering.
+    pub fn as_graph_db_ref(&self, g_id: GraphId) -> GraphDbRef<'_> {
+        GraphDbRef::new(self.db(), g_id, self, self.staged_t())
     }
 }
 
@@ -310,7 +331,7 @@ mod tests {
     fn test_ledger_view_overlay_provider() {
         use fluree_db_core::LedgerSnapshot;
 
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         // Create base novelty with some flakes
         let mut novelty = Novelty::new(0);
@@ -318,7 +339,7 @@ mod tests {
             .apply_commit(vec![make_flake(1, 1, 100, 1), make_flake(3, 1, 300, 1)], 1)
             .unwrap();
 
-        let state = LedgerState::new(db, novelty);
+        let state = LedgerState::new(snapshot, novelty);
 
         // Create view with interleaved staged flakes
         let staged_flakes = vec![make_flake(2, 1, 200, 2), make_flake(4, 1, 400, 2)];
@@ -338,7 +359,7 @@ mod tests {
     fn test_ledger_view_epoch() {
         use fluree_db_core::LedgerSnapshot;
 
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
@@ -346,7 +367,7 @@ mod tests {
             .unwrap();
 
         let base_epoch = novelty.epoch;
-        let state = LedgerState::new(db, novelty);
+        let state = LedgerState::new(snapshot, novelty);
 
         let view = LedgerView::stage(state, vec![make_flake(2, 1, 200, 2)]);
 
@@ -358,9 +379,9 @@ mod tests {
     fn test_ledger_view_into_parts() {
         use fluree_db_core::LedgerSnapshot;
 
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
-        let state = LedgerState::new(db, novelty);
+        let state = LedgerState::new(snapshot, novelty);
 
         let staged_flakes = vec![make_flake(1, 1, 100, 1)];
         let view = LedgerView::stage(state, staged_flakes);

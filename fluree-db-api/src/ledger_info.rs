@@ -141,11 +141,11 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     let parsed_context = context
         .map(|c| ParsedContext::parse(None, c).unwrap_or_default())
         .unwrap_or_default();
-    let compactor = IriCompactor::new(&ledger.db.namespace_codes, &parsed_context);
+    let compactor = IriCompactor::new(&ledger.snapshot.namespace_codes, &parsed_context);
 
     // Build schema index for hierarchy lookups
     let schema_index = ledger
-        .db
+        .snapshot
         .schema
         .as_ref()
         .map(build_schema_index)
@@ -180,18 +180,18 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
                         graph_entry,
                         &ledger.novelty,
                         store,
-                        &ledger.db.namespace_codes,
+                        &ledger.snapshot.namespace_codes,
                         graph_iri.as_deref(),
                         options.include_property_datatypes,
                     );
                 }
                 merge_graph_class_ref_edges_from_novelty(
-                    &ledger.db,
+                    &ledger.snapshot,
                     ledger.novelty.as_ref(),
                     ledger.t(),
                     g_id,
                     graph_entry,
-                    &ledger.db.namespace_codes,
+                    &ledger.snapshot.namespace_codes,
                     graph_iri.as_deref(),
                 )
                 .await?;
@@ -201,8 +201,8 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
-        let alias_prefix = ledger_id_to_path_prefix(&ledger.db.ledger_id)
-            .unwrap_or_else(|_| ledger.db.ledger_id.replace(':', "/"));
+        let alias_prefix = ledger_id_to_path_prefix(&ledger.snapshot.ledger_id)
+            .unwrap_or_else(|_| ledger.snapshot.ledger_id.replace(':', "/"));
         let manifest_addr_primary =
             format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
         if let Ok(bytes) = storage.read_bytes(&manifest_addr_primary).await {
@@ -245,7 +245,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
 
     // 4. Commit section (ALWAYS include, even if None - for Clojure parity)
     if let Some(head_cid) = &ledger.head_commit_id {
-        match build_commit_jsonld(storage, head_cid, &ledger.db.ledger_id).await {
+        match build_commit_jsonld(storage, head_cid, &ledger.snapshot.ledger_id).await {
             Ok(commit_json) => {
                 result.insert("commit".to_string(), commit_json);
             }
@@ -362,7 +362,7 @@ fn build_ledger_block(
         .ns_record
         .as_ref()
         .map(|r| r.index_t)
-        .unwrap_or(ledger.db.t);
+        .unwrap_or(ledger.snapshot.t);
 
     let commit_t = ledger
         .ns_record
@@ -386,7 +386,7 @@ fn build_ledger_block(
     }
 
     json!({
-        "alias": &ledger.db.ledger_id,
+        "alias": &ledger.snapshot.ledger_id,
         "t": ledger.t(),
         "commit-t": commit_t,
         "index-t": index_t,
@@ -595,7 +595,7 @@ fn merge_graph_property_novelty(
 /// subject and the referenced object.
 ///
 async fn merge_graph_class_ref_edges_from_novelty(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     novelty: &Novelty,
     to_t: i64,
     g_id: GraphId,
@@ -644,11 +644,12 @@ async fn merge_graph_class_ref_edges_from_novelty(
     let mut objects: Vec<Sid> = obj_set.into_iter().collect();
     objects.sort();
 
-    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db, overlay, to_t, g_id)
+    let db = fluree_db_core::GraphDbRef::new(snapshot, g_id, overlay, to_t);
+    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db)
         .await
         .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
 
-    let obj_classes = fluree_db_policy::lookup_subject_classes(&objects, db, overlay, to_t, g_id)
+    let obj_classes = fluree_db_policy::lookup_subject_classes(&objects, db)
         .await
         .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
 

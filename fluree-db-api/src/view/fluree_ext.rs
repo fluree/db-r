@@ -211,9 +211,9 @@ where
                     let store = view.binary_store.clone().unwrap();
                     let dict_novelty = view.dict_novelty.clone().unwrap();
                     let provider = BinaryRangeProvider::new(store, dict_novelty);
-                    let mut db = (*view.db).clone();
+                    let mut db = (*view.snapshot).clone();
                     db.range_provider = Some(Arc::new(provider));
-                    view.db = Arc::new(db);
+                    view.snapshot = Arc::new(db);
                     Ok(view.with_graph_id(graph_id))
                 } else {
                     // Overlay-only historical path: filter overlay flakes to txn-meta graph.
@@ -235,16 +235,16 @@ where
                     let store = view.binary_store.clone().unwrap();
                     let dict_novelty = view.dict_novelty.clone().unwrap();
                     let provider = BinaryRangeProvider::new(store, dict_novelty);
-                    let mut db = (*view.db).clone();
+                    let mut db = (*view.snapshot).clone();
                     db.range_provider = Some(Arc::new(provider));
-                    view.db = Arc::new(db);
+                    view.snapshot = Arc::new(db);
                     Ok(view.with_graph_id(graph_id))
                 } else {
                     // Overlay-only historical path: filter overlay flakes by graph IRI.
                     // This supports named graph time travel even when the binary index
                     // cannot answer historical queries (no Region 3 coverage).
                     let inner = Arc::clone(&view.overlay);
-                    let ns_codes = view.db.namespace_codes.clone();
+                    let ns_codes = view.snapshot.namespace_codes.clone();
                     view.overlay =
                         Arc::new(GraphIriFilteredOverlay::new(inner, ns_codes, iri.clone()));
                     Ok(view)
@@ -276,7 +276,10 @@ where
                 .cloned()
             {
                 let storage = self.storage();
-                let cs = fluree_db_core::content_store_for(storage.clone(), &snapshot.db.ledger_id);
+                let cs = fluree_db_core::content_store_for(
+                    storage.clone(),
+                    &snapshot.snapshot.ledger_id,
+                );
                 let bytes = cs
                     .get(&index_cid)
                     .await
@@ -284,7 +287,7 @@ where
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
                 let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
                     storage.clone(),
-                    &snapshot.db.ledger_id,
+                    &snapshot.snapshot.ledger_id,
                 ));
                 let mut store =
                     BinaryIndexStore::load_from_root_bytes_default(cs, &bytes, &cache_dir)
@@ -292,12 +295,12 @@ where
                         .map_err(|e| ApiError::internal(format!("load binary index: {}", e)))?;
 
                 // Augment namespace codes with entries from novelty commits.
-                store.augment_namespace_codes(&snapshot.db.namespace_codes);
+                store.augment_namespace_codes(&snapshot.snapshot.namespace_codes);
 
                 let arc_store = Arc::new(store);
                 let dn = snapshot.dict_novelty.clone();
                 let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
-                snapshot.db.range_provider = Some(Arc::new(provider));
+                snapshot.snapshot.range_provider = Some(Arc::new(provider));
                 snapshot.binary_store = Some(arc_store);
             }
         }
@@ -311,7 +314,7 @@ where
             {
                 let cs = fluree_db_core::content_store_for(
                     self.storage().clone(),
-                    &snapshot.db.ledger_id,
+                    &snapshot.snapshot.ledger_id,
                 );
                 if let Ok(bytes) = cs.get(ctx_id).await {
                     if let Ok(ctx) = serde_json::from_slice(&bytes) {
@@ -346,8 +349,8 @@ where
         // This avoids relying on potentially-stale cached handle state and is
         // sufficient for binary overlay translation when an overlay is present.
         view.dict_novelty = Some(Arc::new(DictNovelty::with_watermarks(
-            view.db.subject_watermarks.clone(),
-            view.db.string_watermark,
+            view.snapshot.subject_watermarks.clone(),
+            view.snapshot.string_watermark,
         )));
 
         // Load the binary index store (for index-backed historical queries only).
@@ -355,7 +358,7 @@ where
         // When the historical view is overlay-only (genesis Db + commit replay),
         // we intentionally skip attaching a binary store so the query engine
         // takes the overlay/range path instead of the binary scan path.
-        if view.db.t > 0 {
+        if view.snapshot.t > 0 {
             // Use nameservice record (not cached handle) to avoid stale index.
             if let Some(record) = self.nameservice.lookup(ledger_id).await? {
                 if let Some(index_cid) = record.index_head_id.as_ref() {
@@ -383,7 +386,7 @@ where
                             })?;
 
                     // Augment namespace codes with entries from novelty commits.
-                    store.augment_namespace_codes(&view.db.namespace_codes);
+                    store.augment_namespace_codes(&view.snapshot.namespace_codes);
 
                     view.binary_store = Some(Arc::new(store));
                 }
@@ -425,7 +428,7 @@ where
                     target_epoch_ms += 1;
                 }
                 let resolved_t = time_resolve::datetime_to_t(
-                    &ledger.db,
+                    &ledger.snapshot,
                     Some(ledger.novelty.as_ref()),
                     target_epoch_ms,
                     current_t,
@@ -439,7 +442,7 @@ where
                 let ledger = snapshot.to_ledger_state();
                 let current_t = ledger.t();
                 let resolved_t = time_resolve::commit_to_t(
-                    &ledger.db,
+                    &ledger.snapshot,
                     Some(ledger.novelty.as_ref()),
                     &commit_prefix,
                     current_t,
@@ -527,10 +530,10 @@ where
         opts: &QueryConnectionOptions,
     ) -> Result<GraphDb> {
         let policy_ctx = crate::policy_builder::build_policy_context_from_opts(
-            &view.db,
+            &view.snapshot,
             view.overlay.as_ref(),
             view.novelty_for_stats(),
-            view.to_t,
+            view.t,
             opts,
         )
         .await?;
@@ -613,7 +616,7 @@ mod tests {
         let view = fluree.db("testdb:main").await.unwrap();
 
         assert_eq!(&*view.ledger_id, "testdb:main");
-        assert_eq!(view.to_t, 0); // Genesis
+        assert_eq!(view.t, 0); // Genesis
         assert!(view.novelty().is_some());
     }
 
@@ -630,11 +633,11 @@ mod tests {
 
         // Load at t=0 (before transaction)
         let view = fluree.db_at_t("testdb:main", 0).await.unwrap();
-        assert_eq!(view.to_t, 0);
+        assert_eq!(view.t, 0);
 
         // Load at t=1 (after transaction)
         let view = fluree.db_at_t("testdb:main", 1).await.unwrap();
-        assert_eq!(view.to_t, 1);
+        assert_eq!(view.t, 1);
     }
 
     #[tokio::test]

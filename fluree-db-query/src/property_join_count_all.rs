@@ -35,7 +35,7 @@ use async_trait::async_trait;
 use fluree_db_core::FlakeValue;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
 use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, GraphView,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, DecodedBatch,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -91,7 +91,7 @@ impl PropertyJoinCountAllOperator {
 
     fn build_cursor_for_predicate(
         ctx: &ExecutionContext<'_>,
-        gv: &GraphView,
+        gv: &BinaryGraphView,
         pred_term: &Term,
     ) -> Result<Option<BinaryCursor>> {
         let order = RunSortOrder::Psot;
@@ -136,7 +136,7 @@ impl PropertyJoinCountAllOperator {
             let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
-            let dict_gv = fluree_db_indexer::run_index::GraphView::new(gv.clone_store(), g_id);
+            let dict_gv = BinaryGraphView::new(gv.clone_store(), g_id);
             let mut dict_ov = crate::dict_overlay::DictOverlay::new(dict_gv, dn);
             let mut ops = crate::binary_scan::translate_overlay_flakes(
                 ctx.overlay(),
@@ -757,8 +757,8 @@ mod tests {
 
         let op = build_operator_tree(&query, &options, None).unwrap();
 
-        let db = LedgerSnapshot::genesis("test:main");
-        let mut ctx = ExecutionContext::new(&db, &vars).with_binary_store(store, 0);
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut ctx = ExecutionContext::new(&snapshot, &vars).with_binary_store(store, 0);
         ctx.to_t = 1;
 
         let batches = run_operator(op, &ctx).await.unwrap();

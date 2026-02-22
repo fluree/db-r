@@ -234,7 +234,7 @@ where
 
         // Apply namespace delta to the in-memory LedgerSnapshot immediately (Clojure parity).
         for (code, prefix) in &ns_delta {
-            base.db.namespace_codes.insert(*code, prefix.clone());
+            base.snapshot.namespace_codes.insert(*code, prefix.clone());
         }
 
         // Generate ISO 8601 timestamp
@@ -366,7 +366,7 @@ where
         }
 
         let new_state = LedgerState {
-            db: base.db,
+            snapshot: base.snapshot,
             novelty: new_novelty,
             dict_novelty,
             head_commit_id: Some(commit_cid.clone()),
@@ -515,7 +515,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -552,7 +552,7 @@ mod tests {
 
         // Stage an empty transaction (no inserts)
         let txn = Txn::insert();
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -589,7 +589,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -613,7 +613,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Bob".to_string())),
         ));
 
-        let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         let (view2, ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default())
             .await
             .unwrap();
@@ -655,7 +655,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String(big_value)),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();

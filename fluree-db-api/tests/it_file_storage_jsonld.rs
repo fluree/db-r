@@ -73,7 +73,7 @@ async fn file_storage_jsonld_insert_then_query_roundtrip() {
         .await
         .expect("query should succeed");
     let json0 = result0
-        .to_jsonld(&committed.ledger.db)
+        .to_jsonld(&committed.ledger.snapshot)
         .expect("format to jsonld");
 
     // Reload ledger from file-backed nameservice+storage and re-run query
@@ -84,7 +84,9 @@ async fn file_storage_jsonld_insert_then_query_roundtrip() {
         .query(&loaded, &query)
         .await
         .expect("query after reload");
-    let json1 = result1.to_jsonld(&loaded.db).expect("format to jsonld");
+    let json1 = result1
+        .to_jsonld(&loaded.snapshot)
+        .expect("format to jsonld");
 
     fn extract_names(v: &serde_json::Value) -> Vec<String> {
         let mut names = vec![];

@@ -33,7 +33,7 @@ async fn policy_applies_in_multi_ledger_query_connection() {
     let out = fluree.query_connection(&q).await.expect("query baseline");
     // Use ledger1 Db for formatting; JSON-LD formatting uses canonical IRIs for dataset joins.
     let ledger1 = fluree.ledger(alias1).await.expect("ledger1");
-    let jsonld = out.to_jsonld(&ledger1.db).expect("to_jsonld");
+    let jsonld = out.to_jsonld(&ledger1.snapshot).expect("to_jsonld");
     let rows = jsonld.as_array().expect("rows");
     assert_eq!(rows.len(), 2, "expected 2 rows without policy: {rows:?}");
 
@@ -58,6 +58,6 @@ async fn policy_applies_in_multi_ledger_query_connection() {
         .query_connection(&q_policy)
         .await
         .expect("query policy");
-    let jsonld = out.to_jsonld(&ledger1.db).expect("to_jsonld policy");
+    let jsonld = out.to_jsonld(&ledger1.snapshot).expect("to_jsonld policy");
     assert_eq!(jsonld, json!([]), "policy should filter ssn across dataset");
 }

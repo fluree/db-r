@@ -647,17 +647,18 @@ mod tests {
         }
     }
 
-    fn make_test_db() -> LedgerSnapshot {
-        let mut db = LedgerSnapshot::genesis("test/main");
+    fn make_test_snapshot() -> LedgerSnapshot {
+        let mut snapshot = LedgerSnapshot::genesis("test/main");
         // Ensure example IRIs used by BM25 tests are encodable to SIDs.
-        db.namespace_codes
+        snapshot
+            .namespace_codes
             .insert(100, "http://example.org/".to_string());
-        db
+        snapshot
     }
 
     #[tokio::test]
     async fn test_bm25_operator_seeded_const_target() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let mut vars = VarRegistry::new();
         let id = vars.get_or_insert("?doc");
         let score = vars.get_or_insert("?score");
@@ -692,7 +693,7 @@ mod tests {
         let mut op =
             build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
-        let mut ctx = ExecutionContext::new(&db, &vars);
+        let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.bm25_provider = Some(&provider);
 
         op.open(&ctx).await.unwrap();
@@ -706,7 +707,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_bm25_operator_dedup_terms_and_blank_target() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let mut vars = VarRegistry::new();
         let id = vars.get_or_insert("?doc");
 
@@ -733,7 +734,7 @@ mod tests {
         let mut op =
             build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
-        let mut ctx = ExecutionContext::new(&db, &vars);
+        let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.bm25_provider = Some(&provider);
 
         op.open(&ctx).await.unwrap();

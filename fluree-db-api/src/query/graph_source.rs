@@ -73,13 +73,16 @@ where
         ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> Result<QueryResult> {
-        let (vars, parsed) =
-            parse_jsonld_query(query_json, &ledger.db, ledger.default_context.as_ref())?;
+        let (vars, parsed) = parse_jsonld_query(
+            query_json,
+            &ledger.snapshot,
+            ledger.default_context.as_ref(),
+        )?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let r2rml_provider = crate::r2rml_provider!(self);
         let tracker = crate::Tracker::disabled();
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+        let source = DataSource::new(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t());
         let batches = crate::execute_with_r2rml(
             source,
             &vars,
@@ -107,12 +110,12 @@ where
         sparql: &str,
     ) -> Result<QueryResult> {
         let (vars, parsed) =
-            parse_sparql_to_ir(sparql, &ledger.db, ledger.default_context.as_ref())?;
+            parse_sparql_to_ir(sparql, &ledger.snapshot, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let r2rml_provider = crate::r2rml_provider!(self);
         let tracker = crate::Tracker::disabled();
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+        let source = DataSource::new(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t());
         let batches = crate::execute_with_r2rml(
             source,
             &vars,

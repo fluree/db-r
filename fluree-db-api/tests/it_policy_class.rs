@@ -1,6 +1,6 @@
 //! Policy class-based query tests.
 //!
-//! Clojure parity: `fluree.db.policy.policy-class-test`
+//! Clojure parity: `fluree.snapshot.policy.policy-class-test`
 //!
 //! Tests policy class lookup where policies are stored in the database
 //! and loaded via f:policyClass references.
@@ -97,7 +97,7 @@ async fn policy_class_restricts_ssn_to_own_user() {
     };
 
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &ledger.db,
+        &ledger.snapshot,
         ledger.novelty.as_ref(),
         Some(ledger.novelty.as_ref()),
         ledger.t(),
@@ -121,7 +121,7 @@ async fn policy_class_restricts_ssn_to_own_user() {
         .await
         .expect("query with policy");
 
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     // Should only have one result (Alice's SSN)
@@ -204,7 +204,7 @@ async fn policy_class_allows_non_restricted_properties() {
     };
 
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &ledger.db,
+        &ledger.snapshot,
         ledger.novelty.as_ref(),
         Some(ledger.novelty.as_ref()),
         ledger.t(),
@@ -228,7 +228,7 @@ async fn policy_class_allows_non_restricted_properties() {
         .await
         .expect("query with policy");
 
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     // Should see both users' names
@@ -303,7 +303,7 @@ async fn policy_class_blocks_other_user_ssn_in_where() {
     };
 
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &ledger.db,
+        &ledger.snapshot,
         ledger.novelty.as_ref(),
         Some(ledger.novelty.as_ref()),
         ledger.t(),
@@ -326,7 +326,7 @@ async fn policy_class_blocks_other_user_ssn_in_where() {
         .await
         .expect("query with policy");
 
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     // John's SSN should not be visible - results should be empty

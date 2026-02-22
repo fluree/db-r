@@ -109,7 +109,7 @@ async fn query_names_at(fluree: &MemoryFluree, from_spec: &str) -> Vec<String> {
         .ledger(ledger_id)
         .await
         .expect("ledger for formatting");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     jsonld
         .as_array()
@@ -483,7 +483,9 @@ async fn time_travel_updates_across_index_novelty_boundary() {
             });
             let result = fluree.query_connection(&query_t1).await.expect("query t=1");
             let ledger_for_fmt = fluree.ledger(ledger_id).await.expect("ledger");
-            let jsonld = result.to_jsonld(&ledger_for_fmt.db).expect("to_jsonld");
+            let jsonld = result
+                .to_jsonld(&ledger_for_fmt.snapshot)
+                .expect("to_jsonld");
             let ages: Vec<i64> = jsonld
                 .as_array()
                 .expect("array")
@@ -500,7 +502,9 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 "where": {"@id": "ex:alice", "ex:age": "?age"}
             });
             let result = fluree.query_connection(&query_t2).await.expect("query t=2");
-            let jsonld = result.to_jsonld(&ledger_for_fmt.db).expect("to_jsonld");
+            let jsonld = result
+                .to_jsonld(&ledger_for_fmt.snapshot)
+                .expect("to_jsonld");
             let ages: Vec<i64> = jsonld
                 .as_array()
                 .expect("array")
@@ -520,7 +524,9 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 .query_connection(&query_current)
                 .await
                 .expect("query current");
-            let jsonld = result.to_jsonld(&ledger_for_fmt.db).expect("to_jsonld");
+            let jsonld = result
+                .to_jsonld(&ledger_for_fmt.snapshot)
+                .expect("to_jsonld");
             let ages: Vec<i64> = jsonld
                 .as_array()
                 .expect("array")
@@ -709,7 +715,7 @@ async fn query_all_person_ages(fluree: &MemoryFluree, from_spec: &str) -> Vec<(S
 
     let ledger_id = from_spec.split('@').next().unwrap_or(from_spec);
     let ledger = fluree.ledger(ledger_id).await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     jsonld
         .as_array()
@@ -740,7 +746,7 @@ async fn query_person_age(fluree: &MemoryFluree, from_spec: &str, person_id: &st
 
     let ledger_id = from_spec.split('@').next().unwrap_or(from_spec);
     let ledger = fluree.ledger(ledger_id).await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     jsonld
         .as_array()

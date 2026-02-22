@@ -1992,7 +1992,7 @@ pub struct ClassPropertyStatsResult {
 ///
 /// Returns {subject_sid -> HashSet<class_sid>} mapping.
 pub async fn batch_lookup_subject_classes(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     g_id: GraphId,
     subjects: &HashSet<Sid>,
 ) -> crate::error::Result<std::collections::HashMap<Sid, HashSet<Sid>>> {
@@ -2006,9 +2006,9 @@ pub async fn batch_lookup_subject_classes(
     // scanning the full rdf:type predicate partition.
     let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
 
-    if let Some(provider) = db.range_provider.as_ref() {
+    if let Some(provider) = snapshot.range_provider.as_ref() {
         let subj_vec: Vec<Sid> = subjects.iter().cloned().collect();
-        let opts = RangeOptions::new().with_to_t(db.t);
+        let opts = RangeOptions::new().with_to_t(snapshot.t);
         let no_overlay = fluree_db_core::overlay::NoOverlay;
         match provider.lookup_subject_predicate_refs_batched(
             g_id,
@@ -2041,11 +2041,18 @@ pub async fn batch_lookup_subject_classes(
     // Fallback: full predicate scan (correct but potentially expensive).
     let match_val = RangeMatch::predicate(rdf_type_sid);
     let opts = RangeOptions::default();
-    let flakes = range(db, g_id, IndexType::Psot, RangeTest::Eq, match_val, opts)
-        .await
-        .map_err(|e| {
-            crate::error::IndexerError::InvalidConfig(format!("PSOT range query failed: {}", e))
-        })?;
+    let flakes = range(
+        snapshot,
+        g_id,
+        IndexType::Psot,
+        RangeTest::Eq,
+        match_val,
+        opts,
+    )
+    .await
+    .map_err(|e| {
+        crate::error::IndexerError::InvalidConfig(format!("PSOT range query failed: {}", e))
+    })?;
 
     let mut result: std::collections::HashMap<Sid, HashSet<Sid>> = std::collections::HashMap::new();
     for flake in flakes {
@@ -2072,7 +2079,7 @@ pub async fn batch_lookup_subject_classes(
 ///
 /// Returns class statistics ready for inclusion in db-root.
 pub async fn compute_class_property_stats_parallel(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     g_id: GraphId,
     prior_stats: Option<&fluree_db_core::IndexStats>,
     novelty_flakes: &[Flake],
@@ -2129,7 +2136,7 @@ pub async fn compute_class_property_stats_parallel(
         if all_subjects_to_lookup.is_empty() {
             std::collections::HashMap::new()
         } else {
-            batch_lookup_subject_classes(db, g_id, &all_subjects_to_lookup).await?
+            batch_lookup_subject_classes(snapshot, g_id, &all_subjects_to_lookup).await?
         };
 
     // Apply rdf:type novelty deltas to base membership (assert adds, retract removes).

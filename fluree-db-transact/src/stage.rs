@@ -23,8 +23,7 @@ use fluree_db_policy::{
 };
 use fluree_db_query::parse::{lower_unresolved_patterns, UnresolvedPattern};
 use fluree_db_query::{
-    execute_pattern_with_overlay_at, Batch, Binding, Pattern, QueryPolicyExecutor, Term,
-    TriplePattern, VarId, VarRegistry,
+    Batch, Binding, Pattern, QueryPolicyExecutor, Term, TriplePattern, VarId, VarRegistry,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -342,7 +341,7 @@ async fn hydrate_list_index_meta_for_retractions(
             .with_datatype(flake.dt.clone());
 
         let found = fluree_db_core::range_with_overlay(
-            &ledger.db,
+            &ledger.snapshot,
             0,
             ledger.novelty.as_ref(),
             fluree_db_core::IndexType::Spot,
@@ -388,21 +387,14 @@ async fn enforce_modify_policies(
             .collect();
 
         // Look up and cache rdf:type for each subject
-        populate_class_cache(
-            &unique_subjects,
-            &ledger.db,
-            ledger.novelty.as_ref(),
-            ledger.t(),
-            0,
-            policy,
-        )
-        .await
-        .map_err(|e| {
-            TransactError::Query(fluree_db_query::QueryError::Internal(format!(
-                "Failed to populate class cache: {}",
-                e
-            )))
-        })?;
+        populate_class_cache(&unique_subjects, ledger.as_graph_db_ref(0), policy)
+            .await
+            .map_err(|e| {
+                TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                    "Failed to populate class cache: {}",
+                    e
+                )))
+            })?;
     }
 
     // Enforce modify policies with full f:query support
@@ -425,7 +417,7 @@ async fn enforce_modify_policy_per_flake(
     // Build a QueryPolicyExecutor that runs f:query against the pre-txn ledger view.
     // Clojure parity: modify policy queries see the state *before* this transaction.
     let executor =
-        QueryPolicyExecutor::with_overlay(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+        QueryPolicyExecutor::with_overlay(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t());
 
     // Clojure parity: fuel is counted for work performed. For transactions, we count
     // one unit of fuel per staged (non-schema) flake, regardless of whether the
@@ -486,7 +478,8 @@ async fn enforce_modify_policy_per_flake(
 async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     // Lower UnresolvedPattern to Pattern using the ledger's LedgerSnapshot as the IRI encoder.
     // This also assigns VarIds to any variables referenced in WHERE patterns.
-    let mut query_patterns = lower_where_patterns(&txn.where_patterns, &ledger.db, &mut txn.vars)?;
+    let mut query_patterns =
+        lower_where_patterns(&txn.where_patterns, &ledger.snapshot, &mut txn.vars)?;
 
     // If VALUES clause present, prepend it as first pattern (seeds the join)
     if let Some(inline_values) = &txn.values {
@@ -504,12 +497,9 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     //
     // IMPORTANT: Execute "as of" the ledger's current t (which may be ahead of db.t when novelty exists).
     let batches = fluree_db_query::execute_where_with_overlay_at_strict(
-        &ledger.db,
-        0,
-        ledger.novelty.as_ref(),
+        ledger.as_graph_db_ref(0),
         &txn.vars,
         &query_patterns,
-        ledger.t(),
         None,
     )
     .await
@@ -690,14 +680,11 @@ async fn generate_upsert_deletions(
         let batches = if let Some(g_id) = graph_id {
             // Named graph: pass g_id explicitly — the range provider is graph-agnostic,
             // so no db clone/swap is needed.
-            if ledger.db.range_provider.is_some() {
-                execute_pattern_with_overlay_at(
-                    &ledger.db,
-                    g_id,
-                    ledger.novelty.as_ref(),
+            if ledger.snapshot.range_provider.is_some() {
+                fluree_db_query::execute_pattern_with_overlay_at(
+                    ledger.as_graph_db_ref(g_id),
                     &query_vars,
                     pattern,
-                    ledger.t(),
                     None,
                 )
                 .await?
@@ -707,13 +694,10 @@ async fn generate_upsert_deletions(
             }
         } else {
             // Default graph: use standard query path through range_provider
-            execute_pattern_with_overlay_at(
-                &ledger.db,
-                0,
-                ledger.novelty.as_ref(),
+            fluree_db_query::execute_pattern_with_overlay_at(
+                ledger.as_graph_db_ref(0),
                 &query_vars,
                 pattern,
-                ledger.t(),
                 None,
             )
             .await?
@@ -909,24 +893,20 @@ async fn validate_staged_nodes(
     let mut all_results = Vec::new();
 
     // Use the view as the overlay (LedgerView implements OverlayProvider)
-    let db = view.db();
-
-    // Use high to_t to include staged flakes (which have t > db.t)
-    let range_opts = fluree_db_core::RangeOptions::default().with_to_t(i64::MAX);
+    let snapshot = view.db();
+    // Use staged_t so GraphDbRef sees staged flakes (which have t > snapshot.t)
+    let db = fluree_db_core::GraphDbRef::new(snapshot, 0, view, view.staged_t());
 
     for subject in staged_subjects {
         // Get the node's types for shape targeting
         let rdf_type = Sid::new(RDF, rdf_names::TYPE);
-        let type_flakes = fluree_db_core::range_with_overlay(
-            db,
-            0,
-            view, // LedgerView implements OverlayProvider
-            fluree_db_core::IndexType::Spot,
-            fluree_db_core::RangeTest::Eq,
-            fluree_db_core::RangeMatch::subject_predicate(subject.clone(), rdf_type),
-            range_opts.clone(),
-        )
-        .await?;
+        let type_flakes = db
+            .range(
+                fluree_db_core::IndexType::Spot,
+                fluree_db_core::RangeTest::Eq,
+                fluree_db_core::RangeMatch::subject_predicate(subject.clone(), rdf_type),
+            )
+            .await?;
 
         let node_types: Vec<Sid> = type_flakes
             .iter()
@@ -940,9 +920,7 @@ async fn validate_staged_nodes(
             .collect();
 
         // Validate this node (view implements OverlayProvider)
-        let report = engine
-            .validate_node(db, 0, view, &subject, &node_types)
-            .await?;
+        let report = engine.validate_node(db, &subject, &node_types).await?;
 
         all_results.extend(report.results);
     }
@@ -1023,7 +1001,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, _ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1050,7 +1028,7 @@ mod tests {
                 TemplateTerm::Value(FlakeValue::Long(30)),
             ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1071,7 +1049,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Anonymous".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1118,7 +1096,7 @@ mod tests {
         ));
 
         // Stage should fail with NoveltyAtMax
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let options = StageOptions::new().with_index_config(&config);
         let result = stage(ledger, txn, ns_registry, options).await;
         assert!(matches!(result, Err(TransactError::NoveltyAtMax)));
@@ -1139,7 +1117,7 @@ mod tests {
         ));
 
         // Should succeed - blank nodes don't trigger existence check
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let result = stage(ledger, txn, ns_registry, StageOptions::default()).await;
         assert!(result.is_ok());
     }
@@ -1164,7 +1142,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view1, ns_registry1) = stage(ledger, txn1, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1186,7 +1164,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alicia".to_string())),
         ));
 
-        let ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         let (view2, _ns_registry2) = stage(state1, txn2, ns_registry2, StageOptions::default())
             .await
             .unwrap();
@@ -1226,7 +1204,7 @@ mod tests {
             TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
         ));
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1255,7 +1233,7 @@ mod tests {
         // Commit 1: Insert schema:alice with schema:name="Alice"
         // Do NOT rely on pre-registered SCHEMA_ORG codes — this build intentionally keeps
         // the default namespace table minimal. Allocate via NamespaceRegistry.
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let schema_alice = ns_registry.sid_for_iri("http://schema.org/alice");
         let schema_name = ns_registry.sid_for_iri("http://schema.org/name");
         let txn1 = Txn::insert().with_insert(TripleTemplate::new(
@@ -1312,7 +1290,7 @@ mod tests {
             ))
             .with_vars(vars);
 
-        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         // Ensure schema.org prefix is present in the registry used for lowering.
         // (Should already be in LedgerSnapshot.namespace_codes via commit delta, but this makes the test robust.)
         let _ = ns_registry2.sid_for_iri("http://schema.org/alice");
@@ -1355,7 +1333,7 @@ mod tests {
         let config = IndexConfig::default();
 
         // Commit 1: Insert schema:alice with name="Alice" and age=30
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let schema_alice = ns_registry.sid_for_iri("http://schema.org/alice");
         let schema_name = ns_registry.sid_for_iri("http://schema.org/name");
         let schema_age = ns_registry.sid_for_iri("http://schema.org/age");
@@ -1386,7 +1364,7 @@ mod tests {
         .unwrap();
 
         // Commit 2: Also insert schema:bob with only a name (no age)
-        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         let schema_bob = ns_registry2.sid_for_iri("http://schema.org/bob");
         let schema_name2 = ns_registry2.sid_for_iri("http://schema.org/name");
         let txn2 = Txn::insert().with_insert(TripleTemplate::new(
@@ -1446,7 +1424,7 @@ mod tests {
             ))
             .with_vars(vars);
 
-        let mut ns_registry3 = NamespaceRegistry::from_db(&state2.db);
+        let mut ns_registry3 = NamespaceRegistry::from_db(&state2.snapshot);
         // Ensure schema.org prefix exists for lowering WHERE IRIs.
         let _ = ns_registry3.sid_for_iri("http://schema.org/age");
         let _ = ns_registry3.sid_for_iri("http://schema.org/name");
@@ -1524,7 +1502,7 @@ mod tests {
             .with_values(values)
             .with_vars(vars);
 
-        let ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let (view, _) = stage(ledger, txn, ns_registry, StageOptions::default())
             .await
             .unwrap();
@@ -1570,7 +1548,7 @@ mod tests {
         let config = IndexConfig::default();
 
         // Insert data: alice has age 30, bob has age 25
-        let mut ns_registry = NamespaceRegistry::from_db(&ledger.db);
+        let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
         let schema_alice = ns_registry.sid_for_iri("http://schema.org/alice");
         let schema_bob = ns_registry.sid_for_iri("http://schema.org/bob");
         let schema_age = ns_registry.sid_for_iri("http://schema.org/age");
@@ -1642,7 +1620,7 @@ mod tests {
             .with_values(values)
             .with_vars(vars);
 
-        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.db);
+        let mut ns_registry2 = NamespaceRegistry::from_db(&state1.snapshot);
         let _ = ns_registry2.sid_for_iri("http://schema.org/age");
         let result = stage(state1, txn2, ns_registry2, StageOptions::default()).await;
 

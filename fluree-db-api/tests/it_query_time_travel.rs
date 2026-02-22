@@ -86,7 +86,7 @@ async fn seed_time_travel_ledger(
 
 async fn query_names_at(
     fluree: &MemoryFluree,
-    db_for_formatting: &fluree_db_core::LedgerSnapshot,
+    db_for_formatting: fluree_db_core::GraphDbRef<'_>,
     from_spec: &str,
 ) -> Vec<Vec<JsonValue>> {
     let q = json!({
@@ -128,28 +128,53 @@ async fn time_travel_query_connection_at_t_iso_and_sha() {
 
     // @t:
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:1")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@t:1")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:2")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@t:2")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"], ["Bob"]]))
     );
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:3")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@t:3")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"], ["Bob"], ["Carol"]]))
     );
 
     // @iso: (use commit timestamp for t=1; should resolve to exactly t=1)
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@iso:{iso_t1}")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@iso:{iso_t1}")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"]]))
     );
 
     // Also ensure @iso: at "now" returns head state.
     let iso_now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@iso:{iso_now}")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@iso:{iso_now}")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"], ["Bob"], ["Carol"]]))
     );
 
@@ -159,20 +184,30 @@ async fn time_travel_query_connection_at_t_iso_and_sha() {
     let sha_6 = &commit_hex_t1[..6];
 
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@commit:{sha_7}")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@commit:{sha_7}")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     assert_eq!(
         query_names_at(
             &fluree,
-            &ledger3.db,
+            ledger3.as_graph_db_ref(0),
             &format!("{ledger_id}@commit:{sha_52}")
         )
         .await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@commit:{sha_6}")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@commit:{sha_6}")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"]]))
     );
 }
@@ -199,7 +234,12 @@ async fn time_travel_invalid_format_errors() {
 
     // sanity: ledger still usable
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:1")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@t:1")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"]]))
     );
 }
@@ -277,7 +317,12 @@ async fn time_travel_iso_too_early_errors() {
 
     // sanity: querying at t=1 still works
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@t:1")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@t:1")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"]]))
     );
 }
@@ -323,12 +368,22 @@ async fn time_travel_iso_between_commits_resolves_to_previous_commit() {
 
     // Mid between t1 and t2 should resolve to t1
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@iso:{mid_12}")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@iso:{mid_12}")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"]]))
     );
     // Mid between t2 and t3 should resolve to t2
     assert_eq!(
-        query_names_at(&fluree, &ledger3.db, &format!("{ledger_id}@iso:{mid_23}")).await,
+        query_names_at(
+            &fluree,
+            ledger3.as_graph_db_ref(0),
+            &format!("{ledger_id}@iso:{mid_23}")
+        )
+        .await,
         normalize_rows_array(&json!([["Alice"], ["Bob"]]))
     );
 }
@@ -384,7 +439,7 @@ async fn time_travel_branch_interaction_main_at_t() {
 
     let result = fluree.query_connection(&q).await.expect("query_connection");
     let jsonld = result
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
 

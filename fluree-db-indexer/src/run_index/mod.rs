@@ -54,7 +54,7 @@ pub mod vocab_merge;
 
 pub use batched_lookup::batched_lookup_predicate_refs;
 pub use binary_cursor::{BinaryCursor, BinaryFilter, DecodedBatch};
-pub use binary_index_store::{BinaryIndexStore, GraphView};
+pub use binary_index_store::{BinaryGraphView, BinaryIndexStore};
 pub use chunk_dict::{hash_subject, ChunkStringDict, ChunkSubjectDict};
 // dict_merge is superseded by vocab_merge (external-sort k-way merge)
 // but kept for its unit tests as a reference implementation.

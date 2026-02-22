@@ -149,9 +149,9 @@ where
         let config = format_config.with_select_mode(result.select_mode);
         match view.policy() {
             Some(policy) => Ok(result
-                .format_async_with_policy(&view.db, &config, policy)
+                .format_async_with_policy(view.as_graph_db_ref(), &config, policy)
                 .await?),
-            None => Ok(result.format_async(&view.db, &config).await?),
+            None => Ok(result.format_async(view.as_graph_db_ref(), &config).await?),
         }
     }
 
@@ -295,9 +295,11 @@ where
         let config = format_config.with_select_mode(result.select_mode);
         match self.view.policy() {
             Some(policy) => Ok(result
-                .format_async_with_policy(&self.view.db, &config, policy)
+                .format_async_with_policy(self.view.as_graph_db_ref(), &config, policy)
                 .await?),
-            None => Ok(result.format_async(&self.view.db, &config).await?),
+            None => Ok(result
+                .format_async(self.view.as_graph_db_ref(), &config)
+                .await?),
         }
     }
 

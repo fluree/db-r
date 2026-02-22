@@ -220,7 +220,7 @@ where
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
         let mut vars = VarRegistry::new();
-        let parsed = parse_query(query_json, &ledger.db, &mut vars)?;
+        let parsed = parse_query(query_json, &ledger.snapshot, &mut vars)?;
 
         // Execute with a wildcard select so the operator pipeline does not project away
         // bindings we need for indexing
@@ -231,7 +231,7 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let source = DataSource::new(&ledger.db, ledger.novelty.as_ref(), ledger.t());
+        let source = DataSource::new(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t());
         let batches = execute_with_overlay(source, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
@@ -249,7 +249,7 @@ where
             binary_graph: None,
         };
 
-        let json = result.to_jsonld_async(&ledger.db).await?;
+        let json = result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?;
         match json {
             JsonValue::Array(arr) => Ok(arr),
             JsonValue::Object(_) => Ok(vec![json]),
@@ -267,7 +267,7 @@ where
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
         let mut vars = VarRegistry::new();
-        let parsed = parse_query(query_json, &view.db, &mut vars)?;
+        let parsed = parse_query(query_json, &view.snapshot, &mut vars)?;
 
         // Execute with a wildcard select
         let mut parsed_for_exec = parsed.clone();
@@ -281,7 +281,7 @@ where
             .overlay()
             .map(|n| n.as_ref() as &dyn fluree_db_core::OverlayProvider)
             .unwrap_or(&fluree_db_core::NoOverlay);
-        let source = DataSource::new(&view.db, overlay, view.to_t());
+        let source = DataSource::new(&view.snapshot, overlay, view.to_t());
         let batches = execute_with_overlay(source, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
@@ -301,7 +301,7 @@ where
             binary_graph: None,
         };
 
-        let json = result.to_jsonld_async(&view.db).await?;
+        let json = result.to_jsonld_async(view.as_graph_db_ref()).await?;
         match json {
             JsonValue::Array(arr) => Ok(arr),
             JsonValue::Object(_) => Ok(vec![json]),
@@ -953,12 +953,13 @@ where
 
         // 5. Compile property deps for this ledger's namespace
         let compiled_deps = CompiledPropertyDeps::compile(&index.property_deps, |iri: &str| {
-            ledger.db.encode_iri(iri)
+            ledger.snapshot.encode_iri(iri)
         });
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
-        let store = fluree_db_core::content_store_for(self.storage().clone(), &ledger.db.ledger_id);
+        let store =
+            fluree_db_core::content_store_for(self.storage().clone(), &ledger.snapshot.ledger_id);
         let stream = trace_commits_by_id(store, head_commit_id.clone(), old_watermark);
         futures::pin_mut!(stream);
 
@@ -982,7 +983,12 @@ where
         // 7. Convert affected Sids to IRIs
         let affected_iris: HashSet<Arc<str>> = affected_sids
             .into_iter()
-            .filter_map(|sid| ledger.db.decode_sid(&sid).map(|s| Arc::from(s.as_str())))
+            .filter_map(|sid| {
+                ledger
+                    .snapshot
+                    .decode_sid(&sid)
+                    .map(|s| Arc::from(s.as_str()))
+            })
             .collect();
 
         info!(

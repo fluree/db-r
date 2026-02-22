@@ -101,7 +101,7 @@ async fn exists_when_pattern_present_returns_subjects() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!(["ex:alice"]));
 }
@@ -125,7 +125,7 @@ async fn exists_when_pattern_absent_returns_no_subjects() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!([]));
 }
@@ -149,7 +149,7 @@ async fn not_exists_filters_subjects_without_nickname() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&rows),
@@ -176,7 +176,7 @@ async fn not_exists_when_everyone_has_family_name_returns_none() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!([]));
 }
@@ -200,7 +200,7 @@ async fn not_exists_all_variables_filters_everything() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!([]));
 }
@@ -226,7 +226,7 @@ async fn not_exists_all_literals_filters_everything_when_match_exists() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!([]));
 }
@@ -251,7 +251,7 @@ async fn minus_removes_bound_solutions() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     // Rust selectDistinct returns an array of scalar rows (one column).
@@ -280,7 +280,7 @@ async fn minus_all_variables_has_no_common_bindings_removes_nothing() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     // Compare as sets: order isn't stable.
     assert_eq!(
@@ -321,7 +321,7 @@ async fn minus_all_literals_no_common_bindings_removes_nothing() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&filter_rows_subject_ex(&rows)),
@@ -374,7 +374,7 @@ async fn inner_filter_not_exists_vs_minus_behavior_matches_clojure() {
         .query(&ledger, &q_not_exists)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(r1, json!([["ex:b", 3.0]]));
 
@@ -393,7 +393,7 @@ async fn inner_filter_not_exists_vs_minus_behavior_matches_clojure() {
         .query(&ledger, &q_minus)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(
         normalize_rows(&r2),

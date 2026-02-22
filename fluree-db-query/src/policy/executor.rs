@@ -17,8 +17,8 @@ use std::collections::HashMap;
 /// This executor converts `PolicyQuery` to the query engine's IR and
 /// executes with a root context (no policy filtering).
 pub struct QueryPolicyExecutor<'a> {
-    /// The database to query
-    pub db: &'a LedgerSnapshot,
+    /// The database snapshot to query
+    pub snapshot: &'a LedgerSnapshot,
     /// Optional overlay provider (for staged flakes)
     pub overlay: Option<&'a dyn OverlayProvider>,
     /// Target transaction time
@@ -27,22 +27,22 @@ pub struct QueryPolicyExecutor<'a> {
 
 impl<'a> QueryPolicyExecutor<'a> {
     /// Create a new query executor
-    pub fn new(db: &'a LedgerSnapshot) -> Self {
+    pub fn new(snapshot: &'a LedgerSnapshot) -> Self {
         Self {
-            db,
+            snapshot,
             overlay: None,
-            to_t: db.t,
+            to_t: snapshot.t,
         }
     }
 
     /// Create a query executor with overlay support
     pub fn with_overlay(
-        db: &'a LedgerSnapshot,
+        snapshot: &'a LedgerSnapshot,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
     ) -> Self {
         Self {
-            db,
+            snapshot,
             overlay: Some(overlay),
             to_t,
         }
@@ -115,7 +115,7 @@ impl<'a> QueryPolicyExecutor<'a> {
                 }
                 // Decode SID to IRI for JSON representation
                 let iri = self
-                    .db
+                    .snapshot
                     .decode_sid(sid)
                     .unwrap_or_else(|| sid.name.to_string());
                 serde_json::json!({"@id": iri})
@@ -155,20 +155,21 @@ impl<'a> QueryPolicyExecutor<'a> {
             vars.get_or_insert(var_name);
         }
 
-        let parsed = crate::parse::parse_query(&query_json, self.db, &mut vars).map_err(|e| {
-            fluree_db_policy::PolicyError::QueryExecution {
-                message: format!("Failed to parse policy query: {}", e),
-            }
-        })?;
+        let parsed =
+            crate::parse::parse_query(&query_json, self.snapshot, &mut vars).map_err(|e| {
+                fluree_db_policy::PolicyError::QueryExecution {
+                    message: format!("Failed to parse policy query: {}", e),
+                }
+            })?;
 
         let patterns = parsed.patterns;
 
         // Create the execution context WITHOUT policy (root context)
         // This is critical - policy queries must not be filtered by policy
         let ctx = if let Some(overlay) = self.overlay {
-            ExecutionContext::with_time_and_overlay(self.db, &vars, self.to_t, None, overlay)
+            ExecutionContext::with_time_and_overlay(self.snapshot, &vars, self.to_t, None, overlay)
         } else {
-            ExecutionContext::with_time(self.db, &vars, self.to_t, None)
+            ExecutionContext::with_time(self.snapshot, &vars, self.to_t, None)
         };
         // Note: policy_enforcer is None by default (root context)
 

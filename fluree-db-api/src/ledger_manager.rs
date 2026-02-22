@@ -65,8 +65,8 @@ fn monotonic_secs() -> u64 {
 /// Safe to pass around and use for queries without blocking other operations.
 /// This is a cheap clone of the underlying state (LedgerSnapshot clone is cheap via Arc fields).
 pub struct CachedLedgerState {
-    /// The indexed database (cheap clone - Arc fields)
-    pub db: LedgerSnapshot,
+    /// The indexed database snapshot (cheap clone - Arc fields)
+    pub snapshot: LedgerSnapshot,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
     /// Dictionary novelty layer (subjects and strings since last index build)
@@ -81,7 +81,7 @@ pub struct CachedLedgerState {
     pub ns_record: Option<NsRecord>,
     /// Binary columnar index store (v2 only).
     ///
-    /// Present when `db.range_provider` is also set — the two are always
+    /// Present when `snapshot.range_provider` is also set — the two are always
     /// set/cleared together (see coherence `debug_assert` in `snapshot()`).
     pub binary_store: Option<Arc<BinaryIndexStore>>,
     /// Default JSON-LD @context for this ledger.
@@ -95,7 +95,7 @@ impl CachedLedgerState {
     /// binary store must set it after construction (see `LedgerHandle::snapshot()`).
     fn from_state(state: &LedgerState) -> Self {
         Self {
-            db: state.db.clone(), // Cheap: Arc fields
+            snapshot: state.snapshot.clone(), // Cheap: Arc fields
             novelty: Arc::clone(&state.novelty),
             dict_novelty: Arc::clone(&state.dict_novelty),
             t: state.t(),
@@ -127,7 +127,7 @@ impl CachedLedgerState {
 
     /// Get index_t from the underlying LedgerSnapshot
     pub fn index_t(&self) -> i64 {
-        self.db.t
+        self.snapshot.t
     }
 
     /// Convert snapshot to LedgerState for backward compatibility
@@ -137,7 +137,7 @@ impl CachedLedgerState {
     pub fn to_ledger_state(self) -> LedgerState {
         let dict_novelty = self.dict_novelty;
         LedgerState {
-            db: self.db,
+            snapshot: self.snapshot,
             novelty: self.novelty,
             dict_novelty,
             head_commit_id: self.head_commit_id,
@@ -213,7 +213,7 @@ struct LedgerHandleInner {
     last_access: AtomicU64,
     /// Binary columnar index store (v2 only).
     ///
-    /// Always coherent with `state.db.range_provider` — writers hold
+    /// Always coherent with `state.snapshot.range_provider` — writers hold
     /// the `state` lock while updating this.
     binary_store: Mutex<Option<Arc<BinaryIndexStore>>>,
 }
@@ -254,7 +254,7 @@ impl LedgerHandle {
         let mut snap = CachedLedgerState::from_state(&state);
         snap.binary_store = binary_store;
         debug_assert!(
-            snap.db.range_provider.is_some() == snap.binary_store.is_some(),
+            snap.snapshot.range_provider.is_some() == snap.binary_store.is_some(),
             "range_provider and binary_store must be coherent"
         );
         snap
@@ -351,7 +351,7 @@ impl LedgerHandle {
         // Load index root by CID via content store
         let ledger_id = {
             let state = self.inner.state.lock().await;
-            state.db.ledger_id.clone()
+            state.snapshot.ledger_id.clone()
         };
         let content_store = fluree_db_core::content_store_for(storage.clone(), &ledger_id);
         let bytes = content_store
@@ -539,7 +539,7 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         None => return Ok(None),
     };
 
-    let store = fluree_db_core::content_store_for(storage.clone(), &state.db.ledger_id);
+    let store = fluree_db_core::content_store_for(storage.clone(), &state.snapshot.ledger_id);
     let bytes = store
         .get(&index_cid)
         .await
@@ -547,19 +547,19 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
 
     let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
         storage.clone(),
-        &state.db.ledger_id,
+        &state.snapshot.ledger_id,
     ));
     let mut store = BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, leaflet_cache)
         .await
         .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
     // Augment namespace codes with entries from novelty commits (see loading.rs).
-    store.augment_namespace_codes(&state.db.namespace_codes);
+    store.augment_namespace_codes(&state.snapshot.namespace_codes);
 
     let arc_store = Arc::new(store);
     let dn = Arc::new(DictNovelty::new_uninitialized());
     let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
-    state.db.range_provider = Some(Arc::new(provider));
+    state.snapshot.range_provider = Some(Arc::new(provider));
     // Also attach the type-erased store to the state so transaction staging
     // (which clones LedgerState under the write lock) can construct
     // graph-scoped BinaryRangeProviders (needed for named-graph upsert deletions).
@@ -573,7 +573,7 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
             .as_ref()
             .and_then(|r| r.default_context.as_ref())
         {
-            let cs = fluree_db_core::content_store_for(storage.clone(), &state.db.ledger_id);
+            let cs = fluree_db_core::content_store_for(storage.clone(), &state.snapshot.ledger_id);
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {
                     Ok(ctx) => state.default_context = Some(ctx),

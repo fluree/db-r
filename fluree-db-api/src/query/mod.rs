@@ -15,8 +15,8 @@ use crate::{
     SelectMode, Tracker, TrackingTally, VarRegistry,
 };
 
-use fluree_db_core::LedgerSnapshot;
-use fluree_db_indexer::run_index::GraphView;
+use fluree_db_core::{GraphDbRef, LedgerSnapshot};
+use fluree_db_indexer::run_index::BinaryGraphView;
 
 use fluree_db_query::parse::{ConstructTemplate, GraphSelectSpec};
 
@@ -44,10 +44,10 @@ pub struct QueryResult {
     /// Graph-scoped binary index view for late materialization of encoded bindings.
     ///
     /// When present, formatters decode `Binding::EncodedLit` values through
-    /// `GraphView::decode_value` — routing per-graph specialty kinds (NUM_BIG,
+    /// `BinaryGraphView::decode_value` — routing per-graph specialty kinds (NUM_BIG,
     /// VECTOR_ID) through the correct arenas.  When absent, all bindings must
     /// already be fully materialized.
-    pub binary_graph: Option<GraphView>,
+    pub binary_graph: Option<BinaryGraphView>,
     /// CONSTRUCT template (None for SELECT queries)
     pub construct_template: Option<ConstructTemplate>,
     /// Graph crawl select specification (None for flat SELECT or CONSTRUCT)
@@ -162,33 +162,33 @@ impl QueryResult {
     ///
     /// Returns simple JSON values with compact IRIs using the @context prefixes.
     /// Rows are arrays aligned to the select order.
-    pub fn to_jsonld(&self, db: &LedgerSnapshot) -> format::Result<JsonValue> {
+    pub fn to_jsonld(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
-        format::format_results(self, &self.context, db, &config)
+        format::format_results(self, &self.context, snapshot, &config)
     }
 
     /// Format as JSON-LD Query JSON with object rows (API-friendly)
     ///
     /// Rows are maps keyed by variable name (e.g., `{"?s": "ex:alice", ...}`).
-    pub fn to_jsonld_objects(&self, db: &LedgerSnapshot) -> format::Result<JsonValue> {
+    pub fn to_jsonld_objects(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld_objects().with_select_mode(self.select_mode);
-        format::format_results(self, &self.context, db, &config)
+        format::format_results(self, &self.context, snapshot, &config)
     }
 
     /// Format as SPARQL 1.1 Query Results JSON
     ///
     /// Returns W3C standard format with `{"head": {"vars": [...]}, "results": {"bindings": [...]}}`.
-    pub fn to_sparql_json(&self, db: &LedgerSnapshot) -> format::Result<JsonValue> {
+    pub fn to_sparql_json(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
         let config = FormatterConfig::sparql_json().with_select_mode(self.select_mode);
-        format::format_results(self, &self.context, db, &config)
+        format::format_results(self, &self.context, snapshot, &config)
     }
 
     /// Format as TypedJson (always include explicit datatype)
     ///
     /// Every value includes `@type` annotation, even for inferable types.
-    pub fn to_typed_json(&self, db: &LedgerSnapshot) -> format::Result<JsonValue> {
+    pub fn to_typed_json(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
         let config = FormatterConfig::typed_json().with_select_mode(self.select_mode);
-        format::format_results(self, &self.context, db, &config)
+        format::format_results(self, &self.context, snapshot, &config)
     }
 
     /// Format CONSTRUCT query results as JSON-LD graph
@@ -199,23 +199,23 @@ impl QueryResult {
     /// # Errors
     ///
     /// Returns error if this is not a CONSTRUCT query result.
-    pub fn to_construct(&self, db: &LedgerSnapshot) -> format::Result<JsonValue> {
+    pub fn to_construct(&self, snapshot: &LedgerSnapshot) -> format::Result<JsonValue> {
         if self.select_mode != SelectMode::Construct {
             return Err(format::FormatError::InvalidBinding(
                 "to_construct() only valid for CONSTRUCT queries".to_string(),
             ));
         }
         let config = FormatterConfig::jsonld().with_select_mode(SelectMode::Construct);
-        format::format_results(self, &self.context, db, &config)
+        format::format_results(self, &self.context, snapshot, &config)
     }
 
     /// Format with custom configuration
     pub fn format(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         config: &FormatterConfig,
     ) -> format::Result<JsonValue> {
-        format::format_results(self, &self.context, db, config)
+        format::format_results(self, &self.context, snapshot, config)
     }
 
     // ========================================================================
@@ -225,15 +225,15 @@ impl QueryResult {
     /// Format as tab-separated values (high-performance path).
     ///
     /// Bypasses JSON DOM construction entirely. IRIs are compacted via `@context`.
-    pub fn to_tsv(&self, db: &LedgerSnapshot) -> format::Result<String> {
-        format::delimited::format_tsv(self, db)
+    pub fn to_tsv(&self, snapshot: &LedgerSnapshot) -> format::Result<String> {
+        format::delimited::format_tsv(self, snapshot)
     }
 
     /// Format as TSV bytes (high-performance path for server use).
     ///
     /// Returns raw `Vec<u8>` suitable for direct HTTP response body.
-    pub fn to_tsv_bytes(&self, db: &LedgerSnapshot) -> format::Result<Vec<u8>> {
-        format::delimited::format_tsv_bytes(self, db)
+    pub fn to_tsv_bytes(&self, snapshot: &LedgerSnapshot) -> format::Result<Vec<u8>> {
+        format::delimited::format_tsv_bytes(self, snapshot)
     }
 
     /// Format as TSV string with a row limit (for benchmark/preview).
@@ -241,10 +241,10 @@ impl QueryResult {
     /// Returns `(tsv_string, total_row_count)`.
     pub fn to_tsv_limited(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         limit: usize,
     ) -> format::Result<(String, usize)> {
-        format::delimited::format_tsv_limited(self, db, limit)
+        format::delimited::format_tsv_limited(self, snapshot, limit)
     }
 
     /// Format as TSV bytes with a row limit (for server benchmark/preview).
@@ -252,10 +252,10 @@ impl QueryResult {
     /// Returns `(tsv_bytes, total_row_count)`.
     pub fn to_tsv_bytes_limited(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         limit: usize,
     ) -> format::Result<(Vec<u8>, usize)> {
-        format::delimited::format_tsv_bytes_limited(self, db, limit)
+        format::delimited::format_tsv_bytes_limited(self, snapshot, limit)
     }
 
     // ========================================================================
@@ -266,15 +266,15 @@ impl QueryResult {
     ///
     /// Bypasses JSON DOM construction entirely. IRIs are compacted via `@context`.
     /// Uses RFC 4180 quoting for values containing commas, quotes, or newlines.
-    pub fn to_csv(&self, db: &LedgerSnapshot) -> format::Result<String> {
-        format::delimited::format_csv(self, db)
+    pub fn to_csv(&self, snapshot: &LedgerSnapshot) -> format::Result<String> {
+        format::delimited::format_csv(self, snapshot)
     }
 
     /// Format as CSV bytes (high-performance path for server use).
     ///
     /// Returns raw `Vec<u8>` suitable for direct HTTP response body.
-    pub fn to_csv_bytes(&self, db: &LedgerSnapshot) -> format::Result<Vec<u8>> {
-        format::delimited::format_csv_bytes(self, db)
+    pub fn to_csv_bytes(&self, snapshot: &LedgerSnapshot) -> format::Result<Vec<u8>> {
+        format::delimited::format_csv_bytes(self, snapshot)
     }
 
     /// Format as CSV string with a row limit (for benchmark/preview).
@@ -282,10 +282,10 @@ impl QueryResult {
     /// Returns `(csv_string, total_row_count)`.
     pub fn to_csv_limited(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         limit: usize,
     ) -> format::Result<(String, usize)> {
-        format::delimited::format_csv_limited(self, db, limit)
+        format::delimited::format_csv_limited(self, snapshot, limit)
     }
 
     /// Format as CSV bytes with a row limit (for server benchmark/preview).
@@ -293,10 +293,10 @@ impl QueryResult {
     /// Returns `(csv_bytes, total_row_count)`.
     pub fn to_csv_bytes_limited(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         limit: usize,
     ) -> format::Result<(Vec<u8>, usize)> {
-        format::delimited::format_csv_bytes_limited(self, db, limit)
+        format::delimited::format_csv_bytes_limited(self, snapshot, limit)
     }
 
     // ========================================================================
@@ -318,9 +318,9 @@ impl QueryResult {
     /// })).await?;
     ///
     /// // Graph crawl requires async formatting
-    /// let json = result.to_jsonld_async(&ledger.db).await?;
+    /// let json = result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?;
     /// ```
-    pub async fn to_jsonld_async(&self, db: &LedgerSnapshot) -> format::Result<JsonValue> {
+    pub async fn to_jsonld_async(&self, db: GraphDbRef<'_>) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
         format::format_results_async(self, &self.context, db, &config, None, None).await
     }
@@ -328,7 +328,7 @@ impl QueryResult {
     /// Format as JSON-LD Query JSON with object rows (async version)
     ///
     /// Async version of `to_jsonld_objects()`. Required for graph crawl queries.
-    pub async fn to_jsonld_objects_async(&self, db: &LedgerSnapshot) -> format::Result<JsonValue> {
+    pub async fn to_jsonld_objects_async(&self, db: GraphDbRef<'_>) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld_objects().with_select_mode(self.select_mode);
         format::format_results_async(self, &self.context, db, &config, None, None).await
     }
@@ -338,7 +338,7 @@ impl QueryResult {
     /// Async version of `format()`. Required for graph crawl queries.
     pub async fn format_async(
         &self,
-        db: &LedgerSnapshot,
+        db: GraphDbRef<'_>,
         config: &FormatterConfig,
     ) -> format::Result<JsonValue> {
         format::format_results_async(self, &self.context, db, config, None, None).await
@@ -359,11 +359,11 @@ impl QueryResult {
     /// ```ignore
     /// let result = fluree.query_with_policy(&ledger, &query, &policy_ctx).await?;
     /// // Graph crawl formatting also applies policy
-    /// let json = result.to_jsonld_async_with_policy(&ledger.db, &policy_ctx).await?;
+    /// let json = result.to_jsonld_async_with_policy(ledger.as_graph_db_ref(0), &policy_ctx).await?;
     /// ```
     pub async fn to_jsonld_async_with_policy(
         &self,
-        db: &LedgerSnapshot,
+        db: GraphDbRef<'_>,
         policy: &PolicyContext,
     ) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
@@ -375,7 +375,7 @@ impl QueryResult {
     /// Combines custom formatting options with policy-aware graph crawl.
     pub async fn format_async_with_policy(
         &self,
-        db: &LedgerSnapshot,
+        db: GraphDbRef<'_>,
         config: &FormatterConfig,
         policy: &PolicyContext,
     ) -> format::Result<JsonValue> {
@@ -385,7 +385,7 @@ impl QueryResult {
     /// Tracked async JSON-LD formatting (graph crawl counts fuel/policy).
     pub async fn to_jsonld_async_tracked(
         &self,
-        db: &LedgerSnapshot,
+        db: GraphDbRef<'_>,
         tracker: &Tracker,
     ) -> format::Result<JsonValue> {
         let config = FormatterConfig::jsonld().with_select_mode(self.select_mode);
@@ -395,7 +395,7 @@ impl QueryResult {
     /// Tracked async JSON-LD formatting with policy (graph crawl counts fuel/policy).
     pub async fn to_jsonld_async_with_policy_tracked(
         &self,
-        db: &LedgerSnapshot,
+        db: GraphDbRef<'_>,
         policy: &PolicyContext,
         tracker: &Tracker,
     ) -> format::Result<JsonValue> {

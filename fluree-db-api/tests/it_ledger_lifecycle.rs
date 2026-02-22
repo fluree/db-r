@@ -188,7 +188,7 @@ async fn query_integration_test() {
     });
 
     let result = fluree.query(&ledger, &query).await.unwrap();
-    let rows = result.to_jsonld(&ledger.db).unwrap();
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     // Expected results: [[:ex/alice "Alice"], [:ex/brian "Brian"], [:ex/cam "Cam"], [:ex/liam "Liam"]]
@@ -242,7 +242,7 @@ async fn fuel_integration_test() {
     });
 
     let basic_result = fluree.query(&ledger, &query_basic).await.unwrap();
-    let rows = basic_result.to_jsonld(&ledger.db).unwrap();
+    let rows = basic_result.to_jsonld(&ledger.snapshot).unwrap();
     assert_eq!(
         rows.as_array().unwrap().len(),
         4,

@@ -20,12 +20,16 @@
 //!
 //! ```ignore
 //! use fluree_db_reasoner::{reason_owl2rl, ReasoningCache, ReasoningOptions};
+//! use fluree_db_core::GraphDbRef;
 //!
 //! // Create a cache (typically application-scoped)
 //! let cache = ReasoningCache::with_default_capacity();
 //!
+//! // Bundle snapshot + graph + overlay + time into GraphDbRef
+//! let db = GraphDbRef::new(&snapshot, g_id, &overlay, to_t);
+//!
 //! // Run reasoning (will hit cache on subsequent calls with same state)
-//! let result = reason_owl2rl(&db, &overlay, &opts, &cache).await?;
+//! let result = reason_owl2rl(db, &opts, &cache).await?;
 //!
 //! // Use derived facts in query
 //! let composite = CompositeOverlay::new(vec![&base_overlay, &result.overlay]);
@@ -60,8 +64,7 @@ pub use rdf_list::{
 };
 pub use same_as::{FrozenSameAs, SameAsTracker};
 
-use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::{GraphId, LedgerSnapshot};
+use fluree_db_core::GraphDbRef;
 use std::sync::Arc;
 pub use types::{ChainElement, PropertyChain, PropertyExpression, ReasoningModes};
 
@@ -107,9 +110,7 @@ impl ReasoningOptions {
 ///
 /// # Arguments
 ///
-/// * `db` - The database to reason over
-/// * `overlay` - Base overlay (e.g., novelty) to read through
-/// * `to_t` - Query "as-of" time (for historical queries, use db.t for current state)
+/// * `db` - Bundled database reference (snapshot, graph, overlay, as-of time)
 /// * `opts` - Reasoning options (budget, enabled rules)
 /// * `cache` - LRU cache for storing/retrieving results
 ///
@@ -123,22 +124,19 @@ impl ReasoningOptions {
 /// Results are cached by (ledger_id, db_epoch, to_t, overlay_epoch, ontology_epoch, config).
 /// Cache hits return immediately without recomputation.
 pub async fn reason_owl2rl(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
+    db: GraphDbRef<'_>,
     opts: &ReasoningOptions,
     cache: &ReasoningCache,
 ) -> Result<Arc<ReasoningResult>> {
     // Get ontology epoch from schema (or 0 if no schema)
-    let ontology_epoch = db.schema_epoch().unwrap_or(0);
+    let ontology_epoch = db.snapshot.schema_epoch().unwrap_or(0);
 
-    // Build cache key with real values from db and execution context
+    // Build cache key with real values from snapshot and execution context
     let key = ReasoningCacheKey {
-        ledger_id: db.ledger_id.as_str().into(),
-        db_epoch: db.t as u64,
-        to_t,
-        overlay_epoch: overlay.epoch(),
+        ledger_id: db.snapshot.ledger_id.as_str().into(),
+        db_epoch: db.snapshot.t as u64,
+        to_t: db.t,
+        overlay_epoch: db.overlay.epoch(),
         ontology_epoch,
         reasoning_modes: ReasoningModes::default(),
         rule_config_hash: opts.config_hash(),
@@ -150,15 +148,14 @@ pub async fn reason_owl2rl(
     }
 
     // Run fixpoint reasoning
-    let (derived_flakes, same_as, diagnostics) =
-        fixpoint::run_fixpoint(db, g_id, overlay, to_t, &opts.budget).await?;
+    let (derived_flakes, same_as, diagnostics) = fixpoint::run_fixpoint(db, &opts.budget).await?;
 
     // Build the derived facts overlay
     let mut builder = DerivedFactsBuilder::with_capacity(derived_flakes.len());
     for flake in derived_flakes {
         builder.push(flake);
     }
-    let derived_overlay = builder.build(same_as, overlay.epoch());
+    let derived_overlay = builder.build(same_as, db.overlay.epoch());
 
     let result = Arc::new(ReasoningResult::new(derived_overlay, diagnostics));
 

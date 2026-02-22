@@ -366,7 +366,7 @@ pub async fn info(
         // Non-proxy mode: load ledger and return comprehensive info
         let ledger_state = super::query::load_ledger_for_query(&state, alias, &span).await?;
 
-        let t = ledger_state.db.t;
+        let t = ledger_state.snapshot.t;
 
         // Build comprehensive ledger info (at parity with Clojure)
         //

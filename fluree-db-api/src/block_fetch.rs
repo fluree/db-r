@@ -37,7 +37,7 @@ use fluree_db_indexer::run_index::leaflet::{
     decode_leaflet, decode_leaflet_region1, LeafletHeader,
 };
 use fluree_db_indexer::run_index::types::DecodedRow;
-use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView, RunSortOrder};
+use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore, RunSortOrder};
 use fluree_db_query::QueryPolicyEnforcer;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -178,7 +178,7 @@ pub enum EnforcementMode {
 /// parameter drift. Constructed from a `CachedLedgerState` at the call site.
 pub struct LedgerBlockContext<'a> {
     /// Database snapshot.
-    pub db: &'a LedgerSnapshot,
+    pub snapshot: &'a LedgerSnapshot,
     /// Time horizon for policy filtering (not always `db.t`).
     pub to_t: i64,
     /// Binary index store for leaf decoding (None if not yet indexed).
@@ -232,7 +232,10 @@ pub fn is_binary_leaf(bytes: &[u8]) -> bool {
 ///
 /// Returns the decoded flakes. Fails if the block is not a valid FLI2 leaf
 /// or if row-to-flake conversion fails (e.g., missing dictionary entries).
-pub fn decode_leaf_block(bytes: &[u8], gv: &GraphView) -> Result<Vec<Flake>, BlockFetchError> {
+pub fn decode_leaf_block(
+    bytes: &[u8],
+    gv: &BinaryGraphView,
+) -> Result<Vec<Flake>, BlockFetchError> {
     let header = read_leaf_header(bytes).map_err(BlockFetchError::LeafDecode)?;
     if header.leaflet_dir.is_empty() {
         return Ok(vec![]);
@@ -342,7 +345,7 @@ fn detect_leaf_sort_order(
 /// If neither `identity` nor `policy_class` is provided, returns all flakes
 /// unfiltered (equivalent to root policy).
 pub async fn apply_policy_filter(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     to_t: i64,
     flakes: Vec<Flake>,
     identity: Option<&str>,
@@ -361,9 +364,10 @@ pub async fn apply_policy_filter(
 
     let overlay: &dyn OverlayProvider = &NoOverlay;
 
-    let policy_ctx = policy_builder::build_policy_context_from_opts(db, overlay, None, to_t, &opts)
-        .await
-        .map_err(|e| BlockFetchError::PolicyBuild(e.to_string()))?;
+    let policy_ctx =
+        policy_builder::build_policy_context_from_opts(snapshot, overlay, None, to_t, &opts)
+            .await
+            .map_err(|e| BlockFetchError::PolicyBuild(e.to_string()))?;
 
     if policy_ctx.wrapper().is_root() {
         return Ok((flakes, false));
@@ -373,7 +377,7 @@ pub async fn apply_policy_filter(
     let tracker = Tracker::disabled();
 
     let filtered = enforcer
-        .filter_flakes_for_graph(db, overlay, to_t, &tracker, flakes)
+        .filter_flakes_for_graph(snapshot, overlay, to_t, &tracker, flakes)
         .await
         .map_err(|e| BlockFetchError::PolicyFilter(e.to_string()))?;
 
@@ -459,14 +463,14 @@ pub async fn fetch_and_decode_block<S: Storage + Clone + 'static>(
                 .as_ref()
                 .ok_or(BlockFetchError::MissingBinaryStore)?;
 
-            // Construct a GraphView with g_id=0 (default graph) for leaf decoding.
+            // Construct a BinaryGraphView with g_id=0 (default graph) for leaf decoding.
             // Block fetch decodes leaves for replication / policy filtering;
             // specialty kinds (BigInt, Vector) route through per-graph arenas.
-            let gv = GraphView::new(Arc::clone(store), 0);
+            let gv = BinaryGraphView::new(Arc::clone(store), 0);
             let flakes = decode_leaf_block(&bytes, &gv)?;
 
             let (filtered, policy_applied) = apply_policy_filter(
-                lctx.db,
+                lctx.snapshot,
                 lctx.to_t,
                 flakes,
                 identity.as_deref(),

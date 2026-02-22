@@ -26,7 +26,7 @@ use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{Flake, GraphId, IndexType, OverlayProvider, RangeProvider, Sid};
 use fluree_db_indexer::run_index::run_record::{RunRecord, RunSortOrder};
 use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryIndexStore, DecodedBatch, GraphView,
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, DecodedBatch,
 };
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -105,7 +105,7 @@ fn binary_lookup_subject_predicate_refs_batched(
     }
 
     // Per-call DictOverlay for ephemeral subject handling + overlay translation.
-    let gv = GraphView::new(store.clone(), g_id);
+    let gv = BinaryGraphView::new(store.clone(), g_id);
     let mut dict_ov = DictOverlay::new(gv, dict_novelty.clone());
 
     // Predicate ID (supports ephemeral predicates, though rdf:type is always persisted).
@@ -236,7 +236,7 @@ fn binary_range_eq(
     opts: &RangeOptions,
     overlay: Option<(&dyn OverlayProvider, &mut DictOverlay)>,
 ) -> io::Result<Vec<Flake>> {
-    let gv = GraphView::new(Arc::clone(store), g_id);
+    let gv = BinaryGraphView::new(Arc::clone(store), g_id);
     let order = index_type_to_sort_order(index);
 
     // Translate match components to integer-ID bounds.
@@ -339,10 +339,10 @@ fn binary_range_eq(
 /// Convert a `DecodedBatch` into `Vec<Flake>` by resolving integer IDs back
 /// to Sid/FlakeValue.
 ///
-/// Uses `GraphView` for graph-scoped value decoding (handles specialty arenas
+/// Uses `BinaryGraphView` for graph-scoped value decoding (handles specialty arenas
 /// like NumBig/Vector that are per-graph).
 fn decode_batch_to_flakes_filtered(
-    gv: &GraphView,
+    gv: &BinaryGraphView,
     batch: &DecodedBatch,
     out: &mut Vec<Flake>,
     bounds: Option<&ObjectBounds>,
@@ -451,7 +451,7 @@ impl RangeProvider for BinaryRangeProvider {
         opts: &RangeOptions,
         overlay: &dyn OverlayProvider,
     ) -> io::Result<Vec<Flake>> {
-        let gv = GraphView::new(Arc::clone(&self.store), g_id);
+        let gv = BinaryGraphView::new(Arc::clone(&self.store), g_id);
         // Create a per-call DictOverlay for ephemeral ID handling.
         let mut dict_ov = DictOverlay::new(gv, self.dict_novelty.clone());
 

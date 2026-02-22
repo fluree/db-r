@@ -8,7 +8,7 @@
 //! so the index is inherently a latest-state snapshot. SpotCursor does not
 //! support time-travel (`to_t` filtering).
 
-use super::binary_index_store::GraphView;
+use super::binary_index_store::BinaryGraphView;
 use super::leaf::read_leaf_header;
 use super::leaflet::decode_leaflet;
 use super::run_record::RunSortOrder;
@@ -25,7 +25,7 @@ use std::ops::Range;
 /// converts them to Flakes, and returns the batch. Returns `None` when
 /// all relevant leaves have been exhausted.
 pub struct SpotCursor {
-    graph_view: GraphView,
+    graph_view: BinaryGraphView,
     /// Indices of leaves to visit (from BranchManifest::find_leaves_for_subject).
     leaf_range: Range<usize>,
     /// Current position within leaf_range.
@@ -42,7 +42,7 @@ impl SpotCursor {
     ///
     /// The cursor will iterate through all leaves that may contain records
     /// for the given subject in the specified graph.
-    pub fn for_subject(graph_view: GraphView, s_id: u64, p_id: Option<u32>) -> Self {
+    pub fn for_subject(graph_view: BinaryGraphView, s_id: u64, p_id: Option<u32>) -> Self {
         let g_id = graph_view.g_id();
         let leaf_range = graph_view
             .store()

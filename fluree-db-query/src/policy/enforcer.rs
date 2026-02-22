@@ -49,7 +49,7 @@ impl QueryPolicyEnforcer {
     ///
     /// # Arguments
     ///
-    /// * `db` - The database for this graph
+    /// * `snapshot` - The database for this graph
     /// * `overlay` - The overlay provider for this graph
     /// * `to_t` - Target transaction time for this graph
     /// * `tracker` - Fuel tracker for limits
@@ -60,7 +60,7 @@ impl QueryPolicyEnforcer {
     /// Filtered flakes that pass policy checks
     pub async fn filter_flakes_for_graph(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         tracker: &Tracker,
@@ -71,8 +71,8 @@ impl QueryPolicyEnforcer {
             return Ok(flakes);
         }
 
-        // Create executor using the GRAPH's db/overlay/to_t (not ctx-level!)
-        let executor = QueryPolicyExecutor::with_overlay(db, overlay, to_t);
+        // Create executor using the GRAPH's snapshot/overlay/to_t (not ctx-level!)
+        let executor = QueryPolicyExecutor::with_overlay(snapshot, overlay, to_t);
 
         let mut result = Vec::with_capacity(flakes.len());
 
@@ -116,7 +116,7 @@ impl QueryPolicyEnforcer {
     /// This is the correct method for dataset mode.
     pub async fn allow_flake_for_graph(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         overlay: &dyn OverlayProvider,
         to_t: i64,
         tracker: &Tracker,
@@ -132,8 +132,8 @@ impl QueryPolicyEnforcer {
             return Ok(true);
         }
 
-        // Create executor using the GRAPH's db/overlay/to_t
-        let executor = QueryPolicyExecutor::with_overlay(db, overlay, to_t);
+        // Create executor using the GRAPH's snapshot/overlay/to_t
+        let executor = QueryPolicyExecutor::with_overlay(snapshot, overlay, to_t);
 
         // Get subject classes from cache
         let subject_classes = self
@@ -155,19 +155,15 @@ impl QueryPolicyEnforcer {
             .map_err(|e| crate::error::QueryError::Policy(e.to_string()))
     }
 
-    /// Populate the class cache for subjects using explicit graph parameters.
+    /// Populate the class cache for subjects using a graph database reference.
     ///
     /// Call this before filtering to ensure class lookups are cached.
-    /// Uses the graph's snapshot for class membership lookups.
     pub async fn populate_class_cache_for_graph(
         &self,
-        db: &LedgerSnapshot,
-        overlay: &dyn OverlayProvider,
-        to_t: i64,
-        g_id: fluree_db_core::GraphId,
+        db: fluree_db_core::GraphDbRef<'_>,
         subjects: &[fluree_db_core::Sid],
     ) -> Result<()> {
-        fluree_db_policy::populate_class_cache(subjects, db, overlay, to_t, g_id, &self.policy)
+        fluree_db_policy::populate_class_cache(subjects, db, &self.policy)
             .await
             .map_err(|e| crate::error::QueryError::Policy(e.to_string()))?;
         Ok(())

@@ -15,21 +15,12 @@ use crate::constraints::value::{
 use crate::constraints::{Constraint, ConstraintViolation, NestedShape};
 use crate::error::Result;
 use fluree_db_core::{
-    range_with_overlay, FlakeValue, GraphId, IndexType, LedgerSnapshot, NoOverlay, OverlayProvider,
-    RangeMatch, RangeOptions, RangeTest, SchemaHierarchy, Sid,
+    FlakeValue, GraphDbRef, GraphId, IndexType, LedgerSnapshot, NoOverlay, RangeMatch, RangeTest,
+    SchemaHierarchy, Sid,
 };
 use fluree_vocab::namespaces::RDF;
 use fluree_vocab::rdf_names;
 use std::collections::HashSet;
-
-/// Create RangeOptions with high to_t to include overlay flakes
-///
-/// This is essential when validating staged data, as staged flakes have
-/// t values higher than the base db.t. Without this, overlay flakes would
-/// be filtered out by the default to_t = db.t filtering.
-fn range_opts_include_overlay() -> RangeOptions {
-    RangeOptions::default().with_to_t(i64::MAX)
-}
 
 /// SHACL validation engine
 ///
@@ -74,17 +65,15 @@ impl ShaclEngine {
     /// immediately after they are committed.
     ///
     /// Automatically extracts the schema hierarchy for RDFS reasoning.
-    pub async fn from_db_with_overlay<O: OverlayProvider>(
-        db: &LedgerSnapshot,
-        g_id: GraphId,
-        overlay: &O,
+    pub async fn from_db_with_overlay(
+        db: GraphDbRef<'_>,
         ledger_id: impl Into<String>,
     ) -> Result<Self> {
-        let shapes = ShapeCompiler::compile_from_db(db, g_id, overlay).await?;
-        let key = ShaclCacheKey::new(ledger_id, db.t as u64);
+        let shapes = ShapeCompiler::compile_from_db(db).await?;
+        let key = ShaclCacheKey::new(ledger_id, db.snapshot.t as u64);
 
         // Get hierarchy for RDFS reasoning (class expansion in cache indexing)
-        let hierarchy = db.schema_hierarchy();
+        let hierarchy = db.snapshot.schema_hierarchy();
         let cache = ShaclCache::new(key, shapes, hierarchy.as_ref());
 
         Ok(Self { cache, hierarchy })
@@ -97,11 +86,12 @@ impl ShaclEngine {
     ///
     /// Automatically extracts the schema hierarchy for RDFS reasoning.
     pub async fn from_db(
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         g_id: GraphId,
         ledger_id: impl Into<String>,
     ) -> Result<Self> {
-        Self::from_db_with_overlay(db, g_id, &fluree_db_core::NoOverlay, ledger_id).await
+        let db = GraphDbRef::new(snapshot, g_id, &NoOverlay, snapshot.t);
+        Self::from_db_with_overlay(db, ledger_id).await
     }
 
     /// Validate a focus node against applicable shapes
@@ -110,11 +100,9 @@ impl ShaclEngine {
     /// 1. Finds all shapes that target the focus node
     /// 2. Validates the node against each shape's constraints
     /// 3. Returns a validation report
-    pub async fn validate_node<O: OverlayProvider>(
+    pub async fn validate_node(
         &self,
-        db: &LedgerSnapshot,
-        g_id: GraphId,
-        overlay: &O,
+        db: GraphDbRef<'_>,
         focus_node: &Sid,
         node_types: &[Sid],
     ) -> Result<ValidationReport> {
@@ -144,8 +132,7 @@ impl ShaclEngine {
                 continue;
             }
 
-            let shape_results =
-                validate_shape(db, g_id, overlay, focus_node, shape, &all_shapes).await?;
+            let shape_results = validate_shape(db, focus_node, shape, &all_shapes).await?;
             results.extend(shape_results);
         }
 
@@ -157,22 +144,17 @@ impl ShaclEngine {
     /// Validate a focus node without an overlay
     pub async fn validate_node_no_overlay(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         g_id: GraphId,
         focus_node: &Sid,
         node_types: &[Sid],
     ) -> Result<ValidationReport> {
-        self.validate_node(db, g_id, &NoOverlay, focus_node, node_types)
-            .await
+        let db = GraphDbRef::new(snapshot, g_id, &NoOverlay, snapshot.t);
+        self.validate_node(db, focus_node, node_types).await
     }
 
     /// Validate all focus nodes targeted by shapes
-    pub async fn validate_all<O: OverlayProvider>(
-        &self,
-        db: &LedgerSnapshot,
-        g_id: GraphId,
-        overlay: &O,
-    ) -> Result<ValidationReport> {
+    pub async fn validate_all(&self, db: GraphDbRef<'_>) -> Result<ValidationReport> {
         let mut all_results = Vec::new();
 
         // Collect all shapes for logical constraint resolution
@@ -184,12 +166,10 @@ impl ShaclEngine {
             }
 
             // Get focus nodes for this shape (with hierarchy expansion)
-            let focus_nodes =
-                get_focus_nodes(db, g_id, overlay, shape, self.hierarchy.as_ref()).await?;
+            let focus_nodes = get_focus_nodes(db, shape, self.hierarchy.as_ref()).await?;
 
             for focus_node in focus_nodes {
-                let results =
-                    validate_shape(db, g_id, overlay, &focus_node, shape, &all_shapes).await?;
+                let results = validate_shape(db, &focus_node, shape, &all_shapes).await?;
                 all_results.extend(results);
             }
         }
@@ -207,10 +187,11 @@ impl ShaclEngine {
     /// Validate all focus nodes without an overlay
     pub async fn validate_all_no_overlay(
         &self,
-        db: &LedgerSnapshot,
+        snapshot: &LedgerSnapshot,
         g_id: GraphId,
     ) -> Result<ValidationReport> {
-        self.validate_all(db, g_id, &NoOverlay).await
+        let db = GraphDbRef::new(snapshot, g_id, &NoOverlay, snapshot.t);
+        self.validate_all(db).await
     }
 
     /// Get the underlying cache
@@ -252,17 +233,15 @@ impl ShaclEngine {
     /// applicable shapes, returning early if no shapes exist.
     ///
     /// # Arguments
-    /// * `db` - The database to validate against
+    /// * `snapshot` - The database snapshot to validate against
     /// * `overlay` - Overlay containing staged changes (so validation sees new data)
     /// * `modified_subjects` - Set of subject SIDs that were modified in the transaction
     ///
     /// # Returns
     /// * `ValidationReport` - conforming if no violations, or containing all violations
-    pub async fn validate_staged<O: OverlayProvider>(
+    pub async fn validate_staged(
         &self,
-        db: &LedgerSnapshot,
-        g_id: GraphId,
-        overlay: &O,
+        db: GraphDbRef<'_>,
         modified_subjects: &HashSet<Sid>,
     ) -> Result<ValidationReport> {
         // Early exit: no shapes means automatic conformance
@@ -283,16 +262,13 @@ impl ShaclEngine {
 
         for subject in modified_subjects {
             // Get the types of this subject (through the overlay so we see staged data)
-            let type_flakes = range_with_overlay(
-                db,
-                g_id,
-                overlay,
-                IndexType::Spot,
-                RangeTest::Eq,
-                RangeMatch::subject_predicate(subject.clone(), rdf_type.clone()),
-                range_opts_include_overlay(),
-            )
-            .await?;
+            let type_flakes = db
+                .range(
+                    IndexType::Spot,
+                    RangeTest::Eq,
+                    RangeMatch::subject_predicate(subject.clone(), rdf_type.clone()),
+                )
+                .await?;
 
             let node_types: Vec<Sid> = type_flakes
                 .iter()
@@ -306,9 +282,7 @@ impl ShaclEngine {
                 .collect();
 
             // Validate this node against applicable shapes
-            let report = self
-                .validate_node(db, g_id, overlay, subject, &node_types)
-                .await?;
+            let report = self.validate_node(db, subject, &node_types).await?;
             all_results.extend(report.results);
         }
 
@@ -326,16 +300,12 @@ impl ShaclEngine {
     ///
     /// This is a convenience wrapper around `validate_staged` that converts
     /// validation failures into errors, suitable for use in transaction staging.
-    pub async fn validate_staged_or_error<O: OverlayProvider>(
+    pub async fn validate_staged_or_error(
         &self,
-        db: &LedgerSnapshot,
-        g_id: GraphId,
-        overlay: &O,
+        db: GraphDbRef<'_>,
         modified_subjects: &HashSet<Sid>,
     ) -> Result<()> {
-        let report = self
-            .validate_staged(db, g_id, overlay, modified_subjects)
-            .await?;
+        let report = self.validate_staged(db, modified_subjects).await?;
 
         if report.conforms {
             Ok(())
@@ -372,10 +342,8 @@ impl ShaclEngine {
 /// When a hierarchy is provided, `TargetType::Class` targets are expanded
 /// to include instances of all subclasses. For example, a shape targeting
 /// `Animal` will also match instances of `Dog` (if `Dog rdfs:subClassOf Animal`).
-async fn get_focus_nodes<O: OverlayProvider>(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &O,
+async fn get_focus_nodes(
+    db: GraphDbRef<'_>,
     shape: &CompiledShape,
     hierarchy: Option<&SchemaHierarchy>,
 ) -> Result<Vec<Sid>> {
@@ -393,16 +361,13 @@ async fn get_focus_nodes<O: OverlayProvider>(
                 // Find all instances of each class
                 let rdf_type = Sid::new(RDF, rdf_names::TYPE);
                 for cls in classes_to_query {
-                    let flakes = range_with_overlay(
-                        db,
-                        g_id,
-                        overlay,
-                        IndexType::Psot,
-                        RangeTest::Eq,
-                        RangeMatch::predicate_object(rdf_type.clone(), FlakeValue::Ref(cls)),
-                        range_opts_include_overlay(),
-                    )
-                    .await?;
+                    let flakes = db
+                        .range(
+                            IndexType::Psot,
+                            RangeTest::Eq,
+                            RangeMatch::predicate_object(rdf_type.clone(), FlakeValue::Ref(cls)),
+                        )
+                        .await?;
 
                     for flake in flakes {
                         focus_nodes.push(flake.s.clone());
@@ -414,16 +379,13 @@ async fn get_focus_nodes<O: OverlayProvider>(
             }
             TargetType::SubjectsOf(predicate) => {
                 // Find all subjects that have this predicate
-                let flakes = range_with_overlay(
-                    db,
-                    g_id,
-                    overlay,
-                    IndexType::Psot,
-                    RangeTest::Eq,
-                    RangeMatch::predicate(predicate.clone()),
-                    range_opts_include_overlay(),
-                )
-                .await?;
+                let flakes = db
+                    .range(
+                        IndexType::Psot,
+                        RangeTest::Eq,
+                        RangeMatch::predicate(predicate.clone()),
+                    )
+                    .await?;
 
                 for flake in flakes {
                     focus_nodes.push(flake.s.clone());
@@ -431,16 +393,13 @@ async fn get_focus_nodes<O: OverlayProvider>(
             }
             TargetType::ObjectsOf(predicate) => {
                 // Find all objects of triples with this predicate
-                let flakes = range_with_overlay(
-                    db,
-                    g_id,
-                    overlay,
-                    IndexType::Psot,
-                    RangeTest::Eq,
-                    RangeMatch::predicate(predicate.clone()),
-                    range_opts_include_overlay(),
-                )
-                .await?;
+                let flakes = db
+                    .range(
+                        IndexType::Psot,
+                        RangeTest::Eq,
+                        RangeMatch::predicate(predicate.clone()),
+                    )
+                    .await?;
 
                 for flake in flakes {
                     if let FlakeValue::Ref(obj) = &flake.o {
@@ -461,10 +420,8 @@ async fn get_focus_nodes<O: OverlayProvider>(
 /// Validate a focus node against a single shape
 ///
 /// Note: This function uses `Box::pin` for recursive calls to avoid infinitely-sized futures.
-fn validate_shape<'a, O: OverlayProvider>(
-    db: &'a LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &'a O,
+fn validate_shape<'a>(
+    db: GraphDbRef<'a>,
     focus_node: &'a Sid,
     shape: &'a CompiledShape,
     all_shapes: &'a [&'a CompiledShape],
@@ -475,17 +432,15 @@ fn validate_shape<'a, O: OverlayProvider>(
 
         // Validate property shapes
         for prop_shape in &shape.property_shapes {
-            let prop_results =
-                validate_property_shape(db, g_id, overlay, focus_node, prop_shape, shape).await?;
+            let prop_results = validate_property_shape(db, focus_node, prop_shape, shape).await?;
             results.extend(prop_results);
         }
 
         // Validate structural constraints (closed, logical)
         for constraint in &shape.structural_constraints {
-            let constraint_results = validate_structural_constraint(
-                db, g_id, overlay, focus_node, constraint, shape, all_shapes,
-            )
-            .await?;
+            let constraint_results =
+                validate_structural_constraint(db, focus_node, constraint, shape, all_shapes)
+                    .await?;
             results.extend(constraint_results);
         }
 
@@ -496,10 +451,8 @@ fn validate_shape<'a, O: OverlayProvider>(
 /// Validate a structural (node-level) constraint
 ///
 /// Note: This function uses `Box::pin` for recursive calls to avoid infinitely-sized futures.
-fn validate_structural_constraint<'a, O: OverlayProvider>(
-    db: &'a LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &'a O,
+fn validate_structural_constraint<'a>(
+    db: GraphDbRef<'a>,
     focus_node: &'a Sid,
     constraint: &'a crate::constraints::NodeConstraint,
     parent_shape: &'a CompiledShape,
@@ -519,16 +472,13 @@ fn validate_structural_constraint<'a, O: OverlayProvider>(
             } => {
                 if *is_closed {
                     // Get all properties used by the focus node
-                    let node_flakes = range_with_overlay(
-                        db,
-                        g_id,
-                        overlay,
-                        IndexType::Spot,
-                        RangeTest::Eq,
-                        RangeMatch::subject(focus_node.clone()),
-                        range_opts_include_overlay(),
-                    )
-                    .await?;
+                    let node_flakes = db
+                        .range(
+                            IndexType::Spot,
+                            RangeTest::Eq,
+                            RangeMatch::subject(focus_node.clone()),
+                        )
+                        .await?;
 
                     // Collect declared properties from the shape's property shapes
                     let declared_properties: std::collections::HashSet<&Sid> = parent_shape
@@ -569,8 +519,7 @@ fn validate_structural_constraint<'a, O: OverlayProvider>(
                 // Find the referenced shape and validate against it
                 if let Some(ref_shape) = all_shapes.iter().find(|s| s.id == nested_shape.id) {
                     let nested_results =
-                        validate_shape(db, g_id, overlay, focus_node, ref_shape, all_shapes)
-                            .await?;
+                        validate_shape(db, focus_node, ref_shape, all_shapes).await?;
                     // If the nested shape has NO violations, that's a violation of sh:not
                     if nested_results.is_empty()
                         || nested_results
@@ -598,8 +547,6 @@ fn validate_structural_constraint<'a, O: OverlayProvider>(
                 for nested in nested_shapes {
                     let nested_results = validate_nested_shape(
                         db,
-                        g_id,
-                        overlay,
                         focus_node,
                         nested.as_ref(),
                         parent_shape,
@@ -631,8 +578,6 @@ fn validate_structural_constraint<'a, O: OverlayProvider>(
                 for nested in nested_shapes {
                     let nested_results = validate_nested_shape(
                         db,
-                        g_id,
-                        overlay,
                         focus_node,
                         nested.as_ref(),
                         parent_shape,
@@ -679,8 +624,6 @@ fn validate_structural_constraint<'a, O: OverlayProvider>(
                 for nested in nested_shapes {
                     let nested_results = validate_nested_shape(
                         db,
-                        g_id,
-                        overlay,
                         focus_node,
                         nested.as_ref(),
                         parent_shape,
@@ -732,10 +675,8 @@ fn validate_structural_constraint<'a, O: OverlayProvider>(
 ///
 /// Unlike `validate_shape` which validates against a `CompiledShape`, this validates
 /// directly against the constraints embedded in a `NestedShape`.
-fn validate_nested_shape<'a, O: OverlayProvider>(
-    db: &'a LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &'a O,
+fn validate_nested_shape<'a>(
+    db: GraphDbRef<'a>,
     focus_node: &'a Sid,
     nested: &'a NestedShape,
     parent_shape: &'a CompiledShape,
@@ -747,7 +688,7 @@ fn validate_nested_shape<'a, O: OverlayProvider>(
         // in all_shapes (for top-level shapes referenced by ID in sh:and/or/xone)
         if nested.property_constraints.is_empty() && nested.node_constraints.is_empty() {
             if let Some(ref_shape) = all_shapes.iter().find(|s| s.id == nested.id) {
-                return validate_shape(db, g_id, overlay, focus_node, ref_shape, all_shapes).await;
+                return validate_shape(db, focus_node, ref_shape, all_shapes).await;
             }
         }
 
@@ -756,36 +697,33 @@ fn validate_nested_shape<'a, O: OverlayProvider>(
         // Validate property constraints
         for (path, constraints) in &nested.property_constraints {
             // Get all values for this property on the focus node
-            let flakes = range_with_overlay(
-                db,
-                g_id,
-                overlay,
-                IndexType::Spot,
-                RangeTest::Eq,
-                RangeMatch::subject_predicate(focus_node.clone(), path.clone()),
-                range_opts_include_overlay(),
-            )
-            .await?;
+            let flakes = db
+                .range(
+                    IndexType::Spot,
+                    RangeTest::Eq,
+                    RangeMatch::subject_predicate(focus_node.clone(), path.clone()),
+                )
+                .await?;
 
             let values: Vec<FlakeValue> = flakes.iter().map(|f| f.o.clone()).collect();
             let datatypes: Vec<Sid> = flakes.iter().map(|f| f.dt.clone()).collect();
 
             // Validate each constraint
             for constraint in constraints {
-                // Handle pair constraints separately since they need db access
+                // Handle pair constraints separately since they need snapshot access
                 match constraint {
                     Constraint::Equals(target_prop) => {
                         // Get values for the target property
-                        let target_flakes = range_with_overlay(
-                            db,
-                            g_id,
-                            overlay,
-                            IndexType::Spot,
-                            RangeTest::Eq,
-                            RangeMatch::subject_predicate(focus_node.clone(), target_prop.clone()),
-                            range_opts_include_overlay(),
-                        )
-                        .await?;
+                        let target_flakes = db
+                            .range(
+                                IndexType::Spot,
+                                RangeTest::Eq,
+                                RangeMatch::subject_predicate(
+                                    focus_node.clone(),
+                                    target_prop.clone(),
+                                ),
+                            )
+                            .await?;
                         let target_values: std::collections::HashSet<_> =
                             target_flakes.iter().map(|f| &f.o).collect();
                         let source_values: std::collections::HashSet<_> = values.iter().collect();
@@ -827,8 +765,6 @@ fn validate_nested_shape<'a, O: OverlayProvider>(
         for node_constraint in &nested.node_constraints {
             let nested_results = validate_structural_constraint(
                 db,
-                g_id,
-                overlay,
                 focus_node,
                 node_constraint,
                 parent_shape,
@@ -843,10 +779,8 @@ fn validate_nested_shape<'a, O: OverlayProvider>(
 }
 
 /// Validate a focus node against a property shape
-async fn validate_property_shape<O: OverlayProvider>(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &O,
+async fn validate_property_shape(
+    db: GraphDbRef<'_>,
     focus_node: &Sid,
     prop_shape: &PropertyShape,
     parent_shape: &CompiledShape,
@@ -854,36 +788,30 @@ async fn validate_property_shape<O: OverlayProvider>(
     let mut results = Vec::new();
 
     // Get all values for this property on the focus node
-    let flakes = range_with_overlay(
-        db,
-        g_id,
-        overlay,
-        IndexType::Spot,
-        RangeTest::Eq,
-        RangeMatch::subject_predicate(focus_node.clone(), prop_shape.path.clone()),
-        range_opts_include_overlay(),
-    )
-    .await?;
+    let flakes = db
+        .range(
+            IndexType::Spot,
+            RangeTest::Eq,
+            RangeMatch::subject_predicate(focus_node.clone(), prop_shape.path.clone()),
+        )
+        .await?;
 
     let values: Vec<FlakeValue> = flakes.iter().map(|f| f.o.clone()).collect();
     let datatypes: Vec<Sid> = flakes.iter().map(|f| f.dt.clone()).collect();
 
     // Validate each constraint
     for constraint in &prop_shape.constraints {
-        // Handle pair constraints separately since they need db access
+        // Handle pair constraints separately since they need snapshot access
         match constraint {
             Constraint::Equals(target_prop) => {
                 // Get values for the target property
-                let target_flakes = range_with_overlay(
-                    db,
-                    g_id,
-                    overlay,
-                    IndexType::Spot,
-                    RangeTest::Eq,
-                    RangeMatch::subject_predicate(focus_node.clone(), target_prop.clone()),
-                    range_opts_include_overlay(),
-                )
-                .await?;
+                let target_flakes = db
+                    .range(
+                        IndexType::Spot,
+                        RangeTest::Eq,
+                        RangeMatch::subject_predicate(focus_node.clone(), target_prop.clone()),
+                    )
+                    .await?;
                 let target_values: std::collections::HashSet<_> =
                     target_flakes.iter().map(|f| &f.o).collect();
                 let source_values: std::collections::HashSet<_> = values.iter().collect();
@@ -1038,7 +966,7 @@ fn validate_constraint(
         | Constraint::Disjoint(_)
         | Constraint::LessThan(_)
         | Constraint::LessThanOrEquals(_) => {
-            // Handled in validate_property_shape where we have access to the db
+            // Handled in validate_property_shape where we have access to the snapshot
         }
 
         // Language constraints
@@ -1122,6 +1050,7 @@ pub struct ValidationResult {
 mod tests {
     use super::*;
     use crate::cache::ShaclCacheKey;
+    use fluree_db_core::GraphDbRef;
 
     #[test]
     fn test_engine_no_shapes_optimization() {
@@ -1172,7 +1101,7 @@ mod tests {
 
         use fluree_db_core::LedgerSnapshot;
 
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         // Empty cache (no shapes)
         let key = ShaclCacheKey::new("test", 1);
@@ -1184,8 +1113,9 @@ mod tests {
         modified_subjects.insert(Sid::new(100, "ex:alice"));
         modified_subjects.insert(Sid::new(100, "ex:bob"));
 
+        let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
         let report = engine
-            .validate_staged(&db, 0, &NoOverlay, &modified_subjects)
+            .validate_staged(db, &modified_subjects)
             .await
             .expect("validation should succeed");
 
@@ -1198,7 +1128,7 @@ mod tests {
     async fn test_validate_staged_empty_subjects_returns_conforming() {
         use fluree_db_core::LedgerSnapshot;
 
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         // Even with shapes, if no subjects modified, should return conforming
         use crate::compile::{CompiledShape, TargetType};
@@ -1222,8 +1152,9 @@ mod tests {
         // Empty subject set
         let modified_subjects = HashSet::new();
 
+        let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
         let report = engine
-            .validate_staged(&db, 0, &NoOverlay, &modified_subjects)
+            .validate_staged(db, &modified_subjects)
             .await
             .expect("validation should succeed");
 

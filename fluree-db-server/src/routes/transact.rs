@@ -1459,9 +1459,9 @@ async fn execute_sparql_update_request(
         }
     };
 
-    // Get namespace registry from the ledger's DB
-    let snapshot = handle.snapshot().await;
-    let mut ns = NamespaceRegistry::from_db(&snapshot.db);
+    // Get namespace registry from the ledger's snapshot
+    let cached_state = handle.snapshot().await;
+    let mut ns = NamespaceRegistry::from_db(&cached_state.snapshot);
 
     // Build transaction options (use auth-derived author)
     let author = effective_author(credential, bearer);

@@ -93,7 +93,7 @@ pub struct PreparedExecution {
 ///
 /// The result can then be executed with any ExecutionContext.
 pub async fn prepare_execution(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn fluree_db_core::OverlayProvider,
     query: &ExecutableQuery,
@@ -101,7 +101,7 @@ pub async fn prepare_execution(
 ) -> Result<PreparedExecution> {
     let span = tracing::debug_span!(
         "query_prepare",
-        db_t = db.t,
+        db_t = snapshot.t,
         to_t = to_t,
         pattern_count = query.query.patterns.len()
     );
@@ -115,7 +115,7 @@ pub async fn prepare_execution(
         let reasoning_span = tracing::debug_span!("reasoning_prep");
         let (hierarchy, reasoning, derived_overlay, ontology) = async {
             // Step 1: Compute schema hierarchy from overlay
-            let hierarchy = schema_hierarchy_with_overlay(db, overlay, to_t);
+            let hierarchy = schema_hierarchy_with_overlay(snapshot, overlay, to_t);
 
             // Step 2: Determine effective reasoning modes
             let reasoning =
@@ -132,7 +132,8 @@ pub async fn prepare_execution(
             }
 
             // Step 3: Compute derived facts from OWL2-RL and/or datalog rules
-            let derived_overlay = compute_derived_facts(db, g_id, overlay, to_t, &reasoning).await;
+            let derived_overlay =
+                compute_derived_facts(snapshot, g_id, overlay, to_t, &reasoning).await;
 
             // Step 4: Build ontology for OWL2-QL mode (if enabled)
             let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> = derived_overlay
@@ -147,15 +148,13 @@ pub async fn prepare_execution(
 
             let ontology = if reasoning.owl2ql {
                 tracing::debug!("building OWL2-QL ontology");
-                Some(
-                    Ontology::from_db_with_overlay(
-                        db,
-                        effective_overlay_for_ontology,
-                        to_t as u64,
-                        to_t,
-                    )
-                    .await?,
-                )
+                let ontology_db = fluree_db_core::GraphDbRef::new(
+                    snapshot,
+                    g_id,
+                    effective_overlay_for_ontology,
+                    to_t,
+                );
+                Some(Ontology::from_db_with_overlay(ontology_db).await?)
             } else {
                 None
             };
@@ -170,9 +169,9 @@ pub async fn prepare_execution(
         // OWL2-QL rewriting (and current RDFS expansion) require SIDs for ontology/hierarchy lookup.
         // Lowering may produce `Term::Iri` to support cross-ledger joins; for single-ledger execution
         // we can safely encode IRIs to SIDs here.
-        fn encode_term(db: &LedgerSnapshot, t: &Term) -> Term {
+        fn encode_term(snapshot: &LedgerSnapshot, t: &Term) -> Term {
             match t {
-                Term::Iri(iri) => db
+                Term::Iri(iri) => snapshot
                     .encode_iri(iri)
                     .map(Term::Sid)
                     .unwrap_or_else(|| t.clone()),
@@ -181,40 +180,40 @@ pub async fn prepare_execution(
         }
 
         fn encode_patterns_for_reasoning(
-            db: &LedgerSnapshot,
+            snapshot: &LedgerSnapshot,
             patterns: &[Pattern],
         ) -> Vec<Pattern> {
             patterns
                 .iter()
                 .map(|p| match p {
                     Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                        s: encode_term(db, &tp.s),
-                        p: encode_term(db, &tp.p),
-                        o: encode_term(db, &tp.o),
+                        s: encode_term(snapshot, &tp.s),
+                        p: encode_term(snapshot, &tp.p),
+                        o: encode_term(snapshot, &tp.o),
                         dt: tp.dt.clone(),
                         lang: tp.lang.clone(),
                     }),
                     Pattern::Optional(inner) => {
-                        Pattern::Optional(encode_patterns_for_reasoning(db, inner))
+                        Pattern::Optional(encode_patterns_for_reasoning(snapshot, inner))
                     }
                     Pattern::Union(branches) => Pattern::Union(
                         branches
                             .iter()
-                            .map(|b| encode_patterns_for_reasoning(db, b))
+                            .map(|b| encode_patterns_for_reasoning(snapshot, b))
                             .collect(),
                     ),
                     Pattern::Minus(inner) => {
-                        Pattern::Minus(encode_patterns_for_reasoning(db, inner))
+                        Pattern::Minus(encode_patterns_for_reasoning(snapshot, inner))
                     }
                     Pattern::Exists(inner) => {
-                        Pattern::Exists(encode_patterns_for_reasoning(db, inner))
+                        Pattern::Exists(encode_patterns_for_reasoning(snapshot, inner))
                     }
                     Pattern::NotExists(inner) => {
-                        Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
+                        Pattern::NotExists(encode_patterns_for_reasoning(snapshot, inner))
                     }
                     Pattern::Graph { name, patterns } => Pattern::Graph {
                         name: name.clone(),
-                        patterns: encode_patterns_for_reasoning(db, patterns),
+                        patterns: encode_patterns_for_reasoning(snapshot, patterns),
                     },
                     _ => p.clone(),
                 })
@@ -230,7 +229,7 @@ pub async fn prepare_execution(
             .entered();
 
             let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-                encode_patterns_for_reasoning(db, &query.query.patterns)
+                encode_patterns_for_reasoning(snapshot, &query.query.patterns)
             } else {
                 query.query.patterns.clone()
             };
@@ -248,7 +247,7 @@ pub async fn prepare_execution(
             // This runs for both SPARQL and JSON-LD queries — same patterns, same rewrite.
             let rewritten_patterns =
                 crate::geo_rewrite::rewrite_geo_patterns(rewritten_patterns, &|iri: &str| {
-                    db.encode_iri(iri)
+                    snapshot.encode_iri(iri)
                 });
 
             tracing::Span::current().record("patterns_after", rewritten_patterns.len());
@@ -270,10 +269,10 @@ pub async fn prepare_execution(
                 tracing::debug_span!("plan", pattern_count = rewritten_query.patterns.len(),)
                     .entered();
 
-            let stats_view = db.stats.as_ref().map(|s| {
+            let stats_view = snapshot.stats.as_ref().map(|s| {
                 Arc::new(StatsView::from_db_stats_with_namespaces(
                     s,
-                    &db.namespace_codes,
+                    &snapshot.namespace_codes,
                 ))
             });
             build_operator_tree(&rewritten_query, &query.options, stats_view)?
@@ -486,7 +485,7 @@ pub async fn execute_prepared<'a, 'b>(
 
     // Build context with all configured options
     let mut ctx = ExecutionContext::with_time_and_overlay(
-        source.db,
+        source.snapshot,
         vars,
         source.to_t,
         source.from_t,

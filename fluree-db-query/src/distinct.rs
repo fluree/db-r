@@ -234,9 +234,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_all_unique() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_batch_with_values(schema.clone(), vec![1, 2, 3, 4, 5]);
@@ -257,9 +257,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_all_duplicates() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_batch_with_values(schema.clone(), vec![1, 1, 1, 1, 1]);
@@ -276,9 +276,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_mixed() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         // 1, 2, 1, 3, 2, 1, 4 => unique: 1, 2, 3, 4
@@ -313,9 +313,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_across_batches() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch1 = make_batch_with_values(schema.clone(), vec![1, 2, 3]);
@@ -346,9 +346,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_batch_all_dupes_skipped() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch1 = make_batch_with_values(schema.clone(), vec![1, 2, 3]);
@@ -374,9 +374,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_multi_column() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         // (1, 1), (1, 2), (1, 1) - third is dupe of first
@@ -394,9 +394,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_with_unbound() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let columns = vec![vec![
@@ -419,9 +419,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_with_poisoned() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let columns = vec![vec![
@@ -444,9 +444,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_preserves_schema() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
         let columns: Vec<Vec<Binding>> = (0..3)
@@ -475,9 +475,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_distinct_state_transitions() {
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let batch = make_batch_with_values(schema.clone(), vec![1, 2, 3]);

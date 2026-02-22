@@ -160,7 +160,7 @@ async fn credential_transact_then_credential_query_enforces_policy() {
         .query(&ledger1, &open_q)
         .await
         .expect("query open")
-        .to_jsonld_async(&ledger1.db)
+        .to_jsonld_async(ledger1.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     assert_eq!(open, json!([{"@id":"ct:open","ct:foo":"bar"}]));
@@ -218,7 +218,7 @@ async fn credential_transact_then_credential_query_enforces_policy() {
         .await
         .expect("credential_query_connection root");
     let root_json = root_res
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     assert_eq!(
@@ -241,7 +241,7 @@ async fn credential_transact_then_credential_query_enforces_policy() {
         .await
         .expect("credential_query_connection pleb");
     let pleb_json = pleb_res
-        .to_jsonld_async(&ledger2.db)
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
         .await
         .expect("to_jsonld_async");
     assert_eq!(pleb_json, json!([]));
@@ -286,7 +286,7 @@ ORDER BY ?name
         .credential_query_sparql(&jws_root, None)
         .await
         .expect("credential_query_sparql root");
-    let jsonld_root = result_root.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld_root = result_root.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(
         normalize_rows_array(&jsonld_root),
         normalize_rows_array(&json!([["Daniel"]]))
@@ -298,6 +298,6 @@ ORDER BY ?name
         .credential_query_sparql(&jws_pleb, None)
         .await
         .expect("credential_query_sparql pleb");
-    let jsonld_pleb = result_pleb.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld_pleb = result_pleb.to_jsonld(&ledger.snapshot).expect("to_jsonld");
     assert_eq!(jsonld_pleb, json!([]));
 }

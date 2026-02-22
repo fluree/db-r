@@ -252,7 +252,7 @@ async fn resolve_history_endpoint_t(
             }
 
             time_resolve::datetime_to_t(
-                &ledger.db,
+                &ledger.snapshot,
                 Some(ledger.novelty.as_ref()),
                 target_epoch_ms,
                 latest_t,
@@ -261,7 +261,7 @@ async fn resolve_history_endpoint_t(
         }
         dataset::TimeSpec::AtCommit(commit_prefix) => {
             time_resolve::commit_to_t(
-                &ledger.db,
+                &ledger.snapshot,
                 Some(ledger.novelty.as_ref()),
                 commit_prefix,
                 latest_t,

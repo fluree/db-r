@@ -119,7 +119,7 @@ mod tests {
         Sid::new(2, "long")
     }
 
-    fn make_test_db() -> LedgerSnapshot {
+    fn make_test_snapshot() -> LedgerSnapshot {
         LedgerSnapshot::genesis("test/main")
     }
 
@@ -129,9 +129,9 @@ mod tests {
         use crate::ir::FilterValue;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create a batch with counts: 5, 15, 8, 20
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
@@ -214,9 +214,9 @@ mod tests {
         use crate::ir::FilterValue;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create a batch with all small counts
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
@@ -277,9 +277,9 @@ mod tests {
         use crate::ir::FilterValue;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1), VarId(2)].into_boxed_slice());
         let columns = vec![
@@ -311,9 +311,9 @@ mod tests {
         use crate::ir::FilterValue;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Batch: city=NYC count=15, city=LA count="not_a_number"
         // HAVING ?count > 10 should keep NYC, filter out LA (type mismatch → filtered, not error)

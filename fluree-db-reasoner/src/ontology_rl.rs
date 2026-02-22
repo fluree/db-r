@@ -14,10 +14,9 @@ use fluree_db_core::flake::Flake;
 use fluree_db_core::namespaces::{
     is_owl_inverse_of, is_owl_same_as, is_rdf_type, is_rdfs_domain, is_rdfs_range,
 };
-use fluree_db_core::overlay::OverlayProvider;
-use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeTest};
+use fluree_db_core::range::{RangeMatch, RangeTest};
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{GraphId, LedgerSnapshot, Sid};
+use fluree_db_core::{GraphDbRef, Sid};
 use fluree_vocab::namespaces::{OWL, RDFS};
 use fluree_vocab::owl_names::*;
 use fluree_vocab::predicates::{RDFS_DOMAIN, RDFS_RANGE};
@@ -171,13 +170,8 @@ impl OntologyRL {
     /// - `?p owl:inverseOf ?q`
     /// - `?p rdfs:domain ?c`
     /// - `?p rdfs:range ?c`
-    pub async fn from_db_with_overlay(
-        db: &LedgerSnapshot,
-        g_id: GraphId,
-        overlay: &dyn OverlayProvider,
-        epoch: u64,
-        to_t: i64,
-    ) -> Result<Self> {
+    pub async fn from_db_with_overlay(db: GraphDbRef<'_>) -> Result<Self> {
+        let epoch = db.snapshot.t as u64;
         let mut symmetric_properties = HashSet::new();
         let mut transitive_properties = HashSet::new();
         let mut inverse_of: HashMap<Sid, Vec<Sid>> = HashMap::new();
@@ -190,49 +184,38 @@ impl OntologyRL {
 
         // Query OPST index for all rdf:type assertions where object is owl:SymmetricProperty
         // This finds all ?p rdf:type owl:SymmetricProperty
-        let opts = RangeOptions {
-            to_t: Some(to_t),
-            ..Default::default()
-        };
-
-        let symmetric_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Opst,
-            RangeTest::Eq,
-            RangeMatch {
-                o: Some(FlakeValue::Ref(owl_symmetric_sid)),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| is_rdf_type(&f.p) && f.op)
-        .collect();
+        let symmetric_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Opst,
+                RangeTest::Eq,
+                RangeMatch {
+                    o: Some(FlakeValue::Ref(owl_symmetric_sid)),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| is_rdf_type(&f.p) && f.op)
+            .collect();
 
         for flake in symmetric_flakes {
             symmetric_properties.insert(flake.s.clone());
         }
 
         // Query for all ?p rdf:type owl:TransitiveProperty
-        let transitive_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Opst,
-            RangeTest::Eq,
-            RangeMatch {
-                o: Some(FlakeValue::Ref(owl_transitive_sid)),
-                ..Default::default()
-            },
-            opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| is_rdf_type(&f.p) && f.op)
-        .collect();
+        let transitive_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Opst,
+                RangeTest::Eq,
+                RangeMatch {
+                    o: Some(FlakeValue::Ref(owl_transitive_sid)),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| is_rdf_type(&f.p) && f.op)
+            .collect();
 
         for flake in transitive_flakes {
             transitive_properties.insert(flake.s.clone());
@@ -241,22 +224,19 @@ impl OntologyRL {
         // Query PSOT index for all owl:inverseOf assertions
         let owl_inverse_of_sid = owl::inverse_of_sid();
 
-        let inverse_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch {
-                p: Some(owl_inverse_of_sid),
-                ..Default::default()
-            },
-            opts,
-        )
-        .await?
-        .into_iter()
-        .filter(|f| is_owl_inverse_of(&f.p) && f.op)
-        .collect();
+        let inverse_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch {
+                    p: Some(owl_inverse_of_sid),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| is_owl_inverse_of(&f.p) && f.op)
+            .collect();
 
         for flake in inverse_flakes {
             // P owl:inverseOf Q means P and Q are inverses of each other
@@ -276,27 +256,20 @@ impl OntologyRL {
         // Query PSOT index for all rdfs:domain assertions
         // This finds all ?p rdfs:domain ?c
         let rdfs_domain_sid = Sid::new(RDFS, RDFS_DOMAIN);
-        let domain_opts = RangeOptions {
-            to_t: Some(to_t),
-            ..Default::default()
-        };
 
-        let domain_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch {
-                p: Some(rdfs_domain_sid),
-                ..Default::default()
-            },
-            domain_opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| is_rdfs_domain(&f.p) && f.op)
-        .collect();
+        let domain_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch {
+                    p: Some(rdfs_domain_sid),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| is_rdfs_domain(&f.p) && f.op)
+            .collect();
 
         for flake in domain_flakes {
             // P rdfs:domain C means any subject of P is of type C
@@ -309,22 +282,19 @@ impl OntologyRL {
         // This finds all ?p rdfs:range ?c
         let rdfs_range_sid = Sid::new(RDFS, RDFS_RANGE);
 
-        let range_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch {
-                p: Some(rdfs_range_sid),
-                ..Default::default()
-            },
-            domain_opts,
-        )
-        .await?
-        .into_iter()
-        .filter(|f| is_rdfs_range(&f.p) && f.op)
-        .collect();
+        let range_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch {
+                    p: Some(rdfs_range_sid),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| is_rdfs_range(&f.p) && f.op)
+            .collect();
 
         for flake in range_flakes {
             // P rdfs:range C means any object of P is of type C (when object is a Ref)
@@ -337,9 +307,9 @@ impl OntologyRL {
         // For prp-spo1: P1(x,y), P1 rdfs:subPropertyOf* P2 -> P2(x,y)
         // subproperties_of(P2) gives us all P1s, so we invert to get P1 -> [P2s]
         let mut super_properties: HashMap<Sid, Vec<Sid>> = HashMap::new();
-        if let Some(hierarchy) = db.schema_hierarchy() {
+        if let Some(hierarchy) = db.snapshot.schema_hierarchy() {
             // Get all properties that have subproperties by checking the schema
-            if let Some(schema) = &db.schema {
+            if let Some(schema) = &db.snapshot.schema {
                 for pred_info in &schema.pred.vals {
                     let p2 = &pred_info.id;
                     // Get all subproperties (descendants) of P2
@@ -365,8 +335,8 @@ impl OntologyRL {
         // subclasses_of(C2) gives us all C1s, so we invert to get C1 -> [C2s]
         // Note: In Fluree, classes are stored in pred.vals along with properties
         let mut super_classes: HashMap<Sid, Vec<Sid>> = HashMap::new();
-        if let Some(hierarchy) = db.schema_hierarchy() {
-            if let Some(schema) = &db.schema {
+        if let Some(hierarchy) = db.snapshot.schema_hierarchy() {
+            if let Some(schema) = &db.snapshot.schema {
                 for pred_info in &schema.pred.vals {
                     let c2 = &pred_info.id;
                     // Get all subclasses (descendants) of C2
@@ -392,27 +362,20 @@ impl OntologyRL {
         // C1 owl:equivalentClass C2 means type(x, C1) ↔ type(x, C2) (bidirectional)
         let mut equivalent_classes: HashMap<Sid, Vec<Sid>> = HashMap::new();
         let owl_equivalent_class_sid = owl::equivalent_class_sid();
-        let equiv_opts = RangeOptions {
-            to_t: Some(to_t),
-            ..Default::default()
-        };
 
-        let equiv_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch {
-                p: Some(owl_equivalent_class_sid),
-                ..Default::default()
-            },
-            equiv_opts,
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == EQUIVALENT_CLASS && f.op)
-        .collect();
+        let equiv_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch {
+                    p: Some(owl_equivalent_class_sid),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == EQUIVALENT_CLASS && f.op)
+            .collect();
 
         for flake in equiv_flakes {
             // C1 owl:equivalentClass C2 - store bidirectionally
@@ -441,27 +404,22 @@ impl OntologyRL {
         // Supports arbitrary length chains (≥2) and inverse elements via owl:inverseOf
         let mut property_chains: Vec<PropertyChain> = Vec::new();
         let owl_chain_axiom_sid = owl::property_chain_axiom_sid();
-        let chain_opts = RangeOptions {
-            to_t: Some(to_t),
-            ..Default::default()
-        };
 
-        let chain_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch {
-                p: Some(owl_chain_axiom_sid.clone()),
-                ..Default::default()
-            },
-            chain_opts,
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == PROPERTY_CHAIN_AXIOM && f.op)
-        .collect();
+        let chain_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch {
+                    p: Some(owl_chain_axiom_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| {
+                f.p.namespace_code == OWL && f.p.name.as_ref() == PROPERTY_CHAIN_AXIOM && f.op
+            })
+            .collect();
 
         for flake in chain_flakes {
             // Subject is the derived property P
@@ -469,9 +427,7 @@ impl OntologyRL {
             // Object is the head of an RDF list containing chain properties (may include owl:inverseOf blanks)
             if let FlakeValue::Ref(list_head) = &flake.o {
                 // Traverse the RDF list to get chain elements, resolving owl:inverseOf to ChainElements
-                if let Ok(chain_elements) =
-                    collect_chain_elements(db, g_id, overlay, list_head, to_t).await
-                {
+                if let Ok(chain_elements) = collect_chain_elements(db, list_head).await {
                     // Only store chains with at least 2 elements
                     if chain_elements.len() >= 2 {
                         property_chains.push(PropertyChain::new(derived_prop, chain_elements));
@@ -485,27 +441,20 @@ impl OntologyRL {
         // ?p rdf:type owl:FunctionalProperty
         let mut functional_properties = HashSet::new();
         let owl_functional_sid = owl::functional_property_sid();
-        let functional_opts = RangeOptions {
-            to_t: Some(to_t),
-            ..Default::default()
-        };
 
-        let functional_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Opst,
-            RangeTest::Eq,
-            RangeMatch {
-                o: Some(FlakeValue::Ref(owl_functional_sid)),
-                ..Default::default()
-            },
-            functional_opts.clone(),
-        )
-        .await?
-        .into_iter()
-        .filter(|f| is_rdf_type(&f.p) && f.op)
-        .collect();
+        let functional_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Opst,
+                RangeTest::Eq,
+                RangeMatch {
+                    o: Some(FlakeValue::Ref(owl_functional_sid)),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| is_rdf_type(&f.p) && f.op)
+            .collect();
 
         for flake in functional_flakes {
             functional_properties.insert(flake.s.clone());
@@ -516,22 +465,19 @@ impl OntologyRL {
         let mut inverse_functional_properties = HashSet::new();
         let owl_inverse_functional_sid = owl::inverse_functional_property_sid();
 
-        let inv_functional_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Opst,
-            RangeTest::Eq,
-            RangeMatch {
-                o: Some(FlakeValue::Ref(owl_inverse_functional_sid)),
-                ..Default::default()
-            },
-            functional_opts,
-        )
-        .await?
-        .into_iter()
-        .filter(|f| is_rdf_type(&f.p) && f.op)
-        .collect();
+        let inv_functional_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Opst,
+                RangeTest::Eq,
+                RangeMatch {
+                    o: Some(FlakeValue::Ref(owl_inverse_functional_sid)),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| is_rdf_type(&f.p) && f.op)
+            .collect();
 
         for flake in inv_functional_flakes {
             inverse_functional_properties.insert(flake.s.clone());
@@ -541,27 +487,20 @@ impl OntologyRL {
         // C owl:hasKey (P1 P2 ...) means instances of C with same key values are sameAs
         let mut has_keys: HashMap<Sid, Vec<Vec<Sid>>> = HashMap::new();
         let owl_has_key_sid = owl::has_key_sid();
-        let has_key_opts = RangeOptions {
-            to_t: Some(to_t),
-            ..Default::default()
-        };
 
-        let has_key_flakes: Vec<Flake> = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Psot,
-            RangeTest::Eq,
-            RangeMatch {
-                p: Some(owl_has_key_sid.clone()),
-                ..Default::default()
-            },
-            has_key_opts,
-        )
-        .await?
-        .into_iter()
-        .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == HAS_KEY && f.op)
-        .collect();
+        let has_key_flakes: Vec<Flake> = db
+            .range(
+                IndexType::Psot,
+                RangeTest::Eq,
+                RangeMatch {
+                    p: Some(owl_has_key_sid.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .into_iter()
+            .filter(|f| f.p.namespace_code == OWL && f.p.name.as_ref() == HAS_KEY && f.op)
+            .collect();
 
         for flake in has_key_flakes {
             // Subject is the class C
@@ -569,9 +508,7 @@ impl OntologyRL {
             // Object is the head of an RDF list containing key properties
             if let FlakeValue::Ref(list_head) = &flake.o {
                 // Traverse the RDF list to get key properties
-                if let Ok(key_properties) =
-                    collect_list_elements(db, g_id, overlay, list_head, to_t).await
-                {
+                if let Ok(key_properties) = collect_list_elements(db, list_head).await {
                     // Only store non-empty key lists
                     if !key_properties.is_empty() {
                         has_keys
@@ -885,35 +822,22 @@ impl OntologyRL {
 /// Load initial owl:sameAs assertions from the database
 ///
 /// Returns pairs of SIDs that are asserted to be the same.
-pub async fn load_same_as_assertions(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
-) -> Result<Vec<(Sid, Sid)>> {
+pub async fn load_same_as_assertions(db: GraphDbRef<'_>) -> Result<Vec<(Sid, Sid)>> {
     let owl_same_as_sid = owl::same_as_sid();
 
-    let opts = RangeOptions {
-        to_t: Some(to_t),
-        ..Default::default()
-    };
-
-    let same_as_flakes: Vec<Flake> = range_with_overlay(
-        db,
-        g_id,
-        overlay,
-        IndexType::Psot,
-        RangeTest::Eq,
-        RangeMatch {
-            p: Some(owl_same_as_sid),
-            ..Default::default()
-        },
-        opts,
-    )
-    .await?
-    .into_iter()
-    .filter(|f| is_owl_same_as(&f.p) && f.op)
-    .collect();
+    let same_as_flakes: Vec<Flake> = db
+        .range(
+            IndexType::Psot,
+            RangeTest::Eq,
+            RangeMatch {
+                p: Some(owl_same_as_sid),
+                ..Default::default()
+            },
+        )
+        .await?
+        .into_iter()
+        .filter(|f| is_owl_same_as(&f.p) && f.op)
+        .collect();
 
     let mut pairs = Vec::new();
     for flake in same_as_flakes {

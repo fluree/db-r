@@ -446,12 +446,13 @@ mod tests {
         }
     }
 
-    fn make_test_db() -> LedgerSnapshot {
-        let mut db = LedgerSnapshot::genesis("test/main");
+    fn make_test_snapshot() -> LedgerSnapshot {
+        let mut snapshot = LedgerSnapshot::genesis("test/main");
         // Ensure example IRIs used by tests are encodable to SIDs.
-        db.namespace_codes
+        snapshot
+            .namespace_codes
             .insert(100, "http://example.org/".to_string());
-        db
+        snapshot
     }
 
     #[test]
@@ -469,7 +470,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_vector_operator_constant_target() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let mut vars = VarRegistry::new();
         let id = vars.get_or_insert("?doc");
         let score = vars.get_or_insert("?score");
@@ -498,7 +499,7 @@ mod tests {
         let mut op =
             build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
-        let mut ctx = ExecutionContext::new(&db, &vars);
+        let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.vector_provider = Some(&provider);
 
         op.open(&ctx).await.unwrap();
@@ -523,7 +524,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_vector_operator_empty_results() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let mut vars = VarRegistry::new();
         let id = vars.get_or_insert("?doc");
 
@@ -543,7 +544,7 @@ mod tests {
         let mut op =
             build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
-        let mut ctx = ExecutionContext::new(&db, &vars);
+        let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.vector_provider = Some(&provider);
 
         op.open(&ctx).await.unwrap();
@@ -555,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_vector_operator_respects_limit() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let mut vars = VarRegistry::new();
         let id = vars.get_or_insert("?doc");
 
@@ -583,7 +584,7 @@ mod tests {
         let mut op =
             build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
-        let mut ctx = ExecutionContext::new(&db, &vars);
+        let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.vector_provider = Some(&provider);
 
         op.open(&ctx).await.unwrap();
@@ -595,7 +596,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_vector_operator_missing_provider_error() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let mut vars = VarRegistry::new();
         let id = vars.get_or_insert("?doc");
 
@@ -613,7 +614,7 @@ mod tests {
             build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
         // No vector_provider set
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         let err = op.open(&ctx).await.unwrap_err();
         assert!(err.to_string().contains("vector_provider"));
@@ -621,7 +622,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_vector_operator_with_ledger_var() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let mut vars = VarRegistry::new();
         let id = vars.get_or_insert("?doc");
         let ledger = vars.get_or_insert("?source");
@@ -643,7 +644,7 @@ mod tests {
         let mut op =
             build_where_operators_seeded(Some(seed), &patterns, None).expect("build operators");
 
-        let mut ctx = ExecutionContext::new(&db, &vars);
+        let mut ctx = ExecutionContext::new(&snapshot, &vars);
         ctx.vector_provider = Some(&provider);
 
         op.open(&ctx).await.unwrap();

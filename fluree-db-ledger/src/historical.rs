@@ -22,13 +22,13 @@
 //! ).await?;
 //!
 //! // Query using the view as an overlay provider
-//! execute_pattern_with_overlay(&view.db, view.overlay(), &vars, &pattern, view.to_t()).await?;
+//! execute_pattern_with_overlay(&view.snapshot, view.overlay(), &vars, &pattern, view.to_t()).await?;
 //! ```
 
 use crate::error::{LedgerError, Result};
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, IndexType,
-    LedgerSnapshot, OverlayProvider, Sid, Storage,
+    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef,
+    IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage,
 };
 use fluree_db_nameservice::NameService;
 
@@ -54,8 +54,8 @@ const TXN_META_GRAPH_LOCAL_NAME: &str = "txn-meta";
 /// Unlike `LedgerState`, this is immutable and cannot be updated.
 #[derive(Debug)]
 pub struct HistoricalLedgerView {
-    /// The indexed database (head index or genesis)
-    pub db: LedgerSnapshot,
+    /// The indexed snapshot (head index or genesis)
+    pub snapshot: LedgerSnapshot,
     /// Optional novelty overlay (commits between index_t and to_t)
     overlay: Option<Arc<Novelty>>,
     /// Time bound for all queries
@@ -109,8 +109,8 @@ impl HistoricalLedgerView {
         // after index_t (normal fast path).
         let use_index = record.index_head_id.is_some() && target_t >= record.index_t;
 
-        // Base db + baseline index_t for overlay range.
-        let (mut db, index_t) = if use_index {
+        // Base snapshot + baseline index_t for overlay range.
+        let (mut snapshot, index_t) = if use_index {
             let index_cid = record.index_head_id.as_ref().unwrap();
             let root_bytes = store.get(index_cid).await?;
             let loaded = LedgerSnapshot::from_root_bytes(&root_bytes)?;
@@ -130,9 +130,9 @@ impl HistoricalLedgerView {
                     Self::load_novelty_range(store, head_cid, index_t, target_t, &record.ledger_id)
                         .await?;
 
-                // Apply namespace deltas to db
+                // Apply namespace deltas to snapshot
                 for (code, prefix) in ns_delta {
-                    db.namespace_codes.insert(code, prefix);
+                    snapshot.namespace_codes.insert(code, prefix);
                 }
 
                 if novelty.is_empty() {
@@ -155,7 +155,7 @@ impl HistoricalLedgerView {
         };
 
         Ok(Self {
-            db,
+            snapshot,
             overlay,
             to_t: target_t,
         })
@@ -309,8 +309,12 @@ impl HistoricalLedgerView {
     /// Create a historical view directly from components
     ///
     /// This is useful for testing or when you've already loaded the components.
-    pub fn new(db: LedgerSnapshot, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
-        Self { db, overlay, to_t }
+    pub fn new(snapshot: LedgerSnapshot, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
+        Self {
+            snapshot,
+            overlay,
+            to_t,
+        }
     }
 
     /// Get the time bound for this view
@@ -318,14 +322,14 @@ impl HistoricalLedgerView {
         self.to_t
     }
 
-    /// Get the index time (when the db was indexed)
+    /// Get the index time (when the snapshot was indexed)
     pub fn index_t(&self) -> i64 {
-        self.db.t
+        self.snapshot.t
     }
 
     /// Get the ledger ID
     pub fn ledger_id(&self) -> &str {
-        &self.db.ledger_id
+        &self.snapshot.ledger_id
     }
 
     /// Get the overlay if present
@@ -341,6 +345,14 @@ impl HistoricalLedgerView {
         self.overlay
             .as_ref()
             .map(|n| n.as_ref() as &dyn OverlayProvider)
+    }
+
+    /// Create a `GraphDbRef` for the default graph (g_id = 0).
+    ///
+    /// Uses `self` as the overlay provider (delegates to inner novelty if
+    /// present, no-op otherwise). `t` is set to `to_t` (the historical time bound).
+    pub fn as_graph_db_ref(&self) -> GraphDbRef<'_> {
+        GraphDbRef::new(&self.snapshot, 0, self, self.to_t)
     }
 }
 
@@ -393,9 +405,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_new() {
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
-        let view = HistoricalLedgerView::new(db, None, 10);
+        let view = HistoricalLedgerView::new(snapshot, None, 10);
 
         assert_eq!(view.ledger_id(), "test:main");
         assert_eq!(view.to_t(), 10);
@@ -405,14 +417,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_with_overlay() {
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
             .apply_commit(vec![make_flake(1, 1, 100, 1)], 1)
             .unwrap();
 
-        let view = HistoricalLedgerView::new(db, Some(Arc::new(novelty)), 10);
+        let view = HistoricalLedgerView::new(snapshot, Some(Arc::new(novelty)), 10);
 
         assert_eq!(view.to_t(), 10);
         assert!(view.overlay().is_some());
@@ -421,7 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_historical_view_overlay_provider() {
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
@@ -436,7 +448,7 @@ mod tests {
             .unwrap();
 
         // View at t=5 should only see flakes with t <= 5
-        let view = HistoricalLedgerView::new(db, Some(Arc::new(novelty)), 5);
+        let view = HistoricalLedgerView::new(snapshot, Some(Arc::new(novelty)), 5);
 
         let mut collected = Vec::new();
         view.for_each_overlay_flake(IndexType::Spot, None, None, true, 100, &mut |f| {
@@ -496,7 +508,7 @@ mod tests {
         let commit = fluree_db_novelty::Commit::new(5, vec![make_flake(1, 1, 100, 5)]);
         store_and_publish_commit(&storage, &ns, "test:main", &commit).await;
 
-        // Load at t=5 - should use genesis db since no index exists
+        // Load at t=5 - should use genesis snapshot since no index exists
         let view = HistoricalLedgerView::load_at(&ns, "test:main", storage, 5)
             .await
             .unwrap();

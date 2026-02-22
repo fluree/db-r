@@ -7,7 +7,7 @@
 use super::{FormatError, Result};
 use crate::QueryResult;
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::GraphView;
+use fluree_db_indexer::run_index::BinaryGraphView;
 use fluree_db_query::binding::Binding;
 
 /// Materialize an encoded binding to a concrete `Binding` (Sid/Lit/etc).
@@ -35,7 +35,10 @@ pub(crate) fn materialize_binding(result: &QueryResult, binding: &Binding) -> Re
     })
 }
 
-fn materialize_encoded_binding(binding: &Binding, gv: &GraphView) -> std::io::Result<Binding> {
+fn materialize_encoded_binding(
+    binding: &Binding,
+    gv: &BinaryGraphView,
+) -> std::io::Result<Binding> {
     let store = gv.store();
     match binding {
         Binding::EncodedSid { s_id } => {
@@ -55,7 +58,7 @@ fn materialize_encoded_binding(binding: &Binding, gv: &GraphView) -> std::io::Re
     }
 }
 
-fn materialize_encoded_lit(binding: &Binding, gv: &GraphView) -> std::io::Result<Binding> {
+fn materialize_encoded_lit(binding: &Binding, gv: &BinaryGraphView) -> std::io::Result<Binding> {
     let Binding::EncodedLit {
         o_kind,
         o_key,

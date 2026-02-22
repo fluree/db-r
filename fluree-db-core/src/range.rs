@@ -9,7 +9,7 @@
 //! use fluree_db_core::{range, IndexType, RangeTest, RangeMatch, RangeOptions};
 //!
 //! let flakes = range(
-//!     &db,
+//!     &snapshot,
 //!     IndexType::Spot,
 //!     RangeTest::Eq,
 //!     RangeMatch::subject(subject_sid),
@@ -42,20 +42,20 @@ pub const BATCHED_JOIN_SIZE: usize = 100_000;
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
+/// * `snapshot` - The database snapshot to query
 /// * `index` - Which index to use
 /// * `test` - Comparison operator (=, <, <=, >, >=)
 /// * `match_val` - Components to match
 /// * `opts` - Query options (limits, offset)
 pub async fn range(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     g_id: GraphId,
     index: IndexType,
     test: RangeTest,
     match_val: RangeMatch,
     opts: RangeOptions,
 ) -> Result<Vec<Flake>> {
-    range_with_overlay(db, g_id, &NoOverlay, index, test, match_val, opts).await
+    range_with_overlay(snapshot, g_id, &NoOverlay, index, test, match_val, opts).await
 }
 
 /// Execute a range query with an overlay provider (novelty).
@@ -63,7 +63,7 @@ pub async fn range(
 /// Delegates to the `RangeProvider` attached to the `LedgerSnapshot`.  For genesis
 /// databases (t=0, no provider), returns overlay-only flakes.
 pub async fn range_with_overlay<O>(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &O,
     index: IndexType,
@@ -74,14 +74,14 @@ pub async fn range_with_overlay<O>(
 where
     O: OverlayProvider + ?Sized,
 {
-    match db.range_provider.as_ref() {
+    match snapshot.range_provider.as_ref() {
         Some(provider) => {
             let overlay_ref = SizedOverlayRef(overlay);
             provider
                 .range(g_id, index, test, &match_val, &opts, &overlay_ref)
                 .map_err(|e| crate::error::Error::Io(e.to_string()))
         }
-        None if db.t == 0 => {
+        None if snapshot.t == 0 => {
             // Genesis Db: no base data, return overlay flakes only.
             // Strict: only default graph (g_id=0) is supported without an index.
             if g_id != 0 {
@@ -90,7 +90,7 @@ where
                      (graph routing dictionaries are not available at genesis)",
                 ));
             }
-            let to_t = opts.to_t.unwrap_or(db.t);
+            let to_t = opts.to_t.unwrap_or(snapshot.t);
             let mut flakes = collect_overlay_only(overlay, index, to_t);
             // Apply RangeMatch filtering — collect_overlay_only returns all
             // overlay flakes; narrow them to the requested range.
@@ -117,7 +117,7 @@ where
 ///
 /// Delegates to `RangeProvider::range_bounded`.
 pub async fn range_bounded_with_overlay<O>(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &O,
     index: IndexType,
@@ -128,14 +128,14 @@ pub async fn range_bounded_with_overlay<O>(
 where
     O: OverlayProvider + ?Sized,
 {
-    match db.range_provider.as_ref() {
+    match snapshot.range_provider.as_ref() {
         Some(provider) => {
             let overlay_ref = SizedOverlayRef(overlay);
             provider
                 .range_bounded(g_id, index, &start_bound, &end_bound, &opts, &overlay_ref)
                 .map_err(|e| crate::error::Error::Io(e.to_string()))
         }
-        None if db.t == 0 => {
+        None if snapshot.t == 0 => {
             // Strict: only default graph (g_id=0) is supported without an index.
             if g_id != 0 {
                 return Err(crate::error::Error::invalid_index(
@@ -143,7 +143,7 @@ where
                      (graph routing dictionaries are not available at genesis)",
                 ));
             }
-            let to_t = opts.to_t.unwrap_or(db.t);
+            let to_t = opts.to_t.unwrap_or(snapshot.t);
             let cmp = index.comparator();
             let mut flakes = collect_overlay_only(overlay, index, to_t);
             // Apply start/end bounds — collect_overlay_only returns all

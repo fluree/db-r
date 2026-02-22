@@ -105,7 +105,7 @@ async fn policy_allow_false_denies_property() {
         .ledger("policy/allow-false:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // SSN should be denied, so WHERE can't match
     assert_eq!(
@@ -137,7 +137,7 @@ async fn policy_allow_false_denies_property() {
         .query_connection(&query_name)
         .await
         .expect("query_connection");
-    let jsonld_name = result_name.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld_name = result_name.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows(&jsonld_name),
@@ -209,7 +209,7 @@ async fn policy_allow_precedence_over_fquery() {
         .ledger("policy/allow-precedence:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // f:allow: false should override f:query
     assert_eq!(
@@ -264,7 +264,7 @@ async fn policy_onclass_with_fquery() {
         .await
         .expect("query_connection");
     let ledger = fluree.ledger("policy/onclass:main").await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Only Users (Alice, Bob) should be visible, not Admin (Carol)
     assert_eq!(
@@ -337,7 +337,7 @@ async fn policy_onclass_with_fquery_this_check() {
         .ledger("policy/onclass-fquery:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Alice (User, age 30) and Carol (Admin) should be visible
     // Bob (User, age 25) should be denied by the age filter
@@ -412,7 +412,7 @@ async fn policy_onproperty_with_fquery() {
         .ledger("policy/onprop-fquery:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Only Alice (age 30) and Carol (age 35) have SSN visible
     // Bob (age 25) SSN is denied by f:query
@@ -483,7 +483,7 @@ async fn policy_onproperty_multiple_values() {
         .ledger("policy/onprop-multi:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Age is denied, so WHERE clause fails to match
     assert_eq!(
@@ -515,7 +515,7 @@ async fn policy_onproperty_multiple_values() {
         .query_connection(&query_name)
         .await
         .expect("query_connection");
-    let jsonld_name = result_name.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld_name = result_name.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     assert_eq!(
         normalize_rows(&jsonld_name),
@@ -584,7 +584,7 @@ async fn policy_required_flag() {
         .await
         .expect("query_connection");
     let ledger = fluree.ledger("policy/required:main").await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // f:required policy must allow - Bob (age 25) is denied despite allow-all
     assert_eq!(
@@ -651,7 +651,7 @@ async fn policy_onclass_and_onproperty_combined() {
         .ledger("policy/combined-targeting:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Only Carol (Admin) SSN should be visible
     // Alice and Bob (Users) SSN should be denied
@@ -792,7 +792,7 @@ async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
             };
 
             let policy_ctx = build_policy_context(
-                &ledger2.db,
+                &ledger2.snapshot,
                 ledger2.novelty.as_ref(),
                 Some(ledger2.novelty.as_ref()),
                 ledger2.t(),
@@ -820,7 +820,7 @@ async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
                 .query_view(&view, &query_ssn)
                 .await
                 .expect("query_view");
-            let jsonld = result.to_jsonld(&ledger2.db).expect("to_jsonld");
+            let jsonld = result.to_jsonld(&ledger2.snapshot).expect("to_jsonld");
 
             assert_eq!(
                 normalize_rows(&jsonld),

@@ -942,10 +942,10 @@ impl NestedLoopJoinOperator {
         Ok(())
     }
 
-    /// Flush batched accumulator using the appropriate db/overlay/to_t for the current context.
+    /// Flush batched accumulator using the appropriate snapshot/overlay/to_t for the current context.
     ///
-    /// - Single-db mode: uses ctx.db/ctx.overlay()/ctx.to_t
-    /// - Dataset mode with exactly one graph: uses that graph's db/overlay/to_t
+    /// - Single-db mode: uses ctx.snapshot/ctx.overlay()/ctx.to_t
+    /// - Dataset mode with exactly one graph: uses that graph's snapshot/overlay/to_t
     async fn flush_batched_accumulator_for_ctx(
         &mut self,
         ctx: &ExecutionContext<'_>,
@@ -1764,11 +1764,11 @@ mod tests {
         use fluree_db_core::{FlakeValue, LedgerSnapshot};
 
         // Minimal context (db is unused here; only batch_size matters).
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let mut vars = VarRegistry::new();
         let x = vars.get_or_insert("?x"); // VarId(0)
         let v = vars.get_or_insert("?v"); // VarId(1)
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Left schema: [?v]
         let left_schema: Arc<[VarId]> = Arc::from(vec![v].into_boxed_slice());
@@ -1865,12 +1865,12 @@ mod tests {
         use crate::var_registry::VarRegistry;
         use fluree_db_core::{FlakeValue, LedgerSnapshot};
 
-        let db = LedgerSnapshot::genesis("test/main");
+        let snapshot = LedgerSnapshot::genesis("test/main");
         let mut vars = VarRegistry::new();
         let s = vars.get_or_insert("?s"); // VarId(0)
         let x = vars.get_or_insert("?x"); // VarId(1)
         let y = vars.get_or_insert("?y"); // VarId(2)
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Left schema: [?s] - a Sid (e.g., from VALUES or prior scan)
         let left_schema: Arc<[VarId]> = Arc::from(vec![s].into_boxed_slice());
@@ -2228,8 +2228,9 @@ mod tests {
         let exec = ExecutableQuery::simple(pq.clone());
         let operator = build_operator_tree(&pq, &exec.options, None).unwrap();
 
-        let db = LedgerSnapshot::genesis("test:main");
-        let mut ctx = crate::context::ExecutionContext::new(&db, &vars).with_binary_store(store, 0);
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let mut ctx =
+            crate::context::ExecutionContext::new(&snapshot, &vars).with_binary_store(store, 0);
         ctx.to_t = 1;
 
         let batches = run_operator(operator, &ctx).await.unwrap();

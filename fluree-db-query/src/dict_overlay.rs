@@ -26,7 +26,7 @@ use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::vec_bi_dict::VecBiDict;
 use fluree_db_core::GraphId;
 use fluree_db_core::ListIndex;
-use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
+use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
@@ -41,7 +41,7 @@ use std::sync::Arc;
 /// guaranteed to be in the persisted tree; IDs above the watermark are novel
 /// and resolved from `DictNovelty`.
 pub struct DictOverlay {
-    graph_view: GraphView,
+    graph_view: BinaryGraphView,
     dict_novelty: Arc<DictNovelty>,
 
     // -- Ephemeral predicate extensions (per-query, low cardinality) --
@@ -96,7 +96,7 @@ const EPHEMERAL_SUBJECT_LOCAL_BASE: u64 = 0x0000_8000_0000_0000;
 
 impl DictOverlay {
     /// Create a new overlay wrapping the given graph view and DictNovelty.
-    pub fn new(graph_view: GraphView, dict_novelty: Arc<DictNovelty>) -> Self {
+    pub fn new(graph_view: BinaryGraphView, dict_novelty: Arc<DictNovelty>) -> Self {
         let store = graph_view.store();
         let base_p_count = store.predicate_count();
         let base_g_count = store.graph_ids().len() as GraphId;
@@ -125,7 +125,7 @@ impl DictOverlay {
     }
 
     /// Reference to the underlying graph view.
-    pub fn graph_view(&self) -> &GraphView {
+    pub fn graph_view(&self) -> &BinaryGraphView {
         &self.graph_view
     }
 

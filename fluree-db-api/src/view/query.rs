@@ -61,12 +61,12 @@ where
         let parse_start = std::time::Instant::now();
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &view.db, view.default_context.as_ref())?
+                parse_jsonld_query(json, &view.snapshot, view.default_context.as_ref())?
             }
             QueryInput::Sparql(sparql) => {
                 // Validate no dataset clauses
                 self.validate_sparql_for_view(sparql)?;
-                parse_sparql_to_ir(sparql, &view.db, view.default_context.as_ref())?
+                parse_sparql_to_ir(sparql, &view.snapshot, view.default_context.as_ref())?
             }
         };
         let parse_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
@@ -101,7 +101,7 @@ where
             vars,
             parsed,
             batches,
-            view.to_t,
+            view.t,
             Some(view.overlay.clone()),
             view.binary_graph(),
         ))
@@ -127,15 +127,17 @@ where
         // Parse
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &view.db, view.default_context.as_ref()).map_err(|e| {
-                    crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-                })?
+                parse_jsonld_query(json, &view.snapshot, view.default_context.as_ref()).map_err(
+                    |e| {
+                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+                    },
+                )?
             }
             QueryInput::Sparql(sparql) => {
                 self.validate_sparql_for_view(sparql).map_err(|e| {
                     crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                 })?;
-                parse_sparql_to_ir(sparql, &view.db, view.default_context.as_ref()).map_err(
+                parse_sparql_to_ir(sparql, &view.snapshot, view.default_context.as_ref()).map_err(
                     |e| {
                         crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                     },
@@ -162,7 +164,7 @@ where
             vars,
             parsed,
             batches,
-            view.to_t,
+            view.t,
             Some(view.overlay.clone()),
             view.binary_graph(),
         );
@@ -170,13 +172,13 @@ where
         // Format with tracking
         let result_json = match view.policy() {
             Some(policy) => query_result
-                .to_jsonld_async_with_policy_tracked(&view.db, policy, &tracker)
+                .to_jsonld_async_with_policy_tracked(view.as_graph_db_ref(), policy, &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
             None => query_result
-                .to_jsonld_async_tracked(&view.db, &tracker)
+                .to_jsonld_async_tracked(view.as_graph_db_ref(), &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
@@ -256,11 +258,11 @@ where
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
         let prepared = prepare_execution(
-            &view.db,
+            &view.snapshot,
             view.graph_id,
             view.overlay.as_ref(),
             executable,
-            view.to_t,
+            view.t,
         )
         .await
         .map_err(query_error_to_api_error)?;
@@ -279,9 +281,9 @@ where
         };
 
         let source = DataSource {
-            db: &view.db,
+            snapshot: &view.snapshot,
             overlay: view.overlay.as_ref(),
-            to_t: view.to_t,
+            to_t: view.t,
             from_t: None,
         };
         execute_prepared(source, vars, prepared, config)
@@ -300,11 +302,11 @@ where
         tracker: &Tracker,
     ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
         let prepared = prepare_execution(
-            &view.db,
+            &view.snapshot,
             view.graph_id,
             view.overlay.as_ref(),
             executable,
-            view.to_t,
+            view.t,
         )
         .await?;
 
@@ -322,9 +324,9 @@ where
         };
 
         let source = DataSource {
-            db: &view.db,
+            snapshot: &view.snapshot,
             overlay: view.overlay.as_ref(),
-            to_t: view.to_t,
+            to_t: view.t,
             from_t: None,
         };
         execute_prepared(source, vars, prepared, config).await

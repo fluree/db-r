@@ -234,7 +234,9 @@ async fn dataset_single_default_graph_basic_query() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Should return both Alice and Bob (single-variable result is flat array)
     assert_eq!(
@@ -289,7 +291,9 @@ async fn dataset_multiple_default_graphs_union() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Should return all 4 people from both ledgers (single-variable result is flat array)
     assert_eq!(
@@ -336,7 +340,9 @@ async fn dataset_composed_across_connections_selecting_variables() {
         .await
         .expect("query_dataset");
     let primary = dataset.primary().expect("primary");
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     assert_eq!(
         normalize_rows_array(&jsonld),
@@ -384,7 +390,7 @@ async fn dataset_composed_across_connections_selecting_subgraph_depth_3() {
         .expect("query_dataset");
     let primary = dataset.primary().expect("primary");
     let jsonld = result
-        .to_jsonld_async(primary.db.as_ref())
+        .to_jsonld_async(primary.as_graph_db_ref())
         .await
         .expect("to_jsonld_async");
 
@@ -500,7 +506,9 @@ async fn dataset_named_graph_basic() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Default graph should only have people, not organizations
     assert_eq!(
@@ -549,7 +557,9 @@ async fn dataset_from_json_single_string() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
     assert_eq!(
         normalize_flat_results(&jsonld),
         normalize_flat_results(&json!(["Alice", "Bob"]))
@@ -592,7 +602,9 @@ async fn dataset_from_json_array() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Should get all 4 people from union
     assert_eq!(
@@ -640,7 +652,9 @@ async fn dataset_from_json_named() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Query against default graph - should only see people
     assert_eq!(
@@ -749,7 +763,9 @@ async fn dataset_cross_graph_join_in_union() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Should find Alice works at Acme (join across union)
     assert_eq!(
@@ -817,7 +833,9 @@ async fn sparql_graph_pattern_concrete_iri() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Should return names from the named graph (people:main)
     assert_eq!(
@@ -862,7 +880,9 @@ async fn sparql_graph_pattern_variable_iteration() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Should return (graph, name) pairs from all named graphs
     // People graph: Alice, Bob
@@ -954,7 +974,7 @@ async fn sparql_graph_pattern_default_vs_named() {
 
     let primary = dataset.primary().unwrap();
     let jsonld_default = result_default
-        .to_jsonld(primary.db.as_ref())
+        .to_jsonld(primary.snapshot.as_ref())
         .expect("to_jsonld");
 
     // Default graph should only have people
@@ -980,7 +1000,7 @@ async fn sparql_graph_pattern_default_vs_named() {
         .expect("query should succeed");
 
     let jsonld_named = result_named
-        .to_jsonld(primary.db.as_ref())
+        .to_jsonld(primary.snapshot.as_ref())
         .expect("to_jsonld");
 
     // Named graph should only have orgs
@@ -1033,7 +1053,9 @@ async fn fql_graph_pattern_basic() {
         .expect("query should succeed");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Should return names from the named graph (people:main)
     assert_eq!(
@@ -1075,7 +1097,9 @@ async fn fql_graph_pattern_with_alias() {
         .expect("query should succeed using alias");
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).expect("to_jsonld");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
 
     // Should return names from the named graph referenced by alias
     assert_eq!(
@@ -1121,7 +1145,7 @@ async fn dataset_time_travel_at_t() {
 
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).unwrap();
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
     assert_eq!(
         normalize_flat_results(&jsonld),
@@ -1172,7 +1196,7 @@ async fn dataset_time_travel_at_time_iso() {
 
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).unwrap();
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
     assert_eq!(
         normalize_flat_results(&jsonld),
@@ -1244,7 +1268,7 @@ async fn dataset_time_travel_mixed_graphs() {
 
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).unwrap();
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
     // Should include Alice (people@t=1) and Acme Corp (orgs@head), but not Bob (people@t=2).
     assert_eq!(
@@ -1292,7 +1316,7 @@ async fn dataset_time_travel_alias_syntax_at_t() {
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).unwrap();
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
     // Should only see Alice (t=1), not Bob (t=2)
     assert_eq!(
@@ -1338,7 +1362,7 @@ async fn dataset_time_travel_at_commit() {
 
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).unwrap();
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
     assert_eq!(
         normalize_flat_results(&jsonld),
@@ -1385,7 +1409,7 @@ async fn dataset_time_travel_at_commit_short_prefix() {
 
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).unwrap();
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
     assert_eq!(
         normalize_flat_results(&jsonld),
@@ -1436,7 +1460,7 @@ async fn dataset_time_travel_alias_syntax_commit() {
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).unwrap();
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
     // Should only see Alice (t=1), not Bob (t=2)
     assert_eq!(
@@ -1528,7 +1552,7 @@ async fn sparql_single_db_graph_matching_alias() {
         .await
         .expect("query should succeed");
 
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should return results because alias matches
     assert_eq!(
@@ -1562,7 +1586,7 @@ async fn sparql_single_db_graph_non_matching_alias() {
         .await
         .expect("query should succeed");
 
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should return empty because alias doesn't match
     assert_eq!(jsonld, json!([]));
@@ -1593,7 +1617,7 @@ async fn sparql_single_db_graph_variable_unbound() {
         .await
         .expect("query should succeed");
 
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should return results with ?g bound to "people:main"
     let normalized = normalize_rows_array(&jsonld);
@@ -1637,7 +1661,7 @@ async fn sparql_single_db_graph_variable_bound_matching() {
         .await
         .expect("query should succeed");
 
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should return results because bound value matches alias
     let normalized = normalize_rows_array(&jsonld);
@@ -1670,7 +1694,7 @@ async fn sparql_single_db_graph_variable_bound_non_matching() {
         .await
         .expect("query should succeed");
 
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Should return empty because bound value doesn't match alias
     assert_eq!(jsonld, json!([]));
@@ -1756,7 +1780,7 @@ async fn dataset_multi_ledger_time_travel_execution() {
     let result = fluree.query_dataset_view(&dataset, &query).await.unwrap();
 
     let primary = dataset.primary().unwrap();
-    let jsonld = result.to_jsonld(primary.db.as_ref()).unwrap();
+    let jsonld = result.to_jsonld(primary.snapshot.as_ref()).unwrap();
 
     // Expect ledger1@t=1 (Alice) + ledger2@t=2 (Carol, Dave)
     assert_eq!(

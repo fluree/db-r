@@ -29,14 +29,14 @@
 //! use fluree_db_api::format::{format_results, format_results_async, FormatterConfig};
 //!
 //! // For regular SELECT queries (sync)
-//! let json = format_results(&result, &parsed.context, &ledger.db, &FormatterConfig::jsonld())?;
+//! let json = format_results(&result, &parsed.context, &ledger.snapshot, &FormatterConfig::jsonld())?;
 //!
 //! // For graph crawl queries (async)
-//! let json = format_results_async(&result, &parsed.context, &ledger.db, &FormatterConfig::jsonld()).await?;
+//! let json = format_results_async(&result, &parsed.context, &ledger.snapshot, &FormatterConfig::jsonld()).await?;
 //!
 //! // For TSV/CSV (high-performance)
-//! let tsv = result.to_tsv(&ledger.db)?;
-//! let csv = result.to_csv(&ledger.db)?;
+//! let tsv = result.to_tsv(&ledger.snapshot)?;
+//! let csv = result.to_csv(&ledger.snapshot)?;
 //! ```
 
 pub mod config;
@@ -55,7 +55,7 @@ pub use iri::IriCompactor;
 
 use crate::QueryResult;
 use fluree_db_core::LedgerSnapshot;
-use fluree_db_core::{FuelExceededError, Tracker};
+use fluree_db_core::{FuelExceededError, GraphDbRef, Tracker};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::Value as JsonValue;
 
@@ -91,7 +91,7 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 ///
 /// * `result` - Query result to format
 /// * `context` - Parsed @context from the query (for IRI compaction)
-/// * `db` - Database (for namespace code lookup)
+/// * `snapshot` - Database snapshot (for namespace code lookup)
 /// * `config` - Formatting configuration
 ///
 /// # Returns
@@ -100,7 +100,7 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 pub fn format_results(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     config: &FormatterConfig,
 ) -> Result<JsonValue> {
     // Delimited-text formats produce bytes/String, not JsonValue. Reject early.
@@ -112,7 +112,7 @@ pub fn format_results(
         )));
     }
 
-    let compactor = IriCompactor::new(db.namespaces(), context);
+    let compactor = IriCompactor::new(snapshot.namespaces(), context);
 
     // CONSTRUCT queries have dedicated output format
     // Guard on BOTH config.select_mode AND result.select_mode for safety
@@ -161,17 +161,17 @@ pub fn format_results(
 pub fn format_results_string(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     config: &FormatterConfig,
 ) -> Result<String> {
     // Delimited-text fast-path: skip JSON DOM and JSON serialization entirely
     match config.format {
-        OutputFormat::Tsv => return delimited::format_tsv(result, db),
-        OutputFormat::Csv => return delimited::format_csv(result, db),
+        OutputFormat::Tsv => return delimited::format_tsv(result, snapshot),
+        OutputFormat::Csv => return delimited::format_csv(result, snapshot),
         _ => {}
     }
 
-    let value = format_results(result, context, db, config)?;
+    let value = format_results(result, context, snapshot, config)?;
 
     if config.pretty {
         Ok(serde_json::to_string_pretty(&value)?)
@@ -196,7 +196,7 @@ pub fn format_results_string(
 ///
 /// * `result` - Query result to format
 /// * `context` - Parsed @context from the query (for IRI compaction)
-/// * `db` - Database (for namespace code lookup and property fetching)
+/// * `snapshot` - Database snapshot (for namespace code lookup and property fetching)
 /// * `config` - Formatting configuration
 ///
 /// # Returns
@@ -210,7 +210,7 @@ pub fn format_results_string(
 pub async fn format_results_async(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &LedgerSnapshot,
+    db: GraphDbRef<'_>,
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
     tracker: Option<&Tracker>,
@@ -224,7 +224,7 @@ pub async fn format_results_async(
         )));
     }
 
-    let compactor = IriCompactor::new(db.namespaces(), context);
+    let compactor = IriCompactor::new(db.snapshot.namespaces(), context);
 
     // CONSTRUCT queries have dedicated output format (sync, no DB access needed)
     if config.select_mode == SelectMode::Construct {
@@ -285,14 +285,14 @@ pub async fn format_results_async(
 pub async fn format_results_string_async(
     result: &QueryResult,
     context: &ParsedContext,
-    db: &LedgerSnapshot,
+    db: GraphDbRef<'_>,
     config: &FormatterConfig,
     policy: Option<&fluree_db_policy::PolicyContext>,
 ) -> Result<String> {
     // Delimited-text fast-path: skip JSON DOM and JSON serialization entirely
     match config.format {
-        OutputFormat::Tsv => return delimited::format_tsv(result, db),
-        OutputFormat::Csv => return delimited::format_csv(result, db),
+        OutputFormat::Tsv => return delimited::format_tsv(result, db.snapshot),
+        OutputFormat::Csv => return delimited::format_csv(result, db.snapshot),
         _ => {}
     }
 

@@ -1,6 +1,6 @@
 //! Policy transaction (modify) enforcement tests.
 //!
-//! Clojure parity: `fluree.db.policy.tx-test`
+//! Clojure parity: `fluree.snapshot.policy.tx-test`
 //!
 //! Tests modify-policy enforcement including:
 //! - f:onProperty modify policies with f:query
@@ -100,7 +100,7 @@ async fn modify_policy_allows_own_property() {
     };
 
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &ledger.db,
+        &ledger.snapshot,
         ledger.novelty.as_ref(),
         Some(ledger.novelty.as_ref()),
         ledger.t(),
@@ -162,7 +162,7 @@ async fn modify_policy_allows_own_property() {
     });
 
     let query_result = fluree.query(&tx_result.ledger, &query).await.unwrap();
-    let rows = query_result.to_jsonld(&tx_result.ledger.db).unwrap();
+    let rows = query_result.to_jsonld(&tx_result.ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
     assert_eq!(arr.len(), 1, "Should have 1 row, got: {:?}", arr);
@@ -216,7 +216,7 @@ async fn modify_policy_denies_other_property() {
     };
 
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &ledger.db,
+        &ledger.snapshot,
         ledger.novelty.as_ref(),
         Some(ledger.novelty.as_ref()),
         ledger.t(),
@@ -310,7 +310,7 @@ async fn view_only_policy_blocks_modify() {
     };
 
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &ledger.db,
+        &ledger.snapshot,
         ledger.novelty.as_ref(),
         Some(ledger.novelty.as_ref()),
         ledger.t(),
@@ -407,7 +407,7 @@ async fn modify_query_always_false_denies() {
     };
 
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &ledger.db,
+        &ledger.snapshot,
         ledger.novelty.as_ref(),
         Some(ledger.novelty.as_ref()),
         ledger.t(),

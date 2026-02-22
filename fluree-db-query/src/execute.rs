@@ -74,8 +74,8 @@ use tracing::Instrument;
 /// and time bounds for the query.
 #[derive(Clone, Copy)]
 pub struct DataSource<'a> {
-    /// The database to query
-    pub db: &'a LedgerSnapshot,
+    /// The database snapshot to query
+    pub snapshot: &'a LedgerSnapshot,
     /// Overlay provider for novelty data
     pub overlay: &'a dyn fluree_db_core::OverlayProvider,
     /// Upper time bound (inclusive)
@@ -87,12 +87,12 @@ pub struct DataSource<'a> {
 impl<'a> DataSource<'a> {
     /// Create a new data source with no lower time bound.
     pub fn new(
-        db: &'a LedgerSnapshot,
+        snapshot: &'a LedgerSnapshot,
         overlay: &'a dyn fluree_db_core::OverlayProvider,
         to_t: i64,
     ) -> Self {
         Self {
-            db,
+            snapshot,
             overlay,
             to_t,
             from_t: None,
@@ -101,13 +101,13 @@ impl<'a> DataSource<'a> {
 
     /// Create a new data source with a time range.
     pub fn with_range(
-        db: &'a LedgerSnapshot,
+        snapshot: &'a LedgerSnapshot,
         overlay: &'a dyn fluree_db_core::OverlayProvider,
         to_t: i64,
         from_t: i64,
     ) -> Self {
         Self {
-            db,
+            snapshot,
             overlay,
             to_t,
             from_t: Some(from_t),
@@ -134,7 +134,7 @@ use runner::{
 ///
 /// # Arguments
 ///
-/// * `db` - Database to query
+/// * `snapshot` - Database snapshot to query
 /// * `vars` - Variable registry for name resolution
 /// * `query` - Executable query with modifiers
 ///
@@ -142,13 +142,13 @@ use runner::{
 ///
 /// Vector of result batches. Empty vector if no results.
 pub async fn execute(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     vars: &VarRegistry,
     query: &ExecutableQuery,
 ) -> Result<Vec<Batch>> {
     let span = tracing::debug_span!(
         "query_execute",
-        db_t = db.t,
+        db_t = snapshot.t,
         pattern_count = query.query.patterns.len()
     );
     // Use an async block with .instrument() so the span is NOT held
@@ -157,8 +157,8 @@ pub async fn execute(
     async move {
         tracing::debug!("starting query execution");
 
-        let ctx = ExecutionContext::new(db, vars).with_strict_bind_errors();
-        let hierarchy = db.schema_hierarchy();
+        let ctx = ExecutionContext::new(snapshot, vars).with_strict_bind_errors();
+        let hierarchy = snapshot.schema_hierarchy();
 
         // Compute effective reasoning modes (auto-RDFS when hierarchy exists)
         let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
@@ -175,15 +175,23 @@ pub async fn execute(
         // Build ontology for OWL2-QL mode (if enabled)
         let ontology = if reasoning.owl2ql {
             tracing::debug!("building OWL2-QL ontology");
-            Some(crate::rewrite_owl_ql::Ontology::from_db(db, db.t as u64).await?)
+            Some(
+                crate::rewrite_owl_ql::Ontology::from_db(fluree_db_core::GraphDbRef::new(
+                    snapshot,
+                    0,
+                    &fluree_db_core::NoOverlay,
+                    snapshot.t,
+                ))
+                .await?,
+            )
         } else {
             None
         };
 
         // Apply pattern rewriting for reasoning (RDFS/OWL expansion)
-        fn encode_term(db: &LedgerSnapshot, t: &Term) -> Term {
+        fn encode_term(snapshot: &LedgerSnapshot, t: &Term) -> Term {
             match t {
-                Term::Iri(iri) => db
+                Term::Iri(iri) => snapshot
                     .encode_iri(iri)
                     .map(Term::Sid)
                     .unwrap_or_else(|| t.clone()),
@@ -192,40 +200,40 @@ pub async fn execute(
         }
 
         fn encode_patterns_for_reasoning(
-            db: &LedgerSnapshot,
+            snapshot: &LedgerSnapshot,
             patterns: &[Pattern],
         ) -> Vec<Pattern> {
             patterns
                 .iter()
                 .map(|p| match p {
                     Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                        s: encode_term(db, &tp.s),
-                        p: encode_term(db, &tp.p),
-                        o: encode_term(db, &tp.o),
+                        s: encode_term(snapshot, &tp.s),
+                        p: encode_term(snapshot, &tp.p),
+                        o: encode_term(snapshot, &tp.o),
                         dt: tp.dt.clone(),
                         lang: tp.lang.clone(),
                     }),
                     Pattern::Optional(inner) => {
-                        Pattern::Optional(encode_patterns_for_reasoning(db, inner))
+                        Pattern::Optional(encode_patterns_for_reasoning(snapshot, inner))
                     }
                     Pattern::Union(branches) => Pattern::Union(
                         branches
                             .iter()
-                            .map(|b| encode_patterns_for_reasoning(db, b))
+                            .map(|b| encode_patterns_for_reasoning(snapshot, b))
                             .collect(),
                     ),
                     Pattern::Minus(inner) => {
-                        Pattern::Minus(encode_patterns_for_reasoning(db, inner))
+                        Pattern::Minus(encode_patterns_for_reasoning(snapshot, inner))
                     }
                     Pattern::Exists(inner) => {
-                        Pattern::Exists(encode_patterns_for_reasoning(db, inner))
+                        Pattern::Exists(encode_patterns_for_reasoning(snapshot, inner))
                     }
                     Pattern::NotExists(inner) => {
-                        Pattern::NotExists(encode_patterns_for_reasoning(db, inner))
+                        Pattern::NotExists(encode_patterns_for_reasoning(snapshot, inner))
                     }
                     Pattern::Graph { name, patterns } => Pattern::Graph {
                         name: name.clone(),
-                        patterns: encode_patterns_for_reasoning(db, patterns),
+                        patterns: encode_patterns_for_reasoning(snapshot, patterns),
                     },
                     _ => p.clone(),
                 })
@@ -233,7 +241,7 @@ pub async fn execute(
         }
 
         let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-            encode_patterns_for_reasoning(db, &query.query.patterns)
+            encode_patterns_for_reasoning(snapshot, &query.query.patterns)
         } else {
             query.query.patterns.clone()
         };
@@ -259,10 +267,10 @@ pub async fn execute(
         //
         // Note: lowering may keep IRIs as `Term::Iri` (cross-ledger). Build an IRI-keyed
         // stats view so planning can still consult stats for IRI predicates.
-        let stats_view = db.stats.as_ref().map(|s| {
+        let stats_view = snapshot.stats.as_ref().map(|s| {
             Arc::new(StatsView::from_db_stats_with_namespaces(
                 s,
-                &db.namespace_codes,
+                &snapshot.namespace_codes,
             ))
         });
 
@@ -283,7 +291,7 @@ pub async fn execute(
 ///
 /// # Arguments
 ///
-/// * `db` - Database to query
+/// * `snapshot` - Database snapshot to query
 /// * `vars` - Variable registry for name resolution
 /// * `query` - Parsed query
 ///
@@ -291,11 +299,11 @@ pub async fn execute(
 ///
 /// Vector of result batches.
 pub async fn execute_query(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     vars: &VarRegistry,
     query: &ParsedQuery,
 ) -> Result<Vec<Batch>> {
-    execute(db, vars, &ExecutableQuery::simple(query.clone())).await
+    execute(snapshot, vars, &ExecutableQuery::simple(query.clone())).await
 }
 
 /// Execute a query with an overlay
@@ -318,7 +326,8 @@ pub async fn execute_with_overlay(
     vars: &VarRegistry,
     query: &ExecutableQuery,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_overlay(source, vars, prepared).await
 }
 
@@ -331,7 +340,8 @@ pub async fn execute_with_overlay_tracked<'a>(
     query: &ExecutableQuery,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_overlay_tracked(source, vars, prepared, tracker).await
 }
 
@@ -345,7 +355,8 @@ pub async fn execute_with_policy<'a>(
     query: &ExecutableQuery,
     policy: &'a fluree_db_policy::PolicyContext,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_policy(source, vars, prepared, policy, None).await
 }
 
@@ -359,7 +370,8 @@ pub async fn execute_with_policy_tracked(
     policy: &fluree_db_policy::PolicyContext,
     tracker: &Tracker,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_policy(source, vars, prepared, policy, Some(tracker)).await
 }
 
@@ -372,7 +384,8 @@ pub async fn execute_with_r2rml<'a, 'b>(
     r2rml_provider: &'b dyn crate::r2rml::R2rmlProvider,
     r2rml_table_provider: &'b dyn crate::r2rml::R2rmlTableProvider,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_r2rml(
         source,
         vars,
@@ -391,7 +404,8 @@ pub async fn execute_with_dataset<'a>(
     query: &ExecutableQuery,
     dataset: &'a DataSet<'a>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset(source, vars, prepared, dataset, None).await
 }
 
@@ -403,7 +417,8 @@ pub async fn execute_with_dataset_tracked<'a>(
     dataset: &'a DataSet<'a>,
     tracker: &'a Tracker,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset(source, vars, prepared, dataset, Some(tracker)).await
 }
 
@@ -415,7 +430,8 @@ pub async fn execute_with_dataset_history<'a>(
     dataset: &'a DataSet<'a>,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_history(source, vars, prepared, dataset, tracker, true).await
 }
 
@@ -427,7 +443,8 @@ pub async fn execute_with_dataset_and_policy<'a>(
     dataset: &'a DataSet<'a>,
     policy: &'a fluree_db_policy::PolicyContext,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_policy(source, vars, prepared, dataset, policy, None).await
 }
 
@@ -440,7 +457,8 @@ pub async fn execute_with_dataset_and_policy_tracked<'a>(
     policy: &'a fluree_db_policy::PolicyContext,
     tracker: &'a Tracker,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_policy(source, vars, prepared, dataset, policy, Some(tracker))
         .await
 }
@@ -458,7 +476,8 @@ pub async fn execute_with_dataset_and_bm25<'a>(
     bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_bm25(source, vars, prepared, dataset, bm25_provider, tracker)
         .await
 }
@@ -477,7 +496,8 @@ pub async fn execute_with_dataset_and_policy_and_bm25<'a>(
     bm25_provider: &dyn crate::bm25::Bm25IndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_policy_and_bm25(
         source,
         vars,
@@ -504,7 +524,8 @@ pub async fn execute_with_dataset_and_providers<'a, 'b>(
     vector_provider: &'b dyn crate::vector::VectorIndexProvider,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_providers(
         source,
         vars,
@@ -527,7 +548,8 @@ pub async fn execute_with_dataset_and_policy_and_providers<'a, 'b>(
     query: &ExecutableQuery,
     params: QueryContextParams<'a, 'b>,
 ) -> Result<Vec<Batch>> {
-    let prepared = prepare_execution(source.db, 0, source.overlay, query, source.to_t).await?;
+    let prepared =
+        prepare_execution(source.snapshot, 0, source.overlay, query, source.to_t).await?;
     execute_prepared_with_dataset_and_policy_and_providers(source, vars, prepared, params).await
 }
 
@@ -546,7 +568,7 @@ mod tests {
     use std::collections::HashSet;
     use where_plan::collect_inner_join_block;
 
-    fn make_test_db() -> LedgerSnapshot {
+    fn make_test_snapshot() -> LedgerSnapshot {
         LedgerSnapshot::genesis("test/main")
     }
 
@@ -573,11 +595,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_patterns_returns_one_row() {
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
 
         let query = make_simple_query(vec![], vec![]);
-        let results = execute_query(&db, &vars, &query).await.unwrap();
+        let results = execute_query(&snapshot, &vars, &query).await.unwrap();
 
         // Empty WHERE returns 1 batch with a single empty solution
         assert_eq!(results.len(), 1);

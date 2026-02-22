@@ -88,12 +88,12 @@ where
         // 1. Parse to common IR (using primary db for namespace resolution).
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &primary.db, primary.default_context.as_ref())?
+                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())?
             }
             QueryInput::Sparql(sparql) => {
                 // For dataset view, SPARQL FROM/FROM NAMED are allowed
                 // (they were validated when building the dataset)
-                parse_sparql_to_ir(sparql, &primary.db, primary.default_context.as_ref())?
+                parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())?
             }
         };
 
@@ -145,18 +145,16 @@ where
         // Parse
         let (vars, parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &primary.db, primary.default_context.as_ref()).map_err(
-                    |e| {
+                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())
+                    .map_err(|e| {
                         crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-                    },
-                )?
+                    })?
             }
             QueryInput::Sparql(sparql) => {
-                parse_sparql_to_ir(sparql, &primary.db, primary.default_context.as_ref()).map_err(
-                    |e| {
+                parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())
+                    .map_err(|e| {
                         crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-                    },
-                )?
+                    })?
             }
         };
 
@@ -189,13 +187,13 @@ where
         // Format with tracking
         let result_json = match primary.policy() {
             Some(policy) => query_result
-                .to_jsonld_async_with_policy_tracked(&primary.db, policy, &tracker)
+                .to_jsonld_async_with_policy_tracked(primary.as_graph_db_ref(), policy, &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
                 })?,
             None => query_result
-                .to_jsonld_async_tracked(&primary.db, &tracker)
+                .to_jsonld_async_tracked(primary.as_graph_db_ref(), &tracker)
                 .await
                 .map_err(|e| {
                     crate::query::TrackedErrorResponse::new(500, e.to_string(), tracker.tally())
@@ -253,7 +251,7 @@ where
     ) -> Result<Vec<crate::Batch>> {
         // Primary default graph drives planning/optimization.
         //
-        // NOTE: We pass `primary.db` to the query engine as the "planning db".
+        // NOTE: We pass `primary.snapshot` to the query engine as the "planning db".
         // The engine will attach `runtime_dataset` to the ExecutionContext and scans
         // will union across all default graphs, but planning (including stats-based
         // reordering) is intentionally based on this primary graph for now.
@@ -264,18 +262,18 @@ where
         let runtime_dataset = dataset.as_runtime_dataset();
 
         let prepared = prepare_execution(
-            &primary.db,
+            &primary.snapshot,
             primary.graph_id,
             primary.overlay.as_ref(),
             executable,
-            primary.to_t,
+            primary.t,
         )
         .await
         .map_err(query_error_to_api_error)?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
-            None => (None, primary.to_t, false),
+            None => (None, primary.t, false),
         };
 
         let spatial_map = primary
@@ -301,7 +299,7 @@ where
         };
 
         let source = DataSource {
-            db: &primary.db,
+            snapshot: &primary.snapshot,
             overlay: primary.overlay.as_ref(),
             to_t,
             from_t,
@@ -328,17 +326,17 @@ where
         let runtime_dataset = dataset.as_runtime_dataset();
 
         let prepared = prepare_execution(
-            &primary.db,
+            &primary.snapshot,
             primary.graph_id,
             primary.overlay.as_ref(),
             executable,
-            primary.to_t,
+            primary.t,
         )
         .await?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
-            None => (None, primary.to_t, false),
+            None => (None, primary.t, false),
         };
 
         let spatial_map = primary
@@ -360,7 +358,7 @@ where
         };
 
         let source = DataSource {
-            db: &primary.db,
+            snapshot: &primary.snapshot,
             overlay: primary.overlay.as_ref(),
             to_t,
             from_t,

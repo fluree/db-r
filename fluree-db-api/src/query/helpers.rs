@@ -8,7 +8,7 @@ use crate::{
 };
 
 use fluree_db_core::LedgerSnapshot;
-use fluree_db_indexer::run_index::GraphView;
+use fluree_db_indexer::run_index::BinaryGraphView;
 use fluree_db_query::parse::{parse_query, ParsedQuery};
 
 use super::QueryResult;
@@ -26,7 +26,7 @@ use super::QueryResult;
 /// Returns the variable registry and parsed query.
 pub(crate) fn parse_jsonld_query(
     query_json: &JsonValue,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     default_context: Option<&JsonValue>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let has_context = query_json.get("@context").is_some() || query_json.get("context").is_some();
@@ -50,7 +50,7 @@ pub(crate) fn parse_jsonld_query(
     };
 
     let mut vars = VarRegistry::new();
-    let parsed = parse_query(query_ref, db, &mut vars)?;
+    let parsed = parse_query(query_ref, snapshot, &mut vars)?;
     Ok((vars, parsed))
 }
 
@@ -64,7 +64,7 @@ pub(crate) fn parse_jsonld_query(
 /// Returns the variable registry and parsed query.
 pub(crate) fn parse_sparql_to_ir(
     sparql: &str,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     default_context: Option<&JsonValue>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let mut ast = parse_and_validate_sparql(sparql)?;
@@ -96,7 +96,7 @@ pub(crate) fn parse_sparql_to_ir(
     }
 
     let mut vars = VarRegistry::new();
-    let parsed = fluree_db_sparql::lower_sparql(&ast, db, &mut vars)?;
+    let parsed = fluree_db_sparql::lower_sparql(&ast, snapshot, &mut vars)?;
     Ok((vars, parsed))
 }
 
@@ -129,7 +129,7 @@ pub(crate) fn build_query_result(
     batches: Vec<Batch>,
     t: i64,
     novelty: Option<Arc<dyn OverlayProvider>>,
-    binary_graph: Option<GraphView>,
+    binary_graph: Option<BinaryGraphView>,
 ) -> QueryResult {
     QueryResult {
         vars,
@@ -153,7 +153,7 @@ pub(crate) fn build_sparql_result(
     batches: Vec<Batch>,
     t: i64,
     novelty: Option<Arc<dyn OverlayProvider>>,
-    binary_graph: Option<GraphView>,
+    binary_graph: Option<BinaryGraphView>,
 ) -> QueryResult {
     QueryResult {
         vars,

@@ -24,7 +24,7 @@
 use crate::binding::Binding;
 use chrono::{Datelike, Timelike};
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::{BinaryIndexStore, GraphView};
+use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -255,7 +255,7 @@ pub enum JoinKeyMode {
 /// to materialize bindings for comparison/hashing/output.
 pub struct Materializer {
     /// Graph-scoped view (store + graph ID) for decoding
-    graph_view: GraphView,
+    graph_view: BinaryGraphView,
     /// Cache: s_id -> Sid (for terminal output)
     sid_cache: HashMap<u64, Sid>,
     /// Cache: s_id -> canonical IRI (for multi-ledger join keys)
@@ -274,7 +274,7 @@ impl Materializer {
     /// # Arguments
     /// * `graph_view` - Graph-scoped view (store + graph ID) for decoding
     /// * `mode` - Single-ledger or multi-ledger join key mode
-    pub fn new(graph_view: GraphView, mode: JoinKeyMode) -> Self {
+    pub fn new(graph_view: BinaryGraphView, mode: JoinKeyMode) -> Self {
         Self {
             graph_view,
             sid_cache: HashMap::new(),

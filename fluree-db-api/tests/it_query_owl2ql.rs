@@ -45,7 +45,7 @@ async fn owl2ql_equivalent_property_expands_across_properties() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!(["v"]));
 }
@@ -81,7 +81,7 @@ async fn owl_ql_alias_string_is_accepted() {
         .query(&ledger, &q)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     assert_eq!(rows, json!(["v"]));
 }

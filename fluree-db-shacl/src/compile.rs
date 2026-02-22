@@ -6,10 +6,7 @@
 use crate::constraints::{Constraint, NestedShape, NodeConstraint};
 use crate::error::Result;
 use crate::predicates;
-use fluree_db_core::{
-    range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot, OverlayProvider,
-    RangeMatch, RangeOptions, RangeTest, Sid,
-};
+use fluree_db_core::{Flake, FlakeValue, GraphDbRef, IndexType, RangeMatch, RangeTest, Sid};
 use fluree_vocab::namespaces::{RDF, SHACL};
 use fluree_vocab::rdf_names;
 use std::collections::{HashMap, HashSet};
@@ -165,11 +162,7 @@ impl ShapeCompiler {
     /// This function queries both the indexed database and any uncommitted
     /// novelty flakes to find SHACL shapes. This is important because shapes
     /// may be defined in the same transaction as the data they validate.
-    pub async fn compile_from_db<O: OverlayProvider>(
-        db: &LedgerSnapshot,
-        g_id: GraphId,
-        overlay: &O,
-    ) -> Result<Vec<CompiledShape>> {
+    pub async fn compile_from_db(db: GraphDbRef<'_>) -> Result<Vec<CompiledShape>> {
         let mut compiler = Self::new();
 
         // Query for all SHACL predicates to find shapes
@@ -225,23 +218,12 @@ impl ShapeCompiler {
             predicates::NAME,
         ];
 
-        // Use a high to_t to include flakes from novelty (which may be at t > db.t)
-        // This is important because shapes committed in recent transactions need to be
-        // available immediately, even before the novelty is merged into the indexed database.
-        let opts = RangeOptions::default().with_to_t(i64::MAX);
-
+        // Query for all SHACL predicates through the db ref
         for pred_name in &shacl_predicates {
             let pred = Sid::new(SHACL, pred_name);
-            let flakes = range_with_overlay(
-                db,
-                g_id,
-                overlay,
-                IndexType::Psot,
-                RangeTest::Eq,
-                RangeMatch::predicate(pred),
-                opts.clone(),
-            )
-            .await?;
+            let flakes = db
+                .range(IndexType::Psot, RangeTest::Eq, RangeMatch::predicate(pred))
+                .await?;
 
             for flake in flakes {
                 compiler.process_flake(&flake)?;
@@ -249,18 +231,13 @@ impl ShapeCompiler {
         }
 
         // Also query for rdf:first/rdf:rest to handle RDF lists (for sh:in, sh:ignoredProperties)
-        compiler.expand_rdf_lists(db, g_id, overlay).await?;
+        compiler.expand_rdf_lists(db).await?;
 
         compiler.finalize()
     }
 
     /// Expand RDF lists that were referenced by sh:in, sh:and, sh:or, sh:xone
-    async fn expand_rdf_lists<O: OverlayProvider>(
-        &mut self,
-        db: &LedgerSnapshot,
-        g_id: GraphId,
-        overlay: &O,
-    ) -> Result<()> {
+    async fn expand_rdf_lists(&mut self, db: GraphDbRef<'_>) -> Result<()> {
         let rdf_first = Sid::new(RDF, rdf_names::FIRST);
         let rdf_rest = Sid::new(RDF, rdf_names::REST);
         let rdf_nil = Sid::new(RDF, rdf_names::NIL);
@@ -280,10 +257,7 @@ impl ShapeCompiler {
 
         // Expand RDF list references
         for (ps_id, list_head) in in_list_expansions {
-            let values = traverse_rdf_list(
-                db, g_id, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil,
-            )
-            .await?;
+            let values = traverse_rdf_list(db, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
             if !values.is_empty() {
                 if let Some(ps_data) = self.property_shapes.get_mut(&ps_id) {
                     // Replace the single Ref with the expanded values
@@ -311,10 +285,7 @@ impl ShapeCompiler {
 
         // Expand sh:and lists
         for (shape_id, list_head) in and_lists {
-            let values = traverse_rdf_list(
-                db, g_id, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil,
-            )
-            .await?;
+            let values = traverse_rdf_list(db, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
             let shape_refs: Vec<Sid> = values
                 .into_iter()
                 .filter_map(|v| {
@@ -332,10 +303,7 @@ impl ShapeCompiler {
 
         // Expand sh:or lists
         for (shape_id, list_head) in or_lists {
-            let values = traverse_rdf_list(
-                db, g_id, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil,
-            )
-            .await?;
+            let values = traverse_rdf_list(db, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
             let shape_refs: Vec<Sid> = values
                 .into_iter()
                 .filter_map(|v| {
@@ -353,10 +321,7 @@ impl ShapeCompiler {
 
         // Expand sh:xone lists
         for (shape_id, list_head) in xone_lists {
-            let values = traverse_rdf_list(
-                db, g_id, overlay, &list_head, &rdf_first, &rdf_rest, &rdf_nil,
-            )
-            .await?;
+            let values = traverse_rdf_list(db, &list_head, &rdf_first, &rdf_rest, &rdf_nil).await?;
             let shape_refs: Vec<Sid> = values
                 .into_iter()
                 .filter_map(|v| {
@@ -804,10 +769,8 @@ impl ShapeCompiler {
 }
 
 /// Traverse an RDF list and collect all values
-async fn traverse_rdf_list<O: OverlayProvider>(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &O,
+async fn traverse_rdf_list(
+    db: GraphDbRef<'_>,
     list_head: &Sid,
     rdf_first: &Sid,
     rdf_rest: &Sid,
@@ -815,9 +778,6 @@ async fn traverse_rdf_list<O: OverlayProvider>(
 ) -> Result<Vec<FlakeValue>> {
     let mut values = Vec::new();
     let mut current = list_head.clone();
-
-    // Use high to_t to include novelty flakes
-    let opts = RangeOptions::default().with_to_t(i64::MAX);
 
     // Limit iterations to prevent infinite loops
     const MAX_LIST_LENGTH: usize = 10000;
@@ -829,32 +789,26 @@ async fn traverse_rdf_list<O: OverlayProvider>(
         }
 
         // Get rdf:first value
-        let first_flakes = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch::subject_predicate(current.clone(), rdf_first.clone()),
-            opts.clone(),
-        )
-        .await?;
+        let first_flakes = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch::subject_predicate(current.clone(), rdf_first.clone()),
+            )
+            .await?;
 
         if let Some(first_flake) = first_flakes.first() {
             values.push(first_flake.o.clone());
         }
 
         // Get rdf:rest to continue traversal
-        let rest_flakes = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            IndexType::Spot,
-            RangeTest::Eq,
-            RangeMatch::subject_predicate(current.clone(), rdf_rest.clone()),
-            opts.clone(),
-        )
-        .await?;
+        let rest_flakes = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch::subject_predicate(current.clone(), rdf_rest.clone()),
+            )
+            .await?;
 
         if let Some(rest_flake) = rest_flakes.first() {
             if let FlakeValue::Ref(next) = &rest_flake.o {

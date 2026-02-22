@@ -342,9 +342,9 @@ pub async fn get_block(
         .await
         .map_err(|e| ServerError::internal(format!("Ledger load failed: {e}")))?;
     let snapshot = handle.snapshot().await;
-    let to_t = snapshot.db.t;
+    let to_t = snapshot.snapshot.t;
     let ledger_ctx = LedgerBlockContext {
-        db: &snapshot.db,
+        snapshot: &snapshot.snapshot,
         to_t,
         binary_store: snapshot.binary_store.clone(),
     };

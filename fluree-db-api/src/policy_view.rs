@@ -51,8 +51,8 @@ use std::sync::Arc;
 /// - `from_ledger_state()` for `LedgerState`
 /// - `from_historical()` for `HistoricalLedgerView`
 pub struct PolicyWrappedView<'a> {
-    /// Reference to the database
-    pub db: &'a LedgerSnapshot,
+    /// Reference to the database snapshot
+    pub snapshot: &'a LedgerSnapshot,
     /// Overlay provider (novelty layer)
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time
@@ -69,14 +69,14 @@ impl<'a> PolicyWrappedView<'a> {
     /// This is the low-level constructor. Prefer using `wrap_policy_view()`
     /// which handles policy context creation from options.
     pub fn new(
-        db: &'a LedgerSnapshot,
+        snapshot: &'a LedgerSnapshot,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         policy: Arc<PolicyContext>,
     ) -> Self {
         let enforcer = Arc::new(QueryPolicyEnforcer::new(Arc::clone(&policy)));
         Self {
-            db,
+            snapshot,
             overlay,
             to_t,
             policy,
@@ -103,14 +103,19 @@ impl<'a> PolicyWrappedView<'a> {
 impl<'a> PolicyWrappedView<'a> {
     /// Create a policy-wrapped view from a `LedgerState`.
     pub fn from_ledger_state(ledger: &'a LedgerState, policy: Arc<PolicyContext>) -> Self {
-        Self::new(&ledger.db, ledger.novelty.as_ref(), ledger.t(), policy)
+        Self::new(
+            &ledger.snapshot,
+            ledger.novelty.as_ref(),
+            ledger.t(),
+            policy,
+        )
     }
 
     /// Create a policy-wrapped view from a `HistoricalLedgerView`.
     ///
     /// Note: The view itself is used as the overlay provider.
     pub fn from_historical(view: &'a HistoricalLedgerView, policy: Arc<PolicyContext>) -> Self {
-        Self::new(&view.db, view, view.to_t(), policy)
+        Self::new(&view.snapshot, view, view.to_t(), policy)
     }
 }
 
@@ -147,7 +152,7 @@ pub async fn wrap_policy_view<'a>(
     opts: &QueryConnectionOptions,
 ) -> Result<PolicyWrappedView<'a>> {
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &ledger.db,
+        &ledger.snapshot,
         ledger.novelty.as_ref(),
         Some(ledger.novelty.as_ref()),
         ledger.t(),
@@ -172,7 +177,7 @@ pub async fn wrap_policy_view_historical<'a>(
     // Extract novelty from the view for stats computation (needed for f:onClass)
     let novelty_for_stats: Option<&Novelty> = view.overlay().map(|arc| arc.as_ref());
     let policy_ctx = policy_builder::build_policy_context_from_opts(
-        &view.db,
+        &view.snapshot,
         view,
         novelty_for_stats,
         view.to_t(),
@@ -193,19 +198,20 @@ pub async fn wrap_policy_view_historical<'a>(
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query against
+/// * `snapshot` - The database snapshot to query against
 /// * `overlay` - Overlay provider for query execution
 /// * `novelty_for_stats` - Optional novelty for computing current stats (needed for f:onClass)
 /// * `to_t` - Time bound for queries
 /// * `opts` - Query connection options with policy configuration
 pub async fn build_policy_context(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     overlay: &dyn OverlayProvider,
     novelty_for_stats: Option<&Novelty>,
     to_t: i64,
     opts: &QueryConnectionOptions,
 ) -> Result<PolicyContext> {
-    policy_builder::build_policy_context_from_opts(db, overlay, novelty_for_stats, to_t, opts).await
+    policy_builder::build_policy_context_from_opts(snapshot, overlay, novelty_for_stats, to_t, opts)
+        .await
 }
 
 /// Wrap a ledger with identity-based policy via `f:policyClass` lookup.

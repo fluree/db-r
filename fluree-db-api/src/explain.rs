@@ -174,20 +174,20 @@ fn plan_patterns_to_json(
 /// the raw SPARQL string).  `where_clause` is optionally included in the
 /// no-stats early-return path (only meaningful for JSON-LD).
 fn explain_from_parsed(
-    db: &fluree_db_core::LedgerSnapshot,
+    snapshot: &fluree_db_core::LedgerSnapshot,
     vars: &VarRegistry,
     parsed: &ParsedQuery,
     query_echo: JsonValue,
     where_clause: Option<JsonValue>,
 ) -> Result<JsonValue> {
-    let compactor = IriCompactor::new(&db.namespace_codes, &parsed.context);
+    let compactor = IriCompactor::new(&snapshot.namespace_codes, &parsed.context);
 
     // Extract triple patterns in query order.
     // Normalize any `Term::Iri` terms into `Term::Sid` when possible so that
     // stats lookups (which are SID-keyed) work for explain/optimization parity.
     let normalize_term = |t: &Term| -> Term {
         match t {
-            Term::Iri(iri) => db
+            Term::Iri(iri) => snapshot
                 .encode_iri(iri)
                 .map(Term::Sid)
                 .unwrap_or_else(|| t.clone()),
@@ -210,10 +210,10 @@ fn explain_from_parsed(
         })
         .collect();
 
-    let stats_view = db
+    let stats_view = snapshot
         .stats
         .as_ref()
-        .map(|s| StatsView::from_db_stats_with_namespaces(s, &db.namespace_codes));
+        .map(|s| StatsView::from_db_stats_with_namespaces(s, &snapshot.namespace_codes));
     let stats_available = stats_view
         .as_ref()
         .map(|s| s.has_property_stats())
@@ -237,7 +237,7 @@ fn explain_from_parsed(
         plan_patterns_to_json(&explain, &triples_in_order, vars, &compactor);
 
     // Minimal statistics summary (stable + useful).
-    let stats = db.stats.as_ref().unwrap();
+    let stats = snapshot.stats.as_ref().unwrap();
     let statistics = json!({
         "total-flakes": stats.flakes,
     });
@@ -259,11 +259,11 @@ fn explain_from_parsed(
 /// Returns a JSON object like:
 /// `{ "query": <parsed/echo>, "plan": { ... } }`
 pub async fn explain_jsonld(
-    db: &fluree_db_core::LedgerSnapshot,
+    snapshot: &fluree_db_core::LedgerSnapshot,
     query_json: &JsonValue,
 ) -> Result<JsonValue> {
     let mut vars = VarRegistry::new();
-    let parsed = parse_query(query_json, db, &mut vars)
+    let parsed = parse_query(query_json, snapshot, &mut vars)
         .map_err(|e| ApiError::query(format!("Explain parse error: {e}")))?;
 
     let query_obj = query_json
@@ -271,7 +271,7 @@ pub async fn explain_jsonld(
         .ok_or_else(|| ApiError::query("Query must be an object"))?;
     let where_clause = query_obj.get("where").cloned();
 
-    explain_from_parsed(db, &vars, &parsed, query_json.clone(), where_clause)
+    explain_from_parsed(snapshot, &vars, &parsed, query_json.clone(), where_clause)
 }
 
 /// Explain a SPARQL query against a LedgerSnapshot.
@@ -279,10 +279,10 @@ pub async fn explain_jsonld(
 /// Returns a JSON object like:
 /// `{ "query": "<sparql string>", "plan": { ... } }`
 pub async fn explain_sparql(
-    db: &fluree_db_core::LedgerSnapshot,
+    snapshot: &fluree_db_core::LedgerSnapshot,
     sparql: &str,
 ) -> Result<JsonValue> {
-    let (vars, parsed) = parse_sparql_to_ir(sparql, db, None)?;
+    let (vars, parsed) = parse_sparql_to_ir(sparql, snapshot, None)?;
 
-    explain_from_parsed(db, &vars, &parsed, json!(sparql), None)
+    explain_from_parsed(snapshot, &vars, &parsed, json!(sparql), None)
 }

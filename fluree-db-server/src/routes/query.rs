@@ -646,8 +646,8 @@ async fn execute_query(
 
         let row_count = result.row_count();
         let bytes = match fmt {
-            DelimitedFormat::Tsv => result.to_tsv_bytes(&graph.db),
-            DelimitedFormat::Csv => result.to_csv_bytes(&graph.db),
+            DelimitedFormat::Tsv => result.to_tsv_bytes(&graph.snapshot),
+            DelimitedFormat::Csv => result.to_csv_bytes(&graph.snapshot),
         }
         .map_err(|e| {
             ServerError::internal(format!(
@@ -852,8 +852,8 @@ async fn execute_sparql_ledger(
 
             let row_count = result.row_count();
             let bytes = match fmt {
-                DelimitedFormat::Tsv => result.to_tsv_bytes(&graph.db),
-                DelimitedFormat::Csv => result.to_csv_bytes(&graph.db),
+                DelimitedFormat::Tsv => result.to_tsv_bytes(&graph.snapshot),
+                DelimitedFormat::Csv => result.to_csv_bytes(&graph.snapshot),
             }
             .map_err(|e| {
                 ServerError::internal(format!(

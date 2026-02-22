@@ -3,10 +3,7 @@
 //! This module provides functions to look up the classes (rdf:type) of subjects
 //! from the database. This is needed for f:onClass policy enforcement.
 
-use fluree_db_core::{
-    range_with_overlay, FlakeValue, GraphId, LedgerSnapshot, OverlayProvider, RangeMatch,
-    RangeOptions, RangeTest, Sid,
-};
+use fluree_db_core::{FlakeValue, GraphDbRef, RangeMatch, RangeOptions, RangeTest, Sid};
 use fluree_vocab::namespaces::RDF;
 use fluree_vocab::predicates::RDF_TYPE;
 use std::collections::{HashMap, HashSet};
@@ -22,9 +19,7 @@ use crate::Result;
 /// # Arguments
 ///
 /// * `subjects` - The subject SIDs to look up classes for
-/// * `db` - The database to query
-/// * `overlay` - Optional overlay (novelty) to include staged flakes
-/// * `to_t` - The transaction time to query as-of
+/// * `db` - Database reference bundling snapshot, graph id, overlay, and time
 ///
 /// # Returns
 ///
@@ -32,10 +27,7 @@ use crate::Result;
 /// rdf:type assertions will not be present in the map.
 pub async fn lookup_subject_classes(
     subjects: &[Sid],
-    db: &LedgerSnapshot,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
-    g_id: GraphId,
+    db: GraphDbRef<'_>,
 ) -> Result<HashMap<Sid, Vec<Sid>>> {
     if subjects.is_empty() {
         return Ok(HashMap::new());
@@ -45,15 +37,15 @@ pub async fn lookup_subject_classes(
     let rdf_type = Sid::new(RDF, RDF_TYPE);
 
     // Prefer an index-native batched lookup when available (binary range provider).
-    if let Some(provider) = db.range_provider.as_ref() {
-        let opts = RangeOptions::new().with_to_t(to_t);
+    if let Some(provider) = db.snapshot.range_provider.as_ref() {
+        let opts = RangeOptions::new().with_to_t(db.t);
         match provider.lookup_subject_predicate_refs_batched(
-            g_id,
+            db.g_id,
             fluree_db_core::IndexType::Psot,
             &rdf_type,
             subjects,
             &opts,
-            overlay,
+            db.overlay,
         ) {
             Ok(map) => return Ok(map),
             Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
@@ -73,20 +65,12 @@ pub async fn lookup_subject_classes(
     let unique_subjects: HashSet<&Sid> = subjects.iter().collect();
     for subject in unique_subjects {
         let range_match = RangeMatch::subject_predicate(subject.clone(), rdf_type.clone());
-        let opts = RangeOptions::new().with_to_t(to_t);
-        let flakes = range_with_overlay(
-            db,
-            g_id,
-            overlay,
-            fluree_db_core::IndexType::Spot,
-            RangeTest::Eq,
-            range_match,
-            opts,
-        )
-        .await
-        .map_err(|e| PolicyError::ClassLookup {
-            message: format!("Failed to look up classes for subject: {}", e),
-        })?;
+        let flakes = db
+            .range(fluree_db_core::IndexType::Spot, RangeTest::Eq, range_match)
+            .await
+            .map_err(|e| PolicyError::ClassLookup {
+                message: format!("Failed to look up classes for subject: {}", e),
+            })?;
 
         let mut classes: Vec<Sid> = flakes
             .into_iter()
@@ -112,16 +96,11 @@ pub async fn lookup_subject_classes(
 /// # Arguments
 ///
 /// * `subjects` - The subject SIDs to look up classes for
-/// * `db` - The database to query
-/// * `overlay` - Optional overlay (novelty) to include staged flakes
-/// * `to_t` - The transaction time to query as-of
+/// * `db` - Database reference bundling snapshot, graph id, overlay, and time
 /// * `policy_ctx` - The policy context whose cache to populate
 pub async fn populate_class_cache(
     subjects: &[Sid],
-    db: &LedgerSnapshot,
-    overlay: &dyn OverlayProvider,
-    to_t: i64,
-    g_id: GraphId,
+    db: GraphDbRef<'_>,
     policy_ctx: &crate::evaluate::PolicyContext,
 ) -> Result<()> {
     // Skip if no class policies need checking
@@ -129,7 +108,7 @@ pub async fn populate_class_cache(
         return Ok(());
     }
 
-    let class_map = lookup_subject_classes(subjects, db, overlay, to_t, g_id).await?;
+    let class_map = lookup_subject_classes(subjects, db).await?;
 
     for (subject, classes) in class_map {
         policy_ctx.cache_subject_classes(subject, classes);

@@ -45,7 +45,7 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::GraphView;
+use fluree_db_indexer::run_index::BinaryGraphView;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -87,7 +87,7 @@ enum AggState {
 /// EncodedSid/EncodedPid raw IDs don't have semantic ordering (s_id=100 for "zebra"
 /// would incorrectly compare > s_id=50 for "apple"). We must decode to get correct
 /// term ordering via namespace/name comparison.
-fn materialize_for_minmax(binding: &Binding, gv: Option<&GraphView>) -> Binding {
+fn materialize_for_minmax(binding: &Binding, gv: Option<&BinaryGraphView>) -> Binding {
     let Some(gv) = gv else {
         // No store available - return as-is (will use raw ID comparison as fallback)
         return binding.clone();
@@ -169,7 +169,7 @@ impl AggState {
     ///
     /// * `binding` - The binding value to incorporate
     /// * `gv` - Optional graph view for materializing encoded bindings (needed for MIN/MAX)
-    fn update(&mut self, binding: &Binding, gv: Option<&GraphView>) {
+    fn update(&mut self, binding: &Binding, gv: Option<&BinaryGraphView>) {
         match self {
             AggState::Count { n } => {
                 // COUNT: count non-Unbound values (COUNT(*) counts all via CountAll variant)
@@ -466,7 +466,7 @@ pub struct GroupAggregateOperator {
     /// Iterator for emitting results
     emit_iter: Option<std::collections::hash_map::IntoIter<CompositeGroupKey, GroupState>>,
     /// Graph view for materializing encoded bindings (used for MIN/MAX semantic ordering).
-    graph_view: Option<GraphView>,
+    graph_view: Option<BinaryGraphView>,
 }
 
 impl GroupAggregateOperator {
@@ -482,7 +482,7 @@ impl GroupAggregateOperator {
         child: BoxedOperator,
         group_vars: Vec<VarId>,
         agg_specs: Vec<StreamingAggSpec>,
-        graph_view: Option<GraphView>,
+        graph_view: Option<BinaryGraphView>,
     ) -> Self {
         let child_schema = child.schema().to_vec();
 
@@ -780,7 +780,7 @@ mod tests {
     use super::*;
     use fluree_db_core::LedgerSnapshot;
 
-    fn make_test_db() -> LedgerSnapshot {
+    fn make_test_snapshot() -> LedgerSnapshot {
         LedgerSnapshot::genesis("test/main")
     }
 
@@ -789,9 +789,9 @@ mod tests {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create input: 5 papers for venue A, 3 papers for venue B
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice()); // ?venue, ?paper
@@ -906,9 +906,9 @@ mod tests {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
 
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars);
+        let ctx = ExecutionContext::new(&snapshot, &vars);
 
         // Create input: category A with values 10, 20, 30; category B with values 5, 15
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
@@ -1165,9 +1165,9 @@ mod tests {
         let store = Arc::new(BinaryIndexStore::load(&run_dir, &index_dir).unwrap());
 
         // --- Build GroupAggregateOperator over encoded subject IDs ---
-        let db = make_test_db();
+        let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
-        let ctx = ExecutionContext::new(&db, &vars).with_binary_store(store.clone(), 0);
+        let ctx = ExecutionContext::new(&snapshot, &vars).with_binary_store(store.clone(), 0);
 
         // Input column: EncodedSid(zebra), EncodedSid(apple)
         let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice()); // ?x

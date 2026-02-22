@@ -32,11 +32,11 @@ where
         let primary = dataset
             .primary()
             .ok_or_else(|| ApiError::query("Dataset has no graphs for query execution"))?;
-        let primary_t = primary.to_t;
+        let primary_t = primary.t;
 
         // Parse the query using the primary ledger's DB for IRI encoding
         let mut vars = VarRegistry::new();
-        let parsed = parse_query(query_json, primary.db.as_ref(), &mut vars)?;
+        let parsed = parse_query(query_json, primary.snapshot.as_ref(), &mut vars)?;
 
         // Build the runtime dataset
         let runtime_dataset = dataset.as_runtime_dataset();
@@ -52,7 +52,11 @@ where
         // Vector provider support is feature-gated. When disabled,
         // f:queryVector patterns are not available and we run the BM25-only path.
         let tracker = tracker_for_limits(query_json);
-        let source = DataSource::new(primary.db.as_ref(), primary.overlay.as_ref(), primary_t);
+        let source = DataSource::new(
+            primary.snapshot.as_ref(),
+            primary.overlay.as_ref(),
+            primary_t,
+        );
         let tracker_ref = if tracker.is_enabled() {
             Some(&tracker)
         } else {

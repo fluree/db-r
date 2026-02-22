@@ -34,7 +34,8 @@ pub use historical::HistoricalLedgerView;
 pub use staged::LedgerView;
 
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, DictNovelty, LedgerSnapshot, Storage,
+    content_store_for, ContentId, ContentStore, DictNovelty, GraphDbRef, GraphId, LedgerSnapshot,
+    Storage,
 };
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{generate_commit_flakes, trace_commits_by_id, Novelty};
@@ -83,8 +84,8 @@ impl Default for IndexConfig {
 /// - In-memory uncommitted changes (Novelty)
 #[derive(Debug, Clone)]
 pub struct LedgerState {
-    /// The indexed database
-    pub db: LedgerSnapshot,
+    /// The indexed snapshot
+    pub snapshot: LedgerSnapshot,
     /// In-memory overlay of uncommitted transactions
     pub novelty: Arc<Novelty>,
     /// Dictionary novelty layer for subjects and strings.
@@ -140,7 +141,7 @@ impl LedgerState {
         let store = content_store_for(storage.clone(), &record.ledger_id);
 
         // Handle missing index (genesis fallback)
-        let (mut db, dict_novelty) = match &record.index_head_id {
+        let (mut snapshot, dict_novelty) = match &record.index_head_id {
             Some(index_cid) => {
                 let root_bytes = store.get(index_cid).await?;
                 let loaded = LedgerSnapshot::from_root_bytes(&root_bytes)?;
@@ -158,18 +159,18 @@ impl LedgerState {
 
         // Load novelty from commits since index_t
         let head_commit_id = match &record.commit_head_id {
-            Some(head_cid) if record.commit_t > db.t => {
+            Some(head_cid) if record.commit_t > snapshot.t => {
                 let (novelty_overlay, ns_delta, head_id) =
-                    Self::load_novelty(store, head_cid, db.t, &record.ledger_id).await?;
+                    Self::load_novelty(store, head_cid, snapshot.t, &record.ledger_id).await?;
                 // Apply namespace deltas from commits
                 for (code, prefix) in ns_delta {
-                    db.namespace_codes.insert(code, prefix);
+                    snapshot.namespace_codes.insert(code, prefix);
                 }
                 // Replace empty novelty with loaded overlay below
                 let head_commit_id = head_id;
                 let head_index_id = record.index_head_id.clone();
                 return Ok(Self {
-                    db,
+                    snapshot,
                     novelty: Arc::new(novelty_overlay),
                     dict_novelty: Arc::new(dict_novelty),
                     head_commit_id,
@@ -184,9 +185,9 @@ impl LedgerState {
         };
 
         let head_index_id = record.index_head_id.clone();
-        let novelty_t = db.t;
+        let novelty_t = snapshot.t;
         Ok(Self {
-            db,
+            snapshot,
             novelty: Arc::new(Novelty::new(novelty_t)),
             dict_novelty: Arc::new(dict_novelty),
             head_commit_id,
@@ -254,11 +255,13 @@ impl LedgerState {
     }
 
     /// Create a new ledger state from components
-    pub fn new(db: LedgerSnapshot, novelty: Novelty) -> Self {
-        let dict_novelty =
-            DictNovelty::with_watermarks(db.subject_watermarks.clone(), db.string_watermark);
+    pub fn new(snapshot: LedgerSnapshot, novelty: Novelty) -> Self {
+        let dict_novelty = DictNovelty::with_watermarks(
+            snapshot.subject_watermarks.clone(),
+            snapshot.string_watermark,
+        );
         Self {
-            db,
+            snapshot,
             novelty: Arc::new(novelty),
             dict_novelty: Arc::new(dict_novelty),
             head_commit_id: None,
@@ -272,17 +275,17 @@ impl LedgerState {
 
     /// Get the current transaction time (max of index and novelty)
     pub fn t(&self) -> i64 {
-        self.novelty.t.max(self.db.t)
+        self.novelty.t.max(self.snapshot.t)
     }
 
     /// Get the indexed transaction time
     pub fn index_t(&self) -> i64 {
-        self.db.t
+        self.snapshot.t
     }
 
     /// Get the ledger ID
     pub fn ledger_id(&self) -> &str {
-        &self.db.ledger_id
+        &self.snapshot.ledger_id
     }
 
     /// Check if novelty is at max capacity (should block new commits)
@@ -293,6 +296,14 @@ impl LedgerState {
     /// Check if novelty should trigger background indexing
     pub fn should_reindex(&self, config: &IndexConfig) -> bool {
         self.novelty.size >= config.reindex_min_bytes
+    }
+
+    /// Create a `GraphDbRef` bundling snapshot, graph id, overlay, and time.
+    ///
+    /// `t` is set to `max(novelty.t, snapshot.t)` — the correct upper bound
+    /// including all committed flakes.
+    pub fn as_graph_db_ref(&self, g_id: GraphId) -> GraphDbRef<'_> {
+        GraphDbRef::new(&self.snapshot, g_id, &*self.novelty, self.t())
     }
 
     /// Get the novelty size in bytes
@@ -319,7 +330,7 @@ impl LedgerState {
     /// as it includes both the indexed stats and any uncommitted changes
     /// from the novelty layer.
     pub fn current_stats(&self) -> fluree_db_core::IndexStats {
-        let indexed = self.db.stats.as_ref().cloned().unwrap_or_default(); // IndexStats::default() for genesis/no-index
+        let indexed = self.snapshot.stats.as_ref().cloned().unwrap_or_default(); // IndexStats::default() for genesis/no-index
         fluree_db_novelty::current_stats(&indexed, self.novelty.as_ref())
     }
 
@@ -344,38 +355,38 @@ impl LedgerState {
     /// - `Core` errors from loading the index
     pub async fn apply_index(&mut self, index_id: &ContentId, cs: &dyn ContentStore) -> Result<()> {
         let root_bytes = cs.get(index_id).await?;
-        let new_db = LedgerSnapshot::from_root_bytes(&root_bytes)?;
+        let new_snapshot = LedgerSnapshot::from_root_bytes(&root_bytes)?;
 
         // Verify ledger ID matches
-        if new_db.ledger_id != self.db.ledger_id {
+        if new_snapshot.ledger_id != self.snapshot.ledger_id {
             return Err(LedgerError::ledger_id_mismatch(
-                &new_db.ledger_id,
-                &self.db.ledger_id,
+                &new_snapshot.ledger_id,
+                &self.snapshot.ledger_id,
             ));
         }
 
         // Verify forward progress on index
-        let current_index_t = self.db.t;
-        if new_db.t < current_index_t {
-            return Err(LedgerError::stale_index(new_db.t, current_index_t));
+        let current_index_t = self.snapshot.t;
+        if new_snapshot.t < current_index_t {
+            return Err(LedgerError::stale_index(new_snapshot.t, current_index_t));
         }
-        if new_db.t == current_index_t {
+        if new_snapshot.t == current_index_t {
             // Equal-t: ignore (defer tie-break by hash to multi-indexer phase)
             return Ok(());
         }
 
         // Clear novelty up to new index_t
         let mut new_novelty = (*self.novelty).clone();
-        new_novelty.clear_up_to(new_db.t);
+        new_novelty.clear_up_to(new_snapshot.t);
 
         // Reset dict_novelty with new watermarks from the index root
         let new_dict_novelty = DictNovelty::with_watermarks(
-            new_db.subject_watermarks.clone(),
-            new_db.string_watermark,
+            new_snapshot.subject_watermarks.clone(),
+            new_snapshot.string_watermark,
         );
 
         // Update state
-        self.db = new_db;
+        self.snapshot = new_snapshot;
         self.novelty = Arc::new(new_novelty);
         self.dict_novelty = Arc::new(new_dict_novelty);
         self.head_index_id = Some(index_id.clone());
@@ -383,7 +394,7 @@ impl LedgerState {
         // Update ns_record
         if let Some(ref mut record) = self.ns_record {
             record.index_head_id = Some(index_id.clone());
-            record.index_t = self.db.t;
+            record.index_t = self.snapshot.t;
         }
 
         Ok(())
@@ -401,38 +412,38 @@ impl LedgerState {
     /// if it's a binary-only (v2) LedgerSnapshot.
     pub fn apply_loaded_db(
         &mut self,
-        new_db: LedgerSnapshot,
+        new_snapshot: LedgerSnapshot,
         index_id: Option<&ContentId>,
     ) -> Result<()> {
         // Verify ledger ID matches
-        if new_db.ledger_id != self.db.ledger_id {
+        if new_snapshot.ledger_id != self.snapshot.ledger_id {
             return Err(LedgerError::ledger_id_mismatch(
-                &new_db.ledger_id,
-                &self.db.ledger_id,
+                &new_snapshot.ledger_id,
+                &self.snapshot.ledger_id,
             ));
         }
 
         // Verify forward progress on index
-        let current_index_t = self.db.t;
-        if new_db.t < current_index_t {
-            return Err(LedgerError::stale_index(new_db.t, current_index_t));
+        let current_index_t = self.snapshot.t;
+        if new_snapshot.t < current_index_t {
+            return Err(LedgerError::stale_index(new_snapshot.t, current_index_t));
         }
-        if new_db.t == current_index_t {
+        if new_snapshot.t == current_index_t {
             return Ok(());
         }
 
         // Clear novelty up to new index_t
         let mut new_novelty = (*self.novelty).clone();
-        new_novelty.clear_up_to(new_db.t);
+        new_novelty.clear_up_to(new_snapshot.t);
 
         // Reset dict_novelty with new watermarks from the index root
         let new_dict_novelty = DictNovelty::with_watermarks(
-            new_db.subject_watermarks.clone(),
-            new_db.string_watermark,
+            new_snapshot.subject_watermarks.clone(),
+            new_snapshot.string_watermark,
         );
 
         // Update state
-        self.db = new_db;
+        self.snapshot = new_snapshot;
         self.novelty = Arc::new(new_novelty);
         self.dict_novelty = Arc::new(new_dict_novelty);
         self.head_index_id = index_id.cloned();
@@ -440,7 +451,7 @@ impl LedgerState {
         // Update ns_record
         if let Some(ref mut record) = self.ns_record {
             record.index_head_id = index_id.cloned();
-            record.index_t = self.db.t;
+            record.index_t = self.snapshot.t;
         }
 
         Ok(())
@@ -461,16 +472,15 @@ impl LedgerState {
         cs: &dyn ContentStore,
     ) -> Result<bool> {
         let record = ns
-            .lookup(&self.db.ledger_id)
+            .lookup(&self.snapshot.ledger_id)
             .await?
-            .ok_or_else(|| LedgerError::not_found(&self.db.ledger_id))?;
+            .ok_or_else(|| LedgerError::not_found(&self.snapshot.ledger_id))?;
 
         // Only apply if there's a newer index AND it has a CID
-        if record.index_t > self.db.t {
-            let index_id = record
-                .index_head_id
-                .as_ref()
-                .ok_or_else(|| LedgerError::missing_index_id(&self.db.ledger_id, record.index_t))?;
+        if record.index_t > self.snapshot.t {
+            let index_id = record.index_head_id.as_ref().ok_or_else(|| {
+                LedgerError::missing_index_id(&self.snapshot.ledger_id, record.index_t)
+            })?;
             self.apply_index(index_id, cs).await?;
             return Ok(true);
         }
@@ -645,14 +655,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_ledger_state_new() {
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         novelty
             .apply_commit(vec![make_flake(1, 1, 100, 1)], 1)
             .unwrap();
 
-        let state = LedgerState::new(db, novelty);
+        let state = LedgerState::new(snapshot, novelty);
 
         assert_eq!(state.ledger_id(), "test:main");
         assert_eq!(state.index_t(), 0);
@@ -662,7 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ledger_state_backpressure() {
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         // Add some flakes to increase size
@@ -672,7 +682,7 @@ mod tests {
                 .unwrap();
         }
 
-        let state = LedgerState::new(db, novelty);
+        let state = LedgerState::new(snapshot, novelty);
 
         let small_config = IndexConfig {
             reindex_min_bytes: 100,
@@ -713,7 +723,7 @@ mod tests {
         use fluree_db_core::IndexType;
 
         let storage = MemoryStorage::new();
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         // Create novelty with flakes at t=1 and t=2
         let mut novelty = Novelty::new(0);
@@ -724,7 +734,7 @@ mod tests {
             .apply_commit(vec![make_flake(2, 1, 200, 2)], 2)
             .unwrap();
 
-        let mut state = LedgerState::new(db, novelty);
+        let mut state = LedgerState::new(snapshot, novelty);
         assert_eq!(state.index_t(), 0);
         // Check active flakes via index iterator (arena has 2, and 2 are active)
         assert_eq!(state.novelty.iter_index(IndexType::Spot).count(), 2);
@@ -746,10 +756,10 @@ mod tests {
     #[tokio::test]
     async fn test_apply_index_address_mismatch() {
         let storage = MemoryStorage::new();
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
 
-        let mut state = LedgerState::new(db, novelty);
+        let mut state = LedgerState::new(snapshot, novelty);
 
         // Create an IRB1 root for a different ledger, but store under test:main's CAS space
         let bytes = build_test_irb1("other:ledger", 1, &[(0, "")]);
@@ -771,9 +781,9 @@ mod tests {
         // Load the LedgerSnapshot from CAS for current state
         let store = content_store_for(storage.clone(), "test:main");
         let root_bytes = store.get(&index_cid_t2).await.unwrap();
-        let db = LedgerSnapshot::from_root_bytes(&root_bytes).unwrap();
+        let snapshot = LedgerSnapshot::from_root_bytes(&root_bytes).unwrap();
         let novelty = Novelty::new(2);
-        let mut state = LedgerState::new(db, novelty);
+        let mut state = LedgerState::new(snapshot, novelty);
         assert_eq!(state.index_t(), 2);
 
         // Create an older IRB1 root at t=1
@@ -795,9 +805,9 @@ mod tests {
         // Load LedgerSnapshot from CAS
         let store = content_store_for(storage.clone(), "test:main");
         let root_bytes = store.get(&index_cid).await.unwrap();
-        let db = LedgerSnapshot::from_root_bytes(&root_bytes).unwrap();
+        let snapshot = LedgerSnapshot::from_root_bytes(&root_bytes).unwrap();
         let novelty = Novelty::new(1);
-        let mut state = LedgerState::new(db, novelty);
+        let mut state = LedgerState::new(snapshot, novelty);
 
         // Create another IRB1 root at same t (different bytes produce different CID)
         let index_cid_same =
@@ -813,10 +823,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_maybe_trigger_index_below_threshold() {
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
         let novelty = Novelty::new(0);
 
-        let state = LedgerState::new(db, novelty);
+        let state = LedgerState::new(snapshot, novelty);
 
         let config = IndexConfig {
             reindex_min_bytes: 1000,
@@ -830,7 +840,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_maybe_trigger_index_above_threshold() {
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         // Add some flakes to increase size
         let mut novelty = Novelty::new(0);
@@ -840,7 +850,7 @@ mod tests {
                 .unwrap();
         }
 
-        let state = LedgerState::new(db, novelty);
+        let state = LedgerState::new(snapshot, novelty);
 
         let config = IndexConfig {
             reindex_min_bytes: 100, // Low threshold to trigger
@@ -854,7 +864,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_require_index_below_max() {
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         for i in 0..10 {
@@ -863,7 +873,7 @@ mod tests {
                 .unwrap();
         }
 
-        let state = LedgerState::new(db, novelty);
+        let state = LedgerState::new(snapshot, novelty);
 
         let config = IndexConfig {
             reindex_min_bytes: 100,
@@ -877,7 +887,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_require_index_at_max() {
-        let db = LedgerSnapshot::genesis("test:main");
+        let snapshot = LedgerSnapshot::genesis("test:main");
 
         let mut novelty = Novelty::new(0);
         for i in 0..100 {
@@ -886,7 +896,7 @@ mod tests {
                 .unwrap();
         }
 
-        let state = LedgerState::new(db, novelty);
+        let state = LedgerState::new(snapshot, novelty);
 
         let config = IndexConfig {
             reindex_min_bytes: 100,

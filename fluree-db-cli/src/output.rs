@@ -4,6 +4,7 @@ use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::format::{IriCompactor, SelectMode};
 use fluree_db_api::QueryResult;
 use fluree_db_core::{FlakeValue, LedgerSnapshot};
+use fluree_db_indexer::run_index::BinaryGraphView;
 use fluree_db_query::binding::Binding;
 
 /// Output format for query results.
@@ -29,12 +30,12 @@ pub struct FormatOutput {
 ///   callers should fall back to the JSON-based formatter for correctness.
 pub fn format_sparql_table_from_result(
     result: &QueryResult,
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     limit: Option<usize>,
 ) -> CliResult<Option<FormatOutput>> {
     // Grouped bindings require cartesian disaggregation (SPARQL formatter logic).
     // Rather than re-implement that here, fall back to the existing SPARQL JSON formatter.
-    let compactor = IriCompactor::new(db.namespaces(), &result.context);
+    let compactor = IriCompactor::new(snapshot.namespaces(), &result.context);
     let gv = result.binary_graph.as_ref();
 
     let head_var_ids: Vec<fluree_db_query::VarId> = match result.select_mode {
@@ -128,7 +129,7 @@ fn strip_question_mark(var_name: &str) -> String {
 fn sparql_table_cell(
     b: &Binding,
     compactor: &IriCompactor,
-    gv: Option<&fluree_db_indexer::run_index::GraphView>,
+    gv: Option<&BinaryGraphView>,
 ) -> Result<String, SparqlTableFastPath> {
     let s = match b {
         Binding::Unbound | Binding::Poisoned => String::new(),

@@ -163,11 +163,11 @@ where
 
         for c in &decoded {
             // Current state is base db + evolving novelty.
-            let current_t = base_state.db.t.max(evolving_novelty.t);
+            let current_t = base_state.snapshot.t.max(evolving_novelty.t);
 
             // 4.1 Retraction invariant (strict).
             assert_retractions_exist(
-                &base_state.db,
+                &base_state.snapshot,
                 &evolving_novelty,
                 current_t,
                 &c.commit.flakes,
@@ -192,14 +192,15 @@ where
             // 4.4 SHACL (optional feature).
             #[cfg(feature = "shacl")]
             {
-                let engine = ShaclEngine::from_db_with_overlay(
-                    &base_state.db,
+                let shacl_db = fluree_db_core::GraphDbRef::new(
+                    &base_state.snapshot,
                     0,
                     &evolving_novelty,
-                    base_state.ledger_id(),
-                )
-                .await
-                .map_err(|e| ApiError::Transact(fluree_db_transact::TransactError::from(e)))?;
+                    current_t,
+                );
+                let engine = ShaclEngine::from_db_with_overlay(shacl_db, base_state.ledger_id())
+                    .await
+                    .map_err(|e| ApiError::Transact(fluree_db_transact::TransactError::from(e)))?;
                 let shacl_cache = engine.cache().clone();
                 fluree_db_transact::validate_view_with_shacl(&staged_view, &shacl_cache)
                     .await
@@ -464,7 +465,7 @@ async fn build_policy_ctx_for_push(
     opts: &QueryConnectionOptions,
 ) -> Result<PolicyContext> {
     // Build policy context from opts against current state (db + evolving novelty).
-    build_policy_context_from_opts(&base.db, evolving, Some(evolving), current_t, opts).await
+    build_policy_context_from_opts(&base.snapshot, evolving, Some(evolving), current_t, opts).await
 }
 
 async fn stage_commit_flakes(
@@ -488,7 +489,7 @@ async fn stage_commit_flakes(
 }
 
 async fn assert_retractions_exist(
-    db: &fluree_db_core::LedgerSnapshot,
+    snapshot: &fluree_db_core::LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     flakes: &[Flake],
@@ -498,7 +499,7 @@ async fn assert_retractions_exist(
             continue;
         }
 
-        if !is_currently_asserted(db, overlay, to_t, f).await? {
+        if !is_currently_asserted(snapshot, overlay, to_t, f).await? {
             return Err(PushError::Invalid(format!(
                 "retraction invariant violated at flake[{}]: retract targets non-existent assertion",
                 idx
@@ -509,7 +510,7 @@ async fn assert_retractions_exist(
 }
 
 async fn is_currently_asserted(
-    db: &fluree_db_core::LedgerSnapshot,
+    snapshot: &fluree_db_core::LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     target: &Flake,
@@ -521,7 +522,7 @@ async fn is_currently_asserted(
         .with_datatype(target.dt.clone());
 
     let found = range_with_overlay(
-        db,
+        snapshot,
         0,
         overlay,
         IndexType::Spot,

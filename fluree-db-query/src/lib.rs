@@ -10,7 +10,7 @@
 //!
 //! ## Quick Start
 //!
-//! Build a `TriplePattern` with a `VarRegistry`, then call `execute_pattern` with a `LedgerSnapshot` reference to get result batches.
+//! Build a `TriplePattern` with a `VarRegistry`, then call `execute_pattern` with a `GraphDbRef` to get result batches.
 
 pub mod aggregate;
 pub mod binary_range;
@@ -140,7 +140,7 @@ pub use var_registry::{VarId, VarRegistry};
 pub use parse::{parse_query, ParsedQuery, SelectMode};
 
 use execute::build_where_operators_seeded;
-use fluree_db_core::{GraphId, LedgerSnapshot, OverlayProvider};
+use fluree_db_core::GraphDbRef;
 use std::sync::Arc;
 
 /// Execute a single triple pattern query
@@ -149,17 +149,16 @@ use std::sync::Arc;
 ///
 /// # Arguments
 ///
-/// * `db` - The database to query
+/// * `db` - Bundled database reference (snapshot + graph id + overlay + as-of time)
 /// * `vars` - Variable registry containing the pattern's variables
 /// * `pattern` - Triple pattern to match
 ///
 pub async fn execute_pattern(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
+    db: GraphDbRef<'_>,
     vars: &VarRegistry,
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
-    let ctx = ExecutionContext::new(db, vars).with_graph_id(g_id);
+    let ctx = ExecutionContext::from_graph_db_ref(db, vars);
     let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
@@ -177,12 +176,11 @@ pub async fn execute_pattern(
 ///
 /// Convenience function when you want all results at once.
 pub async fn execute_pattern_all(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
+    db: GraphDbRef<'_>,
     vars: &VarRegistry,
     pattern: TriplePattern,
 ) -> Result<Option<Batch>> {
-    let batches = execute_pattern(db, g_id, vars, pattern).await?;
+    let batches = execute_pattern(db, vars, pattern).await?;
 
     if batches.is_empty() {
         return Ok(None);
@@ -211,16 +209,16 @@ pub async fn execute_pattern_all(
     Ok(Some(Batch::new(schema, columns)?))
 }
 
-/// Execute a pattern with time-travel settings
+/// Execute a pattern with a `GraphDbRef` and an optional `from_t` for history queries.
+///
+/// `to_t` comes from `db.t`; `from_t` is the lower time bound for history.
 pub async fn execute_pattern_at(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
+    db: GraphDbRef<'_>,
     vars: &VarRegistry,
     pattern: TriplePattern,
-    to_t: i64,
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
-    let ctx = ExecutionContext::with_time(db, vars, to_t, from_t).with_graph_id(g_id);
+    let ctx = ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t);
     let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
@@ -234,27 +232,17 @@ pub async fn execute_pattern_at(
     Ok(batches)
 }
 
-/// Execute a pattern with an overlay provider (novelty)
+/// Execute a pattern against a `GraphDbRef`.
 ///
-/// This enables querying against both the indexed database and in-memory
-/// novelty flakes from uncommitted transactions. The overlay is merged
-/// at the leaf level during range scans.
-///
-/// # Arguments
-///
-/// * `db` - The indexed database to query
-/// * `overlay` - Overlay provider (e.g., `Novelty` from `fluree-db-novelty`)
-/// * `vars` - Variable registry containing the pattern's variables
-/// * `pattern` - Triple pattern to match
-///
+/// The `db` bundles snapshot, graph id, overlay (novelty), and as-of time.
+/// This replaces the old `execute_pattern_with_overlay` and
+/// `execute_pattern_with_overlay_at` functions.
 pub async fn execute_pattern_with_overlay(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
+    db: GraphDbRef<'_>,
     vars: &VarRegistry,
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
-    let ctx = ExecutionContext::with_overlay(db, vars, overlay).with_graph_id(g_id);
+    let ctx = ExecutionContext::from_graph_db_ref(db, vars);
     let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
@@ -268,22 +256,16 @@ pub async fn execute_pattern_with_overlay(
     Ok(batches)
 }
 
-/// Execute a pattern with an overlay and time-travel settings
+/// Execute a pattern with a `GraphDbRef` and an optional `from_t` for history queries.
 ///
-/// Combines overlay support with time-travel queries. The `to_t` parameter
-/// limits results to flakes with `t <= to_t`, and the optional `from_t`
-/// enables history range queries.
+/// `to_t` comes from `db.t`; `from_t` is the lower time bound for history.
 pub async fn execute_pattern_with_overlay_at(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
+    db: GraphDbRef<'_>,
     vars: &VarRegistry,
     pattern: TriplePattern,
-    to_t: i64,
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
-    let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay)
-        .with_graph_id(g_id);
+    let ctx = ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t);
     let mut scan = ScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
@@ -304,11 +286,9 @@ pub async fn execute_pattern_with_overlay_at(
 ///
 /// # Arguments
 ///
-/// * `db` - Database to query
-/// * `overlay` - Overlay provider (e.g., Novelty) for uncommitted data
+/// * `db` - Bundled database reference (snapshot + graph id + overlay + as-of time)
 /// * `vars` - Variable registry for the patterns
 /// * `patterns` - WHERE patterns to execute
-/// * `to_t` - Upper time bound (inclusive)
 /// * `from_t` - Optional lower time bound for history queries
 ///
 /// # Returns
@@ -317,12 +297,9 @@ pub async fn execute_pattern_with_overlay_at(
 /// with one empty solution (row with no columns).
 ///
 pub async fn execute_where_with_overlay_at(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
+    db: GraphDbRef<'_>,
     vars: &VarRegistry,
     patterns: &[Pattern],
-    to_t: i64,
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     if patterns.is_empty() {
@@ -331,8 +308,7 @@ pub async fn execute_where_with_overlay_at(
         return Ok(vec![Batch::empty(schema)?]);
     }
 
-    let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay)
-        .with_graph_id(g_id);
+    let ctx = ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t);
     let mut operator = build_where_operators_seeded(None, patterns, None)?;
 
     operator.open(&ctx).await?;
@@ -347,12 +323,9 @@ pub async fn execute_where_with_overlay_at(
 
 /// Execute WHERE patterns with strict bind error handling.
 pub async fn execute_where_with_overlay_at_strict(
-    db: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn OverlayProvider,
+    db: GraphDbRef<'_>,
     vars: &VarRegistry,
     patterns: &[Pattern],
-    to_t: i64,
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     if patterns.is_empty() {
@@ -360,9 +333,8 @@ pub async fn execute_where_with_overlay_at_strict(
         return Ok(vec![Batch::empty(schema)?]);
     }
 
-    let ctx = ExecutionContext::with_time_and_overlay(db, vars, to_t, from_t, overlay)
-        .with_graph_id(g_id)
-        .with_strict_bind_errors();
+    let ctx =
+        ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t).with_strict_bind_errors();
     let mut operator = build_where_operators_seeded(None, patterns, None)?;
 
     operator.open(&ctx).await?;

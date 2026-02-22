@@ -2110,7 +2110,7 @@ impl BinaryIndexStore {
     ///
     /// Handles all kinds except NUM_BIG and VECTOR_ID, which require per-graph
     /// arena context. Returns a hard error for those kinds — use
-    /// [`GraphView::decode_value`] instead.
+    /// [`BinaryGraphView::decode_value`] instead.
     pub fn decode_value_no_graph(&self, o_kind: u8, o_key: u64) -> io::Result<FlakeValue> {
         if o_kind == ObjKind::MIN.as_u8() || o_kind == ObjKind::NULL.as_u8() {
             return Ok(FlakeValue::Null);
@@ -2176,13 +2176,13 @@ impl BinaryIndexStore {
         if o_kind == ObjKind::NUM_BIG.as_u8() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "NUM_BIG requires graph context — use GraphView::decode_value()",
+                "NUM_BIG requires graph context — use BinaryGraphView::decode_value()",
             ));
         }
         if o_kind == ObjKind::VECTOR_ID.as_u8() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "VECTOR_ID requires graph context — use GraphView::decode_value()",
+                "VECTOR_ID requires graph context — use BinaryGraphView::decode_value()",
             ));
         }
         if o_kind == ObjKind::G_YEAR.as_u8() {
@@ -2424,10 +2424,10 @@ impl BinaryIndexStore {
 
     /// Create a graph-scoped view for decode/arena operations.
     ///
-    /// The returned [`GraphView`] bundles the store with a specific graph ID,
+    /// The returned [`BinaryGraphView`] bundles the store with a specific graph ID,
     /// so callers do not need to pass `g_id` on every decode call.
-    pub fn graph(self: &Arc<Self>, g_id: GraphId) -> GraphView {
-        GraphView {
+    pub fn graph(self: &Arc<Self>, g_id: GraphId) -> BinaryGraphView {
+        BinaryGraphView {
             store: Arc::clone(self),
             g_id,
         }
@@ -2435,19 +2435,19 @@ impl BinaryIndexStore {
 }
 
 // ============================================================================
-// GraphView — graph-scoped wrapper over BinaryIndexStore
+// BinaryGraphView — graph-scoped wrapper over BinaryIndexStore
 // ============================================================================
 
 /// A lightweight handle that pairs a [`BinaryIndexStore`] with a graph ID.
 ///
-/// Callers obtain a `GraphView` via [`BinaryIndexStore::graph`] and use it
+/// Callers obtain a `BinaryGraphView` via [`BinaryIndexStore::graph`] and use it
 /// instead of passing `(store, g_id)` pairs to individual decode calls.
-pub struct GraphView {
+pub struct BinaryGraphView {
     store: Arc<BinaryIndexStore>,
     g_id: GraphId,
 }
 
-impl GraphView {
+impl BinaryGraphView {
     /// Create a new graph-scoped view from an `Arc<BinaryIndexStore>` and graph ID.
     pub fn new(store: Arc<BinaryIndexStore>, g_id: GraphId) -> Self {
         Self { store, g_id }
@@ -2460,7 +2460,7 @@ impl GraphView {
     /// Decode an `(o_kind, o_key)` pair into a [`FlakeValue`].
     ///
     /// Routes specialty kinds (NUM_BIG, VECTOR_ID) through per-graph arenas.
-    /// This is the primary decode path — callers should prefer GraphView over
+    /// This is the primary decode path — callers should prefer BinaryGraphView over
     /// `BinaryIndexStore::decode_value_no_graph` when a graph context is available.
     pub fn decode_value(&self, o_kind: u8, o_key: u64, p_id: u32) -> io::Result<FlakeValue> {
         self.store

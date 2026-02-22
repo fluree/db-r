@@ -6,8 +6,8 @@
 use crate::reasoning::{global_reasoning_cache, reason_owl2rl, ReasoningOverlay};
 use crate::rewrite::ReasoningModes;
 use fluree_db_core::{
-    is_rdfs_subclass_of, is_rdfs_subproperty_of, overlay::OverlayProvider, GraphId, IndexSchema,
-    LedgerSnapshot, SchemaHierarchy, SchemaPredicateInfo,
+    is_rdfs_subclass_of, is_rdfs_subproperty_of, overlay::OverlayProvider, GraphDbRef, GraphId,
+    IndexSchema, LedgerSnapshot, SchemaHierarchy, SchemaPredicateInfo,
 };
 use fluree_db_reasoner::{
     DerivedFactsBuilder, DerivedFactsOverlay, FrozenSameAs, ReasoningOptions,
@@ -20,7 +20,7 @@ use std::sync::Arc;
 /// Merges overlay rdfs:subClassOf and rdfs:subPropertyOf assertions
 /// with the existing database schema to create a unified hierarchy view.
 pub fn schema_hierarchy_with_overlay(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
 ) -> Option<SchemaHierarchy> {
@@ -63,7 +63,7 @@ pub fn schema_hierarchy_with_overlay(
     //
     // Important: in memory-backed tests, schema relationships often exist only in novelty,
     // while `db.schema` reflects the last indexed root. We need a merged view for entailment.
-    let mut schema: IndexSchema = db.schema.clone().unwrap_or_default();
+    let mut schema: IndexSchema = snapshot.schema.clone().unwrap_or_default();
     schema.t = to_t;
 
     // Index existing vals by id for merging.
@@ -164,7 +164,7 @@ pub fn effective_reasoning_modes(
 ///
 /// When both are enabled, derived facts from both sources are combined into a single overlay.
 pub async fn compute_derived_facts(
-    db: &LedgerSnapshot,
+    snapshot: &LedgerSnapshot,
     g_id: GraphId,
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
@@ -180,7 +180,8 @@ pub async fn compute_derived_facts(
         tracing::debug!("computing OWL2-RL derived facts");
         let reasoning_opts = ReasoningOptions::default();
         let cache = global_reasoning_cache();
-        match reason_owl2rl(db, g_id, overlay, to_t, &reasoning_opts, cache).await {
+        let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
+        match reason_owl2rl(db, &reasoning_opts, cache).await {
             Ok(result) => {
                 tracing::debug!(
                     derived_facts = result.diagnostics.facts_derived,
@@ -224,21 +225,17 @@ pub async fn compute_derived_facts(
             }
             let temp_overlay = Arc::new(builder.build(same_as.clone(), overlay.epoch()));
             let combined = ReasoningOverlay::new(overlay, temp_overlay);
+            let combined_db = GraphDbRef::new(snapshot, g_id, &combined, to_t);
             execute_datalog_rules_with_query_rules(
-                db,
-                g_id,
-                &combined,
-                to_t,
+                combined_db,
                 MAX_DATALOG_ITERATIONS,
                 &reasoning.rules,
             )
             .await
         } else {
+            let base_db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
             execute_datalog_rules_with_query_rules(
-                db,
-                g_id,
-                overlay,
-                to_t,
+                base_db,
                 MAX_DATALOG_ITERATIONS,
                 &reasoning.rules,
             )

@@ -38,10 +38,12 @@ where
             .and_then(|r| r.index_head_id.as_ref())
             .cloned()
         {
-            if state.db.range_provider.is_none() || state.binary_store.is_none() {
+            if state.snapshot.range_provider.is_none() || state.binary_store.is_none() {
                 let storage = self.connection.storage();
-                let cs =
-                    fluree_db_core::content_store_for(storage.clone(), state.db.ledger_id.as_str());
+                let cs = fluree_db_core::content_store_for(
+                    storage.clone(),
+                    state.snapshot.ledger_id.as_str(),
+                );
                 let bytes = cs.get(&index_cid).await.map_err(|e| {
                     ApiError::internal(format!(
                         "failed to read binary index root for {}: {}",
@@ -69,15 +71,15 @@ where
                 // The index root only contains namespaces known at index time, but
                 // subsequent transactions may introduce new namespace prefixes.
                 // LedgerSnapshot.namespace_codes already has the merged set (index + novelty).
-                store.augment_namespace_codes(&state.db.namespace_codes);
+                store.augment_namespace_codes(&state.snapshot.namespace_codes);
 
                 let arc_store = Arc::new(store);
-                if state.db.range_provider.is_none() {
+                if state.snapshot.range_provider.is_none() {
                     let provider = BinaryRangeProvider::new(
                         Arc::clone(&arc_store),
                         state.dict_novelty.clone(),
                     );
-                    state.db.range_provider = Some(Arc::new(provider));
+                    state.snapshot.range_provider = Some(Arc::new(provider));
                 }
                 state.binary_store = Some(TypeErasedStore(arc_store));
             }
@@ -91,7 +93,7 @@ where
         {
             let cs = fluree_db_core::content_store_for(
                 self.connection.storage().clone(),
-                state.db.ledger_id.as_str(),
+                state.snapshot.ledger_id.as_str(),
             );
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {

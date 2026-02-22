@@ -59,7 +59,7 @@ async fn values_top_level_no_where_multiple_vars() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
         normalize_rows(&json!([
@@ -82,7 +82,7 @@ async fn values_top_level_no_where_single_var() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
         normalize_rows(&json!(["foo1", "foo2", "foo3"]))
@@ -114,7 +114,7 @@ async fn values_top_level_iri_values_constrain_where() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
         normalize_rows(&json!([
@@ -163,19 +163,19 @@ async fn values_equivalent_iri_forms_var_in_id_map() {
         .query(&ledger, &q1)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let r2 = fluree
         .query(&ledger, &q2)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
     let r3 = fluree
         .query(&ledger, &q3)
         .await
         .unwrap()
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .unwrap();
 
     assert_eq!(
@@ -218,7 +218,7 @@ async fn values_where_clause_keyword_single_var() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
         normalize_rows(&json!([
@@ -256,7 +256,7 @@ async fn values_nested_under_optional_clause() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
 
     // Only nikola matches the OPTIONAL (VALUES constrains to nikola, and nikola has ex:cool)
     // Other users have email so they match the required pattern, but don't match the OPTIONAL
@@ -294,7 +294,7 @@ async fn values_match_meta_language_tag() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(json_rows, json!(["ex:nikola"]));
 }
 
@@ -320,7 +320,7 @@ async fn values_with_empty_solution_seed() {
     });
 
     let result = fluree.query(&ledger, &query).await.expect("query");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
         normalize_rows(&json!([["ex:cam", "Cam"], ["ex:liam", "Liam"]]))
@@ -375,7 +375,7 @@ async fn values_federated_query_connection_from_two_ledgers() {
         .await
         .expect("query_connection");
     let ledger = fluree.ledger("values-test:main").await.expect("ledger");
-    let json_rows = result.to_jsonld(&ledger.db).expect("jsonld");
+    let json_rows = result.to_jsonld(&ledger.snapshot).expect("jsonld");
     assert_eq!(
         normalize_rows(&json_rows),
         normalize_rows(&json!(["Khris", "Nikola"]))

@@ -58,7 +58,7 @@ async fn policy_inline_denies_restricted_property_in_direct_select() {
         .await
         .expect("query_connection");
     let ledger = fluree.ledger("policy/inline:main").await.expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Denying schema:ssn removes all solutions to a query that requires schema:ssn.
     assert_eq!(jsonld, json!([]));
@@ -116,7 +116,7 @@ async fn policy_inline_denies_restricted_property_in_graph_crawl() {
         .expect("sanity query_connection");
     let ledger = fluree.ledger("policy/inline:main").await.expect("ledger");
     let sanity_jsonld = sanity_result
-        .to_jsonld(&ledger.db)
+        .to_jsonld(&ledger.snapshot)
         .expect("sanity to_jsonld");
     assert_eq!(
         normalize_rows(&sanity_jsonld),
@@ -192,7 +192,7 @@ async fn policy_per_source_override_takes_precedence_over_global() {
         .ledger("policy/per-source:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Per-source policy (default-allow: true) should allow data visibility
     assert_eq!(
@@ -251,7 +251,7 @@ async fn policy_per_source_override_denies_when_global_allows() {
         .ledger("policy/per-source-deny:main")
         .await
         .expect("ledger");
-    let jsonld = result.to_jsonld(&ledger.db).expect("to_jsonld");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
 
     // Per-source policy denies schema:name, so query returns empty
     assert_eq!(jsonld, json!([]));
