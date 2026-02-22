@@ -383,8 +383,10 @@ impl LedgerHandle {
             schema: v5.schema,
             subject_watermarks: v5.subject_watermarks,
             string_watermark: v5.string_watermark,
+            graph_iris: v5.graph_iris,
         };
-        let mut db = LedgerSnapshot::new_meta(meta);
+        let mut db = LedgerSnapshot::new_meta(meta)
+            .map_err(|e| ApiError::internal(format!("graph registry from root: {e}")))?;
         db.range_provider = Some(Arc::new(provider));
 
         // Brief lock: swap state + binary_store atomically.

@@ -1465,7 +1465,7 @@ where
     let spool_config = Arc::new(SpoolConfig {
         predicate_alloc: Arc::new(SharedDictAllocator::new_predicate()),
         datatype_alloc: Arc::new(SharedDictAllocator::new_datatype()),
-        graph_alloc: Arc::new(SharedDictAllocator::new_graph()),
+        graph_alloc: Arc::new(SharedDictAllocator::new_graph(alias)),
         numbig_pool: Arc::new(SharedNumBigPool::new()),
         vector_pool: Arc::new(SharedVectorArenaPool::new()),
         ns_alloc: Arc::clone(&shared_alloc),
@@ -1963,11 +1963,9 @@ where
             .predicate_alloc
             .get_or_insert_parts(fluree::DB, db::PREVIOUS);
 
-        let g_id = (spool_config
-            .graph_alloc
-            .get_or_insert_parts(fluree::DB, "txn-meta")
-            + 1) as u16;
-        debug_assert_eq!(g_id, 1, "txn-meta graph must be g_id=1");
+        // txn-meta is always pre-seeded as dict_id=0 in the graph allocator
+        // (via SharedDictAllocator::new_graph), so g_id = dict_id + 1 = 1.
+        let g_id: u16 = 1;
 
         // meta_chunk_idx = number of data chunks (next sequential index).
         let meta_chunk_idx = sort_write_handles.len();

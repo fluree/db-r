@@ -240,10 +240,9 @@ impl CommitResolver {
         // 1. Validate commit hash hex
         let hex = commit_hash_hex;
 
-        // 2. g_id=1 (pre-reserved in GlobalDicts::new())
-        let g_id_raw = dicts.graphs.get_or_insert_parts(fluree::DB, "txn-meta") + 1;
-        debug_assert_eq!(g_id_raw, 1, "txn-meta graph must be g_id=1");
-        let g_id = g_id_raw as u16;
+        // 2. g_id=1 (pre-reserved in GlobalDicts/SharedResolverState construction)
+        //    The txn-meta IRI is always the first graph entry (dict_id=0, g_id=0+1=1).
+        let g_id: u16 = 1;
 
         let t = u32::try_from(envelope.t).map_err(|_| {
             ResolverError::Resolve(format!("commit t={} does not fit in u32", envelope.t))
@@ -937,21 +936,19 @@ pub struct SharedResolverState {
     pub spatial_hook: Option<crate::spatial_hook::SpatialHook>,
 }
 
-impl Default for SharedResolverState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SharedResolverState {
     /// Create a new shared state seeded with default namespace prefixes
     /// and pre-reserved txn-meta graph (g_id=1).
-    pub fn new() -> Self {
+    ///
+    /// The ledger_id is used to construct the ledger-scoped txn-meta IRI
+    /// (`urn:fluree:{ledger_id}#txn-meta`).
+    pub fn new_for_ledger(ledger_id: &str) -> Self {
         use fluree_db_core::value_id::ValueTypeTag;
 
         let mut graphs = super::global_dict::PredicateDict::new();
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
-        graphs.get_or_insert_parts(fluree::DB, "txn-meta");
+        let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri(ledger_id);
+        graphs.get_or_insert(&txn_meta_iri);
 
         let datatypes = super::global_dict::new_datatype_dict();
 
@@ -1011,12 +1008,13 @@ impl SharedResolverState {
         let predicates = super::global_dict::PredicateDict::from_ordered_iris(pred_iris);
 
         // 3. Graphs from graph_iris
-        //    graph_iris[0] must be the txn-meta IRI (g_id=1 pre-reserved)
-        let txn_meta_iri = format!("{}txn-meta", fluree::DB);
-        if root.graph_iris.is_empty() || root.graph_iris[0] != txn_meta_iri {
+        //    graph_iris[0] must be the ledger-scoped txn-meta IRI (g_id=1 pre-reserved)
+        let expected_txn_meta =
+            fluree_db_core::graph_registry::txn_meta_graph_iri(&root.ledger_id);
+        if root.graph_iris.is_empty() || root.graph_iris[0] != expected_txn_meta {
             return Err(ResolverError::Resolve(format!(
                 "graph_iris[0] must be txn-meta IRI '{}', got: {:?}",
-                txn_meta_iri,
+                expected_txn_meta,
                 root.graph_iris.first()
             )));
         }
@@ -1460,10 +1458,9 @@ impl SharedResolverState {
         retracts: u32,
         chunk: &mut RebuildChunk,
     ) -> Result<u32, ResolverError> {
-        // g_id=1 (pre-reserved)
-        let g_id_raw = self.graphs.get_or_insert_parts(fluree::DB, "txn-meta") + 1;
-        debug_assert_eq!(g_id_raw, 1, "txn-meta graph must be g_id=1");
-        let g_id = g_id_raw as u16;
+        // g_id=1 (pre-reserved in SharedResolverState construction)
+        // The txn-meta IRI is always the first graph entry (dict_id=0, g_id=0+1=1).
+        let g_id: u16 = 1;
 
         let t = u32::try_from(envelope.t).map_err(|_| {
             ResolverError::Resolve(format!("commit t={} does not fit in u32", envelope.t))
@@ -1995,7 +1992,7 @@ mod tests {
         let blob = build_test_blob(&flakes, 1);
         let commit_ops = load_commit_ops(&blob).unwrap();
 
-        let mut dicts = GlobalDicts::new_memory();
+        let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
 
         // Add user namespace prefix (code 101)
@@ -2055,7 +2052,7 @@ mod tests {
         let blob = build_test_blob(&flakes, 1);
         let commit_ops = load_commit_ops(&blob).unwrap();
 
-        let mut dicts = GlobalDicts::new_memory();
+        let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
         resolver
             .ns_prefixes
@@ -2097,7 +2094,7 @@ mod tests {
         let blob = build_test_blob(&flakes, 1);
         let commit_ops = load_commit_ops(&blob).unwrap();
 
-        let mut dicts = GlobalDicts::new_memory();
+        let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
         resolver
             .ns_prefixes
@@ -2156,7 +2153,7 @@ mod tests {
         let blob = build_test_blob(&flakes, 1);
         let commit_ops = load_commit_ops(&blob).unwrap();
 
-        let mut dicts = GlobalDicts::new_memory();
+        let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
         resolver
             .ns_prefixes
@@ -2213,7 +2210,7 @@ mod tests {
         let blob = build_test_blob(&flakes, 1);
         let commit_ops = load_commit_ops(&blob).unwrap();
 
-        let mut dicts = GlobalDicts::new_memory();
+        let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
         resolver
             .ns_prefixes
@@ -2265,7 +2262,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let mut dicts = GlobalDicts::new_memory();
+        let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
 
         let config = RunWriterConfig {
@@ -2300,12 +2297,10 @@ mod tests {
         // 7 records on commit subject: address, time, t, size, asserts, retracts, previous
         assert_eq!(count, 7);
 
-        // Verify g_id=1 reservation
-        let g_id = dicts
-            .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta")
-            + 1;
-        assert_eq!(g_id, 1);
+        // Verify g_id=1 reservation: txn-meta IRI is the first graph entry (dict_id=0)
+        let txn_meta = fluree_db_core::graph_registry::txn_meta_graph_iri("test:main");
+        let dict_id = dicts.graphs.get(&txn_meta).expect("txn-meta must be in graph dict");
+        assert_eq!(dict_id + 1, 1, "txn-meta g_id must be 1");
 
         // Verify subjects created
         assert!(dicts.subjects.len() >= 2);
@@ -2390,7 +2385,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let mut dicts = GlobalDicts::new_memory();
+        let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
 
         let config = RunWriterConfig {
@@ -2432,7 +2427,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let mut dicts = GlobalDicts::new_memory();
+        let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
         // Add user namespace for txn_meta predicates
         resolver
@@ -2577,8 +2572,9 @@ mod tests {
 
     #[test]
     fn test_global_dicts_reserves_g_id_1() {
-        let dicts = GlobalDicts::new_memory();
-        let g_id = dicts.graphs.get("https://ns.flur.ee/db#txn-meta");
+        let dicts = GlobalDicts::new_memory("test:main");
+        let txn_meta = fluree_db_core::graph_registry::txn_meta_graph_iri("test:main");
+        let g_id = dicts.graphs.get(&txn_meta);
         assert_eq!(
             g_id,
             Some(0),

@@ -12,8 +12,8 @@
 //! baseline so query/transaction code can reliably encode standard IRIs even
 //! before any index exists.
 use fluree_vocab::namespaces::{
-    BLANK_NODE, DID_KEY, EMPTY, FLUREE_COMMIT, FLUREE_DB, JSON_LD, OGC_GEO, OWL, RDF, RDFS, SHACL,
-    XSD,
+    BLANK_NODE, DID_KEY, EMPTY, FLUREE_COMMIT, FLUREE_DB, FLUREE_URN, JSON_LD, OGC_GEO, OWL, RDF,
+    RDFS, SHACL, XSD,
 };
 use fluree_vocab::predicates::*;
 use std::collections::HashMap;
@@ -119,5 +119,6 @@ pub fn default_namespace_codes() -> HashMap<u16, String> {
     map.insert(FLUREE_COMMIT, fluree_vocab::fluree::COMMIT.to_string());
     map.insert(BLANK_NODE, "_:".to_string());
     map.insert(OGC_GEO, fluree_vocab::geo::NS.to_string());
+    map.insert(FLUREE_URN, fluree_vocab::fluree::URN.to_string());
     map
 }

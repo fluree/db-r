@@ -232,10 +232,9 @@ where
             ns_registry.take_delta()
         };
 
-        // Apply namespace delta to the in-memory LedgerSnapshot immediately (Clojure parity).
-        for (code, prefix) in &ns_delta {
-            base.snapshot.namespace_codes.insert(*code, prefix.clone());
-        }
+        // Apply envelope deltas (namespace + graph) to the in-memory LedgerSnapshot.
+        // This must happen before novelty apply so encode_iri() works for graph routing.
+        base.snapshot.apply_envelope_deltas(&ns_delta, graph_delta.values().map(|s| s.as_str()));
 
         // Generate ISO 8601 timestamp
         // TODO: Refactor to accept an optional timestamp via CommitOpts instead of calling

@@ -393,7 +393,7 @@ where
             // ---- Phase B: Resolve commits into batched chunks ----
             let _span_b =
                 tracing::debug_span!("commit_resolve", commits = commit_cids.len()).entered();
-            let mut shared = SharedResolverState::new();
+            let mut shared = SharedResolverState::new_for_ledger(&ledger_id);
 
             // Pre-insert rdf:type into predicate dictionary so class tracking
             // works from the very first commit.
@@ -5550,7 +5550,7 @@ mod tests {
         use run_index::resolver::SharedResolverState;
 
         // Create a SharedResolverState with predicates spanning two namespaces.
-        let mut shared = SharedResolverState::new();
+        let mut shared = SharedResolverState::new_for_ledger("test:main");
         // p_id 0: predicate in ns 1 ("http://example.org/")
         let _p0 = shared.predicates.get_or_insert("http://example.org/name");
         // p_id 1: predicate in ns 1

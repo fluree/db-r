@@ -1298,6 +1298,12 @@ pub mod fluree {
     /// Fluree DB system namespace IRI (canonical base for all Fluree system vocabulary)
     pub const DB: &str = "https://ns.flur.ee/db#";
 
+    /// Fluree URN prefix for ledger-scoped identifiers.
+    ///
+    /// Used as a namespace prefix so `encode_iri` can decompose ledger-scoped IRIs.
+    /// e.g., `urn:fluree:mydb:main#txn-meta` → `Sid::new(FLUREE_URN, "mydb:main#txn-meta")`
+    pub const URN: &str = "urn:fluree:";
+
     /// db:rule IRI - datalog rule definition predicate
     pub const RULE: &str = "https://ns.flur.ee/db#rule";
 
@@ -1364,9 +1370,15 @@ pub mod namespaces {
     /// Code 11: OGC GeoSPARQL namespace (geo:)
     pub const OGC_GEO: u16 = 11;
 
+    /// Code 12: Fluree URN prefix (urn:fluree:) for ledger-scoped identifiers.
+    ///
+    /// Used for txn-meta graph IRIs: `urn:fluree:{ledger_id}#txn-meta`.
+    /// `encode_iri` decomposes as `Sid::new(FLUREE_URN, "{ledger_id}#txn-meta")`.
+    pub const FLUREE_URN: u16 = 12;
+
     /// First code available for user-defined namespaces.
-    /// Built-in codes occupy 0..=11.
-    pub const USER_START: u16 = 12;
+    /// Built-in codes occupy 0..=12.
+    pub const USER_START: u16 = 13;
 
     /// Overflow namespace code (0xFFFE).
     /// Assigned when all user codes are exhausted. The SID name stores the

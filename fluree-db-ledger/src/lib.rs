@@ -160,20 +160,14 @@ impl LedgerState {
         // Load novelty from commits since index_t
         let head_commit_id = match &record.commit_head_id {
             Some(head_cid) if record.commit_t > snapshot.t => {
-                let (novelty_overlay, ns_delta, head_id) =
-                    Self::load_novelty(store, head_cid, snapshot.t, &record.ledger_id).await?;
-                // Apply namespace deltas from commits
-                for (code, prefix) in ns_delta {
-                    snapshot.namespace_codes.insert(code, prefix);
-                }
-                // Replace empty novelty with loaded overlay below
-                let head_commit_id = head_id;
+                let (novelty_overlay, head_id) =
+                    Self::load_novelty(store, head_cid, snapshot.t, &record.ledger_id, &mut snapshot).await?;
                 let head_index_id = record.index_head_id.clone();
                 return Ok(Self {
                     snapshot,
                     novelty: Arc::new(novelty_overlay),
                     dict_novelty: Arc::new(dict_novelty),
-                    head_commit_id,
+                    head_commit_id: head_id,
                     head_index_id,
                     ns_record: Some(record),
                     binary_store: None,
@@ -199,59 +193,59 @@ impl LedgerState {
         })
     }
 
-    /// Load novelty from commits since a given index_t
+    /// Load novelty from commits since a given index_t.
     ///
     /// Walks the commit chain backwards from `head_cid` using the content store,
     /// collecting flakes for all commits with `t > index_t`.
     ///
-    /// Returns the novelty overlay, a merged map of namespace deltas
-    /// from all loaded commits, and the head commit's ContentId.
+    /// Envelope deltas (namespace codes, graph IRIs) are accumulated and applied
+    /// to the snapshot via `apply_envelope_deltas()` after the walk completes.
+    ///
+    /// Returns the novelty overlay and the head commit's ContentId.
     async fn load_novelty<C: ContentStore + Clone + 'static>(
         store: C,
         head_cid: &ContentId,
         index_t: i64,
         ledger_id: &str,
-    ) -> Result<(
-        Novelty,
-        std::collections::HashMap<u16, String>,
-        Option<ContentId>,
-    )> {
-        use std::collections::HashMap;
+        snapshot: &mut LedgerSnapshot,
+    ) -> Result<(Novelty, Option<ContentId>)> {
+        use std::collections::{HashMap, HashSet};
 
         let mut novelty = Novelty::new(index_t);
+        // Accumulate deltas across all commits.
+        // IMPORTANT: trace_commits streams HEAD → oldest (newest first).
+        // Namespace codes use `or_insert` so newer commits win.
+        // Graph IRIs are collected into a set — `apply_delta` dedupes & sorts.
         let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
-        let head_commit_id: Option<ContentId> = Some(head_cid.clone());
+        let mut all_graph_iris: HashSet<String> = HashSet::new();
 
         let stream = trace_commits_by_id(store, head_cid.clone(), index_t);
         futures::pin_mut!(stream);
 
         while let Some(result) = stream.next().await {
             let commit = result?;
-            Self::apply_commit_to_novelty(&mut novelty, &mut merged_ns_delta, commit, ledger_id)?;
+
+            // Apply flakes to novelty
+            let meta_flakes = generate_commit_flakes(&commit, ledger_id, commit.t);
+            let mut all_flakes = commit.flakes;
+            all_flakes.extend(meta_flakes);
+            novelty.apply_commit(all_flakes, commit.t)?;
+
+            // Accumulate ns_delta (newest wins via or_insert)
+            for (code, prefix) in commit.namespace_delta {
+                merged_ns_delta.entry(code).or_insert(prefix);
+            }
+
+            // Collect graph IRIs from graph_delta values
+            for iri in commit.graph_delta.into_values() {
+                all_graph_iris.insert(iri);
+            }
         }
 
-        Ok((novelty, merged_ns_delta, head_commit_id))
-    }
+        // Apply all accumulated deltas to the snapshot in one shot.
+        snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
 
-    /// Apply a single commit to the novelty overlay and merge namespace deltas.
-    fn apply_commit_to_novelty(
-        novelty: &mut Novelty,
-        merged_ns_delta: &mut std::collections::HashMap<u16, String>,
-        commit: fluree_db_novelty::Commit,
-        ledger_id: &str,
-    ) -> Result<()> {
-        let meta_flakes = generate_commit_flakes(&commit, ledger_id, commit.t);
-        let mut all_flakes = commit.flakes;
-        all_flakes.extend(meta_flakes);
-        novelty.apply_commit(all_flakes, commit.t)?;
-        // Merge namespace deltas.
-        // IMPORTANT: trace_commits streams from HEAD backwards (newest -> oldest),
-        // so we must ensure newer commits win. Only insert if the code hasn't
-        // already been set by a newer commit.
-        for (code, prefix) in commit.namespace_delta {
-            merged_ns_delta.entry(code).or_insert(prefix);
-        }
-        Ok(())
+        Ok((novelty, Some(head_cid.clone())))
     }
 
     /// Create a new ledger state from components

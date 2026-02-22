@@ -68,8 +68,9 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
         schema: v5.schema,
         subject_watermarks: v5.subject_watermarks,
         string_watermark: v5.string_watermark,
+        graph_iris: v5.graph_iris,
     };
-    let mut db = LedgerSnapshot::new_meta(meta);
+    let mut db = LedgerSnapshot::new_meta(meta).expect("seed graph registry from root");
     db.range_provider = Some(Arc::new(provider));
 
     ledger

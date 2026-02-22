@@ -591,13 +591,14 @@ impl SharedDictAllocator {
         Self::from_predicate_dict(&new_datatype_dict())
     }
 
-    /// Create a shared allocator pre-seeded for graph IDs.
+    /// Create a shared allocator pre-seeded for graph IDs with ledger-scoped txn-meta.
     ///
     /// Matches `GlobalDicts::new()`: txn-meta graph at ID 0.
     /// (Callers add +1 for the g_id convention: g_id 0 = default, g_id 1 = txn-meta.)
-    pub fn new_graph() -> Self {
+    pub fn new_graph(ledger_id: &str) -> Self {
         let mut d = PredicateDict::new();
-        d.get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
+        let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri(ledger_id);
+        d.get_or_insert(&txn_meta_iri);
         Self::from_predicate_dict(&d)
     }
 
@@ -1049,10 +1050,11 @@ impl GlobalDicts {
     /// Creates `subjects.fwd` and `strings.fwd` in the given `run_dir`.
     /// The same `run_dir` must be passed to `persist()` later.
     ///
-    /// Pre-inserts the txn-meta graph name (`#txn-meta`) as the first graph entry,
+    /// Pre-inserts the ledger-scoped txn-meta graph IRI as the first graph entry,
     /// guaranteeing `g_id = 1` for txn-meta regardless of import order.
-    pub fn new(run_dir: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn new(run_dir: impl AsRef<Path>, ledger_id: &str) -> io::Result<Self> {
         let dir = run_dir.as_ref();
+        let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri(ledger_id);
         let mut dicts = Self {
             subjects: SubjectDict::new(dir.join("subjects.fwd"))?,
             predicates: PredicateDict::new(),
@@ -1064,17 +1066,16 @@ impl GlobalDicts {
             vectors: FxHashMap::default(),
         };
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
-        dicts
-            .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
+        dicts.graphs.get_or_insert(&txn_meta_iri);
         Ok(dicts)
     }
 
     /// Create GlobalDicts with in-memory dictionaries (no disk files, for tests).
     ///
-    /// Pre-inserts the txn-meta graph name (`#txn-meta`) as the first graph entry,
+    /// Pre-inserts the ledger-scoped txn-meta graph IRI as the first graph entry,
     /// guaranteeing `g_id = 1` for txn-meta regardless of import order.
-    pub fn new_memory() -> Self {
+    pub fn new_memory(ledger_id: &str) -> Self {
+        let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri(ledger_id);
         let mut dicts = Self {
             subjects: SubjectDict::new_memory(),
             predicates: PredicateDict::new(),
@@ -1086,9 +1087,7 @@ impl GlobalDicts {
             vectors: FxHashMap::default(),
         };
         // Reserve g_id=1 for txn-meta: graphs dict returns 0-based, +1 = g_id 1.
-        dicts
-            .graphs
-            .get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
+        dicts.graphs.get_or_insert(&txn_meta_iri);
         dicts
     }
 
@@ -1453,7 +1452,7 @@ mod tests {
 
     #[test]
     fn test_global_dicts_memory() {
-        let mut dicts = GlobalDicts::new_memory();
+        let mut dicts = GlobalDicts::new_memory("test:main");
         dicts
             .subjects
             .get_or_insert("http://example.org/Alice", 100)
@@ -1899,8 +1898,9 @@ mod tests {
         // Verify the graph allocator convention: dict_id + 1 = g_id.
         // Default graph (g_id=0) is NOT in the dict.
         // txn-meta is dict_id=0, so g_id=0+1=1.
+        let txn_meta_iri = fluree_db_core::graph_registry::txn_meta_graph_iri("test:main");
         let mut graph_dict = PredicateDict::new();
-        let txn_meta_dict_id = graph_dict.get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta");
+        let txn_meta_dict_id = graph_dict.get_or_insert(&txn_meta_iri);
         assert_eq!(txn_meta_dict_id, 0);
         assert_eq!(txn_meta_dict_id + 1, 1); // g_id = 1 for txn-meta
 
@@ -1909,10 +1909,7 @@ mod tests {
         let mut cache = DictWorkerCache::new(alloc);
 
         // txn-meta lookup returns same dict_id
-        assert_eq!(
-            cache.get_or_insert_parts(fluree_vocab::fluree::DB, "txn-meta"),
-            0
-        );
+        assert_eq!(cache.get_or_insert(&txn_meta_iri), 0);
 
         // Custom named graph gets dict_id=1 → g_id=2
         let custom_dict_id = cache.get_or_insert("http://example.org/graph/custom");
