@@ -174,15 +174,13 @@ impl Operator for BindOperator {
 
                 // Evaluate inline filters against a row that includes the BIND output
                 if !self.filters.is_empty() {
-                    let mut row_bindings: Vec<Binding> = (0..child_num_cols)
-                        .map(|col| input_batch.get_by_col(row_idx, col).clone())
-                        .collect();
+                    let mut row = row_view.to_vec();
                     if self.is_new_var {
-                        row_bindings.push(computed.clone());
+                        row.push(computed.clone());
                     } else {
-                        row_bindings[self.var_position] = computed.clone();
+                        row[self.var_position] = computed.clone();
                     }
-                    if !passes_filters(&self.filters, &self.schema, &row_bindings, Some(ctx)) {
+                    if !passes_filters(&self.filters, &self.schema, &row, Some(ctx)) {
                         continue;
                     }
                 }
