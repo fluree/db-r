@@ -141,10 +141,12 @@ fn partition_ready_filters(
     (ready, pending)
 }
 
-/// Apply pending BINDs and FILTERs that are ready (all required vars are bound).
+/// Apply eligible BINDs whose required variables are all bound.
 ///
-/// Returns the updated operator and the remaining pending items.
-fn apply_ready_binds_and_filters(
+/// Each ready BIND is fused with any filters that become ready once the BIND's
+/// target variable enters `bound`.  Returns the updated operator, any BINDs
+/// whose dependencies are not yet satisfied, and the remaining pending filters.
+fn apply_eligible_binds(
     mut child: BoxedOperator,
     bound: &mut HashSet<VarId>,
     pending_binds: Vec<PendingBind>,
@@ -153,7 +155,6 @@ fn apply_ready_binds_and_filters(
 ) -> (BoxedOperator, Vec<PendingBind>, Vec<PendingFilter>) {
     let mut remaining_binds = Vec::new();
 
-    // Apply ready BINDs, fusing any newly-ready filters inline
     for pending in pending_binds {
         if pending.required_vars.is_subset(bound) {
             bound.insert(pending.target_var);
@@ -173,7 +174,22 @@ fn apply_ready_binds_and_filters(
         }
     }
 
-    // Apply remaining ready FILTERs that don't depend on any BIND output
+    (child, remaining_binds, pending_filters)
+}
+
+/// Apply pending BINDs and FILTERs that are ready (all required vars are bound).
+///
+/// Returns the updated operator and the remaining pending items.
+fn apply_deferred_patterns(
+    child: BoxedOperator,
+    bound: &mut HashSet<VarId>,
+    pending_binds: Vec<PendingBind>,
+    pending_filters: Vec<PendingFilter>,
+    filter_idxs_consumed: &[usize],
+) -> (BoxedOperator, Vec<PendingBind>, Vec<PendingFilter>) {
+    let (mut child, remaining_binds, pending_filters) =
+        apply_eligible_binds(child, bound, pending_binds, pending_filters, filter_idxs_consumed);
+
     let (ready, remaining_filters) =
         partition_ready_filters(pending_filters, bound, filter_idxs_consumed);
     for expr in ready {
@@ -189,28 +205,21 @@ fn apply_ready_binds_and_filters(
 /// is the last dependency the filter was waiting on.  Any filters still
 /// pending after all BINDs are applied as standalone FilterOperators.
 fn apply_all_remaining(
-    mut child: BoxedOperator,
+    child: BoxedOperator,
     pending_binds: Vec<PendingBind>,
-    mut pending_filters: Vec<PendingFilter>,
+    pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
 ) -> BoxedOperator {
     let mut bound: HashSet<VarId> = child.schema().iter().copied().collect();
 
-    for pending in pending_binds {
-        bound.insert(pending.target_var);
-
-        let (bind_filters, still_pending) =
-            partition_ready_filters(pending_filters, &bound, filter_idxs_consumed);
-        pending_filters = still_pending;
-
-        child = Box::new(BindOperator::new(
-            child,
-            pending.target_var,
-            pending.expr,
-            bind_filters,
-        ));
-    }
-    for pending in pending_filters {
+    let (mut child, _, remaining_filters) = apply_eligible_binds(
+        child,
+        &mut bound,
+        pending_binds,
+        pending_filters,
+        filter_idxs_consumed,
+    );
+    for pending in remaining_filters {
         if !filter_idxs_consumed.contains(&pending.original_idx) {
             child = Box::new(FilterOperator::new(child, pending.expr));
         }
@@ -548,7 +557,7 @@ pub fn build_where_operators_seeded(
                     // Apply any BINDs/FILTERs that are ready after property join + VALUES.
                     bound = bound_vars_from_operator(&operator);
                     if let Some(child) = operator.take() {
-                        let (child, _, _) = apply_ready_binds_and_filters(
+                        let (child, _, _) = apply_deferred_patterns(
                             child,
                             &mut bound,
                             pending_binds,
@@ -607,7 +616,7 @@ pub fn build_where_operators_seeded(
                         // Filters have already been extracted above, so only binds
                         // remain to be applied here.
                         if let Some(child) = operator.take() {
-                            let (child, new_binds, new_filters) = apply_ready_binds_and_filters(
+                            let (child, new_binds, new_filters) = apply_deferred_patterns(
                                 child,
                                 &mut bound,
                                 pending_binds,
