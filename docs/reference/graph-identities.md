@@ -31,9 +31,9 @@ Under the hood, this “graph snapshot” corresponds to the same semantic idea 
 - **Graph**: A query scope (SPARQL term).
   - In a query, a “graph” is identified by an IRI and used to scope patterns (`GRAPH <iri> { … }`).
 - **Graph Snapshot**: An immutable point-in-time view of a graph that can be queried repeatedly.
-- **Db (database value)**: The underlying semantic model: an immutable value at a point in time.
+- **LedgerSnapshot (database value)**: The underlying semantic model: an immutable value at a point in time.
   - In product/docs we usually say “graph snapshot” because it aligns with SPARQL and the Rust API.
-  - Internally you may still see `Db` used for the indexed snapshot type.
+  - Internally the type is `LedgerSnapshot` in `fluree-db-core`.
 - **Graph IRI**: The canonical identity of a graph. This is what SPARQL uses.
 - **Graph reference (GraphRef)**: What a user types (often an alias-like string), which Fluree resolves to a Graph IRI.
 - **Graph Source**: Anything addressable by a Graph IRI that can participate in query execution.
@@ -48,7 +48,7 @@ In practice, you query a graph snapshot by naming its graph:
 - When you write `FROM <…>` or `GRAPH <…>`, you are naming a **graph IRI**.
 - That graph IRI resolves to a **graph snapshot** (an immutable value) at execution time.
 
-### Time pinning syntax (“the part after `@` pins the Db”)
+### Time pinning syntax (“the part after `@` pins the snapshot”)
 Fluree supports time pinning in graph references.
 
 **Current syntax (implemented today):**
@@ -59,7 +59,7 @@ Fluree supports time pinning in graph references.
 Note: you may see an `=` form in older design notes (`@t=100`, etc.). That form is **not** the supported user-facing syntax today; use the `@t:` / `@iso:` / `@commit:` forms in docs and examples.
 
 From a user perspective:
-- The `@…` portion selects **which Db value** you mean for that ledger graph.
+- The `@…` portion selects **which snapshot value** you mean for that ledger graph.
 
 Important nuance:
 - For **ledger graph sources**, `@…` selects a pinned point-in-time view.

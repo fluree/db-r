@@ -16,7 +16,7 @@ use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25IndexBuilder, Bm25Manifest, Bm25SnapshotEntry, PropertyDeps};
 use fluree_db_query::parse::parse_query;
-use fluree_db_query::{execute_with_overlay, DataSource, ExecutableQuery, SelectMode, VarRegistry};
+use fluree_db_query::{execute_with_overlay, ExecutableQuery, SelectMode, VarRegistry};
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -231,8 +231,8 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let source = DataSource::new(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t());
-        let batches = execute_with_overlay(source, &vars, &executable).await?;
+        let db = ledger.as_graph_db_ref(0);
+        let batches = execute_with_overlay(db, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {
@@ -277,12 +277,8 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let overlay: &dyn fluree_db_core::OverlayProvider = view
-            .overlay()
-            .map(|n| n.as_ref() as &dyn fluree_db_core::OverlayProvider)
-            .unwrap_or(&fluree_db_core::NoOverlay);
-        let source = DataSource::new(&view.snapshot, overlay, view.to_t());
-        let batches = execute_with_overlay(source, &vars, &executable).await?;
+        let db = view.as_graph_db_ref(0);
+        let batches = execute_with_overlay(db, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {
@@ -301,7 +297,7 @@ where
             binary_graph: None,
         };
 
-        let json = result.to_jsonld_async(view.as_graph_db_ref()).await?;
+        let json = result.to_jsonld_async(view.as_graph_db_ref(0)).await?;
         match json {
             JsonValue::Array(arr) => Ok(arr),
             JsonValue::Object(_) => Ok(vec![json]),

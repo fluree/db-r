@@ -12,7 +12,8 @@ use crate::{
     ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
     TrackingOptions,
 };
-use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig, DataSource};
+use fluree_db_core::GraphDbRef;
+use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
 
 // ============================================================================
 // Dataset Query Execution
@@ -261,15 +262,11 @@ where
 
         let runtime_dataset = dataset.as_runtime_dataset();
 
-        let prepared = prepare_execution(
-            &primary.snapshot,
-            primary.graph_id,
-            primary.overlay.as_ref(),
-            executable,
-            primary.t,
-        )
-        .await
-        .map_err(query_error_to_api_error)?;
+        let db = primary.as_graph_db_ref();
+
+        let prepared = prepare_execution(db, executable)
+            .await
+            .map_err(query_error_to_api_error)?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
@@ -294,17 +291,13 @@ where
             dict_novelty: primary.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
             history_mode,
+            from_t,
             strict_bind_errors: true,
             ..Default::default()
         };
 
-        let source = DataSource {
-            snapshot: &primary.snapshot,
-            overlay: primary.overlay.as_ref(),
-            to_t,
-            from_t,
-        };
-        execute_prepared(source, vars, prepared, config)
+        let exec_db = GraphDbRef::new(&primary.snapshot, primary.graph_id, &*primary.overlay, to_t);
+        execute_prepared(exec_db, vars, prepared, config)
             .await
             .map_err(query_error_to_api_error)
     }
@@ -325,14 +318,9 @@ where
 
         let runtime_dataset = dataset.as_runtime_dataset();
 
-        let prepared = prepare_execution(
-            &primary.snapshot,
-            primary.graph_id,
-            primary.overlay.as_ref(),
-            executable,
-            primary.t,
-        )
-        .await?;
+        let db = primary.as_graph_db_ref();
+
+        let prepared = prepare_execution(db, executable).await?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
@@ -353,17 +341,13 @@ where
             dict_novelty: primary.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
             history_mode,
+            from_t,
             strict_bind_errors: true,
             ..Default::default()
         };
 
-        let source = DataSource {
-            snapshot: &primary.snapshot,
-            overlay: primary.overlay.as_ref(),
-            to_t,
-            from_t,
-        };
-        execute_prepared(source, vars, prepared, config).await
+        let exec_db = GraphDbRef::new(&primary.snapshot, primary.graph_id, &*primary.overlay, to_t);
+        execute_prepared(exec_db, vars, prepared, config).await
     }
 }
 

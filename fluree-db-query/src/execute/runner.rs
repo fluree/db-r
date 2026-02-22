@@ -17,7 +17,7 @@ use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
 use crate::var_registry::VarRegistry;
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{GraphId, LedgerSnapshot, StatsView, Tracker};
+use fluree_db_core::{GraphDbRef, GraphId, LedgerSnapshot, StatsView, Tracker};
 use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_reasoner::DerivedFactsOverlay;
 use fluree_db_spatial::SpatialIndexProvider;
@@ -31,7 +31,6 @@ use super::reasoning_prep::{
     compute_derived_facts, effective_reasoning_modes, schema_hierarchy_with_overlay,
 };
 use super::rewrite_glue::rewrite_query_patterns;
-use super::DataSource;
 
 /// Query with execution options
 ///
@@ -93,16 +92,13 @@ pub struct PreparedExecution {
 ///
 /// The result can then be executed with any ExecutionContext.
 pub async fn prepare_execution(
-    snapshot: &LedgerSnapshot,
-    g_id: GraphId,
-    overlay: &dyn fluree_db_core::OverlayProvider,
+    db: GraphDbRef<'_>,
     query: &ExecutableQuery,
-    to_t: i64,
 ) -> Result<PreparedExecution> {
     let span = tracing::debug_span!(
         "query_prepare",
-        db_t = snapshot.t,
-        to_t = to_t,
+        db_t = db.snapshot.t,
+        to_t = db.t,
         pattern_count = query.query.patterns.len()
     );
     // Use an async block with .instrument() so the span is NOT held
@@ -115,7 +111,7 @@ pub async fn prepare_execution(
         let reasoning_span = tracing::debug_span!("reasoning_prep");
         let (hierarchy, reasoning, derived_overlay, ontology) = async {
             // Step 1: Compute schema hierarchy from overlay
-            let hierarchy = schema_hierarchy_with_overlay(snapshot, overlay, to_t);
+            let hierarchy = schema_hierarchy_with_overlay(db.snapshot, db.overlay, db.t);
 
             // Step 2: Determine effective reasoning modes
             let reasoning =
@@ -133,26 +129,26 @@ pub async fn prepare_execution(
 
             // Step 3: Compute derived facts from OWL2-RL and/or datalog rules
             let derived_overlay =
-                compute_derived_facts(snapshot, g_id, overlay, to_t, &reasoning).await;
+                compute_derived_facts(db.snapshot, db.g_id, db.overlay, db.t, &reasoning).await;
 
             // Step 4: Build ontology for OWL2-QL mode (if enabled)
             let reasoning_overlay_for_ontology: Option<ReasoningOverlay<'_>> = derived_overlay
                 .as_ref()
-                .map(|derived| ReasoningOverlay::new(overlay, derived.clone()));
+                .map(|derived| ReasoningOverlay::new(db.overlay, derived.clone()));
 
             let effective_overlay_for_ontology: &dyn fluree_db_core::OverlayProvider =
                 reasoning_overlay_for_ontology
                     .as_ref()
                     .map(|o| o as &dyn fluree_db_core::OverlayProvider)
-                    .unwrap_or(overlay);
+                    .unwrap_or(db.overlay);
 
             let ontology = if reasoning.owl2ql {
                 tracing::debug!("building OWL2-QL ontology");
                 let ontology_db = fluree_db_core::GraphDbRef::new(
-                    snapshot,
-                    g_id,
+                    db.snapshot,
+                    db.g_id,
                     effective_overlay_for_ontology,
-                    to_t,
+                    db.t,
                 );
                 Some(Ontology::from_db_with_overlay(ontology_db).await?)
             } else {
@@ -229,7 +225,7 @@ pub async fn prepare_execution(
             .entered();
 
             let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-                encode_patterns_for_reasoning(snapshot, &query.query.patterns)
+                encode_patterns_for_reasoning(db.snapshot, &query.query.patterns)
             } else {
                 query.query.patterns.clone()
             };
@@ -247,7 +243,7 @@ pub async fn prepare_execution(
             // This runs for both SPARQL and JSON-LD queries — same patterns, same rewrite.
             let rewritten_patterns =
                 crate::geo_rewrite::rewrite_geo_patterns(rewritten_patterns, &|iri: &str| {
-                    snapshot.encode_iri(iri)
+                    db.snapshot.encode_iri(iri)
                 });
 
             tracing::Span::current().record("patterns_after", rewritten_patterns.len());
@@ -269,10 +265,10 @@ pub async fn prepare_execution(
                 tracing::debug_span!("plan", pattern_count = rewritten_query.patterns.len(),)
                     .entered();
 
-            let stats_view = snapshot.stats.as_ref().map(|s| {
+            let stats_view = db.snapshot.stats.as_ref().map(|s| {
                 Arc::new(StatsView::from_db_stats_with_namespaces(
                     s,
-                    &snapshot.namespace_codes,
+                    &db.snapshot.namespace_codes,
                 ))
             });
             build_operator_tree(&rewritten_query, &query.options, stats_view)?
@@ -404,6 +400,9 @@ pub struct ContextConfig<'a, 'b> {
     pub vector_provider: Option<&'b dyn crate::vector::VectorIndexProvider>,
     /// Enable history mode - captures op metadata in bindings for @op support
     pub history_mode: bool,
+    /// Optional lower time bound for history/range queries.
+    /// Defaults to None (no lower bound).
+    pub from_t: Option<i64>,
     /// When true, bind evaluation errors become query errors.
     pub strict_bind_errors: bool,
     /// Binary columnar index store for `BinaryScanOperator`.
@@ -466,7 +465,7 @@ impl<'a, 'b> QueryContextParams<'a, 'b> {
 /// This is the unified internal execution path that handles all variants.
 /// The `config` parameter specifies which optional components to add to the context.
 pub async fn execute_prepared<'a, 'b>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     config: ContextConfig<'a, 'b>,
@@ -475,20 +474,20 @@ pub async fn execute_prepared<'a, 'b>(
     let reasoning_overlay: Option<ReasoningOverlay<'a>> = prepared
         .derived_overlay
         .as_ref()
-        .map(|derived| ReasoningOverlay::new(source.overlay, derived.clone()));
+        .map(|derived| ReasoningOverlay::new(db.overlay, derived.clone()));
 
     // Use composite overlay if available, otherwise base overlay
     let effective_overlay: &dyn fluree_db_core::OverlayProvider = reasoning_overlay
         .as_ref()
         .map(|o| o as &dyn fluree_db_core::OverlayProvider)
-        .unwrap_or(source.overlay);
+        .unwrap_or(db.overlay);
 
     // Build context with all configured options
     let mut ctx = ExecutionContext::with_time_and_overlay(
-        source.snapshot,
+        db.snapshot,
         vars,
-        source.to_t,
-        source.from_t,
+        db.t,
+        config.from_t,
         effective_overlay,
     );
 
@@ -535,12 +534,12 @@ pub async fn execute_prepared<'a, 'b>(
 
 /// Execute a prepared query with an overlay
 pub async fn execute_prepared_with_overlay(
-    source: DataSource<'_>,
+    db: GraphDbRef<'_>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {
@@ -553,13 +552,13 @@ pub async fn execute_prepared_with_overlay(
 
 /// Execute with overlay, time bounds, and optional tracker
 pub async fn execute_prepared_with_overlay_tracked<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {
@@ -573,7 +572,7 @@ pub async fn execute_prepared_with_overlay_tracked<'a>(
 
 /// Execute with overlay, time bounds, and policy (with async f:query support)
 pub async fn execute_prepared_with_policy<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     policy: &'a fluree_db_policy::PolicyContext,
@@ -585,7 +584,7 @@ pub async fn execute_prepared_with_policy<'a>(
     )));
 
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {
@@ -600,7 +599,7 @@ pub async fn execute_prepared_with_policy<'a>(
 
 /// Execute with overlay, time bounds, tracker, and R2RML providers
 pub async fn execute_prepared_with_r2rml<'a, 'b>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     tracker: &'a Tracker,
@@ -608,7 +607,7 @@ pub async fn execute_prepared_with_r2rml<'a, 'b>(
     r2rml_table_provider: &'b dyn crate::r2rml::R2rmlTableProvider,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {
@@ -623,18 +622,18 @@ pub async fn execute_prepared_with_r2rml<'a, 'b>(
 
 /// Execute with dataset (multi-graph query)
 pub async fn execute_prepared_with_dataset<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     dataset: &'a DataSet<'a>,
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
-    execute_prepared_with_dataset_history(source, vars, prepared, dataset, tracker, false).await
+    execute_prepared_with_dataset_history(db, vars, prepared, dataset, tracker, false).await
 }
 
 /// Execute with dataset (multi-graph query), with optional history mode
 pub async fn execute_prepared_with_dataset_history<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     dataset: &'a DataSet<'a>,
@@ -642,7 +641,7 @@ pub async fn execute_prepared_with_dataset_history<'a>(
     history_mode: bool,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {
@@ -658,7 +657,7 @@ pub async fn execute_prepared_with_dataset_history<'a>(
 
 /// Execute with dataset and policy
 pub async fn execute_prepared_with_dataset_and_policy<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     dataset: &'a DataSet<'a>,
@@ -666,14 +665,14 @@ pub async fn execute_prepared_with_dataset_and_policy<'a>(
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared_with_dataset_and_policy_history(
-        source, vars, prepared, dataset, policy, tracker, false,
+        db, vars, prepared, dataset, policy, tracker, false,
     )
     .await
 }
 
 /// Execute with dataset and policy, with optional history mode
 pub async fn execute_prepared_with_dataset_and_policy_history<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     dataset: &'a DataSet<'a>,
@@ -687,7 +686,7 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a>(
     )));
 
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {
@@ -704,7 +703,7 @@ pub async fn execute_prepared_with_dataset_and_policy_history<'a>(
 
 /// Execute with dataset and BM25 provider (for graph source BM25 queries)
 pub async fn execute_prepared_with_dataset_and_bm25<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     dataset: &'a DataSet<'a>,
@@ -712,7 +711,7 @@ pub async fn execute_prepared_with_dataset_and_bm25<'a>(
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {
@@ -728,7 +727,7 @@ pub async fn execute_prepared_with_dataset_and_bm25<'a>(
 
 /// Execute with dataset, policy, and BM25 provider (for graph source BM25 queries with policy)
 pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     dataset: &'a DataSet<'a>,
@@ -742,7 +741,7 @@ pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a>(
     )));
 
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {
@@ -759,7 +758,7 @@ pub async fn execute_prepared_with_dataset_and_policy_and_bm25<'a>(
 
 /// Execute with dataset and both BM25 and vector providers (for graph source queries)
 pub async fn execute_prepared_with_dataset_and_providers<'a, 'b>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     dataset: &'a DataSet<'a>,
@@ -768,7 +767,7 @@ pub async fn execute_prepared_with_dataset_and_providers<'a, 'b>(
     tracker: Option<&'a Tracker>,
 ) -> Result<Vec<Batch>> {
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {
@@ -785,7 +784,7 @@ pub async fn execute_prepared_with_dataset_and_providers<'a, 'b>(
 
 /// Execute with dataset, policy, and both BM25 and vector providers
 pub async fn execute_prepared_with_dataset_and_policy_and_providers<'a, 'b>(
-    source: DataSource<'a>,
+    db: GraphDbRef<'a>,
     vars: &VarRegistry,
     prepared: PreparedExecution,
     params: QueryContextParams<'a, 'b>,
@@ -796,7 +795,7 @@ pub async fn execute_prepared_with_dataset_and_policy_and_providers<'a, 'b>(
     )));
 
     execute_prepared(
-        source,
+        db,
         vars,
         prepared,
         ContextConfig {

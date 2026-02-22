@@ -46,6 +46,7 @@
   - [Verifiable data](concepts/verifiable-data.md)
 
 - [Design](design/README.md)
+  - [Query execution and overlay merge](design/query-execution.md)
   - [Auth contract (CLI ↔ Server)](design/auth-contract.md)
   - [Nameservice schema v2](design/nameservice-schema-v2.md)
   - [Storage-agnostic commits and sync](design/storage-agnostic-commits-and-sync.md)

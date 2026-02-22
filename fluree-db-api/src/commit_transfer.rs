@@ -202,7 +202,10 @@ where
                     .await
                     .map_err(|e| ApiError::Transact(fluree_db_transact::TransactError::from(e)))?;
                 let shacl_cache = engine.cache().clone();
-                fluree_db_transact::validate_view_with_shacl(&staged_view, &shacl_cache)
+                // TODO: derive graph_sids from commit flakes + binary store for
+                // per-graph SHACL validation on pushed commits. For now, pass None
+                // to fall back to default-graph validation.
+                fluree_db_transact::validate_view_with_shacl(&staged_view, &shacl_cache, None)
                     .await
                     .map_err(|e| ApiError::http(422, e.to_string()))?;
             }

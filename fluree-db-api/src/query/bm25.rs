@@ -2,8 +2,8 @@ use serde_json::Value as JsonValue;
 
 use crate::query::helpers::{parse_dataset_spec, tracker_for_limits};
 use crate::{
-    ApiError, DataSetDb, DataSource, ExecutableQuery, Fluree, FlureeIndexProvider, QueryResult,
-    Result, Storage, StorageWrite, VarRegistry,
+    ApiError, DataSetDb, ExecutableQuery, Fluree, FlureeIndexProvider, QueryResult, Result, Storage,
+    StorageWrite, VarRegistry,
 };
 
 use fluree_db_query::parse::parse_query;
@@ -32,8 +32,6 @@ where
         let primary = dataset
             .primary()
             .ok_or_else(|| ApiError::query("Dataset has no graphs for query execution"))?;
-        let primary_t = primary.t;
-
         // Parse the query using the primary ledger's DB for IRI encoding
         let mut vars = VarRegistry::new();
         let parsed = parse_query(query_json, primary.snapshot.as_ref(), &mut vars)?;
@@ -52,11 +50,7 @@ where
         // Vector provider support is feature-gated. When disabled,
         // f:queryVector patterns are not available and we run the BM25-only path.
         let tracker = tracker_for_limits(query_json);
-        let source = DataSource::new(
-            primary.snapshot.as_ref(),
-            primary.overlay.as_ref(),
-            primary_t,
-        );
+        let db = primary.as_graph_db_ref();
         let tracker_ref = if tracker.is_enabled() {
             Some(&tracker)
         } else {
@@ -66,7 +60,7 @@ where
             #[cfg(feature = "vector")]
             {
                 crate::execute_with_dataset_and_providers(
-                    source,
+                    db,
                     &vars,
                     &executable,
                     &runtime_dataset,
@@ -79,7 +73,7 @@ where
             #[cfg(not(feature = "vector"))]
             {
                 crate::execute_with_dataset_and_bm25(
-                    source,
+                    db,
                     &vars,
                     &executable,
                     &runtime_dataset,

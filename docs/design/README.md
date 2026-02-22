@@ -4,6 +4,10 @@ Architecture and design documents for Fluree's internal systems. These documents
 
 ## Documents
 
+### [Query execution and overlay merge](query-execution.md)
+
+How queries run through a single preparation/execution pipeline, how scan operators select the binary-cursor path vs the range fallback, and where overlay novelty merges with indexed data (including graph scoping boundaries).
+
 ### [Auth Contract (CLI ↔ Server)](auth-contract.md)
 
 Wire-level contract between the Fluree CLI and any Fluree-compatible server, covering OIDC device auth, token refresh, and storage proxy authentication.

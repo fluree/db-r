@@ -20,10 +20,10 @@ use std::sync::Arc;
 
 // Additional imports for engine-level E2E tests
 use fluree_db_api::{
-    execute_with_r2rml, DataSource, ExecutableQuery, FlureeBuilder, GraphSourcePublisher,
-    ParsedContext, Pattern, StorageWrite, VarRegistry,
+    execute_with_r2rml, ExecutableQuery, FlureeBuilder, GraphSourcePublisher, ParsedContext,
+    Pattern, StorageWrite, VarRegistry,
 };
-use fluree_db_core::{NoOverlay, Tracker};
+use fluree_db_core::{GraphDbRef, NoOverlay, Tracker};
 use fluree_db_query::ir::GraphName;
 use fluree_db_query::parse::{ParsedQuery, SelectMode};
 use fluree_db_query::pattern::{Term, TriplePattern};
@@ -444,12 +444,7 @@ async fn e2e_r2rml_query_iceberg_table() {
 
     // Execute query
     let result = execute_with_r2rml(
-        DataSource {
-            snapshot: &ledger.snapshot,
-            overlay: &NoOverlay,
-            to_t: ledger.t(),
-            from_t: None,
-        },
+        GraphDbRef::new(&ledger.snapshot, 0, &NoOverlay, ledger.t()),
         &vars,
         &executable,
         &tracker,
@@ -1096,12 +1091,7 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
 
     // Execute with our mock R2RML provider
     let batches = execute_with_r2rml(
-        DataSource {
-            snapshot: &ledger.snapshot,
-            overlay: &NoOverlay,
-            to_t: ledger.t(),
-            from_t: None,
-        },
+        GraphDbRef::new(&ledger.snapshot, 0, &NoOverlay, ledger.t()),
         &vars,
         &executable,
         &tracker,
@@ -1221,12 +1211,7 @@ async fn engine_e2e_provider_method_calls() {
 
     // Execute query - should succeed
     let result = execute_with_r2rml(
-        DataSource {
-            snapshot: &ledger.snapshot,
-            overlay: &NoOverlay,
-            to_t: ledger.t(),
-            from_t: None,
-        },
+        GraphDbRef::new(&ledger.snapshot, 0, &NoOverlay, ledger.t()),
         &vars,
         &executable,
         &tracker,
@@ -1860,12 +1845,7 @@ async fn engine_e2e_ref_object_map_join_execution() {
 
     // Execute query
     let batches = execute_with_r2rml(
-        DataSource {
-            snapshot: &ledger.snapshot,
-            overlay: &NoOverlay,
-            to_t: ledger.t(),
-            from_t: None,
-        },
+        GraphDbRef::new(&ledger.snapshot, 0, &NoOverlay, ledger.t()),
         &vars,
         &executable,
         &tracker,

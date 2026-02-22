@@ -28,7 +28,7 @@ use fluree_db_query::vector::usearch::{
     IncrementalVectorUpdater, VectorIndex, VectorIndexBuilder, VectorPropertyDeps,
 };
 #[cfg(feature = "vector")]
-use fluree_db_query::{execute_with_overlay, DataSource, ExecutableQuery, SelectMode, VarRegistry};
+use fluree_db_query::{execute_with_overlay, ExecutableQuery, SelectMode, VarRegistry};
 #[cfg(feature = "vector")]
 use serde_json::Value as JsonValue;
 #[cfg(feature = "vector")]
@@ -257,8 +257,8 @@ where
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let source = DataSource::new(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t());
-        let batches = execute_with_overlay(source, &vars, &executable).await?;
+        let db = ledger.as_graph_db_ref(0);
+        let batches = execute_with_overlay(db, &vars, &executable).await?;
 
         // Format using the standard JSON-LD formatter
         let result = ApiQueryResult {

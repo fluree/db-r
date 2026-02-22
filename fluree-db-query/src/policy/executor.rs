@@ -5,7 +5,7 @@
 use crate::context::ExecutionContext;
 use crate::execute::build_where_operators_seeded;
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{LedgerSnapshot, OverlayProvider, Sid};
+use fluree_db_core::{GraphId, LedgerSnapshot, OverlayProvider, Sid};
 use fluree_db_policy::{
     PolicyQuery, PolicyQueryExecutor, PolicyQueryFut, Result as PolicyResult,
     UNBOUND_IDENTITY_PREFIX,
@@ -23,19 +23,22 @@ pub struct QueryPolicyExecutor<'a> {
     pub overlay: Option<&'a dyn OverlayProvider>,
     /// Target transaction time
     pub to_t: i64,
+    /// Graph ID for range queries (default: 0 = default graph)
+    pub g_id: GraphId,
 }
 
 impl<'a> QueryPolicyExecutor<'a> {
-    /// Create a new query executor
+    /// Create a new query executor for the default graph
     pub fn new(snapshot: &'a LedgerSnapshot) -> Self {
         Self {
             snapshot,
             overlay: None,
             to_t: snapshot.t,
+            g_id: 0,
         }
     }
 
-    /// Create a query executor with overlay support
+    /// Create a query executor with overlay support for the default graph
     pub fn with_overlay(
         snapshot: &'a LedgerSnapshot,
         overlay: &'a dyn OverlayProvider,
@@ -45,7 +48,16 @@ impl<'a> QueryPolicyExecutor<'a> {
             snapshot,
             overlay: Some(overlay),
             to_t,
+            g_id: 0,
         }
+    }
+
+    /// Set the graph ID for range queries.
+    ///
+    /// Policy queries will execute against this graph instead of the default graph.
+    pub fn with_graph_id(mut self, g_id: GraphId) -> Self {
+        self.g_id = g_id;
+        self
     }
 }
 
@@ -168,10 +180,11 @@ impl<'a> QueryPolicyExecutor<'a> {
         // This is critical - policy queries must not be filtered by policy
         let ctx = if let Some(overlay) = self.overlay {
             ExecutionContext::with_time_and_overlay(self.snapshot, &vars, self.to_t, None, overlay)
+                .with_graph_id(self.g_id)
         } else {
             ExecutionContext::with_time(self.snapshot, &vars, self.to_t, None)
+                .with_graph_id(self.g_id)
         };
-        // Note: policy_enforcer is None by default (root context)
 
         // Build the where clause operators (VALUES is now part of parsed patterns)
         let mut operator = build_where_operators_seeded(None, &patterns, None).map_err(|e| {

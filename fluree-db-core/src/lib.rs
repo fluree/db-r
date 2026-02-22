@@ -17,10 +17,10 @@
 //! ## Example
 //!
 //! ```ignore
-//! use fluree_db_core::{Db, range, IndexType, RangeTest};
+//! use fluree_db_core::{LedgerSnapshot, range, IndexType, RangeTest};
 //!
 //! // Apps provide their own Storage implementation
-//! let db = load_db(&storage, &root_id, "ledger/main").await?;
+//! let db = load_ledger_snapshot(&storage, &root_id, "ledger/main").await?;
 //! let flakes = range(&db, IndexType::Spot, RangeTest::Eq, match_val, opts).await?;
 //! ```
 

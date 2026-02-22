@@ -27,7 +27,7 @@
 
 use crate::error::{LedgerError, Result};
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef,
+    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef, GraphId,
     IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage,
 };
 use fluree_db_nameservice::NameService;
@@ -347,12 +347,12 @@ impl HistoricalLedgerView {
             .map(|n| n.as_ref() as &dyn OverlayProvider)
     }
 
-    /// Create a `GraphDbRef` for the default graph (g_id = 0).
+    /// Create a `GraphDbRef` for the given graph.
     ///
     /// Uses `self` as the overlay provider (delegates to inner novelty if
     /// present, no-op otherwise). `t` is set to `to_t` (the historical time bound).
-    pub fn as_graph_db_ref(&self) -> GraphDbRef<'_> {
-        GraphDbRef::new(&self.snapshot, 0, self, self.to_t)
+    pub fn as_graph_db_ref(&self, g_id: GraphId) -> GraphDbRef<'_> {
+        GraphDbRef::new(&self.snapshot, g_id, self, self.to_t)
     }
 }
 

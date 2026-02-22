@@ -10,8 +10,8 @@ use crate::query::helpers::{
 };
 use crate::view::{GraphDb, QueryInput};
 use crate::{
-    ApiError, DataSource, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage,
-    Tracker, TrackingOptions,
+    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
+    TrackingOptions,
 };
 use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
 
@@ -257,15 +257,10 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> Result<Vec<crate::Batch>> {
-        let prepared = prepare_execution(
-            &view.snapshot,
-            view.graph_id,
-            view.overlay.as_ref(),
-            executable,
-            view.t,
-        )
-        .await
-        .map_err(query_error_to_api_error)?;
+        let db = view.as_graph_db_ref();
+        let prepared = prepare_execution(db, executable)
+            .await
+            .map_err(query_error_to_api_error)?;
 
         let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
 
@@ -280,13 +275,7 @@ where
             ..Default::default()
         };
 
-        let source = DataSource {
-            snapshot: &view.snapshot,
-            overlay: view.overlay.as_ref(),
-            to_t: view.t,
-            from_t: None,
-        };
-        execute_prepared(source, vars, prepared, config)
+        execute_prepared(db, vars, prepared, config)
             .await
             .map_err(query_error_to_api_error)
     }
@@ -301,14 +290,8 @@ where
         executable: &ExecutableQuery,
         tracker: &Tracker,
     ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
-        let prepared = prepare_execution(
-            &view.snapshot,
-            view.graph_id,
-            view.overlay.as_ref(),
-            executable,
-            view.t,
-        )
-        .await?;
+        let db = view.as_graph_db_ref();
+        let prepared = prepare_execution(db, executable).await?;
 
         let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
 
@@ -323,13 +306,7 @@ where
             ..Default::default()
         };
 
-        let source = DataSource {
-            snapshot: &view.snapshot,
-            overlay: view.overlay.as_ref(),
-            to_t: view.t,
-            from_t: None,
-        };
-        execute_prepared(source, vars, prepared, config).await
+        execute_prepared(db, vars, prepared, config).await
     }
 }
 

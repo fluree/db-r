@@ -89,7 +89,7 @@ fluree-db/
 **Key Types:**
 - `Flake` - Indexed triple representation
 - `Sid` - Subject identifier
-- `Db` - Database snapshot
+- `LedgerSnapshot` - Database snapshot at a point in time
 - `IndexType` - Index selection enum
 - `StatsView` - Query statistics
 - `ContentId` - CIDv1 content-addressed identifier

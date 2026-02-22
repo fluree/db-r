@@ -12,7 +12,7 @@ use crate::{
     TrackingTally, VarRegistry,
 };
 use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore};
-use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig, DataSource};
+use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
 
 impl<S, N> Fluree<S, N>
 where
@@ -66,14 +66,8 @@ where
             .as_ref()
             .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
 
-        let prepared = prepare_execution(
-            &ledger.snapshot,
-            0,
-            ledger.novelty.as_ref(),
-            executable,
-            ledger.t(),
-        )
-        .await?;
+        let db = ledger.as_graph_db_ref(0);
+        let prepared = prepare_execution(db, executable).await?;
 
         let r2rml_provider = NoOpR2rmlProvider::new();
         let spatial_map = binary_store.as_ref().map(|s| s.spatial_provider_map());
@@ -92,13 +86,7 @@ where
             ..Default::default()
         };
 
-        let source = DataSource {
-            snapshot: &ledger.snapshot,
-            overlay: ledger.novelty.as_ref(),
-            to_t: ledger.t(),
-            from_t: None,
-        };
-        let batches = execute_prepared(source, vars, prepared, config).await?;
+        let batches = execute_prepared(db, vars, prepared, config).await?;
 
         Ok(batches)
     }
@@ -154,14 +142,9 @@ where
         let executable = prepare_for_execution(&parsed);
         let r2rml_provider = NoOpR2rmlProvider::new();
 
-        let source = DataSource {
-            snapshot: &ledger.snapshot,
-            overlay: ledger.novelty.as_ref(),
-            to_t: ledger.t(),
-            from_t: None,
-        };
+        let db = ledger.as_graph_db_ref(0);
         let batches = crate::execute_with_r2rml(
-            source,
+            db,
             &vars,
             &executable,
             &tracker,
@@ -226,14 +209,9 @@ where
         )?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
-        let source = DataSource {
-            snapshot: &ledger.snapshot,
-            overlay: ledger.novelty.as_ref(),
-            to_t: ledger.t(),
-            from_t: None,
-        };
+        let db = ledger.as_graph_db_ref(0);
         let batches =
-            fluree_db_query::execute_with_policy(source, &vars, &executable, policy).await?;
+            fluree_db_query::execute_with_policy(db, &vars, &executable, policy).await?;
 
         Ok(build_query_result(
             vars,
@@ -256,14 +234,9 @@ where
             parse_sparql_to_ir(sparql, &ledger.snapshot, ledger.default_context.as_ref())?;
         let executable = ExecutableQuery::simple(parsed.clone());
 
-        let source = DataSource {
-            snapshot: &ledger.snapshot,
-            overlay: ledger.novelty.as_ref(),
-            to_t: ledger.t(),
-            from_t: None,
-        };
+        let db = ledger.as_graph_db_ref(0);
         let batches =
-            fluree_db_query::execute_with_policy(source, &vars, &executable, policy).await?;
+            fluree_db_query::execute_with_policy(db, &vars, &executable, policy).await?;
 
         Ok(build_sparql_result(
             vars,
@@ -351,39 +324,16 @@ where
         let r2rml_provider = NoOpR2rmlProvider::new();
         let tracker = Tracker::disabled();
 
-        let batches = if let Some(novelty) = view.overlay() {
-            let source = DataSource {
-                snapshot: &view.snapshot,
-                overlay: novelty.as_ref(),
-                to_t: view.to_t(),
-                from_t: None,
-            };
-            crate::execute_with_r2rml(
-                source,
-                &vars,
-                &executable,
-                &tracker,
-                &r2rml_provider,
-                &r2rml_provider,
-            )
-            .await?
-        } else {
-            let source = DataSource {
-                snapshot: &view.snapshot,
-                overlay: &fluree_db_core::NoOverlay,
-                to_t: view.to_t(),
-                from_t: None,
-            };
-            crate::execute_with_r2rml(
-                source,
-                &vars,
-                &executable,
-                &tracker,
-                &r2rml_provider,
-                &r2rml_provider,
-            )
-            .await?
-        };
+        let db = view.as_graph_db_ref(0);
+        let batches = crate::execute_with_r2rml(
+            db,
+            &vars,
+            &executable,
+            &tracker,
+            &r2rml_provider,
+            &r2rml_provider,
+        )
+        .await?;
 
         Ok(build_query_result(
             vars,

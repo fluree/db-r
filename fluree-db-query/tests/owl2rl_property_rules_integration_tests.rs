@@ -14,7 +14,7 @@ use fluree_db_core::range::{range_with_overlay, RangeMatch, RangeOptions, RangeT
 use fluree_db_core::value::FlakeValue;
 use fluree_db_core::{GraphDbRef, LedgerSnapshot, Sid};
 use fluree_db_query::binding::{Binding, RowAccess};
-use fluree_db_query::execute::{execute_with_overlay, DataSource, ExecutableQuery};
+use fluree_db_query::execute::{execute_with_overlay, ExecutableQuery};
 use fluree_db_query::options::QueryOptions;
 use fluree_db_query::parse::{parse_query, MemoryEncoder};
 use fluree_db_query::rewrite::ReasoningModes;
@@ -297,7 +297,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
         parsed_a.clone(),
         QueryOptions::new().with_reasoning(ReasoningModes::default()),
     );
-    let source = DataSource::new(&snapshot, &overlay, 10);
+    let source = GraphDbRef::new(&snapshot, 0, &overlay, 10);
     let res_no = execute_with_overlay(source, &vars_a, &exec_no)
         .await
         .unwrap();
@@ -312,7 +312,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
         parsed_a,
         QueryOptions::new().with_reasoning(ReasoningModes::default().with_owl2rl()),
     );
-    let source = DataSource::new(&snapshot, &overlay, 10);
+    let source = GraphDbRef::new(&snapshot, 0, &overlay, 10);
     let res_yes = execute_with_overlay(source, &vars_a, &exec_yes)
         .await
         .unwrap();
@@ -361,7 +361,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
         parsed_b,
         QueryOptions::new().with_reasoning(ReasoningModes::default().with_owl2rl()),
     );
-    let source = DataSource::new(&snapshot, &overlay, 10);
+    let source = GraphDbRef::new(&snapshot, 0, &overlay, 10);
     let res_chain = execute_with_overlay(source, &vars_b, &exec_chain)
         .await
         .unwrap();

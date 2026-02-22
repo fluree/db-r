@@ -16,7 +16,7 @@ use crate::ir::{TemplateTerm, Txn, TxnType};
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::OverlayProvider;
 use fluree_db_core::Tracker;
-use fluree_db_core::{Flake, FlakeValue, Sid};
+use fluree_db_core::{Flake, FlakeValue, GraphId, Sid};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_policy::{
     is_schema_flake, populate_class_cache, PolicyContext, PolicyDecision, PolicyError,
@@ -25,12 +25,40 @@ use fluree_db_query::parse::{lower_unresolved_patterns, UnresolvedPattern};
 use fluree_db_query::{
     Batch, Binding, Pattern, QueryPolicyExecutor, Term, TriplePattern, VarId, VarRegistry,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::Instrument;
 
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::{ShaclCache, ShaclEngine, ValidationReport};
+
+/// Build a reverse lookup from graph Sid → GraphId.
+///
+/// Given `graph_sids` (GraphId → Sid from `txn.graph_delta`), returns the
+/// inverse mapping. Used by SHACL/policy to determine which graph a flake
+/// belongs to based on its `Flake.g` field.
+fn build_reverse_graph_lookup(graph_sids: &HashMap<GraphId, Sid>) -> HashMap<Sid, GraphId> {
+    graph_sids.iter().map(|(&g_id, sid)| (sid.clone(), g_id)).collect()
+}
+
+/// Resolve a flake's graph ID from its `Flake.g` field.
+///
+/// - `None` → default graph (g_id = 0)
+/// - `Some(sid)` → looked up in `reverse_graph`; returns error if unknown
+fn resolve_flake_graph_id(
+    flake: &Flake,
+    reverse_graph: &HashMap<Sid, GraphId>,
+) -> Result<GraphId> {
+    match &flake.g {
+        None => Ok(0),
+        Some(g_sid) => reverse_graph.get(g_sid).copied().ok_or_else(|| {
+            TransactError::FlakeGeneration(format!(
+                "staged flake references unknown graph Sid: {}",
+                g_sid
+            ))
+        }),
+    }
+}
 
 /// Options for transaction staging
 ///
@@ -167,11 +195,12 @@ pub async fn stage(
         let txn_id = generate_txn_id();
 
         // Convert graph_delta (g_id -> IRI) to graph_sids (g_id -> Sid) for named graph support
-        let graph_sids: std::collections::HashMap<u16, Sid> = txn
+        let graph_sids: HashMap<GraphId, Sid> = txn
             .graph_delta
             .iter()
             .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
             .collect();
+        let reverse_graph = build_reverse_graph_lookup(&graph_sids);
 
         let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id)
             .with_graph_sids(graph_sids.clone());
@@ -189,7 +218,7 @@ pub async fn stage(
             // Clojure parity: DELETE templates often omit list indices even when
             // retracting `@list` values. Hydrate retractions by copying the stored
             // list-index meta from the currently asserted flake (if present).
-            hydrate_list_index_meta_for_retractions(&ledger, &mut retractions).await?;
+            hydrate_list_index_meta_for_retractions(&ledger, &mut retractions, &reverse_graph).await?;
 
             // For Upsert: also generate deletions for existing values
             if txn.txn_type == TxnType::Upsert {
@@ -257,9 +286,18 @@ pub async fn stage(
         if let Some(policy) = options.policy_ctx {
             if !policy.wrapper().is_root() {
                 let policy_span = tracing::debug_span!("policy_enforce");
-                async { enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await }
-                    .instrument(policy_span)
-                    .await?;
+                async {
+                    enforce_modify_policies(
+                        &flakes,
+                        policy,
+                        &ledger,
+                        options.tracker,
+                        &reverse_graph,
+                    )
+                    .await
+                }
+                .instrument(policy_span)
+                .await?;
             }
         }
 
@@ -306,10 +344,16 @@ pub async fn stage_flakes(
         }
 
         // 2. Policy enforcement
+        // stage_flakes has no txn.graph_delta, so we use an empty reverse_graph.
+        // Pre-built flakes (turtle import, commit push) currently enforce policy
+        // against the default graph. TODO: derive graph mapping from binary store
+        // for full per-graph policy enforcement in the stage_flakes path.
+        let reverse_graph: HashMap<Sid, GraphId> = HashMap::new();
         if let Some(policy) = options.policy_ctx {
             if !policy.wrapper().is_root() {
                 tracing::debug!("enforcing modify policies on pre-built flakes");
-                enforce_modify_policies(&flakes, policy, &ledger, options.tracker).await?;
+                enforce_modify_policies(&flakes, policy, &ledger, options.tracker, &reverse_graph)
+                    .await?;
             }
         }
 
@@ -323,6 +367,7 @@ pub async fn stage_flakes(
 async fn hydrate_list_index_meta_for_retractions(
     ledger: &LedgerState,
     retractions: &mut [Flake],
+    reverse_graph: &HashMap<Sid, GraphId>,
 ) -> Result<()> {
     for flake in retractions.iter_mut() {
         // Only retractions with no metadata are candidates.
@@ -333,6 +378,9 @@ async fn hydrate_list_index_meta_for_retractions(
             continue;
         }
 
+        // Resolve the correct graph for this retraction flake.
+        let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
+
         // Find currently asserted matching flakes (db + novelty overlay) and copy list index meta if present.
         let rm = fluree_db_core::RangeMatch::new()
             .with_subject(flake.s.clone())
@@ -342,7 +390,7 @@ async fn hydrate_list_index_meta_for_retractions(
 
         let found = fluree_db_core::range_with_overlay(
             &ledger.snapshot,
-            0,
+            g_id,
             ledger.novelty.as_ref(),
             fluree_db_core::IndexType::Spot,
             fluree_db_core::RangeTest::Eq,
@@ -375,30 +423,32 @@ async fn enforce_modify_policies(
     policy: &PolicyContext,
     ledger: &LedgerState,
     tracker: Option<&Tracker>,
+    reverse_graph: &HashMap<Sid, GraphId>,
 ) -> Result<()> {
-    // Pre-populate class cache for f:onClass policy support
+    // Pre-populate class cache for f:onClass policy support, per graph.
     if policy.wrapper().has_class_policies() {
-        // Collect unique subjects from flakes
-        let unique_subjects: Vec<Sid> = flakes
-            .iter()
-            .map(|f| f.s.clone())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
+        // Group subjects by graph to populate class cache with correct g_id.
+        let mut subjects_by_graph: HashMap<GraphId, HashSet<Sid>> = HashMap::new();
+        for flake in flakes {
+            let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
+            subjects_by_graph.entry(g_id).or_default().insert(flake.s.clone());
+        }
 
-        // Look up and cache rdf:type for each subject
-        populate_class_cache(&unique_subjects, ledger.as_graph_db_ref(0), policy)
-            .await
-            .map_err(|e| {
-                TransactError::Query(fluree_db_query::QueryError::Internal(format!(
-                    "Failed to populate class cache: {}",
-                    e
-                )))
-            })?;
+        for (g_id, subjects) in &subjects_by_graph {
+            let subject_vec: Vec<Sid> = subjects.iter().cloned().collect();
+            populate_class_cache(&subject_vec, ledger.as_graph_db_ref(*g_id), policy)
+                .await
+                .map_err(|e| {
+                    TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                        "Failed to populate class cache: {}",
+                        e
+                    )))
+                })?;
+        }
     }
 
     // Enforce modify policies with full f:query support
-    enforce_modify_policy_per_flake(flakes, policy, ledger, tracker).await
+    enforce_modify_policy_per_flake(flakes, policy, ledger, tracker, reverse_graph).await
 }
 
 /// Enforce modify policies on each flake individually
@@ -413,11 +463,11 @@ async fn enforce_modify_policy_per_flake(
     policy: &PolicyContext,
     ledger: &LedgerState,
     tracker: Option<&Tracker>,
+    reverse_graph: &HashMap<Sid, GraphId>,
 ) -> Result<()> {
-    // Build a QueryPolicyExecutor that runs f:query against the pre-txn ledger view.
-    // Clojure parity: modify policy queries see the state *before* this transaction.
-    let executor =
-        QueryPolicyExecutor::with_overlay(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t());
+    // Build per-graph QueryPolicyExecutors so f:query policies execute against
+    // the correct graph. Cache executors to avoid rebuilding for every flake.
+    let mut executors: HashMap<GraphId, QueryPolicyExecutor<'_>> = HashMap::new();
 
     // Clojure parity: fuel is counted for work performed. For transactions, we count
     // one unit of fuel per staged (non-schema) flake, regardless of whether the
@@ -443,10 +493,22 @@ async fn enforce_modify_policy_per_flake(
         }
 
         // Get subject classes from cache (empty if not cached)
-        // Class cache is populated by stage() before this function is called
+        // Class cache is populated per-graph by enforce_modify_policies() above.
         let subject_classes = policy
             .get_cached_subject_classes(&flake.s)
             .unwrap_or_default();
+
+        // Resolve the graph for this flake and get/create a cached executor.
+        let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
+        let executor = executors.entry(g_id).or_insert_with(|| {
+            // Clojure parity: modify policy queries see the state *before* this transaction.
+            QueryPolicyExecutor::with_overlay(
+                &ledger.snapshot,
+                ledger.novelty.as_ref(),
+                ledger.t(),
+            )
+            .with_graph_id(g_id)
+        });
 
         // Evaluate modify policies with full f:query support using detailed API
         let decision = policy
@@ -455,7 +517,7 @@ async fn enforce_modify_policy_per_flake(
                 &flake.p,
                 &flake.o,
                 &subject_classes,
-                &executor,
+                executor,
                 &async_tracker,
             )
             .await?;
@@ -823,8 +885,11 @@ pub async fn stage_with_shacl(
     options: StageOptions<'_>,
     shacl_cache: &ShaclCache,
 ) -> Result<(LedgerView, NamespaceRegistry)> {
+    // Capture graph_delta before stage() consumes the txn (needed for per-graph SHACL).
+    let graph_delta = txn.graph_delta.clone();
+
     // First, perform regular staging
-    let (view, ns_registry) = stage(ledger, txn, ns_registry, options).await?;
+    let (view, mut ns_registry) = stage(ledger, txn, ns_registry, options).await?;
 
     // Fast path: if there are no SHACL shapes, elide validation entirely.
     // This ensures SHACL has *zero* transaction-time overhead unless rules exist.
@@ -832,12 +897,19 @@ pub async fn stage_with_shacl(
         return Ok((view, ns_registry));
     }
 
+    // Rebuild graph_sids from the cloned graph_delta + returned ns_registry.
+    // These IRIs were already resolved during stage(), so sid_for_iri will hit
+    // the trie cache — no new allocations.
+    let graph_sids: HashMap<GraphId, Sid> = graph_delta
+        .iter()
+        .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
+        .collect();
+
     // Create SHACL engine from cache
     let engine = ShaclEngine::new(shacl_cache.clone());
 
-    // Validate staged flakes against shapes
-    // We need to validate nodes that were modified
-    let report = validate_staged_nodes(&view, &engine).await?;
+    // Validate staged flakes against shapes (per graph)
+    let report = validate_staged_nodes(&view, &engine, Some(&graph_sids)).await?;
 
     if !report.conforms {
         return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
@@ -851,28 +923,45 @@ pub async fn stage_with_shacl(
 /// This is a helper for callers that already have pre-built flakes and stage them
 /// via [`stage_flakes`], but still want SHACL validation parity with [`stage_with_shacl`].
 ///
+/// `graph_sids` provides the `GraphId → Sid` mapping for per-graph validation.
+/// Pass `None` when the mapping is unavailable (e.g., commit-transfer path) —
+/// validation will fall back to the default graph (g_id=0).
+///
 /// Returns `Ok(())` when conforming, or `TransactError::ShaclViolation` when any
 /// violations are present.
 #[cfg(feature = "shacl")]
-pub async fn validate_view_with_shacl(view: &LedgerView, shacl_cache: &ShaclCache) -> Result<()> {
+pub async fn validate_view_with_shacl(
+    view: &LedgerView,
+    shacl_cache: &ShaclCache,
+    graph_sids: Option<&HashMap<GraphId, Sid>>,
+) -> Result<()> {
     // Fast path: if there are no SHACL shapes, elide validation entirely.
     if shacl_cache.is_empty() {
         return Ok(());
     }
 
     let engine = ShaclEngine::new(shacl_cache.clone());
-    let report = validate_staged_nodes(view, &engine).await?;
+    let report = validate_staged_nodes(view, &engine, graph_sids).await?;
     if !report.conforms {
         return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
     }
     Ok(())
 }
 
-/// Validate staged nodes against SHACL shapes
+/// Validate staged nodes against SHACL shapes, per graph.
+///
+/// Groups staged subjects by their graph and validates each group with a
+/// `GraphDbRef` targeting the correct `g_id`. Shape compilation stays at
+/// g_id=0 (shapes are schema-level definitions in the default graph).
+///
+/// When `graph_sids` is `None` (e.g., commit-transfer path where the txn
+/// context is unavailable), falls back to validating all subjects against
+/// the default graph (g_id=0) — matching the previous behavior.
 #[cfg(feature = "shacl")]
 async fn validate_staged_nodes(
     view: &LedgerView,
     engine: &ShaclEngine,
+    graph_sids: Option<&HashMap<GraphId, Sid>>,
 ) -> Result<ValidationReport> {
     use fluree_vocab::namespaces::RDF;
     use fluree_vocab::rdf_names;
@@ -882,47 +971,57 @@ async fn validate_staged_nodes(
         return Ok(ValidationReport::conforming());
     }
 
-    // Collect unique subjects from staged flakes
-    let staged_subjects: HashSet<Sid> = view.staged_flakes().iter().map(|f| f.s.clone()).collect();
-
-    if staged_subjects.is_empty() {
+    if !view.has_staged() {
         return Ok(ValidationReport::conforming());
     }
 
-    // Build a combined report from validating each modified node
+    // Group staged (subject, g_id) pairs. A subject may appear in multiple graphs.
+    let reverse_graph = graph_sids.map(build_reverse_graph_lookup);
+    let mut subjects_by_graph: HashMap<GraphId, HashSet<Sid>> = HashMap::new();
+    for flake in view.staged_flakes() {
+        let g_id = match (&flake.g, &reverse_graph) {
+            (None, _) => 0,
+            (Some(g_sid), Some(rev)) => rev.get(g_sid).copied().unwrap_or(0),
+            // No reverse map (commit-transfer path): fall back to default graph
+            (Some(_), None) => 0,
+        };
+        subjects_by_graph.entry(g_id).or_default().insert(flake.s.clone());
+    }
+
+    let snapshot = view.db();
     let mut all_results = Vec::new();
 
-    // Use the view as the overlay (LedgerView implements OverlayProvider)
-    let snapshot = view.db();
-    // Use staged_t so GraphDbRef sees staged flakes (which have t > snapshot.t)
-    let db = fluree_db_core::GraphDbRef::new(snapshot, 0, view, view.staged_t());
+    for (g_id, subjects) in &subjects_by_graph {
+        // Build GraphDbRef for this graph.
+        // Use staged_t so GraphDbRef sees staged flakes (which have t > snapshot.t).
+        let db = fluree_db_core::GraphDbRef::new(snapshot, *g_id, view, view.staged_t());
 
-    for subject in staged_subjects {
-        // Get the node's types for shape targeting
-        let rdf_type = Sid::new(RDF, rdf_names::TYPE);
-        let type_flakes = db
-            .range(
-                fluree_db_core::IndexType::Spot,
-                fluree_db_core::RangeTest::Eq,
-                fluree_db_core::RangeMatch::subject_predicate(subject.clone(), rdf_type),
-            )
-            .await?;
+        for subject in subjects {
+            // Get the node's types for shape targeting
+            let rdf_type = Sid::new(RDF, rdf_names::TYPE);
+            let type_flakes = db
+                .range(
+                    fluree_db_core::IndexType::Spot,
+                    fluree_db_core::RangeTest::Eq,
+                    fluree_db_core::RangeMatch::subject_predicate(subject.clone(), rdf_type),
+                )
+                .await?;
 
-        let node_types: Vec<Sid> = type_flakes
-            .iter()
-            .filter_map(|f| {
-                if let fluree_db_core::FlakeValue::Ref(type_sid) = &f.o {
-                    Some(type_sid.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+            let node_types: Vec<Sid> = type_flakes
+                .iter()
+                .filter_map(|f| {
+                    if let fluree_db_core::FlakeValue::Ref(type_sid) = &f.o {
+                        Some(type_sid.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
-        // Validate this node (view implements OverlayProvider)
-        let report = engine.validate_node(db, &subject, &node_types).await?;
-
-        all_results.extend(report.results);
+            // Validate this node (view implements OverlayProvider)
+            let report = engine.validate_node(db, subject, &node_types).await?;
+            all_results.extend(report.results);
+        }
     }
 
     // Check conformance
