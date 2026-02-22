@@ -856,7 +856,7 @@ fn collect_guaranteed_vars(patterns: &[Pattern]) -> HashSet<VarId> {
 fn try_nest_deferred(compound: &mut Pattern, deferred: &DeferredPattern) -> bool {
     match compound {
         Pattern::Union(branches) => {
-            let union_vars = branches
+            let guaranteed_vars = branches
                 .iter()
                 .map(|b| collect_guaranteed_vars(b))
                 .reduce(|mut union_vars, branch_vars| {
@@ -867,7 +867,7 @@ fn try_nest_deferred(compound: &mut Pattern, deferred: &DeferredPattern) -> bool
             if !deferred
                 .required_vars
                 .iter()
-                .any(|v| union_vars.contains(v))
+                .any(|v| guaranteed_vars.contains(v))
             {
                 return false;
             }
