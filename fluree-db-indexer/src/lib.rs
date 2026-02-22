@@ -102,39 +102,6 @@ async fn upload_dict_file<S: Storage>(
 }
 
 #[inline]
-fn flush_forward_leaf(
-    leaf_offsets: &mut Vec<u32>,
-    leaf_data: &mut Vec<u8>,
-    leaf_count: &mut u32,
-    data_offset: &mut u32,
-    leaf_first: &mut u64,
-    leaf_last: &mut u64,
-) -> Option<(Vec<u8>, u64, u64, u32)> {
-    if *leaf_count == 0 {
-        return None;
-    }
-    let entry_count = *leaf_count;
-    let header_size = 8;
-    let offset_table_size = leaf_offsets.len() * 4;
-    let total = header_size + offset_table_size + leaf_data.len();
-    let mut buf = Vec::with_capacity(total);
-    buf.extend_from_slice(&dict_tree::forward_leaf::FORWARD_LEAF_MAGIC);
-    buf.extend_from_slice(&entry_count.to_le_bytes());
-    for off in leaf_offsets.iter() {
-        buf.extend_from_slice(&off.to_le_bytes());
-    }
-    buf.extend_from_slice(leaf_data);
-    let out = (buf, *leaf_first, *leaf_last, entry_count);
-    leaf_offsets.clear();
-    leaf_data.clear();
-    *data_offset = 0;
-    *leaf_count = 0;
-    *leaf_first = 0;
-    *leaf_last = 0;
-    Some(out)
-}
-
-#[inline]
 fn flush_reverse_leaf<F>(
     leaf_offsets: &mut Vec<u32>,
     leaf_data: &mut Vec<u8>,
@@ -986,7 +953,7 @@ where
                 }
             };
 
-            // F.5: Convert DictRefs (v4, string-keyed maps) → DictRefsV5 (u32 vecs).
+            // F.5: Convert DictRefs (string-keyed maps) → DictRefsV5 (u32 vecs).
             let dict_refs_v5 = {
                 let dr = dict_addresses.dict_refs;
                 let numbig: Vec<(u32, ContentId)> = dr
@@ -1004,9 +971,8 @@ where
                     })
                     .collect();
                 run_index::DictRefsV5 {
-                    subject_forward: dr.subject_forward,
+                    forward_packs: dr.forward_packs,
                     subject_reverse: dr.subject_reverse,
-                    string_forward: dr.string_forward,
                     string_reverse: dr.string_reverse,
                     numbig,
                     vectors,
@@ -1155,266 +1121,6 @@ where
     })
     .await
     .map_err(|e| IndexerError::StorageWrite(format!("index build task panicked: {}", e)))?
-}
-
-/// Build dictionary CoW trees and upload all dictionary artifacts to CAS.
-///
-/// Subject and string dictionaries are built into CoW trees (branch + leaves)
-/// for O(log n) lookup at query time.
-///
-/// Small dictionaries (graphs, datatypes, languages) are embedded inline in the
-/// v4 index root and are not uploaded as separate dict blobs.
-// Kept for: reference implementation of in-memory dict → CAS upload.
-// Use when: a new pipeline needs to upload GlobalDicts without flat-file persistence.
-// Superseded by: upload_dicts_from_disk (reads flat files, computes watermarks).
-#[expect(dead_code)]
-async fn upload_dicts_to_cas<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
-    run_dir: &std::path::Path,
-    dicts: &run_index::GlobalDicts,
-    numbig_p_ids: &[u32],
-    namespace_codes: &std::collections::HashMap<u16, String>,
-) -> Result<run_index::DictRefs> {
-    use dict_tree::builder::{self, TreeBuildResult};
-    use dict_tree::forward_leaf::ForwardEntry;
-    use dict_tree::reverse_leaf::{subject_reverse_key, ReverseEntry};
-    use fluree_db_core::subject_id::SubjectId;
-    use fluree_db_core::{ContentKind, DictKind};
-    use std::collections::BTreeMap;
-
-    /// Upload a tree build result (branch + leaves) to CAS, returning CID refs.
-    async fn upload_tree<S: Storage>(
-        storage: &S,
-        ledger_id: &str,
-        result: TreeBuildResult,
-        dict: DictKind,
-    ) -> Result<run_index::DictTreeRefs> {
-        let kind = ContentKind::DictBlob { dict };
-        let mut leaf_cids = Vec::with_capacity(result.leaves.len());
-        let mut hash_to_address =
-            std::collections::HashMap::with_capacity(result.leaves.len().saturating_mul(2));
-
-        for leaf in &result.leaves {
-            let cas_result = storage
-                .content_write_bytes(kind, ledger_id, &leaf.bytes)
-                .await
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-            leaf_cids.push(cid_from_write(kind, &cas_result));
-            hash_to_address.insert(leaf.hash.clone(), cas_result.address);
-        }
-
-        // Finalize branch with actual CAS addresses, then upload
-        let (_, branch_bytes, _) = builder::finalize_branch(result.branch, &hash_to_address)
-            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-        let branch_result = storage
-            .content_write_bytes(kind, ledger_id, &branch_bytes)
-            .await
-            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-        Ok(run_index::DictTreeRefs {
-            branch: cid_from_write(kind, &branch_result),
-            leaves: leaf_cids,
-        })
-    }
-
-    // Build subject + string trees (CPU-bound, synchronous)
-    let subject_pairs = dicts
-        .subjects
-        .read_all_entries()
-        .map_err(|e| IndexerError::StorageRead(format!("read subject entries: {}", e)))?;
-
-    let subject_suffix = |sid: u64, iri: &[u8]| -> (u16, Vec<u8>) {
-        let ns_code = SubjectId::from_u64(sid).ns_code();
-        let prefix = namespace_codes
-            .get(&ns_code)
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        let prefix_bytes = prefix.as_bytes();
-        let suffix = if !prefix_bytes.is_empty() && iri.starts_with(prefix_bytes) {
-            &iri[prefix_bytes.len()..]
-        } else {
-            iri
-        };
-        (ns_code, suffix.to_vec())
-    };
-
-    let mut subj_fwd: Vec<ForwardEntry> = subject_pairs
-        .iter()
-        .map(|(sid, iri)| {
-            let (_ns, suffix) = subject_suffix(*sid, iri);
-            ForwardEntry {
-                id: *sid,
-                value: suffix,
-            }
-        })
-        .collect();
-    subj_fwd.sort_unstable_by_key(|e| e.id);
-
-    let mut subj_rev: Vec<ReverseEntry> = subject_pairs
-        .iter()
-        .map(|(sid, iri)| {
-            let (ns_code, suffix) = subject_suffix(*sid, iri);
-            ReverseEntry {
-                key: subject_reverse_key(ns_code, &suffix),
-                id: *sid,
-            }
-        })
-        .collect();
-    subj_rev.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-
-    let sf_tree = builder::build_forward_tree(subj_fwd, builder::DEFAULT_TARGET_LEAF_BYTES)
-        .map_err(|e| IndexerError::StorageWrite(format!("build subject fwd tree: {}", e)))?;
-    let sr_tree = builder::build_reverse_tree(subj_rev, builder::DEFAULT_TARGET_LEAF_BYTES)
-        .map_err(|e| IndexerError::StorageWrite(format!("build subject rev tree: {}", e)))?;
-
-    let string_pairs = dicts
-        .strings
-        .all_entries()
-        .map_err(|e| IndexerError::StorageWrite(format!("read string entries: {}", e)))?;
-
-    let mut str_fwd: Vec<ForwardEntry> = string_pairs
-        .iter()
-        .map(|(id, val)| ForwardEntry {
-            id: *id,
-            value: val.clone(),
-        })
-        .collect();
-    str_fwd.sort_unstable_by_key(|e| e.id);
-
-    let mut str_rev: Vec<ReverseEntry> = string_pairs
-        .into_iter()
-        .map(|(id, val)| ReverseEntry { key: val, id })
-        .collect();
-    str_rev.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-
-    let stf_tree = builder::build_forward_tree(str_fwd, builder::DEFAULT_TARGET_LEAF_BYTES)
-        .map_err(|e| IndexerError::StorageWrite(format!("build string fwd tree: {}", e)))?;
-    let str_tree = builder::build_reverse_tree(str_rev, builder::DEFAULT_TARGET_LEAF_BYTES)
-        .map_err(|e| IndexerError::StorageWrite(format!("build string rev tree: {}", e)))?;
-
-    // Upload all trees + numbig + vectors in parallel
-    let (subject_trees, string_trees, numbig, vectors) = tokio::try_join!(
-        // Task A: subject trees
-        async {
-            let subject_forward =
-                upload_tree(storage, ledger_id, sf_tree, DictKind::SubjectForward).await?;
-            let subject_reverse =
-                upload_tree(storage, ledger_id, sr_tree, DictKind::SubjectReverse).await?;
-            Ok::<_, IndexerError>((subject_forward, subject_reverse))
-        },
-        // Task B: string trees
-        async {
-            let string_forward =
-                upload_tree(storage, ledger_id, stf_tree, DictKind::StringForward).await?;
-            let string_reverse =
-                upload_tree(storage, ledger_id, str_tree, DictKind::StringReverse).await?;
-            Ok::<_, IndexerError>((string_forward, string_reverse))
-        },
-        // Task C: numbig arenas
-        async {
-            let mut numbig = BTreeMap::new();
-            let nb_dir = run_dir.join("numbig");
-            for &p_id in numbig_p_ids {
-                let path = nb_dir.join(format!("p_{}.nba", p_id));
-                if path.exists() {
-                    let (cid, _) = upload_dict_file(
-                        storage,
-                        ledger_id,
-                        &path,
-                        DictKind::NumBig { p_id },
-                        "dict artifact uploaded to CAS",
-                    )
-                    .await?;
-                    numbig.insert(p_id.to_string(), cid);
-                }
-            }
-            Ok::<_, IndexerError>(numbig)
-        },
-        // Task D: vector arenas
-        async {
-            let mut vectors = BTreeMap::new();
-            let vec_dir = run_dir.join("vectors");
-            if vec_dir.exists() {
-                for (&p_id, arena) in &dicts.vectors {
-                    if arena.is_empty() {
-                        continue;
-                    }
-                    let cap = run_index::vector_arena::SHARD_CAPACITY as usize;
-                    let total = arena.len() as usize;
-                    let num_shards = total.div_ceil(cap);
-                    let mut shard_cids = Vec::with_capacity(num_shards);
-                    let mut shard_infos = Vec::with_capacity(num_shards);
-
-                    for shard_idx in 0..num_shards {
-                        let shard_path = vec_dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                        let (shard_cid, shard_wr) = upload_dict_file(
-                            storage,
-                            ledger_id,
-                            &shard_path,
-                            DictKind::VectorShard { p_id },
-                            "dict artifact uploaded to CAS",
-                        )
-                        .await?;
-                        let start_vec = shard_idx * cap;
-                        let count = (total - start_vec).min(cap) as u32;
-                        shard_infos.push(run_index::vector_arena::ShardInfo {
-                            cas: shard_wr.address,
-                            count,
-                        });
-                        shard_cids.push(shard_cid);
-                    }
-
-                    let manifest_path = vec_dir.join(format!("p_{}.vam", p_id));
-                    run_index::vector_arena::write_vector_manifest(
-                        &manifest_path,
-                        arena,
-                        &shard_infos,
-                    )
-                    .map_err(|e| {
-                        IndexerError::StorageWrite(format!("write vector manifest: {}", e))
-                    })?;
-                    let (manifest_cid, _) = upload_dict_file(
-                        storage,
-                        ledger_id,
-                        &manifest_path,
-                        DictKind::VectorManifest { p_id },
-                        "dict artifact uploaded to CAS",
-                    )
-                    .await?;
-
-                    vectors.insert(
-                        p_id.to_string(),
-                        run_index::VectorDictRef {
-                            manifest: manifest_cid,
-                            shards: shard_cids,
-                        },
-                    );
-                }
-            }
-            Ok::<_, IndexerError>(vectors)
-        },
-    )?;
-
-    let (subject_forward, subject_reverse) = subject_trees;
-    let (string_forward, string_reverse) = string_trees;
-
-    tracing::info!(
-        subject_count = dicts.subjects.len(),
-        string_count = dicts.strings.len(),
-        numbig_count = numbig.len(),
-        vector_count = vectors.len(),
-        "dictionary trees built and uploaded to CAS"
-    );
-
-    Ok(run_index::DictRefs {
-        subject_forward,
-        subject_reverse,
-        string_forward,
-        string_reverse,
-        numbig,
-        vectors,
-    })
 }
 
 /// Result of uploading index artifacts to CAS.
@@ -1649,7 +1355,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     run_dir: &std::path::Path,
     namespace_codes: &std::collections::HashMap<u16, String>,
 ) -> Result<UploadedDicts> {
-    use dict_tree::branch::{id_to_branch_key, BranchLeafEntry, DictBranch};
+    use dict_tree::branch::{BranchLeafEntry, DictBranch};
     use dict_tree::builder;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::{ContentKind, DictKind, SubjectIdEncoding};
@@ -1743,11 +1449,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 }
             }
 
-            // Pass 1: forward tree
-            tracing::info!("building subject forward tree");
-            // Fast path: when subjects were produced by vocab-merge, `subjects.sids` and
-            // the forward file are already in ascending sid64 order (and in `(ns_code, suffix)`
-            // key order). Avoid an O(n log n) sort of indices in that case.
+            // Pass 1: forward packs (FPK1 format, one stream per namespace)
+            tracing::info!("building subject forward packs");
             let sids_sorted = sids.windows(2).all(|w| w[0] <= w[1]);
 
             let id_order: Option<Vec<usize>> = if sids_sorted {
@@ -1757,151 +1460,75 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 v.sort_unstable_by_key(|&i| sids[i]);
                 Some(v)
             };
-            let subject_forward = {
-                let kind = ContentKind::DictBlob {
-                    dict: DictKind::SubjectForward,
-                };
-                let mut leaf_cids: Vec<ContentId> = Vec::new();
-                let mut branch_entries: Vec<BranchLeafEntry> = Vec::new();
+            let subject_fwd_pack_refs = {
+                use dict_tree::pack_builder;
 
-                let mut leaf_offsets: Vec<u32> = Vec::new();
-                let mut leaf_data: Vec<u8> = Vec::new();
-                let mut data_offset: u32 = 0;
-                let mut leaf_first: u64 = 0;
-                let mut leaf_last: u64 = 0;
-                let mut leaf_count: u32 = 0;
+                // Group entries by ns_code, collect (local_id, suffix) per namespace.
+                let mut ns_entries: BTreeMap<u16, Vec<(u64, &[u8])>> = BTreeMap::new();
+                let iter_fn = |i: usize| {
+                    let sid = sids[i];
+                    let off = suf_offs[i] as usize;
+                    let len = suf_lens[i] as usize;
+                    let ns_code = SubjectId::from_u64(sid).ns_code();
+                    let local_id = SubjectId::from_u64(sid).local_id();
+                    let suffix = &subj_fwd_data[off..off + len];
+                    (ns_code, local_id, suffix)
+                };
 
                 match &id_order {
                     None => {
                         for i in 0..sids.len() {
-                            let sid = sids[i];
-                            let off = suf_offs[i] as usize;
-                            let len = suf_lens[i] as usize;
-                            let suffix = &subj_fwd_data[off..off + len];
-
-                            if leaf_count == 0 {
-                                leaf_first = sid;
-                            }
-                            leaf_last = sid;
-
-                            leaf_offsets.push(data_offset);
-                            leaf_data.extend_from_slice(&sid.to_le_bytes());
-                            leaf_data.extend_from_slice(&(suffix.len() as u32).to_le_bytes());
-                            leaf_data.extend_from_slice(suffix);
-                            data_offset += (12 + suffix.len()) as u32;
-                            leaf_count += 1;
-
-                            if (leaf_data.len() + leaf_offsets.len() * 4 + 8)
-                                >= builder::DEFAULT_TARGET_LEAF_BYTES
-                            {
-                                if let Some((leaf_bytes, first_id, last_id, cnt)) =
-                                    flush_forward_leaf(
-                                        &mut leaf_offsets,
-                                        &mut leaf_data,
-                                        &mut leaf_count,
-                                        &mut data_offset,
-                                        &mut leaf_first,
-                                        &mut leaf_last,
-                                    )
-                                {
-                                    let cas_result = storage
-                                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
-                                        .await
-                                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                                    leaf_cids.push(cid_from_write(kind, &cas_result));
-                                    branch_entries.push(BranchLeafEntry {
-                                        first_key: id_to_branch_key(first_id),
-                                        last_key: id_to_branch_key(last_id),
-                                        entry_count: cnt,
-                                        address: cas_result.address,
-                                    });
-                                }
-                            }
+                            let (ns_code, local_id, suffix) = iter_fn(i);
+                            ns_entries
+                                .entry(ns_code)
+                                .or_default()
+                                .push((local_id, suffix));
                         }
                     }
                     Some(order) => {
                         for &i in order {
-                            let sid = sids[i];
-                            let off = suf_offs[i] as usize;
-                            let len = suf_lens[i] as usize;
-                            let suffix = &subj_fwd_data[off..off + len];
-
-                            if leaf_count == 0 {
-                                leaf_first = sid;
-                            }
-                            leaf_last = sid;
-
-                            leaf_offsets.push(data_offset);
-                            leaf_data.extend_from_slice(&sid.to_le_bytes());
-                            leaf_data.extend_from_slice(&(suffix.len() as u32).to_le_bytes());
-                            leaf_data.extend_from_slice(suffix);
-                            data_offset += (12 + suffix.len()) as u32;
-                            leaf_count += 1;
-
-                            if (leaf_data.len() + leaf_offsets.len() * 4 + 8)
-                                >= builder::DEFAULT_TARGET_LEAF_BYTES
-                            {
-                                if let Some((leaf_bytes, first_id, last_id, cnt)) =
-                                    flush_forward_leaf(
-                                        &mut leaf_offsets,
-                                        &mut leaf_data,
-                                        &mut leaf_count,
-                                        &mut data_offset,
-                                        &mut leaf_first,
-                                        &mut leaf_last,
-                                    )
-                                {
-                                    let cas_result = storage
-                                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
-                                        .await
-                                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                                    leaf_cids.push(cid_from_write(kind, &cas_result));
-                                    branch_entries.push(BranchLeafEntry {
-                                        first_key: id_to_branch_key(first_id),
-                                        last_key: id_to_branch_key(last_id),
-                                        entry_count: cnt,
-                                        address: cas_result.address,
-                                    });
-                                }
-                            }
+                            let (ns_code, local_id, suffix) = iter_fn(i);
+                            ns_entries
+                                .entry(ns_code)
+                                .or_default()
+                                .push((local_id, suffix));
                         }
                     }
                 }
 
-                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush_forward_leaf(
-                    &mut leaf_offsets,
-                    &mut leaf_data,
-                    &mut leaf_count,
-                    &mut data_offset,
-                    &mut leaf_first,
-                    &mut leaf_last,
-                ) {
-                    let cas_result = storage
-                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
-                        .await
-                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                    leaf_cids.push(cid_from_write(kind, &cas_result));
-                    branch_entries.push(BranchLeafEntry {
-                        first_key: id_to_branch_key(first_id),
-                        last_key: id_to_branch_key(last_id),
-                        entry_count: cnt,
-                        address: cas_result.address,
-                    });
-                }
-
-                let branch = DictBranch {
-                    leaves: branch_entries,
+                // Build and upload packs per namespace.
+                let kind = ContentKind::DictBlob {
+                    dict: DictKind::SubjectForward,
                 };
-                let branch_bytes = branch.encode();
-                let branch_result = storage
-                    .content_write_bytes(kind, ledger_id, &branch_bytes)
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                let mut subject_fwd_ns_packs: Vec<(u16, Vec<run_index::PackBranchEntry>)> =
+                    Vec::new();
+                for (ns_code, entries) in &ns_entries {
+                    // Entries should already be sorted by local_id (ascending sid order within ns).
+                    let pack_result = pack_builder::build_subject_forward_packs_for_ns(
+                        *ns_code,
+                        entries,
+                        pack_builder::DEFAULT_TARGET_PAGE_BYTES,
+                        pack_builder::DEFAULT_TARGET_PACK_BYTES,
+                    )
+                    .map_err(|e| {
+                        IndexerError::StorageWrite(format!("subject pack build: {}", e))
+                    })?;
 
-                run_index::DictTreeRefs {
-                    branch: cid_from_write(kind, &branch_result),
-                    leaves: leaf_cids,
+                    let mut ns_pack_refs = Vec::with_capacity(pack_result.packs.len());
+                    for pack_artifact in pack_result.packs {
+                        let cas_result = storage
+                            .content_write_bytes(kind, ledger_id, &pack_artifact.bytes)
+                            .await
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                        ns_pack_refs.push(run_index::PackBranchEntry {
+                            first_id: pack_artifact.first_id,
+                            last_id: pack_artifact.last_id,
+                            pack_cid: cid_from_write(kind, &cas_result),
+                        });
+                    }
+                    subject_fwd_ns_packs.push((*ns_code, ns_pack_refs));
                 }
+                subject_fwd_ns_packs
             };
 
             // Pass 2: reverse tree
@@ -2135,8 +1762,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 })?
             };
 
-            tracing::info!("subject CoW trees uploaded");
-            Ok::<_, IndexerError>((subject_forward, subject_reverse))
+            tracing::info!("subject dict artifacts uploaded");
+            Ok::<_, IndexerError>((subject_fwd_pack_refs, subject_reverse))
         },
         // Task B: String forward + reverse trees
         async {
@@ -2162,95 +1789,41 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     "string dict files loaded"
                 );
 
-                // Pass 1: forward tree
-                tracing::info!("building string forward tree (streaming, zero-copy)");
+                // Pass 1: forward packs (FPK1 format)
+                tracing::info!("building string forward packs");
                 // IDs are 0..count contiguous and already in order of the forward file.
-                let mut leaf_offsets: Vec<u32> = Vec::new();
-                let mut leaf_data: Vec<u8> = Vec::new();
-                let mut data_offset: u32 = 0;
-                let mut leaf_first: u64 = 0;
-                let mut leaf_last: u64 = 0;
-                let mut leaf_count: u32 = 0;
-                let kind = ContentKind::DictBlob {
-                    dict: DictKind::StringForward,
-                };
-                let mut leaf_cids: Vec<ContentId> = Vec::new();
-                let mut branch_entries: Vec<BranchLeafEntry> = Vec::new();
+                let string_fwd_pack_refs = {
+                    use dict_tree::pack_builder;
+                    let kind = ContentKind::DictBlob {
+                        dict: DictKind::StringForward,
+                    };
+                    let entries: Vec<(u32, &[u8])> = (0..count)
+                        .map(|i| {
+                            let off = str_offsets[i] as usize;
+                            let len = str_lens[i] as usize;
+                            (i as u32, &str_fwd_data[off..off + len])
+                        })
+                        .collect();
+                    let pack_result = pack_builder::build_string_forward_packs(
+                        &entries,
+                        pack_builder::DEFAULT_TARGET_PAGE_BYTES,
+                        pack_builder::DEFAULT_TARGET_PACK_BYTES,
+                    )
+                    .map_err(|e| IndexerError::StorageWrite(format!("string pack build: {}", e)))?;
 
-                for i in 0..count {
-                    let off = str_offsets[i] as usize;
-                    let len = str_lens[i] as usize;
-                    let bytes = &str_fwd_data[off..off + len];
-                    let id = i as u64;
-                    if leaf_count == 0 {
-                        leaf_first = id;
+                    let mut pack_refs = Vec::with_capacity(pack_result.packs.len());
+                    for pack_artifact in pack_result.packs {
+                        let cas_result = storage
+                            .content_write_bytes(kind, ledger_id, &pack_artifact.bytes)
+                            .await
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                        pack_refs.push(run_index::PackBranchEntry {
+                            first_id: pack_artifact.first_id,
+                            last_id: pack_artifact.last_id,
+                            pack_cid: cid_from_write(kind, &cas_result),
+                        });
                     }
-                    leaf_last = id;
-                    leaf_offsets.push(data_offset);
-                    leaf_data.extend_from_slice(&id.to_le_bytes());
-                    leaf_data.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-                    leaf_data.extend_from_slice(bytes);
-                    data_offset += (12 + bytes.len()) as u32;
-                    leaf_count += 1;
-
-                    if (leaf_data.len() + leaf_offsets.len() * 4 + 8)
-                        >= builder::DEFAULT_TARGET_LEAF_BYTES
-                    {
-                        if let Some((leaf_bytes, first_id, last_id, cnt)) = flush_forward_leaf(
-                            &mut leaf_offsets,
-                            &mut leaf_data,
-                            &mut leaf_count,
-                            &mut data_offset,
-                            &mut leaf_first,
-                            &mut leaf_last,
-                        ) {
-                            let cas_result = storage
-                                .content_write_bytes(kind, ledger_id, &leaf_bytes)
-                                .await
-                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                            leaf_cids.push(cid_from_write(kind, &cas_result));
-                            branch_entries.push(BranchLeafEntry {
-                                first_key: id_to_branch_key(first_id),
-                                last_key: id_to_branch_key(last_id),
-                                entry_count: cnt,
-                                address: cas_result.address,
-                            });
-                        }
-                    }
-                }
-
-                if let Some((leaf_bytes, first_id, last_id, cnt)) = flush_forward_leaf(
-                    &mut leaf_offsets,
-                    &mut leaf_data,
-                    &mut leaf_count,
-                    &mut data_offset,
-                    &mut leaf_first,
-                    &mut leaf_last,
-                ) {
-                    let cas_result = storage
-                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
-                        .await
-                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                    leaf_cids.push(cid_from_write(kind, &cas_result));
-                    branch_entries.push(BranchLeafEntry {
-                        first_key: id_to_branch_key(first_id),
-                        last_key: id_to_branch_key(last_id),
-                        entry_count: cnt,
-                        address: cas_result.address,
-                    });
-                }
-
-                let branch = DictBranch {
-                    leaves: branch_entries,
-                };
-                let branch_bytes = branch.encode();
-                let branch_result = storage
-                    .content_write_bytes(kind, ledger_id, &branch_bytes)
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                let sf = run_index::DictTreeRefs {
-                    branch: cid_from_write(kind, &branch_result),
-                    leaves: leaf_cids,
+                    pack_refs
                 };
 
                 // Pass 2: reverse tree
@@ -2436,33 +2009,22 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     })?
                 };
 
-                tracing::info!("string CoW trees uploaded");
-                Ok::<_, IndexerError>((count, sf, sr))
+                tracing::info!("string dict artifacts uploaded");
+                Ok::<_, IndexerError>((count, string_fwd_pack_refs, sr))
             } else {
-                // No strings persisted — empty trees
-                // No strings persisted — empty trees (branch with no leaves)
-                let kind_fwd = ContentKind::DictBlob {
-                    dict: DictKind::StringForward,
-                };
+                // No strings persisted — empty packs + empty reverse tree
                 let kind_rev = ContentKind::DictBlob {
                     dict: DictKind::StringReverse,
                 };
                 let empty_branch = DictBranch { leaves: vec![] };
                 let empty_bytes = empty_branch.encode();
-                let wr_fwd = storage
-                    .content_write_bytes(kind_fwd, ledger_id, &empty_bytes)
-                    .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 let wr_rev = storage
                     .content_write_bytes(kind_rev, ledger_id, &empty_bytes)
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 Ok((
                     0,
-                    run_index::DictTreeRefs {
-                        branch: cid_from_write(kind_fwd, &wr_fwd),
-                        leaves: vec![],
-                    },
+                    vec![], // no forward packs
                     run_index::DictTreeRefs {
                         branch: cid_from_write(kind_rev, &wr_rev),
                         leaves: vec![],
@@ -2600,8 +2162,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         },
     )?;
 
-    let (subject_forward, subject_reverse) = subject_trees;
-    let (string_count, string_forward, string_reverse) = string_result;
+    let (subject_fwd_ns_packs, subject_reverse) = subject_trees;
+    let (string_count, string_fwd_packs, string_reverse) = string_result;
 
     // ---- 4. Compute subject_id_encoding + watermarks from sids ----
     let overflow_ns: u16 = 0xFFFF;
@@ -2668,9 +2230,11 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 
     Ok(UploadedDicts {
         dict_refs: run_index::DictRefs {
-            subject_forward,
+            forward_packs: run_index::DictPackRefs {
+                string_fwd_packs,
+                subject_fwd_ns_packs,
+            },
             subject_reverse,
-            string_forward,
             string_reverse,
             numbig,
             vectors,

@@ -202,7 +202,7 @@ Calculate the distance between two points in meters:
   "where": [
     { "@id": "?place", "ex:location": "?loc" },
     { "@id": "ex:paris", "ex:location": "?parisLoc" },
-    ["bind", "(geof:distance ?loc ?parisLoc)", "?distance"],
+    ["bind", "?distance", "(geof:distance ?loc ?parisLoc)"],
     ["filter", "(< ?distance 500000)"]
   ],
   "select": ["?place", "?distance"]

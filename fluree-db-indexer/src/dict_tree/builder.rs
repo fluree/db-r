@@ -9,8 +9,7 @@
 
 use std::io;
 
-use super::branch::{id_to_branch_key, BranchLeafEntry, DictBranch};
-use super::forward_leaf::{self, ForwardEntry};
+use super::branch::{BranchLeafEntry, DictBranch};
 use super::reverse_leaf::{self, ReverseEntry};
 
 /// Result of building a dictionary tree.
@@ -39,67 +38,6 @@ pub struct LeafArtifact {
 /// at the cost of reading more data per lookup. 2MB keeps the leaf count
 /// manageable for large dictionaries while staying cache-friendly.
 pub const DEFAULT_TARGET_LEAF_BYTES: usize = 2 * 1024 * 1024;
-
-/// Build a forward tree (id → value) from sorted entries.
-///
-/// `entries` must be sorted by `id` in ascending order.
-/// Returns the complete tree structure ready for CAS upload.
-pub fn build_forward_tree(
-    entries: Vec<ForwardEntry>,
-    target_leaf_bytes: usize,
-) -> io::Result<TreeBuildResult> {
-    if entries.is_empty() {
-        return Ok(empty_tree_result());
-    }
-
-    let mut leaves = Vec::new();
-    let mut branch_entries = Vec::new();
-
-    // Partition entries into leaves
-    let mut chunk_start = 0;
-    let mut chunk_bytes = 0usize;
-
-    for (i, entry) in entries.iter().enumerate() {
-        let entry_size = 12 + entry.value.len(); // id(8) + value_len(4) + value
-        chunk_bytes += entry_size;
-
-        let is_last = i == entries.len() - 1;
-        if chunk_bytes >= target_leaf_bytes || is_last {
-            let chunk = &entries[chunk_start..=i];
-            let leaf_bytes = forward_leaf::encode_forward_leaf(chunk);
-            let hash = fluree_db_core::sha256_hex(&leaf_bytes);
-
-            branch_entries.push(BranchLeafEntry {
-                first_key: id_to_branch_key(chunk.first().unwrap().id),
-                last_key: id_to_branch_key(chunk.last().unwrap().id),
-                entry_count: chunk.len() as u32,
-                // Address placeholder — caller fills in after CAS upload
-                address: format!("pending:{}", hash),
-            });
-
-            leaves.push(LeafArtifact {
-                hash,
-                bytes: leaf_bytes,
-            });
-
-            chunk_start = i + 1;
-            chunk_bytes = 0;
-        }
-    }
-
-    let branch = DictBranch {
-        leaves: branch_entries,
-    };
-    let branch_bytes = branch.encode();
-    let branch_hash = fluree_db_core::sha256_hex(&branch_bytes);
-
-    Ok(TreeBuildResult {
-        branch,
-        branch_bytes,
-        branch_hash,
-        leaves,
-    })
-}
 
 /// Build a reverse tree (key → id) from sorted entries.
 ///
@@ -203,51 +141,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_forward_tree_small() {
-        let entries: Vec<ForwardEntry> = (0..10)
-            .map(|i| ForwardEntry {
-                id: i * 100,
-                value: format!("value_{}", i).into_bytes(),
-            })
-            .collect();
-
-        let result = build_forward_tree(entries, DEFAULT_TARGET_LEAF_BYTES).unwrap();
-
-        // Small enough to fit in one leaf
-        assert_eq!(result.leaves.len(), 1);
-        assert_eq!(result.branch.leaves.len(), 1);
-        assert_eq!(result.branch.leaves[0].entry_count, 10);
-    }
-
-    #[test]
-    fn test_build_forward_tree_multiple_leaves() {
-        // Create entries large enough to span multiple leaves
-        let entries: Vec<ForwardEntry> = (0..5000)
-            .map(|i| ForwardEntry {
-                id: i,
-                value: format!("http://example.org/entity/with/long/path/{}", i).into_bytes(),
-            })
-            .collect();
-
-        let result = build_forward_tree(entries, 4096).unwrap(); // 4KB leaves
-
-        assert!(result.leaves.len() > 1, "should produce multiple leaves");
-        assert_eq!(
-            result.branch.leaves.len(),
-            result.leaves.len(),
-            "branch entries should match leaf count"
-        );
-
-        // Verify branch key ordering
-        for i in 1..result.branch.leaves.len() {
-            assert!(
-                result.branch.leaves[i - 1].last_key < result.branch.leaves[i].first_key,
-                "leaf ranges should not overlap"
-            );
-        }
-    }
-
-    #[test]
     fn test_build_reverse_tree() {
         let mut entries: Vec<ReverseEntry> = (0..100)
             .map(|i| ReverseEntry {
@@ -263,22 +156,22 @@ mod tests {
     }
 
     #[test]
-    fn test_build_empty() {
-        let result = build_forward_tree(vec![], DEFAULT_TARGET_LEAF_BYTES).unwrap();
+    fn test_build_empty_reverse_tree() {
+        let result = build_reverse_tree(vec![], DEFAULT_TARGET_LEAF_BYTES).unwrap();
         assert_eq!(result.leaves.len(), 0);
         assert_eq!(result.branch.leaves.len(), 0);
     }
 
     #[test]
     fn test_finalize_branch() {
-        let entries: Vec<ForwardEntry> = (0..10)
-            .map(|i| ForwardEntry {
-                id: i,
-                value: vec![0u8; 10],
+        let entries: Vec<ReverseEntry> = (0..10)
+            .map(|i| ReverseEntry {
+                key: format!("key_{:04}", i).into_bytes(),
+                id: i as u64,
             })
             .collect();
 
-        let result = build_forward_tree(entries, DEFAULT_TARGET_LEAF_BYTES).unwrap();
+        let result = build_reverse_tree(entries, DEFAULT_TARGET_LEAF_BYTES).unwrap();
         let leaf_hash = &result.leaves[0].hash;
 
         let mut map = std::collections::HashMap::new();

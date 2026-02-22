@@ -544,7 +544,7 @@ mod tests {
     fn build_test_irb1(ledger_id: &str, index_t: i64, ns_codes: &[(u16, &str)]) -> Vec<u8> {
         let mut buf = Vec::with_capacity(256);
         buf.extend_from_slice(b"IRB1"); // magic
-        buf.push(1); // version
+        buf.push(2); // version
         buf.push(0); // flags (no optional sections)
         buf.extend_from_slice(&0u16.to_le_bytes()); // pad
         buf.extend_from_slice(&index_t.to_le_bytes()); // index_t
@@ -574,15 +574,21 @@ mod tests {
             buf.extend_from_slice(&0u16.to_le_bytes());
         }
 
-        // Dict refs: 4 trees (each: dummy CID + 0 leaves)
-        // Use a minimal valid CID (all zeros isn't valid, so we create one)
+        // Dict refs (v2 format): forward packs + 2 reverse trees
         let dummy_cid = ContentId::new(ContentKind::IndexRoot, b"dummy");
         let cid_bytes = dummy_cid.to_bytes();
-        for _ in 0..4 {
-            buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
-            buf.extend_from_slice(&cid_bytes);
-            buf.extend_from_slice(&0u32.to_le_bytes()); // 0 leaves
-        }
+        // String forward packs (0 packs)
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        // Subject forward packs (0 namespaces)
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        // Subject reverse tree: branch CID + 0 leaves
+        buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&cid_bytes);
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // String reverse tree: branch CID + 0 leaves
+        buf.extend_from_slice(&(cid_bytes.len() as u16).to_le_bytes());
+        buf.extend_from_slice(&cid_bytes);
+        buf.extend_from_slice(&0u32.to_le_bytes());
 
         // Numbig (empty)
         buf.extend_from_slice(&0u16.to_le_bytes());

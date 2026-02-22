@@ -1585,10 +1585,25 @@ where
         // This avoids double I/O that would kill throughput on external drives.
         let ledger = alias.to_string();
 
-        let (shared_rx, prelude) = match &**chunk_source {
-            ChunkSource::Streaming(reader) => (reader.shared_receiver(), reader.prelude().clone()),
+        let (reader_rx, prelude, ns_preflight_cell) = match &**chunk_source {
+            ChunkSource::Streaming(reader) => (
+                reader.shared_receiver(),
+                reader.prelude().clone(),
+                reader.namespace_preflight_cell(),
+            ),
             _ => unreachable!(),
         };
+
+        // Forward raw chunk payloads from the reader thread to parse workers.
+        // This lets the main thread apply one-time policy decisions (e.g. namespace fallback)
+        // before any chunk is parsed, without adding an extra I/O pass.
+        let (work_tx, work_rx) =
+            std::sync::mpsc::sync_channel::<fluree_graph_turtle::splitter::ChunkPayload>(
+                // Keep the same backpressure semantics as the original streaming
+                // design: bound the number of in-flight chunk buffers.
+                commit_env.config.effective_max_inflight().max(1),
+            );
+        let work_rx = Arc::new(std::sync::Mutex::new(work_rx));
 
         let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<
             std::result::Result<(usize, ParsedChunk), String>,
@@ -1596,7 +1611,7 @@ where
 
         let mut parse_handles = Vec::with_capacity(num_threads);
         for thread_idx in 0..num_threads {
-            let shared_rx = Arc::clone(&shared_rx);
+            let work_rx = Arc::clone(&work_rx);
             let result_tx = result_tx.clone();
             let shared_alloc = Arc::clone(&shared_alloc);
             let ledger = ledger.clone();
@@ -1616,8 +1631,8 @@ where
                         spool_config: &spool_config,
                     };
                     loop {
-                        // Pull next chunk data from the reader thread (no I/O here).
-                        let (idx, raw_bytes) = match shared_rx.lock().unwrap().recv() {
+                        // Pull next chunk data from the main-thread forwarder (no I/O here).
+                        let (idx, raw_bytes) = match work_rx.lock().unwrap().recv() {
                             Ok(payload) => payload,
                             Err(_) => break, // Reader thread finished.
                         };
@@ -1659,6 +1674,46 @@ where
         }
         drop(result_tx); // main thread's copy
 
+        // Forwarder thread: receive from reader thread, apply any one-time namespace
+        // fallback mode before chunk 0 is parsed, then dispatch to workers.
+        let forward_shared_alloc = Arc::clone(&shared_alloc);
+        let forward_handle = std::thread::Builder::new()
+            .name("ttl-forwarder".into())
+            .spawn(move || {
+                use fluree_db_transact::namespace::NsFallbackMode;
+                let mut ns_mode_set = false;
+                loop {
+                    let payload = match reader_rx.lock().unwrap().recv() {
+                        Ok(p) => p,
+                        Err(_) => break,
+                    };
+                    if !ns_mode_set && payload.0 == 0 {
+                        if let Some(pre) = ns_preflight_cell.get() {
+                            if pre.exceeded_budget {
+                                forward_shared_alloc.set_fallback_mode(NsFallbackMode::CoarseHeuristic);
+                                ns_mode_set = true;
+                                tracing::info!(
+                                    distinct_prefixes = pre.distinct_prefixes,
+                                    http_host_prefixes = pre.http_host_prefixes,
+                                    http_host_seg1_prefixes = pre.http_host_seg1_prefixes,
+                                    "namespace preflight exceeded budget; enabling coarse namespace fallback heuristic"
+                                );
+                            }
+                        } else {
+                            tracing::warn!(
+                                "chunk 0 received but namespace preflight not available; using default namespace fallback"
+                            );
+                        }
+                    }
+                    if work_tx.send(payload).is_err() {
+                        break;
+                    }
+                }
+                // Drop sender so workers exit when queue drained.
+                drop(work_tx);
+            })
+            .map_err(|e| ImportError::Transact(format!("spawn forwarder: {}", e)))?;
+
         let next_expected = commit_parsed_chunks_in_order(
             result_rx,
             &commit_env,
@@ -1675,6 +1730,7 @@ where
         for handle in parse_handles {
             handle.join().expect("parse thread panicked");
         }
+        forward_handle.join().expect("forwarder thread panicked");
 
         // Note: The reader thread finishes when all chunks are consumed (channel
         // drained). Any reader errors would have manifested as channel closure,
@@ -2117,6 +2173,52 @@ where
     // Use Arc so Phase B parallel tasks can borrow without cloning the whole map.
     let namespace_codes: Arc<HashMap<u16, String>> =
         Arc::new(shared_alloc.lookup_codes(&published_codes));
+
+    // Diagnostics: namespace explosion investigation.
+    //
+    // This is intentionally cheap (single pass over the ns_code→prefix map) and
+    // only visible when logs are enabled (CLI --verbose).
+    {
+        let ns_total = namespace_codes.len();
+        let mut dblp_pid_deep: usize = 0;
+        let mut dblp_pid_shallow: usize = 0;
+        let mut doi_deep: usize = 0;
+        let mut samples: Vec<(u16, String)> = Vec::new();
+
+        for (&code, prefix) in namespace_codes.iter() {
+            if let Some(rest) = prefix.strip_prefix("https://dblp.org/pid/") {
+                // Expecting either ".../pid/" (shallow) in coarse mode,
+                // or ".../pid/<bucket>/" (deep) in legacy mode.
+                if rest.is_empty() {
+                    dblp_pid_shallow += 1;
+                } else if rest.as_bytes().iter().filter(|&&b| b == b'/').count() >= 1 {
+                    dblp_pid_deep += 1;
+                    if samples.len() < 8 {
+                        samples.push((code, prefix.clone()));
+                    }
+                } else {
+                    dblp_pid_shallow += 1;
+                }
+            } else if let Some(rest) = prefix.strip_prefix("https://doi.org/") {
+                // Deep DOI prefixes like https://doi.org/10.1007/... indicate over-splitting.
+                if rest.as_bytes().iter().filter(|&&b| b == b'/').count() >= 2 {
+                    doi_deep += 1;
+                    if samples.len() < 8 {
+                        samples.push((code, prefix.clone()));
+                    }
+                }
+            }
+        }
+
+        tracing::info!(
+            namespaces_total = ns_total,
+            dblp_pid_shallow,
+            dblp_pid_deep,
+            doi_deep,
+            sample_prefixes = ?samples,
+            "namespace code table summary"
+        );
+    }
 
     let remap_dir = run_dir.join("remap");
     std::fs::create_dir_all(&remap_dir)?;
@@ -3008,7 +3110,7 @@ where
     // ---- Phase 5: Build IndexRootV5 (binary IRB1) ----
     tracing::info!("post-upload: stats built, constructing IRB1 root");
 
-    // Convert DictRefs (v4, string-keyed maps) → DictRefsV5 (u32 vecs).
+    // Convert DictRefs (string-keyed maps) → DictRefsV5 (u32 vecs).
     let dict_refs_v5 = {
         let dr = uploaded_dicts.dict_refs;
         use fluree_db_indexer::run_index::{DictRefsV5, VectorDictRefV5};
@@ -3027,9 +3129,8 @@ where
             })
             .collect();
         DictRefsV5 {
-            subject_forward: dr.subject_forward,
+            forward_packs: dr.forward_packs,
             subject_reverse: dr.subject_reverse,
-            string_forward: dr.string_forward,
             string_reverse: dr.string_reverse,
             numbig,
             vectors,

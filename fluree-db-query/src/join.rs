@@ -1113,8 +1113,18 @@ impl NestedLoopJoinOperator {
             let leaf_path = leaf_entry.resolved_path.as_ref().ok_or_else(|| {
                 QueryError::Internal(format!("leaf {} has no resolved path", leaf_entry.leaf_cid))
             })?;
-            let file = std::fs::File::open(leaf_path)
-                .map_err(|e| QueryError::Internal(format!("open leaf: {}", e)))?;
+            let file = match std::fs::File::open(leaf_path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    store
+                        .ensure_index_leaf_cached(&leaf_entry.leaf_cid, leaf_path)
+                        .map_err(|e| QueryError::Internal(format!("fetch leaf: {}", e)))?;
+                    std::fs::File::open(leaf_path).map_err(|e| {
+                        QueryError::Internal(format!("open leaf after fetch: {}", e))
+                    })?
+                }
+                Err(e) => return Err(QueryError::Internal(format!("open leaf: {}", e))),
+            };
             let leaf_mmap = unsafe { Mmap::map(&file) }
                 .map_err(|e| QueryError::Internal(format!("mmap leaf: {}", e)))?;
             us_open_mmap += t_open.elapsed().as_micros() as u64;

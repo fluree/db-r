@@ -198,27 +198,19 @@ impl DictBranch {
         }
     }
 
-    /// Find the leaf index for a forward tree lookup by u64 ID.
-    ///
-    /// Convenience wrapper that converts the ID to an 8-byte LE key.
-    pub fn find_leaf_by_id(&self, id: u64) -> Option<usize> {
-        self.find_leaf(&id.to_be_bytes())
-    }
-
     /// Total entry count across all leaves.
     pub fn total_entries(&self) -> u64 {
         self.leaves.iter().map(|l| l.entry_count as u64).sum()
     }
 }
 
-/// Helper to create a branch key from a u64 ID (for forward trees).
-pub fn id_to_branch_key(id: u64) -> Vec<u8> {
-    id.to_be_bytes().to_vec()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn id_to_branch_key(id: u64) -> Vec<u8> {
+        id.to_be_bytes().to_vec()
+    }
 
     fn make_branch() -> DictBranch {
         DictBranch {
@@ -255,19 +247,6 @@ mod tests {
         assert_eq!(decoded.leaves[0].entry_count, 100);
         assert_eq!(decoded.leaves[0].address, "cas://leaf_0");
         assert_eq!(decoded.leaves[2].address, "cas://leaf_2");
-    }
-
-    #[test]
-    fn test_find_leaf_by_id() {
-        let branch = make_branch();
-
-        assert_eq!(branch.find_leaf_by_id(0), Some(0));
-        assert_eq!(branch.find_leaf_by_id(50), Some(0));
-        assert_eq!(branch.find_leaf_by_id(99), Some(0));
-        assert_eq!(branch.find_leaf_by_id(100), Some(1));
-        assert_eq!(branch.find_leaf_by_id(200), Some(2));
-        assert_eq!(branch.find_leaf_by_id(299), Some(2));
-        assert_eq!(branch.find_leaf_by_id(300), None);
     }
 
     #[test]

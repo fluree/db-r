@@ -64,8 +64,8 @@ pub use index_build::{
     DT_REF_ID,
 };
 pub use index_root::{
-    BinaryGarbageRef, BinaryPrevIndexRef, DictRefs, DictTreeRefs, GraphOrderRefs, GraphRefs,
-    VectorDictRef,
+    BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictTreeRefs, GraphOrderRefs,
+    GraphRefs, PackBranchEntry, VectorDictRef,
 };
 pub use index_root::{
     DictRefsV5, IndexRootV5, InlineOrderRouting, NamedGraphRouting, VectorDictRefV5,

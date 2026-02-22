@@ -93,6 +93,10 @@ sysinfo = "0.32"
 # Fast hash map with raw_entry API for efficient lookups
 hashbrown = "0.16"
 
+# Fast integer/float formatting (zero-alloc)
+itoa = "1"
+ryu = "1"
+
 # HTTP server dependencies
 axum = { version = "0.7", features = ["macros"] }
 tower = "0.5"
