@@ -1208,6 +1208,25 @@ mod tests {
         TriplePattern::new(Term::Var(s), Term::Sid(Sid::new(100, p_name)), Term::Var(o))
     }
 
+    /// Count top-level patterns matching a predicate.
+    fn count_patterns(patterns: &[Pattern], pred: fn(&Pattern) -> bool) -> usize {
+        patterns.iter().filter(|p| pred(p)).count()
+    }
+
+    /// Assert that every branch of the first UNION in `patterns` contains
+    /// at least one pattern matching `pred`.
+    fn assert_union_branches_contain(patterns: &[Pattern], pred: fn(&Pattern) -> bool, msg: &str) {
+        let union = patterns
+            .iter()
+            .find(|p| matches!(p, Pattern::Union(_)))
+            .expect("expected a UNION in the pattern list");
+        if let Pattern::Union(branches) = union {
+            for (i, branch) in branches.iter().enumerate() {
+                assert!(branch.iter().any(|p| pred(p)), "UNION branch {i}: {msg}");
+            }
+        }
+    }
+
     #[test]
     fn test_reorder_patterns() {
         // When the first pattern placed shares variables with others,
@@ -2415,237 +2434,158 @@ mod tests {
     // Compound pattern absorption tests
     // =========================================================================
 
+    fn is_filter(p: &Pattern) -> bool {
+        matches!(p, Pattern::Filter(_))
+    }
+
+    fn is_bind(p: &Pattern) -> bool {
+        matches!(p, Pattern::Bind { .. })
+    }
+
+    fn is_deferred(p: &Pattern) -> bool {
+        is_filter(p) || is_bind(p)
+    }
+
     #[test]
     fn test_filter_pushed_into_union_when_all_branches_bind_var() {
-        // Patterns: [Triple(?s :name ?name), Union([?s :age ?age], [?s :years ?age]), Filter(?age > 25)]
-        // Expected: Filter pushed into each UNION branch; not present at top level
         let s = VarId(0);
         let name = VarId(1);
         let age = VarId(2);
 
-        let triple = Pattern::Triple(make_pattern(s, "name", name));
-        let union = Pattern::Union(vec![
-            vec![Pattern::Triple(make_pattern(s, "age", age))],
-            vec![Pattern::Triple(make_pattern(s, "years", age))],
-        ]);
-        let filter = Pattern::Filter(Expression::gt(
-            Expression::Var(age),
-            Expression::Const(FilterValue::Long(25)),
-        ));
-
-        let patterns = vec![triple, union, filter];
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "name", name)),
+            Pattern::Union(vec![
+                vec![Pattern::Triple(make_pattern(s, "age", age))],
+                vec![Pattern::Triple(make_pattern(s, "years", age))],
+            ]),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(age),
+                Expression::Const(FilterValue::Long(25)),
+            )),
+        ];
         let reordered = reorder_patterns(&patterns, None, &HashSet::new());
 
-        // Filter should NOT appear as a top-level pattern
-        let top_level_filters = reordered
-            .iter()
-            .filter(|p| matches!(p, Pattern::Filter(_)))
-            .count();
-        assert_eq!(
-            top_level_filters, 0,
-            "Filter should be pushed into UNION, not at top level"
-        );
-
-        // UNION branches should each contain the filter
-        let union_pattern = reordered
-            .iter()
-            .find(|p| matches!(p, Pattern::Union(_)))
-            .expect("UNION should be in result");
-        if let Pattern::Union(branches) = union_pattern {
-            for (i, branch) in branches.iter().enumerate() {
-                let has_filter = branch.iter().any(|p| matches!(p, Pattern::Filter(_)));
-                assert!(
-                    has_filter,
-                    "UNION branch {i} should contain the pushed-in filter"
-                );
-            }
-        }
+        assert_eq!(count_patterns(&reordered, is_filter), 0);
+        assert_union_branches_contain(&reordered, is_filter, "should contain pushed-in filter");
     }
 
     #[test]
     fn test_filter_stays_after_union_when_not_all_branches_bind_var() {
-        // Patterns: [Triple(?s :name ?name), Union([?s :age ?age], [?s :label ?l]), Filter(?age > 25)]
-        // Expected: Filter remains after UNION at top level (branch 2 doesn't bind ?age)
         let s = VarId(0);
         let name = VarId(1);
         let age = VarId(2);
         let label = VarId(3);
 
-        let triple = Pattern::Triple(make_pattern(s, "name", name));
-        let union = Pattern::Union(vec![
-            vec![Pattern::Triple(make_pattern(s, "age", age))],
-            vec![Pattern::Triple(make_pattern(s, "label", label))],
-        ]);
-        let filter = Pattern::Filter(Expression::gt(
-            Expression::Var(age),
-            Expression::Const(FilterValue::Long(25)),
-        ));
-
-        let patterns = vec![triple, union, filter];
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "name", name)),
+            Pattern::Union(vec![
+                vec![Pattern::Triple(make_pattern(s, "age", age))],
+                vec![Pattern::Triple(make_pattern(s, "label", label))],
+            ]),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(age),
+                Expression::Const(FilterValue::Long(25)),
+            )),
+        ];
         let reordered = reorder_patterns(&patterns, None, &HashSet::new());
 
-        // Filter should remain at top level since ?age is not in all branches
-        let top_level_filters = reordered
-            .iter()
-            .filter(|p| matches!(p, Pattern::Filter(_)))
-            .count();
         assert_eq!(
-            top_level_filters, 1,
-            "Filter should stay at top level when not all UNION branches bind the var"
+            count_patterns(&reordered, is_filter),
+            1,
+            "filter should stay at top level when not all branches bind the var"
         );
     }
 
     #[test]
     fn test_bind_and_filter_cascade_into_union() {
-        // Patterns: [Union([?s :age ?age], [?s :years ?age]), Bind(?double = ?age * 2), Filter(?double > 50)]
-        // Expected: Both BIND and FILTER pushed into each UNION branch
         let s = VarId(0);
         let age = VarId(1);
         let double = VarId(2);
 
-        let union = Pattern::Union(vec![
-            vec![Pattern::Triple(make_pattern(s, "age", age))],
-            vec![Pattern::Triple(make_pattern(s, "years", age))],
-        ]);
-        let bind = Pattern::Bind {
-            var: double,
-            expr: Expression::Call {
-                func: Function::Mul,
-                args: vec![
-                    Expression::Var(age),
-                    Expression::Const(FilterValue::Long(2)),
-                ],
+        let patterns = vec![
+            Pattern::Union(vec![
+                vec![Pattern::Triple(make_pattern(s, "age", age))],
+                vec![Pattern::Triple(make_pattern(s, "years", age))],
+            ]),
+            Pattern::Bind {
+                var: double,
+                expr: Expression::Call {
+                    func: Function::Mul,
+                    args: vec![
+                        Expression::Var(age),
+                        Expression::Const(FilterValue::Long(2)),
+                    ],
+                },
             },
-        };
-        let filter = Pattern::Filter(Expression::gt(
-            Expression::Var(double),
-            Expression::Const(FilterValue::Long(50)),
-        ));
-
-        let patterns = vec![union, bind, filter];
+            Pattern::Filter(Expression::gt(
+                Expression::Var(double),
+                Expression::Const(FilterValue::Long(50)),
+            )),
+        ];
         let reordered = reorder_patterns(&patterns, None, &HashSet::new());
 
-        // Neither BIND nor FILTER should appear at top level
-        let top_level_deferred = reordered
-            .iter()
-            .filter(|p| matches!(p, Pattern::Filter(_) | Pattern::Bind { .. }))
-            .count();
-        assert_eq!(
-            top_level_deferred, 0,
-            "Both BIND and FILTER should be pushed into UNION branches"
-        );
-
-        // Each UNION branch should contain both BIND and FILTER
-        let union_pattern = reordered
-            .iter()
-            .find(|p| matches!(p, Pattern::Union(_)))
-            .expect("UNION should be in result");
-        if let Pattern::Union(branches) = union_pattern {
-            for (i, branch) in branches.iter().enumerate() {
-                let has_bind = branch.iter().any(|p| matches!(p, Pattern::Bind { .. }));
-                let has_filter = branch.iter().any(|p| matches!(p, Pattern::Filter(_)));
-                assert!(
-                    has_bind,
-                    "UNION branch {i} should contain the pushed-in BIND"
-                );
-                assert!(
-                    has_filter,
-                    "UNION branch {i} should contain the pushed-in FILTER"
-                );
-            }
-        }
+        assert_eq!(count_patterns(&reordered, is_deferred), 0);
+        assert_union_branches_contain(&reordered, is_bind, "should contain pushed-in BIND");
+        assert_union_branches_contain(&reordered, is_filter, "should contain pushed-in FILTER");
     }
 
     #[test]
     fn test_filter_pushed_into_graph() {
-        // Patterns: [Graph(ex:g, [?s :age ?age]), Filter(?age > 25)]
-        // Expected: Filter pushed into Graph's inner patterns
         let s = VarId(0);
         let age = VarId(1);
 
-        let graph = Pattern::Graph {
-            name: GraphName::Iri(Arc::from("http://example.org/g")),
-            patterns: vec![Pattern::Triple(make_pattern(s, "age", age))],
-        };
-        let filter = Pattern::Filter(Expression::gt(
-            Expression::Var(age),
-            Expression::Const(FilterValue::Long(25)),
-        ));
-
-        let patterns = vec![graph, filter];
+        let patterns = vec![
+            Pattern::Graph {
+                name: GraphName::Iri(Arc::from("http://example.org/g")),
+                patterns: vec![Pattern::Triple(make_pattern(s, "age", age))],
+            },
+            Pattern::Filter(Expression::gt(
+                Expression::Var(age),
+                Expression::Const(FilterValue::Long(25)),
+            )),
+        ];
         let reordered = reorder_patterns(&patterns, None, &HashSet::new());
 
-        // Filter should NOT appear at top level
-        let top_level_filters = reordered
-            .iter()
-            .filter(|p| matches!(p, Pattern::Filter(_)))
-            .count();
-        assert_eq!(
-            top_level_filters, 0,
-            "Filter should be pushed into Graph pattern"
-        );
+        assert_eq!(count_patterns(&reordered, is_filter), 0);
 
-        // Graph's inner patterns should contain the filter
-        let graph_pattern = reordered
+        let graph = reordered
             .iter()
             .find(|p| matches!(p, Pattern::Graph { .. }))
             .expect("Graph should be in result");
-        if let Pattern::Graph { patterns, .. } = graph_pattern {
-            let has_filter = patterns.iter().any(|p| matches!(p, Pattern::Filter(_)));
-            assert!(has_filter, "Graph inner patterns should contain the filter");
+        if let Pattern::Graph { patterns, .. } = graph {
+            assert!(
+                patterns.iter().any(|p| is_filter(p)),
+                "Graph inner patterns should contain the filter"
+            );
         }
     }
 
     #[test]
     fn test_multiple_filters_only_relevant_ones_pushed() {
-        // Patterns: [Triple(?s :name ?name), Union([?s :age ?age], [?s :years ?age]), Filter(?age > 25), Filter(?name = "Alice")]
-        // Expected: Filter(?age > 25) pushed into UNION; Filter(?name = "Alice") stays at top level
         let s = VarId(0);
         let name = VarId(1);
         let age = VarId(2);
 
-        let triple = Pattern::Triple(make_pattern(s, "name", name));
-        let union = Pattern::Union(vec![
-            vec![Pattern::Triple(make_pattern(s, "age", age))],
-            vec![Pattern::Triple(make_pattern(s, "years", age))],
-        ]);
-        let age_filter = Pattern::Filter(Expression::gt(
-            Expression::Var(age),
-            Expression::Const(FilterValue::Long(25)),
-        ));
-        let name_filter = Pattern::Filter(Expression::eq(
-            Expression::Var(name),
-            Expression::Const(FilterValue::String("Alice".to_string())),
-        ));
-
-        let patterns = vec![triple, union, age_filter, name_filter];
+        let patterns = vec![
+            Pattern::Triple(make_pattern(s, "name", name)),
+            Pattern::Union(vec![
+                vec![Pattern::Triple(make_pattern(s, "age", age))],
+                vec![Pattern::Triple(make_pattern(s, "years", age))],
+            ]),
+            Pattern::Filter(Expression::gt(
+                Expression::Var(age),
+                Expression::Const(FilterValue::Long(25)),
+            )),
+            Pattern::Filter(Expression::eq(
+                Expression::Var(name),
+                Expression::Const(FilterValue::String("Alice".to_string())),
+            )),
+        ];
         let reordered = reorder_patterns(&patterns, None, &HashSet::new());
 
-        // The name filter's required var (?name) is bound by the triple, not by
-        // the UNION. It becomes ready after the triple is placed, before the
-        // UNION. So it should appear at top level between the triple and UNION.
-        let top_level_filters = reordered
-            .iter()
-            .filter(|p| matches!(p, Pattern::Filter(_)))
-            .count();
-        assert_eq!(
-            top_level_filters, 1,
-            "Only the name filter should be at top level; age filter should be pushed into UNION"
-        );
-
-        // The age filter should be inside each UNION branch
-        let union_pattern = reordered
-            .iter()
-            .find(|p| matches!(p, Pattern::Union(_)))
-            .expect("UNION should be in result");
-        if let Pattern::Union(branches) = union_pattern {
-            for (i, branch) in branches.iter().enumerate() {
-                let has_filter = branch.iter().any(|p| matches!(p, Pattern::Filter(_)));
-                assert!(
-                    has_filter,
-                    "UNION branch {i} should contain the pushed-in age filter"
-                );
-            }
-        }
+        // Name filter is ready before UNION (bound by triple) so stays top-level.
+        // Age filter is pushed into UNION branches.
+        assert_eq!(count_patterns(&reordered, is_filter), 1);
+        assert_union_branches_contain(&reordered, is_filter, "should contain pushed-in age filter");
     }
 }
