@@ -116,6 +116,31 @@ struct PendingFilter {
     expr: Expression,
 }
 
+/// Partition pending filters into those ready for inline evaluation and those still waiting.
+///
+/// Filters consumed by pushdown are silently dropped. Filters whose required
+/// variables are all in `bound` are returned as the first element (ready);
+/// the rest are returned as the second element (still pending).
+fn partition_ready_filters(
+    filters: Vec<PendingFilter>,
+    bound: &HashSet<VarId>,
+    filter_idxs_consumed: &[usize],
+) -> (Vec<Expression>, Vec<PendingFilter>) {
+    let mut ready = Vec::new();
+    let mut pending = Vec::new();
+    for pf in filters {
+        if filter_idxs_consumed.contains(&pf.original_idx) {
+            continue;
+        }
+        if pf.required_vars.is_subset(bound) {
+            ready.push(pf.expr);
+        } else {
+            pending.push(pf);
+        }
+    }
+    (ready, pending)
+}
+
 /// Apply pending BINDs and FILTERs that are ready (all required vars are bound).
 ///
 /// Returns the updated operator and the remaining pending items.
@@ -131,23 +156,10 @@ fn apply_ready_binds_and_filters(
     // Apply ready BINDs, fusing any newly-ready filters inline
     for pending in pending_binds {
         if pending.required_vars.is_subset(bound) {
-            // The BIND target becomes bound once the BIND executes
             bound.insert(pending.target_var);
 
-            // Collect filters that become ready now (including those referencing
-            // the BIND's target var) and fuse them into the BindOperator
-            let mut bind_filters = Vec::new();
-            let mut still_pending = Vec::new();
-            for pf in remaining_filters {
-                if filter_idxs_consumed.contains(&pf.original_idx) {
-                    continue;
-                }
-                if pf.required_vars.is_subset(bound) {
-                    bind_filters.push(pf.expr);
-                } else {
-                    still_pending.push(pf);
-                }
-            }
+            let (bind_filters, still_pending) =
+                partition_ready_filters(remaining_filters, bound, filter_idxs_consumed);
             remaining_filters = still_pending;
 
             child = Box::new(BindOperator::new(
@@ -162,48 +174,33 @@ fn apply_ready_binds_and_filters(
     }
 
     // Apply remaining ready FILTERs that don't depend on any BIND output
-    let mut still_pending = Vec::new();
-    for pending in remaining_filters {
-        if filter_idxs_consumed.contains(&pending.original_idx) {
-            continue;
-        }
-        if pending.required_vars.is_subset(bound) {
-            child = Box::new(FilterOperator::new(child, pending.expr));
-        } else {
-            still_pending.push(pending);
-        }
+    let (ready, still_pending) =
+        partition_ready_filters(remaining_filters, bound, filter_idxs_consumed);
+    for expr in ready {
+        child = Box::new(FilterOperator::new(child, expr));
     }
 
     (child, remaining_binds, still_pending)
 }
 
-/// Apply all remaining BINDs and FILTERs (assumes all vars are now bound).
+/// Apply all remaining BINDs and FILTERs at the end of a block.
+///
+/// Filters are fused into each BindOperator when the BIND's target variable
+/// is the last dependency the filter was waiting on.  Any filters still
+/// pending after all BINDs are applied as standalone FilterOperators.
 fn apply_all_remaining(
     mut child: BoxedOperator,
     pending_binds: Vec<PendingBind>,
     mut remaining_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
 ) -> BoxedOperator {
-    // Build a bound set from the child's schema so we can determine which
-    // filters become ready after each BIND.
     let mut bound: HashSet<VarId> = child.schema().iter().copied().collect();
 
     for pending in pending_binds {
         bound.insert(pending.target_var);
 
-        // Fuse filters that are now ready into this BindOperator
-        let mut bind_filters = Vec::new();
-        let mut still_pending = Vec::new();
-        for pf in remaining_filters {
-            if filter_idxs_consumed.contains(&pf.original_idx) {
-                continue;
-            }
-            if pf.required_vars.is_subset(&bound) {
-                bind_filters.push(pf.expr);
-            } else {
-                still_pending.push(pf);
-            }
-        }
+        let (bind_filters, still_pending) =
+            partition_ready_filters(remaining_filters, &bound, filter_idxs_consumed);
         remaining_filters = still_pending;
 
         child = Box::new(BindOperator::new(
