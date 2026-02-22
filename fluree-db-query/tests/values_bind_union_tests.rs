@@ -264,7 +264,7 @@ async fn test_bind_clobber_same_value() {
 
     // BIND(42 AS ?x) - same value, should pass through
     let expr = Expression::Const(FilterValue::Long(42));
-    let mut bind_op = BindOperator::new(seed, VarId(0), expr);
+    let mut bind_op = BindOperator::new(seed, VarId(0), expr, vec![]);
 
     bind_op.open(&ctx).await.unwrap();
 
@@ -298,7 +298,7 @@ async fn test_bind_clobber_different_value() {
 
     // BIND(100 AS ?x) - different value, should drop the row
     let expr = Expression::Const(FilterValue::Long(100));
-    let mut bind_op = BindOperator::new(seed, VarId(0), expr);
+    let mut bind_op = BindOperator::new(seed, VarId(0), expr, vec![]);
 
     bind_op.open(&ctx).await.unwrap();
 
@@ -388,7 +388,7 @@ async fn test_bind_error_does_not_clobber_existing_binding() {
         Expression::Const(FilterValue::Long(1)),
     );
 
-    let mut bind_op = BindOperator::new(seed, VarId(0), expr);
+    let mut bind_op = BindOperator::new(seed, VarId(0), expr, vec![]);
     bind_op.open(&ctx).await.unwrap();
 
     let batch = bind_op.next_batch(&ctx).await.unwrap().unwrap();
@@ -397,5 +397,99 @@ async fn test_bind_error_does_not_clobber_existing_binding() {
     // Value should remain 42 (not clobbered to Unbound)
     let (val, _, _) = batch.get_by_col(0, 0).as_lit().unwrap();
     assert_eq!(*val, FlakeValue::Long(42));
+    bind_op.close();
+}
+
+/// Test BindOperator with inline filters - rows failing the filter are dropped
+#[tokio::test]
+async fn test_bind_with_inline_filter() {
+    use fluree_db_query::bind::BindOperator;
+
+    let db = make_test_db();
+    let vars = VarRegistry::new();
+    let ctx = ExecutionContext::new(&db, &vars);
+
+    // Create a VALUES operator producing three rows: ?x = 10, 20, 30
+    let values_rows = vec![
+        vec![Binding::lit(FlakeValue::Long(10), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(20), xsd_long())],
+        vec![Binding::lit(FlakeValue::Long(30), xsd_long())],
+    ];
+    let seed = Box::new(ValuesOperator::new(
+        Box::new(EmptyOperator::new()),
+        vec![VarId(0)],
+        values_rows,
+    ));
+
+    // BIND(?x + 10 AS ?y) with inline filter: ?y > 25
+    // ?x=10 => ?y=20 (fails ?y > 25)
+    // ?x=20 => ?y=30 (passes)
+    // ?x=30 => ?y=40 (passes)
+    let bind_expr = Expression::add(
+        Expression::Var(VarId(0)),
+        Expression::Const(FilterValue::Long(10)),
+    );
+    let filter_expr = Expression::gt(
+        Expression::Var(VarId(1)),
+        Expression::Const(FilterValue::Long(25)),
+    );
+
+    let mut bind_op = BindOperator::new(seed, VarId(1), bind_expr, vec![filter_expr]);
+    bind_op.open(&ctx).await.unwrap();
+
+    let result = bind_op.next_batch(&ctx).await.unwrap();
+    assert!(result.is_some(), "should produce a batch");
+
+    let batch = result.unwrap();
+    assert_eq!(batch.len(), 2, "only two rows should pass the filter");
+
+    // First passing row: ?x=20, ?y=30
+    let (x0, _, _) = batch.get_by_col(0, 0).as_lit().unwrap();
+    let (y0, _, _) = batch.get_by_col(0, 1).as_lit().unwrap();
+    assert_eq!(*x0, FlakeValue::Long(20));
+    assert_eq!(*y0, FlakeValue::Long(30));
+
+    // Second passing row: ?x=30, ?y=40
+    let (x1, _, _) = batch.get_by_col(1, 0).as_lit().unwrap();
+    let (y1, _, _) = batch.get_by_col(1, 1).as_lit().unwrap();
+    assert_eq!(*x1, FlakeValue::Long(30));
+    assert_eq!(*y1, FlakeValue::Long(40));
+
+    bind_op.close();
+}
+
+/// Test BindOperator with inline filter that rejects all rows
+#[tokio::test]
+async fn test_bind_with_inline_filter_rejects_all() {
+    use fluree_db_query::bind::BindOperator;
+
+    let db = make_test_db();
+    let vars = VarRegistry::new();
+    let ctx = ExecutionContext::new(&db, &vars);
+
+    // Single row: ?x = 5
+    let seed = Box::new(ValuesOperator::new(
+        Box::new(EmptyOperator::new()),
+        vec![VarId(0)],
+        vec![vec![Binding::lit(FlakeValue::Long(5), xsd_long())]],
+    ));
+
+    // BIND(?x + 10 AS ?y) with filter: ?y > 100
+    // ?x=5 => ?y=15 (fails ?y > 100)
+    let bind_expr = Expression::add(
+        Expression::Var(VarId(0)),
+        Expression::Const(FilterValue::Long(10)),
+    );
+    let filter_expr = Expression::gt(
+        Expression::Var(VarId(1)),
+        Expression::Const(FilterValue::Long(100)),
+    );
+
+    let mut bind_op = BindOperator::new(seed, VarId(1), bind_expr, vec![filter_expr]);
+    bind_op.open(&ctx).await.unwrap();
+
+    let result = bind_op.next_batch(&ctx).await.unwrap();
+    assert!(result.is_none(), "all rows filtered out should yield None");
+
     bind_op.close();
 }

@@ -15,6 +15,7 @@
 use crate::binding::{Batch, Binding, RowAccess};
 use crate::context::ExecutionContext;
 use crate::error::Result;
+use crate::expression::passes_filters;
 use crate::ir::Expression;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
@@ -34,6 +35,10 @@ pub struct BindOperator {
     var: VarId,
     /// Expression to evaluate
     expr: Expression,
+    /// Inline filters evaluated after computing the BIND value.
+    /// Rows that fail any filter are dropped before materialization,
+    /// eliminating the overhead of a separate FilterOperator.
+    filters: Vec<Expression>,
     /// Output schema (child schema with var added if new)
     schema: Arc<[VarId]>,
     /// Position of var in output schema
@@ -52,7 +57,14 @@ impl BindOperator {
     /// * `child` - Child operator providing input solutions
     /// * `var` - Variable to bind the computed value to
     /// * `expr` - Expression to evaluate
-    pub fn new(child: BoxedOperator, var: VarId, expr: Expression) -> Self {
+    /// * `filters` - Inline filter expressions evaluated after computing the
+    ///   BIND value; rows failing any filter are dropped before materialization
+    pub fn new(
+        child: BoxedOperator,
+        var: VarId,
+        expr: Expression,
+        filters: Vec<Expression>,
+    ) -> Self {
         let child_schema = child.schema();
 
         // Check if var already exists in child schema
@@ -80,6 +92,7 @@ impl BindOperator {
             child,
             var,
             expr,
+            filters,
             schema,
             var_position,
             is_new_var,
@@ -159,6 +172,21 @@ impl Operator for BindOperator {
                     continue;
                 }
 
+                // Evaluate inline filters against a row that includes the BIND output
+                if !self.filters.is_empty() {
+                    let mut row_bindings: Vec<Binding> = (0..child_num_cols)
+                        .map(|col| input_batch.get_by_col(row_idx, col).clone())
+                        .collect();
+                    if self.is_new_var {
+                        row_bindings.push(computed.clone());
+                    } else {
+                        row_bindings[self.var_position] = computed.clone();
+                    }
+                    if !passes_filters(&self.filters, &self.schema, &row_bindings, Some(ctx)) {
+                        continue;
+                    }
+                }
+
                 // Copy child columns
                 for (col_idx, output_col) in
                     output_columns.iter_mut().enumerate().take(child_num_cols)
@@ -221,7 +249,7 @@ mod tests {
         });
 
         let expr = Expression::Const(FilterValue::Long(42));
-        let op = BindOperator::new(child, VarId(1), expr);
+        let op = BindOperator::new(child, VarId(1), expr, vec![]);
 
         // Output schema should be [?a, ?b]
         assert_eq!(op.schema().len(), 2);
@@ -239,7 +267,7 @@ mod tests {
         });
 
         let expr = Expression::Const(FilterValue::Long(42));
-        let op = BindOperator::new(child, VarId(0), expr);
+        let op = BindOperator::new(child, VarId(0), expr, vec![]);
 
         // Schema should stay [?a, ?b]
         assert_eq!(op.schema().len(), 2);
