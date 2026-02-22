@@ -38,17 +38,17 @@ use fluree_db_shacl::{ShaclCache, ShaclEngine, ValidationReport};
 /// inverse mapping. Used by SHACL/policy to determine which graph a flake
 /// belongs to based on its `Flake.g` field.
 fn build_reverse_graph_lookup(graph_sids: &HashMap<GraphId, Sid>) -> HashMap<Sid, GraphId> {
-    graph_sids.iter().map(|(&g_id, sid)| (sid.clone(), g_id)).collect()
+    graph_sids
+        .iter()
+        .map(|(&g_id, sid)| (sid.clone(), g_id))
+        .collect()
 }
 
 /// Resolve a flake's graph ID from its `Flake.g` field.
 ///
 /// - `None` → default graph (g_id = 0)
 /// - `Some(sid)` → looked up in `reverse_graph`; returns error if unknown
-fn resolve_flake_graph_id(
-    flake: &Flake,
-    reverse_graph: &HashMap<Sid, GraphId>,
-) -> Result<GraphId> {
+fn resolve_flake_graph_id(flake: &Flake, reverse_graph: &HashMap<Sid, GraphId>) -> Result<GraphId> {
     match &flake.g {
         None => Ok(0),
         Some(g_sid) => reverse_graph.get(g_sid).copied().ok_or_else(|| {
@@ -77,6 +77,17 @@ pub struct StageOptions<'a> {
     /// Tracker for fuel accounting.
     /// If provided, fuel will be consumed for each staged flake.
     pub tracker: Option<&'a Tracker>,
+
+    /// Graph routing map for named-graph flakes.
+    ///
+    /// Maps `GraphId → Sid` so that `stage_flakes` can resolve each flake's
+    /// `Flake.g` to a `GraphId` for per-graph policy enforcement and SHACL validation.
+    ///
+    /// **Required** when any flake has `g != None`. If `None` is provided and
+    /// named-graph flakes are present, `stage_flakes` will return an error.
+    ///
+    /// The normal `stage()` path builds this internally from `txn.graph_delta`.
+    pub graph_sids: Option<&'a HashMap<GraphId, Sid>>,
 }
 
 impl<'a> StageOptions<'a> {
@@ -100,6 +111,12 @@ impl<'a> StageOptions<'a> {
     /// Set the tracker for fuel accounting
     pub fn with_tracker(mut self, tracker: &'a Tracker) -> Self {
         self.tracker = Some(tracker);
+        self
+    }
+
+    /// Set the graph routing map for named-graph flakes
+    pub fn with_graph_sids(mut self, graph_sids: &'a HashMap<GraphId, Sid>) -> Self {
+        self.graph_sids = Some(graph_sids);
         self
     }
 }
@@ -218,7 +235,8 @@ pub async fn stage(
             // Clojure parity: DELETE templates often omit list indices even when
             // retracting `@list` values. Hydrate retractions by copying the stored
             // list-index meta from the currently asserted flake (if present).
-            hydrate_list_index_meta_for_retractions(&ledger, &mut retractions, &reverse_graph).await?;
+            hydrate_list_index_meta_for_retractions(&ledger, &mut retractions, &reverse_graph)
+                .await?;
 
             // For Upsert: also generate deletions for existing values
             if txn.txn_type == TxnType::Upsert {
@@ -324,10 +342,17 @@ pub async fn stage(
 /// constructed by [`FlakeSink`](crate::flake_sink::FlakeSink). No WHERE
 /// execution, template materialization, or cancellation is performed.
 ///
+/// # Named Graph Support
+///
+/// When flakes include named-graph data (`Flake.g = Some(_)`), the caller
+/// **must** provide `StageOptions.graph_sids` so that policy enforcement
+/// and SHACL validation can resolve each flake's graph. If named-graph flakes
+/// are present without a routing map, this function returns an error.
+///
 /// # Arguments
 /// * `ledger` - The ledger state (consumed)
 /// * `flakes` - Pre-built assertion flakes
-/// * `options` - Optional backpressure / policy / tracking configuration
+/// * `options` - Optional backpressure / policy / tracking / graph routing configuration
 pub async fn stage_flakes(
     ledger: LedgerState,
     flakes: Vec<Flake>,
@@ -343,12 +368,26 @@ pub async fn stage_flakes(
             }
         }
 
-        // 2. Policy enforcement
-        // stage_flakes has no txn.graph_delta, so we use an empty reverse_graph.
-        // Pre-built flakes (turtle import, commit push) currently enforce policy
-        // against the default graph. TODO: derive graph mapping from binary store
-        // for full per-graph policy enforcement in the stage_flakes path.
-        let reverse_graph: HashMap<Sid, GraphId> = HashMap::new();
+        // 2. Build graph routing map.
+        //
+        // If the caller provided graph_sids (push/import path), use it.
+        // Otherwise, verify no named-graph flakes are present — stage_flakes
+        // cannot correctly enforce policy/SHACL without a routing map.
+        let reverse_graph: HashMap<Sid, GraphId> = match options.graph_sids {
+            Some(gs) => build_reverse_graph_lookup(gs),
+            None => {
+                if flakes.iter().any(|f| f.g.is_some()) {
+                    return Err(TransactError::FlakeGeneration(
+                        "stage_flakes received named-graph flakes but no graph_sids \
+                         routing map was provided in StageOptions"
+                            .to_string(),
+                    ));
+                }
+                HashMap::new()
+            }
+        };
+
+        // 3. Policy enforcement
         if let Some(policy) = options.policy_ctx {
             if !policy.wrapper().is_root() {
                 tracing::debug!("enforcing modify policies on pre-built flakes");
@@ -431,7 +470,10 @@ async fn enforce_modify_policies(
         let mut subjects_by_graph: HashMap<GraphId, HashSet<Sid>> = HashMap::new();
         for flake in flakes {
             let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
-            subjects_by_graph.entry(g_id).or_default().insert(flake.s.clone());
+            subjects_by_graph
+                .entry(g_id)
+                .or_default()
+                .insert(flake.s.clone());
         }
 
         for (g_id, subjects) in &subjects_by_graph {
@@ -502,12 +544,8 @@ async fn enforce_modify_policy_per_flake(
         let g_id = resolve_flake_graph_id(flake, reverse_graph)?;
         let executor = executors.entry(g_id).or_insert_with(|| {
             // Clojure parity: modify policy queries see the state *before* this transaction.
-            QueryPolicyExecutor::with_overlay(
-                &ledger.snapshot,
-                ledger.novelty.as_ref(),
-                ledger.t(),
-            )
-            .with_graph_id(g_id)
+            QueryPolicyExecutor::with_overlay(&ledger.snapshot, ledger.novelty.as_ref(), ledger.t())
+                .with_graph_id(g_id)
         });
 
         // Evaluate modify policies with full f:query support using detailed API
@@ -985,7 +1023,10 @@ async fn validate_staged_nodes(
             // No reverse map (commit-transfer path): fall back to default graph
             (Some(_), None) => 0,
         };
-        subjects_by_graph.entry(g_id).or_default().insert(flake.s.clone());
+        subjects_by_graph
+            .entry(g_id)
+            .or_default()
+            .insert(flake.s.clone());
     }
 
     let snapshot = view.db();

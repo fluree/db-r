@@ -78,13 +78,13 @@ pub use dataset::{ActiveGraph, ActiveGraphs, DataSet, GraphRef};
 pub use distinct::DistinctOperator;
 pub use error::{QueryError, Result};
 pub use execute::{
-    build_operator_tree, execute, execute_query, execute_with_dataset,
-    execute_with_dataset_and_bm25, execute_with_dataset_and_policy,
-    execute_with_dataset_and_policy_and_bm25, execute_with_dataset_and_policy_and_providers,
-    execute_with_dataset_and_policy_tracked, execute_with_dataset_and_providers,
-    execute_with_dataset_history, execute_with_dataset_tracked, execute_with_overlay,
-    execute_with_overlay_tracked, execute_with_policy, execute_with_policy_tracked,
-    execute_with_r2rml, run_operator, ExecutableQuery, QueryContextParams,
+    build_operator_tree, execute_with_dataset, execute_with_dataset_and_bm25,
+    execute_with_dataset_and_policy, execute_with_dataset_and_policy_and_bm25,
+    execute_with_dataset_and_policy_and_providers, execute_with_dataset_and_policy_tracked,
+    execute_with_dataset_and_providers, execute_with_dataset_history, execute_with_dataset_tracked,
+    execute_with_overlay, execute_with_overlay_tracked, execute_with_policy,
+    execute_with_policy_tracked, execute_with_r2rml, run_operator, ExecutableQuery,
+    QueryContextParams,
 };
 pub use exists::ExistsOperator;
 pub use explain::{

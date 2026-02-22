@@ -83,7 +83,11 @@ where
         }
         None if snapshot.t == 0 => {
             // Genesis Db: no base data, return overlay flakes only.
-            // Strict: only default graph (g_id=0) is supported without an index.
+            // Only the default graph (g_id=0) is supported without an index —
+            // named-graph range queries require graph routing dictionaries that
+            // only exist in the binary index. Callers that need overlay-only
+            // named-graph checks at genesis must use g_id=0 and post-filter by
+            // flake.g themselves.
             if g_id != 0 {
                 return Err(crate::error::Error::invalid_index(
                     "named-graph range queries require a loaded binary index \
@@ -136,7 +140,12 @@ where
                 .map_err(|e| crate::error::Error::Io(e.to_string()))
         }
         None if snapshot.t == 0 => {
-            // Strict: only default graph (g_id=0) is supported without an index.
+            // Genesis Db: no base data, return overlay flakes only.
+            // Only the default graph (g_id=0) is supported without an index —
+            // named-graph range queries require graph routing dictionaries that
+            // only exist in the binary index. Callers that need overlay-only
+            // named-graph checks at genesis must use g_id=0 and post-filter by
+            // flake.g themselves.
             if g_id != 0 {
                 return Err(crate::error::Error::invalid_index(
                     "named-graph range queries require a loaded binary index \

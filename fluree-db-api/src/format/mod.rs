@@ -257,9 +257,8 @@ pub async fn format_results_async(
             Some(novelty) => GraphDbRef::new(db.snapshot, db.g_id, novelty.as_ref(), result.t),
             None => db,
         };
-        let v =
-            graph_crawl::format_async(result, crawl_db, &compactor, config, policy, tracker)
-                .await?;
+        let v = graph_crawl::format_async(result, crawl_db, &compactor, config, policy, tracker)
+            .await?;
         // Graph crawl formatter returns an array of rows; honor selectOne by
         // returning the first row (or null if empty).
         return match config.select_mode {

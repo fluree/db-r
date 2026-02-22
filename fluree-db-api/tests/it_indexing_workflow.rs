@@ -1214,9 +1214,7 @@ async fn construct_works_after_indexing() {
             });
 
             let result = fluree.query(&loaded, &query).await.expect("query");
-            let constructed = result
-                .to_construct(&loaded.snapshot)
-                .expect("to_construct");
+            let constructed = result.to_construct(&loaded.snapshot).expect("to_construct");
 
             let graph = constructed
                 .get("@graph")

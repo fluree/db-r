@@ -210,8 +210,7 @@ where
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let db = ledger.as_graph_db_ref(0);
-        let batches =
-            fluree_db_query::execute_with_policy(db, &vars, &executable, policy).await?;
+        let batches = fluree_db_query::execute_with_policy(db, &vars, &executable, policy).await?;
 
         Ok(build_query_result(
             vars,
@@ -235,8 +234,7 @@ where
         let executable = ExecutableQuery::simple(parsed.clone());
 
         let db = ledger.as_graph_db_ref(0);
-        let batches =
-            fluree_db_query::execute_with_policy(db, &vars, &executable, policy).await?;
+        let batches = fluree_db_query::execute_with_policy(db, &vars, &executable, policy).await?;
 
         Ok(build_sparql_result(
             vars,

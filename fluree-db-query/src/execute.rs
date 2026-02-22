@@ -57,19 +57,11 @@ pub use pushdown::{
 };
 
 use crate::binding::Batch;
-use crate::context::ExecutionContext;
 use crate::dataset::DataSet;
 use crate::error::Result;
-use crate::ir::Pattern;
-use crate::parse::ParsedQuery;
-use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarRegistry;
-use fluree_db_core::{GraphDbRef, LedgerSnapshot, StatsView, Tracker};
-use std::sync::Arc;
-use tracing::Instrument;
+use fluree_db_core::{GraphDbRef, Tracker};
 
-use reasoning_prep::effective_reasoning_modes;
-use rewrite_glue::rewrite_query_patterns;
 pub use runner::prepare_execution;
 use runner::{
     execute_prepared_with_dataset, execute_prepared_with_dataset_and_bm25,
@@ -79,187 +71,6 @@ use runner::{
     execute_prepared_with_overlay, execute_prepared_with_overlay_tracked,
     execute_prepared_with_policy, execute_prepared_with_r2rml,
 };
-
-/// Execute a query with full modifier support
-///
-/// Builds an operator tree from the query and options, executes it,
-/// and collects all result batches.
-///
-/// # Arguments
-///
-/// * `snapshot` - Database snapshot to query
-/// * `vars` - Variable registry for name resolution
-/// * `query` - Executable query with modifiers
-///
-/// # Returns
-///
-/// Vector of result batches. Empty vector if no results.
-pub async fn execute(
-    snapshot: &LedgerSnapshot,
-    vars: &VarRegistry,
-    query: &ExecutableQuery,
-) -> Result<Vec<Batch>> {
-    let span = tracing::debug_span!(
-        "query_execute",
-        db_t = snapshot.t,
-        pattern_count = query.query.patterns.len()
-    );
-    // Use an async block with .instrument() so the span is NOT held
-    // across .await via a thread-local guard (which would cause cross-request
-    // trace contamination in tokio's multi-threaded runtime).
-    async move {
-        tracing::debug!("starting query execution");
-
-        let ctx = ExecutionContext::new(snapshot, vars).with_strict_bind_errors();
-        let hierarchy = snapshot.schema_hierarchy();
-
-        // Compute effective reasoning modes (auto-RDFS when hierarchy exists)
-        let reasoning = effective_reasoning_modes(&query.options.reasoning, hierarchy.is_some());
-
-        if reasoning.rdfs || reasoning.owl2ql || reasoning.owl2rl {
-            tracing::debug!(
-                rdfs = reasoning.rdfs,
-                owl2ql = reasoning.owl2ql,
-                owl2rl = reasoning.owl2rl,
-                "reasoning enabled"
-            );
-        }
-
-        // Build ontology for OWL2-QL mode (if enabled)
-        // Ontology is loaded from the indexed snapshot only (no overlay, default graph).
-        // For graph-aware ontology loading, use prepare_execution() which accepts g_id.
-        let ontology = if reasoning.owl2ql {
-            tracing::debug!("building OWL2-QL ontology");
-            Some(
-                crate::rewrite_owl_ql::Ontology::from_db(fluree_db_core::GraphDbRef::new(
-                    snapshot,
-                    0,
-                    &fluree_db_core::NoOverlay,
-                    snapshot.t,
-                ))
-                .await?,
-            )
-        } else {
-            None
-        };
-
-        // Apply pattern rewriting for reasoning (RDFS/OWL expansion)
-        fn encode_term(snapshot: &LedgerSnapshot, t: &Term) -> Term {
-            match t {
-                Term::Iri(iri) => snapshot
-                    .encode_iri(iri)
-                    .map(Term::Sid)
-                    .unwrap_or_else(|| t.clone()),
-                _ => t.clone(),
-            }
-        }
-
-        fn encode_patterns_for_reasoning(
-            snapshot: &LedgerSnapshot,
-            patterns: &[Pattern],
-        ) -> Vec<Pattern> {
-            patterns
-                .iter()
-                .map(|p| match p {
-                    Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                        s: encode_term(snapshot, &tp.s),
-                        p: encode_term(snapshot, &tp.p),
-                        o: encode_term(snapshot, &tp.o),
-                        dt: tp.dt.clone(),
-                        lang: tp.lang.clone(),
-                    }),
-                    Pattern::Optional(inner) => {
-                        Pattern::Optional(encode_patterns_for_reasoning(snapshot, inner))
-                    }
-                    Pattern::Union(branches) => Pattern::Union(
-                        branches
-                            .iter()
-                            .map(|b| encode_patterns_for_reasoning(snapshot, b))
-                            .collect(),
-                    ),
-                    Pattern::Minus(inner) => {
-                        Pattern::Minus(encode_patterns_for_reasoning(snapshot, inner))
-                    }
-                    Pattern::Exists(inner) => {
-                        Pattern::Exists(encode_patterns_for_reasoning(snapshot, inner))
-                    }
-                    Pattern::NotExists(inner) => {
-                        Pattern::NotExists(encode_patterns_for_reasoning(snapshot, inner))
-                    }
-                    Pattern::Graph { name, patterns } => Pattern::Graph {
-                        name: name.clone(),
-                        patterns: encode_patterns_for_reasoning(snapshot, patterns),
-                    },
-                    _ => p.clone(),
-                })
-                .collect()
-        }
-
-        let patterns_for_rewrite = if reasoning.rdfs || reasoning.owl2ql {
-            encode_patterns_for_reasoning(snapshot, &query.query.patterns)
-        } else {
-            query.query.patterns.clone()
-        };
-        let (rewritten_patterns, _diag) = rewrite_query_patterns(
-            &patterns_for_rewrite,
-            hierarchy,
-            &reasoning,
-            ontology.as_ref(),
-        );
-
-        if rewritten_patterns.len() != query.query.patterns.len() {
-            tracing::debug!(
-                original_count = query.query.patterns.len(),
-                rewritten_count = rewritten_patterns.len(),
-                "patterns rewritten for reasoning"
-            );
-        }
-
-        // Build query with rewritten patterns
-        let rewritten_query = query.query.with_patterns(rewritten_patterns);
-
-        // Build stats view for selectivity-based optimization
-        //
-        // Note: lowering may keep IRIs as `Term::Iri` (cross-ledger). Build an IRI-keyed
-        // stats view so planning can still consult stats for IRI predicates.
-        let stats_view = snapshot.stats.as_ref().map(|s| {
-            Arc::new(StatsView::from_db_stats_with_namespaces(
-                s,
-                &snapshot.namespace_codes,
-            ))
-        });
-
-        // Build the operator tree
-        tracing::debug!("building operator tree");
-        let operator = build_operator_tree(&rewritten_query, &query.options, stats_view)?;
-
-        // Execute: open, drain batches, close
-        run_operator(operator, &ctx).await
-    }
-    .instrument(span)
-    .await
-}
-
-/// Execute a parsed query with default options
-///
-/// Convenience function for simple queries without modifiers.
-///
-/// # Arguments
-///
-/// * `snapshot` - Database snapshot to query
-/// * `vars` - Variable registry for name resolution
-/// * `query` - Parsed query
-///
-/// # Returns
-///
-/// Vector of result batches.
-pub async fn execute_query(
-    snapshot: &LedgerSnapshot,
-    vars: &VarRegistry,
-    query: &ParsedQuery,
-) -> Result<Vec<Batch>> {
-    execute(snapshot, vars, &ExecutableQuery::simple(query.clone())).await
-}
 
 /// Execute a query with an overlay
 ///
@@ -330,8 +141,15 @@ pub async fn execute_with_r2rml<'a, 'b>(
     r2rml_table_provider: &'b dyn crate::r2rml::R2rmlTableProvider,
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, query).await?;
-    execute_prepared_with_r2rml(db, vars, prepared, tracker, r2rml_provider, r2rml_table_provider)
-        .await
+    execute_prepared_with_r2rml(
+        db,
+        vars,
+        prepared,
+        tracker,
+        r2rml_provider,
+        r2rml_table_provider,
+    )
+    .await
 }
 
 /// Execute a query against a dataset (multi-graph query)
@@ -428,7 +246,13 @@ pub async fn execute_with_dataset_and_policy_and_bm25<'a>(
 ) -> Result<Vec<Batch>> {
     let prepared = prepare_execution(db, query).await?;
     execute_prepared_with_dataset_and_policy_and_bm25(
-        db, vars, prepared, dataset, policy, bm25_provider, tracker,
+        db,
+        vars,
+        prepared,
+        dataset,
+        policy,
+        bm25_provider,
+        tracker,
     )
     .await
 }
@@ -479,12 +303,12 @@ mod tests {
     use super::*;
     use crate::ir::{Expression, FilterValue, Pattern};
     use crate::options::QueryOptions;
-    use crate::parse::SelectMode;
+    use crate::parse::{ParsedQuery, SelectMode};
     use crate::pattern::{Term, TriplePattern};
     use crate::planner::reorder_patterns;
     use crate::sort::SortSpec;
     use crate::var_registry::VarId;
-    use fluree_db_core::{FlakeValue, LedgerSnapshot, PropertyStatData, Sid, StatsView};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, NoOverlay, PropertyStatData, Sid, StatsView};
     use fluree_graph_json_ld::ParsedContext;
     use std::collections::HashSet;
     use where_plan::collect_inner_join_block;
@@ -501,26 +325,24 @@ mod tests {
         )
     }
 
-    fn make_simple_query(select: Vec<VarId>, patterns: Vec<Pattern>) -> ParsedQuery {
-        ParsedQuery {
-            context: ParsedContext::default(),
-            orig_context: None,
-            select,
-            patterns,
-            options: QueryOptions::default(),
-            select_mode: SelectMode::default(),
-            construct_template: None,
-            graph_select: None,
-        }
-    }
-
     #[tokio::test]
     async fn test_empty_patterns_returns_one_row() {
         let snapshot = make_test_snapshot();
         let vars = VarRegistry::new();
+        let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
 
-        let query = make_simple_query(vec![], vec![]);
-        let results = execute_query(&snapshot, &vars, &query).await.unwrap();
+        let query = ParsedQuery {
+            context: ParsedContext::default(),
+            orig_context: None,
+            select: vec![],
+            patterns: vec![],
+            options: QueryOptions::default(),
+            select_mode: SelectMode::default(),
+            construct_template: None,
+            graph_select: None,
+        };
+        let executable = ExecutableQuery::simple(query);
+        let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
         // Empty WHERE returns 1 batch with a single empty solution
         assert_eq!(results.len(), 1);

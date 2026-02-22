@@ -26,10 +26,12 @@ use crate::{Fluree, IndexConfig, LedgerHandle};
 use base64::Engine as _;
 use fluree_db_core::ContentId;
 use fluree_db_core::{
-    range_with_overlay, ContentAddressedWrite, ContentKind, DictNovelty, Flake, IndexType,
+    range_with_overlay, ContentAddressedWrite, ContentKind, DictNovelty, Flake, GraphId, IndexType,
+    Sid,
 };
 use fluree_db_core::{RangeMatch, RangeOptions, RangeTest, Storage};
 use fluree_db_core::{CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN};
+use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{CasResult, NameService, RefKind, RefPublisher, RefValue};
 use fluree_db_novelty::{generate_commit_flakes, Novelty};
@@ -165,12 +167,23 @@ where
             // Current state is base db + evolving novelty.
             let current_t = base_state.snapshot.t.max(evolving_novelty.t);
 
+            // 4.0 Derive graph routing from this commit's flakes + binary store.
+            //
+            // This builds a GraphId → Sid mapping using the binary store's
+            // graph dictionary for known graphs, and assigns fresh sequential
+            // GraphIds for graphs not yet indexed (overlay-only).
+            let evolving_state = base_state.clone_with_novelty(Arc::new(evolving_novelty.clone()));
+            let routing = derive_graph_routing(&evolving_state, &c.commit.flakes);
+            let reverse_graph = reverse_graph_lookup(&routing.graph_sids);
+
             // 4.1 Retraction invariant (strict).
             assert_retractions_exist(
                 &base_state.snapshot,
                 &evolving_novelty,
                 current_t,
                 &c.commit.flakes,
+                &reverse_graph,
+                &routing.overlay_only_sids,
             )
             .await
             .map_err(|e| e.into_api_error())?;
@@ -181,10 +194,11 @@ where
 
             // 4.3 Stage flakes (policy/backpressure). No WHERE/cancellation; flakes are prebuilt.
             let staged_view = stage_commit_flakes(
-                base_state.clone_with_novelty(Arc::new(evolving_novelty.clone())),
+                evolving_state,
                 &c.commit.flakes,
                 index_config,
                 &policy_ctx,
+                &routing.graph_sids,
             )
             .await
             .map_err(|e| e.into_api_error())?;
@@ -202,12 +216,13 @@ where
                     .await
                     .map_err(|e| ApiError::Transact(fluree_db_transact::TransactError::from(e)))?;
                 let shacl_cache = engine.cache().clone();
-                // TODO: derive graph_sids from commit flakes + binary store for
-                // per-graph SHACL validation on pushed commits. For now, pass None
-                // to fall back to default-graph validation.
-                fluree_db_transact::validate_view_with_shacl(&staged_view, &shacl_cache, None)
-                    .await
-                    .map_err(|e| ApiError::http(422, e.to_string()))?;
+                fluree_db_transact::validate_view_with_shacl(
+                    &staged_view,
+                    &shacl_cache,
+                    Some(&routing.graph_sids),
+                )
+                .await
+                .map_err(|e| ApiError::http(422, e.to_string()))?;
             }
             #[cfg(not(feature = "shacl"))]
             {
@@ -339,6 +354,95 @@ impl PushError {
             PushError::Internal(m) => ApiError::internal(m),
         }
     }
+}
+
+/// Result of graph routing derivation.
+///
+/// Separates graphs into "resolved" (known to the binary store) and
+/// "overlay-only" (not yet indexed). `stage_flakes` uses `all()` for
+/// routing; `is_currently_asserted` checks `overlay_only_sids` to decide
+/// whether to use the binary range provider or the g_id=0 + post-filter path.
+struct GraphRoutingResult {
+    /// All graph ID → Sid mappings (resolved + fabricated). Used by stage_flakes.
+    graph_sids: HashMap<GraphId, Sid>,
+    /// Graph Sids NOT found in the binary store's graph dictionary.
+    /// Range queries for these graphs must use g_id=0 and post-filter by flake.g,
+    /// because the binary range provider has no partition for them.
+    overlay_only_sids: HashSet<Sid>,
+}
+
+/// Derive a `GraphId → Sid` routing map from flakes + binary store.
+///
+/// For each unique `Flake.g = Some(sid)`, resolves the graph IRI via the
+/// binary store's namespace dictionary, then looks up the `GraphId` in the
+/// binary store's graph dictionary.
+///
+/// Graphs not found in the binary store are "overlay-only" — they exist in
+/// novelty but haven't been indexed yet. They still get fabricated sequential
+/// `GraphId`s (needed by `stage_flakes`), but range queries for them must use
+/// g_id=0 and post-filter by `flake.g` to avoid scanning non-existent binary
+/// index partitions.
+///
+/// Returns an empty routing when no named-graph flakes are present.
+fn derive_graph_routing(state: &LedgerState, flakes: &[Flake]) -> GraphRoutingResult {
+    // Collect unique graph Sids from flakes.
+    let graph_sids_set: HashSet<Sid> = flakes.iter().filter_map(|f| f.g.clone()).collect();
+
+    if graph_sids_set.is_empty() {
+        return GraphRoutingResult {
+            graph_sids: HashMap::new(),
+            overlay_only_sids: HashSet::new(),
+        };
+    }
+
+    let binary_store: Option<Arc<BinaryIndexStore>> = state
+        .binary_store
+        .as_ref()
+        .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
+
+    let mut result: HashMap<GraphId, Sid> = HashMap::new();
+    let mut overlay_only: HashSet<Sid> = HashSet::new();
+    let mut max_g_id: GraphId = 1; // 0=default, 1=txn-meta
+    let mut unresolved: Vec<Sid> = Vec::new();
+
+    for g_sid in &graph_sids_set {
+        let resolved = if let Some(store) = &binary_store {
+            let iri = store.sid_to_iri(g_sid);
+            store.graph_id_for_iri(&iri)
+        } else {
+            None
+        };
+
+        if let Some(g_id) = resolved {
+            max_g_id = max_g_id.max(g_id);
+            result.insert(g_id, g_sid.clone());
+        } else {
+            overlay_only.insert(g_sid.clone());
+            unresolved.push(g_sid.clone());
+        }
+    }
+
+    // Assign fabricated sequential GraphIds for unresolved graphs.
+    // These are needed by stage_flakes for graph routing but must NOT be
+    // used in binary range queries (the binary index has no partitions for them).
+    let mut next_id = max_g_id + 1;
+    for g_sid in unresolved {
+        result.insert(next_id, g_sid);
+        next_id += 1;
+    }
+
+    GraphRoutingResult {
+        graph_sids: result,
+        overlay_only_sids: overlay_only,
+    }
+}
+
+/// Build a reverse lookup from graph Sid → GraphId.
+fn reverse_graph_lookup(graph_sids: &HashMap<GraphId, Sid>) -> HashMap<Sid, GraphId> {
+    graph_sids
+        .iter()
+        .map(|(&g_id, sid)| (sid.clone(), g_id))
+        .collect()
 }
 
 fn decode_and_validate_commit_chain(
@@ -476,8 +580,11 @@ async fn stage_commit_flakes(
     flakes: &[Flake],
     index_config: &IndexConfig,
     policy_ctx: &PolicyContext,
+    graph_sids: &HashMap<GraphId, Sid>,
 ) -> std::result::Result<fluree_db_ledger::LedgerView, PushError> {
-    let mut options = fluree_db_transact::StageOptions::new().with_index_config(index_config);
+    let mut options = fluree_db_transact::StageOptions::new()
+        .with_index_config(index_config)
+        .with_graph_sids(graph_sids);
     if !policy_ctx.wrapper().is_root() {
         options = options.with_policy(policy_ctx);
     }
@@ -496,13 +603,17 @@ async fn assert_retractions_exist(
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     flakes: &[Flake],
+    reverse_graph: &HashMap<Sid, GraphId>,
+    overlay_only_sids: &HashSet<Sid>,
 ) -> std::result::Result<(), PushError> {
     for (idx, f) in flakes.iter().enumerate() {
         if f.op {
             continue;
         }
 
-        if !is_currently_asserted(snapshot, overlay, to_t, f).await? {
+        if !is_currently_asserted(snapshot, overlay, to_t, f, reverse_graph, overlay_only_sids)
+            .await?
+        {
             return Err(PushError::Invalid(format!(
                 "retraction invariant violated at flake[{}]: retract targets non-existent assertion",
                 idx
@@ -517,7 +628,41 @@ async fn is_currently_asserted(
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     target: &Flake,
+    reverse_graph: &HashMap<Sid, GraphId>,
+    overlay_only_sids: &HashSet<Sid>,
 ) -> std::result::Result<bool, PushError> {
+    // Resolve the correct graph for this flake's range query.
+    //
+    // Three cases:
+    //
+    // 1. Default graph (target.g = None): use g_id=0 directly.
+    //
+    // 2. Named graph known to the binary store (resolved by derive_graph_routing):
+    //    use the real GraphId from reverse_graph. Strict — must be present.
+    //
+    // 3. Named graph NOT in the binary store (overlay-only: new graph introduced
+    //    in novelty but not yet indexed): use g_id=0 and post-filter by flake.g.
+    //    The binary range provider has no partition for this graph, so the
+    //    g_id=0 query returns default-graph binary data + ALL overlay flakes.
+    //    The flake.g post-filter (below) isolates the target graph's flakes.
+    let g_id = match &target.g {
+        None => 0,
+        Some(g_sid) if overlay_only_sids.contains(g_sid) => {
+            // Overlay-only graph: use g_id=0 and rely on flake.g post-filter.
+            0
+        }
+        Some(g_sid) => {
+            // Resolved graph: strict lookup — must be in reverse_graph.
+            *reverse_graph.get(g_sid).ok_or_else(|| {
+                PushError::Internal(format!(
+                    "is_currently_asserted: graph Sid {:?} not found in reverse_graph map \
+                     — derive_graph_routing should have included it",
+                    g_sid,
+                ))
+            })?
+        }
+    };
+
     let rm = RangeMatch::new()
         .with_subject(target.s.clone())
         .with_predicate(target.p.clone())
@@ -526,7 +671,7 @@ async fn is_currently_asserted(
 
     let found = range_with_overlay(
         snapshot,
-        0,
+        g_id,
         overlay,
         IndexType::Spot,
         RangeTest::Eq,

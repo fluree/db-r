@@ -5,10 +5,10 @@
 //! - BIND expression evaluation
 //! - UNION branch execution
 
-use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
+use fluree_db_core::{FlakeValue, GraphDbRef, LedgerSnapshot, NoOverlay, Sid};
 use fluree_db_query::binding::Binding;
 use fluree_db_query::context::ExecutionContext;
-use fluree_db_query::execute::execute_query;
+use fluree_db_query::execute::{execute_with_overlay, ExecutableQuery};
 use fluree_db_query::ir::{Expression, FilterValue, Pattern};
 use fluree_db_query::operator::Operator;
 use fluree_db_query::options::QueryOptions;
@@ -76,7 +76,9 @@ async fn test_values_first_then_join() {
     );
 
     // This should succeed even though VALUES is at position 0
-    let results = execute_query(&snapshot, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // With an empty database, we'll get no results from the join
     // but the query structure is valid
@@ -107,7 +109,9 @@ async fn test_bind_first() {
     );
 
     // Should succeed even though BIND is at position 0
-    let results = execute_query(&snapshot, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // With an empty database, we'll get no results from the join
     // but the query structure is valid
@@ -143,7 +147,9 @@ async fn test_union_first() {
     );
 
     // Should succeed even though UNION is at position 0
-    let results = execute_query(&snapshot, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // With an empty database, we'll get no results
     // but the query structure is valid
@@ -171,7 +177,9 @@ async fn test_filter_first_true() {
     );
 
     // Should succeed - FILTER is on constants, passes for the empty seed row
-    let results = execute_query(&snapshot, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Empty database, so no triple matches
     assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
@@ -196,7 +204,9 @@ async fn test_filter_first_false() {
     );
 
     // The false filter should eliminate all rows
-    let results = execute_query(&snapshot, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // No results because the filter eliminates the empty seed row
     assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
@@ -346,7 +356,9 @@ async fn test_union_is_correlated_via_values_overlap() {
         ],
     );
 
-    let results = execute_query(&snapshot, &vars, &query).await.unwrap();
+    let db = GraphDbRef::new(&snapshot, 0, &NoOverlay, snapshot.t);
+    let executable = ExecutableQuery::simple(query);
+    let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
     let rows: Vec<Binding> = results
         .iter()
         .flat_map(|b| b.column_by_idx(0).unwrap_or(&[]).iter().cloned())
