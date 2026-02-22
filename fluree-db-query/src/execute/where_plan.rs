@@ -148,7 +148,7 @@ fn apply_ready_binds_and_filters(
     mut child: BoxedOperator,
     bound: &mut HashSet<VarId>,
     pending_binds: Vec<PendingBind>,
-    mut remaining_filters: Vec<PendingFilter>,
+    mut pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
 ) -> (BoxedOperator, Vec<PendingBind>, Vec<PendingFilter>) {
     let mut remaining_binds = Vec::new();
@@ -159,8 +159,8 @@ fn apply_ready_binds_and_filters(
             bound.insert(pending.target_var);
 
             let (bind_filters, still_pending) =
-                partition_ready_filters(remaining_filters, bound, filter_idxs_consumed);
-            remaining_filters = still_pending;
+                partition_ready_filters(pending_filters, bound, filter_idxs_consumed);
+            pending_filters = still_pending;
 
             child = Box::new(BindOperator::new(
                 child,
@@ -174,13 +174,13 @@ fn apply_ready_binds_and_filters(
     }
 
     // Apply remaining ready FILTERs that don't depend on any BIND output
-    let (ready, still_pending) =
-        partition_ready_filters(remaining_filters, bound, filter_idxs_consumed);
+    let (ready, remaining_filters) =
+        partition_ready_filters(pending_filters, bound, filter_idxs_consumed);
     for expr in ready {
         child = Box::new(FilterOperator::new(child, expr));
     }
 
-    (child, remaining_binds, still_pending)
+    (child, remaining_binds, remaining_filters)
 }
 
 /// Apply all remaining BINDs and FILTERs at the end of a block.
@@ -191,7 +191,7 @@ fn apply_ready_binds_and_filters(
 fn apply_all_remaining(
     mut child: BoxedOperator,
     pending_binds: Vec<PendingBind>,
-    mut remaining_filters: Vec<PendingFilter>,
+    mut pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
 ) -> BoxedOperator {
     let mut bound: HashSet<VarId> = child.schema().iter().copied().collect();
@@ -200,8 +200,8 @@ fn apply_all_remaining(
         bound.insert(pending.target_var);
 
         let (bind_filters, still_pending) =
-            partition_ready_filters(remaining_filters, &bound, filter_idxs_consumed);
-        remaining_filters = still_pending;
+            partition_ready_filters(pending_filters, &bound, filter_idxs_consumed);
+        pending_filters = still_pending;
 
         child = Box::new(BindOperator::new(
             child,
@@ -210,7 +210,7 @@ fn apply_all_remaining(
             bind_filters,
         ));
     }
-    for pending in remaining_filters {
+    for pending in pending_filters {
         if !filter_idxs_consumed.contains(&pending.original_idx) {
             child = Box::new(FilterOperator::new(child, pending.expr));
         }
