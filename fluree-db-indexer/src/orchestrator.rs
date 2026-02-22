@@ -1857,7 +1857,9 @@ mod embedded_tests {
         let db = LedgerSnapshot::genesis("test:main");
         let mut novelty = Novelty::new(0);
         let large_flake = make_large_flake(2, 2000);
-        novelty.apply_commit(vec![large_flake], 2).unwrap();
+        novelty
+            .apply_commit(vec![large_flake], 2, &HashMap::new())
+            .unwrap();
         let ledger = LedgerState::new(db, novelty);
 
         let index_config = IndexConfig {
@@ -1906,7 +1908,9 @@ mod embedded_tests {
         let db = LedgerSnapshot::genesis("test:main");
         let mut novelty = Novelty::new(0);
         let flake = make_flake(1, "ex:bob", 1, "ex:age", 25, 2);
-        novelty.apply_commit(vec![flake], 2).unwrap();
+        novelty
+            .apply_commit(vec![flake], 2, &HashMap::new())
+            .unwrap();
         let ledger = LedgerState::new(db, novelty);
 
         let indexer_config = IndexerConfig::small()

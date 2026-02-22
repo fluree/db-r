@@ -234,7 +234,8 @@ where
 
         // Apply envelope deltas (namespace + graph) to the in-memory LedgerSnapshot.
         // This must happen before novelty apply so encode_iri() works for graph routing.
-        base.snapshot.apply_envelope_deltas(&ns_delta, graph_delta.values().map(|s| s.as_str()));
+        base.snapshot
+            .apply_envelope_deltas(&ns_delta, graph_delta.values().map(|s| s.as_str()));
 
         // Generate ISO 8601 timestamp
         // TODO: Refactor to accept an optional timestamp via CommitOpts instead of calling
@@ -361,7 +362,8 @@ where
         {
             let span = tracing::debug_span!("commit_apply_to_novelty");
             let _g = span.enter();
-            Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t)?;
+            let reverse_graph = base.snapshot.build_reverse_graph()?;
+            Arc::make_mut(&mut new_novelty).apply_commit(all_flakes, new_t, &reverse_graph)?;
         }
 
         let new_state = LedgerState {

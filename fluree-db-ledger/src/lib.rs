@@ -34,8 +34,8 @@ pub use historical::HistoricalLedgerView;
 pub use staged::LedgerView;
 
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, DictNovelty, GraphDbRef, GraphId, LedgerSnapshot,
-    Storage,
+    content_store_for, ContentId, ContentStore, DictNovelty, Flake, GraphDbRef, GraphId,
+    LedgerSnapshot, Storage,
 };
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{generate_commit_flakes, trace_commits_by_id, Novelty};
@@ -160,8 +160,14 @@ impl LedgerState {
         // Load novelty from commits since index_t
         let head_commit_id = match &record.commit_head_id {
             Some(head_cid) if record.commit_t > snapshot.t => {
-                let (novelty_overlay, head_id) =
-                    Self::load_novelty(store, head_cid, snapshot.t, &record.ledger_id, &mut snapshot).await?;
+                let (novelty_overlay, head_id) = Self::load_novelty(
+                    store,
+                    head_cid,
+                    snapshot.t,
+                    &record.ledger_id,
+                    &mut snapshot,
+                )
+                .await?;
                 let head_index_id = record.index_head_id.clone();
                 return Ok(Self {
                     snapshot,
@@ -219,17 +225,23 @@ impl LedgerState {
         let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
         let mut all_graph_iris: HashSet<String> = HashSet::new();
 
+        // Deferred batch approach: collect (flakes, commit_t) batches during
+        // the HEAD→oldest walk, then replay oldest→newest after applying deltas.
+        // This is required because per-graph novelty routing needs reverse_graph,
+        // which depends on namespace_codes from apply_envelope_deltas().
+        let mut commit_batches: Vec<(Vec<Flake>, i64)> = Vec::new();
+
         let stream = trace_commits_by_id(store, head_cid.clone(), index_t);
         futures::pin_mut!(stream);
 
         while let Some(result) = stream.next().await {
             let commit = result?;
 
-            // Apply flakes to novelty
+            // Collect flakes for deferred replay
             let meta_flakes = generate_commit_flakes(&commit, ledger_id, commit.t);
             let mut all_flakes = commit.flakes;
             all_flakes.extend(meta_flakes);
-            novelty.apply_commit(all_flakes, commit.t)?;
+            commit_batches.push((all_flakes, commit.t));
 
             // Accumulate ns_delta (newest wins via or_insert)
             for (code, prefix) in commit.namespace_delta {
@@ -244,6 +256,15 @@ impl LedgerState {
 
         // Apply all accumulated deltas to the snapshot in one shot.
         snapshot.apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
+
+        // Build reverse_graph now that namespace_codes and graph_registry are complete.
+        let reverse_graph = snapshot.build_reverse_graph()?;
+
+        // Replay oldest→newest (walk was HEAD→oldest, so reverse)
+        commit_batches.reverse();
+        for (flakes, commit_t) in commit_batches {
+            novelty.apply_commit(flakes, commit_t, &reverse_graph)?;
+        }
 
         Ok((novelty, Some(head_cid.clone())))
     }
@@ -537,6 +558,7 @@ mod tests {
     use super::*;
     use fluree_db_core::{ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
+    use std::collections::HashMap;
 
     fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
@@ -653,7 +675,7 @@ mod tests {
 
         let mut novelty = Novelty::new(0);
         novelty
-            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1)
+            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1, &HashMap::new())
             .unwrap();
 
         let state = LedgerState::new(snapshot, novelty);
@@ -672,7 +694,7 @@ mod tests {
         // Add some flakes to increase size
         for i in 0..100 {
             novelty
-                .apply_commit(vec![make_flake(i, 1, i as i64, 1)], 1)
+                .apply_commit(vec![make_flake(i, 1, i as i64, 1)], 1, &HashMap::new())
                 .unwrap();
         }
 
@@ -722,10 +744,10 @@ mod tests {
         // Create novelty with flakes at t=1 and t=2
         let mut novelty = Novelty::new(0);
         novelty
-            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1)
+            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1, &HashMap::new())
             .unwrap();
         novelty
-            .apply_commit(vec![make_flake(2, 1, 200, 2)], 2)
+            .apply_commit(vec![make_flake(2, 1, 200, 2)], 2, &HashMap::new())
             .unwrap();
 
         let mut state = LedgerState::new(snapshot, novelty);
@@ -840,7 +862,7 @@ mod tests {
         let mut novelty = Novelty::new(0);
         for i in 0..100 {
             novelty
-                .apply_commit(vec![make_flake(i, 1, i as i64, 1)], 1)
+                .apply_commit(vec![make_flake(i, 1, i as i64, 1)], 1, &HashMap::new())
                 .unwrap();
         }
 
@@ -863,7 +885,7 @@ mod tests {
         let mut novelty = Novelty::new(0);
         for i in 0..10 {
             novelty
-                .apply_commit(vec![make_flake(i, 1, i as i64, 1)], 1)
+                .apply_commit(vec![make_flake(i, 1, i as i64, 1)], 1, &HashMap::new())
                 .unwrap();
         }
 
@@ -886,7 +908,7 @@ mod tests {
         let mut novelty = Novelty::new(0);
         for i in 0..100 {
             novelty
-                .apply_commit(vec![make_flake(i, 1, i as i64, 1)], 1)
+                .apply_commit(vec![make_flake(i, 1, i as i64, 1)], 1, &HashMap::new())
                 .unwrap();
         }
 

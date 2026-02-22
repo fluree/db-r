@@ -1217,49 +1217,41 @@ pub(crate) fn translate_overlay_flakes(
         "translate_overlay_flakes: starting"
     );
 
-    // Collect all overlay flakes (no boundary filtering — the cursor
-    // partitions per-leaf internally via find_overlay_for_leaf).
-    overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, to_t, &mut |flake| {
-        // Filter by graph ID
-        let flake_g_id: GraphId = match &flake.g {
-            None => 0, // default graph
-            Some(g_sid) => {
-                // Reconstruct the graph IRI from Sid and look up the g_id
-                let graph_iri = dict_overlay.store().sid_to_iri(g_sid);
-                dict_overlay
-                    .store()
-                    .graph_id_for_iri(&graph_iri)
-                    .unwrap_or(GraphId::MAX) // Unknown graph → never match
+    // Collect overlay flakes for the requested graph. Per-graph novelty returns
+    // only that graph's flakes — no per-flake sid_to_iri reconstruction needed.
+    overlay.for_each_overlay_flake(
+        g_id,
+        IndexType::Spot,
+        None,
+        None,
+        true,
+        to_t,
+        &mut |flake| {
+            tracing::trace!(
+                s = ?flake.s,
+                p = ?flake.p,
+                o = ?flake.o,
+                t = flake.t,
+                op = ?flake.op,
+                g_id,
+                "translate_overlay_flakes: processing flake"
+            );
+            if io_error.is_some() {
+                return;
             }
-        };
-        if flake_g_id != g_id {
-            return; // Skip flakes from other graphs
-        }
-
-        tracing::trace!(
-            s = ?flake.s,
-            p = ?flake.p,
-            o = ?flake.o,
-            t = flake.t,
-            op = ?flake.op,
-            g_id = flake_g_id,
-            "translate_overlay_flakes: processing flake"
-        );
-        if io_error.is_some() {
-            return;
-        }
-        match translate_one_flake(flake, dict_overlay) {
-            Ok(op) => ops.push(op),
-            Err(e) => {
-                // IO errors from mmap reads are truly exceptional; log and
-                // stop collecting (remaining flakes will be missing from
-                // overlay, but this is a storage-level failure, not a
-                // dictionary gap).
-                tracing::error!(%e, "IO error during overlay translation");
-                io_error = Some(e);
+            match translate_one_flake(flake, dict_overlay) {
+                Ok(op) => ops.push(op),
+                Err(e) => {
+                    // IO errors from mmap reads are truly exceptional; log and
+                    // stop collecting (remaining flakes will be missing from
+                    // overlay, but this is a storage-level failure, not a
+                    // dictionary gap).
+                    tracing::error!(%e, "IO error during overlay translation");
+                    io_error = Some(e);
+                }
             }
-        }
-    });
+        },
+    );
 
     tracing::trace!(count = ops.len(), "translate_overlay_flakes: collected ops");
     ops
@@ -1623,10 +1615,12 @@ impl RangeScanOperator {
     /// Scan one graph: range query + policy enforcement + post-filtering.
     ///
     /// Shared by the default-graphs, named-graphs, and single-db paths in `open()`.
+    #[allow(clippy::too_many_arguments)]
     async fn scan_one_graph(
         &self,
         snapshot: &LedgerSnapshot,
         overlay: &dyn OverlayProvider,
+        g_id: GraphId,
         to_t: i64,
         index: IndexType,
         ctx: &ExecutionContext<'_>,
@@ -1636,7 +1630,7 @@ impl RangeScanOperator {
         let opts = self.build_range_opts(to_t, ctx);
         let flakes = range_with_overlay(
             snapshot,
-            ctx.binary_g_id,
+            g_id,
             overlay,
             index,
             RangeTest::Eq,
@@ -1655,7 +1649,7 @@ impl RangeScanOperator {
                     .collect::<HashSet<_>>()
                     .into_iter()
                     .collect();
-                let db = fluree_db_core::GraphDbRef::new(snapshot, ctx.binary_g_id, overlay, to_t);
+                let db = fluree_db_core::GraphDbRef::new(snapshot, g_id, overlay, to_t);
                 enforcer
                     .populate_class_cache_for_graph(db, &subjects)
                     .await?;
@@ -1810,6 +1804,7 @@ impl Operator for RangeScanOperator {
                     .scan_one_graph(
                         graph.snapshot,
                         graph.overlay,
+                        graph.g_id,
                         graph.to_t,
                         index,
                         ctx,
@@ -1833,6 +1828,7 @@ impl Operator for RangeScanOperator {
                     .scan_one_graph(
                         graph.snapshot,
                         graph.overlay,
+                        graph.g_id,
                         graph.to_t,
                         index,
                         ctx,
@@ -1846,6 +1842,7 @@ impl Operator for RangeScanOperator {
             self.scan_one_graph(
                 ctx.snapshot,
                 ctx.overlay(),
+                ctx.binary_g_id,
                 ctx.to_t,
                 index,
                 ctx,

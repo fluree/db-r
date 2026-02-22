@@ -163,18 +163,18 @@ where
         // Track per-commit "all flakes" so we can update state after CAS.
         let mut accepted_all_flakes: Vec<(i64, Vec<Flake>)> = Vec::with_capacity(decoded.len());
 
+        // 4.0 Build ONE cumulative graph routing from ALL commits' flakes.
+        //
+        // This ensures consistent GraphId assignments across the entire push batch.
+        // Per-commit routing would assign different GraphIds for the same graph
+        // when processing separate commits independently (each starts max_g_id=1).
+        let all_push_flakes: Vec<&Flake> = decoded.iter().flat_map(|c| &c.commit.flakes).collect();
+        let routing = derive_graph_routing(&base_state, &all_push_flakes);
+        let reverse_graph = reverse_graph_lookup(&routing.graph_sids);
+
         for c in &decoded {
             // Current state is base db + evolving novelty.
             let current_t = base_state.snapshot.t.max(evolving_novelty.t);
-
-            // 4.0 Derive graph routing from this commit's flakes + binary store.
-            //
-            // This builds a GraphId → Sid mapping using the binary store's
-            // graph dictionary for known graphs, and assigns fresh sequential
-            // GraphIds for graphs not yet indexed (overlay-only).
-            let evolving_state = base_state.clone_with_novelty(Arc::new(evolving_novelty.clone()));
-            let routing = derive_graph_routing(&evolving_state, &c.commit.flakes);
-            let reverse_graph = reverse_graph_lookup(&routing.graph_sids);
 
             // 4.1 Retraction invariant (strict).
             assert_retractions_exist(
@@ -183,7 +183,6 @@ where
                 current_t,
                 &c.commit.flakes,
                 &reverse_graph,
-                &routing.overlay_only_sids,
             )
             .await
             .map_err(|e| e.into_api_error())?;
@@ -193,6 +192,7 @@ where
                 build_policy_ctx_for_push(&base_state, &evolving_novelty, current_t, opts).await?;
 
             // 4.3 Stage flakes (policy/backpressure). No WHERE/cancellation; flakes are prebuilt.
+            let evolving_state = base_state.clone_with_novelty(Arc::new(evolving_novelty.clone()));
             let staged_view = stage_commit_flakes(
                 evolving_state,
                 &c.commit.flakes,
@@ -236,7 +236,7 @@ where
 
             // Note: Novelty::apply_commit bumps to max(commit_t) internally.
             evolving_novelty
-                .apply_commit(all_flakes.clone(), c.commit.t)
+                .apply_commit(all_flakes.clone(), c.commit.t, &reverse_graph)
                 .map_err(ApiError::Novelty)?;
 
             accepted_all_flakes.push((c.commit.t, all_flakes));
@@ -286,8 +286,12 @@ where
         }
 
         // 7) Update in-memory ledger state (now committed).
-        let new_state =
-            apply_pushed_commits_to_state(base_state, &accepted_all_flakes, &stored_commits);
+        let new_state = apply_pushed_commits_to_state(
+            base_state,
+            &accepted_all_flakes,
+            &decoded,
+            &stored_commits,
+        );
 
         // 8) Compute indexing status from the updated state.
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
@@ -358,17 +362,12 @@ impl PushError {
 
 /// Result of graph routing derivation.
 ///
-/// Separates graphs into "resolved" (known to the binary store) and
-/// "overlay-only" (not yet indexed). `stage_flakes` uses `all()` for
-/// routing; `is_currently_asserted` checks `overlay_only_sids` to decide
-/// whether to use the binary range provider or the g_id=0 + post-filter path.
+/// Maps each unique graph Sid to a GraphId. Resolved graphs (known to the
+/// binary store) use the store's existing GraphId; unresolved graphs get
+/// fresh sequential IDs. Used by `stage_flakes` and `is_currently_asserted`.
 struct GraphRoutingResult {
-    /// All graph ID → Sid mappings (resolved + fabricated). Used by stage_flakes.
+    /// All graph ID → Sid mappings (resolved + fabricated).
     graph_sids: HashMap<GraphId, Sid>,
-    /// Graph Sids NOT found in the binary store's graph dictionary.
-    /// Range queries for these graphs must use g_id=0 and post-filter by flake.g,
-    /// because the binary range provider has no partition for them.
-    overlay_only_sids: HashSet<Sid>,
 }
 
 /// Derive a `GraphId → Sid` routing map from flakes + binary store.
@@ -384,14 +383,13 @@ struct GraphRoutingResult {
 /// index partitions.
 ///
 /// Returns an empty routing when no named-graph flakes are present.
-fn derive_graph_routing(state: &LedgerState, flakes: &[Flake]) -> GraphRoutingResult {
+fn derive_graph_routing(state: &LedgerState, flakes: &[&Flake]) -> GraphRoutingResult {
     // Collect unique graph Sids from flakes.
     let graph_sids_set: HashSet<Sid> = flakes.iter().filter_map(|f| f.g.clone()).collect();
 
     if graph_sids_set.is_empty() {
         return GraphRoutingResult {
             graph_sids: HashMap::new(),
-            overlay_only_sids: HashSet::new(),
         };
     }
 
@@ -401,7 +399,6 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[Flake]) -> GraphRoutingRe
         .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
 
     let mut result: HashMap<GraphId, Sid> = HashMap::new();
-    let mut overlay_only: HashSet<Sid> = HashSet::new();
     let mut max_g_id: GraphId = 1; // 0=default, 1=txn-meta
     let mut unresolved: Vec<Sid> = Vec::new();
 
@@ -417,24 +414,20 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[Flake]) -> GraphRoutingRe
             max_g_id = max_g_id.max(g_id);
             result.insert(g_id, g_sid.clone());
         } else {
-            overlay_only.insert(g_sid.clone());
             unresolved.push(g_sid.clone());
         }
     }
 
     // Assign fabricated sequential GraphIds for unresolved graphs.
-    // These are needed by stage_flakes for graph routing but must NOT be
-    // used in binary range queries (the binary index has no partitions for them).
+    // Sort to ensure deterministic assignment across calls.
+    unresolved.sort();
     let mut next_id = max_g_id + 1;
     for g_sid in unresolved {
         result.insert(next_id, g_sid);
         next_id += 1;
     }
 
-    GraphRoutingResult {
-        graph_sids: result,
-        overlay_only_sids: overlay_only,
-    }
+    GraphRoutingResult { graph_sids: result }
 }
 
 /// Build a reverse lookup from graph Sid → GraphId.
@@ -604,16 +597,13 @@ async fn assert_retractions_exist(
     to_t: i64,
     flakes: &[Flake],
     reverse_graph: &HashMap<Sid, GraphId>,
-    overlay_only_sids: &HashSet<Sid>,
 ) -> std::result::Result<(), PushError> {
     for (idx, f) in flakes.iter().enumerate() {
         if f.op {
             continue;
         }
 
-        if !is_currently_asserted(snapshot, overlay, to_t, f, reverse_graph, overlay_only_sids)
-            .await?
-        {
+        if !is_currently_asserted(snapshot, overlay, to_t, f, reverse_graph).await? {
             return Err(PushError::Invalid(format!(
                 "retraction invariant violated at flake[{}]: retract targets non-existent assertion",
                 idx
@@ -629,38 +619,21 @@ async fn is_currently_asserted(
     to_t: i64,
     target: &Flake,
     reverse_graph: &HashMap<Sid, GraphId>,
-    overlay_only_sids: &HashSet<Sid>,
 ) -> std::result::Result<bool, PushError> {
     // Resolve the correct graph for this flake's range query.
     //
-    // Three cases:
-    //
-    // 1. Default graph (target.g = None): use g_id=0 directly.
-    //
-    // 2. Named graph known to the binary store (resolved by derive_graph_routing):
-    //    use the real GraphId from reverse_graph. Strict — must be present.
-    //
-    // 3. Named graph NOT in the binary store (overlay-only: new graph introduced
-    //    in novelty but not yet indexed): use g_id=0 and post-filter by flake.g.
-    //    The binary range provider has no partition for this graph, so the
-    //    g_id=0 query returns default-graph binary data + ALL overlay flakes.
-    //    The flake.g post-filter (below) isolates the target graph's flakes.
+    // With per-graph novelty, ALL graphs (including overlay-only ones) have proper
+    // GraphIds assigned by the cumulative routing. The overlay returns only that
+    // graph's flakes, so no post-filtering by flake.g is needed for graph isolation.
     let g_id = match &target.g {
         None => 0,
-        Some(g_sid) if overlay_only_sids.contains(g_sid) => {
-            // Overlay-only graph: use g_id=0 and rely on flake.g post-filter.
-            0
-        }
-        Some(g_sid) => {
-            // Resolved graph: strict lookup — must be in reverse_graph.
-            *reverse_graph.get(g_sid).ok_or_else(|| {
-                PushError::Internal(format!(
-                    "is_currently_asserted: graph Sid {:?} not found in reverse_graph map \
-                     — derive_graph_routing should have included it",
-                    g_sid,
-                ))
-            })?
-        }
+        Some(g_sid) => *reverse_graph.get(g_sid).ok_or_else(|| {
+            PushError::Internal(format!(
+                "is_currently_asserted: graph Sid {:?} not found in reverse_graph map \
+                 — derive_graph_routing should have included it",
+                g_sid,
+            ))
+        })?,
     };
 
     let rm = RangeMatch::new()
@@ -793,18 +766,36 @@ async fn write_commit_blobs<S: Storage + ContentAddressedWrite + Clone + Send + 
 fn apply_pushed_commits_to_state(
     mut base: LedgerState,
     accepted_all_flakes: &[(i64, Vec<Flake>)],
+    decoded: &[PushCommitDecoded],
     stored_commits: &[StoredCommit],
 ) -> LedgerState {
-    // Apply namespace deltas from commits to in-memory LedgerSnapshot (Clojure parity).
-    //
-    // NOTE: We only have access to the full commit structs during validation; the
-    // committed SIDs in flakes do not require namespace_codes, but keeping LedgerSnapshot updated
-    // is important for subsequent API calls that encode IRIs.
-    //
-    // For now, we conservatively reload namespace deltas by decoding the stored commits
-    // would be expensive; instead, we rely on the fact that namespace delta flakes
-    // are already applied via novelty, and encoding uses namespace_codes primarily
-    // for new allocations. This is acceptable for push-only path.
+    // Extract namespace deltas and graph IRIs from the decoded commits,
+    // then apply to the snapshot so that build_reverse_graph() has complete data.
+    {
+        let mut merged_ns_delta: HashMap<u16, String> = HashMap::new();
+        let mut all_graph_iris: HashSet<String> = HashSet::new();
+        for c in decoded {
+            for (code, prefix) in &c.commit.namespace_delta {
+                merged_ns_delta
+                    .entry(*code)
+                    .or_insert_with(|| prefix.clone());
+            }
+            for iri in c.commit.graph_delta.values() {
+                all_graph_iris.insert(iri.clone());
+            }
+        }
+        base.snapshot
+            .apply_envelope_deltas(&merged_ns_delta, &all_graph_iris);
+    }
+
+    // Build reverse_graph now that namespace_codes and graph_registry are complete.
+    let reverse_graph = base.snapshot.build_reverse_graph().unwrap_or_else(|e| {
+        error!(
+            error = ?e,
+            "post-CAS build_reverse_graph failed; falling back to empty map"
+        );
+        HashMap::new()
+    });
 
     // Apply all flakes to novelty (we already validated them; re-apply for state).
     let mut novelty = (*base.novelty).clone();
@@ -814,7 +805,7 @@ fn apply_pushed_commits_to_state(
         // Populate dict novelty similarly to transact commit path.
         populate_dict_novelty(Arc::make_mut(&mut dict_novelty), flakes);
         // Apply to novelty.
-        if let Err(e) = novelty.apply_commit(flakes.clone(), *t) {
+        if let Err(e) = novelty.apply_commit(flakes.clone(), *t, &reverse_graph) {
             error!(
                 error = ?e,
                 commit_t = *t,
@@ -1413,7 +1404,8 @@ where
             })
             .collect();
 
-        let new_state = apply_pushed_commits_to_state(base_state, &all_flakes, &stored_commits);
+        let new_state =
+            apply_pushed_commits_to_state(base_state, &all_flakes, &decoded, &stored_commits);
 
         // 9) Compute indexing status from the updated state.
         let index_config = self.default_index_config();

@@ -490,6 +490,11 @@ pub async fn execute_prepared<'a, 'b>(
         config.from_t,
         effective_overlay,
     );
+    // Always propagate the graph id, even when no binary store is attached.
+    //
+    // Overlay-only historical queries (genesis snapshot + commit replay) must still
+    // route all range queries through the correct graph partition in the overlay.
+    ctx = ctx.with_graph_id(db.g_id);
 
     if let Some(tracker) = config.tracker {
         ctx = ctx.with_tracker(tracker.clone());
@@ -516,7 +521,7 @@ pub async fn execute_prepared<'a, 'b>(
         ctx = ctx.with_strict_bind_errors();
     }
     if let Some(store) = config.binary_store {
-        ctx = ctx.with_binary_store(store, config.binary_g_id);
+        ctx = ctx.with_binary_store(store, db.g_id);
     }
     if let Some(dn) = config.dict_novelty {
         ctx = ctx.with_dict_novelty(dn);

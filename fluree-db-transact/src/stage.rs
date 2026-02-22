@@ -330,7 +330,10 @@ pub async fn stage(
             "transaction staging completed"
         );
 
-        Ok((LedgerView::stage(ledger, flakes), ns_registry))
+        Ok((
+            LedgerView::stage(ledger, flakes, &reverse_graph)?,
+            ns_registry,
+        ))
     }
     .instrument(span)
     .await
@@ -397,7 +400,7 @@ pub async fn stage_flakes(
         }
 
         tracing::info!(flake_count = flakes.len(), "stage_flakes completed");
-        Ok(LedgerView::stage(ledger, flakes))
+        Ok(LedgerView::stage(ledger, flakes, &reverse_graph)?)
     }
     .instrument(span)
     .await
@@ -770,6 +773,17 @@ async fn generate_upsert_deletions(
     let o_var = query_vars.get_or_insert("?o");
 
     for (subject, predicate, graph_id) in spg_tuples {
+        // IMPORTANT: `TripleTemplate.graph_id` is a transaction-local ID.
+        // It must be translated to a ledger-stable GraphId before we can query
+        // the correct per-graph index partition.
+        //
+        // txn_local_g_id -> graph IRI (txn.graph_delta) -> ledger g_id (GraphRegistry)
+        let ledger_g_id: Option<u16> = graph_id.and_then(|txn_g_id| {
+            txn.graph_delta
+                .get(&txn_g_id)
+                .and_then(|iri| ledger.snapshot.graph_registry.graph_id_for_iri(iri))
+        });
+
         // Query: <subject> <predicate> ?o
         let pattern = TriplePattern::new(
             Term::Sid(subject.clone()),
@@ -777,20 +791,28 @@ async fn generate_upsert_deletions(
             Term::Var(o_var),
         );
 
-        let batches = if let Some(g_id) = graph_id {
-            // Named graph: pass g_id explicitly — the range provider is graph-agnostic,
-            // so no db clone/swap is needed.
-            if ledger.snapshot.range_provider.is_some() {
-                fluree_db_query::execute_pattern_with_overlay_at(
-                    ledger.as_graph_db_ref(g_id),
-                    &query_vars,
-                    pattern,
-                    None,
-                )
-                .await?
-            } else {
-                // No binary store available (genesis / not indexed): scan novelty directly.
-                query_novelty_for_graph(ledger, &subject, &predicate, g_id, o_var, graph_sids)
+        let batches = if graph_id.is_some() {
+            // Named graph: translate txn-local g_id to ledger g_id before querying.
+            match ledger_g_id {
+                None => {
+                    // Graph is not yet in the ledger registry (new graph in this txn),
+                    // so there cannot be existing values to retract.
+                    Vec::new()
+                }
+                Some(g_id) => {
+                    if ledger.snapshot.range_provider.is_some() {
+                        fluree_db_query::execute_pattern_with_overlay_at(
+                            ledger.as_graph_db_ref(g_id),
+                            &query_vars,
+                            pattern,
+                            None,
+                        )
+                        .await?
+                    } else {
+                        // No binary store available (genesis / not indexed): scan novelty directly.
+                        query_novelty_for_graph(ledger, &subject, &predicate, g_id, o_var)
+                    }
+                }
             }
         } else {
             // Default graph: use standard query path through range_provider
@@ -803,7 +825,8 @@ async fn generate_upsert_deletions(
             .await?
         };
 
-        // Convert each result to a retraction flake in the appropriate graph
+        // Convert each result to a retraction flake in the appropriate graph.
+        // Here we use the txn-local g_id to look up the graph Sid (flake.g).
         let graph_sid = graph_id.and_then(|g_id| graph_sids.get(&g_id).cloned());
 
         for batch in batches.iter() {
@@ -851,17 +874,13 @@ fn query_novelty_for_graph(
     predicate: &Sid,
     target_g_id: u16,
     o_var: VarId,
-    graph_sids: &std::collections::HashMap<u16, Sid>,
 ) -> Vec<Batch> {
     use fluree_db_core::IndexType;
 
-    let Some(target_graph_sid) = graph_sids.get(&target_g_id) else {
-        return Vec::new();
-    };
-
-    // Collect matching flakes from novelty
+    // Collect matching flakes from novelty for the target graph
     let mut matching_values = Vec::new();
     ledger.novelty.for_each_overlay_flake(
+        target_g_id,
         IndexType::Spot,
         None,
         None,
@@ -870,12 +889,7 @@ fn query_novelty_for_graph(
         &mut |flake| {
             // Check if flake matches (subject, predicate) and is an assertion
             if &flake.s == subject && &flake.p == predicate && flake.op {
-                // Check if flake is in the target graph
-                if let Some(g_sid) = &flake.g {
-                    if g_sid == target_graph_sid {
-                        matching_values.push((flake.o.clone(), flake.dt.clone()));
-                    }
-                }
+                matching_values.push((flake.o.clone(), flake.dt.clone()));
             }
         },
     );
@@ -1218,7 +1232,9 @@ mod tests {
                 true,
                 None,
             );
-            novelty.apply_commit(vec![flake], 1).unwrap();
+            novelty
+                .apply_commit(vec![flake], 1, &HashMap::new())
+                .unwrap();
         }
 
         let ledger = LedgerState::new(db, novelty);

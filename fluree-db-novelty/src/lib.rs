@@ -18,10 +18,10 @@
 //! use fluree_db_novelty::Novelty;
 //!
 //! let mut novelty = Novelty::new(0);
-//! novelty.apply_commit(flakes, 1)?;
+//! novelty.apply_commit(flakes, 1, &reverse_graph)?;
 //!
-//! // Get slice for a leaf's range
-//! let slice = novelty.slice_for_range(IndexType::Spot, Some(&first), Some(&rhs), false);
+//! // Get slice for a specific graph's leaf range
+//! let slice = novelty.slice_for_range(g_id, IndexType::Spot, Some(&first), Some(&rhs), false);
 //! ```
 
 mod commit;
@@ -43,9 +43,10 @@ pub use error::{NoveltyError, Result};
 pub use fluree_db_credential::SigningKey;
 pub use stats::current_stats;
 
-use fluree_db_core::{Flake, IndexType};
+use fluree_db_core::{Flake, GraphId, IndexType, Sid};
 use rayon::Scope;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 /// Index into FlakeStore - u32 limits to ~4B flakes
 pub type FlakeId = u32;
@@ -106,21 +107,92 @@ impl FlakeStore {
     }
 }
 
-/// Novelty overlay - in-memory storage for uncommitted transactions
+/// Per-graph sorted index vectors.
 ///
-/// Stores flakes in an arena with per-index sorted vectors for efficient
-/// range queries and merge operations.
+/// Each graph gets its own set of 4 sorted FlakeId vectors (SPOT, PSOT, POST, OPST).
+/// FlakeIds reference the shared `FlakeStore` arena.
 #[derive(Clone, Default)]
-pub struct Novelty {
-    /// Canonical flake storage (arena)
-    store: FlakeStore,
-
-    /// Per-index sorted vectors of FlakeIds
-    /// Each vector sorted by that index's comparator
+struct GraphIndexVectors {
     spot: Vec<FlakeId>,
     psot: Vec<FlakeId>,
     post: Vec<FlakeId>,
     opst: Vec<FlakeId>,
+}
+
+impl GraphIndexVectors {
+    fn get_index(&self, index: IndexType) -> &[FlakeId] {
+        match index {
+            IndexType::Spot => &self.spot,
+            IndexType::Psot => &self.psot,
+            IndexType::Post => &self.post,
+            IndexType::Opst => &self.opst,
+        }
+    }
+
+    /// Get slice of flake IDs for a leaf's range (binary search).
+    fn slice_for_range(
+        &self,
+        store: &FlakeStore,
+        index: IndexType,
+        first: Option<&Flake>,
+        rhs: Option<&Flake>,
+        leftmost: bool,
+    ) -> &[FlakeId] {
+        let ids = self.get_index(index);
+
+        if ids.is_empty() {
+            return &[];
+        }
+
+        let start = if leftmost {
+            0
+        } else if let Some(f) = first {
+            ids.partition_point(|&id| index.compare(store.get(id), f) != Ordering::Greater)
+        } else {
+            0
+        };
+
+        let end = if let Some(r) = rhs {
+            ids.partition_point(|&id| index.compare(store.get(id), r) != Ordering::Greater)
+        } else {
+            ids.len()
+        };
+
+        if start >= end {
+            return &[];
+        }
+
+        &ids[start..end]
+    }
+
+    /// Returns true if all index vectors are empty.
+    fn is_empty(&self) -> bool {
+        self.spot.is_empty() && self.psot.is_empty() && self.post.is_empty() && self.opst.is_empty()
+    }
+
+    /// Retain only alive flake IDs across all index vectors.
+    fn retain_alive(&mut self, alive: &[bool]) {
+        self.spot.retain(|&id| alive[id as usize]);
+        self.psot.retain(|&id| alive[id as usize]);
+        self.post.retain(|&id| alive[id as usize]);
+        self.opst.retain(|&id| alive[id as usize]);
+    }
+}
+
+/// Novelty overlay - in-memory storage for uncommitted transactions
+///
+/// Stores flakes in a shared arena with per-graph, per-index sorted vectors
+/// for efficient range queries and merge operations.
+///
+/// GraphIds are dense small integers, so we use `Vec<Option<GraphIndexVectors>>`
+/// indexed by `g_id as usize` instead of a HashMap.
+#[derive(Clone, Default)]
+pub struct Novelty {
+    /// Canonical flake storage (arena), shared across all graphs
+    store: FlakeStore,
+
+    /// Per-graph sorted index vectors, indexed by g_id
+    graphs: Vec<Option<GraphIndexVectors>>,
 
     /// Total size in bytes (for backpressure)
     pub size: usize,
@@ -137,21 +209,46 @@ impl Novelty {
     pub fn new(t: i64) -> Self {
         Self {
             store: FlakeStore::new(),
-            spot: Vec::new(),
-            psot: Vec::new(),
-            post: Vec::new(),
-            opst: Vec::new(),
+            graphs: Vec::new(),
             size: 0,
             t,
             epoch: 0,
         }
     }
 
-    /// Apply a batch of flakes from a commit
+    /// Ensure the graphs vec has a slot for `g_id`, growing if needed.
+    fn ensure_graph(&mut self, g_id: GraphId) -> &mut GraphIndexVectors {
+        let idx = g_id as usize;
+        if idx >= self.graphs.len() {
+            self.graphs.resize_with(idx + 1, || None);
+        }
+        self.graphs[idx].get_or_insert_with(GraphIndexVectors::default)
+    }
+
+    /// Resolve a flake's graph ID from its `Flake.g` field.
+    ///
+    /// - `None` → default graph (g_id = 0)
+    /// - `Some(sid)` → looked up in `reverse_graph`; returns error if unknown
+    fn resolve_flake_g_id(flake: &Flake, reverse_graph: &HashMap<Sid, GraphId>) -> Result<GraphId> {
+        match &flake.g {
+            None => Ok(0),
+            Some(g_sid) => reverse_graph.get(g_sid).copied().ok_or_else(|| {
+                NoveltyError::InvalidGraph(format!("flake references unknown graph Sid: {}", g_sid))
+            }),
+        }
+    }
+
+    /// Apply a batch of flakes from a commit, routing each flake to its graph.
     ///
     /// Epoch bumps ONCE per call, not per flake.
-    /// This performs 4 sorts (one per index) on the batch, then 4 linear merges.
-    pub fn apply_commit(&mut self, flakes: Vec<Flake>, commit_t: i64) -> Result<()> {
+    /// Each flake is routed to its graph via `reverse_graph`. Unknown graph Sids
+    /// cause an error — no silent fallback to the default graph.
+    pub fn apply_commit(
+        &mut self,
+        flakes: Vec<Flake>,
+        commit_t: i64,
+        reverse_graph: &HashMap<Sid, GraphId>,
+    ) -> Result<()> {
         if flakes.is_empty() {
             return Ok(());
         }
@@ -176,69 +273,63 @@ impl Novelty {
         self.t = self.t.max(commit_t);
         self.epoch += 1; // Bump epoch once per commit
 
-        // Store flakes in arena and build batch IDs
-        let base_id = self.store.len() as FlakeId;
+        // Store flakes in arena, resolve graph IDs, and group by graph
+        let mut per_graph: HashMap<GraphId, Vec<FlakeId>> = HashMap::new();
+
         for flake in flakes {
+            let g_id = Self::resolve_flake_g_id(&flake, reverse_graph)?;
             let size = flake.size_bytes();
             self.size += size;
-            self.store.push_with_size(flake, size);
+            let flake_id = self.store.push_with_size(flake, size);
+            per_graph.entry(g_id).or_default().push(flake_id);
         }
 
-        // Build batch IDs
-        let batch_ids_vec: Vec<FlakeId> = (base_id..self.store.len() as FlakeId).collect();
-        let batch_ids: &[FlakeId] = batch_ids_vec.as_slice();
+        // Ensure all graph slots exist
+        for &g_id in per_graph.keys() {
+            self.ensure_graph(g_id);
+        }
 
-        // Merge batch into each index (LSM-style merge).
-        //
-        // These merges are independent (read-only access to store + disjoint index vectors),
-        // so we can run them in parallel to utilize multiple CPU cores.
+        // Merge each graph's batch into its 4 index vectors
         let store = &self.store;
-        let (spot, psot, post, opst) = (
-            &mut self.spot,
-            &mut self.psot,
-            &mut self.post,
-            &mut self.opst,
-        );
-
-        // Propagate the parent span context into Rayon worker threads so that
-        // per-index merge spans appear nested under `novelty_apply_commit` in traces.
         let parent = tracing::Span::current();
 
-        rayon::scope(|scope: &Scope<'_>| {
-            let parent_spot = parent.clone();
-            scope.spawn(move |_| {
-                let _p = parent_spot.enter();
-                let span = tracing::debug_span!("novelty_merge_spot", batch_len = batch_ids.len());
-                let _g = span.enter();
-                merge_batch_into_index(store, spot, batch_ids, IndexType::Spot)
+        for (g_id, batch_ids) in &per_graph {
+            let graph_vecs = self.graphs[*g_id as usize]
+                .as_mut()
+                .expect("graph slot ensured above");
+            let (spot, psot, post, opst) = (
+                &mut graph_vecs.spot,
+                &mut graph_vecs.psot,
+                &mut graph_vecs.post,
+                &mut graph_vecs.opst,
+            );
+
+            rayon::scope(|scope: &Scope<'_>| {
+                let parent_spot = parent.clone();
+                scope.spawn(move |_| {
+                    let _p = parent_spot.enter();
+                    merge_batch_into_index(store, spot, batch_ids, IndexType::Spot)
+                });
+                let parent_psot = parent.clone();
+                scope.spawn(move |_| {
+                    let _p = parent_psot.enter();
+                    merge_batch_into_index(store, psot, batch_ids, IndexType::Psot)
+                });
+                let parent_post = parent.clone();
+                scope.spawn(move |_| {
+                    let _p = parent_post.enter();
+                    merge_batch_into_index(store, post, batch_ids, IndexType::Post)
+                });
+                let parent_opst = parent.clone();
+                scope.spawn(move |_| {
+                    let _p = parent_opst.enter();
+                    merge_batch_into_index(store, opst, batch_ids, IndexType::Opst)
+                });
             });
-            let parent_psot = parent.clone();
-            scope.spawn(move |_| {
-                let _p = parent_psot.enter();
-                let span = tracing::debug_span!("novelty_merge_psot", batch_len = batch_ids.len());
-                let _g = span.enter();
-                merge_batch_into_index(store, psot, batch_ids, IndexType::Psot)
-            });
-            let parent_post = parent.clone();
-            scope.spawn(move |_| {
-                let _p = parent_post.enter();
-                let span = tracing::debug_span!("novelty_merge_post", batch_len = batch_ids.len());
-                let _g = span.enter();
-                merge_batch_into_index(store, post, batch_ids, IndexType::Post)
-            });
-            let parent_opst = parent.clone();
-            scope.spawn(move |_| {
-                let _p = parent_opst.enter();
-                let span = tracing::debug_span!("novelty_merge_opst", batch_len = batch_ids.len());
-                let _g = span.enter();
-                merge_batch_into_index(store, opst, batch_ids, IndexType::Opst)
-            });
-        });
+        }
 
         Ok(())
     }
-
-    // merge helpers are free functions below
 
     /// Clear flakes with t <= cutoff_t (after index merge)
     ///
@@ -265,11 +356,15 @@ impl Novelty {
             }
         }
 
-        // Retain only alive flakes in each index
-        self.spot.retain(|&id| alive[id as usize]);
-        self.psot.retain(|&id| alive[id as usize]);
-        self.post.retain(|&id| alive[id as usize]);
-        self.opst.retain(|&id| alive[id as usize]);
+        // Retain only alive flakes in each graph's index vectors
+        for slot in &mut self.graphs {
+            if let Some(graph_vecs) = slot {
+                graph_vecs.retain_alive(&alive);
+                if graph_vecs.is_empty() {
+                    *slot = None;
+                }
+            }
+        }
 
         // Update size
         self.size = new_size;
@@ -277,7 +372,9 @@ impl Novelty {
         self.epoch += 1;
     }
 
-    /// Get slice of flake IDs for a leaf's range
+    /// Get slice of flake IDs for a specific graph's leaf range.
+    ///
+    /// Returns `&[]` if the graph has no novelty.
     ///
     /// Uses binary search for O(log n + k) slicing.
     ///
@@ -287,45 +384,18 @@ impl Novelty {
     /// - rhs is INCLUSIVE when present
     pub fn slice_for_range(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
         leftmost: bool,
     ) -> &[FlakeId] {
-        let ids = match index {
-            IndexType::Spot => &self.spot,
-            IndexType::Psot => &self.psot,
-            IndexType::Post => &self.post,
-            IndexType::Opst => &self.opst,
-        };
-
-        if ids.is_empty() {
-            return &[];
+        match self.graphs.get(g_id as usize).and_then(Option::as_ref) {
+            Some(graph_vecs) => {
+                graph_vecs.slice_for_range(&self.store, index, first, rhs, leftmost)
+            }
+            None => &[],
         }
-
-        // Find start index
-        let start = if leftmost {
-            0
-        } else if let Some(f) = first {
-            // Exclusive: find first element > first
-            ids.partition_point(|&id| index.compare(self.store.get(id), f) != Ordering::Greater)
-        } else {
-            0
-        };
-
-        // Find end index
-        let end = if let Some(r) = rhs {
-            // Inclusive: find first element > rhs
-            ids.partition_point(|&id| index.compare(self.store.get(id), r) != Ordering::Greater)
-        } else {
-            ids.len()
-        };
-
-        if start >= end {
-            return &[];
-        }
-
-        &ids[start..end]
     }
 
     /// Get flake reference by ID
@@ -343,15 +413,14 @@ impl Novelty {
         self.store.is_empty()
     }
 
-    /// Iterate over all flake IDs for a given index
+    /// Iterate over all flake IDs for a given index across ALL graphs.
+    ///
+    /// Used by stats collection which needs the full picture regardless of graph.
     pub fn iter_index(&self, index: IndexType) -> impl Iterator<Item = FlakeId> + '_ {
-        let ids = match index {
-            IndexType::Spot => &self.spot,
-            IndexType::Psot => &self.psot,
-            IndexType::Post => &self.post,
-            IndexType::Opst => &self.opst,
-        };
-        ids.iter().copied()
+        self.graphs
+            .iter()
+            .filter_map(Option::as_ref)
+            .flat_map(move |graph_vecs| graph_vecs.get_index(index).iter().copied())
     }
 }
 
@@ -359,6 +428,10 @@ impl std::fmt::Debug for Novelty {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Novelty")
             .field("flake_count", &self.store.len())
+            .field(
+                "graphs",
+                &self.graphs.iter().filter(|s| s.is_some()).count(),
+            )
             .field("size", &self.size)
             .field("t", &self.t)
             .field("epoch", &self.epoch)
@@ -377,6 +450,7 @@ impl OverlayProvider for Novelty {
 
     fn for_each_overlay_flake(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -384,7 +458,7 @@ impl OverlayProvider for Novelty {
         to_t: i64,
         callback: &mut dyn FnMut(&Flake),
     ) {
-        let slice = self.slice_for_range(index, first, rhs, leftmost);
+        let slice = self.slice_for_range(g_id, index, first, rhs, leftmost);
 
         for &id in slice {
             let flake = self.get_flake(id);
@@ -438,6 +512,11 @@ mod tests {
     use super::*;
     use fluree_db_core::{FlakeValue, Sid};
 
+    /// Empty reverse_graph — all flakes go to default graph (g_id=0)
+    fn no_graphs() -> HashMap<Sid, GraphId> {
+        HashMap::new()
+    }
+
     fn make_flake(s: u16, p: u16, o: i64, t: i64, op: bool) -> Flake {
         Flake::new(
             Sid::new(s, format!("s{}", s)),
@@ -462,6 +541,21 @@ mod tests {
         )
     }
 
+    /// Make a flake assigned to a named graph via its `g` field
+    fn make_graph_flake(s: u16, p: u16, o: i64, t: i64, g_sid: Sid) -> Flake {
+        let mut f = Flake::new(
+            Sid::new(s, format!("s{}", s)),
+            Sid::new(p, format!("p{}", p)),
+            FlakeValue::Long(o),
+            Sid::new(2, "long"),
+            t,
+            true,
+            None,
+        );
+        f.g = Some(g_sid);
+        f
+    }
+
     #[test]
     fn test_novelty_new() {
         let novelty = Novelty::new(5);
@@ -480,7 +574,7 @@ mod tests {
             make_flake(2, 1, 200, 1, true),
         ];
 
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &no_graphs()).unwrap();
 
         assert_eq!(novelty.len(), 2);
         assert_eq!(novelty.t, 1);
@@ -491,16 +585,17 @@ mod tests {
     #[test]
     fn test_apply_commit_multiple() {
         let mut novelty = Novelty::new(0);
+        let rg = no_graphs();
 
         // First commit
         novelty
-            .apply_commit(vec![make_flake(1, 1, 100, 1, true)], 1)
+            .apply_commit(vec![make_flake(1, 1, 100, 1, true)], 1, &rg)
             .unwrap();
         assert_eq!(novelty.epoch, 1);
 
         // Second commit
         novelty
-            .apply_commit(vec![make_flake(2, 1, 200, 2, true)], 2)
+            .apply_commit(vec![make_flake(2, 1, 200, 2, true)], 2, &rg)
             .unwrap();
         assert_eq!(novelty.epoch, 2); // Epoch bumped once per commit
 
@@ -511,7 +606,7 @@ mod tests {
     #[test]
     fn test_apply_commit_empty() {
         let mut novelty = Novelty::new(0);
-        novelty.apply_commit(vec![], 1).unwrap();
+        novelty.apply_commit(vec![], 1, &no_graphs()).unwrap();
 
         // Empty commit should not bump epoch
         assert_eq!(novelty.epoch, 0);
@@ -528,7 +623,7 @@ mod tests {
             make_flake(2, 1, 100, 1, true),
         ];
 
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &no_graphs()).unwrap();
 
         // SPOT should order by subject
         let spot_ids: Vec<FlakeId> = novelty.iter_index(IndexType::Spot).collect();
@@ -552,7 +647,7 @@ mod tests {
             make_flake(1, 2, 100, 1, true),
         ];
 
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &no_graphs()).unwrap();
 
         // PSOT should order by predicate first
         let psot_ids: Vec<FlakeId> = novelty.iter_index(IndexType::Psot).collect();
@@ -577,7 +672,7 @@ mod tests {
             make_ref_flake(4, 1, 5, 1),     // ref
         ];
 
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &no_graphs()).unwrap();
 
         // OPST should contain ALL flakes, not just refs
         let opst_ids: Vec<FlakeId> = novelty.iter_index(IndexType::Opst).collect();
@@ -596,17 +691,21 @@ mod tests {
             make_flake(5, 1, 100, 1, true),
         ];
 
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &no_graphs()).unwrap();
 
-        // Full range (leftmost, no rhs)
-        let slice = novelty.slice_for_range(IndexType::Spot, None, None, true);
+        // Full range (leftmost, no rhs) — default graph
+        let slice = novelty.slice_for_range(0, IndexType::Spot, None, None, true);
         assert_eq!(slice.len(), 5);
 
         // From subject 2 (exclusive) to end
         let first = make_flake(2, 1, 100, 1, true);
-        let slice = novelty.slice_for_range(IndexType::Spot, Some(&first), None, false);
+        let slice = novelty.slice_for_range(0, IndexType::Spot, Some(&first), None, false);
         // Should get subjects 3, 4, 5 (> 2)
         assert_eq!(slice.len(), 3);
+
+        // Absent graph returns empty slice
+        let slice = novelty.slice_for_range(99, IndexType::Spot, None, None, true);
+        assert!(slice.is_empty());
     }
 
     #[test]
@@ -621,11 +720,11 @@ mod tests {
             make_flake(5, 1, 100, 1, true),
         ];
 
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &no_graphs()).unwrap();
 
-        // From leftmost to subject 3 (inclusive)
+        // From leftmost to subject 3 (inclusive) — default graph
         let rhs = make_flake(3, 1, 100, 1, true);
-        let slice = novelty.slice_for_range(IndexType::Spot, None, Some(&rhs), true);
+        let slice = novelty.slice_for_range(0, IndexType::Spot, None, Some(&rhs), true);
         // Should get subjects 1, 2, 3 (<= 3)
         assert_eq!(slice.len(), 3);
     }
@@ -633,16 +732,17 @@ mod tests {
     #[test]
     fn test_clear_up_to() {
         let mut novelty = Novelty::new(0);
+        let rg = no_graphs();
 
         // Add flakes at different times
         novelty
-            .apply_commit(vec![make_flake(1, 1, 100, 1, true)], 1)
+            .apply_commit(vec![make_flake(1, 1, 100, 1, true)], 1, &rg)
             .unwrap();
         novelty
-            .apply_commit(vec![make_flake(2, 1, 100, 2, true)], 2)
+            .apply_commit(vec![make_flake(2, 1, 100, 2, true)], 2, &rg)
             .unwrap();
         novelty
-            .apply_commit(vec![make_flake(3, 1, 100, 3, true)], 3)
+            .apply_commit(vec![make_flake(3, 1, 100, 3, true)], 3, &rg)
             .unwrap();
 
         let initial_size = novelty.size;
@@ -665,6 +765,7 @@ mod tests {
     #[test]
     fn test_merge_preserves_order() {
         let mut novelty = Novelty::new(0);
+        let rg = no_graphs();
 
         // First batch
         novelty
@@ -675,6 +776,7 @@ mod tests {
                     make_flake(5, 1, 100, 1, true),
                 ],
                 1,
+                &rg,
             )
             .unwrap();
 
@@ -686,6 +788,7 @@ mod tests {
                     make_flake(4, 1, 100, 2, true),
                 ],
                 2,
+                &rg,
             )
             .unwrap();
 
@@ -706,6 +809,64 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn test_per_graph_isolation() {
+        let mut novelty = Novelty::new(0);
+
+        // Set up: graph 2 mapped to Sid("g", "graph2")
+        let g2_sid = Sid::new(100, "graph2");
+        let mut rg = HashMap::new();
+        rg.insert(g2_sid.clone(), 2u16);
+
+        // Default graph flakes (flake.g = None)
+        let default_flakes = vec![
+            make_flake(1, 1, 100, 1, true),
+            make_flake(2, 1, 200, 1, true),
+        ];
+
+        // Named graph flakes (flake.g = Some(g2_sid))
+        let named_flakes = vec![
+            make_graph_flake(10, 1, 300, 1, g2_sid.clone()),
+            make_graph_flake(11, 1, 400, 1, g2_sid.clone()),
+            make_graph_flake(12, 1, 500, 1, g2_sid.clone()),
+        ];
+
+        let mut all = default_flakes;
+        all.extend(named_flakes);
+        novelty.apply_commit(all, 1, &rg).unwrap();
+
+        // Default graph (g_id=0) should have 2 flakes
+        let g0_slice = novelty.slice_for_range(0, IndexType::Spot, None, None, true);
+        assert_eq!(g0_slice.len(), 2);
+
+        // Named graph (g_id=2) should have 3 flakes
+        let g2_slice = novelty.slice_for_range(2, IndexType::Spot, None, None, true);
+        assert_eq!(g2_slice.len(), 3);
+
+        // Non-existent graph returns empty
+        let g99_slice = novelty.slice_for_range(99, IndexType::Spot, None, None, true);
+        assert!(g99_slice.is_empty());
+
+        // iter_index returns ALL flakes across graphs
+        let all_spot: Vec<FlakeId> = novelty.iter_index(IndexType::Spot).collect();
+        assert_eq!(all_spot.len(), 5);
+    }
+
+    #[test]
+    fn test_unknown_graph_sid_errors() {
+        let mut novelty = Novelty::new(0);
+        let rg = no_graphs(); // No named graphs registered
+
+        // Flake with a graph Sid that isn't in reverse_graph
+        let unknown_g = Sid::new(200, "unknown");
+        let flakes = vec![make_graph_flake(1, 1, 100, 1, unknown_g)];
+
+        let result = novelty.apply_commit(flakes, 1, &rg);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("unknown graph Sid"), "got: {}", err_msg);
     }
 
     #[test]

@@ -430,7 +430,7 @@ mod tests {
             make_prop_flake(make_sid(100, "alice"), make_sid(100, "name"), 42, 6),
             make_prop_flake(make_sid(100, "bob"), make_sid(100, "name"), 43, 6),
         ];
-        novelty.apply_commit(flakes, 6).unwrap();
+        novelty.apply_commit(flakes, 6, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let props = result.properties.unwrap();
@@ -454,7 +454,7 @@ mod tests {
             make_type_flake(make_sid(100, "bob"), make_sid(100, "Person"), 1, true),
             make_type_flake(make_sid(100, "acme"), make_sid(100, "Company"), 1, true),
         ];
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let classes = result.classes.unwrap();
@@ -487,7 +487,7 @@ mod tests {
             make_prop_flake(alice.clone(), name_prop.clone(), 42, 1),
             make_prop_flake(bob.clone(), name_prop.clone(), 43, 1),
         ];
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let classes = result.classes.unwrap();
@@ -535,7 +535,7 @@ mod tests {
             false, // retraction
             None,
         )];
-        novelty.apply_commit(flakes, 6).unwrap();
+        novelty.apply_commit(flakes, 6, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let props = result.properties.unwrap();
@@ -558,7 +558,7 @@ mod tests {
             make_lang_flake(alice.clone(), label.clone(), "Alice", "en", 1),
             make_lang_flake(alice.clone(), label.clone(), "Alicia", "es", 1),
         ];
-        novelty.apply_commit(flakes, 1).unwrap();
+        novelty.apply_commit(flakes, 1, &HashMap::new()).unwrap();
 
         let result = current_stats(&indexed, &novelty);
         let classes = result.classes.unwrap();

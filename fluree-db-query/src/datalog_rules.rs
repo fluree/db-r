@@ -1154,6 +1154,7 @@ impl<'a> OverlayProvider for OverlayRef<'a> {
 
     fn for_each_overlay_flake(
         &self,
+        g_id: fluree_db_core::GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -1162,7 +1163,7 @@ impl<'a> OverlayProvider for OverlayRef<'a> {
         callback: &mut dyn FnMut(&Flake),
     ) {
         self.0
-            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, callback)
+            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, callback)
     }
 }
 

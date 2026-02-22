@@ -282,8 +282,12 @@ impl GraphDb {
         let mut combined = (*base.novelty).clone();
         let staged_flakes = staged.view.staged_flakes().to_vec();
         if !staged_flakes.is_empty() {
+            let reverse_graph = base
+                .snapshot
+                .build_reverse_graph()
+                .map_err(|e| crate::ApiError::internal(e.to_string()))?;
             combined
-                .apply_commit(staged_flakes, staged_t)
+                .apply_commit(staged_flakes, staged_t, &reverse_graph)
                 .map_err(|e| {
                     crate::ApiError::internal(format!(
                         "Failed to merge staged flakes into novelty: {}",

@@ -227,7 +227,9 @@ mod tests {
                 (1, "http://example.org/".to_string()),
             ]),
             predicate_sids: vec![(1, "name".to_string()), (1, "age".to_string())],
-            graph_iris: vec![fluree_db_core::graph_registry::txn_meta_graph_iri("test-ledger")],
+            graph_iris: vec![fluree_db_core::graph_registry::txn_meta_graph_iri(
+                "test-ledger",
+            )],
             datatype_iris: vec!["xsd:string".to_string()],
             language_tags: vec!["en".to_string()],
             dict_refs: DictRefsV5 {

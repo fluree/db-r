@@ -1163,7 +1163,9 @@ mod tests_v5 {
             subject_id_encoding: fluree_db_core::SubjectIdEncoding::Narrow,
             namespace_codes: ns,
             predicate_sids: vec![(0, "p0".to_string())],
-            graph_iris: vec![fluree_db_core::graph_registry::txn_meta_graph_iri("test:main")],
+            graph_iris: vec![fluree_db_core::graph_registry::txn_meta_graph_iri(
+                "test:main",
+            )],
             datatype_iris: vec!["@id".to_string()],
             language_tags: vec![],
             dict_refs: sample_dict_refs_v5(),

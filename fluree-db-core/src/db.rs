@@ -7,6 +7,7 @@ use crate::content_id::ContentId;
 use crate::content_kind::ContentKind;
 use crate::error::{Error, Result};
 use crate::graph_registry::GraphRegistry;
+use crate::ids::GraphId;
 use crate::index_schema::IndexSchema;
 use crate::index_stats::IndexStats;
 use crate::namespaces::default_namespace_codes;
@@ -159,9 +160,8 @@ impl LedgerSnapshot {
         let graph_registry = if meta.graph_iris.is_empty() {
             GraphRegistry::new_for_ledger(&meta.ledger_id)
         } else {
-            GraphRegistry::seed_from_root_iris(&meta.graph_iris).map_err(|e| {
-                Error::invalid_index(format!("graph registry seed from root: {e}"))
-            })?
+            GraphRegistry::seed_from_root_iris(&meta.graph_iris)
+                .map_err(|e| Error::invalid_index(format!("graph registry seed from root: {e}")))?
         };
 
         Ok(Self {
@@ -494,6 +494,36 @@ impl LedgerSnapshot {
         })
     }
 
+    /// Build a reverse lookup from graph Sid → GraphId.
+    ///
+    /// Returns `Err` if any registered graph IRI cannot be encoded (missing
+    /// namespace prefix) or if two graph IRIs collide to the same Sid.
+    ///
+    /// **Prerequisite**: `apply_envelope_deltas()` must be called first so that
+    /// namespace codes are available for `encode_iri()`.
+    pub fn build_reverse_graph(&self) -> Result<HashMap<Sid, GraphId>> {
+        let mut map = HashMap::new();
+        for (g_id, iri) in self.graph_registry.iter_entries() {
+            if g_id == 0 {
+                continue;
+            } // default graph has no Sid
+            let sid = self.encode_iri(iri).ok_or_else(|| {
+                Error::invalid_index(format!(
+                    "graph IRI '{}' (g_id={}) has no matching namespace prefix \
+                     — namespace_codes may be incomplete",
+                    iri, g_id
+                ))
+            })?;
+            if let Some(prev_g_id) = map.insert(sid.clone(), g_id) {
+                return Err(Error::invalid_index(format!(
+                    "Sid collision: graph IRIs for g_id={} and g_id={} encode to same Sid '{}'",
+                    prev_g_id, g_id, sid
+                )));
+            }
+        }
+        Ok(map)
+    }
+
     /// Decode a SID to an IRI using this db's namespace codes.
     ///
     /// Returns None if the namespace code is not registered.
@@ -621,7 +651,9 @@ mod tests {
         assert_eq!(txn_meta_iri, "urn:fluree:mydb:main#txn-meta");
 
         // encode_iri must succeed via the urn:fluree: baseline namespace (FLUREE_URN=12).
-        let sid = db.encode_iri(&txn_meta_iri).expect("encode_iri must work for txn-meta");
+        let sid = db
+            .encode_iri(&txn_meta_iri)
+            .expect("encode_iri must work for txn-meta");
         assert_eq!(sid.namespace_code, fluree_vocab::namespaces::FLUREE_URN);
         assert_eq!(sid.name.as_ref(), "mydb:main#txn-meta");
 

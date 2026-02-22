@@ -406,8 +406,8 @@ mod tests {
     fn test_seed_from_root_iris() {
         let txn_meta = txn_meta_graph_iri("test:a");
         let iris = vec![
-            txn_meta.clone(),                        // root[0] → g_id 1
-            "http://example.org/g1".to_string(),     // root[1] → g_id 2
+            txn_meta.clone(),                    // root[0] → g_id 1
+            "http://example.org/g1".to_string(), // root[1] → g_id 2
         ];
         let reg = GraphRegistry::seed_from_root_iris(&iris).unwrap();
 
@@ -427,10 +427,7 @@ mod tests {
         // seed_from_root_iris trusts whatever IRI is at iris[0]
         let iris = vec!["http://custom.org/txn-meta".to_string()];
         let reg = GraphRegistry::seed_from_root_iris(&iris).unwrap();
-        assert_eq!(
-            reg.graph_id_for_iri("http://custom.org/txn-meta"),
-            Some(1)
-        );
+        assert_eq!(reg.graph_id_for_iri("http://custom.org/txn-meta"), Some(1));
     }
 
     #[test]
@@ -465,10 +462,7 @@ mod tests {
     #[test]
     fn test_seed_from_entries() {
         let txn_meta = txn_meta_graph_iri("test:a");
-        let entries = vec![
-            (1u16, txn_meta.as_str()),
-            (2u16, "http://example.org/g1"),
-        ];
+        let entries = vec![(1u16, txn_meta.as_str()), (2u16, "http://example.org/g1")];
         let reg = GraphRegistry::seed_from_entries(&entries).unwrap();
 
         assert_eq!(reg.graph_id_for_iri(&txn_meta), Some(1));
@@ -539,10 +533,7 @@ mod tests {
     #[test]
     fn test_seed_then_apply_delta() {
         let txn_meta = txn_meta_graph_iri("test:a");
-        let iris = vec![
-            txn_meta.clone(),
-            "http://example.org/g1".to_string(),
-        ];
+        let iris = vec![txn_meta.clone(), "http://example.org/g1".to_string()];
         let mut reg = GraphRegistry::seed_from_root_iris(&iris).unwrap();
 
         let assigned = reg.apply_delta(["http://example.org/g2"]);

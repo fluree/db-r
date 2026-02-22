@@ -601,7 +601,7 @@ impl<'a> ExecutionContext<'a> {
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
             binary_store: None, // GraphRef doesn't have binary store
-            binary_g_id: 0,
+            binary_g_id: graph.g_id,
             dict_novelty: None, // GraphRef doesn't have dict novelty
             spatial_providers: self.spatial_providers,
         }

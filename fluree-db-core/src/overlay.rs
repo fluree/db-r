@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use fluree_db_core::{OverlayProvider, IndexType, Flake};
+//! use fluree_db_core::{OverlayProvider, IndexType, GraphId, Flake};
 //!
 //! struct MyOverlay { /* ... */ }
 //!
@@ -21,6 +21,7 @@
 //!
 //!     fn for_each_overlay_flake(
 //!         &self,
+//!         g_id: GraphId,
 //!         index: IndexType,
 //!         first: Option<&Flake>,
 //!         rhs: Option<&Flake>,
@@ -28,13 +29,14 @@
 //!         to_t: i64,
 //!         callback: &mut dyn FnMut(&Flake),
 //!     ) {
-//!         // Push flakes in sorted order
+//!         // Push flakes for the requested graph in sorted order
 //!     }
 //! }
 //! ```
 
 use crate::comparator::IndexType;
 use crate::flake::Flake;
+use crate::ids::GraphId;
 
 /// Overlay provider trait for external flake sources
 ///
@@ -53,6 +55,7 @@ pub trait OverlayProvider: Send + Sync {
     ///
     /// # Arguments
     ///
+    /// * `g_id` - Graph to return flakes for (per-graph partitioning)
     /// * `index` - Which index ordering to use
     /// * `first` - Left boundary of the range (or None for start)
     /// * `rhs` - Right boundary of the range (or None for end)
@@ -74,8 +77,10 @@ pub trait OverlayProvider: Send + Sync {
     /// * If `leftmost=false`: left boundary is EXCLUSIVE (`> first`)
     /// * If `leftmost=true`: no left boundary (start from beginning)
     /// * `rhs` is INCLUSIVE when present (`<= rhs`)
+    #[allow(clippy::too_many_arguments)]
     fn for_each_overlay_flake(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -98,6 +103,7 @@ impl OverlayProvider for NoOverlay {
 
     fn for_each_overlay_flake(
         &self,
+        _g_id: GraphId,
         _index: IndexType,
         _first: Option<&Flake>,
         _rhs: Option<&Flake>,
@@ -128,6 +134,7 @@ mod tests {
 
         fn for_each_overlay_flake(
             &self,
+            _g_id: GraphId,
             _index: IndexType,
             _first: Option<&Flake>,
             _rhs: Option<&Flake>,
@@ -161,7 +168,9 @@ mod tests {
         assert_eq!(overlay.epoch(), 0);
 
         let mut count = 0;
-        overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, 100, &mut |_| count += 1);
+        overlay.for_each_overlay_flake(0, IndexType::Spot, None, None, true, 100, &mut |_| {
+            count += 1
+        });
         assert_eq!(count, 0);
     }
 
@@ -175,7 +184,7 @@ mod tests {
         assert_eq!(overlay.epoch(), 42);
 
         let mut collected = Vec::new();
-        overlay.for_each_overlay_flake(IndexType::Spot, None, None, true, 100, &mut |f| {
+        overlay.for_each_overlay_flake(0, IndexType::Spot, None, None, true, 100, &mut |f| {
             collected.push(f.s.namespace_code)
         });
         assert_eq!(collected, vec![1, 2, 3]);
@@ -190,6 +199,7 @@ mod tests {
 
         let mut collected = Vec::new();
         overlay.for_each_overlay_flake(
+            0,
             IndexType::Spot,
             None,
             None,

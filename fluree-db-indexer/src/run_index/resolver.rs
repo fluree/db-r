@@ -1009,8 +1009,7 @@ impl SharedResolverState {
 
         // 3. Graphs from graph_iris
         //    graph_iris[0] must be the ledger-scoped txn-meta IRI (g_id=1 pre-reserved)
-        let expected_txn_meta =
-            fluree_db_core::graph_registry::txn_meta_graph_iri(&root.ledger_id);
+        let expected_txn_meta = fluree_db_core::graph_registry::txn_meta_graph_iri(&root.ledger_id);
         if root.graph_iris.is_empty() || root.graph_iris[0] != expected_txn_meta {
             return Err(ResolverError::Resolve(format!(
                 "graph_iris[0] must be txn-meta IRI '{}', got: {:?}",
@@ -2299,7 +2298,10 @@ mod tests {
 
         // Verify g_id=1 reservation: txn-meta IRI is the first graph entry (dict_id=0)
         let txn_meta = fluree_db_core::graph_registry::txn_meta_graph_iri("test:main");
-        let dict_id = dicts.graphs.get(&txn_meta).expect("txn-meta must be in graph dict");
+        let dict_id = dicts
+            .graphs
+            .get(&txn_meta)
+            .expect("txn-meta must be in graph dict");
         assert_eq!(dict_id + 1, 1, "txn-meta g_id must be 1");
 
         // Verify subjects created

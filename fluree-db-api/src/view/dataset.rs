@@ -159,6 +159,7 @@ impl DataSetDb {
         for view in &self.default {
             let mut graph = fluree_db_query::GraphRef::new(
                 view.snapshot.as_ref(),
+                view.graph_id,
                 view.overlay.as_ref(),
                 view.t,
                 Arc::clone(&view.ledger_id),
@@ -174,6 +175,7 @@ impl DataSetDb {
                 .expect("named_order key must exist in named map");
             let mut graph = fluree_db_query::GraphRef::new(
                 view.snapshot.as_ref(),
+                view.graph_id,
                 view.overlay.as_ref(),
                 view.t,
                 Arc::clone(&view.ledger_id),

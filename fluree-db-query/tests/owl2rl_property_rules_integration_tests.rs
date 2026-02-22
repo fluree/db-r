@@ -104,6 +104,7 @@ impl OverlayProvider for SortedOverlay {
 
     fn for_each_overlay_flake(
         &self,
+        _g_id: fluree_db_core::GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,

@@ -344,8 +344,14 @@ impl Ontology {
         let domain = base.inner.domain.clone();
         let range = base.inner.range.clone();
 
-        db.overlay
-            .for_each_overlay_flake(IndexType::Psot, None, None, true, db.t, &mut |flake| {
+        db.overlay.for_each_overlay_flake(
+            0,
+            IndexType::Psot,
+            None,
+            None,
+            true,
+            db.t,
+            &mut |flake| {
                 if !flake.op {
                     return;
                 }
@@ -355,7 +361,8 @@ impl Ontology {
                 if let FlakeValue::Ref(eq_prop) = &flake.o {
                     eq_edges.push((flake.s.clone(), eq_prop.clone()));
                 }
-            });
+            },
+        );
 
         // Normalize: sort/dedup for determinism.
         for invs in inverse_of.values_mut() {

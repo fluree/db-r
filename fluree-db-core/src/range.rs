@@ -62,6 +62,9 @@ pub async fn range(
 ///
 /// Delegates to the `RangeProvider` attached to the `LedgerSnapshot`.  For genesis
 /// databases (t=0, no provider), returns overlay-only flakes.
+///
+/// The overlay is graph-aware: per-graph novelty returns only flakes belonging
+/// to the requested `g_id`, so no post-filtering is needed.
 pub async fn range_with_overlay<O>(
     snapshot: &LedgerSnapshot,
     g_id: GraphId,
@@ -83,21 +86,11 @@ where
         }
         None if snapshot.t == 0 => {
             // Genesis Db: no base data, return overlay flakes only.
-            // Only the default graph (g_id=0) is supported without an index —
-            // named-graph range queries require graph routing dictionaries that
-            // only exist in the binary index. Callers that need overlay-only
-            // named-graph checks at genesis must use g_id=0 and post-filter by
-            // flake.g themselves.
-            if g_id != 0 {
-                return Err(crate::error::Error::invalid_index(
-                    "named-graph range queries require a loaded binary index \
-                     (graph routing dictionaries are not available at genesis)",
-                ));
-            }
-            let to_t = opts.to_t.unwrap_or(snapshot.t);
-            let mut flakes = collect_overlay_only(overlay, index, to_t);
+            // Per-graph novelty returns only the requested graph's flakes.
+            let to_t = opts.to_t.unwrap_or(i64::MAX);
+            let mut flakes = collect_overlay_only(overlay, g_id, index, to_t);
             // Apply RangeMatch filtering — collect_overlay_only returns all
-            // overlay flakes; narrow them to the requested range.
+            // overlay flakes for this graph; narrow them to the requested range.
             apply_range_filter(&mut flakes, test, &match_val);
             // Apply RangeOptions semantics for overlay-only path (object bounds, offset, limits).
             //
@@ -141,22 +134,12 @@ where
         }
         None if snapshot.t == 0 => {
             // Genesis Db: no base data, return overlay flakes only.
-            // Only the default graph (g_id=0) is supported without an index —
-            // named-graph range queries require graph routing dictionaries that
-            // only exist in the binary index. Callers that need overlay-only
-            // named-graph checks at genesis must use g_id=0 and post-filter by
-            // flake.g themselves.
-            if g_id != 0 {
-                return Err(crate::error::Error::invalid_index(
-                    "named-graph range queries require a loaded binary index \
-                     (graph routing dictionaries are not available at genesis)",
-                ));
-            }
-            let to_t = opts.to_t.unwrap_or(snapshot.t);
+            // Per-graph novelty returns only the requested graph's flakes.
+            let to_t = opts.to_t.unwrap_or(i64::MAX);
             let cmp = index.comparator();
-            let mut flakes = collect_overlay_only(overlay, index, to_t);
+            let mut flakes = collect_overlay_only(overlay, g_id, index, to_t);
             // Apply start/end bounds — collect_overlay_only returns all
-            // overlay flakes; narrow to the [start_bound, end_bound] range.
+            // overlay flakes for this graph; narrow to the [start_bound, end_bound] range.
             flakes.retain(|f| {
                 cmp(f, &start_bound) != std::cmp::Ordering::Less
                     && cmp(f, &end_bound) != std::cmp::Ordering::Greater
@@ -183,6 +166,7 @@ impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
     }
     fn for_each_overlay_flake(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -191,7 +175,7 @@ impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
         callback: &mut dyn FnMut(&Flake),
     ) {
         self.0
-            .for_each_overlay_flake(index, first, rhs, leftmost, to_t, callback)
+            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, callback)
     }
 }
 
@@ -272,18 +256,19 @@ fn apply_overlay_only_options(flakes: &mut Vec<Flake>, opts: &RangeOptions) {
 
 /// Collect overlay flakes for a genesis LedgerSnapshot (no base data).
 ///
-/// Queries the overlay for all flakes matching the index, applies time
+/// Queries the overlay for all flakes matching the graph and index, applies time
 /// filtering, sorts by index comparator, and removes stale flakes.
 fn collect_overlay_only<O: OverlayProvider + ?Sized>(
     overlay: &O,
+    g_id: GraphId,
     index: IndexType,
     to_t: i64,
 ) -> Vec<Flake> {
     let cmp = index.comparator();
     let mut flakes: Vec<Flake> = Vec::new();
 
-    // Request all overlay flakes for this index (leftmost=true, rhs=None → full range).
-    overlay.for_each_overlay_flake(index, None, None, true, to_t, &mut |f| {
+    // Request all overlay flakes for this graph+index (leftmost=true, rhs=None → full range).
+    overlay.for_each_overlay_flake(g_id, index, None, None, true, to_t, &mut |f| {
         if f.t <= to_t {
             flakes.push(f.clone());
         }

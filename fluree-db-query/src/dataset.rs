@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use fluree_db_core::ids::GraphId;
 use fluree_db_core::{LedgerSnapshot, OverlayProvider};
 
 use crate::policy::QueryPolicyEnforcer;
@@ -42,6 +43,12 @@ use crate::policy::QueryPolicyEnforcer;
 pub struct GraphRef<'a> {
     /// The database snapshot for this graph
     pub snapshot: &'a LedgerSnapshot,
+    /// Graph ID to query within the snapshot
+    ///
+    /// - 0: default graph
+    /// - 1: txn-meta graph
+    /// - 2+: user-defined named graphs
+    pub g_id: GraphId,
     /// Overlay provider (novelty) - NOT optional, LedgerState always has novelty
     pub overlay: &'a dyn OverlayProvider,
     /// Target transaction time for this graph
@@ -71,12 +78,14 @@ impl<'a> GraphRef<'a> {
     /// * `ledger_id` - Ledger ID for provenance tracking (e.g., "orders:main")
     pub fn new(
         snapshot: &'a LedgerSnapshot,
+        g_id: GraphId,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_id: impl Into<Arc<str>>,
     ) -> Self {
         Self {
             snapshot,
+            g_id,
             overlay,
             to_t,
             ledger_id: ledger_id.into(),
@@ -95,6 +104,7 @@ impl<'a> GraphRef<'a> {
     /// * `policy_enforcer` - Policy enforcer for this graph
     pub fn with_policy(
         snapshot: &'a LedgerSnapshot,
+        g_id: GraphId,
         overlay: &'a dyn OverlayProvider,
         to_t: i64,
         ledger_id: impl Into<Arc<str>>,
@@ -102,6 +112,7 @@ impl<'a> GraphRef<'a> {
     ) -> Self {
         Self {
             snapshot,
+            g_id,
             overlay,
             to_t,
             ledger_id: ledger_id.into(),
@@ -119,6 +130,7 @@ impl<'a> GraphRef<'a> {
     ) -> Self {
         Self {
             snapshot,
+            g_id: 0,
             overlay,
             to_t,
             ledger_id: Arc::from(snapshot.ledger_id.as_str()),

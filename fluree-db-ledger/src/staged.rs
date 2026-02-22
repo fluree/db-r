@@ -7,10 +7,12 @@
 //!
 //! This enables query against staged changes without committing them.
 
+use crate::error::LedgerError;
 use crate::LedgerState;
-use fluree_db_core::{Flake, GraphDbRef, GraphId, IndexType, OverlayProvider};
+use fluree_db_core::{Flake, GraphDbRef, GraphId, IndexType, OverlayProvider, Sid};
 use fluree_db_novelty::FlakeId;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 /// Arena-style storage for staged flakes
 struct StagedStore {
@@ -35,9 +37,12 @@ impl StagedStore {
     }
 }
 
-/// Staged overlay - maintains sorted vectors like Novelty
+/// Staged overlay - maintains sorted vectors like Novelty, with per-flake graph IDs
+/// for efficient graph filtering.
 struct StagedOverlay {
     store: StagedStore,
+    /// Pre-computed GraphId per flake (parallel to store.flakes, same indices)
+    flake_graph_ids: Vec<GraphId>,
     spot: Vec<FlakeId>,
     psot: Vec<FlakeId>,
     post: Vec<FlakeId>,
@@ -45,15 +50,36 @@ struct StagedOverlay {
 }
 
 impl StagedOverlay {
-    fn from_flakes(flakes: Vec<Flake>) -> Self {
+    fn from_flakes(
+        flakes: Vec<Flake>,
+        reverse_graph: &HashMap<Sid, GraphId>,
+    ) -> Result<Self, LedgerError> {
         if flakes.is_empty() {
-            return Self {
+            return Ok(Self {
                 store: StagedStore::new(vec![]),
+                flake_graph_ids: vec![],
                 spot: vec![],
                 psot: vec![],
                 post: vec![],
                 opst: vec![],
+            });
+        }
+
+        // Pre-compute graph IDs for all flakes — strict, no silent fallback.
+        // Unknown graph Sids are a programming error (reverse_graph is built from
+        // build_reverse_graph() which is total).
+        let mut flake_graph_ids: Vec<GraphId> = Vec::with_capacity(flakes.len());
+        for f in &flakes {
+            let g_id = match &f.g {
+                None => 0,
+                Some(g_sid) => *reverse_graph.get(g_sid).ok_or_else(|| {
+                    LedgerError::Core(fluree_db_core::Error::invalid_index(format!(
+                        "staged flake has unknown graph Sid '{}' not in reverse_graph",
+                        g_sid
+                    )))
+                })?,
             };
+            flake_graph_ids.push(g_id);
         }
 
         let store = StagedStore::new(flakes);
@@ -69,21 +95,18 @@ impl StagedOverlay {
         let mut post = ids.clone();
         post.sort_by(|&a, &b| IndexType::Post.compare(store.get(a), store.get(b)));
 
-        // OPST only for refs
-        let mut opst: Vec<FlakeId> = ids
-            .iter()
-            .copied()
-            .filter(|&id| store.get(id).is_ref())
-            .collect();
+        // OPST includes all flakes (matching Novelty and DerivedFactsOverlay behavior)
+        let mut opst = ids;
         opst.sort_by(|&a, &b| IndexType::Opst.compare(store.get(a), store.get(b)));
 
-        Self {
+        Ok(Self {
             store,
+            flake_graph_ids,
             spot,
             psot,
             post,
             opst,
-        }
+        })
     }
 
     fn get_index(&self, index: IndexType) -> &[FlakeId] {
@@ -128,6 +151,11 @@ impl StagedOverlay {
 
         &ids[start..end]
     }
+
+    /// Get the pre-computed graph ID for a flake
+    fn graph_id(&self, id: FlakeId) -> GraphId {
+        self.flake_graph_ids[id as usize]
+    }
 }
 
 /// A view of a ledger with staged (uncommitted) changes
@@ -148,13 +176,23 @@ pub struct LedgerView {
 
 impl LedgerView {
     /// Create a new ledger view with staged flakes
-    pub fn stage(base: LedgerState, flakes: Vec<Flake>) -> Self {
+    ///
+    /// `reverse_graph` maps graph Sids to GraphIds for per-graph filtering.
+    /// Pass an empty map when all flakes are default-graph only.
+    ///
+    /// Returns `Err` if any staged flake has a graph Sid not present in
+    /// `reverse_graph` (programming error — the map must be complete).
+    pub fn stage(
+        base: LedgerState,
+        flakes: Vec<Flake>,
+        reverse_graph: &HashMap<Sid, GraphId>,
+    ) -> Result<Self, LedgerError> {
         let staged_epoch = base.novelty.epoch + 1;
-        Self {
-            staged: StagedOverlay::from_flakes(flakes),
+        Ok(Self {
+            staged: StagedOverlay::from_flakes(flakes, reverse_graph)?,
             staged_epoch,
             base,
-        }
+        })
     }
 
     /// Get the base ledger state
@@ -228,6 +266,7 @@ impl OverlayProvider for LedgerView {
 
     fn for_each_overlay_flake(
         &self,
+        g_id: GraphId,
         index: IndexType,
         first: Option<&Flake>,
         rhs: Option<&Flake>,
@@ -235,17 +274,21 @@ impl OverlayProvider for LedgerView {
         to_t: i64,
         callback: &mut dyn FnMut(&Flake),
     ) {
-        // Two-way merge of base novelty slice + staged slice
-        // Both are sorted, yield in merged order
+        // Two-way merge of base novelty slice (already per-graph) + staged slice
+        // (filtered by g_id using pre-computed graph IDs)
 
         let base_slice = self
             .base
             .novelty
-            .slice_for_range(index, first, rhs, leftmost);
+            .slice_for_range(g_id, index, first, rhs, leftmost);
         let staged_slice = self.staged.slice_for_range(index, first, rhs, leftmost);
 
         let mut base_iter = base_slice.iter().map(|&id| self.base.novelty.get_flake(id));
-        let mut staged_iter = staged_slice.iter().map(|&id| self.staged.store.get(id));
+        // Filter staged flakes to only those matching the requested graph
+        let mut staged_iter = staged_slice
+            .iter()
+            .filter(|&&id| self.staged.graph_id(id) == g_id)
+            .map(|&id| self.staged.store.get(id));
 
         let mut base_next = base_iter.next();
         let mut staged_next = staged_iter.next();
@@ -304,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_staged_overlay_empty() {
-        let staged = StagedOverlay::from_flakes(vec![]);
+        let staged = StagedOverlay::from_flakes(vec![], &HashMap::new()).unwrap();
         assert!(staged.store.is_empty());
     }
 
@@ -316,7 +359,7 @@ mod tests {
             make_flake(2, 1, 100, 1),
         ];
 
-        let staged = StagedOverlay::from_flakes(flakes);
+        let staged = StagedOverlay::from_flakes(flakes, &HashMap::new()).unwrap();
 
         // SPOT should be sorted by subject
         let spot_subjects: Vec<u16> = staged
@@ -333,21 +376,25 @@ mod tests {
 
         let snapshot = LedgerSnapshot::genesis("test:main");
 
-        // Create base novelty with some flakes
+        // Create base novelty with some flakes (default graph, no reverse_graph needed)
         let mut novelty = Novelty::new(0);
         novelty
-            .apply_commit(vec![make_flake(1, 1, 100, 1), make_flake(3, 1, 300, 1)], 1)
+            .apply_commit(
+                vec![make_flake(1, 1, 100, 1), make_flake(3, 1, 300, 1)],
+                1,
+                &HashMap::new(),
+            )
             .unwrap();
 
         let state = LedgerState::new(snapshot, novelty);
 
         // Create view with interleaved staged flakes
         let staged_flakes = vec![make_flake(2, 1, 200, 2), make_flake(4, 1, 400, 2)];
-        let view = LedgerView::stage(state, staged_flakes);
+        let view = LedgerView::stage(state, staged_flakes, &HashMap::new()).unwrap();
 
-        // Collect all flakes via overlay provider
+        // Collect all flakes via overlay provider (g_id=0 for default graph)
         let mut collected = Vec::new();
-        view.for_each_overlay_flake(IndexType::Spot, None, None, true, 100, &mut |f| {
+        view.for_each_overlay_flake(0, IndexType::Spot, None, None, true, 100, &mut |f| {
             collected.push(f.s.namespace_code)
         });
 
@@ -363,13 +410,14 @@ mod tests {
 
         let mut novelty = Novelty::new(0);
         novelty
-            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1)
+            .apply_commit(vec![make_flake(1, 1, 100, 1)], 1, &HashMap::new())
             .unwrap();
 
         let base_epoch = novelty.epoch;
         let state = LedgerState::new(snapshot, novelty);
 
-        let view = LedgerView::stage(state, vec![make_flake(2, 1, 200, 2)]);
+        let view =
+            LedgerView::stage(state, vec![make_flake(2, 1, 200, 2)], &HashMap::new()).unwrap();
 
         // Staged epoch should be different from base epoch
         assert_eq!(view.epoch(), base_epoch + 1);
@@ -384,10 +432,31 @@ mod tests {
         let state = LedgerState::new(snapshot, novelty);
 
         let staged_flakes = vec![make_flake(1, 1, 100, 1)];
-        let view = LedgerView::stage(state, staged_flakes);
+        let view = LedgerView::stage(state, staged_flakes, &HashMap::new()).unwrap();
 
         let (base, flakes) = view.into_parts();
         assert_eq!(base.ledger_id(), "test:main");
         assert_eq!(flakes.len(), 1);
+    }
+
+    #[test]
+    fn test_staged_overlay_unknown_graph_sid_errors() {
+        use fluree_db_core::Flake;
+
+        let graph_sid = Sid::new(99, "unknown:graph");
+        let flakes = vec![Flake::new_in_graph(
+            graph_sid,
+            Sid::new(1, "s1"),
+            Sid::new(2, "p1"),
+            FlakeValue::Long(100),
+            Sid::new(3, "long"),
+            1,
+            true,
+            None,
+        )];
+
+        // Empty reverse_graph means the graph Sid is unknown — should error
+        let result = StagedOverlay::from_flakes(flakes, &HashMap::new());
+        assert!(result.is_err());
     }
 }
