@@ -187,8 +187,13 @@ fn apply_deferred_patterns(
     pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
 ) -> (BoxedOperator, Vec<PendingBind>, Vec<PendingFilter>) {
-    let (mut child, remaining_binds, pending_filters) =
-        apply_eligible_binds(child, bound, pending_binds, pending_filters, filter_idxs_consumed);
+    let (mut child, remaining_binds, pending_filters) = apply_eligible_binds(
+        child,
+        bound,
+        pending_binds,
+        pending_filters,
+        filter_idxs_consumed,
+    );
 
     let (ready, remaining_filters) =
         partition_ready_filters(pending_filters, bound, filter_idxs_consumed);
