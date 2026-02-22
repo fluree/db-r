@@ -842,14 +842,14 @@ fn collect_guaranteed_vars(patterns: &[Pattern]) -> HashSet<VarId> {
 /// Try to nest a deferred pattern into a compound pattern's inner lists.
 ///
 /// Returns `true` if the pattern was nested, `false` if the pattern is not
-/// a supported compound type or (for UNION) the deferred pattern's required
-/// variables aren't all guaranteed by every branch.
+/// a supported compound type or (for UNION) none of the deferred pattern's
+/// required variables appear in every branch.
 ///
 /// For UNION the deferred pattern is cloned into every branch, but only if
-/// all required variables appear in the intersection of branch variables.
-/// This is necessary because individual branches may bind different variables,
-/// and nesting a filter that references a variable absent from some branch
-/// would be incorrect.
+/// at least one required variable appears in the intersection of all branch
+/// variable sets.  Variables from prior patterns are already bound in the
+/// parent scope and available inside each branch, so only the UNION-specific
+/// variables need the intersection check.
 ///
 /// For Graph and Service all inner variables are guaranteed, so the deferred
 /// pattern is nested unconditionally.
