@@ -50,15 +50,29 @@ impl ValuesPattern {
     }
 }
 
-/// A single BIND pattern: target variable and its defining expression.
+/// A single BIND pattern: target variable, defining expression, and the set of
+/// variables the expression depends on.
+///
+/// `required_vars` is computed at construction time and used during operator
+/// building to determine when this BIND can be applied (all dependencies bound).
+#[derive(Debug, Clone)]
 pub struct BindPattern {
+    /// Variables that must be bound before this BIND can execute
+    pub required_vars: HashSet<VarId>,
+    /// The variable being bound by this expression
     pub var: VarId,
+    /// The expression to evaluate
     pub expr: Expression,
 }
 
 impl BindPattern {
     pub fn new(var: VarId, expr: Expression) -> Self {
-        Self { var, expr }
+        let required_vars = expr.variables().into_iter().collect();
+        Self {
+            required_vars,
+            var,
+            expr,
+        }
     }
 }
 
@@ -129,30 +143,6 @@ fn apply_values(
     operator
 }
 
-/// Pending BIND expression waiting to be applied once its required variables are bound.
-///
-/// BINDs are applied in order after the triple patterns that bind their dependencies.
-#[derive(Debug, Clone)]
-struct PendingBind {
-    /// Variables that must be bound before this BIND can execute
-    required_vars: HashSet<VarId>,
-    /// The variable being bound by this expression
-    target_var: VarId,
-    /// The expression to evaluate
-    expr: Expression,
-}
-
-impl From<BindPattern> for PendingBind {
-    fn from(bind: BindPattern) -> Self {
-        let required_vars = bind.expr.variables().into_iter().collect();
-        Self {
-            required_vars,
-            target_var: bind.var,
-            expr: bind.expr,
-        }
-    }
-}
-
 /// Pending FILTER expression waiting to be applied once its required variables are bound.
 ///
 /// Filters are tracked with their original index so that filters "consumed" by pushdown
@@ -211,15 +201,15 @@ fn partition_eligible_filters(
 fn apply_eligible_binds(
     mut child: BoxedOperator,
     bound: &mut HashSet<VarId>,
-    pending_binds: Vec<PendingBind>,
+    pending_binds: Vec<BindPattern>,
     mut pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
-) -> (BoxedOperator, Vec<PendingBind>, Vec<PendingFilter>) {
+) -> (BoxedOperator, Vec<BindPattern>, Vec<PendingFilter>) {
     let mut remaining_binds = Vec::new();
 
     for pending in pending_binds {
         if pending.required_vars.is_subset(bound) {
-            bound.insert(pending.target_var);
+            bound.insert(pending.var);
 
             let (bind_filters, still_pending) =
                 partition_eligible_filters(pending_filters, bound, filter_idxs_consumed);
@@ -227,7 +217,7 @@ fn apply_eligible_binds(
 
             child = Box::new(BindOperator::new(
                 child,
-                pending.target_var,
+                pending.var,
                 pending.expr,
                 bind_filters,
             ));
@@ -245,10 +235,10 @@ fn apply_eligible_binds(
 fn apply_deferred_patterns(
     child: BoxedOperator,
     bound: &mut HashSet<VarId>,
-    pending_binds: Vec<PendingBind>,
+    pending_binds: Vec<BindPattern>,
     pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
-) -> (BoxedOperator, Vec<PendingBind>, Vec<PendingFilter>) {
+) -> (BoxedOperator, Vec<BindPattern>, Vec<PendingFilter>) {
     let (mut child, remaining_binds, pending_filters) = apply_eligible_binds(
         child,
         bound,
@@ -273,7 +263,7 @@ fn apply_deferred_patterns(
 /// pending after all BINDs are applied as standalone FilterOperators.
 fn apply_all_remaining(
     child: BoxedOperator,
-    pending_binds: Vec<PendingBind>,
+    pending_binds: Vec<BindPattern>,
     pending_filters: Vec<PendingFilter>,
     filter_idxs_consumed: &[usize],
 ) -> BoxedOperator {
@@ -338,7 +328,7 @@ fn build_property_join_block(
     operator: Option<BoxedOperator>,
     triples: &[TriplePattern],
     block_values: Vec<ValuesPattern>,
-    pending_binds: Vec<PendingBind>,
+    pending_binds: Vec<BindPattern>,
     pending_filters: Vec<PendingFilter>,
     object_bounds: &HashMap<VarId, ObjectBounds>,
     filter_idxs_consumed: &[usize],
@@ -373,7 +363,7 @@ fn build_sequential_join_block(
     operator: Option<BoxedOperator>,
     triples: &[TriplePattern],
     block_values: Vec<ValuesPattern>,
-    pending_binds: Vec<PendingBind>,
+    pending_binds: Vec<BindPattern>,
     pending_filters: Vec<PendingFilter>,
     object_bounds: &HashMap<VarId, ObjectBounds>,
     filter_idxs_consumed: &[usize],
@@ -619,8 +609,7 @@ pub fn build_where_operators_seeded(
                     continue;
                 }
 
-                let pending_binds: Vec<PendingBind> =
-                    block.binds.into_iter().map(PendingBind::from).collect();
+                let pending_binds = block.binds;
                 let pending_filters: Vec<PendingFilter> = block
                     .filters
                     .into_iter()
