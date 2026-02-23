@@ -460,7 +460,16 @@ fn install_claude_vscode(fluree_bin: &str) -> CliResult<()> {
         .map_err(|e| CliError::Config(format!("failed to create .vscode/: {e}")))?;
 
     let config_path = vscode_dir.join("mcp.json");
-    let config = mcp_config_json(fluree_bin);
+
+    // VS Code Claude extension uses "servers" key (not "mcpServers")
+    let config = serde_json::json!({
+        "servers": {
+            "fluree-memory": {
+                "command": fluree_bin,
+                "args": ["mcp", "serve", "--transport", "stdio"]
+            }
+        }
+    });
 
     std::fs::write(
         &config_path,
