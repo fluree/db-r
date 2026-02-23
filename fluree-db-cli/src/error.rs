@@ -3,7 +3,9 @@ use std::fmt;
 use std::process;
 
 /// Exit codes for the CLI.
-#[allow(dead_code)]
+// Kept for: future use in commands that need to explicitly exit with success.
+// Use when: adding commands that need `process::exit(EXIT_SUCCESS)`.
+#[expect(dead_code)]
 pub const EXIT_SUCCESS: i32 = 0;
 pub const EXIT_ERROR: i32 = 1;
 pub const EXIT_USAGE: i32 = 2;
@@ -30,6 +32,8 @@ pub enum CliError {
     Credential(fluree_db_credential::CredentialError),
     /// Remote ledger operation error (track mode).
     Remote(String),
+    /// Server lifecycle error (start/stop/status).
+    Server(String),
 }
 
 impl fmt::Display for CliError {
@@ -55,6 +59,7 @@ impl fmt::Display for CliError {
             CliError::Import(msg) => write!(f, "{} {msg}", "error:".red().bold()),
             CliError::Credential(e) => write!(f, "{} {e}", "error:".red().bold()),
             CliError::Remote(msg) => write!(f, "{} {msg}", "error:".red().bold()),
+            CliError::Server(msg) => write!(f, "{} {msg}", "error:".red().bold()),
         }
     }
 }

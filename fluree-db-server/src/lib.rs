@@ -88,9 +88,102 @@ impl FlureeServer {
             }
         }
 
+        // Pre-load all ledgers into the LRU cache so the first query
+        // against each ledger doesn't pay the cold-start penalty (loading
+        // the binary index root from CAS, deserializing dicts, etc.).
+        Self::preload_all_ledgers(&state).await;
+
         let router = routes::build_router(state.clone());
 
         Ok(Self { state, router })
+    }
+
+    /// Pre-load all non-retracted ledgers into the LRU cache.
+    ///
+    /// This warms the binary index store cache for every ledger so that the
+    /// first query doesn't pay a cold-start penalty. Errors are logged but
+    /// do not prevent the server from starting.
+    async fn preload_all_ledgers(state: &Arc<AppState>) {
+        use fluree_db_nameservice::NameService;
+
+        let start = std::time::Instant::now();
+
+        let records = match &state.fluree {
+            state::FlureeInstance::File(f) => match f.nameservice().all_records().await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to enumerate ledgers for preloading");
+                    return;
+                }
+            },
+            state::FlureeInstance::Proxy(p) => match p.nameservice().all_records().await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to enumerate ledgers for preloading");
+                    return;
+                }
+            },
+        };
+
+        let active: Vec<_> = records.into_iter().filter(|r| !r.retracted).collect();
+        if active.is_empty() {
+            return;
+        }
+
+        let total = active.len();
+        let mut loaded = 0usize;
+
+        for record in &active {
+            let handle = match &state.fluree {
+                state::FlureeInstance::File(f) => f.ledger_cached(&record.ledger_id).await,
+                state::FlureeInstance::Proxy(p) => p.ledger_cached(&record.ledger_id).await,
+            };
+
+            match handle {
+                Ok(handle) => {
+                    loaded += 1;
+
+                    // Warm dict tree leaves into the LeafletCache so the first
+                    // query doesn't pay cold-start disk I/O for IRI/string resolution.
+                    let snap = handle.snapshot().await;
+                    if let Some(store) = &snap.binary_store {
+                        match store.preload_dict_leaves() {
+                            Ok(leaf_count) => {
+                                tracing::debug!(
+                                    ledger = %record.ledger_id,
+                                    leaf_count,
+                                    "Preloaded ledger + dict leaves"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    ledger = %record.ledger_id,
+                                    error = %e,
+                                    "Preloaded ledger but dict leaf warming failed"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::debug!(ledger = %record.ledger_id, "Preloaded ledger (no binary index)");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        ledger = %record.ledger_id,
+                        error = %e,
+                        "Failed to preload ledger"
+                    );
+                }
+            }
+        }
+
+        let elapsed = start.elapsed();
+        info!(
+            loaded,
+            total,
+            elapsed_ms = elapsed.as_millis() as u64,
+            "Ledger preload complete"
+        );
     }
 
     /// Get a reference to the application state
