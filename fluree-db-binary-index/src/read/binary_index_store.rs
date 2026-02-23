@@ -1187,6 +1187,22 @@ impl BinaryIndexStore {
         }
     }
 
+    /// Preload all dictionary tree leaves into the global cache.
+    ///
+    /// This forces every subject and string dict leaf to be read from disk
+    /// (or CAS) and cached in the `LeafletCache`, eliminating cold-start
+    /// I/O penalties on the first query. Returns total leaves loaded.
+    pub fn preload_dict_leaves(&self) -> std::io::Result<usize> {
+        let mut total = 0;
+        if let Some(tree) = &self.dicts.subject_reverse_tree {
+            total += tree.preload_all_leaves()?;
+        }
+        if let Some(tree) = &self.dicts.string_reverse_tree {
+            total += tree.preload_all_leaves()?;
+        }
+        Ok(total)
+    }
+
     /// Replace the leaflet cache on an already-loaded store.
     ///
     /// Use this to attach a shared cache after construction, or to

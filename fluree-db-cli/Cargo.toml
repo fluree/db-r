@@ -11,6 +11,8 @@ name = "fluree"
 path = "src/main.rs"
 
 [features]
+default = ["server"]
+server = ["dep:fluree-db-server"]
 otel = [
     "dep:tracing-opentelemetry",
     "dep:opentelemetry",
@@ -27,6 +29,9 @@ fluree-vocab = { path = "../fluree-vocab" }
 fluree-db-query = { path = "../fluree-db-query" }
 fluree-db-binary-index = { path = "../fluree-db-binary-index" }
 
+# Server embedding (optional — enables `fluree server` subcommands)
+fluree-db-server = { path = "../fluree-db-server", optional = true }
+
 clap = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
@@ -41,6 +46,9 @@ clap_complete = "4"
 indicatif = "0.17"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# Unix process management (server subcommand)
+libc = "0.2"
 
 # OpenTelemetry (optional, enabled by `otel` feature)
 tracing-opentelemetry = { version = "0.32.1", optional = true }
