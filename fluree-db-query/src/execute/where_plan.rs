@@ -89,6 +89,22 @@ fn bound_vars_from_operator(operator: &Option<BoxedOperator>) -> HashSet<VarId> 
         .unwrap_or_default()
 }
 
+/// Apply VALUES patterns on top of an existing operator.
+///
+/// Each VALUES pattern wraps the current operator with a `ValuesOperator`,
+/// creating an empty seed if no operator exists yet.
+fn apply_values(
+    operator: Option<BoxedOperator>,
+    block_values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)>,
+) -> Option<BoxedOperator> {
+    let mut operator = operator;
+    for (vars, rows) in block_values {
+        let child = get_or_empty_seed(operator.take());
+        operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
+    }
+    operator
+}
+
 /// Pending BIND expression waiting to be applied once its required variables are bound.
 ///
 /// BINDs are applied in order after the triple patterns that bind their dependencies.
@@ -476,23 +492,11 @@ pub fn build_where_operators_seeded(
 
                 i = end;
 
-                // Defer VALUES application: we may want to wrap PropertyJoinOperator
-                // with VALUES (rather than the reverse) so that PropertyJoin can scan
-                // predicates independently without an upstream operator.
-                //
-                // For the hot path (triples-only, no BIND/FILTER), VALUES still goes
-                // first since there's no property-join consideration.
-                let has_values = !block_values.is_empty();
-
-                // Hot path: block is *only* triples (no VALUES/BIND/FILTER).
-                // Avoid any dependency bookkeeping and just do seeded reorder + build.
-                if block_binds.is_empty() && block_filters.is_empty() {
-                    // Apply VALUES first in the hot path (original behavior).
-                    if has_values {
-                        for (vars, rows) in block_values {
-                            let child = get_or_empty_seed(operator.take());
-                            operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
-                        }
+                // Hot path: triples only (no BIND/FILTER).
+                // Skip dependency bookkeeping entirely.
+                if block.binds.is_empty() && block.filters.is_empty() {
+                    if !block.values.is_empty() {
+                        operator = apply_values(operator.take(), block.values);
                     }
                     let reordered = triples;
                     operator = Some(build_triple_operators(
