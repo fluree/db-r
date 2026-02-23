@@ -102,6 +102,17 @@ struct PendingBind {
     expr: Expression,
 }
 
+impl PendingBind {
+    fn new(var: VarId, expr: Expression) -> Self {
+        let required_vars = expr.variables().into_iter().collect();
+        Self {
+            required_vars,
+            target_var: var,
+            expr,
+        }
+    }
+}
+
 /// Pending FILTER expression waiting to be applied once its required variables are bound.
 ///
 /// Filters are tracked with their original index so that filters "consumed" by pushdown
@@ -114,6 +125,17 @@ struct PendingFilter {
     required_vars: HashSet<VarId>,
     /// The filter expression to evaluate
     expr: Expression,
+}
+
+impl PendingFilter {
+    fn new(original_idx: usize, expr: Expression) -> Self {
+        let required_vars = expr.variables().into_iter().collect();
+        Self {
+            original_idx,
+            required_vars,
+            expr,
+        }
+    }
 }
 
 /// Partition pending filters into those eligible for inline evaluation and those still waiting.
@@ -481,32 +503,16 @@ pub fn build_where_operators_seeded(
                     continue;
                 }
 
-                // Pending actions (safe BINDs + safe FILTERs), applied when their vars are bound.
-                // We keep them in original order and only apply when ready.
-                let mut pending_binds: Vec<PendingBind> = block_binds
+                let pending_binds: Vec<PendingBind> = block
+                    .binds
                     .into_iter()
-                    .map(|(var, expr)| {
-                        let required_vars: HashSet<VarId> = expr.variables().into_iter().collect();
-                        PendingBind {
-                            required_vars,
-                            target_var: var,
-                            expr,
-                        }
-                    })
+                    .map(|(var, expr)| PendingBind::new(var, expr))
                     .collect();
-                // Track original indices so "pushdown-consumed" filters can be skipped even
-                // after we delay/reorder/filter the pending list.
-                let mut pending_filters: Vec<PendingFilter> = block_filters
+                let pending_filters: Vec<PendingFilter> = block
+                    .filters
                     .into_iter()
                     .enumerate()
-                    .map(|(idx, expr)| {
-                        let required_vars: HashSet<VarId> = expr.variables().into_iter().collect();
-                        PendingFilter {
-                            original_idx: idx,
-                            required_vars,
-                            expr,
-                        }
-                    })
+                    .map(|(idx, expr)| PendingFilter::new(idx, expr))
                     .collect();
 
                 // Compute bound vars from whatever upstream exists (may be None if VALUES deferred).
