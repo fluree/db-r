@@ -2487,7 +2487,7 @@ where
                 let state = self.ledger(ledger_id).await?;
                 let binary_store = state.binary_store.as_ref().and_then(|te| {
                     te.0.clone()
-                        .downcast::<fluree_db_indexer::run_index::BinaryIndexStore>()
+                        .downcast::<fluree_db_binary_index::BinaryIndexStore>()
                         .ok()
                 });
                 Ok(LedgerHandle::new(

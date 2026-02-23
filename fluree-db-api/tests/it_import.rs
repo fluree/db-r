@@ -495,9 +495,9 @@ ex:bob a ex:User ;
     assert!(result.t > 0, "should have at least one commit");
     assert!(result.root_id.is_some(), "index should have been built");
 
-    // Query the txn-meta graph via view (same path as CLI: fluree.view("alias#txn-meta"))
+    // Query the txn-meta graph via db (same path as CLI: fluree.db("alias#txn-meta"))
     let view = fluree
-        .view("test/import-txn-meta:main#txn-meta")
+        .db("test/import-txn-meta:main#txn-meta")
         .await
         .expect("load txn-meta view");
 

@@ -297,7 +297,7 @@ impl BinaryScanOperator {
         // Only filter internal predicates for the default graph (g_id=0).
         // The txn-meta graph (g_id=1) is entirely composed of db: namespace
         // predicates, so filtering them would return zero results.
-        self.g_id == 0
+        self.graph_view.g_id() == 0
             && self.p_is_var
             && self
                 .p_sids
