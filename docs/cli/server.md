@@ -25,7 +25,7 @@ These options are available on `run`, `start`, and `restart`:
 | `--profile <NAME>` | Configuration profile to activate |
 | `-- <ARGS>...` | Additional server flags (passed through to server config) |
 
-When no flags are provided, the server reads its configuration from the `[server]` section of `.fluree/config.toml` (or the global config). The CLI's `--config` flag is also honored.
+When no flags are provided, the server discovers its configuration using the same search as the CLI: it walks up from the current working directory looking for a `.fluree/config.toml` (or `config.jsonld`), then falls back to the global Fluree config directory (`$FLUREE_HOME`, or the platform config directory — see [Configuration](../operations/configuration.md)). Server settings live under the `[server]` section. The CLI's `--config` flag is also honored.
 
 ## run
 
@@ -169,7 +169,7 @@ These files are cleaned up automatically by `fluree server stop`.
 
 ## Configuration
 
-The server uses the same `config.toml` as the CLI. Server-specific settings live under the `[server]` section:
+The server uses the same config file as the CLI (discovered via walk-up or global fallback — see above). Server-specific settings live under the `[server]` section:
 
 ```toml
 [server]

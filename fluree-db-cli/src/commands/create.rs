@@ -182,11 +182,6 @@ where
     // low-frequency (<= 1 write/sec).
     // ------------------------------------------------------------------------
     let breadcrumb_path: Option<std::path::PathBuf> = {
-        fn sanitize_for_filename(s: &str) -> String {
-            s.chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect()
-        }
         let crash_dir = fluree_dir.join("crash");
         if std::fs::create_dir_all(&crash_dir).is_ok() {
             let pid = std::process::id();
@@ -491,6 +486,13 @@ fn is_import_path(path: &Path) -> CliResult<bool> {
     }
 
     Ok(false)
+}
+
+/// Replace non-alphanumeric characters with underscores for safe filenames.
+fn sanitize_for_filename(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 /// Format a u64 with comma-separated thousands (e.g. 543_174_590 → "543,174,590").
