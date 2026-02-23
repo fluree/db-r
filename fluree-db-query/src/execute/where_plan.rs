@@ -270,6 +270,143 @@ fn apply_all_remaining(
     child
 }
 
+/// Build an operator for a single non-block pattern (BIND, VALUES, or Triple).
+///
+/// Used when `collect_inner_join_block` consumes zero patterns because the
+/// current pattern is not safe to hoist. Processes one pattern and returns.
+fn build_single_pattern(
+    operator: Option<BoxedOperator>,
+    pattern: &Pattern,
+) -> Option<BoxedOperator> {
+    match pattern {
+        Pattern::Bind { var, expr } => {
+            let child = get_or_empty_seed(operator);
+            Some(Box::new(BindOperator::new(
+                child,
+                *var,
+                expr.clone(),
+                vec![],
+            )))
+        }
+        Pattern::Values { vars, rows } => {
+            let child = get_or_empty_seed(operator);
+            Some(Box::new(ValuesOperator::new(
+                child,
+                vars.clone(),
+                rows.clone(),
+            )))
+        }
+        Pattern::Triple(tp) => Some(build_scan_or_join(
+            operator,
+            tp,
+            &HashMap::new(),
+            Vec::new(),
+        )),
+        _ => operator,
+    }
+}
+
+/// Build an operator tree for a property-join-eligible block of triples.
+///
+/// Constructs a `PropertyJoinOperator` for the triples, then layers deferred
+/// VALUES and any ready BINDs/FILTERs on top.
+fn build_property_join_block(
+    operator: Option<BoxedOperator>,
+    triples: &[TriplePattern],
+    block_values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)>,
+    pending_binds: Vec<PendingBind>,
+    pending_filters: Vec<PendingFilter>,
+    object_bounds: &HashMap<VarId, ObjectBounds>,
+    filter_idxs_consumed: &[usize],
+) -> Result<Option<BoxedOperator>> {
+    let mut operator = Some(build_triple_operators(operator, triples, object_bounds)?);
+
+    if !block_values.is_empty() {
+        operator = apply_values(operator, block_values);
+    }
+
+    let mut bound = bound_vars_from_operator(&operator);
+    if let Some(child) = operator.take() {
+        let (child, _, _) = apply_deferred_patterns(
+            child,
+            &mut bound,
+            pending_binds,
+            pending_filters,
+            filter_idxs_consumed,
+        );
+        operator = Some(child);
+    }
+
+    Ok(operator)
+}
+
+/// Build an operator tree for a sequential scan/join block of triples.
+///
+/// Applies VALUES first (if any), then iterates triples building scan/join
+/// operators, inlining eligible filters into each step and applying deferred
+/// BINDs/FILTERs as their dependencies become bound.
+fn build_sequential_join_block(
+    operator: Option<BoxedOperator>,
+    triples: &[TriplePattern],
+    block_values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)>,
+    pending_binds: Vec<PendingBind>,
+    pending_filters: Vec<PendingFilter>,
+    object_bounds: &HashMap<VarId, ObjectBounds>,
+    filter_idxs_consumed: &[usize],
+) -> Result<Option<BoxedOperator>> {
+    let mut operator = operator;
+
+    if !block_values.is_empty() {
+        operator = apply_values(operator, block_values);
+    }
+
+    let mut bound = bound_vars_from_operator(&operator);
+    let mut pending_binds = pending_binds;
+    let mut pending_filters = pending_filters;
+
+    for tp in triples {
+        let mut vars_after: HashSet<VarId> = bound.clone();
+        for v in tp.variables() {
+            vars_after.insert(v);
+        }
+
+        let (inlined, remaining) =
+            partition_eligible_filters(pending_filters, &vars_after, filter_idxs_consumed);
+        pending_filters = remaining;
+
+        operator = Some(build_scan_or_join(operator, tp, object_bounds, inlined));
+
+        for v in tp.variables() {
+            bound.insert(v);
+        }
+
+        if let Some(child) = operator.take() {
+            let (child, new_binds, new_filters) = apply_deferred_patterns(
+                child,
+                &mut bound,
+                pending_binds,
+                pending_filters,
+                filter_idxs_consumed,
+            );
+            pending_binds = new_binds;
+            pending_filters = new_filters;
+            operator = Some(child);
+        }
+    }
+
+    if !pending_binds.is_empty() || !pending_filters.is_empty() {
+        let child = require_child(operator, "Filters")?;
+        operator = Some(apply_all_remaining(
+            child,
+            pending_binds,
+            pending_filters,
+            filter_idxs_consumed,
+        ));
+    }
+
+    Ok(operator)
+}
+
 /// Build operators for WHERE clause patterns
 ///
 /// Handles pattern types and builds appropriate operators:
@@ -430,66 +567,18 @@ pub fn build_where_operators_seeded(
     while i < patterns.len() {
         match &patterns[i] {
             Pattern::Triple(_) | Pattern::Values { .. } | Pattern::Bind { .. } => {
-                // Collect an inner-join block of Triples, VALUES, safe BINDs, and safe FILTERs.
-                // This allows:
-                // - hoisting VALUES earlier within the block (inner-join safe)
-                // - hoisting safe BIND/FILTER earlier (only when their inputs are already bound)
-                // - reordering triples for join efficiency
-                // - delaying filters until their vars are bound (never earlier)
                 let start = i;
                 let block = collect_inner_join_block(patterns, start);
                 let end = block.end_index;
-                let block_values = block.values;
-                let triples = block.triples;
-                let block_binds = block.binds;
-                let block_filters = block.filters;
-                // IMPORTANT: `collect_inner_join_block` may consume *zero* patterns when the
-                // current pattern is a BIND/FILTER that is not safe to hoist into a block
-                // (e.g., it references vars that are not yet bound in left-to-right order).
-                //
-                // In that case, we must fall back to processing the single pattern in-order,
-                // otherwise `i` will not advance and we'll spin forever (100% CPU).
-                if end == start {
-                    match &patterns[start] {
-                        Pattern::Bind { var, expr } => {
-                            let child = get_or_empty_seed(operator.take());
-                            operator = Some(Box::new(BindOperator::new(
-                                child,
-                                *var,
-                                expr.clone(),
-                                vec![],
-                            )));
-                            i = start + 1;
-                            continue;
-                        }
-                        Pattern::Values { vars, rows } => {
-                            let child = get_or_empty_seed(operator.take());
-                            operator = Some(Box::new(ValuesOperator::new(
-                                child,
-                                vars.clone(),
-                                rows.clone(),
-                            )));
-                            i = start + 1;
-                            continue;
-                        }
-                        Pattern::Triple(tp) => {
-                            operator = Some(build_scan_or_join(
-                                operator,
-                                tp,
-                                &HashMap::new(),
-                                Vec::new(),
-                            ));
-                            i = start + 1;
-                            continue;
-                        }
-                        _ => {
-                            // Should be unreachable due to match arm, but avoid accidental spins.
-                            i = start + 1;
-                            continue;
-                        }
-                    }
-                }
 
+                // `collect_inner_join_block` may consume *zero* patterns when the
+                // current pattern is not safe to hoist (e.g. BIND with unbound vars).
+                // Fall back to processing one pattern to ensure `i` advances.
+                if end == start {
+                    operator = build_single_pattern(operator.take(), &patterns[start]);
+                    i = start + 1;
+                    continue;
+                }
                 i = end;
 
                 // Hot path: triples only (no BIND/FILTER).
@@ -498,10 +587,9 @@ pub fn build_where_operators_seeded(
                     if !block.values.is_empty() {
                         operator = apply_values(operator.take(), block.values);
                     }
-                    let reordered = triples;
                     operator = Some(build_triple_operators(
                         operator,
-                        &reordered,
+                        &block.triples,
                         &HashMap::new(),
                     )?);
                     continue;
@@ -519,141 +607,41 @@ pub fn build_where_operators_seeded(
                     .map(|(idx, expr)| PendingFilter::new(idx, expr))
                     .collect();
 
-                // Compute bound vars from whatever upstream exists (may be None if VALUES deferred).
-                let mut bound = bound_vars_from_operator(&operator);
-
-                // Triples are already in optimal order from the upfront reorder_patterns call.
-                let reordered = triples;
-
-                // If this block contains only BIND/FILTER (no triples) and we have no upstream
-                // operator yet, we still need a concrete seed to attach those operators to.
-                // Use an empty seed (one empty row) to preserve SPARQL-style semantics.
-                if reordered.is_empty()
-                    && operator.is_none()
-                    && (!pending_binds.is_empty() || !pending_filters.is_empty())
-                {
-                    operator = Some(Box::new(EmptyOperator::new()));
-                    bound = bound_vars_from_operator(&operator);
-                }
-
-                // Push down range-safe filters into object bounds (when possible)
+                // Push down range-safe filters into object bounds (when possible).
                 let filters_for_pushdown: Vec<Expression> =
                     pending_filters.iter().map(|f| f.expr.clone()).collect();
                 let (object_bounds, filter_idxs_consumed) =
-                    extract_bounds_from_filters(&reordered, &filters_for_pushdown);
+                    extract_bounds_from_filters(&block.triples, &filters_for_pushdown);
 
-                // PropertyJoinOperator scans each predicate independently across all subjects,
-                // applying per-predicate object bounds during its scan phase. This avoids the
-                // catastrophic nested-loop join overhead when novelty is large (e.g. vector data).
-                //
-                // When VALUES are present but the triples qualify for property join, we build
-                // PropertyJoinOperator FIRST (without the VALUES upstream), then wrap VALUES
-                // on top. This keeps PropertyJoin's independent scanning while still composing
-                // with the VALUES bindings (cross-join since variables are typically disjoint).
-                let can_property_join =
-                    operator.is_none() && reordered.len() >= 2 && is_property_join(&reordered);
+                // Ensure a concrete seed when only BIND/FILTER remain (no triples, no upstream).
+                if block.triples.is_empty() && operator.is_none() {
+                    operator = Some(Box::new(EmptyOperator::new()));
+                }
+
+                let can_property_join = operator.is_none()
+                    && block.triples.len() >= 2
+                    && is_property_join(&block.triples);
+
                 if can_property_join {
-                    operator = Some(build_triple_operators(
+                    operator = build_property_join_block(
                         operator,
-                        &reordered,
+                        &block.triples,
+                        block.values,
+                        pending_binds,
+                        pending_filters,
                         &object_bounds,
-                    )?);
-
-                    // Now apply deferred VALUES on top of PropertyJoinOperator.
-                    // ValuesOperator cross-joins its child rows with the VALUES rows,
-                    // effectively appending the VALUES bindings to each PropertyJoin result.
-                    if has_values {
-                        for (vars, rows) in block_values {
-                            let child = operator.take().unwrap();
-                            operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
-                        }
-                    }
-
-                    // Apply any BINDs/FILTERs that are ready after property join + VALUES.
-                    bound = bound_vars_from_operator(&operator);
-                    if let Some(child) = operator.take() {
-                        let (child, _, _) = apply_deferred_patterns(
-                            child,
-                            &mut bound,
-                            pending_binds,
-                            pending_filters,
-                            &filter_idxs_consumed,
-                        );
-                        // We don't attempt to delay remaining binds/filters in the property-join fast-path;
-                        // any not-yet-ready will be applied later as separate patterns (i.e. not hoisted).
-                        operator = Some(child);
-                    }
+                        &filter_idxs_consumed,
+                    )?;
                 } else {
-                    // Not a property-join candidate. Apply VALUES first (original behavior)
-                    // then build scan/join chain.
-                    if has_values {
-                        for (vars, rows) in block_values {
-                            let child = get_or_empty_seed(operator.take());
-                            operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
-                        }
-                        bound = bound_vars_from_operator(&operator);
-                    }
-
-                    for tp in &reordered {
-                        // Extract filters whose required vars will all be bound
-                        // after this triple. These are inlined into the operator
-                        // (ScanOperator for first scan, NestedLoopJoinOperator
-                        // for subsequent joins) to avoid separate FilterOperator
-                        // overhead.
-                        let mut vars_after: HashSet<VarId> = bound.clone();
-                        for v in tp.variables() {
-                            vars_after.insert(v);
-                        }
-
-                        let mut inlined = Vec::new();
-                        let mut remaining = Vec::new();
-                        for pf in pending_filters {
-                            if filter_idxs_consumed.contains(&pf.original_idx) {
-                                continue;
-                            }
-                            if pf.required_vars.is_subset(&vars_after) {
-                                inlined.push(pf.expr);
-                            } else {
-                                remaining.push(pf);
-                            }
-                        }
-                        pending_filters = remaining;
-
-                        // Build scan/join for this triple with inline filters
-                        operator = Some(build_scan_or_join(operator, tp, &object_bounds, inlined));
-
-                        // Update bound vars after this triple
-                        for v in tp.variables() {
-                            bound.insert(v);
-                        }
-
-                        // Apply any pending binds that are now safe (all vars bound).
-                        // Filters have already been extracted above, so only binds
-                        // remain to be applied here.
-                        if let Some(child) = operator.take() {
-                            let (child, new_binds, new_filters) = apply_deferred_patterns(
-                                child,
-                                &mut bound,
-                                pending_binds,
-                                pending_filters,
-                                &filter_idxs_consumed,
-                            );
-                            pending_binds = new_binds;
-                            pending_filters = new_filters;
-                            operator = Some(child);
-                        }
-                    }
-
-                    // Any remaining binds/filters should now be bound; apply them.
-                    if !pending_binds.is_empty() || !pending_filters.is_empty() {
-                        let child = require_child(operator, "Filters")?;
-                        operator = Some(apply_all_remaining(
-                            child,
-                            pending_binds,
-                            pending_filters,
-                            &filter_idxs_consumed,
-                        ));
-                    }
+                    operator = build_sequential_join_block(
+                        operator,
+                        &block.triples,
+                        block.values,
+                        pending_binds,
+                        pending_filters,
+                        &object_bounds,
+                        &filter_idxs_consumed,
+                    )?;
                 }
             }
 
