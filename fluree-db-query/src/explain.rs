@@ -5,8 +5,8 @@
 //!
 //! Call `explain_patterns` with a set of patterns and optional stats to get an `ExplainPlan`.
 
-use crate::pattern::{Term, TriplePattern};
 use crate::planner::{classify_pattern, estimate_triple_row_count, PatternType};
+use crate::triple::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::StatsView;
 use std::collections::HashSet;

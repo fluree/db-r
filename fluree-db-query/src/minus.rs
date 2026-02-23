@@ -220,7 +220,7 @@ fn collect_vars_from_patterns(patterns: &[Pattern], vars: &mut HashSet<VarId>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pattern::{Term, TriplePattern};
+    use crate::triple::{Term, TriplePattern};
     use fluree_db_core::Sid;
 
     #[test]

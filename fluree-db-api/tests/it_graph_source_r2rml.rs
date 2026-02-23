@@ -26,7 +26,7 @@ use fluree_db_api::{
 use fluree_db_core::{NoOverlay, Tracker};
 use fluree_db_query::ir::GraphName;
 use fluree_db_query::parse::{ParsedQuery, SelectMode};
-use fluree_db_query::pattern::{Term, TriplePattern};
+use fluree_db_query::triple::{Term, TriplePattern};
 use support::genesis_ledger;
 
 // =============================================================================

@@ -1,7 +1,7 @@
-//! Pattern types for query representation
+//! Triple pattern types for query representation
 //!
-//! Patterns represent the logical query structure. The planner transforms
-//! patterns into physical operators.
+//! Defines `Term` (variable or constant) and `TriplePattern` (subject–predicate–object)
+//! used to match flakes in the database index.
 
 use crate::var_registry::VarId;
 use fluree_db_core::{FlakeValue, Sid};

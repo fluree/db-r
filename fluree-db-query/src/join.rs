@@ -11,7 +11,7 @@ use crate::error::{QueryError, Result};
 use crate::expression::passes_filters;
 use crate::ir::Expression;
 use crate::operator::{Operator, OperatorState};
-use crate::pattern::{Term, TriplePattern};
+use crate::triple::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
@@ -1953,7 +1953,7 @@ mod tests {
         use crate::execute::{build_operator_tree, run_operator, ExecutableQuery};
         use crate::ir::{Expression, FilterValue, Pattern};
         use crate::parse::ParsedQuery;
-        use crate::pattern::Term;
+        use crate::triple::Term;
         use crate::var_registry::VarRegistry;
         use fluree_db_core::value_id::{ObjKey, ObjKind};
         use fluree_db_core::DatatypeDictId;

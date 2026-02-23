@@ -19,12 +19,12 @@ use crate::join::NestedLoopJoinOperator;
 use crate::minus::MinusOperator;
 use crate::operator::BoxedOperator;
 use crate::optional::{OptionalOperator, PlanTreeOptionalBuilder};
-use crate::pattern::TriplePattern;
 use crate::planner::{is_property_join, reorder_patterns};
 use crate::property_join::PropertyJoinOperator;
 use crate::property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
 use crate::seed::EmptyOperator;
 use crate::subquery::SubqueryOperator;
+use crate::triple::TriplePattern;
 use crate::union::UnionOperator;
 use crate::values::ValuesOperator;
 use crate::var_registry::VarId;
@@ -951,7 +951,7 @@ pub fn build_triple_operators(
 mod tests {
     use super::*;
     use crate::ir::{Expression, FilterValue, Pattern};
-    use crate::pattern::Term;
+    use crate::triple::Term;
     use fluree_db_core::{FlakeValue, PropertyStatData, Sid, StatsView};
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {

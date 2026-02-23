@@ -1391,7 +1391,7 @@ mod tests {
         if let crate::ir::Pattern::Triple(tp) = &query.patterns[0] {
             // Predicate IRI is lowered to Term::Iri for deferred encoding
             assert!(
-                matches!(tp.p, crate::pattern::Term::Iri(ref iri) if iri.as_ref() == "http://example.org/name")
+                matches!(tp.p, crate::triple::Term::Iri(ref iri) if iri.as_ref() == "http://example.org/name")
             );
         } else {
             panic!("Expected Pattern::Triple");

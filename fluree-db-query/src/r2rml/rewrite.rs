@@ -25,7 +25,7 @@
 //! - Filter patterns are preserved and applied post-R2RML scan
 
 use crate::ir::{Pattern, R2rmlPattern};
-use crate::pattern::{Term, TriplePattern};
+use crate::triple::{Term, TriplePattern};
 use fluree_db_core::Db;
 
 /// Result of rewriting patterns for R2RML.

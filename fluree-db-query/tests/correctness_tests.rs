@@ -9,7 +9,7 @@ use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::join::NestedLoopJoinOperator;
 use fluree_db_query::operator::Operator;
 use fluree_db_query::optional::{OptionalBuilder, OptionalOperator};
-use fluree_db_query::pattern::{Term, TriplePattern};
+use fluree_db_query::triple::{Term, TriplePattern};
 use fluree_db_query::var_registry::{VarId, VarRegistry};
 use std::sync::Arc;
 

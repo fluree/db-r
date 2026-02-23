@@ -23,8 +23,8 @@ use crate::vector::DistanceMetric;
 // Re-export graph select types for external use
 pub use crate::ir::{GraphSelectSpec, NestedSelectSpec, Root, SelectionSpec};
 use crate::options::QueryOptions;
-use crate::pattern::{Term, TriplePattern};
 use crate::sort::{SortDirection, SortSpec};
+use crate::triple::{Term, TriplePattern};
 use crate::var_registry::{VarId, VarRegistry};
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_graph_json_ld::ParsedContext;

@@ -32,7 +32,7 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{PathModifier, PropertyPathPattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::pattern::Term;
+use crate::triple::Term;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{
@@ -714,7 +714,7 @@ impl Operator for PropertyPathOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pattern::Term;
+    use crate::triple::Term;
     use fluree_db_core::Sid;
 
     fn make_pattern(

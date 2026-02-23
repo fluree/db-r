@@ -8,7 +8,7 @@
 //! `build_where_operators_seeded` in `execute/where_plan.rs`.
 
 use crate::ir::{CompareOp, Function, Pattern};
-use crate::pattern::{Term, TriplePattern};
+use crate::triple::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::{FlakeValue, PropertyStatData, StatsView};
 use std::collections::{HashMap, HashSet};
@@ -187,7 +187,7 @@ pub(crate) fn estimate_triple_row_count(
 /// Same ?s var, multiple distinct specified predicates, object vars.
 /// Used by the planner to choose PropertyJoinOperator.
 pub fn is_property_join(patterns: &[TriplePattern]) -> bool {
-    use crate::pattern::Term;
+    use crate::triple::Term;
 
     if patterns.len() < 2 {
         return false;
@@ -1200,7 +1200,7 @@ fn deferred_required_vars(pattern: &Pattern) -> Vec<VarId> {
 mod tests {
     use super::*;
     use crate::ir::GraphName;
-    use crate::pattern::Term;
+    use crate::triple::Term;
     use fluree_db_core::{PropertyStatData, Sid, StatsView};
     use std::sync::Arc;
 

@@ -10,8 +10,8 @@
 //! - The planner chooses physical join operators based on pattern analysis
 
 use crate::binding::Binding;
-use crate::pattern::{Term, TriplePattern};
 use crate::sort::SortSpec;
+use crate::triple::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::Sid;
 
@@ -1903,7 +1903,7 @@ pub enum Function {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pattern::Term;
+    use crate::triple::Term;
     use fluree_db_core::Sid;
 
     fn test_pattern() -> TriplePattern {

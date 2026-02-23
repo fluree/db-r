@@ -427,7 +427,7 @@ impl Operator for GraphOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pattern::{Term, TriplePattern};
+    use crate::triple::{Term, TriplePattern};
     use fluree_db_core::Sid;
 
     // Helper test struct for creating operators with specific schemas

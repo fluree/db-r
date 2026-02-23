@@ -30,7 +30,7 @@ use crate::binding::{Batch, Binding};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::pattern::{Term, TriplePattern};
+use crate::triple::{Term, TriplePattern};
 use async_trait::async_trait;
 use fluree_db_core::FlakeValue;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
@@ -406,7 +406,7 @@ mod tests {
     use crate::ir::Pattern;
     use crate::options::QueryOptions;
     use crate::parse::{ParsedQuery, SelectMode};
-    use crate::pattern::{Term, TriplePattern};
+    use crate::triple::{Term, TriplePattern};
     use crate::var_registry::VarRegistry;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};

@@ -16,10 +16,10 @@ use crate::offset::OffsetOperator;
 use crate::operator::BoxedOperator;
 use crate::options::QueryOptions;
 use crate::parse::{ParsedQuery, SelectMode};
-use crate::pattern::Term;
 use crate::project::ProjectOperator;
 use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
+use crate::triple::Term;
 use crate::var_registry::VarId;
 use crate::PropertyJoinCountAllOperator;
 use fluree_db_core::StatsView;
@@ -109,7 +109,7 @@ fn detect_stats_count_by_predicate(
 fn detect_property_join_count_all(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(VarId, Vec<(crate::pattern::Term, VarId)>, VarId)> {
+) -> Option<(VarId, Vec<(crate::triple::Term, VarId)>, VarId)> {
     if query.select_mode == SelectMode::Construct {
         return None;
     }
@@ -135,7 +135,7 @@ fn detect_property_join_count_all(
     }
 
     let mut subject_var: Option<VarId> = None;
-    let mut preds: Vec<(crate::pattern::Term, VarId)> = Vec::with_capacity(query.patterns.len());
+    let mut preds: Vec<(crate::triple::Term, VarId)> = Vec::with_capacity(query.patterns.len());
     let mut seen_obj: std::collections::HashSet<VarId> = std::collections::HashSet::new();
 
     for p in &query.patterns {
@@ -144,7 +144,7 @@ fn detect_property_join_count_all(
         };
 
         // Subject must be a variable, shared across all patterns.
-        let crate::pattern::Term::Var(s) = &tp.s else {
+        let crate::triple::Term::Var(s) = &tp.s else {
             return None;
         };
         match subject_var {
@@ -155,10 +155,10 @@ fn detect_property_join_count_all(
 
         // Predicates must be bound, objects must be vars, and no dt/lang constraints.
         let pred = match &tp.p {
-            crate::pattern::Term::Sid(_) | crate::pattern::Term::Iri(_) => tp.p.clone(),
+            crate::triple::Term::Sid(_) | crate::triple::Term::Iri(_) => tp.p.clone(),
             _ => return None,
         };
-        let crate::pattern::Term::Var(o) = &tp.o else {
+        let crate::triple::Term::Var(o) = &tp.o else {
             return None;
         };
         if tp.dt.is_some() || tp.lang.is_some() {
@@ -479,8 +479,8 @@ mod tests {
     use crate::ir::Pattern;
     use crate::options::QueryOptions;
     use crate::parse::ParsedQuery;
-    use crate::pattern::{Term, TriplePattern};
     use crate::sort::SortSpec;
+    use crate::triple::{Term, TriplePattern};
     use fluree_db_core::Sid;
     use fluree_graph_json_ld::ParsedContext;
 

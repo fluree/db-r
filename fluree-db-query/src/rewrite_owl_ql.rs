@@ -36,8 +36,8 @@
 //! ```
 
 use crate::ir::Pattern;
-use crate::pattern::{Term, TriplePattern};
 use crate::rewrite::{Diagnostics, PlanContext, RewriteResult};
+use crate::triple::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::{
     is_owl_equivalent_property, is_rdf_type, range, Db, FlakeValue, IndexType, OverlayProvider,

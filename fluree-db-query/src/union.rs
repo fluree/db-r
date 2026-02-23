@@ -320,15 +320,15 @@ mod tests {
         });
 
         let branches = vec![
-            vec![Pattern::Triple(crate::pattern::TriplePattern::new(
-                crate::pattern::Term::Var(VarId(0)),
-                crate::pattern::Term::Sid(Sid::new(100, "name")),
-                crate::pattern::Term::Var(VarId(1)),
+            vec![Pattern::Triple(crate::triple::TriplePattern::new(
+                crate::triple::Term::Var(VarId(0)),
+                crate::triple::Term::Sid(Sid::new(100, "name")),
+                crate::triple::Term::Var(VarId(1)),
             ))],
-            vec![Pattern::Triple(crate::pattern::TriplePattern::new(
-                crate::pattern::Term::Var(VarId(0)),
-                crate::pattern::Term::Sid(Sid::new(100, "email")),
-                crate::pattern::Term::Var(VarId(2)),
+            vec![Pattern::Triple(crate::triple::TriplePattern::new(
+                crate::triple::Term::Var(VarId(0)),
+                crate::triple::Term::Sid(Sid::new(100, "email")),
+                crate::triple::Term::Var(VarId(2)),
             ))],
         ];
 

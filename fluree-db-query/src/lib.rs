@@ -46,7 +46,6 @@ pub mod operator;
 pub mod optional;
 pub mod options;
 pub mod parse;
-pub mod pattern;
 pub mod planner;
 pub mod policy;
 pub mod project;
@@ -63,6 +62,7 @@ pub mod service;
 pub mod sort;
 pub mod stats_query;
 pub mod subquery;
+pub mod triple;
 pub mod union;
 pub mod values;
 pub mod var_registry;
@@ -111,7 +111,6 @@ pub use offset::OffsetOperator;
 pub use operator::{BoxedOperator, Operator, OperatorState};
 pub use optional::OptionalOperator;
 pub use options::QueryOptions;
-pub use pattern::{Term, TriplePattern};
 pub use planner::{
     extract_object_bounds_for_var, extract_range_constraints, is_property_join, PatternType,
     RangeConstraint, RangeValue,
@@ -131,6 +130,7 @@ pub use seed::{EmptyOperator, SeedOperator};
 pub use sort::{compare_bindings, compare_flake_values, SortDirection, SortOperator, SortSpec};
 pub use stats_query::StatsCountByPredicateOperator;
 pub use subquery::SubqueryOperator;
+pub use triple::{Term, TriplePattern};
 pub use union::UnionOperator;
 pub use values::ValuesOperator;
 

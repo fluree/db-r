@@ -252,8 +252,8 @@ mod tests {
     use fluree_db_query::aggregate::AggregateFn;
     use fluree_db_query::ir::{PathModifier, Pattern};
     use fluree_db_query::parse::encode::MemoryEncoder;
-    use fluree_db_query::pattern::Term;
     use fluree_db_query::sort::SortDirection;
+    use fluree_db_query::triple::Term;
 
     fn test_encoder() -> MemoryEncoder {
         let mut encoder = MemoryEncoder::with_common_namespaces();

@@ -236,7 +236,7 @@ impl Operator for ExistsOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pattern::{Term, TriplePattern};
+    use crate::triple::{Term, TriplePattern};
     use fluree_db_core::Sid;
 
     #[test]
