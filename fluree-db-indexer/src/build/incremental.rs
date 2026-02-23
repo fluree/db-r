@@ -145,13 +145,15 @@ where
 
     // Format-level constants for leaflet/leaf sizing.
     // These match the full-rebuild pipeline and are tied to the FLI2 format.
+    //
+    // Note: these can be overridden via IndexerConfig for testing/specialized builds.
     let branch_config = IncrementalBranchConfig {
         zstd_level: 1,
         max_parallel_leaves: 4,
-        leaflet_split_rows: 37_500,
-        leaflet_target_rows: 25_000,
-        leaflets_per_leaf: 10,
-        leaf_split_leaflets: 20,
+        leaflet_target_rows: config.leaflet_rows.max(1),
+        leaflet_split_rows: (config.leaflet_rows.max(1) * 3) / 2,
+        leaflets_per_leaf: config.leaflets_per_leaf.max(1),
+        leaf_split_leaflets: config.leaflets_per_leaf.max(1) * 2,
     };
 
     let p_width = fluree_db_binary_index::format::leaflet::p_width_for_max(

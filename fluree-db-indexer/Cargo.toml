@@ -54,3 +54,4 @@ rayon.workspace = true
 [dev-dependencies]
 # For HLL tests (proper hash distribution)
 xxhash-rust.workspace = true
+tempfile = "3"

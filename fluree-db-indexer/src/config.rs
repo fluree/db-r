@@ -95,6 +95,20 @@ pub struct IndexerConfig {
     ///
     /// Default: 4 (one per sort order in a single-graph workload)
     pub incremental_max_concurrency: usize,
+
+    /// Target rows per leaflet (FLI2).
+    ///
+    /// This is primarily a build-format tuning knob. Smaller values produce
+    /// more leaflets (and therefore more leaves) for the same dataset, which
+    /// can be useful for tests that need multi-leaf coverage with small data.
+    ///
+    /// Default: 25,000.
+    pub leaflet_rows: usize,
+
+    /// Leaflets per leaf file (FLI2).
+    ///
+    /// Default: 10.
+    pub leaflets_per_leaf: usize,
 }
 
 /// Default run-sort budget: 256 MB.
@@ -120,6 +134,8 @@ impl Default for IndexerConfig {
             incremental_enabled: true,
             incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
+            leaflet_rows: 25_000,
+            leaflets_per_leaf: 10,
         }
     }
 }
@@ -144,6 +160,8 @@ impl IndexerConfig {
             incremental_enabled: true,
             incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
+            leaflet_rows: 25_000,
+            leaflets_per_leaf: 10,
         }
     }
 
@@ -161,6 +179,8 @@ impl IndexerConfig {
             incremental_enabled: true,
             incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
+            leaflet_rows: 25_000,
+            leaflets_per_leaf: 10,
         }
     }
 
@@ -178,7 +198,19 @@ impl IndexerConfig {
             incremental_enabled: true,
             incremental_max_commits: DEFAULT_INCREMENTAL_MAX_COMMITS,
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
+            leaflet_rows: 25_000,
+            leaflets_per_leaf: 10,
         }
+    }
+
+    pub fn with_leaflet_rows(mut self, rows: usize) -> Self {
+        self.leaflet_rows = rows.max(1);
+        self
+    }
+
+    pub fn with_leaflets_per_leaf(mut self, n: usize) -> Self {
+        self.leaflets_per_leaf = n.max(1);
+        self
     }
 
     /// Builder method to set GC max old indexes
