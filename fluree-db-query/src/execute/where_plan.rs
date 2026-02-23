@@ -116,12 +116,12 @@ struct PendingFilter {
     expr: Expression,
 }
 
-/// Partition pending filters into those ready for inline evaluation and those still waiting.
+/// Partition pending filters into those eligible for inline evaluation and those still waiting.
 ///
 /// Filters consumed by pushdown are silently dropped. Filters whose required
 /// variables are all in `bound` are returned as the first element (ready);
 /// the rest are returned as the second element (still pending).
-fn partition_ready_filters(
+fn partition_eligible_filters(
     filters: Vec<PendingFilter>,
     bound: &HashSet<VarId>,
     filter_idxs_consumed: &[usize],
@@ -160,7 +160,7 @@ fn apply_eligible_binds(
             bound.insert(pending.target_var);
 
             let (bind_filters, still_pending) =
-                partition_ready_filters(pending_filters, bound, filter_idxs_consumed);
+                partition_eligible_filters(pending_filters, bound, filter_idxs_consumed);
             pending_filters = still_pending;
 
             child = Box::new(BindOperator::new(
@@ -196,7 +196,7 @@ fn apply_deferred_patterns(
     );
 
     let (ready, remaining_filters) =
-        partition_ready_filters(pending_filters, bound, filter_idxs_consumed);
+        partition_eligible_filters(pending_filters, bound, filter_idxs_consumed);
     for expr in ready {
         child = Box::new(FilterOperator::new(child, expr));
     }
