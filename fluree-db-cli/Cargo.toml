@@ -29,6 +29,12 @@ fluree-vocab = { path = "../fluree-vocab" }
 fluree-db-query = { path = "../fluree-db-query" }
 fluree-db-binary-index = { path = "../fluree-db-binary-index" }
 
+# Developer memory layer
+fluree-db-memory = { path = "../fluree-db-memory", features = ["mcp"] }
+
+# MCP stdio server
+rmcp = { workspace = true }
+
 # Server embedding (optional — enables `fluree server` subcommands)
 fluree-db-server = { path = "../fluree-db-server", optional = true }
 

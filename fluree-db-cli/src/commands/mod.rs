@@ -10,6 +10,8 @@ pub mod init;
 pub mod insert;
 pub mod list;
 pub mod log;
+pub mod mcp_serve;
+pub mod memory;
 pub mod prefix;
 pub mod query;
 pub mod remote;

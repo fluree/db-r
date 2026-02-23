@@ -412,6 +412,170 @@ pub enum Commands {
         #[command(subcommand)]
         action: ServerAction,
     },
+
+    /// Developer memory — store and recall facts, decisions, constraints
+    Memory {
+        #[command(subcommand)]
+        action: MemoryAction,
+    },
+
+    /// Model Context Protocol (MCP) server
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
+}
+
+/// Memory subcommands.
+#[derive(Subcommand)]
+pub enum MemoryAction {
+    /// Initialize the memory store (creates __memory ledger)
+    Init,
+
+    /// Store a new memory
+    Add {
+        /// Memory kind: fact, decision, constraint, preference, artifact
+        #[arg(long, default_value = "fact")]
+        kind: String,
+
+        /// Content text (or provide via --file or stdin)
+        #[arg(long)]
+        text: Option<String>,
+
+        /// Tags for categorization (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// File/artifact references (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        refs: Vec<String>,
+
+        /// Severity for constraints: must, should, prefer
+        #[arg(long)]
+        severity: Option<String>,
+
+        /// Scope: repo (default) or user
+        #[arg(long)]
+        scope: Option<String>,
+
+        /// Sensitivity: public (default), internal, client, secret
+        #[arg(long)]
+        sensitivity: Option<String>,
+
+        /// Why this decision was made (for kind=decision)
+        #[arg(long)]
+        rationale: Option<String>,
+
+        /// Alternatives considered (for kind=decision, comma-separated)
+        #[arg(long)]
+        alternatives: Option<String>,
+
+        /// Fact sub-type: command, architecture, dependency, configuration, api
+        #[arg(long)]
+        fact_kind: Option<String>,
+
+        /// Preference convention scope: user, team, repo
+        #[arg(long)]
+        pref_scope: Option<String>,
+
+        /// Artifact sub-type: file, symbol, crate, module, config, endpoint
+        #[arg(long)]
+        artifact_kind: Option<String>,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Recall relevant memories for a query
+    Recall {
+        /// Search query
+        query: String,
+
+        /// Maximum number of results
+        #[arg(long, short = 'n', default_value_t = 10)]
+        limit: usize,
+
+        /// Filter by kind
+        #[arg(long)]
+        kind: Option<String>,
+
+        /// Filter by tag(s) (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+
+        /// Filter by scope: repo or user
+        #[arg(long)]
+        scope: Option<String>,
+
+        /// Output format: text, json, or context (XML for LLM)
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Update (supersede) an existing memory
+    Update {
+        /// ID of the memory to update
+        id: String,
+
+        /// New content text
+        #[arg(long)]
+        text: Option<String>,
+
+        /// New tags (replaces all existing tags)
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+
+        /// New artifact refs (replaces all existing refs)
+        #[arg(long, value_delimiter = ',')]
+        refs: Option<Vec<String>>,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Delete a memory
+    Forget {
+        /// ID of the memory to delete
+        id: String,
+    },
+
+    /// Show the supersession chain for a memory
+    Explain {
+        /// ID of the memory to explain
+        id: String,
+    },
+
+    /// Show memory store status
+    Status,
+
+    /// Export all memories as JSON
+    Export,
+
+    /// Import memories from a JSON file
+    Import {
+        /// Path to JSON file
+        file: std::path::PathBuf,
+    },
+
+    /// Install MCP configuration for an IDE
+    McpInstall {
+        /// Target IDE: claude-code, claude-vscode, cursor (auto-detected if omitted)
+        #[arg(long)]
+        ide: Option<String>,
+    },
+}
+
+/// MCP subcommands.
+#[derive(Subcommand)]
+pub enum McpAction {
+    /// Start the MCP server (stdio transport for IDE integration)
+    Serve {
+        /// Transport: stdio (default) — reads JSON-RPC from stdin, writes to stdout
+        #[arg(long, default_value = "stdio")]
+        transport: String,
+    },
 }
 
 /// Server lifecycle subcommands.

@@ -203,21 +203,20 @@ async fn main() {
         colored::control::set_override(false);
     }
 
-    // Skip CLI tracing for server subcommands that run the server in-process
-    // (Run, Child). The server has its own telemetry initialization (init_logging)
-    // that must own the global tracing subscriber. If we install the CLI's "off"
-    // filter first, the server's init_logging() no-ops (has_been_set() == true).
-    // Other server subcommands (start, stop, status, etc.) are just process
-    // management and use normal CLI tracing.
+    // Skip CLI tracing for:
+    // - Server subcommands (Run, Child) that own the global tracing subscriber
+    // - MCP serve (stdio transport uses stdout; any tracing to stderr could
+    //   interfere with the JSON-RPC protocol)
+    let skip_tracing = matches!(cli.command, Commands::Mcp { .. });
+
     #[cfg(feature = "server")]
-    let skip_tracing = matches!(
-        cli.command,
-        Commands::Server {
-            action: cli::ServerAction::Run { .. } | cli::ServerAction::Child { .. }
-        }
-    );
-    #[cfg(not(feature = "server"))]
-    let skip_tracing = false;
+    let skip_tracing = skip_tracing
+        || matches!(
+            cli.command,
+            Commands::Server {
+                action: cli::ServerAction::Run { .. } | cli::ServerAction::Child { .. }
+            }
+        );
 
     if !skip_tracing {
         init_tracing(&cli);
@@ -514,5 +513,19 @@ async fn run(cli: Cli) -> error::CliResult<()> {
         Commands::Server { .. } => Err(error::CliError::Server(
             "server support not compiled. Rebuild with `--features server`.".into(),
         )),
+
+        Commands::Memory { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            commands::memory::run(action, &fluree_dir).await
+        }
+
+        Commands::Mcp { action } => {
+            let fluree_dir = config::require_fluree_dir(config_path)?;
+            match action {
+                cli::McpAction::Serve { transport } => {
+                    commands::mcp_serve::run(&transport, &fluree_dir).await
+                }
+            }
+        }
     }
 }

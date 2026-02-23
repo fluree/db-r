@@ -27,6 +27,8 @@
   - [clone](cli/clone.md)
   - [track](cli/track.md)
   - [server](cli/server.md)
+  - [memory](cli/memory.md)
+  - [mcp](cli/mcp.md)
   - [completions](cli/completions.md)
 
 - [Getting started](getting-started/README.md)
@@ -55,6 +57,7 @@
   - [Index format](design/index-format.md)
   - [Namespace allocation and fallback modes](design/namespace-allocation.md)
   - [Storage traits](design/storage-traits.md)
+  - [Developer memory layer](design/memory-layer.md)
 
 - [HTTP API (fluree-db-server)](api/README.md)
   - [Overview](api/overview.md)

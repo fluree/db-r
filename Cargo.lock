@@ -2399,6 +2399,7 @@ dependencies = [
  "fluree-db-binary-index",
  "fluree-db-core",
  "fluree-db-credential",
+ "fluree-db-memory",
  "fluree-db-nameservice",
  "fluree-db-nameservice-sync",
  "fluree-db-novelty",
@@ -2417,6 +2418,7 @@ dependencies = [
  "predicates",
  "rand 0.8.5",
  "reqwest",
+ "rmcp",
  "serde",
  "serde_json",
  "sha2",
@@ -2595,6 +2597,26 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "fluree-db-memory"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "fluree-db-api",
+ "fluree-db-core",
+ "fluree-db-nameservice",
+ "regex",
+ "rmcp",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "ulid",
 ]
 
 [[package]]
