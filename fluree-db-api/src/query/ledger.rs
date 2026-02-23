@@ -11,7 +11,7 @@ use crate::{
     OverlayProvider, PolicyContext, QueryResult, Result, Storage, Tracker, TrackingOptions,
     TrackingTally, VarRegistry,
 };
-use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore};
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
 
 impl<S, N> Fluree<S, N>

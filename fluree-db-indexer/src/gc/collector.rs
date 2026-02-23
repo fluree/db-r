@@ -32,7 +32,7 @@ struct IndexChainEntry {
 ///
 /// Returns `(index_t, prev_index_id, garbage_id)`.
 fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<ContentId>, Option<ContentId>)> {
-    let v5 = crate::run_index::IndexRootV5::decode(bytes).map_err(|e| {
+    let v5 = fluree_db_binary_index::IndexRootV5::decode(bytes).map_err(|e| {
         crate::error::IndexerError::Serialization(format!("index root: expected IRB1: {e}"))
     })?;
     let prev_id = v5.prev_index.map(|p| p.id);
@@ -331,7 +331,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_index::{
+    use fluree_db_binary_index::{
         BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefsV5, DictTreeRefs, IndexRootV5,
     };
     use fluree_db_core::prelude::*;

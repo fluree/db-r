@@ -14,10 +14,10 @@ use crate::operator::{Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{GraphId, ObjectBounds, Sid, BATCHED_JOIN_SIZE};
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
@@ -1004,13 +1004,13 @@ impl NestedLoopJoinOperator {
     /// of the current left batch. Without subject bounds we'd scan the entire
     /// predicate partition even when subjects fall into a narrow range.
     fn find_psot_leaf_range(
-        branch: &fluree_db_indexer::run_index::branch::BranchManifest,
+        branch: &fluree_db_binary_index::BranchManifest,
         g_id: GraphId,
         p_id: u32,
         min_s_id: u64,
         max_s_id: u64,
     ) -> std::ops::Range<usize> {
-        use fluree_db_indexer::run_index::run_record::{cmp_psot, RunRecord};
+        use fluree_db_binary_index::{cmp_psot, RunRecord};
 
         let min_key = RunRecord {
             g_id,
@@ -1049,22 +1049,18 @@ impl NestedLoopJoinOperator {
         &self,
         ctx: &ExecutionContext<'_>,
         store: &BinaryIndexStore,
-        branch: &fluree_db_indexer::run_index::branch::BranchManifest,
+        branch: &fluree_db_binary_index::BranchManifest,
         leaf_range: std::ops::Range<usize>,
         p_id: u32,
         unique_s_ids: &[u64],
         s_id_to_accum: &HashMap<u64, Vec<usize>>,
         scatter: &mut [Vec<Vec<Binding>>],
     ) -> Result<()> {
+        use fluree_db_binary_index::{
+            decode_leaflet_region1, decode_leaflet_region2, read_leaf_header, CachedRegion1,
+            CachedRegion2, LeafletCacheKey, LeafletHeader, RunSortOrder,
+        };
         use fluree_db_core::ListIndex;
-        use fluree_db_indexer::run_index::leaf::read_leaf_header;
-        use fluree_db_indexer::run_index::leaflet::{
-            decode_leaflet_region1, decode_leaflet_region2, LeafletHeader,
-        };
-        use fluree_db_indexer::run_index::leaflet_cache::{
-            CachedRegion1, CachedRegion2, LeafletCacheKey,
-        };
-        use fluree_db_indexer::run_index::run_record::RunSortOrder;
         use memmap2::Mmap;
         use std::sync::Arc as StdArc;
         use xxhash_rust::xxh3::xxh3_128;
@@ -1486,7 +1482,7 @@ impl NestedLoopJoinOperator {
     /// This avoids opening/decompressing leaflets once per subject, which can be
     /// catastrophically slow for large left batches.
     async fn flush_batched_accumulator_binary(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
-        use fluree_db_indexer::run_index::run_record::RunSortOrder;
+        use fluree_db_binary_index::RunSortOrder;
 
         if self.batched_accumulator.is_empty() {
             return Ok(());
@@ -1950,6 +1946,8 @@ mod tests {
         use crate::parse::ParsedQuery;
         use crate::pattern::Term;
         use crate::var_registry::VarRegistry;
+        use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+        use fluree_db_binary_index::BinaryIndexStore;
         use fluree_db_core::value_id::{ObjKey, ObjKind};
         use fluree_db_core::DatatypeDictId;
         use fluree_db_core::LedgerSnapshot;
@@ -1961,8 +1959,6 @@ mod tests {
         };
         use fluree_db_indexer::run_index::index_build::build_all_indexes;
         use fluree_db_indexer::run_index::run_file::write_run_file;
-        use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
-        use fluree_db_indexer::run_index::BinaryIndexStore;
         use fluree_graph_json_ld::ParsedContext;
 
         // --- Temp dirs ---

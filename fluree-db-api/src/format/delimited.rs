@@ -20,9 +20,9 @@
 use super::iri::IriCompactor;
 use super::{FormatError, Result};
 use crate::QueryResult;
+use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{FlakeValue, LedgerSnapshot, Sid};
-use fluree_db_indexer::run_index::BinaryGraphView;
 use fluree_db_query::binding::Binding;
 use fluree_db_query::{SelectMode, VarId};
 

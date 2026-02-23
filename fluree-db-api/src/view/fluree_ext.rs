@@ -10,9 +10,9 @@ use crate::view::{GraphDb, ReasoningModePrecedence};
 use crate::{
     time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result, Storage, TimeSpec,
 };
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ids::GraphId;
 use fluree_db_core::{ContentStore, DictNovelty};
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_query::rewrite::ReasoningModes;
 use fluree_db_query::BinaryRangeProvider;
 

@@ -7,8 +7,8 @@ use crate::{
     SelectMode, Tracker, TrackingOptions, VarRegistry,
 };
 
+use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::LedgerSnapshot;
-use fluree_db_indexer::run_index::BinaryGraphView;
 use fluree_db_query::parse::{parse_query, ParsedQuery};
 
 use super::QueryResult;

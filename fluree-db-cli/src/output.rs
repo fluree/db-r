@@ -3,8 +3,8 @@ use crate::error::CliResult;
 use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::format::{IriCompactor, SelectMode};
 use fluree_db_api::QueryResult;
+use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::{FlakeValue, LedgerSnapshot};
-use fluree_db_indexer::run_index::BinaryGraphView;
 use fluree_db_query::binding::Binding;
 
 /// Output format for query results.

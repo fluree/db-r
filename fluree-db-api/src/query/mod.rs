@@ -15,8 +15,8 @@ use crate::{
     SelectMode, Tracker, TrackingTally, VarRegistry,
 };
 
+use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::{GraphDbRef, LedgerSnapshot};
-use fluree_db_indexer::run_index::BinaryGraphView;
 
 use fluree_db_query::parse::{ConstructTemplate, GraphSelectSpec};
 

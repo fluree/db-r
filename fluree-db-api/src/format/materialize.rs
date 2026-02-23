@@ -6,8 +6,8 @@
 
 use super::{FormatError, Result};
 use crate::QueryResult;
+use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryGraphView;
 use fluree_db_query::binding::Binding;
 
 /// Materialize an encoded binding to a concrete `Binding` (Sid/Lit/etc).

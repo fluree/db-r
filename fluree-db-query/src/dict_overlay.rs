@@ -16,6 +16,7 @@
 //! let iri = overlay.resolve_subject_iri(s_id)?;
 //! ```
 
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::flake::FlakeMeta;
 use fluree_db_core::ns_vec_bi_dict::NsVecBiDict;
@@ -26,7 +27,6 @@ use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::vec_bi_dict::VecBiDict;
 use fluree_db_core::GraphId;
 use fluree_db_core::ListIndex;
-use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore};
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;

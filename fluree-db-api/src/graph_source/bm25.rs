@@ -504,7 +504,7 @@ where
     N: NameService + GraphSourcePublisher,
 {
     /// Get the shared leaflet cache from LedgerManager (if caching is enabled).
-    fn leaflet_cache(&self) -> Option<Arc<fluree_db_indexer::run_index::LeafletCache>> {
+    fn leaflet_cache(&self) -> Option<Arc<fluree_db_binary_index::LeafletCache>> {
         self.ledger_manager()
             .and_then(|lm| lm.leaflet_cache().cloned())
     }
@@ -586,7 +586,7 @@ where
         graph_source_id: &str,
         bytes: &[u8],
     ) -> Result<fluree_db_query::bm25::Bm25Index> {
-        use fluree_db_indexer::run_index::LeafletCache;
+        use fluree_db_binary_index::LeafletCache;
         use fluree_db_query::bm25::{
             assemble_from_chunked_root, deserialize, deserialize_chunked_root,
             deserialize_posting_leaflet, is_chunked_format, LeafletRef, PostingList,
@@ -672,7 +672,7 @@ where
         query_text: &str,
         limit: usize,
     ) -> Result<fluree_db_query::bm25::Bm25SearchResult> {
-        use fluree_db_indexer::run_index::LeafletCache;
+        use fluree_db_binary_index::LeafletCache;
         use fluree_db_query::bm25::{
             assemble_from_chunked_root, deserialize_chunked_root, deserialize_posting_leaflet,
             is_chunked_format, Analyzer, Bm25Scorer, Bm25SearchResult, LeafletRef, PostingList,

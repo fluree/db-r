@@ -15,10 +15,10 @@ mod support;
 use std::sync::Arc;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState};
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::{
     load_ledger_snapshot, DictNovelty, LedgerSnapshot, LedgerSnapshotMetadata, Storage,
 };
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_query::BinaryRangeProvider;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
@@ -59,7 +59,7 @@ async fn apply_index_v2<S: Storage + Clone + 'static>(
     let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
 
     // Extract metadata from IRB1 root
-    let v5 = fluree_db_indexer::run_index::IndexRootV5::decode(&bytes).expect("decode IRB1 root");
+    let v5 = fluree_db_binary_index::IndexRootV5::decode(&bytes).expect("decode IRB1 root");
     let meta = LedgerSnapshotMetadata {
         ledger_id: v5.ledger_id,
         t: v5.index_t,

@@ -32,11 +32,11 @@ use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use async_trait::async_trait;
-use fluree_db_core::FlakeValue;
-use fluree_db_indexer::run_index::run_record::RunSortOrder;
-use fluree_db_indexer::run_index::{
+use fluree_db_binary_index::{
     sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, DecodedBatch,
+    RunSortOrder,
 };
+use fluree_db_core::FlakeValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -415,6 +415,8 @@ mod tests {
     use crate::parse::{ParsedQuery, SelectMode};
     use crate::pattern::{Term, TriplePattern};
     use crate::var_registry::VarRegistry;
+    use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+    use fluree_db_binary_index::BinaryIndexStore;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::{DatatypeDictId, LedgerSnapshot, Sid};
@@ -424,8 +426,6 @@ mod tests {
     use fluree_db_indexer::run_index::global_dict::{LanguageTagDict, PredicateDict, SubjectDict};
     use fluree_db_indexer::run_index::index_build::build_all_indexes;
     use fluree_db_indexer::run_index::run_file::write_run_file;
-    use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
-    use fluree_db_indexer::run_index::BinaryIndexStore;
     use fluree_graph_json_ld::ParsedContext;
 
     #[tokio::test]

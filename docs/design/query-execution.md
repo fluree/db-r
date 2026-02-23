@@ -55,7 +55,7 @@ Graph scoping is applied at two key boundaries:
 - **Binary streaming path**: `BinaryCursor` operates on a `BinaryGraphView` (graph-scoped decode handle), ensuring leaf/leaflet decoding, predicate dictionaries, and specialty arenas are graph-isolated.
 - **Range path**: `range_with_overlay(snapshot, g_id, overlay, ...)` passes `g_id` into the `RangeProvider`, which routes the range query to the correct per-graph index segments.
 
-Overlay providers are **not** graph-scoped at the trait boundary today (they receive only the index + bounds + `to_t`), so any code that mixes overlay flakes across graphs must filter by graph at the merge site (or via higher-level grouping before querying).
+Overlay providers are **graph-scoped** at the trait boundary: the overlay hook receives `g_id` and must only return flakes for that graph. This keeps multi-tenant named graphs isolated even when overlay data is sourced externally.
 
 ## Overlay merge semantics (high level)
 

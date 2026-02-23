@@ -19,15 +19,15 @@
 
 use crate::binary_scan::index_type_to_sort_order;
 use crate::dict_overlay::DictOverlay;
+use fluree_db_binary_index::{
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, DecodedBatch,
+    RunRecord, RunSortOrder,
+};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::range::{ObjectBounds, RangeMatch, RangeOptions, RangeTest};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{Flake, GraphId, IndexType, OverlayProvider, RangeProvider, Sid};
-use fluree_db_indexer::run_index::run_record::{RunRecord, RunSortOrder};
-use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, DecodedBatch,
-};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::Arc;

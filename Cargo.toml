@@ -15,6 +15,7 @@ members = [
     "fluree-db-novelty",
     "fluree-db-ledger",
     "fluree-db-transact",
+    "fluree-db-binary-index",
     "fluree-db-indexer",
     "fluree-db-spatial",
     "fluree-db-policy",

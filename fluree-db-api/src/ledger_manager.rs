@@ -26,10 +26,10 @@ use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
+use fluree_db_binary_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_core::db::{LedgerSnapshot, LedgerSnapshotMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{ledger_id::normalize_ledger_id, ContentId, ContentStore, Storage};
-use fluree_db_indexer::run_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::Novelty;
@@ -373,7 +373,7 @@ impl LedgerHandle {
         let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
 
         // Build metadata-only LedgerSnapshot from IRB1 root.
-        let v5 = fluree_db_indexer::run_index::IndexRootV5::decode(&bytes)
+        let v5 = fluree_db_binary_index::IndexRootV5::decode(&bytes)
             .map_err(|e| ApiError::internal(format!("failed to decode IRB1 root: {}", e)))?;
         let meta = LedgerSnapshotMetadata {
             ledger_id: v5.ledger_id,

@@ -1975,11 +1975,12 @@ where
         let parent_span = tracing::Span::current();
         Some(tokio::task::spawn_blocking(move || {
             let _guard = parent_span.enter();
+            use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
+            use fluree_db_binary_index::RunRecord;
             use fluree_db_core::value_id::{ObjKey, ObjKind};
             use fluree_db_core::{DatatypeDictId, SubjectId};
-            use fluree_db_indexer::run_index::run_record::LIST_INDEX_NONE;
             use fluree_db_indexer::run_index::{
-                sort_remap_and_write_sorted_commit, ChunkStringDict, ChunkSubjectDict, RunRecord,
+                sort_remap_and_write_sorted_commit, ChunkStringDict, ChunkSubjectDict,
             };
             use fluree_vocab::namespaces;
 
@@ -2364,7 +2365,7 @@ where
                 let nb_dir = run_dir.join(format!("g_{}", g_id)).join("numbig");
                 std::fs::create_dir_all(&nb_dir)?;
                 for (&p_id, arena) in per_pred {
-                    fluree_db_indexer::run_index::numbig_dict::write_numbig_arena(
+                    fluree_db_binary_index::arena::numbig::write_numbig_arena(
                         &nb_dir.join(format!("p_{}.nba", p_id)),
                         arena,
                     )?;
@@ -2401,26 +2402,24 @@ where
                     if arena.is_empty() {
                         continue;
                     }
-                    let shard_paths =
-                        fluree_db_indexer::run_index::vector_arena::write_vector_shards(
-                            &vec_dir, p_id, arena,
-                        )?;
-                    let shard_infos: Vec<fluree_db_indexer::run_index::vector_arena::ShardInfo> =
+                    let shard_paths = fluree_db_binary_index::arena::vector::write_vector_shards(
+                        &vec_dir, p_id, arena,
+                    )?;
+                    let shard_infos: Vec<fluree_db_binary_index::arena::vector::ShardInfo> =
                         shard_paths
                             .iter()
                             .enumerate()
                             .map(|(i, path)| {
-                                let cap =
-                                    fluree_db_indexer::run_index::vector_arena::SHARD_CAPACITY;
+                                let cap = fluree_db_binary_index::arena::vector::SHARD_CAPACITY;
                                 let start = i as u32 * cap;
                                 let count = (arena.len() - start).min(cap);
-                                fluree_db_indexer::run_index::vector_arena::ShardInfo {
+                                fluree_db_binary_index::arena::vector::ShardInfo {
                                     cas: path.display().to_string(),
                                     count,
                                 }
                             })
                             .collect();
-                    fluree_db_indexer::run_index::vector_arena::write_vector_manifest(
+                    fluree_db_binary_index::arena::vector::write_vector_manifest(
                         &vec_dir.join(format!("p_{}.vam", p_id)),
                         arena,
                         &shard_infos,
@@ -2468,12 +2467,12 @@ where
 
     // Pre-compute field widths from dict sizes (avoids re-reading dict files later).
     let p_width = {
-        use fluree_db_indexer::run_index::leaflet::p_width_for_max;
+        use fluree_db_binary_index::format::leaflet::p_width_for_max;
         let n = spool_config.predicate_alloc.len();
         p_width_for_max(n.saturating_sub(1))
     };
     let dt_width = {
-        use fluree_db_indexer::run_index::leaflet::dt_width_for_max;
+        use fluree_db_binary_index::format::leaflet::dt_width_for_max;
         let n = spool_config.datatype_alloc.len();
         dt_width_for_max(n.saturating_sub(1))
     };
@@ -2524,10 +2523,12 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Publisher,
 {
+    use fluree_db_binary_index::{IndexRootV5, RunSortOrder};
+    use fluree_db_core::PrefixTrie;
     use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
     use fluree_db_indexer::run_index::{
-        build_all_indexes, build_spot_from_sorted_commits, ClassBitsetTable, IndexRootV5,
-        PrefixTrie, RunSortOrder, SortedCommitInput, SpotFromCommitsConfig,
+        build_all_indexes, build_spot_from_sorted_commits, ClassBitsetTable, SortedCommitInput,
+        SpotFromCommitsConfig,
     };
     use fluree_db_indexer::{upload_dicts_from_disk, upload_indexes_to_cas};
 
@@ -2737,10 +2738,9 @@ where
     let de_handle = tokio::task::spawn_blocking(
         move || -> std::result::Result<DeResult, ImportError> {
             let _guard = de_span.enter();
+            use fluree_db_binary_index::RunSortOrder as RSO;
             use fluree_db_indexer::run_index::spool::{MmapStringRemap, MmapSubjectRemap};
-            use fluree_db_indexer::run_index::{
-                MultiOrderConfig, MultiOrderRunWriter, RunSortOrder as RSO,
-            };
+            use fluree_db_indexer::run_index::{MultiOrderConfig, MultiOrderRunWriter};
 
             // ---- Phase D: Parallel remap sorted commits → run files (secondary orders only) ----
             tracing::info!(
@@ -3146,7 +3146,9 @@ where
     // Convert DictRefs (string-keyed maps) → DictRefsV5 + GraphArenaRefsV5.
     let (dict_refs_v5, graph_arenas) = {
         let dr = uploaded_dicts.dict_refs;
-        use fluree_db_indexer::run_index::{DictRefsV5, GraphArenaRefsV5, VectorDictRefV5};
+        use fluree_db_binary_index::format::index_root::{
+            DictRefsV5, GraphArenaRefsV5, VectorDictRefV5,
+        };
 
         let dict_refs = DictRefsV5 {
             forward_packs: dr.forward_packs,

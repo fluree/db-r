@@ -19,15 +19,14 @@ use crate::ir::{GeoSearchCenter, GeoSearchPattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::{
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, OverlayOp,
+    RunRecord, RunSortOrder,
+};
 use fluree_db_core::geo::{geo_proximity_bounds, haversine_distance};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{FlakeValue, GeoPointBits, GraphId};
-use fluree_db_indexer::run_index::run_record::RunSortOrder;
-use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, OverlayOp,
-    RunRecord,
-};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 

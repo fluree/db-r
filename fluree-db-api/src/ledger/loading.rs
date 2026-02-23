@@ -4,8 +4,8 @@ use crate::{
     ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage,
     TypeErasedStore,
 };
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_nameservice::{NameServiceError, Publisher};
 use fluree_db_query::BinaryRangeProvider;
 

@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::ids::GraphId;
 use fluree_db_core::{GraphDbRef, LedgerSnapshot, NoOverlay, OverlayProvider};
-use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::PolicyContext;

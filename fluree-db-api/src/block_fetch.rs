@@ -28,16 +28,14 @@
 
 use crate::dataset::QueryConnectionOptions;
 use crate::policy_builder;
+use fluree_db_binary_index::format::leaflet::decode_leaflet;
+use fluree_db_binary_index::read_leaf_header;
+use fluree_db_binary_index::{decode_leaflet_region1, DecodedRow, LeafletHeader};
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore, RunSortOrder};
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::flake::Flake;
 use fluree_db_core::storage::content_address;
 use fluree_db_core::{ContentId, LedgerSnapshot, NoOverlay, OverlayProvider, Storage, Tracker};
-use fluree_db_indexer::run_index::leaf::read_leaf_header;
-use fluree_db_indexer::run_index::leaflet::{
-    decode_leaflet, decode_leaflet_region1, LeafletHeader,
-};
-use fluree_db_indexer::run_index::types::DecodedRow;
-use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore, RunSortOrder};
 use fluree_db_query::QueryPolicyEnforcer;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -286,7 +284,7 @@ pub fn decode_leaf_block(
 /// first leaflet's header markers.
 fn detect_leaf_sort_order(
     leaf_bytes: &[u8],
-    header: &fluree_db_indexer::run_index::leaf::LeafFileHeader,
+    header: &fluree_db_binary_index::format::leaf::LeafFileHeader,
 ) -> Result<RunSortOrder, BlockFetchError> {
     let first = header.leaflet_dir.first().ok_or_else(|| {
         BlockFetchError::LeafDecode(std::io::Error::new(

@@ -19,6 +19,7 @@
 //! Use the builder API to select a different graph via name, IRI, or g_id.
 
 use crate::format::iri::IriCompactor;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::address_path::ledger_id_to_path_prefix;
 use fluree_db_core::comparator::IndexType;
 use fluree_db_core::ids::GraphId;
@@ -32,7 +33,6 @@ use fluree_db_core::{
     ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexSchema, IndexStats,
     SchemaPredicateInfo,
 };
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{GraphSourceRecord, NsRecord};
 use fluree_db_novelty::{load_commit_by_id, Novelty};

@@ -25,7 +25,7 @@ fluree-db-nameservice = { path = "../fluree-db-nameservice" }
 fluree-db-core = { path = "../fluree-db-core" }
 fluree-vocab = { path = "../fluree-vocab" }
 fluree-db-query = { path = "../fluree-db-query" }
-fluree-db-indexer = { path = "../fluree-db-indexer" }
+fluree-db-binary-index = { path = "../fluree-db-binary-index" }
 
 clap = { workspace = true }
 tokio.workspace = true

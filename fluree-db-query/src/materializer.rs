@@ -23,8 +23,8 @@
 
 use crate::binding::Binding;
 use chrono::{Datelike, Timelike};
+use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::{BinaryGraphView, BinaryIndexStore};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

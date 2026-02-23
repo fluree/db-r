@@ -32,17 +32,16 @@ use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::pattern::{Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::{
+    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, DecodedBatch, NumericShape,
+    OverlayOp, RunSortOrder,
+};
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::ListIndex;
 use fluree_db_core::{
     dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
     ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
-};
-use fluree_db_indexer::run_index::numfloat_dict::NumericShape;
-use fluree_db_indexer::run_index::run_record::RunSortOrder;
-use fluree_db_indexer::run_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, DecodedBatch, OverlayOp,
 };
 use fluree_vocab::namespaces::FLUREE_DB;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -837,8 +836,8 @@ impl Operator for BinaryScanOperator {
                             Ok(s_id) => {
                                 tracing::trace!(s_id, sid = ?s, "binary_scan: got s_id for overlay-only subject");
                                 // Create bounds for this specific subject
+                                use fluree_db_binary_index::RunRecord;
                                 use fluree_db_core::subject_id::SubjectId;
-                                use fluree_db_indexer::run_index::RunRecord;
                                 let p_id = p_sid
                                     .as_ref()
                                     .and_then(|p| self.graph_view.store().sid_to_p_id(p));
@@ -1407,33 +1406,33 @@ impl Operator for ScanOperator {
         // ID resolution during both overlay translation and result decoding.
         // If overlay exists, translate flakes to integer-ID space (infallible —
         // ephemeral IDs are allocated for entities not in persisted dictionaries).
-        let (overlay_data, dict_overlay) = if use_binary && ctx.overlay.is_some() {
+        let (overlay_data, dict_overlay) = if use_binary {
             let store = ctx.binary_store.as_ref().unwrap().clone();
             let gv = BinaryGraphView::new(store, ctx.binary_g_id);
             let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
                 Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
             });
             let mut dict_ov = crate::dict_overlay::DictOverlay::new(gv, dn);
-            let ops =
-                translate_overlay_flakes(ctx.overlay(), &mut dict_ov, ctx.to_t, ctx.binary_g_id);
-            tracing::trace!(
-                overlay_ops = ops.len(),
-                g_id = ctx.binary_g_id,
-                "ScanOperator::open: translated overlay ops"
-            );
-            let epoch = ctx.overlay().epoch();
-            if ops.is_empty() {
-                (None, Some(dict_ov))
+
+            let overlay_data = if ctx.overlay.is_some() {
+                let ops = translate_overlay_flakes(
+                    ctx.overlay(),
+                    &mut dict_ov,
+                    ctx.to_t,
+                    ctx.binary_g_id,
+                );
+                tracing::trace!(
+                    overlay_ops = ops.len(),
+                    g_id = ctx.binary_g_id,
+                    "ScanOperator::open: translated overlay ops"
+                );
+                let epoch = ctx.overlay().epoch();
+                (!ops.is_empty()).then_some((ops, epoch))
             } else {
-                (Some((ops, epoch)), Some(dict_ov))
-            }
-        } else if use_binary {
-            let store = ctx.binary_store.as_ref().unwrap().clone();
-            let gv = BinaryGraphView::new(store, ctx.binary_g_id);
-            let dn = ctx.dict_novelty.clone().unwrap_or_else(|| {
-                Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized())
-            });
-            (None, Some(crate::dict_overlay::DictOverlay::new(gv, dn)))
+                None
+            };
+
+            (overlay_data, Some(dict_ov))
         } else {
             (None, None)
         };

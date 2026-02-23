@@ -17,6 +17,7 @@
 
 use crate::error::{ApiError, Result};
 use crate::LedgerHandle;
+use fluree_db_binary_index::IndexRootV5;
 use fluree_db_core::pack::{
     encode_data_frame, encode_end_frame, encode_error_frame, encode_header_frame,
     encode_manifest_frame, estimate_pack_bytes, write_stream_preamble, PackHeader, PackRequest,
@@ -24,7 +25,6 @@ use fluree_db_core::pack::{
 };
 use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentId, ContentStore, Storage};
-use fluree_db_indexer::run_index::IndexRootV5;
 use fluree_db_nameservice::{NameService, RefPublisher};
 use fluree_db_novelty::commit_v2::envelope::decode_envelope;
 use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};

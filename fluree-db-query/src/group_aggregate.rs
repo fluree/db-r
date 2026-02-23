@@ -44,8 +44,8 @@ use crate::error::Result;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
+use fluree_db_binary_index::BinaryGraphView;
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_db_indexer::run_index::BinaryGraphView;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -1009,6 +1009,8 @@ mod tests {
     async fn test_streaming_min_materializes_encoded_sid_with_store() {
         use crate::context::ExecutionContext;
         use crate::var_registry::VarRegistry;
+        use fluree_db_binary_index::format::run_record::{cmp_for_order, RunRecord, RunSortOrder};
+        use fluree_db_binary_index::BinaryIndexStore;
         use fluree_db_core::subject_id::SubjectId;
         use fluree_db_core::value_id::{ObjKey, ObjKind};
         use fluree_db_core::DatatypeDictId;
@@ -1020,8 +1022,6 @@ mod tests {
         };
         use fluree_db_indexer::run_index::index_build::build_all_indexes;
         use fluree_db_indexer::run_index::run_file::write_run_file;
-        use fluree_db_indexer::run_index::run_record::{cmp_for_order, RunRecord, RunSortOrder};
-        use fluree_db_indexer::run_index::BinaryIndexStore;
 
         // Build a tiny on-disk BinaryIndexStore so we can materialize EncodedSid.
         // We intentionally insert subjects so that s_id order disagrees with lex order:

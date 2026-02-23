@@ -24,6 +24,7 @@ use crate::policy_builder::build_policy_context_from_opts;
 use crate::tx::{IndexingMode, IndexingStatus};
 use crate::{Fluree, IndexConfig, LedgerHandle};
 use base64::Engine as _;
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentId;
 use fluree_db_core::{
     range_with_overlay, ContentAddressedWrite, ContentKind, DictNovelty, Flake, GraphId, IndexType,
@@ -31,7 +32,6 @@ use fluree_db_core::{
 };
 use fluree_db_core::{RangeMatch, RangeOptions, RangeTest, Storage};
 use fluree_db_core::{CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN};
-use fluree_db_indexer::run_index::BinaryIndexStore;
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{CasResult, NameService, RefKind, RefPublisher, RefValue};
 use fluree_db_novelty::{generate_commit_flakes, Novelty};
