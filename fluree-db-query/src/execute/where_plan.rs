@@ -38,14 +38,26 @@ use super::pushdown::extract_bounds_from_filters;
 // Inner join block result type
 // ============================================================================
 
+/// A single VALUES clause: its bound variables and constant rows.
+pub struct ValuesPattern {
+    pub vars: Vec<VarId>,
+    pub rows: Vec<Vec<crate::binding::Binding>>,
+}
+
+impl ValuesPattern {
+    pub fn new(vars: Vec<VarId>, rows: Vec<Vec<crate::binding::Binding>>) -> Self {
+        Self { vars, rows }
+    }
+}
+
 /// Result of collecting an inner-join block from a pattern list.
 ///
 /// Contains all the components needed to build a joined block of patterns.
 pub struct InnerJoinBlock {
     /// Index past the last consumed pattern
     pub end_index: usize,
-    /// VALUES patterns (vars and rows)
-    pub values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)>,
+    /// VALUES patterns
+    pub values: Vec<ValuesPattern>,
     /// Triple patterns
     pub triples: Vec<TriplePattern>,
     /// BIND patterns (var and expression)
@@ -95,12 +107,12 @@ fn bound_vars_from_operator(operator: &Option<BoxedOperator>) -> HashSet<VarId> 
 /// creating an empty seed if no operator exists yet.
 fn apply_values(
     operator: Option<BoxedOperator>,
-    block_values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)>,
+    block_values: Vec<ValuesPattern>,
 ) -> Option<BoxedOperator> {
     let mut operator = operator;
-    for (vars, rows) in block_values {
+    for vp in block_values {
         let child = get_or_empty_seed(operator.take());
-        operator = Some(Box::new(ValuesOperator::new(child, vars, rows)));
+        operator = Some(Box::new(ValuesOperator::new(child, vp.vars, vp.rows)));
     }
     operator
 }
@@ -313,7 +325,7 @@ fn build_single_pattern(
 fn build_property_join_block(
     operator: Option<BoxedOperator>,
     triples: &[TriplePattern],
-    block_values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)>,
+    block_values: Vec<ValuesPattern>,
     pending_binds: Vec<PendingBind>,
     pending_filters: Vec<PendingFilter>,
     object_bounds: &HashMap<VarId, ObjectBounds>,
@@ -348,7 +360,7 @@ fn build_property_join_block(
 fn build_sequential_join_block(
     operator: Option<BoxedOperator>,
     triples: &[TriplePattern],
-    block_values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)>,
+    block_values: Vec<ValuesPattern>,
     pending_binds: Vec<PendingBind>,
     pending_filters: Vec<PendingFilter>,
     object_bounds: &HashMap<VarId, ObjectBounds>,
@@ -458,7 +470,7 @@ pub fn build_where_operators(
 /// `VALUES` is always safe to include because it is an inner-join constraint/seed.
 pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoinBlock {
     let mut i = start;
-    let mut values: Vec<(Vec<VarId>, Vec<Vec<crate::binding::Binding>>)> = Vec::new();
+    let mut values: Vec<ValuesPattern> = Vec::new();
     let mut triples: Vec<TriplePattern> = Vec::new();
     let mut binds: Vec<(VarId, Expression)> = Vec::new();
     let mut filters: Vec<Expression> = Vec::new();
@@ -469,7 +481,7 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
             Pattern::Values { vars, rows } => {
                 // VALUES binds its vars immediately (join seed/constraint).
                 bound_vars.extend(vars.iter().copied());
-                values.push((vars.clone(), rows.clone()));
+                values.push(ValuesPattern::new(vars.clone(), rows.clone()));
                 i += 1;
             }
             Pattern::Triple(tp) => {
