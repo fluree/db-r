@@ -38,7 +38,7 @@ use super::pushdown::extract_bounds_from_filters;
 // Inner join block result type
 // ============================================================================
 
-/// A single VALUES clause: its bound variables and constant rows.
+/// A single VALUES pattern: its bound variables and constant rows.
 pub struct ValuesPattern {
     pub vars: Vec<VarId>,
     pub rows: Vec<Vec<crate::binding::Binding>>,
@@ -47,6 +47,18 @@ pub struct ValuesPattern {
 impl ValuesPattern {
     pub fn new(vars: Vec<VarId>, rows: Vec<Vec<crate::binding::Binding>>) -> Self {
         Self { vars, rows }
+    }
+}
+
+/// A single BIND pattern: target variable and its defining expression.
+pub struct BindPattern {
+    pub var: VarId,
+    pub expr: Expression,
+}
+
+impl BindPattern {
+    pub fn new(var: VarId, expr: Expression) -> Self {
+        Self { var, expr }
     }
 }
 
@@ -60,8 +72,8 @@ pub struct InnerJoinBlock {
     pub values: Vec<ValuesPattern>,
     /// Triple patterns
     pub triples: Vec<TriplePattern>,
-    /// BIND patterns (var and expression)
-    pub binds: Vec<(VarId, Expression)>,
+    /// BIND patterns
+    pub binds: Vec<BindPattern>,
     /// FILTER expressions
     pub filters: Vec<Expression>,
 }
@@ -130,13 +142,13 @@ struct PendingBind {
     expr: Expression,
 }
 
-impl PendingBind {
-    fn new(var: VarId, expr: Expression) -> Self {
-        let required_vars = expr.variables().into_iter().collect();
+impl From<BindPattern> for PendingBind {
+    fn from(bind: BindPattern) -> Self {
+        let required_vars = bind.expr.variables().into_iter().collect();
         Self {
             required_vars,
-            target_var: var,
-            expr,
+            target_var: bind.var,
+            expr: bind.expr,
         }
     }
 }
@@ -472,7 +484,7 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
     let mut i = start;
     let mut values: Vec<ValuesPattern> = Vec::new();
     let mut triples: Vec<TriplePattern> = Vec::new();
-    let mut binds: Vec<(VarId, Expression)> = Vec::new();
+    let mut binds: Vec<BindPattern> = Vec::new();
     let mut filters: Vec<Expression> = Vec::new();
     let mut bound_vars: HashSet<VarId> = HashSet::new();
 
@@ -494,7 +506,7 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
                 let vars: HashSet<VarId> = expr.variables().into_iter().collect();
                 if vars.is_subset(&bound_vars) {
                     // Safe to move within block: inputs already bound.
-                    binds.push((*var, expr.clone()));
+                    binds.push(BindPattern::new(*var, expr.clone()));
                     bound_vars.insert(*var);
                     i += 1;
                 } else {
@@ -607,11 +619,8 @@ pub fn build_where_operators_seeded(
                     continue;
                 }
 
-                let pending_binds: Vec<PendingBind> = block
-                    .binds
-                    .into_iter()
-                    .map(|(var, expr)| PendingBind::new(var, expr))
-                    .collect();
+                let pending_binds: Vec<PendingBind> =
+                    block.binds.into_iter().map(PendingBind::from).collect();
                 let pending_filters: Vec<PendingFilter> = block
                     .filters
                     .into_iter()
