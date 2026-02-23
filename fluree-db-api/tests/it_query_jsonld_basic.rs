@@ -879,3 +879,39 @@ async fn jsonld_expanding_literal_nodes_specific_properties() {
 
     assert_eq!(json_result, expected);
 }
+
+/// Regression test: bare `{"@id": "?s"}` where clause (no additional constraints)
+/// should return all subjects with all properties — equivalent to "select all".
+#[tokio::test]
+async fn jsonld_bare_id_variable_returns_all_subjects() {
+    let (fluree, ledger) = seed_simple_subject_crawl().await;
+
+    // This is the exact query pattern reported as returning an empty array.
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/"
+        },
+        "select": { "?s": ["*"] },
+        "where": { "@id": "?s" }
+    });
+
+    let result = fluree.query(&ledger, &query).await.expect("query");
+    let mut json_result = result
+        .to_jsonld_async(&ledger.db)
+        .await
+        .expect("to_jsonld_async");
+    normalize_object_arrays(&mut json_result);
+
+    let arr = json_result.as_array().expect("should be an array");
+    // The seed data has 4 subjects (alice, brian, cam, david).
+    // A bare where clause should return at least those 4.
+    assert!(
+        !arr.is_empty(),
+        "bare {{\"@id\": \"?s\"}} should NOT return an empty array, got: {json_result}"
+    );
+    assert!(
+        arr.len() >= 4,
+        "expected at least 4 subjects, got {}: {json_result}",
+        arr.len()
+    );
+}

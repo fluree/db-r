@@ -503,6 +503,7 @@ pub fn parse_node_map(
     }
 
     // Determine subject: explicit @id (or aliased @id) or generated unique variable
+    let has_explicit_id = map.contains_key("@id") || map.contains_key(context.id_key.as_str());
     let subject = if let Some(id_val) = map.get("@id").or_else(|| map.get(context.id_key.as_str()))
     {
         parse_subject(id_val, context)?
@@ -513,6 +514,9 @@ pub fn parse_node_map(
         *subject_counter += 1;
         UnresolvedTerm::var(&var_name)
     };
+
+    // Track pattern count before the loop so we can detect bare-subject nodes.
+    let patterns_before = query.patterns.len();
 
     // Process each property in the node-map
     for (key, value) in map {
@@ -544,6 +548,16 @@ pub fn parse_node_map(
             object_var_parsing,
         };
         parse_property(key, value, &subject, query, &mut ctx)?;
+    }
+
+    // If the node-map had only @id with a variable and no other properties produced
+    // any patterns, emit a full-scan triple (?s ?p ?o) so the subject variable is bound.
+    // This handles the "select all subjects" query: {"where": {"@id": "?s"}}.
+    if query.patterns.len() == patterns_before && has_explicit_id && subject.is_var() {
+        let p_var = UnresolvedTerm::var(format!("?__p{}", *nested_counter));
+        let o_var = UnresolvedTerm::var(format!("?__o{}", *nested_counter));
+        *nested_counter += 1;
+        query.add_pattern(UnresolvedTriplePattern::new(subject, p_var, o_var));
     }
 
     Ok(())
