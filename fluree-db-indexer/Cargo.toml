@@ -48,6 +48,7 @@ uuid = { version = "1", features = ["v4"] }
 once_cell.workspace = true
 parking_lot = "0.12"
 libc = "0.2"
+rayon.workspace = true
 
 [dev-dependencies]
 # For HLL tests (proper hash distribution)

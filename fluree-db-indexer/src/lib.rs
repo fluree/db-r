@@ -1440,6 +1440,7 @@ where
     // These match the full-rebuild pipeline and are tied to the FLI2 format.
     let branch_config = IncrementalBranchConfig {
         zstd_level: 1,
+        max_parallel_leaves: 4,
         leaflet_split_rows: 37_500,
         leaflet_target_rows: 25_000,
         leaflets_per_leaf: 10,

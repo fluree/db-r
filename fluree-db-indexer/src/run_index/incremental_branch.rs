@@ -9,11 +9,12 @@
 
 use super::branch::{build_branch_v2_bytes, BranchManifest, LeafEntry};
 use super::incremental_leaf::{
-    update_leaf, IncrementalLeafError, LeafUpdateInput, LeafUpdateOutput, NewLeafBlob,
+    update_leaf, IncrementalLeafError, LeafUpdateInput, NewLeafBlob,
 };
 use super::run_record::{cmp_for_order, RunRecord, RunSortOrder};
 use fluree_db_core::content_kind::CODEC_FLUREE_INDEX_BRANCH;
 use fluree_db_core::ContentId;
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::io;
@@ -26,6 +27,13 @@ use std::io;
 pub struct IncrementalBranchConfig {
     /// zstd compression level for re-encoded leaflets.
     pub zstd_level: i32,
+    /// Max number of touched leaves to rewrite in parallel within a single
+    /// `(graph, order)` branch update.
+    ///
+    /// Note: overall incremental job concurrency is also bounded by the
+    /// orchestrator semaphore; this cap prevents runaway parallelism when a
+    /// single branch touches many leaves.
+    pub max_parallel_leaves: usize,
     /// Threshold above which a merged leaflet should be split (default: 37_500).
     pub leaflet_split_rows: usize,
     /// Target rows per leaflet after split (default: 25_000).
@@ -113,40 +121,109 @@ pub fn update_branch(
     // 1. Slice novelty to leaves using half-open intervals on first_key
     let slices = slice_novelty_to_leaves(novelty, &existing.leaves, cmp);
 
-    let mut leaf_entries: Vec<LeafEntry> = Vec::new();
-    let mut new_blobs: Vec<NewLeafBlob> = Vec::new();
-    let mut replaced_cids: Vec<ContentId> = Vec::new();
-    let mut untouched_count = 0usize;
+    // 2. Prefetch touched leaves (fetch_leaf may perform I/O; keep it sequential).
+    struct TouchedLeaf<'a> {
+        idx: usize,
+        old_cid: ContentId,
+        leaf_bytes: Vec<u8>,
+        novelty: &'a [RunRecord],
+    }
 
-    // 2. Process each leaf
+    let mut untouched_count = 0usize;
+    let mut touched: Vec<TouchedLeaf<'_>> = Vec::new();
     for (i, leaf) in existing.leaves.iter().enumerate() {
         let leaf_novelty = slices[i];
         if leaf_novelty.is_empty() {
-            // No novelty: carry through unchanged
-            leaf_entries.push(leaf.clone());
             untouched_count += 1;
-        } else {
-            // Fetch leaf bytes, merge novelty
-            let leaf_bytes = fetch_leaf(&leaf.leaf_cid)?;
-            let leaf_input = LeafUpdateInput {
-                leaf_bytes: &leaf_bytes,
-                novelty: leaf_novelty,
-                order,
-                g_id,
-                zstd_level: config.zstd_level,
-                leaflet_split_rows: config.leaflet_split_rows,
-                leaflet_target_rows: config.leaflet_target_rows,
-                leaflets_per_leaf: config.leaflets_per_leaf,
-                leaf_split_leaflets: config.leaf_split_leaflets,
-            };
+            continue;
+        }
 
-            let output = update_leaf(&leaf_input)?;
-            replaced_cids.push(leaf.leaf_cid.clone());
-            append_new_leaf_entries(&output, &mut leaf_entries, &mut new_blobs);
+        let leaf_bytes = fetch_leaf(&leaf.leaf_cid)?;
+        touched.push(TouchedLeaf {
+            idx: i,
+            old_cid: leaf.leaf_cid.clone(),
+            leaf_bytes,
+            novelty: leaf_novelty,
+        });
+    }
+
+    // 3. Rewrite touched leaves in parallel (CPU-bound), but keep output ordering
+    // deterministic by assembling results in original leaf order.
+    struct LeafRewriteResult {
+        idx: usize,
+        old_cid: ContentId,
+        new_leaves: Vec<NewLeafBlob>,
+    }
+
+    let max_parallel = config.max_parallel_leaves.max(1);
+    let mut rewritten: Vec<LeafRewriteResult> = Vec::with_capacity(touched.len());
+    for batch in touched.chunks(max_parallel) {
+        let batch_results: Vec<Result<LeafRewriteResult, IncrementalBranchError>> = batch
+            .par_iter()
+            .map(|leaf| {
+                let leaf_input = LeafUpdateInput {
+                    leaf_bytes: &leaf.leaf_bytes,
+                    novelty: leaf.novelty,
+                    order,
+                    g_id,
+                    zstd_level: config.zstd_level,
+                    leaflet_split_rows: config.leaflet_split_rows,
+                    leaflet_target_rows: config.leaflet_target_rows,
+                    leaflets_per_leaf: config.leaflets_per_leaf,
+                    leaf_split_leaflets: config.leaf_split_leaflets,
+                };
+                let output = update_leaf(&leaf_input)?;
+                Ok(LeafRewriteResult {
+                    idx: leaf.idx,
+                    old_cid: leaf.old_cid.clone(),
+                    new_leaves: output.leaves,
+                })
+            })
+            .collect();
+
+        // Preserve early-exit behavior on error.
+        for r in batch_results {
+            rewritten.push(r?);
         }
     }
 
-    // 3. Build new FBR2 branch manifest
+    // Index results by leaf index for deterministic assembly.
+    let mut rewrites_by_idx: Vec<Option<LeafRewriteResult>> =
+        (0..total_leaves).map(|_| None).collect();
+    for r in rewritten {
+        let idx = r.idx;
+        rewrites_by_idx[idx] = Some(r);
+    }
+
+    // 4. Assemble new leaf routing + blobs in original leaf order.
+    let mut leaf_entries: Vec<LeafEntry> = Vec::new();
+    let mut new_blobs: Vec<NewLeafBlob> = Vec::new();
+    let mut replaced_cids: Vec<ContentId> = Vec::new();
+
+    for (i, leaf) in existing.leaves.iter().enumerate() {
+        if slices[i].is_empty() {
+            leaf_entries.push(leaf.clone());
+            continue;
+        }
+
+        let rewrite = rewrites_by_idx[i]
+            .take()
+            .ok_or_else(|| io::Error::other("missing leaf rewrite result"))?;
+
+        replaced_cids.push(rewrite.old_cid);
+        for blob in rewrite.new_leaves {
+            leaf_entries.push(LeafEntry {
+                first_key: blob.first_key,
+                last_key: blob.last_key,
+                row_count: blob.row_count,
+                leaf_cid: blob.cid.clone(),
+                resolved_path: None,
+            });
+            new_blobs.push(blob);
+        }
+    }
+
+    // 5. Build new FBR2 branch manifest
     let branch_bytes = build_branch_v2_bytes(order, g_id, &leaf_entries);
     let branch_cid = ContentId::from_hex_digest(
         CODEC_FLUREE_INDEX_BRANCH,
@@ -178,31 +255,6 @@ pub fn update_branch(
 // ============================================================================
 // Helpers
 // ============================================================================
-
-/// Convert `LeafUpdateOutput` blobs into `LeafEntry` + accumulate new blobs.
-fn append_new_leaf_entries(
-    output: &LeafUpdateOutput,
-    entries: &mut Vec<LeafEntry>,
-    blobs: &mut Vec<NewLeafBlob>,
-) {
-    for blob in &output.leaves {
-        entries.push(LeafEntry {
-            first_key: blob.first_key,
-            last_key: blob.last_key,
-            row_count: blob.row_count,
-            leaf_cid: blob.cid.clone(),
-            resolved_path: None,
-        });
-    }
-    // Move blobs by cloning the inner data (NewLeafBlob fields are plain data)
-    blobs.extend(output.leaves.iter().map(|b| NewLeafBlob {
-        bytes: b.bytes.clone(),
-        cid: b.cid.clone(),
-        first_key: b.first_key,
-        last_key: b.last_key,
-        row_count: b.row_count,
-    }));
-}
 
 /// Slice novelty to leaves using half-open intervals on `first_key`.
 ///
@@ -291,6 +343,7 @@ mod tests {
     fn default_config() -> IncrementalBranchConfig {
         IncrementalBranchConfig {
             zstd_level: 1,
+            max_parallel_leaves: 4,
             leaflet_split_rows: 37_500,
             leaflet_target_rows: 25_000,
             leaflets_per_leaf: 10,

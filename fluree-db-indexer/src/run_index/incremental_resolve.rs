@@ -210,10 +210,14 @@ pub async fn resolve_incremental_commits(
         }
     }
 
-    // 4. Walk commit chain backward from head, collect CIDs
-    let commit_cids = walk_commit_chain(cs.as_ref(), &config.head_commit_id).await?;
+    // 4. Walk commit chain backward from head, collecting only commits with `t > from_t`.
+    //
+    // This is critical for performance: we do NOT need to scan to genesis when
+    // building incrementally from an existing root.
+    let commit_cids =
+        walk_commit_chain_since(cs.as_ref(), &config.head_commit_id, config.from_t).await?;
 
-    // 5. Filter to commits with t > from_t, resolve into chunk
+    // 5. Resolve commits into chunk (already filtered to `t > from_t`)
     let mut chunk = RebuildChunk::new();
     let mut max_t: i64 = root.index_t;
     let mut delta_commit_size = 0u64;
@@ -233,12 +237,6 @@ pub async fn resolve_incremental_commits(
                 cid, e
             ))
         })?;
-
-        if envelope.t <= config.from_t {
-            // Apply namespace delta even for skipped commits (forward order)
-            shared.apply_namespace_delta(&envelope.namespace_delta);
-            continue;
-        }
 
         // Resolve this commit's ops into chunk
         let resolved = shared
@@ -337,9 +335,10 @@ pub async fn resolve_incremental_commits(
 
 /// Walk the commit chain backward from `head_id` to genesis, returning CIDs
 /// in chronological order (genesis first).
-async fn walk_commit_chain(
+async fn walk_commit_chain_since(
     cs: &dyn ContentStore,
     head_id: &ContentId,
+    from_t: i64,
 ) -> Result<Vec<ContentId>, IncrementalResolveError> {
     let mut cids = Vec::new();
     let mut current = Some(head_id.clone());
@@ -355,6 +354,13 @@ async fn walk_commit_chain(
                 cid, e
             ))
         })?;
+
+        // Commit `t` values are monotonically decreasing as we follow previous refs.
+        // Once we reach `t <= from_t`, the remaining commits are already covered by
+        // the base root and are not needed for incremental resolution.
+        if envelope.t <= from_t {
+            break;
+        }
 
         current = envelope.previous_ref.map(|r| r.id);
         cids.push(cid);

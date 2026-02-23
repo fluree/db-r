@@ -827,13 +827,24 @@ async fn generate_upsert_deletions(
 
         // Convert each result to a retraction flake in the appropriate graph.
         // Here we use the txn-local g_id to look up the graph Sid (flake.g).
-        let graph_sid = graph_id.and_then(|g_id| graph_sids.get(&g_id).cloned());
+        let graph_sid: Option<Sid> = match graph_id {
+            None => None,
+            Some(txn_g_id) => Some(
+                graph_sids.get(&txn_g_id).cloned().ok_or_else(|| {
+                    TransactError::FlakeGeneration(format!(
+                        "upsert deletion generation references graph_id {} but no graph Sid was provided; \
+                         this indicates a bug in graph delta/sid wiring",
+                        txn_g_id
+                    ))
+                })?,
+            ),
+        };
 
         for batch in batches.iter() {
             for row in 0..batch.len() {
                 if let Some((o, dt)) = batch.get(row, o_var).and_then(binding_to_flake_object) {
-                    let flake = if let Some(g) = graph_sid.clone() {
-                        Flake::new_in_graph(
+                    let flake = match graph_sid.clone() {
+                        Some(g) => Flake::new_in_graph(
                             g,
                             subject.clone(),
                             predicate.clone(),
@@ -842,9 +853,8 @@ async fn generate_upsert_deletions(
                             new_t,
                             false, // retraction
                             None,
-                        )
-                    } else {
-                        Flake::new(
+                        ),
+                        None => Flake::new(
                             subject.clone(),
                             predicate.clone(),
                             o,
@@ -852,7 +862,7 @@ async fn generate_upsert_deletions(
                             new_t,
                             false, // retraction
                             None,
-                        )
+                        ),
                     };
                     retractions.push(flake);
                 }
@@ -1031,11 +1041,10 @@ async fn validate_staged_nodes(
     let reverse_graph = graph_sids.map(build_reverse_graph_lookup);
     let mut subjects_by_graph: HashMap<GraphId, HashSet<Sid>> = HashMap::new();
     for flake in view.staged_flakes() {
-        let g_id = match (&flake.g, &reverse_graph) {
-            (None, _) => 0,
-            (Some(g_sid), Some(rev)) => rev.get(g_sid).copied().unwrap_or(0),
+        let g_id = match &reverse_graph {
+            Some(rev) => resolve_flake_graph_id(flake, rev)?,
             // No reverse map (commit-transfer path): fall back to default graph
-            (Some(_), None) => 0,
+            None => 0,
         };
         subjects_by_graph
             .entry(g_id)
