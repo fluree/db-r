@@ -194,7 +194,7 @@ impl fmt::Display for ListIndex {
 /// | boolean   | 1  (BOOLEAN)        | 2  (BOOLEAN)           |
 /// | integer   | 2  (INTEGER)        | 3  (INTEGER)           |
 ///
-/// The first 14 IDs (0–13) are reserved for well-known datatypes. Custom
+/// The first 15 IDs (0–14) are reserved for well-known datatypes. Custom
 /// datatypes are assigned dynamically starting at `RESERVED_COUNT`.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 #[repr(transparent)]
@@ -229,8 +229,10 @@ impl DatatypeDictId {
     pub const JSON: Self = Self(12);
     /// `@vector`
     pub const VECTOR: Self = Self(13);
+    /// `@fulltext`
+    pub const FULL_TEXT: Self = Self(14);
     /// Number of reserved well-known datatype dictionary IDs.
-    pub const RESERVED_COUNT: u16 = 14;
+    pub const RESERVED_COUNT: u16 = 15;
 
     #[inline]
     pub fn as_u16(self) -> u16 {
@@ -261,7 +263,8 @@ impl DatatypeDictId {
             Self::TIME => Some(ValueTypeTag::TIME),
             Self::LANG_STRING => Some(ValueTypeTag::LANG_STRING),
             Self::JSON => Some(ValueTypeTag::RDF_JSON),
-            Self::VECTOR => None, // no ValueTypeTag for @vector
+            Self::VECTOR => None,    // no ValueTypeTag for @vector
+            Self::FULL_TEXT => None, // no ValueTypeTag for @fulltext
             _ => None,
         }
     }

@@ -3200,6 +3200,7 @@ where
                     numbig,
                     vectors,
                     spatial: Vec::new(),
+                    fulltext: vec![],
                 }
             })
             .collect();

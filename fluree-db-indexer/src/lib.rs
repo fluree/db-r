@@ -35,6 +35,7 @@ pub mod gc;
 pub mod hll;
 pub mod orchestrator;
 pub mod run_index;
+pub mod fulltext_hook;
 pub mod spatial_hook;
 pub mod stats;
 

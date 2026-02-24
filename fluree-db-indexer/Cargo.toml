@@ -51,6 +51,10 @@ parking_lot = "0.12"
 libc = "0.2"
 rayon.workspace = true
 
+# Text analysis (fulltext arena building)
+regex = "1"
+rust-stemmers = "1.2"
+
 [dev-dependencies]
 # For HLL tests (proper hash distribution)
 xxhash-rust.workspace = true

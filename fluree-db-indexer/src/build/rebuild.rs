@@ -5,8 +5,8 @@
 //! orders, and writes an `IndexRootV5` (IRB1) descriptor to storage.
 
 use fluree_db_binary_index::{
-    BinaryGarbageRef, BinaryIndexStore, BinaryPrevIndexRef, DictRefsV5, GraphArenaRefsV5,
-    IndexRootV5, RunRecord, RunSortOrder, SpatialArenaRefV5, VectorDictRefV5,
+    BinaryGarbageRef, BinaryIndexStore, BinaryPrevIndexRef, DictRefsV5, FulltextArenaRefV5,
+    GraphArenaRefsV5, IndexRootV5, RunRecord, RunSortOrder, SpatialArenaRefV5, VectorDictRefV5,
 };
 use fluree_db_core::{ContentId, ContentKind, ContentStore, GraphId, Storage};
 
@@ -130,6 +130,9 @@ where
             // Enable spatial geometry collection during resolution.
             shared.spatial_hook = Some(crate::spatial_hook::SpatialHook::new());
 
+            // Enable fulltext collection during resolution.
+            shared.fulltext_hook = Some(crate::fulltext_hook::FulltextHook::new());
+
             let chunk_max_flakes: u64 = 5_000_000; // ~5M flakes per chunk
             let mut chunk = RebuildChunk::new();
             let mut chunks: Vec<RebuildChunk> = Vec::new();
@@ -138,6 +141,10 @@ where
             // Each entry is (start_idx, end_idx) into spatial_hook.entries().
             let mut spatial_chunk_ranges: Vec<(usize, usize)> = Vec::new();
             let mut spatial_cursor: usize = 0;
+
+            // Track fulltext entry ranges per chunk for string ID remapping.
+            let mut fulltext_chunk_ranges: Vec<(usize, usize)> = Vec::new();
+            let mut fulltext_cursor: usize = 0;
 
             // Accumulate commit statistics for index root
             let mut total_commit_size = 0u64;
@@ -151,6 +158,10 @@ where
                     let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
                     spatial_chunk_ranges.push((spatial_cursor, spatial_end));
                     spatial_cursor = spatial_end;
+                    let fulltext_end =
+                        shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                    fulltext_chunk_ranges.push((fulltext_cursor, fulltext_end));
+                    fulltext_cursor = fulltext_end;
                     chunks.push(std::mem::take(&mut chunk));
                 }
 
@@ -181,6 +192,10 @@ where
                     let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
                     spatial_chunk_ranges.push((spatial_cursor, spatial_end));
                     spatial_cursor = spatial_end;
+                    let fulltext_end =
+                        shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                    fulltext_chunk_ranges.push((fulltext_cursor, fulltext_end));
+                    fulltext_cursor = fulltext_end;
                     chunks.push(std::mem::take(&mut chunk));
                 }
             }
@@ -189,6 +204,9 @@ where
             if !chunk.is_empty() {
                 let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
                 spatial_chunk_ranges.push((spatial_cursor, spatial_end));
+                let fulltext_end =
+                    shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                fulltext_chunk_ranges.push((fulltext_cursor, fulltext_end));
                 chunks.push(chunk);
             }
 
@@ -244,6 +262,44 @@ where
                     tracing::info!(
                         spatial_entries = all_entries.len(),
                         "spatial entries collected and remapped to global IDs"
+                    );
+                }
+                all_entries
+            };
+
+            // Remap fulltext entries' chunk-local string IDs → global string IDs.
+            // The fulltext hook accumulated entries with chunk-local string_id values;
+            // fulltext_chunk_ranges[ci] = (start, end) into entries for chunk ci.
+            let fulltext_entries: Vec<crate::fulltext_hook::FulltextEntry> = {
+                let mut all_entries = shared
+                    .fulltext_hook
+                    .take()
+                    .map(|h| h.into_entries())
+                    .unwrap_or_default();
+
+                for (ci, &(start, end)) in fulltext_chunk_ranges.iter().enumerate() {
+                    let str_remap = &string_remaps[ci];
+                    for entry in &mut all_entries[start..end] {
+                        let local_str = entry.string_id as usize;
+                        if let Some(&global_str) = str_remap.get(local_str) {
+                            entry.string_id = global_str;
+                        } else {
+                            tracing::warn!(
+                                chunk = ci,
+                                local_str,
+                                "fulltext entry string_id remap miss; skipping"
+                            );
+                            // Mark as retraction so it's skipped by the builder.
+                            entry.is_assert = false;
+                            entry.string_id = u32::MAX;
+                        }
+                    }
+                }
+
+                if !all_entries.is_empty() {
+                    tracing::info!(
+                        fulltext_entries = all_entries.len(),
+                        "fulltext entries collected and remapped to global IDs"
                     );
                 }
                 all_entries
@@ -688,6 +744,21 @@ where
                 }
             };
 
+            // ---- Phase E.6: Build fulltext arenas from collected entries ----
+            let fulltext_arena_refs: Vec<(GraphId, Vec<FulltextArenaRefV5>)> = {
+                if fulltext_entries.is_empty() {
+                    vec![]
+                } else {
+                    super::fulltext::build_and_upload_fulltext_arenas(
+                        &fulltext_entries,
+                        &string_merge,
+                        &ledger_id,
+                        &storage,
+                    )
+                    .await?
+                }
+            };
+
             // ---- Phase F: Upload artifacts to CAS and write v4 root ----
 
             // F.1: Load store for max_t / base_t / namespace_codes
@@ -869,6 +940,7 @@ where
                             numbig,
                             vectors,
                             spatial: Vec::new(),
+                            fulltext: vec![],
                         }
                     })
                     .collect();
@@ -882,6 +954,21 @@ where
                             numbig: vec![],
                             vectors: vec![],
                             spatial: spatial_refs,
+                            fulltext: vec![],
+                        });
+                    }
+                }
+                // Merge fulltext arena refs into graph arenas.
+                for (g_id, ft_refs) in fulltext_arena_refs {
+                    if let Some(ga) = arenas.iter_mut().find(|ga| ga.g_id == g_id) {
+                        ga.fulltext = ft_refs;
+                    } else {
+                        arenas.push(GraphArenaRefsV5 {
+                            g_id,
+                            numbig: vec![],
+                            vectors: vec![],
+                            spatial: vec![],
+                            fulltext: ft_refs,
                         });
                     }
                 }

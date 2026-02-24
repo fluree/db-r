@@ -62,6 +62,9 @@ pub struct CommitResolver {
     /// Optional spatial geometry collection hook. When set, `on_op()` is
     /// called for every resolved user-data op to collect non-POINT WKT geometries.
     spatial_hook: Option<crate::spatial_hook::SpatialHook>,
+    /// Optional fulltext collection hook. When set, `on_op()` is called for
+    /// every resolved user-data op to collect `@fulltext`-typed string entries.
+    fulltext_hook: Option<crate::fulltext_hook::FulltextHook>,
 }
 
 impl CommitResolver {
@@ -72,6 +75,7 @@ impl CommitResolver {
             hasher: Xxh3::new(),
             stats_hook: None,
             spatial_hook: None,
+            fulltext_hook: None,
         }
     }
 
@@ -93,6 +97,16 @@ impl CommitResolver {
     /// Take the spatial hook out of the resolver (for finalization).
     pub fn take_spatial_hook(&mut self) -> Option<crate::spatial_hook::SpatialHook> {
         self.spatial_hook.take()
+    }
+
+    /// Set the fulltext collection hook for `@fulltext`-typed literals.
+    pub fn set_fulltext_hook(&mut self, hook: crate::fulltext_hook::FulltextHook) {
+        self.fulltext_hook = Some(hook);
+    }
+
+    /// Take the fulltext hook out of the resolver (for finalization).
+    pub fn take_fulltext_hook(&mut self) -> Option<crate::fulltext_hook::FulltextHook> {
+        self.fulltext_hook.take()
     }
 
     /// Apply a commit's namespace delta to update prefix mappings.
@@ -156,6 +170,19 @@ impl CommitResolver {
                     record.s_id.as_u64(),
                     record.p_id,
                     t as i64,
+                );
+            }
+
+            // Feed resolved record to fulltext hook (collects @fulltext-typed strings)
+            if let Some(ref mut ft) = self.fulltext_hook {
+                ft.on_op(
+                    record.g_id,
+                    record.p_id,
+                    record.dt,
+                    record.o_kind,
+                    record.o_key,
+                    t as i64,
+                    record.op != 0,
                 );
             }
 
@@ -936,6 +963,9 @@ pub struct SharedResolverState {
     /// called for every resolved user-data op to collect non-POINT WKT geometries.
     /// Subject IDs in entries are chunk-local and must be remapped after dict merge.
     pub spatial_hook: Option<crate::spatial_hook::SpatialHook>,
+    /// Optional fulltext collection hook. When set, `on_op()` is called for
+    /// every resolved user-data op to collect `@fulltext`-typed string entries.
+    pub fulltext_hook: Option<crate::fulltext_hook::FulltextHook>,
 }
 
 impl SharedResolverState {
@@ -974,6 +1004,7 @@ impl SharedResolverState {
             vectors: FxHashMap::default(),
             dt_tags,
             spatial_hook: None,
+            fulltext_hook: None,
         }
     }
 
@@ -1097,6 +1128,7 @@ impl SharedResolverState {
             vectors: FxHashMap::default(),
             dt_tags,
             spatial_hook: None,
+            fulltext_hook: None,
         })
     }
 
@@ -1162,6 +1194,21 @@ impl SharedResolverState {
                     record.s_id.as_u64(),
                     record.p_id,
                     t as i64,
+                );
+            }
+
+            // Feed resolved record to fulltext hook (collects @fulltext-typed strings).
+            // Note: string_id (o_key) is chunk-local here; entries must be remapped
+            // to global IDs after dict reconciliation (see incremental_resolve.rs step 7).
+            if let Some(ref mut ft) = self.fulltext_hook {
+                ft.on_op(
+                    record.g_id,
+                    record.p_id,
+                    record.dt,
+                    record.o_kind,
+                    record.o_key,
+                    t as i64,
+                    record.op != 0,
                 );
             }
 

@@ -263,6 +263,7 @@ where
             .map_err(query_error_to_api_error)?;
 
         let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
+        let fulltext_map = view.binary_store.as_ref().map(|s| s.fulltext_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -271,6 +272,7 @@ where
             binary_g_id: view.graph_id,
             dict_novelty: view.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
+            fulltext_providers: fulltext_map.as_ref(),
             strict_bind_errors: true,
             ..Default::default()
         };
@@ -294,6 +296,7 @@ where
         let prepared = prepare_execution(db, executable).await?;
 
         let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
+        let fulltext_map = view.binary_store.as_ref().map(|s| s.fulltext_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -302,6 +305,7 @@ where
             binary_g_id: view.graph_id,
             dict_novelty: view.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
+            fulltext_providers: fulltext_map.as_ref(),
             strict_bind_errors: true,
             ..Default::default()
         };

@@ -71,6 +71,7 @@ where
 
         let r2rml_provider = NoOpR2rmlProvider::new();
         let spatial_map = binary_store.as_ref().map(|s| s.spatial_provider_map());
+        let fulltext_map = binary_store.as_ref().map(|s| s.fulltext_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -82,6 +83,7 @@ where
                 None
             },
             spatial_providers: spatial_map.as_ref(),
+            fulltext_providers: fulltext_map.as_ref(),
             strict_bind_errors: true,
             ..Default::default()
         };
