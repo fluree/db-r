@@ -35,7 +35,7 @@ use std::sync::Arc;
 use super::pushdown::extract_bounds_from_filters;
 
 // ============================================================================
-// Inner join block result type
+// Inner join block types
 // ============================================================================
 
 /// A single VALUES pattern: its bound variables and constant rows.
@@ -120,18 +120,7 @@ pub struct InnerJoinBlock {
     pub filters: Vec<FilterPattern>,
 }
 
-// ============================================================================
-// Helper functions to reduce duplication in build_where_operators_seeded
-// ============================================================================
-
 /// Require a child operator, returning an error if None.
-///
-/// This helper eliminates the repeated pattern of:
-/// ```ignore
-/// let child = operator.ok_or_else(|| {
-///     QueryError::InvalidQuery("XXX has no input operator".to_string())
-/// })?;
-/// ```
 #[inline]
 fn require_child(operator: Option<BoxedOperator>, pattern_name: &str) -> Result<BoxedOperator> {
     operator
@@ -171,11 +160,11 @@ fn apply_values(
     operator
 }
 
-/// Partition pending filters into those eligible for inline evaluation and those still waiting.
+/// Partition filters into those eligible for inline evaluation and those still waiting.
 ///
 /// Filters consumed by pushdown are silently dropped. Filters whose required
-/// variables are all in `bound` are returned as the first element (ready);
-/// the rest are returned as the second element (still pending).
+/// variables are all in `bound` are returned as ready expressions (first element);
+/// the rest are returned as-is (second element).
 fn partition_eligible_filters(
     filters: Vec<FilterPattern>,
     bound: &HashSet<VarId>,
@@ -199,8 +188,8 @@ fn partition_eligible_filters(
 /// Apply eligible BINDs whose required variables are all bound.
 ///
 /// Each ready BIND is fused with any filters that become ready once the BIND's
-/// target variable enters `bound`.  Returns the updated operator, any BINDs
-/// whose dependencies are not yet satisfied, and the remaining pending filters.
+/// variable enters `bound`.  Returns the updated operator, any BINDs whose
+/// dependencies are not yet satisfied, and the remaining filters.
 fn apply_eligible_binds(
     mut child: BoxedOperator,
     bound: &mut HashSet<VarId>,
@@ -232,9 +221,9 @@ fn apply_eligible_binds(
     (child, remaining_binds, pending_filters)
 }
 
-/// Apply pending BINDs and FILTERs that are ready (all required vars are bound).
+/// Apply BINDs and FILTERs whose required variables are all bound.
 ///
-/// Returns the updated operator and the remaining pending items.
+/// Returns the updated operator and the remaining items.
 fn apply_deferred_patterns(
     child: BoxedOperator,
     bound: &mut HashSet<VarId>,
@@ -261,9 +250,9 @@ fn apply_deferred_patterns(
 
 /// Apply all remaining BINDs and FILTERs at the end of a block.
 ///
-/// Filters are fused into each BindOperator when the BIND's target variable
-/// is the last dependency the filter was waiting on.  Any filters still
-/// pending after all BINDs are applied as standalone FilterOperators.
+/// Filters are fused into each BindOperator when the BIND's variable is the
+/// last dependency the filter was waiting on.  Any filters still remaining
+/// after all BINDs are applied as standalone FilterOperators.
 fn apply_all_remaining(
     child: BoxedOperator,
     pending_binds: Vec<BindPattern>,
@@ -424,31 +413,9 @@ fn build_sequential_join_block(
     Ok(operator)
 }
 
-/// Build operators for WHERE clause patterns
+/// Build operators for WHERE clause patterns.
 ///
-/// Handles pattern types and builds appropriate operators:
-/// - Triple patterns: ScanOperator or NestedLoopJoinOperator
-/// - Filter patterns: FilterOperator
-/// - Optional patterns: OptionalOperator
-/// - Values patterns: ValuesOperator
-/// - Bind patterns: BindOperator
-/// - Union patterns: UnionOperator
-///
-/// # Non-Triple Start Support
-///
-/// When the first pattern is not a Triple (e.g., VALUES, BIND, UNION, FILTER),
-/// we start with an EmptyOperator that yields a single empty solution.
-/// This allows these patterns to work at position 0.
-///
-/// # Scoped Reordering
-///
-/// Pattern reordering is scoped and *explicitly bounded*:
-/// - We only reorder within a contiguous block of `Triple` patterns (and `VALUES`, and "safe" `Filter`s)
-/// - We stop the block at the first "unsafe" FILTER (references vars not yet bound)
-/// - We do not reorder across non-inner-join patterns (OPTIONAL/UNION/MINUS/EXISTS/GRAPH/BIND/etc.)
-///
-/// This keeps semantics stable while still allowing aggressive optimization inside
-/// the regions where it is safe.
+/// Delegates to [`build_where_operators_seeded`] with no initial seed operator.
 pub fn build_where_operators(
     patterns: &[Pattern],
     stats: Option<Arc<StatsView>>,
@@ -463,10 +430,10 @@ pub fn build_where_operators(
 /// - `FILTER`s (all filters, regardless of variable binding status)
 ///
 /// FILTERs are collected unconditionally. Filters referencing variables not yet bound
-/// in left-to-right order will be tracked via `FilterPattern` and applied later when
-/// their required variables become bound. This allows users to write FILTER patterns
-/// anywhere in the WHERE clause - the system automatically moves each filter to execute
-/// immediately after all of its required variables are bound.
+/// in left-to-right order will be applied later when their required variables become
+/// bound. This allows users to write FILTER patterns anywhere in the WHERE clause —
+/// the system automatically moves each filter to execute immediately after all of its
+/// required variables are bound.
 ///
 /// A BIND is considered safe to include in the block if **all** variables referenced
 /// by its expression are already bound by preceding patterns (original order). BINDs
@@ -530,12 +497,22 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
     }
 }
 
-/// Internal helper to build WHERE operators with an optional initial seed operator.
+/// Build WHERE operators with an optional initial seed operator.
+///
+/// Handles all pattern types: Triple, VALUES, BIND, FILTER, OPTIONAL, UNION,
+/// MINUS, EXISTS, PropertyPath, Subquery, and search patterns.
+///
+/// Contiguous runs of Triple/VALUES/BIND/FILTER patterns are collected into
+/// inner-join blocks by [`collect_inner_join_block`], then built as either a
+/// `PropertyJoinOperator` or a sequential scan/join chain. All other patterns
+/// (OPTIONAL, UNION, MINUS, etc.) are processed one at a time.
+///
+/// Pattern reordering is applied upfront via [`reorder_patterns`] using
+/// selectivity-based cost estimation.
 ///
 /// - If `seed` is `Some`, it is used as the starting operator for the pattern list.
 /// - If `seed` is `None` and the first pattern is non-triple, an `EmptyOperator` is used.
 /// - `stats` provides property/class statistics for selectivity-based pattern reordering.
-///   Using `Arc` avoids expensive HashMap cloning when threading stats to nested operators.
 pub fn build_where_operators_seeded(
     seed: Option<BoxedOperator>,
     patterns: &[Pattern],
