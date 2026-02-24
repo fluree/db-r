@@ -118,13 +118,16 @@ impl UnresolvedTerm {
 
 /// Constraint on the datatype of an unresolved triple pattern's object literal.
 ///
+/// Either an explicit datatype IRI or a language tag. Setting a language tag
+/// implies that the datatype is `rdf:langString` (per RDF 1.1).
+///
 /// Mirrors [`DatatypeConstraint`](crate::triple::DatatypeConstraint) but uses
 /// IRI strings instead of resolved Sids.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UnresolvedDatatypeConstraint {
     /// Datatype IRI (not yet resolved to Sid)
     Explicit(Arc<str>),
-    /// Language tag (implies `rdf:langString`)
+    /// Language tag (implies the datatype is `rdf:langString`)
     LangTag(Arc<str>),
 }
 

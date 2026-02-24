@@ -15,14 +15,15 @@ static RDF_LANG_STRING_SID: LazyLock<Sid> =
 
 /// Constraint on the datatype of a triple pattern's object literal.
 ///
-/// Collapses the previously independent `dt` and `lang` fields into a single
-/// sum type so that the illegal state (both set simultaneously with a non-
-/// `rdf:langString` datatype) is unrepresentable.
+/// Either an explicit datatype or a language tag. Setting a language tag
+/// implies that the datatype is `rdf:langString` (per RDF 1.1); this sum
+/// type makes the illegal state (both an explicit non-`rdf:langString`
+/// datatype and a language tag) unrepresentable.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DatatypeConstraint {
     /// Explicitly specified datatype (e.g. `xsd:integer`, `xsd:dateTime`)
     Explicit(Sid),
-    /// Language tag — datatype is always `rdf:langString`
+    /// Language tag (implies the datatype is `rdf:langString`)
     LangTag(Arc<str>),
 }
 
