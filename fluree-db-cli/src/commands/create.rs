@@ -3,7 +3,7 @@ use crate::context;
 use crate::detect;
 use crate::error::{CliError, CliResult};
 use fluree_db_api::server_defaults::FlureeDir;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Import tuning options passed from global + create-specific CLI flags.
@@ -39,7 +39,7 @@ pub async fn run(
         Some(path) if path.is_dir() => {
             // Directory: scan to determine format, then route.
             match scan_directory_format(path)? {
-                DirectoryFormat::Turtle => {
+                DirectoryFormat::Turtle | DirectoryFormat::JsonLd => {
                     run_bulk_import(
                         &fluree,
                         ledger,
@@ -51,14 +51,10 @@ pub async fn run(
                     )
                     .await?;
                 }
-                DirectoryFormat::JsonLd => {
-                    run_jsonld_directory(&fluree, ledger, path, dirs.data_dir(), verbose, quiet)
-                        .await?;
-                }
             }
         }
         Some(path) if is_import_path(path)? => {
-            // Bulk import: Turtle file (any size).
+            // Bulk import: Turtle or JSON-LD file (any size).
             // The import pipeline handles both small (single-chunk) and large
             // (auto-split) files via resolve_chunk_source.
             run_bulk_import(
@@ -531,130 +527,6 @@ fn scan_directory_format(dir: &Path) -> CliResult<DirectoryFormat> {
     }
 }
 
-/// Discover and sort `.jsonld` files from a directory (case-insensitive).
-fn discover_jsonld_files(dir: &Path) -> CliResult<Vec<PathBuf>> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| CliError::Input(format!("failed to read directory {}: {e}", dir.display())))?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_file()))
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonld"))
-        })
-        .collect();
-
-    files.sort();
-    Ok(files)
-}
-
-/// Process a directory of JSON-LD files: create ledger, then transact each
-/// file in sorted order.
-async fn run_jsonld_directory<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
-    ledger: &str,
-    dir: &Path,
-    fluree_dir: &Path,
-    verbose: bool,
-    quiet: bool,
-) -> CliResult<()>
-where
-    S: fluree_db_core::storage::Storage
-        + fluree_db_core::ContentAddressedWrite
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    N: fluree_db_nameservice::NameService
-        + fluree_db_nameservice::Publisher
-        + fluree_db_nameservice::ConfigPublisher
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-{
-    let files = discover_jsonld_files(dir)?;
-    let total = files.len();
-
-    if verbose {
-        eprintln!(
-            "Importing {} JSON-LD file(s) from: {}",
-            total,
-            dir.display()
-        );
-    }
-
-    // Create the ledger first; write active-ledger marker immediately so the
-    // user can inspect/query/drop even if a later file fails.
-    fluree.create_ledger(ledger).await?;
-    config::write_active_ledger(fluree_dir, ledger)?;
-
-    let start = std::time::Instant::now();
-    let mut cumulative_flakes: usize = 0;
-    let mut last_t: i64 = 0;
-
-    for (i, file_path) in files.iter().enumerate() {
-        let file_name = file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
-
-        if !quiet {
-            eprintln!("[{}/{}] {}", i + 1, total, file_name);
-        }
-
-        let content = std::fs::read_to_string(file_path)
-            .map_err(|e| CliError::Input(format!("failed to read {}: {e}", file_path.display())))?;
-
-        // Validate that the file is actually JSON-LD, not arbitrary JSON.
-        let format = detect::detect_data_format(Some(file_path), &content, None)?;
-        if !matches!(format, detect::DataFormat::JsonLd) {
-            return Err(CliError::Input(format!(
-                "file {} does not appear to be JSON-LD",
-                file_path.display()
-            )));
-        }
-
-        let json: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-            CliError::Input(format!("JSON parse error in {}: {e}", file_path.display()))
-        })?;
-
-        let result = fluree
-            .graph(ledger)
-            .transact()
-            .insert(&json)
-            .commit()
-            .await
-            .map_err(|e| {
-                CliError::Import(format!("failed to transact {}: {e}", file_path.display()))
-            })?;
-
-        cumulative_flakes += result.receipt.flake_count;
-        last_t = result.receipt.t;
-
-        if verbose {
-            eprintln!(
-                "  -> t={}, {} flakes",
-                result.receipt.t, result.receipt.flake_count
-            );
-        }
-    }
-
-    let elapsed = start.elapsed();
-
-    println!(
-        "Created ledger '{}' ({} flakes across {} files in {:.2}s, t={})",
-        ledger,
-        format_with_commas(cumulative_flakes as u64),
-        total,
-        elapsed.as_secs_f64(),
-        last_t,
-    );
-
-    Ok(())
-}
-
 // ============================================================================
 // Import path detection (single files only)
 // ============================================================================
@@ -662,8 +534,9 @@ where
 /// Whether this single-file path should use the import pipeline.
 ///
 /// - `.ttl` files (case-insensitive) → import (auto-splits large files)
+/// - `.jsonld` files (case-insensitive) → import (bypasses novelty)
 /// - `.ttl.gz` → error with helpful message
-/// - Everything else → staging path (JSON-LD read + insert)
+/// - Everything else (e.g. `.json`) → detect-based transact path
 ///
 /// Note: directories are handled separately in `run()` via `scan_directory_format()`.
 fn is_import_path(path: &Path) -> CliResult<bool> {
@@ -681,8 +554,8 @@ fn is_import_path(path: &Path) -> CliResult<bool> {
         )));
     }
 
-    // Case-insensitive .ttl check.
-    if name_lower.ends_with(".ttl") {
+    // Case-insensitive .ttl / .jsonld check.
+    if name_lower.ends_with(".ttl") || name_lower.ends_with(".jsonld") {
         return Ok(true);
     }
 

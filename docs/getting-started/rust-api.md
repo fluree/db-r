@@ -83,10 +83,10 @@ async fn main() -> Result<()> {
 }
 ```
 
-### Bulk import Turtle chunks (high throughput)
+### Bulk import (high throughput)
 
-For initial ledger bootstraps (large Turtle datasets), Fluree exposes a bulk import pipeline as a
-first-class Rust API:
+For initial ledger bootstraps (large Turtle or JSON-LD datasets), Fluree exposes a bulk import
+pipeline as a first-class Rust API:
 
 ```rust
 use fluree_db_api::{FlureeBuilder, Result};
@@ -96,8 +96,9 @@ async fn main() -> Result<()> {
     let fluree = FlureeBuilder::file("./data").build()?;
 
     // `chunks_dir` can be:
-    // - a directory containing `.ttl` or `.trig` files (sorted lexicographically), OR
-    // - a single `.ttl` file.
+    // - a directory containing *.ttl, *.trig, or *.jsonld files (sorted lexicographically), OR
+    // - a single .ttl or .jsonld file.
+    // Directories must contain a single format (no mixing Turtle and JSON-LD).
     let result = fluree
         .create("dblp:main")
         .import("./chunks_dir")

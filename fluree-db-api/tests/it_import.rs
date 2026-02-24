@@ -594,3 +594,169 @@ async fn import_directory_without_chunk_prefix() {
 
     assert_eq!(names, vec!["Alice", "Bob"]);
 }
+
+// ============================================================================
+// JSON-LD import tests
+// ============================================================================
+
+#[tokio::test]
+async fn import_jsonld_directory_then_query() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    std::fs::write(
+        data_dir.path().join("01_alice.jsonld"),
+        r#"{
+            "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
+            "@id": "ex:alice",
+            "@type": "ex:Person",
+            "schema:name": "Alice"
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        data_dir.path().join("02_bob.jsonld"),
+        r#"{
+            "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
+            "@id": "ex:bob",
+            "@type": "ex:Person",
+            "schema:name": "Bob"
+        }"#,
+    )
+    .unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let result = fluree
+        .create("test/import-jsonld-dir:main")
+        .import(data_dir.path())
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("JSON-LD directory import should succeed");
+
+    assert_eq!(result.t, 2, "two .jsonld files => t=2");
+    assert!(result.flake_count > 0, "expected flakes, got 0");
+
+    let ledger = fluree
+        .ledger("test/import-jsonld-dir:main")
+        .await
+        .expect("load ledger");
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "select": ["?name"],
+        "where": { "schema:name": "?name" }
+    });
+
+    let qr = fluree
+        .query(&ledger, &query)
+        .await
+        .expect("query after JSON-LD import");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
+    let names = extract_sorted_strings(&json);
+
+    assert_eq!(names, vec!["Alice", "Bob"]);
+}
+
+#[tokio::test]
+async fn import_single_jsonld_file_then_query() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let file_path = data_dir.path().join("people.jsonld");
+    std::fs::write(
+        &file_path,
+        r#"{
+            "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
+            "@graph": [
+                {"@id": "ex:carol", "@type": "ex:Person", "schema:name": "Carol"},
+                {"@id": "ex:dave", "@type": "ex:Person", "schema:name": "Dave"}
+            ]
+        }"#,
+    )
+    .unwrap();
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let result = fluree
+        .create("test/import-jsonld-single:main")
+        .import(&file_path)
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("single JSON-LD file import should succeed");
+
+    assert_eq!(result.t, 1, "single file => t=1");
+    assert!(result.flake_count > 0);
+
+    let ledger = fluree
+        .ledger("test/import-jsonld-single:main")
+        .await
+        .expect("load ledger");
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "select": ["?name"],
+        "where": { "schema:name": "?name" }
+    });
+
+    let qr = fluree
+        .query(&ledger, &query)
+        .await
+        .expect("query after single JSON-LD import");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
+    let names = extract_sorted_strings(&json);
+
+    assert_eq!(names, vec!["Carol", "Dave"]);
+}
+
+/// Regression: serial Turtle path (threads=0) must produce queryable results.
+#[tokio::test]
+async fn import_serial_turtle_then_query() {
+    let db_dir = tempfile::tempdir().expect("db");
+    let data_dir = tempfile::tempdir().expect("data");
+
+    write_ttl(
+        data_dir.path(),
+        "a.ttl",
+        "@prefix ex: <http://example.org/ns/> .\n@prefix schema: <http://schema.org/> .\nex:alice a ex:Person ; schema:name \"Alice\" .\n",
+    );
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build");
+
+    let result = fluree
+        .create("test/serial-ttl:main")
+        .import(data_dir.path())
+        .threads(0) // Force serial path
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("import");
+
+    assert_eq!(result.t, 1);
+    assert!(result.flake_count > 0);
+
+    let ledger = fluree.ledger("test/serial-ttl:main").await.expect("load");
+    let query = json!({
+        "@context": { "schema": "http://schema.org/" },
+        "select": ["?name"],
+        "where": { "schema:name": "?name" }
+    });
+    let qr = fluree.query(&ledger, &query).await.expect("query");
+    let json_result = qr.to_jsonld(&ledger.snapshot).expect("format");
+    let names = extract_sorted_strings(&json_result);
+    assert_eq!(names, vec!["Alice"]);
+}

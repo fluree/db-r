@@ -61,7 +61,7 @@ pub enum Commands {
 
         /// Import data from a file or directory.
         /// Accepts a single .ttl, .json, or .jsonld file, or a directory of
-        /// .ttl/.trig files (bulk import) or .jsonld files (sequential transact).
+        /// .ttl/.trig or .jsonld files (bulk import, bypasses novelty).
         /// Files in a directory are processed in lexicographic order.
         #[arg(long)]
         from: Option<PathBuf>,

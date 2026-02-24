@@ -1363,8 +1363,8 @@ fn create_from_jsonld_directory() {
         .args(["create", "jsondir", "--from", data_dir.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Created ledger 'jsondir'"))
-        .stdout(predicate::str::contains("flakes across 2 files"));
+        .stdout(predicate::str::contains("About ledger 'jsondir'"))
+        .stdout(predicate::str::contains("flakes"));
 }
 
 #[test]
