@@ -35,6 +35,8 @@ members = [
     "fluree-search-httpd",
     "fluree-db-cli",
     "bench-filter-query",
+]
+exclude = [
     "testsuite-sparql",
 ]
 

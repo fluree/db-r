@@ -4,7 +4,6 @@
 # Run `make help` to see available targets.
 
 CARGO := cargo
-CRATE := testsuite-sparql
 REPORT := report.txt
 FAILURES_REPORT := failures.txt
 RDF_TESTS := rdf-tests
@@ -44,22 +43,22 @@ help: ## Show this help
 # ---------------------------------------------------------------------------
 
 test: ## Run all non-ignored tests (syntax; CI-safe)
-	$(CARGO) test -p $(CRATE) -- --nocapture 2>&1
+	$(CARGO) test -- --nocapture 2>&1
 
 test-all: ## Run ALL registered W3C tests including ignored
-	$(CARGO) test -p $(CRATE) -- --nocapture --include-ignored 2>&1
+	$(CARGO) test -- --nocapture --include-ignored 2>&1
 
 test-syntax11: ## Run SPARQL 1.1 query syntax tests only
-	$(CARGO) test -p $(CRATE) sparql11_syntax_query_tests -- --nocapture 2>&1
+	$(CARGO) test sparql11_syntax_query_tests -- --nocapture 2>&1
 
 test-syntax10: ## Run SPARQL 1.0 syntax tests only
-	$(CARGO) test -p $(CRATE) sparql10_syntax_tests -- --nocapture 2>&1
+	$(CARGO) test sparql10_syntax_tests -- --nocapture 2>&1
 
 test-syntax-update: ## Run SPARQL 1.1 update syntax tests
-	$(CARGO) test -p $(CRATE) sparql11_syntax_update -- --nocapture 2>&1
+	$(CARGO) test sparql11_syntax_update -- --nocapture 2>&1
 
 test-eval: ## Run full SPARQL 1.1 query evaluation suite (~5 min)
-	$(CARGO) test -p $(CRATE) sparql11_query_w3c_testsuite -- --nocapture --include-ignored 2>&1
+	$(CARGO) test sparql11_query_w3c_testsuite -- --nocapture --include-ignored 2>&1
 
 test-eval-cat: ## Run one eval category (CAT=aggregates|bind|functions|...)
 ifndef CAT
@@ -71,24 +70,24 @@ ifndef CAT
 	@echo "  property_path, subquery"
 	@exit 1
 endif
-	$(CARGO) test -p $(CRATE) sparql11_$(CAT) -- --nocapture --include-ignored 2>&1
+	$(CARGO) test sparql11_$(CAT) -- --nocapture --include-ignored 2>&1
 
 test-eval10: ## Run SPARQL 1.0 query evaluation tests
-	$(CARGO) test -p $(CRATE) sparql10_query_eval -- --nocapture --include-ignored 2>&1
+	$(CARGO) test sparql10_query_eval -- --nocapture --include-ignored 2>&1
 
 test-update: ## Run SPARQL 1.1 update tests (syntax + eval)
-	$(CARGO) test -p $(CRATE) sparql11_update -- --nocapture --include-ignored 2>&1
+	$(CARGO) test sparql11_update -- --nocapture --include-ignored 2>&1
 
 test-fed: ## Run SPARQL 1.1 federation tests (syntax + service)
-	$(CARGO) test -p $(CRATE) sparql11_federation -- --nocapture --include-ignored 2>&1
-	$(CARGO) test -p $(CRATE) sparql11_service -- --nocapture --include-ignored 2>&1
+	$(CARGO) test sparql11_federation -- --nocapture --include-ignored 2>&1
+	$(CARGO) test sparql11_service -- --nocapture --include-ignored 2>&1
 
 test-results: ## Run SPARQL 1.1 result format tests (JSON + CSV/TSV)
-	$(CARGO) test -p $(CRATE) sparql11_json_result -- --nocapture --include-ignored 2>&1
-	$(CARGO) test -p $(CRATE) sparql11_csv_tsv -- --nocapture --include-ignored 2>&1
+	$(CARGO) test sparql11_json_result -- --nocapture --include-ignored 2>&1
+	$(CARGO) test sparql11_csv_tsv -- --nocapture --include-ignored 2>&1
 
 test-entailment: ## Run SPARQL 1.1 entailment tests
-	$(CARGO) test -p $(CRATE) sparql11_entailment -- --nocapture --include-ignored 2>&1
+	$(CARGO) test sparql11_entailment -- --nocapture --include-ignored 2>&1
 
 # ---------------------------------------------------------------------------
 # Reports and analysis
@@ -96,20 +95,20 @@ test-entailment: ## Run SPARQL 1.1 entailment tests
 
 report: ## Run syntax tests and save full output to report.txt
 	@echo "Running W3C SPARQL syntax tests (output → $(REPORT))..."
-	@$(CARGO) test -p $(CRATE) -- --nocapture > $(REPORT) 2>&1; true
+	@$(CARGO) test -- --nocapture > $(REPORT) 2>&1; true
 	@grep -E "(=== Test Summary|Total:|Passed:|Ignored:|Failed:)" $(REPORT) || true
 	@echo "Full report saved to $(REPORT)"
 
 report-eval: ## Run eval tests and save full output to report-eval.txt
 	@echo "Running W3C SPARQL eval tests (output → report-eval.txt)..."
-	@$(CARGO) test -p $(CRATE) sparql11_query_w3c_testsuite -- --nocapture --include-ignored > report-eval.txt 2>&1; true
+	@$(CARGO) test sparql11_query_w3c_testsuite -- --nocapture --include-ignored > report-eval.txt 2>&1; true
 	@grep -E "(=== Test Summary|Total:|Passed:|Ignored:|Failed:)" report-eval.txt || true
 	@echo "Full report saved to report-eval.txt"
 
 report-json: ## Generate machine-readable JSON report for all tests
 	@echo "Running all W3C SPARQL tests (JSON output → report.json)..."
 	@echo "  (using --test-threads=1 to avoid concurrent report writes)"
-	@W3C_REPORT_JSON=report.json $(CARGO) test -p $(CRATE) -- --nocapture --include-ignored --test-threads=1 > /dev/null 2>&1; true
+	@W3C_REPORT_JSON=report.json $(CARGO) test -- --nocapture --include-ignored --test-threads=1 > /dev/null 2>&1; true
 	@echo "JSON report written to report.json"
 	@python3 -c "import json; r=json.load(open('report.json')); print(f'  Total: {r[\"total\"]}  Passed: {r[\"passed\"]}  Ignored: {r[\"ignored\"]}  Failed: {r[\"failed\"]}  Rate: {r[\"pass_rate\"]}')" 2>/dev/null || true
 
@@ -125,10 +124,10 @@ failures-list: report ## One-line-per-failure summary (test ID + error type)
 		|| echo "(no failures)"
 
 count: ## Show pass/fail summary counts (syntax tests)
-	@$(CARGO) test -p $(CRATE) -- --nocapture 2>&1 | grep -E "(Total|Passed|Ignored|Failed|=== Test Summary)" || true
+	@$(CARGO) test -- --nocapture 2>&1 | grep -E "(Total|Passed|Ignored|Failed|=== Test Summary)" || true
 
 count-eval: ## Show pass/fail counts for 1.1 eval tests
-	@$(CARGO) test -p $(CRATE) sparql11_query_w3c_testsuite -- --nocapture --include-ignored 2>&1 | grep -E "(Total|Passed|Ignored|Failed|=== Test Summary)" || true
+	@$(CARGO) test sparql11_query_w3c_testsuite -- --nocapture --include-ignored 2>&1 | grep -E "(Total|Passed|Ignored|Failed|=== Test Summary)" || true
 
 # ---------------------------------------------------------------------------
 # Investigating specific tests
@@ -171,7 +170,7 @@ endif
 # ---------------------------------------------------------------------------
 
 ci: ## CI target: run only tests that are expected to pass
-	$(CARGO) test -p $(CRATE) 2>&1
+	$(CARGO) test 2>&1
 
 # ---------------------------------------------------------------------------
 # Maintenance
@@ -183,7 +182,7 @@ update-submodule: ## Update the W3C rdf-tests submodule to latest
 	@echo "Submodule updated. Run 'make test' to check for regressions."
 
 check: ## Run cargo check on the testsuite crate
-	$(CARGO) check -p $(CRATE)
+	$(CARGO) check
 
 clean: ## Remove generated report files
 	rm -f $(REPORT) $(FAILURES_REPORT) report-eval.txt report.json
