@@ -39,20 +39,29 @@ pub fn evaluate_query_evaluation_test(test: &Test) -> Result<()> {
         .context("QueryEvaluationTest missing mf:result (expected result file)")?;
     let graph_data = test.graph_data.clone();
 
+    // Use tokio::task::spawn so the eval runs on a separate runtime worker.
+    // This is critical: if query_sparql internally blocks on a synchronous
+    // parse that infinite-loops, the timeout can still fire because it runs
+    // on a different worker thread. With an inline async block, the timeout
+    // would never fire because the blocked code never yields.
     shared_runtime().block_on(async {
-        match tokio::time::timeout(EVAL_TIMEOUT, async {
+        let test_id_for_task = test_id.clone();
+        let task = tokio::task::spawn(async move {
             run_eval_test(
-                &test_id,
+                &test_id_for_task,
                 &query_url,
                 data_url.as_deref(),
                 &result_url,
                 &graph_data,
             )
             .await
-        })
-        .await
-        {
-            Ok(outcome) => outcome,
+        });
+
+        match tokio::time::timeout(EVAL_TIMEOUT, task).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(join_err)) => {
+                bail!("Query evaluation test panicked.\nTest: {test_id}\n{join_err}")
+            }
             Err(_) => {
                 bail!("Query evaluation test timed out (>{EVAL_TIMEOUT:?}).\nTest: {test_id}")
             }
