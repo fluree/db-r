@@ -271,6 +271,11 @@ impl MemoryToolService {
 
         let branch = crate::detect_git_branch();
 
+        // Capture preview before content is moved into MemoryInput
+        let preview: String = content.lines().next().unwrap_or("").chars().take(80).collect();
+        let ellipsis = if content.len() > preview.len() { "..." } else { "" };
+        let preview_line = format!("{}{}", preview, ellipsis);
+
         let input = MemoryInput {
             kind,
             content,
@@ -292,20 +297,11 @@ impl MemoryToolService {
         match self.store.add(input).await {
             Ok(id) => {
                 info!(id = %id, kind = %req.kind, "Memory added");
-                let mut text = format!("Stored memory: {}", id);
+
+                let mut text = format!("Stored memory: {} | {}: {}", id, req.kind, preview_line);
+
                 if redacted {
                     text.push_str("\n\nWarning: Secrets were detected and automatically redacted.");
-                }
-
-                // Return the full memory as JSON for the agent
-                if let Ok(Some(mem)) = self.store.get(&id).await {
-                    let json = format_json(&mem);
-                    text = serde_json::to_string_pretty(&json).unwrap_or(text);
-                    if redacted {
-                        text.push_str(
-                            "\n\nWarning: Secrets were detected and automatically redacted.",
-                        );
-                    }
                 }
 
                 Ok(CallToolResult::success(vec![Content::text(text)]))

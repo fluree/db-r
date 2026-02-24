@@ -11,6 +11,30 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
+const MEM_PREFIX: &str = "mem:";
+const MEM_NAMESPACE: &str = "https://ns.flur.ee/memory#";
+
+/// Expand compact `mem:` prefix IDs to full IRIs for SPARQL queries.
+/// Passes through already-expanded IRIs unchanged.
+fn expand_id(id: &str) -> String {
+    if id.starts_with(MEM_NAMESPACE) {
+        id.to_string()
+    } else if let Some(local) = id.strip_prefix(MEM_PREFIX) {
+        format!("{}{}", MEM_NAMESPACE, local)
+    } else {
+        id.to_string()
+    }
+}
+
+/// Compact a full IRI back to `mem:` prefix form (canonical for Memory.id).
+fn compact_id(id: &str) -> String {
+    if let Some(local) = id.strip_prefix(MEM_NAMESPACE) {
+        format!("{}{}", MEM_PREFIX, local)
+    } else {
+        id.to_string()
+    }
+}
+
 /// Name of the internal memory ledger.
 pub const MEMORY_LEDGER: &str = "__memory";
 
@@ -227,6 +251,10 @@ impl MemoryStore {
     pub async fn get(&self, id: &str) -> Result<Option<Memory>> {
         self.initialize().await?;
 
+        let expanded = expand_id(id);
+        // Compact form is canonical for Memory.id
+        let compact = compact_id(&expanded);
+        let id = &expanded;
         let sparql = format!(
             r#"SELECT ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind
 WHERE {{
@@ -258,7 +286,7 @@ WHERE {{
             .execute_formatted()
             .await?;
 
-        parse_memory_from_sparql_results(id, &result)
+        parse_memory_from_sparql_results(&compact, &result)
     }
 
     /// Update (supersede) an existing memory.
@@ -271,9 +299,12 @@ WHERE {{
     pub async fn update(&self, id: &str, update: MemoryUpdate) -> Result<String> {
         self.initialize().await?;
 
+        let expanded = expand_id(id);
+        let compact = compact_id(&expanded);
+
         // Load the existing memory
         let existing = self
-            .get(id)
+            .get(&expanded)
             .await?
             .ok_or_else(|| MemoryError::NotFound(id.to_string()))?;
 
@@ -291,7 +322,7 @@ WHERE {{
             severity: update.severity.or(existing.severity),
             artifact_refs: update.artifact_refs.unwrap_or(existing.artifact_refs),
             branch: existing.branch,
-            supersedes: Some(id.to_string()),
+            supersedes: Some(compact),
             valid_from: update.valid_from.or(existing.valid_from),
             valid_to: update.valid_to.or(existing.valid_to),
             created_at,
@@ -338,9 +369,12 @@ WHERE {{
     pub async fn forget(&self, id: &str) -> Result<()> {
         self.initialize().await?;
 
+        let expanded = expand_id(id);
+        let compact = compact_id(&expanded);
+
         // Load the memory to know its scope (for file routing)
         let mem = self
-            .get(id)
+            .get(&expanded)
             .await?
             .ok_or_else(|| MemoryError::NotFound(id.to_string()))?;
 
@@ -358,24 +392,25 @@ WHERE {{
                     Some(Scope::User),
                 ),
             };
-            // Get all memories for this scope, then exclude the one being forgotten
+            // Get all memories for this scope, then exclude the one being forgotten.
+            // Compare both compact and expanded forms since Memory.id may use either.
             let remaining: Vec<Memory> = self
                 .all_memories_for_scope(scope_filter.as_ref())
                 .await?
                 .into_iter()
-                .filter(|m| m.id != id)
+                .filter(|m| m.id != compact && m.id != expanded)
                 .collect();
             crate::turtle_io::write_memory_file(&path, &remaining, header)?;
             crate::file_sync::update_hash(dir)?;
         }
 
-        // Then update the ledger cache
+        // Then update the ledger cache (JSON-LD @context expands mem: prefix)
         let delete_doc = json!({
             "@context": {
                 "mem": "https://ns.flur.ee/memory#"
             },
-            "where": { "@id": id, "?p": "?o" },
-            "delete": { "@id": id, "?p": "?o" }
+            "where": { "@id": &compact, "?p": "?o" },
+            "delete": { "@id": &compact, "?p": "?o" }
         });
 
         self.fluree
@@ -768,17 +803,46 @@ fn parse_memories_from_sparql_results(result: &Value) -> Result<Vec<Memory>> {
     Ok(Vec::new())
 }
 
-/// Parse a single memory from SPARQL results.
+/// Parse a single memory from SPARQL results where the ID is known (not a binding variable).
+///
+/// The `get()` query uses `<{id}>` as a constant, so `?id` is NOT in the result bindings.
+/// We inject the known ID into each binding so `parse_from_sparql_bindings` can process them.
 fn parse_memory_from_sparql_results(id: &str, result: &Value) -> Result<Option<Memory>> {
-    let memories = parse_memories_from_sparql_results(result)?;
+    // Inject the known ID into bindings since the get() query doesn't select ?id
+    if let Some(bindings) = result
+        .get("results")
+        .and_then(|r| r.get("bindings"))
+        .and_then(|b| b.as_array())
+    {
+        if bindings.is_empty() {
+            return Ok(None);
+        }
+        let patched: Vec<Value> = bindings
+            .iter()
+            .map(|b| {
+                let mut b = b.clone();
+                if let Some(obj) = b.as_object_mut() {
+                    obj.insert(
+                        "id".to_string(),
+                        serde_json::json!({"type": "uri", "value": id}),
+                    );
+                }
+                b
+            })
+            .collect();
+        let memories = parse_from_sparql_bindings(&patched)?;
+        if memories.is_empty() {
+            return Ok(None);
+        }
+        return Ok(merge_memory_rows(id, &memories));
+    }
 
+    // Fallback: try generic parse
+    let memories = parse_memories_from_sparql_results(result)?;
     if memories.is_empty() {
         return Ok(None);
     }
-
-    // Merge rows for the same ID (multiple rows from OPTIONAL multi-value patterns like tags)
-    let merged = merge_memory_rows(id, &memories);
-    Ok(merged)
+    Ok(merge_memory_rows(id, &memories))
 }
 
 /// Parse memories from SPARQL bindings format.
