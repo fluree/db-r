@@ -12,7 +12,7 @@ use crate::constraints::value::{
     validate_has_value, validate_in, validate_max_exclusive, validate_max_inclusive,
     validate_min_exclusive, validate_min_inclusive,
 };
-use crate::constraints::{Constraint, ConstraintViolation, NestedShape};
+use crate::constraints::{Constraint, ConstraintViolation, NestedShape, NodeConstraint};
 use crate::error::Result;
 use fluree_db_core::{
     FlakeValue, GraphDbRef, GraphId, IndexType, LedgerSnapshot, NoOverlay, RangeMatch, RangeTest,
@@ -432,7 +432,8 @@ fn validate_shape<'a>(
 
         // Validate property shapes
         for prop_shape in &shape.property_shapes {
-            let prop_results = validate_property_shape(db, focus_node, prop_shape, shape).await?;
+            let prop_results =
+                validate_property_shape(db, focus_node, prop_shape, shape, all_shapes).await?;
             results.extend(prop_results);
         }
 
@@ -461,7 +462,6 @@ fn validate_structural_constraint<'a>(
 {
     Box::pin(async move {
         use crate::compile::Severity;
-        use crate::constraints::NodeConstraint;
 
         let mut results = Vec::new();
 
@@ -686,10 +686,24 @@ fn validate_nested_shape<'a>(
     Box::pin(async move {
         // If the NestedShape has no inline constraints, try to find the referenced shape
         // in all_shapes (for top-level shapes referenced by ID in sh:and/or/xone)
-        if nested.property_constraints.is_empty() && nested.node_constraints.is_empty() {
+        if nested.property_constraints.is_empty()
+            && nested.node_constraints.is_empty()
+            && nested.value_constraints.is_empty()
+        {
             if let Some(ref_shape) = all_shapes.iter().find(|s| s.id == nested.id) {
                 return validate_shape(db, focus_node, ref_shape, all_shapes).await;
             }
+            // Shape not found and no inline constraints — treat as unresolved.
+            // Return a violation to prevent sh:or from being trivially true.
+            return Ok(vec![ValidationResult {
+                focus_node: focus_node.clone(),
+                result_path: None,
+                source_shape: parent_shape.id.clone(),
+                source_constraint: Some(nested.id.clone()),
+                severity: Severity::Violation,
+                message: format!("Referenced shape {} could not be resolved", nested.id.name),
+                value: None,
+            }]);
         }
 
         let mut results = Vec::new();
@@ -779,11 +793,12 @@ fn validate_nested_shape<'a>(
 }
 
 /// Validate a focus node against a property shape
-async fn validate_property_shape(
-    db: GraphDbRef<'_>,
+async fn validate_property_shape<'a>(
+    db: GraphDbRef<'a>,
     focus_node: &Sid,
     prop_shape: &PropertyShape,
-    parent_shape: &CompiledShape,
+    parent_shape: &'a CompiledShape,
+    all_shapes: &'a [&'a CompiledShape],
 ) -> Result<Vec<ValidationResult>> {
     let mut results = Vec::new();
 
@@ -851,7 +866,264 @@ async fn validate_property_shape(
         }
     }
 
+    // Validate per-value structural constraints (e.g. sh:or on a property shape).
+    // Each value of the property is checked individually against the nested shapes.
+    for structural in &prop_shape.value_structural_constraints {
+        let structural_results = validate_property_value_structural_constraint(
+            db,
+            focus_node,
+            &values,
+            &datatypes,
+            structural,
+            prop_shape,
+            parent_shape,
+            all_shapes,
+        )
+        .await?;
+        results.extend(structural_results);
+    }
+
     Ok(results)
+}
+
+/// Validate a structural constraint (sh:or/sh:and/sh:xone/sh:not) per-value
+/// on a property shape.
+///
+/// Unlike `validate_structural_constraint` which evaluates against the focus node,
+/// this evaluates against each individual value of the property.
+#[allow(clippy::too_many_arguments)]
+async fn validate_property_value_structural_constraint<'a>(
+    db: GraphDbRef<'a>,
+    focus_node: &Sid,
+    values: &[FlakeValue],
+    datatypes: &[Sid],
+    constraint: &'a NodeConstraint,
+    prop_shape: &PropertyShape,
+    parent_shape: &'a CompiledShape,
+    all_shapes: &'a [&'a CompiledShape],
+) -> Result<Vec<ValidationResult>> {
+    use crate::constraints::NodeConstraint;
+
+    let mut results = Vec::new();
+
+    match constraint {
+        NodeConstraint::Or(nested_shapes) => {
+            // For each value, at least one nested shape must accept it
+            for (i, value) in values.iter().enumerate() {
+                let dt = datatypes.get(i);
+                let mut any_conforms = false;
+                let mut all_messages = Vec::new();
+
+                for nested in nested_shapes {
+                    let conforms = check_value_against_nested_shape(
+                        db,
+                        value,
+                        dt,
+                        nested,
+                        parent_shape,
+                        all_shapes,
+                    )
+                    .await?;
+                    if conforms {
+                        any_conforms = true;
+                        break;
+                    } else {
+                        all_messages.push(nested.id.name.to_string());
+                    }
+                }
+
+                if !any_conforms && !nested_shapes.is_empty() {
+                    results.push(ValidationResult {
+                        focus_node: focus_node.clone(),
+                        result_path: Some(prop_shape.path.clone()),
+                        source_shape: parent_shape.id.clone(),
+                        source_constraint: Some(prop_shape.id.clone()),
+                        severity: prop_shape.severity,
+                        message: format!(
+                            "Value {:?} does not conform to any shape in sh:or",
+                            value
+                        ),
+                        value: Some(value.clone()),
+                    });
+                }
+            }
+        }
+
+        NodeConstraint::And(nested_shapes) => {
+            // For each value, ALL nested shapes must accept it
+            for (i, value) in values.iter().enumerate() {
+                let dt = datatypes.get(i);
+                for nested in nested_shapes {
+                    let conforms = check_value_against_nested_shape(
+                        db,
+                        value,
+                        dt,
+                        nested,
+                        parent_shape,
+                        all_shapes,
+                    )
+                    .await?;
+                    if !conforms {
+                        results.push(ValidationResult {
+                            focus_node: focus_node.clone(),
+                            result_path: Some(prop_shape.path.clone()),
+                            source_shape: parent_shape.id.clone(),
+                            source_constraint: Some(prop_shape.id.clone()),
+                            severity: prop_shape.severity,
+                            message: format!(
+                                "Value {:?} does not conform to shape {} (sh:and)",
+                                value, nested.id.name
+                            ),
+                            value: Some(value.clone()),
+                        });
+                    }
+                }
+            }
+        }
+
+        NodeConstraint::Xone(nested_shapes) => {
+            // For each value, exactly ONE nested shape must accept it
+            for (i, value) in values.iter().enumerate() {
+                let dt = datatypes.get(i);
+                let mut conforming_count = 0;
+
+                for nested in nested_shapes {
+                    let conforms = check_value_against_nested_shape(
+                        db,
+                        value,
+                        dt,
+                        nested,
+                        parent_shape,
+                        all_shapes,
+                    )
+                    .await?;
+                    if conforms {
+                        conforming_count += 1;
+                    }
+                }
+
+                if conforming_count == 0 {
+                    results.push(ValidationResult {
+                        focus_node: focus_node.clone(),
+                        result_path: Some(prop_shape.path.clone()),
+                        source_shape: parent_shape.id.clone(),
+                        source_constraint: Some(prop_shape.id.clone()),
+                        severity: prop_shape.severity,
+                        message: format!(
+                            "Value {:?} does not conform to any shape in sh:xone",
+                            value
+                        ),
+                        value: Some(value.clone()),
+                    });
+                } else if conforming_count > 1 {
+                    results.push(ValidationResult {
+                        focus_node: focus_node.clone(),
+                        result_path: Some(prop_shape.path.clone()),
+                        source_shape: parent_shape.id.clone(),
+                        source_constraint: Some(prop_shape.id.clone()),
+                        severity: prop_shape.severity,
+                        message: format!(
+                            "Value {:?} conforms to {} shapes in sh:xone (must be exactly 1)",
+                            value, conforming_count
+                        ),
+                        value: Some(value.clone()),
+                    });
+                }
+            }
+        }
+
+        NodeConstraint::Not(nested) => {
+            // For each value, the nested shape must NOT accept it
+            for (i, value) in values.iter().enumerate() {
+                let dt = datatypes.get(i);
+                let conforms = check_value_against_nested_shape(
+                    db,
+                    value,
+                    dt,
+                    nested,
+                    parent_shape,
+                    all_shapes,
+                )
+                .await?;
+                if conforms {
+                    results.push(ValidationResult {
+                        focus_node: focus_node.clone(),
+                        result_path: Some(prop_shape.path.clone()),
+                        source_shape: parent_shape.id.clone(),
+                        source_constraint: Some(prop_shape.id.clone()),
+                        severity: prop_shape.severity,
+                        message: format!(
+                            "Value {:?} conforms to shape {} which is not allowed (sh:not)",
+                            value, nested.id.name
+                        ),
+                        value: Some(value.clone()),
+                    });
+                }
+            }
+        }
+
+        NodeConstraint::Closed { .. } => {
+            // Closed constraint at property level is not meaningful — skip
+        }
+    }
+
+    Ok(results)
+}
+
+/// Check whether a single property value conforms to a nested shape.
+///
+/// For nested shapes with `value_constraints` (anonymous shapes like
+/// `[sh:datatype xsd:string]`), validates the constraints directly against
+/// the value and datatype. For IRI/blank-node values (`FlakeValue::Ref`),
+/// delegates to `validate_nested_shape` which can look up the value as a
+/// focus node in the database.
+async fn check_value_against_nested_shape<'a>(
+    db: GraphDbRef<'a>,
+    value: &FlakeValue,
+    datatype: Option<&Sid>,
+    nested: &'a NestedShape,
+    parent_shape: &'a CompiledShape,
+    all_shapes: &'a [&'a CompiledShape],
+) -> Result<bool> {
+    // If the nested shape has value-level constraints (e.g. sh:datatype without sh:path),
+    // check them directly against the value/datatype.
+    if !nested.value_constraints.is_empty() {
+        let dt_slice: Vec<Sid> = datatype.into_iter().cloned().collect();
+        let violations = validate_constraint_set(
+            &nested.value_constraints,
+            std::slice::from_ref(value),
+            &dt_slice,
+        )?;
+        return Ok(violations.is_empty());
+    }
+
+    // For IRI/blank-node values, evaluate the nested shape against the value as a focus node
+    if let FlakeValue::Ref(sid) = value {
+        let nested_results =
+            validate_nested_shape(db, sid, nested, parent_shape, all_shapes).await?;
+        let has_violations = nested_results
+            .iter()
+            .any(|r| r.severity == Severity::Violation);
+        return Ok(!has_violations);
+    }
+
+    // Literal value with no value_constraints — can't evaluate meaningfully.
+    // Treat as non-conforming (the nested shape presumably expects something specific).
+    Ok(false)
+}
+
+/// Apply multiple constraints to a set of values and collect all violations.
+fn validate_constraint_set(
+    constraints: &[Constraint],
+    values: &[FlakeValue],
+    datatypes: &[Sid],
+) -> Result<Vec<ConstraintViolation>> {
+    let mut all_violations = Vec::new();
+    for constraint in constraints {
+        let violations = validate_constraint(constraint, values, datatypes)?;
+        all_violations.extend(violations);
+    }
+    Ok(all_violations)
 }
 
 /// Validate a constraint against a set of values

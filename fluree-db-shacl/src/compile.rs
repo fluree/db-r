@@ -48,6 +48,10 @@ pub struct PropertyShape {
     pub path: Sid,
     /// Constraints on this property
     pub constraints: Vec<Constraint>,
+    /// Per-value structural constraints (sh:or/sh:and/sh:xone/sh:not on a property shape).
+    /// Unlike `CompiledShape::structural_constraints` which apply to the focus node,
+    /// these are evaluated against each value of the property individually.
+    pub value_structural_constraints: Vec<NodeConstraint>,
     /// Severity level for violations
     pub severity: Severity,
     /// Human-readable name
@@ -625,54 +629,35 @@ impl ShapeCompiler {
 
     /// Finalize compilation and produce CompiledShape instances
     fn finalize(self) -> Result<Vec<CompiledShape>> {
+        // Destructure so both maps remain accessible throughout finalization.
+        let Self {
+            shapes,
+            property_shapes: ps_map,
+        } = self;
+
         let mut compiled = Vec::new();
 
-        for (id, data) in self.shapes {
+        for (id, data) in &shapes {
             // Resolve property shapes
-            let mut property_shapes = Vec::new();
-            for ps_id in data.property_shape_ids {
-                if let Some(ps_data) = self.property_shapes.get(&ps_id) {
+            let mut prop_shapes = Vec::new();
+            for ps_id in &data.property_shape_ids {
+                if let Some(ps_data) = ps_map.get(ps_id) {
                     if let Some(path) = &ps_data.path {
-                        // Build constraints, combining pattern + flags
-                        let mut constraints = Vec::new();
+                        let constraints = build_constraints_from_ps_data(ps_data);
 
-                        for constraint in &ps_data.constraints {
-                            match constraint {
-                                // Skip In constraints - will be replaced with expanded values
-                                Constraint::In(_) => {}
-                                other => constraints.push(other.clone()),
-                            }
-                        }
+                        // Check if this property shape's subject also has structural
+                        // constraints (e.g. sh:or on a property shape). If so, build
+                        // per-value structural constraints from its ShapeData entry.
+                        let value_structural_constraints = shapes
+                            .get(ps_id)
+                            .map(|sd| build_logical_constraints(sd, &ps_map))
+                            .unwrap_or_default();
 
-                        // Add Pattern constraint with flags if present
-                        if let Some(pattern) = &ps_data.pattern_string {
-                            constraints.push(Constraint::Pattern(
-                                pattern.clone(),
-                                ps_data.pattern_flags.clone(),
-                            ));
-                        }
-
-                        // Add In constraint with expanded values if present
-                        if !ps_data.in_values.is_empty() {
-                            constraints.push(Constraint::In(ps_data.in_values.clone()));
-                        } else {
-                            // Keep original In constraint if no expansion happened
-                            for constraint in &ps_data.constraints {
-                                if let Constraint::In(values) = constraint {
-                                    // Only keep if it's not an RDF list reference
-                                    if values.len() != 1
-                                        || !matches!(values.first(), Some(FlakeValue::Ref(_)))
-                                    {
-                                        constraints.push(constraint.clone());
-                                    }
-                                }
-                            }
-                        }
-
-                        property_shapes.push(PropertyShape {
+                        prop_shapes.push(PropertyShape {
                             id: ps_id.clone(),
                             path: path.clone(),
                             constraints,
+                            value_structural_constraints,
                             severity: ps_data.severity,
                             name: ps_data.name.clone(),
                             message: ps_data.message.clone(),
@@ -692,80 +677,141 @@ impl ShapeCompiler {
                 });
             }
 
-            // Add sh:not constraint
-            if let Some(ref shape_ref) = data.not_shape {
-                // Create a nested shape reference - the actual shape will be looked up during validation
-                let nested = NestedShape {
-                    id: shape_ref.clone(),
-                    property_constraints: Vec::new(),
-                    node_constraints: Vec::new(),
-                };
-                structural_constraints.push(NodeConstraint::Not(Arc::new(nested)));
-            }
-
-            // Add sh:and constraint (list of shapes)
-            if !data.and_shapes.is_empty() {
-                let nested_shapes: Vec<Arc<NestedShape>> = data
-                    .and_shapes
-                    .iter()
-                    .map(|sid| {
-                        Arc::new(NestedShape {
-                            id: sid.clone(),
-                            property_constraints: Vec::new(),
-                            node_constraints: Vec::new(),
-                        })
-                    })
-                    .collect();
-                structural_constraints.push(NodeConstraint::And(nested_shapes));
-            }
-
-            // Add sh:or constraint (list of shapes)
-            if !data.or_shapes.is_empty() {
-                let nested_shapes: Vec<Arc<NestedShape>> = data
-                    .or_shapes
-                    .iter()
-                    .map(|sid| {
-                        Arc::new(NestedShape {
-                            id: sid.clone(),
-                            property_constraints: Vec::new(),
-                            node_constraints: Vec::new(),
-                        })
-                    })
-                    .collect();
-                structural_constraints.push(NodeConstraint::Or(nested_shapes));
-            }
-
-            // Add sh:xone constraint (list of shapes)
-            if !data.xone_shapes.is_empty() {
-                let nested_shapes: Vec<Arc<NestedShape>> = data
-                    .xone_shapes
-                    .iter()
-                    .map(|sid| {
-                        Arc::new(NestedShape {
-                            id: sid.clone(),
-                            property_constraints: Vec::new(),
-                            node_constraints: Vec::new(),
-                        })
-                    })
-                    .collect();
-                structural_constraints.push(NodeConstraint::Xone(nested_shapes));
-            }
+            // Add logical constraints (sh:not, sh:and, sh:or, sh:xone)
+            structural_constraints.extend(build_logical_constraints(data, &ps_map));
 
             compiled.push(CompiledShape {
-                id,
-                targets: data.targets,
-                property_shapes,
-                node_constraints: data.node_constraints,
+                id: id.clone(),
+                targets: data.targets.clone(),
+                property_shapes: prop_shapes,
+                node_constraints: data.node_constraints.clone(),
                 structural_constraints,
                 severity: data.severity,
-                name: data.name,
-                message: data.message,
+                name: data.name.clone(),
+                message: data.message.clone(),
                 deactivated: data.deactivated,
             });
         }
 
         Ok(compiled)
     }
+}
+
+/// Build the final constraint list from a `PropertyShapeData`, combining
+/// pattern + flags and expanding sh:in values.
+fn build_constraints_from_ps_data(ps_data: &PropertyShapeData) -> Vec<Constraint> {
+    let mut constraints = Vec::new();
+
+    for constraint in &ps_data.constraints {
+        match constraint {
+            // Skip In constraints — will be replaced with expanded values below
+            Constraint::In(_) => {}
+            other => constraints.push(other.clone()),
+        }
+    }
+
+    // Add Pattern constraint with flags if present
+    if let Some(pattern) = &ps_data.pattern_string {
+        constraints.push(Constraint::Pattern(
+            pattern.clone(),
+            ps_data.pattern_flags.clone(),
+        ));
+    }
+
+    // Add In constraint with expanded values if present
+    if !ps_data.in_values.is_empty() {
+        constraints.push(Constraint::In(ps_data.in_values.clone()));
+    } else {
+        // Keep original In constraint if no expansion happened
+        for constraint in &ps_data.constraints {
+            if let Constraint::In(values) = constraint {
+                // Only keep if it's not an RDF list reference
+                if values.len() != 1 || !matches!(values.first(), Some(FlakeValue::Ref(_))) {
+                    constraints.push(constraint.clone());
+                }
+            }
+        }
+    }
+
+    constraints
+}
+
+/// Build a `NestedShape` for a member of sh:or/sh:and/sh:xone/sh:not,
+/// inlining value-level or property constraints from `PropertyShapeData`
+/// when the member is an anonymous shape.
+fn build_nested_shape(sid: &ShapeId, ps_map: &HashMap<ShapeId, PropertyShapeData>) -> NestedShape {
+    if let Some(ps_data) = ps_map.get(sid) {
+        if ps_data.path.is_none() {
+            // Anonymous shape with constraints but no sh:path — these are
+            // value-level constraints (e.g. sh:datatype on the value node).
+            let value_constraints = build_constraints_from_ps_data(ps_data);
+            return NestedShape {
+                id: sid.clone(),
+                property_constraints: Vec::new(),
+                node_constraints: Vec::new(),
+                value_constraints,
+            };
+        }
+        // Has sh:path — inline as a property constraint on the nested shape
+        let constraints = build_constraints_from_ps_data(ps_data);
+        return NestedShape {
+            id: sid.clone(),
+            property_constraints: vec![(ps_data.path.clone().unwrap(), constraints)],
+            node_constraints: Vec::new(),
+            value_constraints: Vec::new(),
+        };
+    }
+    // Named shape reference — constraints will be resolved at validation time
+    NestedShape {
+        id: sid.clone(),
+        property_constraints: Vec::new(),
+        node_constraints: Vec::new(),
+        value_constraints: Vec::new(),
+    }
+}
+
+/// Build logical `NodeConstraint`s (sh:not, sh:and, sh:or, sh:xone) from a
+/// `ShapeData`, using `build_nested_shape` to inline anonymous member constraints.
+fn build_logical_constraints(
+    data: &ShapeData,
+    ps_map: &HashMap<ShapeId, PropertyShapeData>,
+) -> Vec<NodeConstraint> {
+    let mut constraints = Vec::new();
+
+    if let Some(ref shape_ref) = data.not_shape {
+        constraints.push(NodeConstraint::Not(Arc::new(build_nested_shape(
+            shape_ref, ps_map,
+        ))));
+    }
+
+    if !data.and_shapes.is_empty() {
+        let nested = data
+            .and_shapes
+            .iter()
+            .map(|sid| Arc::new(build_nested_shape(sid, ps_map)))
+            .collect();
+        constraints.push(NodeConstraint::And(nested));
+    }
+
+    if !data.or_shapes.is_empty() {
+        let nested = data
+            .or_shapes
+            .iter()
+            .map(|sid| Arc::new(build_nested_shape(sid, ps_map)))
+            .collect();
+        constraints.push(NodeConstraint::Or(nested));
+    }
+
+    if !data.xone_shapes.is_empty() {
+        let nested = data
+            .xone_shapes
+            .iter()
+            .map(|sid| Arc::new(build_nested_shape(sid, ps_map)))
+            .collect();
+        constraints.push(NodeConstraint::Xone(nested));
+    }
+
+    constraints
 }
 
 /// Traverse an RDF list and collect all values
