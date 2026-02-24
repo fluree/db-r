@@ -116,6 +116,39 @@ impl UnresolvedTerm {
     }
 }
 
+/// Constraint on the datatype of an unresolved triple pattern's object literal.
+///
+/// Mirrors [`DatatypeConstraint`](crate::triple::DatatypeConstraint) but uses
+/// IRI strings instead of resolved Sids.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UnresolvedDatatypeConstraint {
+    /// Datatype IRI (not yet resolved to Sid)
+    Explicit(Arc<str>),
+    /// Language tag (implies `rdf:langString`)
+    LangTag(Arc<str>),
+}
+
+impl UnresolvedDatatypeConstraint {
+    /// The effective datatype IRI.
+    ///
+    /// Returns the explicit IRI for [`Explicit`](Self::Explicit), or the
+    /// canonical `rdf:langString` IRI for [`LangTag`](Self::LangTag).
+    pub fn datatype_iri(&self) -> &str {
+        match self {
+            UnresolvedDatatypeConstraint::Explicit(iri) => iri,
+            UnresolvedDatatypeConstraint::LangTag(_) => fluree_vocab::rdf::LANG_STRING,
+        }
+    }
+
+    /// The language tag, if this is a [`LangTag`](Self::LangTag) constraint.
+    pub fn lang_tag(&self) -> Option<&str> {
+        match self {
+            UnresolvedDatatypeConstraint::LangTag(tag) => Some(tag),
+            UnresolvedDatatypeConstraint::Explicit(_) => None,
+        }
+    }
+}
+
 /// Unresolved triple pattern - before IRI encoding
 #[derive(Clone, Debug)]
 pub struct UnresolvedTriplePattern {
@@ -125,25 +158,17 @@ pub struct UnresolvedTriplePattern {
     pub p: UnresolvedTerm,
     /// Object term
     pub o: UnresolvedTerm,
-    /// Optional datatype IRI for the object (from context)
-    pub dt_iri: Option<Arc<str>>,
-    /// Optional language tag for the object (from @language in value object)
-    pub lang: Option<Arc<str>>,
+    /// Optional datatype or language-tag constraint for the object
+    pub dtc: Option<UnresolvedDatatypeConstraint>,
 }
 
 impl UnresolvedTriplePattern {
-    /// Create a new unresolved triple pattern
+    /// Create a new unresolved triple pattern with no constraint
     pub fn new(s: UnresolvedTerm, p: UnresolvedTerm, o: UnresolvedTerm) -> Self {
-        Self {
-            s,
-            p,
-            o,
-            dt_iri: None,
-            lang: None,
-        }
+        Self { s, p, o, dtc: None }
     }
 
-    /// Create with a datatype IRI
+    /// Create with a datatype IRI constraint
     pub fn with_dt(
         s: UnresolvedTerm,
         p: UnresolvedTerm,
@@ -154,15 +179,27 @@ impl UnresolvedTriplePattern {
             s,
             p,
             o,
-            dt_iri: Some(Arc::from(dt_iri.as_ref())),
-            lang: None,
+            dtc: Some(UnresolvedDatatypeConstraint::Explicit(Arc::from(
+                dt_iri.as_ref(),
+            ))),
         }
     }
 
-    /// Set language tag
-    pub fn with_lang(mut self, lang: impl AsRef<str>) -> Self {
-        self.lang = Some(Arc::from(lang.as_ref()));
-        self
+    /// Create with a language tag constraint (implies `rdf:langString` datatype)
+    pub fn with_lang(
+        s: UnresolvedTerm,
+        p: UnresolvedTerm,
+        o: UnresolvedTerm,
+        lang: impl AsRef<str>,
+    ) -> Self {
+        Self {
+            s,
+            p,
+            o,
+            dtc: Some(UnresolvedDatatypeConstraint::LangTag(Arc::from(
+                lang.as_ref(),
+            ))),
+        }
     }
 }
 
@@ -1074,7 +1111,7 @@ mod tests {
         assert!(pattern.s.is_var());
         assert!(!pattern.p.is_var());
         assert!(pattern.o.is_var());
-        assert!(pattern.dt_iri.is_none());
+        assert!(pattern.dtc.is_none());
     }
 
     #[test]
@@ -1086,9 +1123,9 @@ mod tests {
             "http://www.w3.org/2001/XMLSchema#integer",
         );
 
-        assert!(pattern.dt_iri.is_some());
+        assert!(pattern.dtc.is_some());
         assert_eq!(
-            pattern.dt_iri.as_ref().map(|s| s.as_ref()),
+            pattern.dtc.as_ref().map(|c| c.datatype_iri()),
             Some("http://www.w3.org/2001/XMLSchema#integer")
         );
     }

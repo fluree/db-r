@@ -1582,7 +1582,7 @@ impl RangeScanOperator {
             _ => {}
         }
 
-        if let Some(dt) = &self.pattern.dt {
+        if let Some(dt) = self.pattern.dtc.as_ref().and_then(|c| c.as_explicit()) {
             rm.dt = Some(dt.clone());
         }
 
@@ -1688,7 +1688,7 @@ impl RangeScanOperator {
             _ => {}
         }
 
-        if let Some(dt) = &self.pattern.dt {
+        if let Some(dt) = self.pattern.dtc.as_ref().and_then(|c| c.as_explicit()) {
             if !dt_compatible(dt, &f.dt) {
                 return false;
             }

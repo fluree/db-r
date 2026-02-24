@@ -29,7 +29,7 @@ use crate::error::Result;
 use crate::join::NestedLoopJoinOperator;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::seed::EmptyOperator;
-use crate::triple::{Ref, Term, TriplePattern};
+use crate::triple::{DatatypeConstraint, Ref, Term, TriplePattern};
 use crate::values::ValuesOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -78,7 +78,7 @@ pub struct PropertyJoinOperator {
     /// Predicates and their corresponding object variables
     /// Each entry is (predicate_ref, object_var, optional datatype constraint)
     /// predicate_ref can be Ref::Sid or Ref::Iri depending on how the query was lowered.
-    predicates: Vec<(Ref, VarId, Option<Sid>)>,
+    predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>)>,
     /// Output schema: [subject_var, obj_var_1, obj_var_2, ...]
     output_schema: Arc<[VarId]>,
     /// Operator state
@@ -173,7 +173,7 @@ impl PropertyJoinOperator {
 
         // Extract (predicate_ref, object_var, dt) triples
         // Predicate can be Ref::Sid or Ref::Iri depending on lowering
-        let predicates: Vec<(Ref, VarId, Option<Sid>)> = patterns
+        let predicates: Vec<(Ref, VarId, Option<DatatypeConstraint>)> = patterns
             .iter()
             .map(|p| {
                 let pred_ref = match &p.p {
@@ -184,7 +184,7 @@ impl PropertyJoinOperator {
                     Term::Var(v) => *v,
                     _ => panic!("Property-join requires variable objects"),
                 };
-                (pred_ref, obj_var, p.dt.clone())
+                (pred_ref, obj_var, p.dtc.clone())
             })
             .collect();
 
@@ -213,7 +213,7 @@ impl PropertyJoinOperator {
     }
 
     /// Get the predicates with their object variables
-    pub fn predicates(&self) -> &[(Ref, VarId, Option<Sid>)] {
+    pub fn predicates(&self) -> &[(Ref, VarId, Option<DatatypeConstraint>)] {
         &self.predicates
     }
 
@@ -379,14 +379,14 @@ impl Operator for PropertyJoinOperator {
             let mut scan_rows_total: u64 = 0;
 
             for (order_pos, pred_idx) in scan_order.iter().copied().enumerate() {
-                let (pred_term, obj_var, dt) = &self.predicates[pred_idx];
+                let (pred_term, obj_var, constraint) = &self.predicates[pred_idx];
 
                 // If we have a driver subject set and we're in the right execution mode,
                 // try a batched subject probe for this predicate.
                 let can_batched_probe = order_pos > 0
                     && driver_subject_ids.is_some()
                     && ctx.has_binary_store()
-                    && dt.is_none();
+                    && constraint.is_none();
 
                 if can_batched_probe {
                     let store = ctx.binary_store.as_ref().unwrap();
@@ -474,19 +474,11 @@ impl Operator for PropertyJoinOperator {
 
                 // Create pattern: ?s :pred ?o (temp var for object, accessed by index)
                 // pred_term is already a Ref (Sid or Iri) so use it directly
-                let pattern = if let Some(dt) = dt {
-                    TriplePattern::with_dt(
-                        Ref::Var(self.subject_var),
-                        pred_term.clone(),
-                        Term::Var(TEMP_OBJECT_VAR),
-                        dt.clone(),
-                    )
-                } else {
-                    TriplePattern::new(
-                        Ref::Var(self.subject_var),
-                        pred_term.clone(),
-                        Term::Var(TEMP_OBJECT_VAR),
-                    )
+                let pattern = TriplePattern {
+                    s: Ref::Var(self.subject_var),
+                    p: pred_term.clone(),
+                    o: Term::Var(TEMP_OBJECT_VAR),
+                    dtc: constraint.clone(),
                 };
 
                 // Create scan with optional bounds pushdown for this object variable.

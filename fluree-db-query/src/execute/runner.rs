@@ -195,8 +195,7 @@ pub async fn prepare_execution(
                         s: encode_ref(db, &tp.s),
                         p: encode_ref(db, &tp.p),
                         o: encode_term(db, &tp.o),
-                        dt: tp.dt.clone(),
-                        lang: tp.lang.clone(),
+                        dtc: tp.dtc.clone(),
                     }),
                     Pattern::Optional(inner) => {
                         Pattern::Optional(encode_patterns_for_reasoning(db, inner))

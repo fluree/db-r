@@ -106,10 +106,9 @@ fn is_batched_eligible(
     // No object bounds (no FILTER range pushdown)
     let no_bounds = object_bounds.is_none();
     // No datatype or language constraints
-    let no_dt = right_pattern.dt.is_none();
-    let no_lang = right_pattern.lang.is_none();
+    let no_constraint = right_pattern.dtc.is_none();
 
-    has_subject_bind && pred_fixed && obj_is_var && no_obj_bind && no_bounds && no_dt && no_lang
+    has_subject_bind && pred_fixed && obj_is_var && no_obj_bind && no_bounds && no_constraint
 }
 
 /// Bind-join operator for nested-loop join

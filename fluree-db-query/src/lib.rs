@@ -130,7 +130,7 @@ pub use seed::{EmptyOperator, SeedOperator};
 pub use sort::{compare_bindings, compare_flake_values, SortDirection, SortOperator, SortSpec};
 pub use stats_query::StatsCountByPredicateOperator;
 pub use subquery::SubqueryOperator;
-pub use triple::{Ref, Term, TriplePattern};
+pub use triple::{DatatypeConstraint, Ref, Term, TriplePattern};
 pub use union::UnionOperator;
 pub use values::ValuesOperator;
 

@@ -5,10 +5,10 @@
 
 use super::ast::{
     LiteralValue, UnresolvedAggregateFn, UnresolvedAggregateSpec, UnresolvedConstructTemplate,
-    UnresolvedExpression, UnresolvedGraphSelectSpec, UnresolvedNestedSelectSpec, UnresolvedOptions,
-    UnresolvedPathExpr, UnresolvedPattern, UnresolvedQuery, UnresolvedRoot,
-    UnresolvedSelectionSpec, UnresolvedSortDirection, UnresolvedSortSpec, UnresolvedTerm,
-    UnresolvedTriplePattern, UnresolvedValue,
+    UnresolvedDatatypeConstraint, UnresolvedExpression, UnresolvedGraphSelectSpec,
+    UnresolvedNestedSelectSpec, UnresolvedOptions, UnresolvedPathExpr, UnresolvedPattern,
+    UnresolvedQuery, UnresolvedRoot, UnresolvedSelectionSpec, UnresolvedSortDirection,
+    UnresolvedSortSpec, UnresolvedTerm, UnresolvedTriplePattern, UnresolvedValue,
 };
 use super::encode::IriEncoder;
 use super::error::{ParseError, Result};
@@ -24,7 +24,7 @@ use crate::vector::DistanceMetric;
 pub use crate::ir::{GraphSelectSpec, NestedSelectSpec, Root, SelectionSpec};
 use crate::options::QueryOptions;
 use crate::sort::{SortDirection, SortSpec};
-use crate::triple::{Ref, Term, TriplePattern};
+use crate::triple::{DatatypeConstraint, Ref, Term, TriplePattern};
 use crate::var_registry::{VarId, VarRegistry};
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_graph_json_ld::ParsedContext;
@@ -530,36 +530,28 @@ fn lower_triple_pattern<E: IriEncoder>(
     let p = lower_ref_term(&pattern.p, encoder, vars)?;
     let mut o = lower_term(&pattern.o, encoder, vars)?;
 
-    // Handle datatype
-    let dt = if let Some(dt_iri) = &pattern.dt_iri {
-        let dt_sid = encoder
-            .encode_iri(dt_iri)
-            .ok_or_else(|| ParseError::UnknownNamespace(dt_iri.to_string()))?;
+    // Lower constraint (datatype or language tag)
+    let dtc = match &pattern.dtc {
+        Some(UnresolvedDatatypeConstraint::Explicit(dt_iri)) => {
+            let dt_sid = encoder
+                .encode_iri(dt_iri)
+                .ok_or_else(|| ParseError::UnknownNamespace(dt_iri.to_string()))?;
 
-        // Coerce literal values based on datatype
-        if let Term::Value(ref value) = o {
-            let coerced = coerce_value_by_datatype(value.clone(), dt_iri)?;
-            o = Term::Value(coerced);
+            // Coerce literal values based on datatype
+            if let Term::Value(ref value) = o {
+                let coerced = coerce_value_by_datatype(value.clone(), dt_iri)?;
+                o = Term::Value(coerced);
+            }
+
+            Some(DatatypeConstraint::Explicit(dt_sid))
         }
-
-        Some(dt_sid)
-    } else {
-        None
+        Some(UnresolvedDatatypeConstraint::LangTag(tag)) => {
+            Some(DatatypeConstraint::LangTag(tag.clone()))
+        }
+        None => None,
     };
 
-    // Build pattern with dt and lang
-    let mut tp = if let Some(dt) = dt {
-        TriplePattern::with_dt(s, p, o, dt)
-    } else {
-        TriplePattern::new(s, p, o)
-    };
-
-    // Add language constraint if present (can be a constant or a variable like "?lang")
-    if let Some(lang) = &pattern.lang {
-        tp = tp.with_lang(lang.as_ref());
-    }
-
-    Ok(tp)
+    Ok(TriplePattern { s, p, o, dtc })
 }
 
 /// Lower a property path pattern (from `@path` alias) to resolved Pattern(s).
@@ -1601,7 +1593,7 @@ mod tests {
         // Predicate IRI is lowered to Ref::Iri for deferred encoding
         assert_eq!(lowered.p.as_iri(), Some("http://schema.org/name"));
         assert!(matches!(lowered.o, Term::Var(VarId(1))));
-        assert!(lowered.dt.is_none());
+        assert!(lowered.dtc.is_none());
     }
 
     #[test]
@@ -1618,10 +1610,11 @@ mod tests {
 
         let lowered = lower_triple_pattern(&pattern, &encoder, &mut vars).unwrap();
 
-        assert!(lowered.dt.is_some());
-        let dt = lowered.dt.unwrap();
-        assert_eq!(dt.namespace_code, 2);
-        assert_eq!(dt.name.as_ref(), "integer");
+        assert!(lowered.dtc.is_some());
+        let dt = lowered.dtc.unwrap();
+        let sid = dt.as_explicit().expect("should be Explicit");
+        assert_eq!(sid.namespace_code, 2);
+        assert_eq!(sid.name.as_ref(), "integer");
     }
 
     #[test]

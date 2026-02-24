@@ -161,7 +161,7 @@ fn detect_property_join_count_all(
         let Term::Var(o) = &tp.o else {
             return None;
         };
-        if tp.dt.is_some() || tp.lang.is_some() {
+        if tp.dtc.is_some() {
             return None;
         }
         // Object vars must be distinct; otherwise join is not a cartesian product.

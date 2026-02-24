@@ -217,8 +217,7 @@ fn explain_from_parsed(
                 s: normalize_ref(&tp.s),
                 p: normalize_ref(&tp.p),
                 o: normalize_term(&tp.o),
-                dt: tp.dt.clone(),
-                lang: tp.lang.clone(),
+                dtc: tp.dtc.clone(),
             }),
             _ => None,
         })

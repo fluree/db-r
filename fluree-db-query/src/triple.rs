@@ -6,8 +6,54 @@
 
 use crate::var_registry::VarId;
 use fluree_db_core::{FlakeValue, Sid};
-use fluree_vocab::rdf;
-use std::sync::Arc;
+use fluree_vocab::{namespaces, rdf, rdf_names};
+use std::sync::{Arc, LazyLock};
+
+/// Canonical Sid for `rdf:langString`, used by [`DatatypeConstraint::LangTag`].
+static RDF_LANG_STRING_SID: LazyLock<Sid> =
+    LazyLock::new(|| Sid::new(namespaces::RDF, rdf_names::LANG_STRING));
+
+/// Constraint on the datatype of a triple pattern's object literal.
+///
+/// Collapses the previously independent `dt` and `lang` fields into a single
+/// sum type so that the illegal state (both set simultaneously with a non-
+/// `rdf:langString` datatype) is unrepresentable.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DatatypeConstraint {
+    /// Explicitly specified datatype (e.g. `xsd:integer`, `xsd:dateTime`)
+    Explicit(Sid),
+    /// Language tag — datatype is always `rdf:langString`
+    LangTag(Arc<str>),
+}
+
+impl DatatypeConstraint {
+    /// The effective datatype Sid.
+    ///
+    /// Returns the explicit Sid for [`Explicit`](Self::Explicit), or the
+    /// canonical `rdf:langString` Sid for [`LangTag`](Self::LangTag).
+    pub fn datatype(&self) -> &Sid {
+        match self {
+            DatatypeConstraint::Explicit(sid) => sid,
+            DatatypeConstraint::LangTag(_) => &RDF_LANG_STRING_SID,
+        }
+    }
+
+    /// The language tag, if this is a [`LangTag`](Self::LangTag) constraint.
+    pub fn lang_tag(&self) -> Option<&str> {
+        match self {
+            DatatypeConstraint::LangTag(tag) => Some(tag),
+            DatatypeConstraint::Explicit(_) => None,
+        }
+    }
+
+    /// The explicit datatype Sid, if this is an [`Explicit`](Self::Explicit) constraint.
+    pub fn as_explicit(&self) -> Option<&Sid> {
+        match self {
+            DatatypeConstraint::Explicit(sid) => Some(sid),
+            DatatypeConstraint::LangTag(_) => None,
+        }
+    }
+}
 
 /// A reference term in a triple pattern — variable, constant SID, or IRI.
 ///
@@ -196,39 +242,34 @@ pub struct TriplePattern {
     pub p: Ref,
     /// Object term (variable, SID, IRI, or literal value)
     pub o: Term,
-    /// Optional datatype constraint for the object
-    pub dt: Option<Sid>,
-    /// Optional language tag constraint for the object (e.g., "en", "fr")
-    pub lang: Option<Arc<str>>,
+    /// Optional datatype or language-tag constraint for the object
+    pub dtc: Option<DatatypeConstraint>,
 }
 
 impl TriplePattern {
-    /// Create a new triple pattern
+    /// Create a new triple pattern with no datatype/language constraint
     pub fn new(s: Ref, p: Ref, o: Term) -> Self {
-        Self {
-            s,
-            p,
-            o,
-            dt: None,
-            lang: None,
-        }
+        Self { s, p, o, dtc: None }
     }
 
-    /// Create with datatype constraint
+    /// Create with an explicit datatype constraint
     pub fn with_dt(s: Ref, p: Ref, o: Term, dt: Sid) -> Self {
         Self {
             s,
             p,
             o,
-            dt: Some(dt),
-            lang: None,
+            dtc: Some(DatatypeConstraint::Explicit(dt)),
         }
     }
 
-    /// Set language tag constraint
-    pub fn with_lang(mut self, lang: impl AsRef<str>) -> Self {
-        self.lang = Some(Arc::from(lang.as_ref()));
-        self
+    /// Create with a language tag constraint (implies `rdf:langString` datatype)
+    pub fn with_lang(s: Ref, p: Ref, o: Term, lang: impl AsRef<str>) -> Self {
+        Self {
+            s,
+            p,
+            o,
+            dtc: Some(DatatypeConstraint::LangTag(Arc::from(lang.as_ref()))),
+        }
     }
 
     /// Get the variables in this pattern (in order: s, p, o)

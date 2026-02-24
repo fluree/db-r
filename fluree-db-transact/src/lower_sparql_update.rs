@@ -40,7 +40,8 @@ use std::sync::Arc;
 
 use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_query::parse::{
-    LiteralValue, UnresolvedPattern, UnresolvedTerm, UnresolvedTriplePattern,
+    LiteralValue, UnresolvedDatatypeConstraint, UnresolvedPattern, UnresolvedTerm,
+    UnresolvedTriplePattern,
 };
 use fluree_db_query::VarRegistry;
 use fluree_db_sparql::ast::{
@@ -363,16 +364,17 @@ fn lower_triple_to_where(
     let p = predicate_to_unresolved(&triple.predicate, prologue)?;
     let obj = object_to_unresolved(&triple.object, prologue)?;
 
-    let pattern = if obj.datatype.is_some() || obj.lang.is_some() {
-        UnresolvedTriplePattern {
-            s,
-            p,
-            o: obj.term,
-            dt_iri: obj.datatype,
-            lang: obj.lang,
-        }
+    let constraint = if let Some(lang) = obj.lang {
+        Some(UnresolvedDatatypeConstraint::LangTag(lang))
     } else {
-        UnresolvedTriplePattern::new(s, p, obj.term)
+        obj.datatype.map(UnresolvedDatatypeConstraint::Explicit)
+    };
+
+    let pattern = UnresolvedTriplePattern {
+        s,
+        p,
+        o: obj.term,
+        dtc: constraint,
     };
 
     Ok(UnresolvedPattern::Triple(pattern))
