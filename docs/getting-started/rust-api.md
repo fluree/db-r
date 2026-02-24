@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
     let fluree = FlureeBuilder::file("./data").build()?;
 
     // `chunks_dir` can be:
-    // - a directory containing `chunk_*.ttl` files (sorted lexicographically), OR
+    // - a directory containing `.ttl` or `.trig` files (sorted lexicographically), OR
     // - a single `.ttl` file.
     let result = fluree
         .create("dblp:main")

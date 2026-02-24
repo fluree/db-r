@@ -438,7 +438,7 @@ impl From<fluree_db_core::Error> for ImportError {
 /// Either a set of pre-split files (index-based access), or a streaming reader
 /// for a single large Turtle file (channel-based, no pre-scan).
 pub enum ChunkSource {
-    /// Pre-split chunk files (existing behavior: `chunk_*.ttl` / `chunk_*.trig`).
+    /// Pre-split Turtle/TriG files from a directory (sorted lexicographically).
     Files(Vec<PathBuf>),
     /// Streaming reader for a single large Turtle file. Chunks are emitted
     /// through a channel as the file is read — no full pre-scan needed.
@@ -518,7 +518,7 @@ impl ChunkSource {
 
 /// Resolve the import path into a `ChunkSource`.
 ///
-/// - If `path` is a directory: discover `chunk_*.ttl`/`chunk_*.trig` files (existing behavior).
+/// - If `path` is a directory: discover `.ttl`/`.trig` files (sorted lexicographically).
 /// - If `path` is a single large `.ttl` file: auto-split using `TurtleChunkReader`.
 /// - If `path` is a single small `.ttl` file: treat as a single-element `Files` source.
 fn resolve_chunk_source(
@@ -769,7 +769,8 @@ where
 {
     /// Attach a bulk import to this create operation.
     ///
-    /// `path` can be a directory containing `chunk_*.ttl` files, or a single TTL file.
+    /// `path` can be a directory containing `.ttl`/`.trig` files (sorted
+    /// lexicographically), or a single `.ttl` file.
     pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, S, N> {
         ImportBuilder::new(self.fluree, self.ledger_id, path.as_ref().to_path_buf())
     }
@@ -779,7 +780,7 @@ where
 // Chunk discovery
 // ============================================================================
 
-/// Discover and sort `chunk_*.ttl` or `chunk_*.trig` files from a directory.
+/// Discover and sort `.ttl` or `.trig` files from a directory (case-insensitive).
 fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError> {
     if !dir.is_dir() {
         // Single file import
@@ -794,22 +795,21 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
 
     let mut chunks: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_file()))
         .map(|e| e.path())
         .filter(|p| {
-            let is_supported_ext = p
-                .extension()
-                .is_some_and(|ext| ext == "ttl" || ext == "trig");
-            let starts_with_chunk = p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("chunk_"));
-            is_supported_ext && starts_with_chunk
+            p.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    let lower = ext.to_ascii_lowercase();
+                    lower == "ttl" || lower == "trig"
+                })
         })
         .collect();
 
     if chunks.is_empty() {
         return Err(ImportError::NoChunks(format!(
-            "no chunk_*.ttl or chunk_*.trig files found in {}",
+            "no *.ttl or *.trig files found in {}",
             dir.display()
         )));
     }

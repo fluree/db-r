@@ -527,3 +527,70 @@ ex:bob a ex:User ;
         qr.row_count()
     );
 }
+
+// ============================================================================
+// Directory import without chunk_ prefix
+// ============================================================================
+
+#[tokio::test]
+async fn import_directory_without_chunk_prefix() {
+    let db_dir = tempfile::tempdir().expect("db tmpdir");
+    let data_dir = tempfile::tempdir().expect("data tmpdir");
+
+    let prefix = "@prefix ex: <http://example.org/ns/> .\n\
+                  @prefix schema: <http://schema.org/> .\n";
+
+    let file_a = format!(
+        "{prefix}\n\
+         ex:alice a ex:User ;\n\
+             schema:name \"Alice\" .\n"
+    );
+    let file_b = format!(
+        "{prefix}\n\
+         ex:bob a ex:User ;\n\
+             schema:name \"Bob\" .\n"
+    );
+
+    write_ttl(data_dir.path(), "a_people.ttl", &file_a);
+    write_ttl(data_dir.path(), "b_people.ttl", &file_b);
+
+    let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let result = fluree
+        .create("test/import-noprefix:main")
+        .import(data_dir.path())
+        .threads(2)
+        .memory_budget_mb(256)
+        .cleanup(false)
+        .execute()
+        .await
+        .expect("import should succeed without chunk_ prefix");
+
+    assert_eq!(result.t, 2, "two files => t=2");
+    assert!(result.flake_count > 0);
+
+    let ledger = fluree
+        .ledger("test/import-noprefix:main")
+        .await
+        .expect("load ledger");
+
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "select": ["?name"],
+        "where": { "schema:name": "?name" }
+    });
+
+    let qr = fluree
+        .query(&ledger, &query)
+        .await
+        .expect("query after import");
+    let json = qr.to_jsonld(&ledger.snapshot).expect("format jsonld");
+    let names = extract_sorted_strings(&json);
+
+    assert_eq!(names, vec!["Alice", "Bob"]);
+}
