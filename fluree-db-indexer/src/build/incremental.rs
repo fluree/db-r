@@ -774,9 +774,7 @@ where
     // Build updated graph_arenas by starting from the base root's arenas
     // and patching any (g_id, p_id) that have new/extended data.
     {
-        use fluree_db_binary_index::format::index_root::{
-            GraphArenaRefsV5, VectorDictRefV5,
-        };
+        use fluree_db_binary_index::format::index_root::{GraphArenaRefsV5, VectorDictRefV5};
         use fluree_db_binary_index::FulltextArenaRefV5;
         use std::collections::BTreeMap;
 
@@ -1411,8 +1409,10 @@ where
                     .unwrap_or(&[]);
 
                 // Group novelty entries by (g_id, p_id).
-                let mut ft_grouped: BTreeMap<(u16, u32), Vec<&crate::fulltext_hook::FulltextEntry>> =
-                    BTreeMap::new();
+                let mut ft_grouped: BTreeMap<
+                    (u16, u32),
+                    Vec<&crate::fulltext_hook::FulltextEntry>,
+                > = BTreeMap::new();
                 for entry in fulltext_entries {
                     ft_grouped
                         .entry((entry.g_id, entry.p_id))
@@ -1423,8 +1423,7 @@ where
                 for ((g_id, p_id), group_entries) in ft_grouped {
                     // Load prior FTA1 arena from CAS (if this (g_id, p_id) was indexed before).
                     let ga = arenas_by_gid.get(&g_id);
-                    let existing_ref =
-                        ga.and_then(|a| a.fulltext.iter().find(|f| f.p_id == p_id));
+                    let existing_ref = ga.and_then(|a| a.fulltext.iter().find(|f| f.p_id == p_id));
 
                     let prior_arena = if let Some(ft_ref) = existing_ref {
                         match content_store.get(&ft_ref.arena_cid).await {
@@ -1441,7 +1440,8 @@ where
                                             "failed to decode prior FTA1 arena; \
                                              rebuilding from novelty only"
                                         );
-                                        fluree_db_binary_index::arena::fulltext::FulltextArena::new()
+                                        fluree_db_binary_index::arena::fulltext::FulltextArena::new(
+                                        )
                                     }
                                 }
                             }
@@ -1489,15 +1489,13 @@ where
                         })?;
 
                     let codec = ContentKind::IndexLeaf.to_codec();
-                    let arena_cid =
-                        ContentId::from_hex_digest(codec, &cas_result.content_hash).ok_or_else(
-                            || {
-                                IndexerError::Other(format!(
-                                    "invalid fulltext arena hash: {}",
-                                    cas_result.content_hash
-                                ))
-                            },
-                        )?;
+                    let arena_cid = ContentId::from_hex_digest(codec, &cas_result.content_hash)
+                        .ok_or_else(|| {
+                            IndexerError::Other(format!(
+                                "invalid fulltext arena hash: {}",
+                                cas_result.content_hash
+                            ))
+                        })?;
 
                     let new_ref = FulltextArenaRefV5 { p_id, arena_cid };
 

@@ -165,14 +165,13 @@ pub(crate) async fn build_and_upload_fulltext_arenas<S: Storage>(
             .map_err(|e| IndexerError::StorageWrite(format!("fulltext CAS write: {}", e)))?;
 
         let codec = ContentKind::IndexLeaf.to_codec();
-        let arena_cid = ContentId::from_hex_digest(codec, &cas_result.content_hash).ok_or_else(
-            || {
+        let arena_cid =
+            ContentId::from_hex_digest(codec, &cas_result.content_hash).ok_or_else(|| {
                 IndexerError::Other(format!(
                     "invalid fulltext arena hash: {}",
                     cas_result.content_hash
                 ))
-            },
-        )?;
+            })?;
 
         per_graph
             .entry(g_id)
@@ -375,10 +374,7 @@ mod tests {
     #[test]
     fn test_incremental_from_empty_prior() {
         let prior = FulltextArena::new();
-        let entries = vec![
-            make_entry(0, 1, 10, 1, true),
-            make_entry(0, 1, 20, 1, true),
-        ];
+        let entries = [make_entry(0, 1, 10, 1, true), make_entry(0, 1, 20, 1, true)];
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(10, "hello world rust"), (20, "rust programming")]);
 
@@ -401,7 +397,7 @@ mod tests {
         assert_eq!(prior.stats().n, 1);
 
         // Add a new doc via incremental update.
-        let entries = vec![make_entry(0, 1, 20, 2, true)];
+        let entries = [make_entry(0, 1, 20, 2, true)];
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(20, "hello rust")]);
 
@@ -433,7 +429,7 @@ mod tests {
         assert_eq!(prior.stats().n, 2);
 
         // Retract doc 20.
-        let entries = vec![make_entry(0, 1, 20, 2, false)];
+        let entries = [make_entry(0, 1, 20, 2, false)];
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings: HashMap<u32, Vec<u8>> = HashMap::new();
 
@@ -454,7 +450,7 @@ mod tests {
         prior.finalize_stats();
 
         // Another triple asserts the same string_id.
-        let entries = vec![make_entry(0, 1, 10, 2, true)];
+        let entries = [make_entry(0, 1, 10, 2, true)];
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(10, "hello")]);
 
@@ -477,7 +473,7 @@ mod tests {
 
         // Novelty adds a term "banana" which sorts BEFORE "cherry",
         // forcing a term_id remap.
-        let entries = vec![make_entry(0, 1, 20, 2, true)];
+        let entries = [make_entry(0, 1, 20, 2, true)];
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(20, "banana cherry")]);
 
@@ -509,7 +505,7 @@ mod tests {
         prior.finalize_stats();
 
         // Incremental update.
-        let entries = vec![make_entry(0, 1, 20, 2, true)];
+        let entries = [make_entry(0, 1, 20, 2, true)];
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(20, "world")]);
 

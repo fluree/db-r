@@ -137,7 +137,15 @@ mod tests {
         let mut hook = FulltextHook::new();
 
         // Fulltext dt_id but wrong o_kind (e.g., REF_ID)
-        hook.on_op(0, 5, DatatypeDictId::FULL_TEXT.as_u16(), ObjKind::REF_ID.as_u8(), 42, 1, true);
+        hook.on_op(
+            0,
+            5,
+            DatatypeDictId::FULL_TEXT.as_u16(),
+            ObjKind::REF_ID.as_u8(),
+            42,
+            1,
+            true,
+        );
         assert!(hook.is_empty());
 
         // Fulltext dt_id but NUM_INT o_kind

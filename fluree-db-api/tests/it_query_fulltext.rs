@@ -47,11 +47,7 @@ async fn insert_doc(
         }
     });
 
-    fluree
-        .insert(ledger, &tx)
-        .await
-        .expect("insert doc")
-        .ledger
+    fluree.insert(ledger, &tx).await.expect("insert doc").ledger
 }
 
 /// Helper to run a fulltext query and return (title, score) pairs ordered by score desc.
@@ -410,7 +406,11 @@ async fn fulltext_novelty_docs_scored_when_arena_exists() {
                 // Plain string (NOT @fulltext) — should not be indexed into the arena.
                 "ex:content": seeded_plain_text
             });
-            let ledger = fluree.insert(ledger, &seed_tx).await.expect("seed insert").ledger;
+            let ledger = fluree
+                .insert(ledger, &seed_tx)
+                .await
+                .expect("seed insert")
+                .ledger;
 
             // Index → arenas are built for docs 1 and 2 (but not for the seeded plain string)
             let loaded = index_and_load(&fluree, &handle, alias, ledger.snapshot.t).await;
@@ -426,8 +426,8 @@ async fn fulltext_novelty_docs_scored_when_arena_exists() {
             // Now insert a THIRD doc WITHOUT re-indexing (this is in novelty).
             // IMPORTANT: it reuses the seeded string value so the string_id is persisted,
             // but the doc is not present in the arena (novelty assertion).
-            let ledger = insert_doc(&fluree, loaded, "ex:doc3", "Novelty Doc", seeded_plain_text)
-                .await;
+            let ledger =
+                insert_doc(&fluree, loaded, "ex:doc3", "Novelty Doc", seeded_plain_text).await;
 
             // Query the ledger with novelty — should find all 3 docs
             let results = query_fulltext(&fluree, &ledger, "Rust").await;

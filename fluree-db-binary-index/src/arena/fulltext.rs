@@ -234,12 +234,7 @@ impl FulltextArena {
                 Err(_) => continue,
             };
             // Document frequency for this term
-            let df = self
-                .stats
-                .df
-                .get(qt_id as usize)
-                .copied()
-                .unwrap_or(0) as f64;
+            let df = self.stats.df.get(qt_id as usize).copied().unwrap_or(0) as f64;
             // IDF: ln((N - df + 0.5) / (df + 0.5) + 1)
             let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
             // TF saturation

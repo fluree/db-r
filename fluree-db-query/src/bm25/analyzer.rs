@@ -1,13 +1,10 @@
-//! Text Analyzer with Clojure Parity
+//! Text analyzer (default English)
 //!
-//! Implements a text analysis pipeline matching the Clojure implementation:
+//! Implements the default English text analysis pipeline used for BM25 scoring:
 //! 1. Lowercase (in tokenizer)
 //! 2. Split on `[^\w]+` (regex word split)
 //! 3. Stopword filtering
 //! 4. Snowball stemming
-//!
-//! Note: Java/Clojure `\w` may differ slightly from Rust regex `\w`.
-//! Both should include `[a-zA-Z0-9_]` but Unicode handling may vary.
 
 use std::collections::HashSet;
 
@@ -41,27 +38,25 @@ pub trait Tokenizer: Send + Sync {
 }
 
 /// Regex for splitting on non-word characters.
-/// Matches the Clojure `(str/split text #"[^\w]+")` pattern.
 static WORD_SPLIT: Lazy<Regex> = Lazy::new(|| {
     // `[^\w]+` in regex means one or more non-word characters
-    // In Rust, `\w` matches `[a-zA-Z0-9_]` (ASCII only by default)
+    // Note: `\w` semantics depend on the regex engine's Unicode configuration.
     Regex::new(r"[^\w]+").expect("Invalid regex")
 });
 
-/// Clojure-parity tokenizer.
+/// Default English tokenizer.
 ///
 /// Performs:
 /// 1. Lowercase the input text
 /// 2. Split on `[^\w]+` (non-word characters)
 ///
-/// Note: Lowercase is done in the tokenizer (not as a separate filter)
-/// to match the Clojure flow: `(-> text str/lower-case (str/split #"[^\w]+"))`
+/// Note: Lowercase is done in the tokenizer (not as a separate filter).
 #[derive(Debug, Default, Clone)]
-pub struct ClojureParityTokenizer;
+pub struct DefaultEnglishTokenizer;
 
-impl Tokenizer for ClojureParityTokenizer {
+impl Tokenizer for DefaultEnglishTokenizer {
     fn tokenize(&self, text: &str) -> Vec<Token> {
-        // Lowercase first (matches Clojure's str/lower-case before split)
+        // Lowercase first.
         let lowercased = text.to_lowercase();
 
         WORD_SPLIT
@@ -182,15 +177,15 @@ impl Analyzer {
         Self { tokenizer, filters }
     }
 
-    /// Create the Clojure-parity English analyzer.
+    /// Create the default English analyzer.
     ///
     /// Pipeline:
-    /// 1. ClojureParityTokenizer (lowercase + word split)
+    /// 1. DefaultEnglishTokenizer (lowercase + word split)
     /// 2. StopwordFilter (English stopwords)
     /// 3. SnowballStemmerFilter (English stemmer)
-    pub fn clojure_parity_english() -> Self {
+    pub fn english_default() -> Self {
         Self {
-            tokenizer: Box::new(ClojureParityTokenizer),
+            tokenizer: Box::new(DefaultEnglishTokenizer),
             // NO LowercaseFilter - already done in tokenizer
             filters: vec![
                 Box::new(StopwordFilter::english()),
@@ -229,10 +224,10 @@ impl Analyzer {
 // English Stopwords
 // ============================================================================
 
-/// English stopwords ported from Clojure's stopwords/en.txt
+/// English stopwords for the default analyzer.
 ///
 /// This list is loaded at compile time from the resources directory for
-/// exact parity with the Clojure implementation.
+/// deterministic behavior across builds.
 static ENGLISH_STOPWORDS: Lazy<HashSet<String>> = Lazy::new(|| {
     // Load the stopwords file at compile time
     const STOPWORDS_FILE: &str = include_str!("../../resources/stopwords/en.txt");
@@ -250,8 +245,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_clojure_parity_tokenizer() {
-        let tokenizer = ClojureParityTokenizer;
+    fn test_default_english_tokenizer() {
+        let tokenizer = DefaultEnglishTokenizer;
 
         let tokens = tokenizer.tokenize("Hello, World!");
         assert_eq!(tokens.len(), 2);
@@ -261,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_tokenizer_unicode() {
-        let tokenizer = ClojureParityTokenizer;
+        let tokenizer = DefaultEnglishTokenizer;
 
         // Rust regex \w includes Unicode letters by default (better for i18n)
         let tokens = tokenizer.tokenize("café résumé");
@@ -272,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_tokenizer_numbers() {
-        let tokenizer = ClojureParityTokenizer;
+        let tokenizer = DefaultEnglishTokenizer;
 
         let tokens = tokenizer.tokenize("test123 hello_world foo42bar");
         assert_eq!(tokens.len(), 3);
@@ -315,7 +310,7 @@ mod tests {
 
     #[test]
     fn test_analyzer_full_pipeline() {
-        let analyzer = Analyzer::clojure_parity_english();
+        let analyzer = Analyzer::english_default();
 
         let terms = analyzer.analyze_to_strings("The quick brown foxes are running!");
 
@@ -331,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_analyzer_term_freqs() {
-        let analyzer = Analyzer::clojure_parity_english();
+        let analyzer = Analyzer::english_default();
 
         let freqs = analyzer.analyze_to_term_freqs("fox fox fox dog dog cat");
 
@@ -342,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_analyzer_empty_input() {
-        let analyzer = Analyzer::clojure_parity_english();
+        let analyzer = Analyzer::english_default();
 
         let terms = analyzer.analyze_to_strings("");
         assert!(terms.is_empty());
@@ -353,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_analyzer_only_stopwords() {
-        let analyzer = Analyzer::clojure_parity_english();
+        let analyzer = Analyzer::english_default();
 
         let terms = analyzer.analyze_to_strings("the a an is are");
         assert!(terms.is_empty());

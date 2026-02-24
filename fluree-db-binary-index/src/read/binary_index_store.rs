@@ -988,11 +988,7 @@ impl BinaryIndexStore {
                         })?;
                     ft_map.insert(ft_ref.p_id, Arc::new(arena));
 
-                    tracing::info!(
-                        g_id = ga.g_id,
-                        p_id = ft_ref.p_id,
-                        "loaded fulltext arena"
-                    );
+                    tracing::info!(g_id = ga.g_id, p_id = ft_ref.p_id, "loaded fulltext arena");
                 }
             }
 

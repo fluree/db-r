@@ -310,10 +310,7 @@ pub async fn resolve_incremental_commits(
                 let global_id = match reconcile.string_remap.get(local_id) {
                     Some(&id) => id,
                     None => {
-                        tracing::warn!(
-                            local_id,
-                            "fulltext entry string_id remap miss; skipping"
-                        );
+                        tracing::warn!(local_id, "fulltext entry string_id remap miss; skipping");
                         // Poison the entry so it's effectively skipped.
                         entry.is_assert = false;
                         entry.string_id = u32::MAX;

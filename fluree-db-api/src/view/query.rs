@@ -263,7 +263,10 @@ where
             .map_err(query_error_to_api_error)?;
 
         let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
-        let fulltext_map = view.binary_store.as_ref().map(|s| s.fulltext_provider_map());
+        let fulltext_map = view
+            .binary_store
+            .as_ref()
+            .map(|s| s.fulltext_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -296,7 +299,10 @@ where
         let prepared = prepare_execution(db, executable).await?;
 
         let spatial_map = view.binary_store.as_ref().map(|s| s.spatial_provider_map());
-        let fulltext_map = view.binary_store.as_ref().map(|s| s.fulltext_provider_map());
+        let fulltext_map = view
+            .binary_store
+            .as_ref()
+            .map(|s| s.fulltext_provider_map());
 
         let config = ContextConfig {
             tracker: Some(tracker),

@@ -158,8 +158,7 @@ where
                     let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
                     spatial_chunk_ranges.push((spatial_cursor, spatial_end));
                     spatial_cursor = spatial_end;
-                    let fulltext_end =
-                        shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                    let fulltext_end = shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
                     fulltext_chunk_ranges.push((fulltext_cursor, fulltext_end));
                     fulltext_cursor = fulltext_end;
                     chunks.push(std::mem::take(&mut chunk));
@@ -192,8 +191,7 @@ where
                     let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
                     spatial_chunk_ranges.push((spatial_cursor, spatial_end));
                     spatial_cursor = spatial_end;
-                    let fulltext_end =
-                        shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                    let fulltext_end = shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
                     fulltext_chunk_ranges.push((fulltext_cursor, fulltext_end));
                     fulltext_cursor = fulltext_end;
                     chunks.push(std::mem::take(&mut chunk));
@@ -204,8 +202,7 @@ where
             if !chunk.is_empty() {
                 let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
                 spatial_chunk_ranges.push((spatial_cursor, spatial_end));
-                let fulltext_end =
-                    shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                let fulltext_end = shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
                 fulltext_chunk_ranges.push((fulltext_cursor, fulltext_end));
                 chunks.push(chunk);
             }
