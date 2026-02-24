@@ -103,15 +103,16 @@ https://w3c.github.io/rdf-tests/sparql/sparql11/syntax-query/manifest.ttl#test_3
 
 For syntax tests, failures fall into three categories:
 
-| Failure Type | What It Means | Example |
-|-------------|--------------|---------|
-| **Positive test fails** | Parser rejects valid SPARQL | Missing feature (subqueries, property path `\|`) |
-| **Negative test fails** | Parser accepts invalid SPARQL | Missing validation (BIND scope, GROUP BY scope) |
-| **Parser timeout** | Parser enters infinite loop | Bug in grammar handling (collections, BIND expressions) |
+| Failure Type            | What It Means                 | Example                                                 |
+| ----------------------- | ----------------------------- | ------------------------------------------------------- |
+| **Positive test fails** | Parser rejects valid SPARQL   | Missing feature (subqueries, property path `\|`)        |
+| **Negative test fails** | Parser accepts invalid SPARQL | Missing validation (BIND scope, GROUP BY scope)         |
+| **Parser timeout**      | Parser enters infinite loop   | Bug in grammar handling (collections, BIND expressions) |
 
 ### Test IDs
 
 Every test has a unique IRI like:
+
 ```
 https://w3c.github.io/rdf-tests/sparql/sparql11/syntax-query/manifest.ttl#test_34
 ```
@@ -129,6 +130,7 @@ cargo test -p testsuite-sparql sparql11_syntax_query_tests -- --nocapture 2>&1 |
 ```
 
 Determine which category:
+
 - **Parser timeout** → Bug in `fluree-db-sparql` grammar rules causing infinite loop
 - **Positive syntax rejected** → Missing parser feature or incorrect grammar
 - **Negative syntax accepted** → Missing semantic validation pass
@@ -169,10 +171,12 @@ Or use the `parse_with_timeout` pattern from `sparql_handlers.rs` if you suspect
 ### Step 4: Investigate the Root Cause
 
 For **parser issues**, the relevant code is in `fluree-db-sparql/`. Start with:
+
 - `src/parser/` — Grammar rules and parser combinators
 - `src/ast/` — AST types the parser emits
 
 For **query evaluation issues**, the chain is:
+
 1. `fluree-db-sparql` → parses to `SparqlAst`
 2. `fluree-db-query` → evaluates the AST against a ledger
 3. `fluree-db-api` → orchestrates ledger creation and query execution
@@ -231,10 +235,6 @@ cargo test -p fluree-db-sparql
 cargo clippy -p fluree-db-sparql --all-features -- -D warnings
 ```
 
-### Step 7: Update the Compliance Status
-
-After merging a fix, update the pass/fail counts in `dev-docs/sparql/00-sparql-compliance-plan.md`.
-
 ## Using Claude Code for Debugging
 
 Claude Code is particularly effective for SPARQL compliance work because each failure is self-contained: a query file, an expected behavior, and a specific error. Here's how to give a session full context.
@@ -284,20 +284,20 @@ Please investigate why the results differ and propose a fix.
 
 When asking Claude Code for help, these files provide essential context:
 
-| Context Needed | File(s) |
-|---------------|---------|
-| Test harness architecture | `testsuite-sparql/src/lib.rs`, `src/evaluator.rs` |
-| How manifests are parsed | `testsuite-sparql/src/manifest.rs` |
-| Syntax test handlers | `testsuite-sparql/src/sparql_handlers.rs` |
-| Eval test handler (data load + query + compare) | `testsuite-sparql/src/query_handler.rs` |
-| Expected result parsing (.srx/.srj) | `testsuite-sparql/src/result_format.rs` |
-| Isomorphic result comparison | `testsuite-sparql/src/result_comparison.rs` |
-| SPARQL parser entry point | `fluree-db-sparql/src/lib.rs` (`parse_sparql()`) |
-| Parser grammar rules | `fluree-db-sparql/src/parser/` |
-| SPARQL AST types | `fluree-db-sparql/src/ast/` |
-| Query engine | `fluree-db-query/src/` |
-| API orchestration | `fluree-db-api/src/` |
-| W3C SPARQL test categories | `testsuite-sparql/tests/w3c_sparql.rs` |
+| Context Needed                                  | File(s)                                           |
+| ----------------------------------------------- | ------------------------------------------------- |
+| Test harness architecture                       | `testsuite-sparql/src/lib.rs`, `src/evaluator.rs` |
+| How manifests are parsed                        | `testsuite-sparql/src/manifest.rs`                |
+| Syntax test handlers                            | `testsuite-sparql/src/sparql_handlers.rs`         |
+| Eval test handler (data load + query + compare) | `testsuite-sparql/src/query_handler.rs`           |
+| Expected result parsing (.srx/.srj)             | `testsuite-sparql/src/result_format.rs`           |
+| Isomorphic result comparison                    | `testsuite-sparql/src/result_comparison.rs`       |
+| SPARQL parser entry point                       | `fluree-db-sparql/src/lib.rs` (`parse_sparql()`)  |
+| Parser grammar rules                            | `fluree-db-sparql/src/parser/`                    |
+| SPARQL AST types                                | `fluree-db-sparql/src/ast/`                       |
+| Query engine                                    | `fluree-db-query/src/`                            |
+| API orchestration                               | `fluree-db-api/src/`                              |
+| W3C SPARQL test categories                      | `testsuite-sparql/tests/w3c_sparql.rs`            |
 
 ### Batch Processing Tips
 
@@ -359,29 +359,29 @@ testsuite-sparql/
 
 ### Syntax Tests (Phase 1)
 
-| Suite | What It Tests | Manifest |
-|-------|-------------|----------|
+| Suite             | What It Tests                             | Manifest                    |
+| ----------------- | ----------------------------------------- | --------------------------- |
 | SPARQL 1.1 syntax | Parser correctness for SPARQL 1.1 grammar | `syntax-query/manifest.ttl` |
-| SPARQL 1.0 syntax | Backward compatibility with SPARQL 1.0 | `manifest-syntax.ttl` |
+| SPARQL 1.0 syntax | Backward compatibility with SPARQL 1.0    | `manifest-syntax.ttl`       |
 
 ### Query Evaluation Tests (Phase 2)
 
 Each test creates an in-memory Fluree ledger, loads RDF data, executes a SPARQL query, and compares results against W3C expected outputs. Run with `make test-eval-cat CAT=<name>`.
 
-| Suite | What It Tests | Manifest |
-|-------|-------------|----------|
-| Aggregates | COUNT, SUM, AVG, MIN, MAX, GROUP_CONCAT, SAMPLE | `aggregates/manifest.ttl` |
-| BIND | BIND expressions, variable assignment | `bind/manifest.ttl` |
-| Bindings | VALUES inline data | `bindings/manifest.ttl` |
-| Cast | xsd:integer(), xsd:double(), xsd:string() | `cast/manifest.ttl` |
-| Construct | CONSTRUCT query form | `construct/manifest.ttl` |
-| Exists | FILTER EXISTS, FILTER NOT EXISTS | `exists/manifest.ttl` |
-| Functions | String, numeric, date/time, hash, IRI functions | `functions/manifest.ttl` |
-| Grouping | GROUP BY semantics, error handling | `grouping/manifest.ttl` |
-| Negation | MINUS, NOT EXISTS | `negation/manifest.ttl` |
-| Project-Expression | SELECT expressions, AS aliases | `project-expression/manifest.ttl` |
-| Property-Path | `/`, `\|`, `^`, `+`, `*`, `?` operators | `property-path/manifest.ttl` |
-| Subquery | Nested SELECT within WHERE | `subquery/manifest.ttl` |
+| Suite              | What It Tests                                   | Manifest                          |
+| ------------------ | ----------------------------------------------- | --------------------------------- |
+| Aggregates         | COUNT, SUM, AVG, MIN, MAX, GROUP_CONCAT, SAMPLE | `aggregates/manifest.ttl`         |
+| BIND               | BIND expressions, variable assignment           | `bind/manifest.ttl`               |
+| Bindings           | VALUES inline data                              | `bindings/manifest.ttl`           |
+| Cast               | xsd:integer(), xsd:double(), xsd:string()       | `cast/manifest.ttl`               |
+| Construct          | CONSTRUCT query form                            | `construct/manifest.ttl`          |
+| Exists             | FILTER EXISTS, FILTER NOT EXISTS                | `exists/manifest.ttl`             |
+| Functions          | String, numeric, date/time, hash, IRI functions | `functions/manifest.ttl`          |
+| Grouping           | GROUP BY semantics, error handling              | `grouping/manifest.ttl`           |
+| Negation           | MINUS, NOT EXISTS                               | `negation/manifest.ttl`           |
+| Project-Expression | SELECT expressions, AS aliases                  | `project-expression/manifest.ttl` |
+| Property-Path      | `/`, `\|`, `^`, `+`, `*`, `?` operators         | `property-path/manifest.ttl`      |
+| Subquery           | Nested SELECT within WHERE                      | `subquery/manifest.ttl`           |
 
 ## Managing the Skip List
 
@@ -400,8 +400,9 @@ check_testsuite(
 ```
 
 **Rules:**
+
 1. Start with an **empty** skip list. Expect full compliance.
-2. Only add entries after investigation confirms a *deliberate* design choice, not a bug.
+2. Only add entries after investigation confirms a _deliberate_ design choice, not a bug.
 3. Every skip entry must have a comment explaining why, linking to the relevant spec section.
 4. Skip entries require review by 2+ team members.
 5. The total skip list should be <5% of tests (Oxigraph skips ~25 out of 700+).
