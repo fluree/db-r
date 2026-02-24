@@ -358,10 +358,31 @@ impl MemoryToolService {
 
         let limit = req.limit.unwrap_or(10);
 
+        // BM25 fulltext search for content relevance
+        let bm25_hits = match self.store.recall_fulltext(&req.query, limit).await {
+            Ok(hits) => hits,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Failed to search memories: {}",
+                    e
+                ))]));
+            }
+        };
+
+        // Load full memory objects for metadata re-ranking
         match self.store.current_memories(&filter).await {
             Ok(all) => {
                 let branch = crate::detect_git_branch();
-                let scored = RecallEngine::recall(&req.query, &all, branch.as_deref(), Some(limit));
+                let scored = if bm25_hits.is_empty() {
+                    RecallEngine::recall_metadata_only(
+                        &req.query,
+                        &all,
+                        branch.as_deref(),
+                        Some(limit),
+                    )
+                } else {
+                    RecallEngine::rerank(&req.query, &bm25_hits, &all, branch.as_deref())
+                };
 
                 if scored.is_empty() {
                     return Ok(CallToolResult::success(vec![Content::text(

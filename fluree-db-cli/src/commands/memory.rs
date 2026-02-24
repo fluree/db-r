@@ -237,10 +237,23 @@ async fn run_recall(
     };
 
     let store = build_store(dirs)?;
+
+    // BM25 fulltext search for content relevance
+    let bm25_hits = store
+        .recall_fulltext(query, limit)
+        .await
+        .map_err(memory_err)?;
+
+    // Load full memory objects for metadata re-ranking
     let all = store.current_memories(&filter).await.map_err(memory_err)?;
 
     let branch = fluree_db_memory::detect_git_branch();
-    let scored = RecallEngine::recall(query, &all, branch.as_deref(), Some(limit));
+    let scored = if bm25_hits.is_empty() {
+        // Fallback to metadata-only scoring when BM25 returns nothing
+        RecallEngine::recall_metadata_only(query, &all, branch.as_deref(), Some(limit))
+    } else {
+        RecallEngine::rerank(query, &bm25_hits, &all, branch.as_deref())
+    };
 
     let result = RecallResult {
         query: query.to_string(),

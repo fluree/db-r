@@ -399,6 +399,65 @@ WHERE {{
         Ok(serde_json::to_value(&all)?)
     }
 
+    /// Full-text recall: BM25-ranked search over memory content.
+    ///
+    /// Uses the native `@fulltext` datatype and `fulltext()` scoring function
+    /// to rank memories by relevance. Returns `(memory_id, bm25_score)` pairs
+    /// ordered by descending score, limited to non-zero matches.
+    ///
+    /// Only searches current (non-superseded) memories.
+    pub async fn recall_fulltext(
+        &self,
+        query_text: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, f64)>> {
+        self.require_initialized().await?;
+
+        let bind_expr = format!("(fulltext ?content \"{}\")", query_text.replace('"', "\\\""));
+
+        let query = json!({
+            "@context": {
+                "mem": "https://ns.flur.ee/memory#"
+            },
+            "select": ["?id", "?score"],
+            "where": [
+                {
+                    "@id": "?id",
+                    "mem:content": "?content"
+                },
+                ["bind", "?score", bind_expr],
+                ["filter", "(> ?score 0)"]
+            ],
+            "orderBy": [["desc", "?score"]],
+            "limit": limit
+        });
+
+        let result = self
+            .fluree
+            .graph(MEMORY_LEDGER_ID)
+            .query()
+            .jsonld(&query)
+            .execute_formatted()
+            .await?;
+
+        // Parse the flat-array result: [[id, score], ...]
+        let mut pairs = Vec::new();
+        if let Some(rows) = result.as_array() {
+            for row in rows {
+                if let Some(arr) = row.as_array() {
+                    if let (Some(id), Some(score)) = (
+                        arr.first().and_then(|v| v.as_str()),
+                        arr.get(1).and_then(|v| v.as_f64()),
+                    ) {
+                        pairs.push((id.to_string(), score));
+                    }
+                }
+            }
+        }
+
+        Ok(pairs)
+    }
+
     /// Execute a raw SPARQL query against the memory ledger.
     ///
     /// Returns the raw JSON result from Fluree.

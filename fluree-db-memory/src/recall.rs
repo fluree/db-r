@@ -1,17 +1,62 @@
 use crate::types::{Memory, MemoryKind, ScoredMemory};
 use chrono::{DateTime, Utc};
 
-/// Keyword-based recall engine for scoring memories against a query.
+/// Recall engine that combines BM25 content scores with metadata bonuses.
 ///
-/// Phase 1: No embeddings, no LLM. Pure keyword + metadata matching.
-/// Phase 2 will add vector similarity via Fluree Cloud embeddings.
+/// The primary ranking signal comes from Fluree's native `@fulltext` / `fulltext()`
+/// BM25 scoring on `mem:content`. Metadata bonuses (tag matches, artifact refs,
+/// branch affinity, recency) are layered on top to re-rank results.
 pub struct RecallEngine;
 
 impl RecallEngine {
-    /// Score and rank memories against a query string.
+    /// Re-rank BM25 results by applying metadata bonuses.
     ///
-    /// Returns memories sorted by descending score, filtered to those with score > 0.
-    pub fn recall(
+    /// `bm25_hits` are `(memory_id, bm25_score)` pairs from `MemoryStore::recall_fulltext()`.
+    /// Each hit is matched against the full `Memory` objects (loaded separately) to apply
+    /// tag, artifact ref, branch, and recency bonuses.
+    ///
+    /// Returns `ScoredMemory` entries sorted by combined score, descending.
+    pub fn rerank(
+        query: &str,
+        bm25_hits: &[(String, f64)],
+        memories: &[Memory],
+        current_branch: Option<&str>,
+    ) -> Vec<ScoredMemory> {
+        let query_lower = query.to_lowercase();
+        let query_words: Vec<&str> = query_lower
+            .split_whitespace()
+            .filter(|w| w.len() > 2)
+            .collect();
+
+        let now = Utc::now();
+
+        let mut scored: Vec<ScoredMemory> = bm25_hits
+            .iter()
+            .filter_map(|(id, bm25_score)| {
+                // BM25 query may return compact prefix IDs (mem:fact-...) while
+                // Memory objects use full IRIs (https://ns.flur.ee/memory#fact-...).
+                let mem = memories.iter().find(|m| ids_match(&m.id, id))?;
+                let bonus = metadata_bonus(mem, &query_lower, &query_words, current_branch, &now);
+                Some(ScoredMemory {
+                    memory: mem.clone(),
+                    score: *bm25_score + bonus,
+                })
+            })
+            .collect();
+
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        scored
+    }
+
+    /// Fallback: score memories purely from metadata when BM25 is unavailable
+    /// (e.g., empty query, or fulltext query returns no results but tag/branch
+    /// matches are still relevant).
+    pub fn recall_metadata_only(
         query: &str,
         memories: &[Memory],
         current_branch: Option<&str>,
@@ -20,7 +65,7 @@ impl RecallEngine {
         let query_lower = query.to_lowercase();
         let query_words: Vec<&str> = query_lower
             .split_whitespace()
-            .filter(|w| w.len() > 2) // Skip very short words
+            .filter(|w| w.len() > 2)
             .collect();
 
         let now = Utc::now();
@@ -28,7 +73,8 @@ impl RecallEngine {
         let mut scored: Vec<ScoredMemory> = memories
             .iter()
             .map(|mem| {
-                let score = score_memory(mem, &query_lower, &query_words, current_branch, &now);
+                let score =
+                    metadata_bonus(mem, &query_lower, &query_words, current_branch, &now);
                 ScoredMemory {
                     memory: mem.clone(),
                     score,
@@ -37,7 +83,6 @@ impl RecallEngine {
             .filter(|sm| sm.score > 0.0)
             .collect();
 
-        // Sort by descending score
         scored.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -52,21 +97,43 @@ impl RecallEngine {
     }
 }
 
-/// Score a single memory against a query.
-fn score_memory(
+/// Match memory IDs that may be in different formats:
+/// - Full IRI: `https://ns.flur.ee/memory#fact-01abc`
+/// - Compact prefix: `mem:fact-01abc`
+fn ids_match(full_id: &str, query_id: &str) -> bool {
+    if full_id == query_id {
+        return true;
+    }
+    // Extract the local part after the namespace/prefix
+    let full_local = full_id
+        .strip_prefix("https://ns.flur.ee/memory#")
+        .unwrap_or(full_id);
+    let query_local = query_id.strip_prefix("mem:").unwrap_or(query_id);
+    full_local == query_local
+}
+
+/// Compute metadata-based bonus score for a memory.
+///
+/// These bonuses are additive on top of the BM25 content score:
+/// - Tag match: +10 per tag that contains a query word
+/// - Artifact ref match: +8 per ref that contains a query word
+/// - Kind match: +6 if the query mentions the memory kind
+/// - Branch match: +3 if the memory is on the current git branch
+/// - Recency: +2 if created in last 7 days, +1 if last 30 days
+fn metadata_bonus(
     mem: &Memory,
     query_lower: &str,
     query_words: &[&str],
     current_branch: Option<&str>,
     now: &DateTime<Utc>,
 ) -> f64 {
-    let mut score = 0.0;
+    let mut bonus = 0.0;
 
-    // Tag exact match: +10 per matching tag
+    // Tag match: +10 per matching tag
     for tag in &mem.tags {
         let tag_lower = tag.to_lowercase();
-        if query_words.iter().any(|w| tag_lower.contains(w)) {
-            score += 10.0;
+        if query_words.iter().any(|w| tag_lower == *w || tag_lower.contains(w)) {
+            bonus += 10.0;
         }
     }
 
@@ -74,11 +141,11 @@ fn score_memory(
     for aref in &mem.artifact_refs {
         let aref_lower = aref.to_lowercase();
         if query_words.iter().any(|w| aref_lower.contains(w)) {
-            score += 8.0;
+            bonus += 8.0;
         }
     }
 
-    // Type match: +6 if query mentions the memory kind
+    // Kind match: +6 if query mentions the memory kind
     let kind_names = match mem.kind {
         MemoryKind::Fact => &["fact", "facts"][..],
         MemoryKind::Decision => &["decision", "decisions", "decided"][..],
@@ -87,21 +154,18 @@ fn score_memory(
             "constraints",
             "rule",
             "rules",
-            "must",
-            "never",
         ][..],
         MemoryKind::Preference => &["preference", "preferences", "prefer", "preferred"][..],
         MemoryKind::Artifact => &["artifact", "artifacts", "file", "files"][..],
     };
     if kind_names.iter().any(|kn| query_lower.contains(kn)) {
-        score += 6.0;
+        bonus += 6.0;
     }
 
-    // Content keyword overlap: +1 per matching word
-    let content_lower = mem.content.to_lowercase();
-    for word in query_words {
-        if content_lower.contains(word) {
-            score += 1.0;
+    // Branch match: +3
+    if let (Some(mem_branch), Some(cur_branch)) = (&mem.branch, current_branch) {
+        if mem_branch == cur_branch {
+            bonus += 3.0;
         }
     }
 
@@ -109,20 +173,13 @@ fn score_memory(
     if let Ok(created) = DateTime::parse_from_rfc3339(&mem.created_at) {
         let age = *now - created.to_utc();
         if age.num_days() < 7 {
-            score += 2.0;
+            bonus += 2.0;
         } else if age.num_days() < 30 {
-            score += 1.0;
+            bonus += 1.0;
         }
     }
 
-    // Branch match: +3
-    if let (Some(mem_branch), Some(cur_branch)) = (&mem.branch, current_branch) {
-        if mem_branch == cur_branch {
-            score += 3.0;
-        }
-    }
-
-    score
+    bonus
 }
 
 #[cfg(test)]
@@ -130,9 +187,9 @@ mod tests {
     use super::*;
     use crate::types::{Memory, MemoryKind, Scope, Sensitivity};
 
-    fn make_memory(content: &str, tags: &[&str], kind: MemoryKind) -> Memory {
+    fn make_memory(id: &str, content: &str, tags: &[&str], kind: MemoryKind) -> Memory {
         Memory {
-            id: format!("mem:{}-test", kind.as_str()),
+            id: id.to_string(),
             kind,
             content: content.to_string(),
             tags: tags.iter().map(|t| t.to_string()).collect(),
@@ -154,57 +211,63 @@ mod tests {
     }
 
     #[test]
-    fn tag_match_scores_higher() {
+    fn rerank_applies_tag_bonus() {
         let memories = vec![
-            make_memory("Use nextest for tests", &["testing"], MemoryKind::Fact),
-            make_memory(
-                "The database uses RDF triples",
-                &["database"],
-                MemoryKind::Fact,
-            ),
+            make_memory("mem:a", "Use nextest for tests", &["testing"], MemoryKind::Fact),
+            make_memory("mem:b", "The database uses RDF triples", &["database"], MemoryKind::Fact),
         ];
 
-        let results = RecallEngine::recall("how to run testing", &memories, None, None);
-        assert!(!results.is_empty());
-        assert_eq!(results[0].memory.tags, vec!["testing"]);
-    }
-
-    #[test]
-    fn content_match_works() {
-        let memories = vec![
-            make_memory("Use cargo nextest for running tests", &[], MemoryKind::Fact),
-            make_memory("Database config is in config.toml", &[], MemoryKind::Fact),
+        // Simulate BM25 returning both with similar content scores
+        let bm25_hits = vec![
+            ("mem:a".to_string(), 1.5),
+            ("mem:b".to_string(), 1.2),
         ];
 
-        let results = RecallEngine::recall("nextest tests", &memories, None, None);
-        assert!(!results.is_empty());
-        assert!(results[0].memory.content.contains("nextest"));
-    }
-
-    #[test]
-    fn limit_works() {
-        let memories = vec![
-            make_memory("Fact one about testing", &["testing"], MemoryKind::Fact),
-            make_memory("Fact two about testing", &["testing"], MemoryKind::Fact),
-            make_memory("Fact three about testing", &["testing"], MemoryKind::Fact),
-        ];
-
-        let results = RecallEngine::recall("testing", &memories, None, Some(2));
+        let results = RecallEngine::rerank("testing", &bm25_hits, &memories, None);
         assert_eq!(results.len(), 2);
+        // mem:a should rank higher due to tag bonus (+10 for "testing" tag)
+        assert_eq!(results[0].memory.id, "mem:a");
+        assert!(results[0].score > results[1].score);
     }
 
     #[test]
-    fn zero_score_filtered() {
-        // Use an old timestamp to avoid the recency bonus
-        let mut mem = make_memory(
-            "Completely unrelated topic",
-            &["unrelated"],
-            MemoryKind::Fact,
-        );
-        mem.created_at = "2020-01-01T00:00:00Z".to_string();
-        let memories = vec![mem];
+    fn rerank_preserves_bm25_ordering_when_no_bonus() {
+        let memories = vec![
+            make_memory("mem:a", "Topic alpha", &[], MemoryKind::Fact),
+            make_memory("mem:b", "Topic beta", &[], MemoryKind::Fact),
+        ];
 
-        let results = RecallEngine::recall("testing cargo nextest", &memories, None, None);
-        assert!(results.is_empty());
+        // BM25 says mem:b is more relevant
+        let bm25_hits = vec![
+            ("mem:b".to_string(), 3.0),
+            ("mem:a".to_string(), 1.0),
+        ];
+
+        let results = RecallEngine::rerank("unrelated query", &bm25_hits, &memories, None);
+        assert_eq!(results[0].memory.id, "mem:b");
+    }
+
+    #[test]
+    fn metadata_only_fallback() {
+        let memories = vec![
+            make_memory("mem:a", "Use nextest for tests", &["testing"], MemoryKind::Fact),
+            make_memory("mem:b", "Unrelated content", &["other"], MemoryKind::Fact),
+        ];
+
+        let results = RecallEngine::recall_metadata_only("testing", &memories, None, None);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].memory.id, "mem:a");
+    }
+
+    #[test]
+    fn branch_bonus_applied() {
+        let mut mem = make_memory("mem:a", "Some fact", &[], MemoryKind::Fact);
+        mem.branch = Some("feature/memory".to_string());
+
+        let memories = vec![mem];
+        let bm25_hits = vec![("mem:a".to_string(), 1.0)];
+
+        let results = RecallEngine::rerank("fact", &bm25_hits, &memories, Some("feature/memory"));
+        assert_eq!(results[0].score, 1.0 + 3.0 + 2.0); // bm25 + branch + recency
     }
 }

@@ -144,7 +144,7 @@ pub fn memory_to_jsonld(mem: &crate::types::Memory) -> Value {
         },
         "@id": mem.id,
         "@type": mem.kind.class_iri(),
-        "mem:content": mem.content,
+        "mem:content": { "@value": mem.content, "@type": "@fulltext" },
         "mem:scope": { "@id": mem.scope.prefixed() },
         "mem:sensitivity": mem.sensitivity.as_str(),
         "mem:createdAt": mem.created_at
@@ -195,7 +195,10 @@ pub fn memory_to_jsonld(mem: &crate::types::Memory) -> Value {
 
     // Type-specific predicates
     if let Some(r) = &mem.rationale {
-        obj.insert("mem:rationale".to_string(), json!(r));
+        obj.insert(
+            "mem:rationale".to_string(),
+            json!({ "@value": r, "@type": "@fulltext" }),
+        );
     }
     if let Some(a) = &mem.alternatives {
         obj.insert("mem:alternatives".to_string(), json!(a));
