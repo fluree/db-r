@@ -207,7 +207,7 @@ impl BinaryScanOperator {
         }
 
         let (schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
-        let p_is_var = matches!(pattern.p, Ref::Var(_));
+        let p_is_var = pattern.p.is_var();
 
         Self {
             pattern,
@@ -1530,7 +1530,7 @@ impl RangeScanOperator {
         object_bounds: Option<ObjectBounds>,
         filters: Vec<crate::ir::Expression>,
     ) -> Self {
-        let p_is_var = matches!(pattern.p, Ref::Var(_));
+        let p_is_var = pattern.p.is_var();
         let (schema, s_var_pos, p_var_pos, o_var_pos) = schema_from_pattern(&pattern);
 
         Self {

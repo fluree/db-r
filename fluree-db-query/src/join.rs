@@ -96,7 +96,7 @@ fn is_batched_eligible(
         .iter()
         .any(|b| b.position == PatternPosition::Subject);
     // Predicate must be fixed (Ref::Sid)
-    let pred_fixed = matches!(&right_pattern.p, Ref::Sid(_));
+    let pred_fixed = right_pattern.p.is_sid();
     // Object must be a variable
     let obj_is_var = matches!(&right_pattern.o, Term::Var(_));
     // No BindInstruction for Object (object is a new variable, not shared)

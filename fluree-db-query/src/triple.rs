@@ -46,12 +46,22 @@ impl Ref {
         }
     }
 
+    /// Check if this ref is a SID
+    pub fn is_sid(&self) -> bool {
+        matches!(self, Ref::Sid(_))
+    }
+
     /// Get the SID if this is a Sid ref
     pub fn as_sid(&self) -> Option<&Sid> {
         match self {
             Ref::Sid(s) => Some(s),
             _ => None,
         }
+    }
+
+    /// Check if this ref is an IRI
+    pub fn is_iri(&self) -> bool {
+        matches!(self, Ref::Iri(_))
     }
 
     /// Get the IRI if this is an Iri ref

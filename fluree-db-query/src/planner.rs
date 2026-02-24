@@ -1406,8 +1406,9 @@ mod tests {
             Pattern::Triple(tp) => tp,
             _ => panic!("expected Triple pattern"),
         };
-        assert!(
-            matches!(&first.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/z"),
+        assert_eq!(
+            first.p.as_iri(),
+            Some("http://example.org/z"),
             "expected stats-driven ordering to pick the most selective predicate first; got ordered[0]={:?}",
             ordered[0]
         );

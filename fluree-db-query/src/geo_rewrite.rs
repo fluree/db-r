@@ -266,7 +266,7 @@ fn is_var_used_elsewhere(
 fn pattern_references_var(pattern: &Pattern, var: VarId) -> bool {
     match pattern {
         Pattern::Triple(tp) => {
-            ref_is_var(&tp.s, var) || ref_is_var(&tp.p, var) || term_is_var(&tp.o, var)
+            tp.s.as_var() == Some(var) || tp.p.as_var() == Some(var) || term_is_var(&tp.o, var)
         }
         Pattern::Filter(expr) => expr.variables().contains(&var),
         Pattern::Bind { var: v, expr } => *v == var || expr.variables().contains(&var),
@@ -291,10 +291,6 @@ fn pattern_references_var(pattern: &Pattern, var: VarId) -> bool {
         Pattern::Service(sp) => sp.variables().contains(&var),
         Pattern::R2rml(r2rml) => r2rml.variables().contains(&var),
     }
-}
-
-fn ref_is_var(r: &Ref, var: VarId) -> bool {
-    matches!(r, Ref::Var(v) if *v == var)
 }
 
 fn term_is_var(term: &Term, var: VarId) -> bool {

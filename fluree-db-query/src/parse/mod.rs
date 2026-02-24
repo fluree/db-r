@@ -1390,9 +1390,7 @@ mod tests {
         // query.patterns now contains Pattern, not TriplePattern
         if let crate::ir::Pattern::Triple(tp) = &query.patterns[0] {
             // Predicate IRI is lowered to Ref::Iri for deferred encoding
-            assert!(
-                matches!(tp.p, crate::triple::Ref::Iri(ref iri) if iri.as_ref() == "http://example.org/name")
-            );
+            assert_eq!(tp.p.as_iri(), Some("http://example.org/name"));
         } else {
             panic!("Expected Pattern::Triple");
         }
