@@ -1,10 +1,13 @@
 use crate::error::{MemoryError, Result};
 use crate::schema::{memory_schema_jsonld, memory_to_jsonld};
-use crate::types::{Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryStatus, MemoryUpdate};
+use crate::types::{
+    Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryStatus, MemoryUpdate, Scope,
+};
 use chrono::Utc;
 use fluree_db_api::{FileStorage, Fluree};
 use fluree_db_nameservice::file::FileNameService;
 use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
 use tracing::debug;
 
 /// Name of the internal memory ledger.
@@ -14,14 +17,26 @@ pub const MEMORY_LEDGER: &str = "__memory";
 const MEMORY_LEDGER_ID: &str = "__memory:main";
 
 /// The memory store: CRUD operations backed by a Fluree ledger.
+///
+/// When `memory_dir` is set, mutations are also written to `.ttl` files
+/// for git-based sharing. The ledger serves as a derived query cache.
 pub struct MemoryStore {
     fluree: Fluree<FileStorage, FileNameService>,
+    memory_dir: Option<PathBuf>,
 }
 
 impl MemoryStore {
     /// Create a new memory store wrapping a Fluree instance.
-    pub fn new(fluree: Fluree<FileStorage, FileNameService>) -> Self {
-        Self { fluree }
+    ///
+    /// Pass `memory_dir` to enable file-based sync (e.g., `.fluree/memory/`).
+    /// Pass `None` for legacy behavior (ledger-only, no file sharing).
+    pub fn new(fluree: Fluree<FileStorage, FileNameService>, memory_dir: Option<PathBuf>) -> Self {
+        Self { fluree, memory_dir }
+    }
+
+    /// The memory directory path, if file-based sync is enabled.
+    pub fn memory_dir(&self) -> Option<&Path> {
+        self.memory_dir.as_deref()
     }
 
     /// Check if the memory ledger has been initialized.
@@ -33,12 +48,15 @@ impl MemoryStore {
             .unwrap_or(false))
     }
 
-    /// Initialize the memory ledger (create + transact schema).
+    /// Initialize the memory ledger and file structure.
     ///
-    /// Idempotent — returns Ok if already initialized.
+    /// Idempotent — safe to call on every operation. Creates the ledger,
+    /// transacts the schema, and (when `memory_dir` is set) creates the
+    /// directory structure, `.gitignore`, and empty `.ttl` files.
     pub async fn initialize(&self) -> Result<()> {
         if self.is_initialized().await? {
-            debug!("Memory ledger already initialized");
+            // Ledger exists — but ensure file structure exists too
+            self.ensure_file_structure()?;
             return Ok(());
         }
 
@@ -54,23 +72,102 @@ impl MemoryStore {
             .commit()
             .await?;
 
+        self.ensure_file_structure()?;
+
         debug!("Memory ledger initialized");
         Ok(())
     }
 
-    /// Ensure the memory store is initialized, returning an error if not.
-    async fn require_initialized(&self) -> Result<()> {
-        if !self.is_initialized().await? {
-            return Err(MemoryError::NotInitialized);
+    /// Create the file-based memory directory structure if `memory_dir` is set.
+    ///
+    /// Idempotent — skips anything that already exists.
+    fn ensure_file_structure(&self) -> Result<()> {
+        let Some(dir) = &self.memory_dir else {
+            return Ok(());
+        };
+
+        // Create .local/ subdirectory
+        let local_dir = dir.join(".local");
+        std::fs::create_dir_all(&local_dir)?;
+
+        // .gitignore for .local/
+        let gitignore_path = dir.join(".gitignore");
+        if !gitignore_path.exists() {
+            std::fs::write(&gitignore_path, ".local/\n")?;
         }
+
+        // Empty .ttl files with prefix headers
+        let repo_ttl = crate::turtle_io::repo_ttl_path(dir);
+        if !repo_ttl.exists() {
+            crate::turtle_io::create_empty_memory_file(&repo_ttl, crate::turtle_io::REPO_HEADER)?;
+        }
+
+        let user_ttl = crate::turtle_io::user_ttl_path(dir);
+        if !user_ttl.exists() {
+            crate::turtle_io::create_empty_memory_file(&user_ttl, crate::turtle_io::USER_HEADER)?;
+        }
+
+        Ok(())
+    }
+
+    /// Drop and reinitialize the `__memory` ledger.
+    ///
+    /// Used by the rebuild pipeline to recreate the ledger from `.ttl` files.
+    pub async fn drop_and_reinit(&self) -> Result<()> {
+        // Delete the ledger if it exists
+        if self.is_initialized().await? {
+            debug!("Dropping __memory ledger for rebuild");
+            self.fluree
+                .drop_ledger(MEMORY_LEDGER_ID, fluree_db_api::DropMode::Hard)
+                .await?;
+        }
+
+        // Recreate
+        debug!("Recreating __memory ledger");
+        self.fluree.create_ledger(MEMORY_LEDGER).await?;
+
+        let schema = memory_schema_jsonld();
+        self.fluree
+            .graph(MEMORY_LEDGER_ID)
+            .transact()
+            .insert(&schema)
+            .commit()
+            .await?;
+
+        debug!("__memory ledger reinitialized");
+        Ok(())
+    }
+
+    /// Ensure the ledger is in sync with `.ttl` files.
+    ///
+    /// No-op if `memory_dir` is `None`.
+    pub async fn ensure_synced(&self) -> Result<()> {
+        if let Some(dir) = &self.memory_dir {
+            crate::file_sync::ensure_synced(self, dir).await?;
+        }
+        Ok(())
+    }
+
+    /// Insert a JSON-LD document into the memory ledger (used by rebuild).
+    pub async fn transact_insert(&self, doc: &Value) -> Result<()> {
+        self.fluree
+            .graph(MEMORY_LEDGER_ID)
+            .transact()
+            .insert(doc)
+            .commit()
+            .await?;
         Ok(())
     }
 
     /// Add a new memory to the store.
     ///
     /// Returns the generated memory ID.
+    ///
+    /// In file-based mode, the `.ttl` file is written first (authoritative),
+    /// then the ledger cache is updated. If the ledger transact fails, the
+    /// next `ensure_synced()` will rebuild from the file.
     pub async fn add(&self, input: MemoryInput) -> Result<String> {
-        self.require_initialized().await?;
+        self.initialize().await?;
 
         let id = crate::id::generate_memory_id(input.kind);
         let created_at = Utc::now().to_rfc3339();
@@ -96,8 +193,24 @@ impl MemoryStore {
             artifact_kind: input.artifact_kind,
         };
 
-        let doc = memory_to_jsonld(&mem);
+        // File is truth — write the authoritative .ttl first
+        if let Some(dir) = &self.memory_dir {
+            let (path, header) = match mem.scope {
+                Scope::Repo => (
+                    crate::turtle_io::repo_ttl_path(dir),
+                    crate::turtle_io::REPO_HEADER,
+                ),
+                Scope::User => (
+                    crate::turtle_io::user_ttl_path(dir),
+                    crate::turtle_io::USER_HEADER,
+                ),
+            };
+            crate::turtle_io::append_memory_to_file(&path, &mem, header)?;
+            crate::file_sync::update_hash(dir)?;
+        }
 
+        // Then update the ledger cache
+        let doc = memory_to_jsonld(&mem);
         self.fluree
             .graph(MEMORY_LEDGER_ID)
             .transact()
@@ -111,7 +224,7 @@ impl MemoryStore {
 
     /// Get a single memory by ID.
     pub async fn get(&self, id: &str) -> Result<Option<Memory>> {
-        self.require_initialized().await?;
+        self.initialize().await?;
 
         let sparql = format!(
             r#"SELECT ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind
@@ -151,8 +264,11 @@ WHERE {{
     ///
     /// Creates a new memory that supersedes the given one.
     /// Returns the new memory's ID.
+    ///
+    /// In file-based mode, the `.ttl` file is written first (authoritative),
+    /// then the ledger cache is updated.
     pub async fn update(&self, id: &str, update: MemoryUpdate) -> Result<String> {
-        self.require_initialized().await?;
+        self.initialize().await?;
 
         // Load the existing memory
         let existing = self
@@ -185,8 +301,24 @@ WHERE {{
             artifact_kind: existing.artifact_kind,
         };
 
-        let doc = memory_to_jsonld(&merged);
+        // File is truth — append superseding memory first (old one stays — append-only)
+        if let Some(dir) = &self.memory_dir {
+            let (path, header) = match merged.scope {
+                Scope::Repo => (
+                    crate::turtle_io::repo_ttl_path(dir),
+                    crate::turtle_io::REPO_HEADER,
+                ),
+                Scope::User => (
+                    crate::turtle_io::user_ttl_path(dir),
+                    crate::turtle_io::USER_HEADER,
+                ),
+            };
+            crate::turtle_io::append_memory_to_file(&path, &merged, header)?;
+            crate::file_sync::update_hash(dir)?;
+        }
 
+        // Then update the ledger cache
+        let doc = memory_to_jsonld(&merged);
         self.fluree
             .graph(MEMORY_LEDGER_ID)
             .transact()
@@ -199,15 +331,44 @@ WHERE {{
     }
 
     /// Delete a memory by retracting all its triples.
+    ///
+    /// In file-based mode, the `.ttl` file is rewritten first (authoritative),
+    /// then the ledger cache is updated. This is the only non-append file mutation.
     pub async fn forget(&self, id: &str) -> Result<()> {
-        self.require_initialized().await?;
+        self.initialize().await?;
 
-        // Verify the memory exists
-        if self.get(id).await?.is_none() {
-            return Err(MemoryError::NotFound(id.to_string()));
+        // Load the memory to know its scope (for file routing)
+        let mem = self
+            .get(id)
+            .await?
+            .ok_or_else(|| MemoryError::NotFound(id.to_string()))?;
+
+        // File is truth — rewrite excluding the forgotten memory first
+        if let Some(dir) = &self.memory_dir {
+            let (path, header, scope_filter) = match mem.scope {
+                Scope::Repo => (
+                    crate::turtle_io::repo_ttl_path(dir),
+                    crate::turtle_io::REPO_HEADER,
+                    Some(Scope::Repo),
+                ),
+                Scope::User => (
+                    crate::turtle_io::user_ttl_path(dir),
+                    crate::turtle_io::USER_HEADER,
+                    Some(Scope::User),
+                ),
+            };
+            // Get all memories for this scope, then exclude the one being forgotten
+            let remaining: Vec<Memory> = self
+                .all_memories_for_scope(scope_filter.as_ref())
+                .await?
+                .into_iter()
+                .filter(|m| m.id != id)
+                .collect();
+            crate::turtle_io::write_memory_file(&path, &remaining, header)?;
+            crate::file_sync::update_hash(dir)?;
         }
 
-        // Use the update (WHERE/DELETE) pattern to retract all triples for this subject.
+        // Then update the ledger cache
         let delete_doc = json!({
             "@context": {
                 "mem": "https://ns.flur.ee/memory#"
@@ -227,9 +388,62 @@ WHERE {{
         Ok(())
     }
 
+    /// Get ALL memories for a scope (including superseded ones).
+    ///
+    /// Used by `forget()` to rewrite the Turtle file after deletion.
+    async fn all_memories_for_scope(&self, scope: Option<&Scope>) -> Result<Vec<Memory>> {
+        self.initialize().await?;
+
+        let mut where_clauses = vec![
+            "?id a ?type".to_string(),
+            "?id <https://ns.flur.ee/memory#content> ?content".to_string(),
+            "?id <https://ns.flur.ee/memory#createdAt> ?createdAt".to_string(),
+        ];
+
+        if let Some(scope) = scope {
+            where_clauses.push(format!(
+                "?id <https://ns.flur.ee/memory#scope> <{}>",
+                scope.iri()
+            ));
+        }
+
+        let optional_clauses = vec![
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#scope> ?scope }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#sensitivity> ?sensitivity }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#severity> ?severity }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#tag> ?tag }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactRef> ?artifactRef }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#branch> ?branch }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#supersedes> ?supersedes }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#validFrom> ?validFrom }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#validTo> ?validTo }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#rationale> ?rationale }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#alternatives> ?alternatives }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#factKind> ?factKind }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#prefScope> ?prefScope }".to_string(),
+            "OPTIONAL { ?id <https://ns.flur.ee/memory#artifactKind> ?artifactKind }".to_string(),
+        ];
+
+        let sparql = format!(
+            "SELECT ?id ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind\nWHERE {{\n  {}\n  {}\n}}\nORDER BY ASC(?id)",
+            where_clauses.join(" .\n  "),
+            optional_clauses.join("\n  "),
+        );
+
+        let result = self
+            .fluree
+            .graph(MEMORY_LEDGER_ID)
+            .query()
+            .sparql(&sparql)
+            .execute_formatted()
+            .await?;
+
+        parse_memories_from_sparql_results(&result)
+    }
+
     /// Get all current (non-superseded) memories matching the filter.
     pub async fn current_memories(&self, filter: &MemoryFilter) -> Result<Vec<Memory>> {
-        self.require_initialized().await?;
+        self.initialize().await?;
 
         // Build SPARQL query with filters
         let mut where_clauses = vec![
@@ -342,7 +556,7 @@ WHERE {{
 
     /// Get the supersession chain for a memory (newest first).
     pub async fn supersession_chain(&self, id: &str) -> Result<Vec<Memory>> {
-        self.require_initialized().await?;
+        self.initialize().await?;
 
         let mut chain = Vec::new();
 
@@ -394,7 +608,7 @@ WHERE {{
 
     /// Export all memories as JSON.
     pub async fn export(&self) -> Result<Value> {
-        self.require_initialized().await?;
+        self.initialize().await?;
         let all = self.current_memories(&MemoryFilter::default()).await?;
         Ok(serde_json::to_value(&all)?)
     }
@@ -411,7 +625,7 @@ WHERE {{
         query_text: &str,
         limit: usize,
     ) -> Result<Vec<(String, f64)>> {
-        self.require_initialized().await?;
+        self.initialize().await?;
 
         let bind_expr = format!("(fulltext ?content \"{}\")", query_text.replace('"', "\\\""));
 
@@ -462,7 +676,7 @@ WHERE {{
     ///
     /// Returns the raw JSON result from Fluree.
     pub async fn query_sparql(&self, sparql: &str) -> Result<Value> {
-        self.require_initialized().await?;
+        self.initialize().await?;
 
         let result = self
             .fluree
@@ -479,7 +693,7 @@ WHERE {{
     ///
     /// Returns the number of memories imported.
     pub async fn import(&self, data: Value) -> Result<usize> {
-        self.require_initialized().await?;
+        self.initialize().await?;
 
         let memories: Vec<Memory> = serde_json::from_value(data)?;
         let count = memories.len();

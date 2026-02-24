@@ -549,6 +549,11 @@ impl MemoryToolService {
                 .await
                 .map_err(|e| format!("initialization failed: {}", e))?;
         }
+        // Rebuild ledger from .ttl files if they've changed (e.g. git pull)
+        self.store
+            .ensure_synced()
+            .await
+            .map_err(|e| format!("file sync failed: {}", e))?;
         Ok(())
     }
 }

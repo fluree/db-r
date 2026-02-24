@@ -1,5 +1,6 @@
 pub mod branch;
 pub mod error;
+pub mod file_sync;
 pub mod format;
 pub mod id;
 #[cfg(feature = "mcp")]
@@ -8,6 +9,7 @@ pub mod recall;
 pub mod schema;
 pub mod secrets;
 pub mod store;
+pub mod turtle_io;
 pub mod types;
 pub mod vocab;
 

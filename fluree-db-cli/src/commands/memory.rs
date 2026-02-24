@@ -69,13 +69,88 @@ pub async fn run(action: MemoryAction, dirs: &FlureeDir) -> CliResult<()> {
 
 fn build_store(dirs: &FlureeDir) -> CliResult<MemoryStore> {
     let fluree = context::build_fluree(dirs)?;
-    Ok(MemoryStore::new(fluree))
+
+    // Determine memory_dir: use .fluree/memory/ in local mode
+    let memory_dir = if dirs.is_unified() {
+        // Local mode — data_dir is typically .fluree/
+        let dir = dirs.data_dir().join("memory");
+        if dir.exists() || dirs.data_dir().join("storage").exists() {
+            Some(dir)
+        } else {
+            None
+        }
+    } else {
+        None // Global mode — no file sharing
+    };
+
+    Ok(MemoryStore::new(fluree, memory_dir))
 }
 
 async fn run_init(dirs: &FlureeDir) -> CliResult<()> {
     let store = build_store(dirs)?;
+
+    // initialize() handles ledger + file structure (dirs, .gitignore, .ttl files)
     store.initialize().await.map_err(memory_err)?;
-    println!("Memory store initialized.");
+
+    // Migration: export existing ledger memories to .ttl files
+    if let Some(memory_dir) = store.memory_dir() {
+        let memory_dir = memory_dir.to_path_buf();
+        let repo_ttl = fluree_db_memory::turtle_io::repo_ttl_path(&memory_dir);
+        let user_ttl = fluree_db_memory::turtle_io::user_ttl_path(&memory_dir);
+
+        let existing = store
+            .current_memories(&MemoryFilter::default())
+            .await
+            .map_err(memory_err)?;
+        if !existing.is_empty() {
+            let repo_mems: Vec<_> = existing
+                .iter()
+                .filter(|m| m.scope == fluree_db_memory::Scope::Repo)
+                .cloned()
+                .collect();
+            let user_mems: Vec<_> = existing
+                .iter()
+                .filter(|m| m.scope == fluree_db_memory::Scope::User)
+                .cloned()
+                .collect();
+
+            if !repo_mems.is_empty() {
+                fluree_db_memory::turtle_io::write_memory_file(
+                    &repo_ttl,
+                    &repo_mems,
+                    fluree_db_memory::turtle_io::REPO_HEADER,
+                )
+                .map_err(memory_err)?;
+            }
+            if !user_mems.is_empty() {
+                fluree_db_memory::turtle_io::write_memory_file(
+                    &user_ttl,
+                    &user_mems,
+                    fluree_db_memory::turtle_io::USER_HEADER,
+                )
+                .map_err(memory_err)?;
+            }
+
+            fluree_db_memory::file_sync::update_hash(&memory_dir).map_err(memory_err)?;
+
+            println!(
+                "Migrated {} existing memories to .ttl files.",
+                existing.len()
+            );
+        }
+
+        println!("Memory store initialized at {}", memory_dir.display());
+        println!();
+        println!("To share repo memories via git, ensure .fluree/memory/ is not gitignored.");
+        println!("If your .gitignore has '.fluree/', add these exceptions:");
+        println!();
+        println!("  !.fluree/memory/");
+        println!("  !.fluree/memory/repo.ttl");
+        println!("  !.fluree/memory/.gitignore");
+    } else {
+        println!("Memory store initialized.");
+    }
+
     Ok(())
 }
 
@@ -186,6 +261,7 @@ async fn run_add(
     };
 
     let store = build_store(dirs)?;
+    store.ensure_synced().await.map_err(memory_err)?;
     let id = store.add(input).await.map_err(memory_err)?;
 
     match format {
@@ -237,6 +313,7 @@ async fn run_recall(
     };
 
     let store = build_store(dirs)?;
+    store.ensure_synced().await.map_err(memory_err)?;
 
     // BM25 fulltext search for content relevance
     let bm25_hits = store
@@ -310,6 +387,7 @@ async fn run_update(
     };
 
     let store = build_store(dirs)?;
+    store.ensure_synced().await.map_err(memory_err)?;
     let new_id = store.update(id, update).await.map_err(memory_err)?;
 
     match format {
@@ -332,6 +410,7 @@ async fn run_update(
 
 async fn run_forget(id: &str, dirs: &FlureeDir) -> CliResult<()> {
     let store = build_store(dirs)?;
+    store.ensure_synced().await.map_err(memory_err)?;
     store.forget(id).await.map_err(memory_err)?;
     println!("Forgotten: {}", id);
     Ok(())
@@ -339,6 +418,7 @@ async fn run_forget(id: &str, dirs: &FlureeDir) -> CliResult<()> {
 
 async fn run_explain(id: &str, dirs: &FlureeDir) -> CliResult<()> {
     let store = build_store(dirs)?;
+    store.ensure_synced().await.map_err(memory_err)?;
     let chain = store.supersession_chain(id).await.map_err(memory_err)?;
     print!("{}", fluree_db_memory::format_explain(&chain));
     Ok(())
@@ -346,6 +426,7 @@ async fn run_explain(id: &str, dirs: &FlureeDir) -> CliResult<()> {
 
 async fn run_status(dirs: &FlureeDir) -> CliResult<()> {
     let store = build_store(dirs)?;
+    store.ensure_synced().await.map_err(memory_err)?;
     let status = store.status().await.map_err(memory_err)?;
     print!("{}", fluree_db_memory::format_status_text(&status));
     Ok(())
@@ -353,6 +434,7 @@ async fn run_status(dirs: &FlureeDir) -> CliResult<()> {
 
 async fn run_export(dirs: &FlureeDir) -> CliResult<()> {
     let store = build_store(dirs)?;
+    store.ensure_synced().await.map_err(memory_err)?;
     let data = store.export().await.map_err(memory_err)?;
     println!(
         "{}",
@@ -367,6 +449,7 @@ async fn run_import(file: &std::path::Path, dirs: &FlureeDir) -> CliResult<()> {
     let data: serde_json::Value = serde_json::from_str(&content)?;
 
     let store = build_store(dirs)?;
+    store.ensure_synced().await.map_err(memory_err)?;
     let count = store.import(data).await.map_err(memory_err)?;
     println!("Imported {} memories.", count);
     Ok(())
@@ -535,7 +618,6 @@ fn install_cursor(fluree_bin: &str) -> CliResult<()> {
 /// Convert MemoryError to CliError.
 fn memory_err(e: fluree_db_memory::MemoryError) -> CliError {
     match e {
-        fluree_db_memory::MemoryError::NotInitialized => CliError::Config(e.to_string()),
         fluree_db_memory::MemoryError::NotFound(id) => {
             CliError::NotFound(format!("memory '{}' not found", id))
         }
