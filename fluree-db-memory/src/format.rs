@@ -151,22 +151,48 @@ pub fn format_explain(chain: &[Memory]) -> String {
 }
 
 /// Format memory status for human-readable output.
+///
+/// Includes counts by kind and previews of recent memories so that
+/// the LLM can see what topics are stored and use better keywords.
 pub fn format_status_text(status: &MemoryStatus) -> String {
     let mut out = String::new();
 
     if !status.initialized {
-        return "Memory store not initialized. Run `fluree memory init` to set up.".to_string();
+        return "Memory store is empty. Use memory_add to store project knowledge.".to_string();
     }
 
-    out.push_str("Memory Store Status\n");
-    out.push_str(&format!("  Total memories: {}\n", status.total_memories));
-    out.push_str(&format!("  Total tags:     {}\n", status.total_tags));
+    if status.total_memories == 0 {
+        return "Memory store is empty. Use memory_add to store project knowledge.".to_string();
+    }
+
+    out.push_str(&format!(
+        "Memory Store: {} memories, {} tags\n",
+        status.total_memories, status.total_tags
+    ));
 
     if !status.by_kind.is_empty() {
-        out.push_str("  By kind:\n");
-        for (kind, count) in &status.by_kind {
-            out.push_str(&format!("    {}: {}\n", kind, count));
+        let kinds: Vec<String> = status
+            .by_kind
+            .iter()
+            .map(|(kind, count)| format!("{} {}", count, kind))
+            .collect();
+        out.push_str(&format!("  Kinds: {}\n", kinds.join(", ")));
+    }
+
+    if !status.recent.is_empty() {
+        out.push_str("\nRecent memories:\n");
+        for preview in &status.recent {
+            let tags_str = if preview.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", preview.tags.join(", "))
+            };
+            out.push_str(&format!(
+                "  - [{}] {}{}\n    ID: {}\n",
+                preview.kind, preview.summary, tags_str, preview.id
+            ));
         }
+        out.push_str("\nUse memory_recall with specific keywords from above to search.");
     }
 
     out

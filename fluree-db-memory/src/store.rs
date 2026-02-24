@@ -1,7 +1,8 @@
 use crate::error::{MemoryError, Result};
 use crate::schema::{memory_schema_jsonld, memory_to_jsonld};
 use crate::types::{
-    Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryStatus, MemoryUpdate, Scope,
+    Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryPreview, MemoryStatus, MemoryUpdate,
+    Scope,
 };
 use chrono::Utc;
 use fluree_db_api::{FileStorage, Fluree};
@@ -522,7 +523,7 @@ WHERE {{
         parse_memories_from_sparql_results(&result)
     }
 
-    /// Get memory store status summary.
+    /// Get memory store status summary, including previews of recent memories.
     pub async fn status(&self) -> Result<MemoryStatus> {
         if !self.is_initialized().await? {
             return Ok(MemoryStatus {
@@ -530,6 +531,7 @@ WHERE {{
                 total_memories: 0,
                 by_kind: Vec::new(),
                 total_tags: 0,
+                recent: Vec::new(),
             });
         }
 
@@ -546,11 +548,31 @@ WHERE {{
 
         let by_kind: Vec<(MemoryKind, usize)> = by_kind.into_iter().collect();
 
+        // Build previews of the most recent memories (up to 10)
+        let recent: Vec<MemoryPreview> = all
+            .iter()
+            .take(10)
+            .map(|m| {
+                let summary = if m.content.len() > 100 {
+                    format!("{}...", &m.content[..100])
+                } else {
+                    m.content.clone()
+                };
+                MemoryPreview {
+                    id: m.id.clone(),
+                    kind: m.kind,
+                    summary,
+                    tags: m.tags.clone(),
+                }
+            })
+            .collect();
+
         Ok(MemoryStatus {
             initialized: true,
             total_memories: all.len(),
             by_kind,
             total_tags,
+            recent,
         })
     }
 

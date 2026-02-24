@@ -294,4 +294,16 @@ pub struct MemoryStatus {
     pub total_memories: usize,
     pub by_kind: Vec<(MemoryKind, usize)>,
     pub total_tags: usize,
+    /// Preview of recent memories (content truncated) for discoverability.
+    pub recent: Vec<MemoryPreview>,
+}
+
+/// A compact summary of a memory for status/listing output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryPreview {
+    pub id: String,
+    pub kind: MemoryKind,
+    /// Content truncated to ~100 chars.
+    pub summary: String,
+    pub tags: Vec<String>,
 }

@@ -174,10 +174,12 @@ async fn rebuild_from_files(store: &MemoryStore, memory_dir: &Path) -> Result<()
 
     let repo_jsonld = if repo_path.exists() {
         let content = fs::read_to_string(&repo_path)?;
-        if content.trim().is_empty() || !content.contains("mem:") {
-            None
-        } else {
+        if has_memory_subjects(&content) {
+            debug!("Parsing repo.ttl for rebuild");
             turtle_io::parse_and_inject_fulltext(&content)?
+        } else {
+            debug!("repo.ttl has no memory subjects, skipping");
+            None
         }
     } else {
         None
@@ -185,10 +187,12 @@ async fn rebuild_from_files(store: &MemoryStore, memory_dir: &Path) -> Result<()
 
     let user_jsonld = if user_path.exists() {
         let content = fs::read_to_string(&user_path)?;
-        if content.trim().is_empty() || !content.contains("mem:") {
-            None
-        } else {
+        if has_memory_subjects(&content) {
+            debug!("Parsing user.ttl for rebuild");
             turtle_io::parse_and_inject_fulltext(&content)?
+        } else {
+            debug!("user.ttl has no memory subjects, skipping");
+            None
         }
     } else {
         None
@@ -279,6 +283,26 @@ async fn transact_batch(store: &MemoryStore, data: serde_json::Value) -> Result<
     Ok(())
 }
 
+/// Check if a `.ttl` file has actual memory subject blocks (not just prefixes).
+///
+/// Looks for `mem:<kind>-` patterns which indicate real memory subjects
+/// (e.g., `mem:fact-01JDXYZ...`). The old heuristic `content.contains("mem:")`
+/// was too broad — it matches the `@prefix mem:` declaration in empty files.
+fn has_memory_subjects(content: &str) -> bool {
+    if content.trim().is_empty() {
+        return false;
+    }
+    // Look for subject patterns: mem:<kind>-<ulid>
+    // These patterns don't appear in prefix declarations or property references.
+    for kind in &["fact-", "decision-", "constraint-", "preference-", "artifact-"] {
+        let pattern = format!("mem:{kind}");
+        if content.contains(&pattern) {
+            return true;
+        }
+    }
+    false
+}
+
 // We need hex encoding for sha2. Use a simple inline implementation
 // to avoid pulling in the `hex` crate.
 mod hex {
@@ -357,5 +381,60 @@ mod tests {
 
         write_stored_hash(memory_dir, "abc123").unwrap();
         assert_eq!(read_stored_hash(memory_dir).unwrap(), "abc123");
+    }
+
+    #[test]
+    fn has_memory_subjects_empty_file() {
+        // Empty file with just prefixes — should return false
+        let content = "\
+# Fluree Memory — repo-scoped
+# Auto-managed by `fluree memory`. Manual edits are supported.
+@prefix mem: <https://ns.flur.ee/memory#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+";
+        assert!(
+            !has_memory_subjects(content),
+            "empty file with only prefixes should not have memory subjects"
+        );
+    }
+
+    #[test]
+    fn has_memory_subjects_with_fact() {
+        let content = "\
+@prefix mem: <https://ns.flur.ee/memory#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+mem:fact-01jdxyz0000000000000000 a mem:Fact ;
+    mem:content \"Test content\" .
+";
+        assert!(
+            has_memory_subjects(content),
+            "file with a fact subject should be detected"
+        );
+    }
+
+    #[test]
+    fn has_memory_subjects_with_decision() {
+        let content = "\
+@prefix mem: <https://ns.flur.ee/memory#> .
+mem:decision-01jdxyz0000000000000000 a mem:Decision ;
+    mem:content \"We decided X\" .
+";
+        assert!(
+            has_memory_subjects(content),
+            "file with a decision subject should be detected"
+        );
+    }
+
+    #[test]
+    fn has_memory_subjects_blank() {
+        assert!(
+            !has_memory_subjects(""),
+            "blank content should not have subjects"
+        );
+        assert!(
+            !has_memory_subjects("   \n\n  "),
+            "whitespace-only should not have subjects"
+        );
     }
 }

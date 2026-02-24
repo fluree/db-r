@@ -26,6 +26,6 @@ pub use recall::RecallEngine;
 pub use secrets::SecretDetector;
 pub use store::MemoryStore;
 pub use types::{
-    Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryStatus, MemoryUpdate, RecallResult, Scope,
-    ScoredMemory, Sensitivity, Severity,
+    Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryPreview, MemoryStatus, MemoryUpdate,
+    RecallResult, Scope, ScoredMemory, Sensitivity, Severity,
 };
