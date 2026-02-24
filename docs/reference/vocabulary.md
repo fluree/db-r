@@ -14,7 +14,7 @@ Users declare a prefix in their JSON-LD `@context` to use compact forms:
 
 Any prefix works (`f:`, `db:`, `fluree:`, etc.) as long as it expands to the canonical IRI. Internally, Fluree always compares on fully expanded IRIs.
 
-The `@vector` shorthand is the one exception: it is a JSON-LD convenience alias that resolves to `f:embeddingVector` without requiring a prefix declaration.
+The `@vector` and `@fulltext` shorthands are exceptions: they are JSON-LD convenience aliases that resolve to `f:embeddingVector` and `f:fullText` respectively without requiring a prefix declaration.
 
 > **Source of truth**: All constants are defined in the `fluree-vocab` crate. This document is the user-facing reference.
 
@@ -100,6 +100,42 @@ Or with the `@vector` shorthand:
   }
 }
 ```
+
+---
+
+## Fulltext datatype
+
+| Term | IRI | Description |
+|------|-----|-------------|
+| `f:fullText` | `https://ns.flur.ee/db#fullText` | Inline full-text search datatype |
+| `@fulltext` | (shorthand) | JSON-LD alias that resolves to `f:fullText` |
+
+Example usage in a transaction:
+
+```json
+{
+  "@context": { "f": "https://ns.flur.ee/db#", "ex": "http://example.org/" },
+  "insert": {
+    "@id": "ex:article-1",
+    "ex:content": { "@value": "Rust is a systems programming language", "@type": "f:fullText" }
+  }
+}
+```
+
+Or with the `@fulltext` shorthand:
+
+```json
+{
+  "insert": {
+    "@id": "ex:article-1",
+    "ex:content": { "@value": "Rust is a systems programming language", "@type": "@fulltext" }
+  }
+}
+```
+
+Values annotated with `@fulltext` are analyzed (tokenized, stemmed) and indexed into per-predicate fulltext arenas during background index builds. Query with the `fulltext()` function in `bind` expressions for BM25 relevance scoring.
+
+See [Inline Fulltext Search](../indexing-and-search/fulltext.md) for details.
 
 ---
 
