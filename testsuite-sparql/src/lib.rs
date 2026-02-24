@@ -8,30 +8,12 @@ pub mod result_format;
 pub mod sparql_handlers;
 pub mod vocab;
 
-use std::sync::OnceLock;
-
 use anyhow::Result;
-use tokio::runtime::Runtime;
 
 use evaluator::TestEvaluator;
 use manifest::TestManifest;
 use report::TestEntry;
 use sparql_handlers::register_sparql_tests;
-
-/// Shared Tokio runtime for all test handlers.
-///
-/// Using a single runtime avoids the overhead of creating 300+ runtimes
-/// (one per eval test). The multi-thread scheduler allows `block_on` to
-/// be called from multiple test-harness threads concurrently.
-pub fn shared_runtime() -> &'static Runtime {
-    static RT: OnceLock<Runtime> = OnceLock::new();
-    RT.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create shared Tokio runtime")
-    })
-}
 
 /// Run all tests from the given manifest URL(s).
 ///
@@ -39,7 +21,8 @@ pub fn shared_runtime() -> &'static Runtime {
 /// the overall suite to fail. Every other test must pass.
 ///
 /// If the `W3C_REPORT_JSON` environment variable is set, a machine-readable
-/// JSON report is written to that path.
+/// JSON report is written to that path. Use `--test-threads=1` when generating
+/// reports to avoid concurrent writes to the same file.
 pub fn check_testsuite(manifest_url: &str, ignored_tests: &[&str]) -> Result<()> {
     let mut evaluator = TestEvaluator::default();
     register_sparql_tests(&mut evaluator);
@@ -87,7 +70,9 @@ pub fn check_testsuite(manifest_url: &str, ignored_tests: &[&str]) -> Result<()>
         failures.len()
     );
 
-    // Write JSON report if requested via env var
+    // Write JSON report if requested via env var.
+    // NOTE: Use --test-threads=1 when generating reports to avoid
+    // concurrent writes from parallel test functions.
     if let Ok(report_path) = std::env::var("W3C_REPORT_JSON") {
         report::write_json_report(
             &report_path,

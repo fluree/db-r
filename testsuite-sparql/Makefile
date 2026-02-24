@@ -108,7 +108,8 @@ report-eval: ## Run eval tests and save full output to report-eval.txt
 
 report-json: ## Generate machine-readable JSON report for all tests
 	@echo "Running all W3C SPARQL tests (JSON output → report.json)..."
-	@W3C_REPORT_JSON=report.json $(CARGO) test -p $(CRATE) -- --nocapture --include-ignored > /dev/null 2>&1; true
+	@echo "  (using --test-threads=1 to avoid concurrent report writes)"
+	@W3C_REPORT_JSON=report.json $(CARGO) test -p $(CRATE) -- --nocapture --include-ignored --test-threads=1 > /dev/null 2>&1; true
 	@echo "JSON report written to report.json"
 	@python3 -c "import json; r=json.load(open('report.json')); print(f'  Total: {r[\"total\"]}  Passed: {r[\"passed\"]}  Ignored: {r[\"ignored\"]}  Failed: {r[\"failed\"]}  Rate: {r[\"pass_rate\"]}')" 2>/dev/null || true
 

@@ -1,3 +1,5 @@
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -7,7 +9,6 @@ use crate::evaluator::TestEvaluator;
 use crate::files::read_file_to_string;
 use crate::manifest::Test;
 use crate::query_handler::evaluate_query_evaluation_test;
-use crate::shared_runtime;
 use crate::vocab::mf;
 
 /// Max time to wait for the SPARQL parser before declaring a timeout.
@@ -136,44 +137,40 @@ fn evaluate_not_applicable_test(test: &Test) -> Result<()> {
     )
 }
 
-/// Run `parse_sparql` + `validate` with a timeout via `tokio::time::timeout`
-/// and `spawn_blocking`.
+/// Run `parse_sparql` + `validate` with a timeout on a dedicated thread.
 ///
 /// Returns `Ok(has_errors)` or `Err` if the parser timed out or panicked.
 ///
-/// When a parse times out, the blocking task continues on tokio's thread pool
-/// but the test moves on. Tokio's blocking pool cleans up idle threads after
-/// 10 seconds. In the worst case (many infinite-loop parses), threads accumulate
-/// until the process exits.
+/// Uses `thread::spawn` + `mpsc::recv_timeout` for reliable timeout behavior.
+/// This works even when the parser enters an infinite loop because the timeout
+/// is checked on the calling thread, independent of the parser thread.
+///
+/// When a parse times out, the spawned thread continues running until the
+/// process exits (Rust cannot kill threads). For a typical test suite run,
+/// a handful of timed-out threads is acceptable.
 fn parse_with_timeout(query_string: &str, test_id: &str) -> Result<bool> {
     let query = query_string.to_string();
-    let id = test_id.to_string();
+    let (tx, rx) = mpsc::channel();
 
-    shared_runtime().block_on(async {
-        match tokio::time::timeout(
-            PARSE_TIMEOUT,
-            tokio::task::spawn_blocking(move || {
-                let output = parse_sparql(&query);
-                let mut has_errors = output.has_errors();
-                // Run validation if parsing produced an AST
-                if !has_errors {
-                    if let Some(ast) = &output.ast {
-                        let val_diags = validate(ast, &Capabilities::default());
-                        if val_diags.iter().any(|d| d.is_error()) {
-                            has_errors = true;
-                        }
-                    }
+    thread::spawn(move || {
+        let output = parse_sparql(&query);
+        let mut has_errors = output.has_errors();
+        // Run validation if parsing produced an AST
+        if !has_errors {
+            if let Some(ast) = &output.ast {
+                let val_diags = validate(ast, &Capabilities::default());
+                if val_diags.iter().any(|d| d.is_error()) {
+                    has_errors = true;
                 }
-                has_errors
-            }),
-        )
-        .await
-        {
-            Ok(Ok(has_errors)) => Ok(has_errors),
-            Ok(Err(e)) => bail!("Parse task panicked: {e}\nTest: {id}"),
-            Err(_) => {
-                bail!("Parser timeout (>{PARSE_TIMEOUT:?}) — likely infinite loop.\nTest: {id}")
             }
         }
-    })
+        let _ = tx.send(has_errors);
+    });
+
+    match rx.recv_timeout(PARSE_TIMEOUT) {
+        Ok(has_errors) => Ok(has_errors),
+        Err(_) => {
+            bail!("Parser timeout (>{PARSE_TIMEOUT:?}) — likely infinite loop.\nTest: {test_id}")
+        }
+    }
 }

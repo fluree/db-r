@@ -1,6 +1,7 @@
 //! `QueryEvaluationTest` handler: create an in-memory Fluree ledger, load
 //! test data, execute a SPARQL query, and compare against expected results.
 
+use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -12,20 +13,21 @@ use crate::result_comparison::{are_results_isomorphic, format_results_diff};
 use crate::result_format::{
     fluree_construct_to_sparql_results, fluree_json_to_sparql_results, parse_expected_results,
 };
-use crate::shared_runtime;
 
 /// Max time for a single query evaluation test (data load + query + compare).
 const EVAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Handler for `mf:QueryEvaluationTest`.
 ///
-/// 1. Creates an in-memory Fluree instance + ledger
-/// 2. Loads the test's default graph data (Turtle)
-/// 3. Loads named graph data if present (via TriG wrapping)
-/// 4. Executes the SPARQL query
-/// 5. Compares results against expected outputs
-/// 6. For SELECT/ASK: converts via `to_sparql_json()` → `SparqlResults`
-/// 7. For CONSTRUCT: converts via `to_construct()` → `SparqlResults::Graph`
+/// 1. Creates a dedicated `current_thread` Tokio runtime (cheap, ~1ms)
+/// 2. Runs the async eval work on a separate thread
+/// 3. Uses `mpsc::recv_timeout` for reliable timeout enforcement
+///
+/// Each eval test gets its own runtime and thread. This ensures:
+/// - No shared state between tests (safe when cargo runs tests in parallel)
+/// - Timeouts work even if query execution blocks on synchronous code
+///   (e.g., parser infinite loops inside `query_sparql`)
+/// - `current_thread` runtime avoids spawning extra worker threads
 pub fn evaluate_query_evaluation_test(test: &Test) -> Result<()> {
     let test_id = test.id.clone();
     let query_url = test
@@ -39,16 +41,18 @@ pub fn evaluate_query_evaluation_test(test: &Test) -> Result<()> {
         .context("QueryEvaluationTest missing mf:result (expected result file)")?;
     let graph_data = test.graph_data.clone();
 
-    // Use tokio::task::spawn so the eval runs on a separate runtime worker.
-    // This is critical: if query_sparql internally blocks on a synchronous
-    // parse that infinite-loops, the timeout can still fire because it runs
-    // on a different worker thread. With an inline async block, the timeout
-    // would never fire because the blocked code never yields.
-    shared_runtime().block_on(async {
-        let test_id_for_task = test_id.clone();
-        let task = tokio::task::spawn(async move {
+    let (tx, rx) = mpsc::channel();
+    let test_id_for_error = test.id.clone();
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create Tokio runtime");
+
+        let outcome = rt.block_on(async {
             run_eval_test(
-                &test_id_for_task,
+                &test_id,
                 &query_url,
                 data_url.as_deref(),
                 &result_url,
@@ -56,17 +60,24 @@ pub fn evaluate_query_evaluation_test(test: &Test) -> Result<()> {
             )
             .await
         });
+        let _ = tx.send(outcome);
+    });
 
-        match tokio::time::timeout(EVAL_TIMEOUT, task).await {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(join_err)) => {
-                bail!("Query evaluation test panicked.\nTest: {test_id}\n{join_err}")
-            }
-            Err(_) => {
-                bail!("Query evaluation test timed out (>{EVAL_TIMEOUT:?}).\nTest: {test_id}")
-            }
+    match rx.recv_timeout(EVAL_TIMEOUT) {
+        Ok(outcome) => outcome,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            bail!(
+                "Query evaluation test timed out (>{EVAL_TIMEOUT:?}).\nTest: {}",
+                test_id_for_error
+            )
         }
-    })
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            bail!(
+                "Query evaluation test panicked.\nTest: {}",
+                test_id_for_error
+            )
+        }
+    }
 }
 
 /// Inner async function that does the actual test work.
