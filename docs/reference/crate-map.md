@@ -191,7 +191,11 @@ fluree-db/
 - `Query` - Parsed query
 - `VarRegistry` - Variable management
 - `Pattern` - Query patterns
-- `Term` - Query terms
+- `TriplePattern` - Subject–predicate–object pattern with optional `DatatypeConstraint`
+- `Ref` - Variable or constant in subject/predicate position (no literals)
+- `Term` - Variable or constant in object position (includes literals)
+- `DatatypeConstraint` - Explicit datatype (`Explicit(Sid)`) or language tag
+  (`LangTag`; implies `rdf:langString` datatype)
 - `PatternEstimate` - Cardinality classification (Source, Reducer, Expander, Deferred)
 
 **Dependencies:**
