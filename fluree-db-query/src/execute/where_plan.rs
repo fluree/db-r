@@ -76,6 +76,34 @@ impl BindPattern {
     }
 }
 
+/// A single FILTER pattern: expression, its required variables, and its
+/// original index within the block (used for pushdown tracking).
+///
+/// `required_vars` is computed at construction time and used during operator
+/// building to determine when this filter can be applied (all dependencies bound).
+/// `original_idx` tracks which filters were consumed by bound pushdown so they
+/// can be skipped during operator application.
+#[derive(Debug, Clone)]
+pub struct FilterPattern {
+    /// Original index in the block's filter list (for pushdown tracking)
+    pub original_idx: usize,
+    /// Variables that must be bound before this filter can execute
+    pub required_vars: HashSet<VarId>,
+    /// The filter expression to evaluate
+    pub expr: Expression,
+}
+
+impl FilterPattern {
+    pub fn new(original_idx: usize, expr: Expression) -> Self {
+        let required_vars = expr.variables().into_iter().collect();
+        Self {
+            original_idx,
+            required_vars,
+            expr,
+        }
+    }
+}
+
 /// Result of collecting an inner-join block from a pattern list.
 ///
 /// Contains all the components needed to build a joined block of patterns.
@@ -88,8 +116,8 @@ pub struct InnerJoinBlock {
     pub triples: Vec<TriplePattern>,
     /// BIND patterns
     pub binds: Vec<BindPattern>,
-    /// FILTER expressions
-    pub filters: Vec<Expression>,
+    /// FILTER patterns
+    pub filters: Vec<FilterPattern>,
 }
 
 // ============================================================================
@@ -143,41 +171,16 @@ fn apply_values(
     operator
 }
 
-/// Pending FILTER expression waiting to be applied once its required variables are bound.
-///
-/// Filters are tracked with their original index so that filters "consumed" by pushdown
-/// (converted to index scan bounds) can be identified and skipped during operator application.
-#[derive(Debug, Clone)]
-struct PendingFilter {
-    /// Original index in the block's filter list (for pushdown tracking)
-    original_idx: usize,
-    /// Variables that must be bound before this filter can execute
-    required_vars: HashSet<VarId>,
-    /// The filter expression to evaluate
-    expr: Expression,
-}
-
-impl PendingFilter {
-    fn new(original_idx: usize, expr: Expression) -> Self {
-        let required_vars = expr.variables().into_iter().collect();
-        Self {
-            original_idx,
-            required_vars,
-            expr,
-        }
-    }
-}
-
 /// Partition pending filters into those eligible for inline evaluation and those still waiting.
 ///
 /// Filters consumed by pushdown are silently dropped. Filters whose required
 /// variables are all in `bound` are returned as the first element (ready);
 /// the rest are returned as the second element (still pending).
 fn partition_eligible_filters(
-    filters: Vec<PendingFilter>,
+    filters: Vec<FilterPattern>,
     bound: &HashSet<VarId>,
     filter_idxs_consumed: &[usize],
-) -> (Vec<Expression>, Vec<PendingFilter>) {
+) -> (Vec<Expression>, Vec<FilterPattern>) {
     let mut ready = Vec::new();
     let mut pending = Vec::new();
     for pf in filters {
@@ -202,9 +205,9 @@ fn apply_eligible_binds(
     mut child: BoxedOperator,
     bound: &mut HashSet<VarId>,
     pending_binds: Vec<BindPattern>,
-    mut pending_filters: Vec<PendingFilter>,
+    mut pending_filters: Vec<FilterPattern>,
     filter_idxs_consumed: &[usize],
-) -> (BoxedOperator, Vec<BindPattern>, Vec<PendingFilter>) {
+) -> (BoxedOperator, Vec<BindPattern>, Vec<FilterPattern>) {
     let mut remaining_binds = Vec::new();
 
     for pending in pending_binds {
@@ -236,9 +239,9 @@ fn apply_deferred_patterns(
     child: BoxedOperator,
     bound: &mut HashSet<VarId>,
     pending_binds: Vec<BindPattern>,
-    pending_filters: Vec<PendingFilter>,
+    pending_filters: Vec<FilterPattern>,
     filter_idxs_consumed: &[usize],
-) -> (BoxedOperator, Vec<BindPattern>, Vec<PendingFilter>) {
+) -> (BoxedOperator, Vec<BindPattern>, Vec<FilterPattern>) {
     let (mut child, remaining_binds, pending_filters) = apply_eligible_binds(
         child,
         bound,
@@ -264,7 +267,7 @@ fn apply_deferred_patterns(
 fn apply_all_remaining(
     child: BoxedOperator,
     pending_binds: Vec<BindPattern>,
-    pending_filters: Vec<PendingFilter>,
+    pending_filters: Vec<FilterPattern>,
     filter_idxs_consumed: &[usize],
 ) -> BoxedOperator {
     let mut bound: HashSet<VarId> = child.schema().iter().copied().collect();
@@ -329,7 +332,7 @@ fn build_property_join_block(
     triples: &[TriplePattern],
     block_values: Vec<ValuesPattern>,
     pending_binds: Vec<BindPattern>,
-    pending_filters: Vec<PendingFilter>,
+    pending_filters: Vec<FilterPattern>,
     object_bounds: &HashMap<VarId, ObjectBounds>,
     filter_idxs_consumed: &[usize],
 ) -> Result<Option<BoxedOperator>> {
@@ -364,7 +367,7 @@ fn build_sequential_join_block(
     triples: &[TriplePattern],
     block_values: Vec<ValuesPattern>,
     pending_binds: Vec<BindPattern>,
-    pending_filters: Vec<PendingFilter>,
+    pending_filters: Vec<FilterPattern>,
     object_bounds: &HashMap<VarId, ObjectBounds>,
     filter_idxs_consumed: &[usize],
 ) -> Result<Option<BoxedOperator>> {
@@ -460,7 +463,7 @@ pub fn build_where_operators(
 /// - `FILTER`s (all filters, regardless of variable binding status)
 ///
 /// FILTERs are collected unconditionally. Filters referencing variables not yet bound
-/// in left-to-right order will be tracked via `PendingFilter` and applied later when
+/// in left-to-right order will be tracked via `FilterPattern` and applied later when
 /// their required variables become bound. This allows users to write FILTER patterns
 /// anywhere in the WHERE clause - the system automatically moves each filter to execute
 /// immediately after all of its required variables are bound.
@@ -475,7 +478,7 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
     let mut values: Vec<ValuesPattern> = Vec::new();
     let mut triples: Vec<TriplePattern> = Vec::new();
     let mut binds: Vec<BindPattern> = Vec::new();
-    let mut filters: Vec<Expression> = Vec::new();
+    let mut filters: Vec<FilterPattern> = Vec::new();
     let mut bound_vars: HashSet<VarId> = HashSet::new();
 
     while i < patterns.len() {
@@ -506,12 +509,12 @@ pub fn collect_inner_join_block(patterns: &[Pattern], start: usize) -> InnerJoin
             }
             Pattern::Filter(expr) => {
                 // Collect all filters unconditionally. Filters referencing variables
-                // not yet bound will be tracked via PendingFilter and applied later
-                // when their required variables become bound (after subsequent triples).
-                // This allows users to write FILTER patterns anywhere in the WHERE
-                // clause - the system automatically moves each filter to execute
-                // immediately after all of its required variables are bound.
-                filters.push(expr.clone());
+                // not yet bound will be applied later when their required variables
+                // become bound (after subsequent triples). This allows users to write
+                // FILTER patterns anywhere in the WHERE clause — the system automatically
+                // moves each filter to execute immediately after all of its required
+                // variables are bound.
+                filters.push(FilterPattern::new(filters.len(), expr.clone()));
                 i += 1;
             }
             _ => break,
@@ -610,12 +613,7 @@ pub fn build_where_operators_seeded(
                 }
 
                 let pending_binds = block.binds;
-                let pending_filters: Vec<PendingFilter> = block
-                    .filters
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, expr)| PendingFilter::new(idx, expr))
-                    .collect();
+                let pending_filters = block.filters;
 
                 // Push down range-safe filters into object bounds (when possible).
                 let filters_for_pushdown: Vec<Expression> =
