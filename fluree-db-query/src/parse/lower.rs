@@ -1610,9 +1610,9 @@ mod tests {
 
         let lowered = lower_triple_pattern(&pattern, &encoder, &mut vars).unwrap();
 
-        assert!(lowered.dtc.is_some());
-        let dt = lowered.dtc.unwrap();
-        let sid = dt.as_explicit().expect("should be Explicit");
+        let DatatypeConstraint::Explicit(sid) = lowered.dtc.expect("should have dtc") else {
+            panic!("should be Explicit");
+        };
         assert_eq!(sid.namespace_code, 2);
         assert_eq!(sid.name.as_ref(), "integer");
     }

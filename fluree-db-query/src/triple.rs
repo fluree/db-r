@@ -46,14 +46,6 @@ impl DatatypeConstraint {
             DatatypeConstraint::Explicit(_) => None,
         }
     }
-
-    /// The explicit datatype Sid, if this is an [`Explicit`](Self::Explicit) constraint.
-    pub fn as_explicit(&self) -> Option<&Sid> {
-        match self {
-            DatatypeConstraint::Explicit(sid) => Some(sid),
-            DatatypeConstraint::LangTag(_) => None,
-        }
-    }
 }
 
 /// A reference term in a triple pattern — variable, constant SID, or IRI.
