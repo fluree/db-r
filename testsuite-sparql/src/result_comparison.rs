@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::result_format::{RdfTerm, SparqlResults};
+use crate::result_format::{RdfTerm, SparqlResults, Triple};
 
 /// Compare two SPARQL result sets for isomorphism.
 ///
@@ -47,6 +47,7 @@ pub fn are_results_isomorphic(expected: &SparqlResults, actual: &SparqlResults) 
             match_solutions(exp_solutions, act_solutions, 0, &mut bnode_map, &mut used)
         }
         (SparqlResults::Boolean(exp), SparqlResults::Boolean(act)) => exp == act,
+        (SparqlResults::Graph(exp), SparqlResults::Graph(act)) => are_graphs_isomorphic(exp, act),
         _ => false, // Type mismatch
     }
 }
@@ -161,6 +162,123 @@ fn normalize_datatype(dt: &Option<String>) -> Option<&str> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Graph isomorphism (CONSTRUCT / DESCRIBE)
+// ---------------------------------------------------------------------------
+
+/// Check if two RDF graphs (triple sets) are isomorphic.
+///
+/// Two graphs are isomorphic if there exists a bijective mapping of blank node
+/// labels such that the sets of triples become equal.
+fn are_graphs_isomorphic(expected: &[Triple], actual: &[Triple]) -> bool {
+    if expected.len() != actual.len() {
+        return false;
+    }
+
+    // Fast path: no blank nodes in either graph — just sort and compare.
+    let has_bnodes = |triples: &[Triple]| {
+        triples.iter().any(|t| {
+            matches!(t.subject, RdfTerm::BlankNode(_))
+                || matches!(t.predicate, RdfTerm::BlankNode(_))
+                || matches!(t.object, RdfTerm::BlankNode(_))
+        })
+    };
+
+    if !has_bnodes(expected) && !has_bnodes(actual) {
+        let mut exp_sorted: Vec<_> = expected.to_vec();
+        let mut act_sorted: Vec<_> = actual.to_vec();
+        exp_sorted.sort_by(triple_sort_key);
+        act_sorted.sort_by(triple_sort_key);
+        return exp_sorted == act_sorted;
+    }
+
+    // Slow path: backtracking search for a consistent blank node mapping.
+    let mut bnode_map: HashMap<String, String> = HashMap::new();
+    let mut used: Vec<bool> = vec![false; actual.len()];
+    match_triples(expected, actual, 0, &mut bnode_map, &mut used)
+}
+
+/// Deterministic sort key for triples (for the bnode-free fast path).
+fn triple_sort_key(a: &Triple, b: &Triple) -> std::cmp::Ordering {
+    rdf_term_sort_key(&a.subject, &b.subject)
+        .then_with(|| rdf_term_sort_key(&a.predicate, &b.predicate))
+        .then_with(|| rdf_term_sort_key(&a.object, &b.object))
+}
+
+fn rdf_term_sort_key(a: &RdfTerm, b: &RdfTerm) -> std::cmp::Ordering {
+    let discriminant = |t: &RdfTerm| -> u8 {
+        match t {
+            RdfTerm::BlankNode(_) => 0,
+            RdfTerm::Iri(_) => 1,
+            RdfTerm::Literal { .. } => 2,
+        }
+    };
+    discriminant(a).cmp(&discriminant(b)).then_with(|| {
+        match (a, b) {
+            (RdfTerm::Iri(a), RdfTerm::Iri(b)) => a.cmp(b),
+            (RdfTerm::BlankNode(a), RdfTerm::BlankNode(b)) => a.cmp(b),
+            (
+                RdfTerm::Literal {
+                    value: av,
+                    datatype: ad,
+                    language: al,
+                },
+                RdfTerm::Literal {
+                    value: bv,
+                    datatype: bd,
+                    language: bl,
+                },
+            ) => av.cmp(bv).then_with(|| ad.cmp(bd)).then_with(|| al.cmp(bl)),
+            _ => std::cmp::Ordering::Equal, // different discriminants already handled
+        }
+    })
+}
+
+/// Recursively match expected triples to actual triples with backtracking
+/// for blank node isomorphism.
+fn match_triples(
+    expected: &[Triple],
+    actual: &[Triple],
+    exp_idx: usize,
+    bnode_map: &mut HashMap<String, String>,
+    used: &mut [bool],
+) -> bool {
+    if exp_idx >= expected.len() {
+        return true;
+    }
+
+    let exp_triple = &expected[exp_idx];
+
+    for act_idx in 0..actual.len() {
+        if used[act_idx] {
+            continue;
+        }
+
+        let saved_map = bnode_map.clone();
+        if triple_matches(exp_triple, &actual[act_idx], bnode_map) {
+            used[act_idx] = true;
+            if match_triples(expected, actual, exp_idx + 1, bnode_map, used) {
+                return true;
+            }
+            used[act_idx] = false;
+        }
+        *bnode_map = saved_map;
+    }
+
+    false
+}
+
+/// Check if two triples match under the current blank node mapping.
+fn triple_matches(
+    expected: &Triple,
+    actual: &Triple,
+    bnode_map: &mut HashMap<String, String>,
+) -> bool {
+    terms_match(&expected.subject, &actual.subject, bnode_map)
+        && terms_match(&expected.predicate, &actual.predicate, bnode_map)
+        && terms_match(&expected.object, &actual.object, bnode_map)
+}
+
 /// Format a diff between expected and actual results for error messages.
 pub fn format_results_diff(expected: &SparqlResults, actual: &SparqlResults) -> String {
     match (expected, actual) {
@@ -204,6 +322,35 @@ pub fn format_results_diff(expected: &SparqlResults, actual: &SparqlResults) -> 
         (SparqlResults::Boolean(exp), SparqlResults::Boolean(act)) => {
             format!("Expected: {exp}, Actual: {act}")
         }
+        (SparqlResults::Graph(exp), SparqlResults::Graph(act)) => {
+            let mut msg = String::new();
+            msg.push_str(&format!(
+                "Expected {} triple(s), got {}\n",
+                exp.len(),
+                act.len(),
+            ));
+
+            let show_count = 10;
+            if !exp.is_empty() {
+                msg.push_str("\nExpected (first few):\n");
+                for (i, t) in exp.iter().take(show_count).enumerate() {
+                    msg.push_str(&format!(
+                        "  [{i}]: {:?} {:?} {:?}\n",
+                        t.subject, t.predicate, t.object
+                    ));
+                }
+            }
+            if !act.is_empty() {
+                msg.push_str("\nActual (first few):\n");
+                for (i, t) in act.iter().take(show_count).enumerate() {
+                    msg.push_str(&format!(
+                        "  [{i}]: {:?} {:?} {:?}\n",
+                        t.subject, t.predicate, t.object
+                    ));
+                }
+            }
+            msg
+        }
         _ => format!(
             "Result type mismatch: expected {}, got {}",
             result_type_name(expected),
@@ -216,6 +363,7 @@ fn result_type_name(r: &SparqlResults) -> &'static str {
     match r {
         SparqlResults::Solutions { .. } => "Solutions",
         SparqlResults::Boolean(_) => "Boolean",
+        SparqlResults::Graph(_) => "Graph",
     }
 }
 

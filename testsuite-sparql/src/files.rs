@@ -16,16 +16,42 @@ fn rdf_tests_dir() -> PathBuf {
 /// The `rdf-tests` submodule mirrors this structure at:
 ///   `{CARGO_MANIFEST_DIR}/rdf-tests/sparql/sparql11/syntax-query/syntax-select-expr-01.rq`
 pub fn url_to_path(url: &str) -> Result<PathBuf> {
+    // Strip any fragment identifier (e.g. "#test1") before resolving.
+    let url = url.split('#').next().unwrap_or(url);
+
     // Strip the W3C host prefix + "rdf-tests/" to get the relative path.
     // URL:  https://w3c.github.io/rdf-tests/sparql/sparql11/...
     // Local: {CARGO_MANIFEST_DIR}/rdf-tests/sparql/sparql11/...
-    let relative = url
+    //
+    // SPARQL 1.0 manifests use a legacy URL scheme:
+    //   http://www.w3.org/2001/sw/DataAccess/tests/data-r2/...
+    //   → rdf-tests/sparql/sparql10/...
+    //
+    // SPARQL 1.1 test IDs sometimes use:
+    //   http://www.w3.org/2009/sparql/docs/tests/data-sparql11/...
+    //   → rdf-tests/sparql/sparql11/...
+    if let Some(relative) = url
         .strip_prefix("https://w3c.github.io/rdf-tests/")
         .or_else(|| url.strip_prefix("http://w3c.github.io/rdf-tests/"))
-        .with_context(|| format!("URL does not match W3C pattern: {url}"))?;
+    {
+        let path = rdf_tests_dir().join(relative);
+        return Ok(path);
+    }
 
-    let path = rdf_tests_dir().join(relative);
-    Ok(path)
+    if let Some(relative) = url.strip_prefix("http://www.w3.org/2001/sw/DataAccess/tests/data-r2/")
+    {
+        let path = rdf_tests_dir().join("sparql/sparql10").join(relative);
+        return Ok(path);
+    }
+
+    if let Some(relative) =
+        url.strip_prefix("http://www.w3.org/2009/sparql/docs/tests/data-sparql11/")
+    {
+        let path = rdf_tests_dir().join("sparql/sparql11").join(relative);
+        return Ok(path);
+    }
+
+    anyhow::bail!("URL does not match any known W3C pattern: {url}");
 }
 
 /// Read a test resource file to a string, resolving from a W3C URL.
@@ -97,5 +123,66 @@ mod tests {
             resolved,
             "https://w3c.github.io/rdf-tests/sparql/sparql11/syntax-query/manifest.ttl"
         );
+    }
+
+    #[test]
+    fn test_url_to_path_strips_fragment() {
+        let url =
+            "https://w3c.github.io/rdf-tests/sparql/sparql11/syntax-query/syntax-select-expr-01.rq#frag";
+        let path = url_to_path(url).unwrap();
+        assert!(path.ends_with("sparql/sparql11/syntax-query/syntax-select-expr-01.rq"));
+        // Fragment must not appear in the resolved path.
+        assert!(!path.to_string_lossy().contains('#'));
+    }
+
+    #[test]
+    fn test_url_to_path_sparql10_legacy_prefix() {
+        let url = "http://www.w3.org/2001/sw/DataAccess/tests/data-r2/algebra/manifest.ttl";
+        let path = url_to_path(url).unwrap();
+        assert!(
+            path.ends_with("rdf-tests/sparql/sparql10/algebra/manifest.ttl"),
+            "expected sparql10 mapping, got: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn test_url_to_path_sparql10_with_fragment() {
+        let url =
+            "http://www.w3.org/2001/sw/DataAccess/tests/data-r2/basic/manifest#dawg-triple-pattern-001";
+        let path = url_to_path(url).unwrap();
+        assert!(
+            path.ends_with("rdf-tests/sparql/sparql10/basic/manifest"),
+            "expected sparql10 mapping without fragment, got: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn test_url_to_path_sparql11_legacy_prefix() {
+        let url = "http://www.w3.org/2009/sparql/docs/tests/data-sparql11/aggregates/manifest.ttl";
+        let path = url_to_path(url).unwrap();
+        assert!(
+            path.ends_with("rdf-tests/sparql/sparql11/aggregates/manifest.ttl"),
+            "expected sparql11 mapping, got: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn test_url_to_path_sparql11_with_fragment() {
+        let url = "http://www.w3.org/2009/sparql/docs/tests/data-sparql11/bind/manifest#bind01";
+        let path = url_to_path(url).unwrap();
+        assert!(
+            path.ends_with("rdf-tests/sparql/sparql11/bind/manifest"),
+            "expected sparql11 mapping without fragment, got: {}",
+            path.display()
+        );
+    }
+
+    #[test]
+    fn test_url_to_path_unknown_prefix_fails() {
+        let url = "http://example.org/unknown/path.rq";
+        assert!(url_to_path(url).is_err());
     }
 }

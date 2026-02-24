@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
+use fluree_graph_ir::{GraphCollectorSink, Term as IrTerm};
+use fluree_graph_turtle::parse as parse_turtle;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
@@ -25,6 +27,14 @@ pub enum RdfTerm {
     },
 }
 
+/// An RDF triple in a CONSTRUCT/DESCRIBE result graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Triple {
+    pub subject: RdfTerm,
+    pub predicate: RdfTerm,
+    pub object: RdfTerm,
+}
+
 /// Normalized SPARQL query result (format-independent).
 #[derive(Debug)]
 pub enum SparqlResults {
@@ -35,6 +45,8 @@ pub enum SparqlResults {
     },
     /// ASK query: boolean result.
     Boolean(bool),
+    /// CONSTRUCT/DESCRIBE result: set of RDF triples.
+    Graph(Vec<Triple>),
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +68,7 @@ pub fn parse_expected_results(url: &str) -> Result<SparqlResults> {
     } else if url.ends_with(".srj") {
         parse_srj(&content).with_context(|| format!("Parsing .srj: {url}"))
     } else if url.ends_with(".ttl") || url.ends_with(".rdf") {
-        bail!("CONSTRUCT result comparison (.ttl/.rdf) not yet implemented: {url}")
+        parse_ttl_graph(&content).with_context(|| format!("Parsing .ttl/.rdf graph: {url}"))
     } else {
         bail!("Unknown result file format: {url}")
     }
@@ -214,7 +226,10 @@ pub fn parse_srx(xml: &str) -> Result<SparqlResults> {
             }
             Ok(Event::Text(ref e)) => {
                 if current_term.is_some() || in_boolean {
-                    text_buf.push_str(&e.unescape().unwrap_or(std::borrow::Cow::Borrowed("")));
+                    text_buf.push_str(
+                        &e.unescape()
+                            .context("Failed to unescape XML text content")?,
+                    );
                 }
             }
             Ok(Event::Eof) => break,
@@ -323,6 +338,198 @@ fn parse_srj_term(value: &serde_json::Value) -> Option<RdfTerm> {
 pub fn fluree_json_to_sparql_results(json: &serde_json::Value) -> Result<SparqlResults> {
     let json_str = serde_json::to_string(json)?;
     parse_srj(&json_str)
+}
+
+// ---------------------------------------------------------------------------
+// Turtle / RDF graph parsing (CONSTRUCT expected results)
+// ---------------------------------------------------------------------------
+
+/// Parse a Turtle document into a [`SparqlResults::Graph`].
+///
+/// Used for `.ttl` and `.rdf` CONSTRUCT expected result files.
+fn parse_ttl_graph(content: &str) -> Result<SparqlResults> {
+    let mut sink = GraphCollectorSink::new();
+    parse_turtle(content, &mut sink).context("Turtle parse error")?;
+    let graph = sink.finish();
+
+    let triples: Vec<Triple> = graph
+        .iter()
+        .map(|t| Triple {
+            subject: ir_term_to_rdf_term(&t.s),
+            predicate: ir_term_to_rdf_term(&t.p),
+            object: ir_term_to_rdf_term(&t.o),
+        })
+        .collect();
+
+    Ok(SparqlResults::Graph(triples))
+}
+
+/// Convert a `fluree_graph_ir::Term` to our local [`RdfTerm`].
+fn ir_term_to_rdf_term(term: &IrTerm) -> RdfTerm {
+    match term {
+        IrTerm::Iri(iri) => RdfTerm::Iri(iri.to_string()),
+        IrTerm::BlankNode(id) => RdfTerm::BlankNode(id.as_str().to_string()),
+        IrTerm::Literal {
+            value,
+            datatype,
+            language,
+        } => {
+            let dt_iri = datatype.as_iri();
+            let datatype_opt = if datatype.is_xsd_string() {
+                None
+            } else {
+                Some(dt_iri.to_string())
+            };
+            let language_opt = language.as_ref().map(|l| l.to_string());
+            RdfTerm::Literal {
+                value: value.lexical(),
+                datatype: datatype_opt,
+                language: language_opt,
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Convert Fluree CONSTRUCT JSON-LD output → SparqlResults::Graph
+// ---------------------------------------------------------------------------
+
+/// Convert Fluree's CONSTRUCT JSON-LD output into a [`SparqlResults::Graph`].
+///
+/// Expects a JSON-LD `@graph` array (or a single node object). Each node has
+/// `@id` as the subject; every other key is a predicate whose values are objects.
+pub fn fluree_construct_to_sparql_results(json: &serde_json::Value) -> Result<SparqlResults> {
+    let nodes = if let Some(graph) = json.get("@graph").and_then(|g| g.as_array()) {
+        graph.clone()
+    } else if json.is_array() {
+        json.as_array().unwrap().clone()
+    } else if json.is_object() {
+        vec![json.clone()]
+    } else {
+        bail!("CONSTRUCT result is not a JSON-LD graph: {json}");
+    };
+
+    let mut triples = Vec::new();
+
+    for node in &nodes {
+        let obj = node
+            .as_object()
+            .context("CONSTRUCT graph node is not an object")?;
+
+        let subject = match obj.get("@id").and_then(|v| v.as_str()) {
+            Some(id) => match id.strip_prefix("_:") {
+                Some(label) => RdfTerm::BlankNode(label.to_string()),
+                None => RdfTerm::Iri(id.to_string()),
+            },
+            None => continue, // skip nodes without @id
+        };
+
+        for (key, value) in obj {
+            if key == "@id" {
+                continue;
+            }
+
+            if key == "@type" {
+                let rdf_type =
+                    RdfTerm::Iri("http://www.w3.org/1999/02/22-rdf-syntax-ns#type".to_string());
+                let types = match value {
+                    serde_json::Value::Array(arr) => arr.clone(),
+                    other => vec![other.clone()],
+                };
+                for type_val in &types {
+                    if let Some(t) = type_val.as_str() {
+                        triples.push(Triple {
+                            subject: subject.clone(),
+                            predicate: rdf_type.clone(),
+                            object: RdfTerm::Iri(t.to_string()),
+                        });
+                    }
+                }
+                continue;
+            }
+
+            let predicate = RdfTerm::Iri(key.clone());
+            let values = match value {
+                serde_json::Value::Array(arr) => arr.clone(),
+                other => vec![other.clone()],
+            };
+
+            for val in &values {
+                if let Some(term) = json_ld_value_to_rdf_term(val) {
+                    triples.push(Triple {
+                        subject: subject.clone(),
+                        predicate: predicate.clone(),
+                        object: term,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(SparqlResults::Graph(triples))
+}
+
+/// Convert a JSON-LD value node to an [`RdfTerm`].
+///
+/// Handles `{"@id": "..."}`, `{"@value": "...", "@type": "...", "@language": "..."}`,
+/// and plain string/number values.
+fn json_ld_value_to_rdf_term(val: &serde_json::Value) -> Option<RdfTerm> {
+    if let Some(obj) = val.as_object() {
+        // Node reference: {"@id": "http://..."}
+        if let Some(id) = obj.get("@id").and_then(|v| v.as_str()) {
+            return Some(match id.strip_prefix("_:") {
+                Some(label) => RdfTerm::BlankNode(label.to_string()),
+                None => RdfTerm::Iri(id.to_string()),
+            });
+        }
+
+        // Value node: {"@value": "...", "@type"?: "...", "@language"?: "..."}
+        if let Some(value_field) = obj.get("@value") {
+            let lexical = match value_field {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                _ => return None,
+            };
+            let datatype = obj.get("@type").and_then(|v| v.as_str()).map(String::from);
+            let language = obj
+                .get("@language")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            return Some(RdfTerm::Literal {
+                value: lexical,
+                datatype,
+                language,
+            });
+        }
+
+        None
+    } else if let Some(s) = val.as_str() {
+        // Plain string — treat as untyped literal
+        Some(RdfTerm::Literal {
+            value: s.to_string(),
+            datatype: None,
+            language: None,
+        })
+    } else if let Some(n) = val.as_i64() {
+        Some(RdfTerm::Literal {
+            value: n.to_string(),
+            datatype: Some("http://www.w3.org/2001/XMLSchema#integer".to_string()),
+            language: None,
+        })
+    } else if let Some(n) = val.as_f64() {
+        Some(RdfTerm::Literal {
+            value: n.to_string(),
+            datatype: Some("http://www.w3.org/2001/XMLSchema#double".to_string()),
+            language: None,
+        })
+    } else {
+        val.as_bool().map(|b| RdfTerm::Literal {
+            value: b.to_string(),
+            datatype: Some("http://www.w3.org/2001/XMLSchema#boolean".to_string()),
+            language: None,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -297,7 +297,7 @@ When asking Claude Code for help, these files provide essential context:
 | SPARQL AST types | `fluree-db-sparql/src/ast/` |
 | Query engine | `fluree-db-query/src/` |
 | API orchestration | `fluree-db-api/src/` |
-| Design doc with failure analysis | `dev-docs/sparql/00-sparql-compliance-plan.md` |
+| W3C SPARQL test categories | `testsuite-sparql/tests/w3c_sparql.rs` |
 
 ### Batch Processing Tips
 
@@ -427,7 +427,6 @@ cargo test -p testsuite-sparql
 
 ## Related Documentation
 
-- [Design doc](../../dev-docs/sparql/00-sparql-compliance-plan.md) — Full architecture, failure analysis, and phased implementation plan
 - [Tests guide](tests.md) — General testing practices
 - [SPARQL query docs](../query/sparql.md) — User-facing SPARQL feature documentation
 - [Compatibility](../reference/compatibility.md) — Standards compliance status

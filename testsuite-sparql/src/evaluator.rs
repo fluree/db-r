@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use std::io::IsTerminal;
+
 use anyhow::{bail, Result};
 
 use crate::manifest::Test;
@@ -41,7 +43,11 @@ impl TestEvaluator {
             .map(|test| {
                 let test = test?;
                 count += 1;
-                eprint!("\r  Running test {count}: {} ...", test.id);
+                if std::io::stderr().is_terminal() {
+                    eprint!("\r  Running test {count}: {} ...", test.id);
+                } else {
+                    eprintln!("  Running test {count}: {} ...", test.id);
+                }
                 let outcome = test
                     .kinds
                     .iter()

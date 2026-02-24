@@ -86,6 +86,11 @@ impl TestManifest {
         let mut sink = GraphCollectorSink::new();
         parse(&content, &mut sink).with_context(|| format!("Parsing manifest {url}"))?;
 
+        // NOTE: This replaces (not accumulates) the graph. This is intentional:
+        // `tests_to_do` captures test IDs as strings, and `parse_test()` runs for
+        // each test ID *before* the next `load_manifest()` call (enforced by the
+        // `loop` in `Iterator::next`). Cross-manifest test references are not
+        // supported by the W3C test suite structure.
         self.graph = sink.finish();
 
         // Find the manifest subject (type mf:Manifest or has mf:entries/mf:include)

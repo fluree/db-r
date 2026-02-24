@@ -34,6 +34,10 @@ pub mod mf {
         "http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#CSVResultFormatTest";
     pub const SERVICE_DESCRIPTION_TEST: &str =
         "http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#ServiceDescriptionTest";
+    pub const PROTOCOL_TEST: &str =
+        "http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#ProtocolTest";
+    pub const GRAPH_STORE_PROTOCOL_TEST: &str =
+        "http://www.w3.org/2001/sw/DataAccess/tests/test-manifest#GraphStoreProtocolTest";
 }
 
 /// SPARQL query test vocabulary (qt:)
