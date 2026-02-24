@@ -61,16 +61,39 @@ You can also use the full IRI or `f:` prefix form:
 
 ### Inserting fulltext values (Turtle / SPARQL UPDATE)
 
-In Turtle and SPARQL UPDATE, the `@fulltext` shorthand is not available. Use the `f:fullText` datatype IRI with the standard `^^` typed-literal syntax:
+In Turtle and SPARQL UPDATE, the `@fulltext` shorthand is not available. Use the `f:fullText` datatype IRI with the standard `^^` typed-literal syntax.
+
+**Turtle data file:**
+
+```turtle
+@prefix ex: <http://example.org/> .
+@prefix f: <https://ns.flur.ee/db#> .
+
+ex:article-1
+  a ex:Article ;
+  ex:title "Introduction to Rust" ;
+  ex:content "Rust is a systems programming language focused on safety and performance"^^f:fullText .
+
+ex:article-2
+  a ex:Article ;
+  ex:title "Database Design Patterns" ;
+  ex:content "Modern database systems use columnar storage and immutable ledgers"^^f:fullText .
+```
+
+**SPARQL UPDATE:**
 
 ```sparql
 PREFIX ex: <http://example.org/>
 PREFIX f: <https://ns.flur.ee/db#>
 
 INSERT DATA {
-  ex:article-1 ex:content "Rust is a systems programming language..."^^f:fullText .
+  ex:article-1 a ex:Article ;
+    ex:title "Introduction to Rust" ;
+    ex:content "Rust is a systems programming language focused on safety"^^f:fullText .
 }
 ```
+
+The `^^f:fullText` annotation is the Turtle/SPARQL equivalent of `"@type": "@fulltext"` in JSON-LD. Without it, the string is stored as a plain `xsd:string`.
 
 ### Multiple fulltext properties per entity
 
@@ -360,7 +383,31 @@ Expected results (ordered by relevance):
 
 ## SPARQL Support
 
-Inline fulltext scoring is currently available in JSON-LD Query only. SPARQL support is planned for a future release.
+### Inserting data
+
+Fulltext annotation works in SPARQL UPDATE today using the `^^f:fullText` typed literal syntax (see the Turtle/SPARQL insertion examples above).
+
+### Querying
+
+The `fulltext()` scoring function is currently available in **JSON-LD Query only**. SPARQL query support is planned for a future release, with anticipated syntax like:
+
+```sparql
+PREFIX ex: <http://example.org/>
+PREFIX f: <https://ns.flur.ee/db#>
+
+SELECT ?title ?score
+WHERE {
+  ?doc a ex:Article ;
+       ex:content ?content ;
+       ex:title ?title .
+  BIND(f:fulltext(?content, "Rust programming") AS ?score)
+  FILTER(?score > 0)
+}
+ORDER BY DESC(?score)
+LIMIT 10
+```
+
+This mirrors the pattern established by inline vector similarity functions (`dotProduct`, `cosineSimilarity`, `euclideanDistance`), which also support JSON-LD Query today with SPARQL planned.
 
 ## Related Documentation
 
