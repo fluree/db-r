@@ -516,29 +516,33 @@ fn validate_structural_constraint<'a>(
 
             NodeConstraint::Not(nested_shape) => {
                 // sh:not - the nested shape must NOT match
-                // Find the referenced shape and validate against it
-                if let Some(ref_shape) = all_shapes.iter().find(|s| s.id == nested_shape.id) {
-                    let nested_results =
-                        validate_shape(db, focus_node, ref_shape, all_shapes).await?;
-                    // If the nested shape has NO violations, that's a violation of sh:not
-                    if nested_results.is_empty()
-                        || nested_results
-                            .iter()
-                            .all(|r| r.severity != Severity::Violation)
-                    {
-                        results.push(ValidationResult {
-                            focus_node: focus_node.clone(),
-                            result_path: None,
-                            source_shape: parent_shape.id.clone(),
-                            source_constraint: None,
-                            severity: Severity::Violation,
-                            message: format!(
-                                "Node conforms to shape {} which is not allowed (sh:not)",
-                                nested_shape.id.name
-                            ),
-                            value: None,
-                        });
-                    }
+                let nested_results = validate_nested_shape(
+                    db,
+                    focus_node,
+                    nested_shape.as_ref(),
+                    parent_shape,
+                    all_shapes,
+                )
+                .await?;
+                // If the nested shape has NO violations, that's a violation of sh:not.
+                // An "unresolved shape" violation from validate_nested_shape counts as
+                // a violation (the shape didn't match), so sh:not is satisfied.
+                let has_violations = nested_results
+                    .iter()
+                    .any(|r| r.severity == Severity::Violation);
+                if !has_violations {
+                    results.push(ValidationResult {
+                        focus_node: focus_node.clone(),
+                        result_path: None,
+                        source_shape: parent_shape.id.clone(),
+                        source_constraint: None,
+                        severity: Severity::Violation,
+                        message: format!(
+                            "Node conforms to shape {} which is not allowed (sh:not)",
+                            nested_shape.id.name
+                        ),
+                        value: None,
+                    });
                 }
             }
 
@@ -902,8 +906,6 @@ async fn validate_property_value_structural_constraint<'a>(
     parent_shape: &'a CompiledShape,
     all_shapes: &'a [&'a CompiledShape],
 ) -> Result<Vec<ValidationResult>> {
-    use crate::constraints::NodeConstraint;
-
     let mut results = Vec::new();
 
     match constraint {
@@ -940,8 +942,9 @@ async fn validate_property_value_structural_constraint<'a>(
                         source_constraint: Some(prop_shape.id.clone()),
                         severity: prop_shape.severity,
                         message: format!(
-                            "Value {:?} does not conform to any shape in sh:or",
-                            value
+                            "Value {:?} does not conform to any shape in sh:or (tried: {})",
+                            value,
+                            all_messages.join(", ")
                         ),
                         value: Some(value.clone()),
                     });
@@ -1088,11 +1091,18 @@ async fn check_value_against_nested_shape<'a>(
     // If the nested shape has value-level constraints (e.g. sh:datatype without sh:path),
     // check them directly against the value/datatype.
     if !nested.value_constraints.is_empty() {
-        let dt_slice: Vec<Sid> = datatype.into_iter().cloned().collect();
+        let dt_arr: [Sid; 1];
+        let dt_slice: &[Sid] = match datatype {
+            Some(dt) => {
+                dt_arr = [dt.clone()];
+                &dt_arr
+            }
+            None => &[],
+        };
         let violations = validate_constraint_set(
             &nested.value_constraints,
             std::slice::from_ref(value),
-            &dt_slice,
+            dt_slice,
         )?;
         return Ok(violations.is_empty());
     }

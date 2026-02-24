@@ -1285,16 +1285,25 @@ fn parse_single_list_item(
     blank_counter: &mut usize,
 ) -> Result<ParsedValue> {
     match item {
-        Value::Object(_) => parse_expanded_value(
-            item,
-            context,
-            vars,
-            ns_registry,
-            templates,
-            object_var_parsing,
-            graph_ids,
-            blank_counter,
-        ),
+        Value::Object(obj) => {
+            // Nested @list inside a list item is not supported (would silently
+            // lose data because parse_list_value only returns the first element).
+            if obj.contains_key("@list") {
+                return Err(TransactError::Parse(
+                    "Nested @list not supported".to_string(),
+                ));
+            }
+            parse_expanded_value(
+                item,
+                context,
+                vars,
+                ns_registry,
+                templates,
+                object_var_parsing,
+                graph_ids,
+                blank_counter,
+            )
+        }
         // Direct values
         Value::String(s) => {
             if s.starts_with('?') {
