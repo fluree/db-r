@@ -379,14 +379,14 @@ impl Operator for PropertyJoinOperator {
             let mut scan_rows_total: u64 = 0;
 
             for (order_pos, pred_idx) in scan_order.iter().copied().enumerate() {
-                let (pred_term, obj_var, constraint) = &self.predicates[pred_idx];
+                let (pred_term, obj_var, dtc) = &self.predicates[pred_idx];
 
                 // If we have a driver subject set and we're in the right execution mode,
                 // try a batched subject probe for this predicate.
                 let can_batched_probe = order_pos > 0
                     && driver_subject_ids.is_some()
                     && ctx.has_binary_store()
-                    && constraint.is_none();
+                    && dtc.is_none();
 
                 if can_batched_probe {
                     let store = ctx.binary_store.as_ref().unwrap();
@@ -478,7 +478,7 @@ impl Operator for PropertyJoinOperator {
                     s: Ref::Var(self.subject_var),
                     p: pred_term.clone(),
                     o: Term::Var(TEMP_OBJECT_VAR),
-                    dtc: constraint.clone(),
+                    dtc: dtc.clone(),
                 };
 
                 // Create scan with optional bounds pushdown for this object variable.

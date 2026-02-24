@@ -364,11 +364,10 @@ fn lower_triple_to_where(
     let p = predicate_to_unresolved(&triple.predicate, prologue)?;
     let obj = object_to_unresolved(&triple.object, prologue)?;
 
-    let constraint = if let Some(lang) = obj.lang {
-        Some(UnresolvedDatatypeConstraint::LangTag(lang))
-    } else {
-        obj.datatype.map(UnresolvedDatatypeConstraint::Explicit)
-    };
+    let constraint = obj
+        .lang
+        .map(UnresolvedDatatypeConstraint::LangTag)
+        .or_else(|| obj.datatype.map(UnresolvedDatatypeConstraint::Explicit));
 
     let pattern = UnresolvedTriplePattern {
         s,

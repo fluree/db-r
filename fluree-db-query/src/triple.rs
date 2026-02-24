@@ -309,12 +309,10 @@ impl TriplePattern {
     /// Term::Iri is treated as a ref because it represents an IRI that will
     /// be encoded to a Sid for each target ledger.
     pub fn o_is_ref(&self) -> bool {
-        match &self.o {
-            Term::Sid(_) => true,
-            Term::Iri(_) => true, // IRI will be encoded to Sid per-ledger
-            Term::Value(FlakeValue::Ref(_)) => true,
-            _ => false,
-        }
+        matches!(
+            &self.o,
+            Term::Sid(_) | Term::Iri(_) | Term::Value(FlakeValue::Ref(_))
+        )
     }
 }
 

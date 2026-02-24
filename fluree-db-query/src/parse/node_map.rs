@@ -774,9 +774,7 @@ fn parse_property(
                     )?;
                 } else {
                     // Constant language constraint
-                    pattern.dtc = Some(UnresolvedDatatypeConstraint::LangTag(Arc::from(
-                        lang.as_ref(),
-                    )));
+                    pattern.dtc = Some(UnresolvedDatatypeConstraint::LangTag(lang));
                 }
             }
 
