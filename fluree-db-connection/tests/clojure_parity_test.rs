@@ -7,7 +7,7 @@
 
 use fluree_db_connection::{connect, ConnectionConfig, ConnectionHandle, StorageType};
 use fluree_db_core::{ContentId, ContentKind};
-use fluree_db_query::{execute_pattern, RowAccess, Term, TriplePattern, VarRegistry};
+use fluree_db_query::{execute_pattern, Ref, RowAccess, Term, TriplePattern, VarRegistry};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -126,7 +126,7 @@ async fn test_connection_parity() {
     let p = vars.get_or_insert("?p");
     let o = vars.get_or_insert("?o");
 
-    let pattern = TriplePattern::new(Term::Var(s), Term::Var(p), Term::Var(o));
+    let pattern = TriplePattern::new(Ref::Var(s), Ref::Var(p), Term::Var(o));
     let batches = execute_pattern(&db, &vars, pattern).await.unwrap();
 
     assert!(!batches.is_empty(), "Should have at least one batch");

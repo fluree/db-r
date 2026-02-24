@@ -9,7 +9,7 @@ use fluree_db_query::context::ExecutionContext;
 use fluree_db_query::join::NestedLoopJoinOperator;
 use fluree_db_query::operator::Operator;
 use fluree_db_query::optional::{OptionalBuilder, OptionalOperator};
-use fluree_db_query::triple::{Term, TriplePattern};
+use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use fluree_db_query::var_registry::{VarId, VarRegistry};
 use std::sync::Arc;
 
@@ -124,8 +124,8 @@ async fn test_optional_poison_blocks_subsequent() {
     let left_schema: Arc<[VarId]> = Arc::from(vec![s, opt].into_boxed_slice());
 
     let right_pattern = TriplePattern::new(
-        Term::Var(opt), // correlation var (poisoned) used for binding
-        Term::Sid(Sid::new(100, "p")),
+        Ref::Var(opt), // correlation var (poisoned) used for binding
+        Ref::Sid(Sid::new(100, "p")),
         Term::Var(o),
     );
 

@@ -11,7 +11,7 @@ use crate::error::{QueryError, Result};
 use crate::expression::passes_filters;
 use crate::ir::Expression;
 use crate::operator::{Operator, OperatorState};
-use crate::triple::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::subject_id::{SubjectId, SubjectIdColumn};
@@ -84,7 +84,7 @@ enum BatchRef {
 /// Check if the right pattern is eligible for batched subject join.
 ///
 /// Eligible patterns have shape: `(?s, fixed_p, ?o)` where subject is bound
-/// from the left, predicate is fixed (Term::Sid), object is a new unbound
+/// from the left, predicate is fixed (Ref::Sid), object is a new unbound
 /// variable, with no object bounds or datatype/language constraints.
 fn is_batched_eligible(
     bind_instructions: &[BindInstruction],
@@ -95,8 +95,8 @@ fn is_batched_eligible(
     let has_subject_bind = bind_instructions
         .iter()
         .any(|b| b.position == PatternPosition::Subject);
-    // Predicate must be fixed (Term::Sid)
-    let pred_fixed = matches!(&right_pattern.p, Term::Sid(_));
+    // Predicate must be fixed (Ref::Sid)
+    let pred_fixed = matches!(&right_pattern.p, Ref::Sid(_));
     // Object must be a variable
     let obj_is_var = matches!(&right_pattern.o, Term::Var(_));
     // No BindInstruction for Object (object is a new variable, not shared)
@@ -216,7 +216,7 @@ impl NestedLoopJoinOperator {
             .collect();
 
         // Check subject
-        if let Term::Var(v) = &right_pattern.s {
+        if let Ref::Var(v) = &right_pattern.s {
             if let Some(&col) = left_var_positions.get(v) {
                 bind_instructions.push(BindInstruction {
                     position: PatternPosition::Subject,
@@ -226,7 +226,7 @@ impl NestedLoopJoinOperator {
         }
 
         // Check predicate
-        if let Term::Var(v) = &right_pattern.p {
+        if let Ref::Var(v) = &right_pattern.p {
             if let Some(&col) = left_var_positions.get(v) {
                 bind_instructions.push(BindInstruction {
                     position: PatternPosition::Predicate,
@@ -318,7 +318,7 @@ impl NestedLoopJoinOperator {
         };
         let batched_predicate = if batched_eligible {
             match &right_pattern.p {
-                Term::Sid(sid) => Some(sid.clone()),
+                Ref::Sid(sid) => Some(sid.clone()),
                 _ => None,
             }
         } else {
@@ -393,7 +393,7 @@ impl NestedLoopJoinOperator {
 
     /// Substitute left row bindings into right pattern
     ///
-    /// For IriMatch bindings, uses `Term::Iri` to carry the canonical IRI.
+    /// For IriMatch bindings, uses `Ref::Iri` to carry the canonical IRI.
     /// The scan operator will encode this IRI for each target ledger's namespace
     /// table, enabling correct cross-ledger joins even when namespace tables differ.
     ///
@@ -420,17 +420,17 @@ impl NestedLoopJoinOperator {
                 PatternPosition::Subject => {
                     match binding {
                         Binding::Sid(sid) => {
-                            pattern.s = Term::Sid(sid.clone());
+                            pattern.s = Ref::Sid(sid.clone());
                         }
                         Binding::IriMatch { iri, .. } => {
-                            // Use Term::Iri so scan can encode for each target ledger
-                            pattern.s = Term::Iri(iri.clone());
+                            // Use Ref::Iri so scan can encode for each target ledger
+                            pattern.s = Ref::Iri(iri.clone());
                         }
                         Binding::EncodedSid { s_id } => {
                             // Resolve encoded s_id to IRI if store available
                             if let Some(store) = store {
                                 if let Ok(iri) = store.resolve_subject_iri(*s_id) {
-                                    pattern.s = Term::Iri(Arc::from(iri));
+                                    pattern.s = Ref::Iri(Arc::from(iri));
                                 }
                             }
                             // Otherwise leave as variable
@@ -443,17 +443,17 @@ impl NestedLoopJoinOperator {
                 PatternPosition::Predicate => {
                     match binding {
                         Binding::Sid(sid) => {
-                            pattern.p = Term::Sid(sid.clone());
+                            pattern.p = Ref::Sid(sid.clone());
                         }
                         Binding::IriMatch { iri, .. } => {
-                            // Use Term::Iri so scan can encode for each target ledger
-                            pattern.p = Term::Iri(iri.clone());
+                            // Use Ref::Iri so scan can encode for each target ledger
+                            pattern.p = Ref::Iri(iri.clone());
                         }
                         Binding::EncodedPid { p_id } => {
                             // Resolve encoded p_id to IRI if store available
                             if let Some(store) = store {
                                 if let Some(iri) = store.resolve_predicate_iri(*p_id) {
-                                    pattern.p = Term::Iri(Arc::from(iri));
+                                    pattern.p = Ref::Iri(Arc::from(iri));
                                 }
                             }
                             // Otherwise leave as variable
@@ -1588,8 +1588,8 @@ mod tests {
 
         // Right pattern: ?s :age ?age (shares ?s with left)
         let _right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)), // ?s - shared
-            Term::Sid(Sid::new(100, "age")),
+            Ref::Var(VarId(0)), // ?s - shared
+            Ref::Sid(Sid::new(100, "age")),
             Term::Var(VarId(2)), // ?age - new
         );
 
@@ -1614,8 +1614,8 @@ mod tests {
 
         let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
         let right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)), // ?s - shared
-            Term::Sid(Sid::new(100, "name")),
+            Ref::Var(VarId(0)), // ?s - shared
+            Ref::Sid(Sid::new(100, "name")),
             Term::Var(VarId(1)), // ?name - new
         );
 
@@ -1650,8 +1650,8 @@ mod tests {
 
         let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)), // ?s at right position 0
-            Term::Sid(Sid::new(100, "age")),
+            Ref::Var(VarId(0)), // ?s at right position 0
+            Ref::Sid(Sid::new(100, "age")),
             Term::Var(VarId(2)), // ?age at right position 1
         );
 
@@ -1688,8 +1688,8 @@ mod tests {
         // Create a simple operator setup
         let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
         let right_pattern = TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(Sid::new(100, "age")),
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "age")),
             Term::Var(VarId(2)),
         );
 
@@ -1779,7 +1779,7 @@ mod tests {
         let left_schema: Arc<[VarId]> = Arc::from(vec![v].into_boxed_slice());
         // Right pattern: ?x p ?v (shared ?v at Object position)
         let right_pattern =
-            TriplePattern::new(Term::Var(x), Term::Sid(Sid::new(100, "p")), Term::Var(v));
+            TriplePattern::new(Ref::Var(x), Ref::Sid(Sid::new(100, "p")), Term::Var(v));
 
         // Mock left operator (unused; we inject batches directly into join state).
         struct MockOp;
@@ -1882,7 +1882,7 @@ mod tests {
         // Right pattern: ?s p ?x with separate object ?y
         // Actually let's test: ?x p ?y where neither is in left schema
         let right_pattern =
-            TriplePattern::new(Term::Var(x), Term::Sid(Sid::new(100, "p")), Term::Var(y));
+            TriplePattern::new(Ref::Var(x), Ref::Sid(Sid::new(100, "p")), Term::Var(y));
 
         struct MockOp;
         #[async_trait]
@@ -2209,13 +2209,13 @@ mod tests {
         let v_score_v = vars.get_or_insert("?scoreV");
 
         let tp_refers = TriplePattern::new(
-            Term::Var(v_score),
-            Term::Sid(Sid::new(0, p_refers)),
+            Ref::Var(v_score),
+            Ref::Sid(Sid::new(0, p_refers)),
             Term::Var(v_concept),
         );
         let tp_has_score = TriplePattern::new(
-            Term::Var(v_score),
-            Term::Sid(Sid::new(0, p_has_score)),
+            Ref::Var(v_score),
+            Ref::Sid(Sid::new(0, p_has_score)),
             Term::Var(v_score_v),
         );
         let filter = Expression::gt(

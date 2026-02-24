@@ -26,7 +26,7 @@ use fluree_db_policy::{
 use fluree_db_query::parse::{lower_unresolved_patterns, UnresolvedPattern};
 use fluree_db_query::{
     execute_pattern_with_overlay_at, Batch, BinaryRangeProvider, Binding, Pattern,
-    QueryPolicyExecutor, Term, TriplePattern, VarId, VarRegistry,
+    QueryPolicyExecutor, Ref, Term, TriplePattern, VarId, VarRegistry,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -681,8 +681,8 @@ async fn generate_upsert_deletions(
     for (subject, predicate, graph_id) in spg_tuples {
         // Query: <subject> <predicate> ?o
         let pattern = TriplePattern::new(
-            Term::Sid(subject.clone()),
-            Term::Sid(predicate.clone()),
+            Ref::Sid(subject.clone()),
+            Ref::Sid(predicate.clone()),
             Term::Var(o_var),
         );
 

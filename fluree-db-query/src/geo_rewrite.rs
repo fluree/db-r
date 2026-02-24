@@ -7,7 +7,7 @@
 //! patterns to use the accelerated GeoPoint binary index path.
 
 use crate::ir::{Expression, FilterValue, Function, GeoSearchCenter, GeoSearchPattern, Pattern};
-use crate::triple::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::geo::try_extract_point;
 use fluree_db_core::Sid;
@@ -111,16 +111,15 @@ where
                 if let Some((triple_idx, tp)) = obj_var_to_triple.get(&loc_var) {
                     // 4. Extract predicate Sid
                     let predicate = match &tp.p {
-                        Term::Sid(sid) => Some(sid.clone()),
-                        Term::Iri(iri) => encode_iri(iri),
-                        Term::Var(_) => None, // Can't rewrite variable predicate
-                        _ => None,
+                        Ref::Sid(sid) => Some(sid.clone()),
+                        Ref::Iri(iri) => encode_iri(iri),
+                        Ref::Var(_) => None, // Can't rewrite variable predicate
                     };
 
                     if let Some(predicate) = predicate {
                         // 5. Extract subject var
                         let subject_var = match &tp.s {
-                            Term::Var(v) => Some(*v),
+                            Ref::Var(v) => Some(*v),
                             _ => None, // Need variable subject for GeoSearch
                         };
 
@@ -267,7 +266,7 @@ fn is_var_used_elsewhere(
 fn pattern_references_var(pattern: &Pattern, var: VarId) -> bool {
     match pattern {
         Pattern::Triple(tp) => {
-            term_is_var(&tp.s, var) || term_is_var(&tp.p, var) || term_is_var(&tp.o, var)
+            ref_is_var(&tp.s, var) || ref_is_var(&tp.p, var) || term_is_var(&tp.o, var)
         }
         Pattern::Filter(expr) => expr.variables().contains(&var),
         Pattern::Bind { var: v, expr } => *v == var || expr.variables().contains(&var),
@@ -292,6 +291,10 @@ fn pattern_references_var(pattern: &Pattern, var: VarId) -> bool {
         Pattern::Service(sp) => sp.variables().contains(&var),
         Pattern::R2rml(r2rml) => r2rml.variables().contains(&var),
     }
+}
+
+fn ref_is_var(r: &Ref, var: VarId) -> bool {
+    matches!(r, Ref::Var(v) if *v == var)
 }
 
 fn term_is_var(term: &Term, var: VarId) -> bool {
@@ -440,8 +443,8 @@ mod tests {
         // Build: Triple(?place, location, ?loc), Bind(?dist = distance), Filter(?dist < 1000)
         let patterns = vec![
             Pattern::Triple(TriplePattern::new(
-                Term::Var(place_var),
-                Term::Sid(pred_sid.clone()),
+                Ref::Var(place_var),
+                Ref::Sid(pred_sid.clone()),
                 Term::Var(loc_var),
             )),
             Pattern::Bind {
@@ -487,8 +490,8 @@ mod tests {
         // Build patterns where ?loc is also used in another pattern
         let patterns = vec![
             Pattern::Triple(TriplePattern::new(
-                Term::Var(place_var),
-                Term::Sid(pred_sid.clone()),
+                Ref::Var(place_var),
+                Ref::Sid(pred_sid.clone()),
                 Term::Var(loc_var),
             )),
             Pattern::Bind {
@@ -539,8 +542,8 @@ mod tests {
         // Build: Triple + Bind without Filter
         let patterns = vec![
             Pattern::Triple(TriplePattern::new(
-                Term::Var(place_var),
-                Term::Sid(pred_sid.clone()),
+                Ref::Var(place_var),
+                Ref::Sid(pred_sid.clone()),
                 Term::Var(loc_var),
             )),
             Pattern::Bind {
@@ -574,8 +577,8 @@ mod tests {
         // Build with variable predicate
         let patterns = vec![
             Pattern::Triple(TriplePattern::new(
-                Term::Var(place_var),
-                Term::Var(pred_var), // Variable predicate!
+                Ref::Var(place_var),
+                Ref::Var(pred_var), // Variable predicate!
                 Term::Var(loc_var),
             )),
             Pattern::Bind {
@@ -611,8 +614,8 @@ mod tests {
         // Build with IRI predicate
         let patterns = vec![
             Pattern::Triple(TriplePattern::new(
-                Term::Var(place_var),
-                Term::Iri("http://example.org/location".into()), // IRI predicate
+                Ref::Var(place_var),
+                Ref::Iri("http://example.org/location".into()), // IRI predicate
                 Term::Var(loc_var),
             )),
             Pattern::Bind {
@@ -648,8 +651,8 @@ mod tests {
         // Build with unknown IRI predicate
         let patterns = vec![
             Pattern::Triple(TriplePattern::new(
-                Term::Var(place_var),
-                Term::Iri("http://unknown.org/prop".into()), // Unknown IRI
+                Ref::Var(place_var),
+                Ref::Iri("http://unknown.org/prop".into()), // Unknown IRI
                 Term::Var(loc_var),
             )),
             Pattern::Bind {
@@ -686,8 +689,8 @@ mod tests {
         // Build pattern inside Optional
         let inner_patterns = vec![
             Pattern::Triple(TriplePattern::new(
-                Term::Var(place_var),
-                Term::Sid(pred_sid.clone()),
+                Ref::Var(place_var),
+                Ref::Sid(pred_sid.clone()),
                 Term::Var(loc_var),
             )),
             Pattern::Bind {

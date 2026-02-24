@@ -15,7 +15,7 @@ use crate::span::SourceSpan;
 
 use fluree_db_query::ir::{PathModifier, Pattern, PropertyPathPattern};
 use fluree_db_query::parse::encode::IriEncoder;
-use fluree_db_query::triple::{Term, TriplePattern};
+use fluree_db_query::triple::{Ref, TriplePattern};
 use fluree_vocab::rdf::TYPE;
 
 use super::{LowerError, LoweringContext, Result};
@@ -33,23 +33,17 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         object: &ObjectTerm,
         span: SourceSpan,
     ) -> Result<Vec<Pattern>> {
-        // Lower subject and object terms
+        // Lower subject term (already a Ref, so no literal validation needed)
         let s = self.lower_subject(subject)?;
-        let o = self.lower_object(object)?;
 
-        // Validate neither is a literal
-        if matches!(s, Term::Value(_)) {
-            return Err(LowerError::invalid_property_path(
-                "Property path subject cannot be a literal value",
-                span,
-            ));
-        }
-        if matches!(o, Term::Value(_)) {
-            return Err(LowerError::invalid_property_path(
+        // Lower object term and convert to Ref (fails on literal values)
+        let o_term = self.lower_object(object)?;
+        let o = Ref::try_from(o_term).map_err(|_| {
+            LowerError::invalid_property_path(
                 "Property path object cannot be a literal value",
                 span,
-            ));
-        }
+            )
+        })?;
 
         self.lower_path_dispatch(&s, path, &o, span)
     }
@@ -57,9 +51,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     /// Dispatch on path type to produce the appropriate pattern(s).
     fn lower_path_dispatch(
         &mut self,
-        s: &Term,
+        s: &Ref,
         path: &SparqlPropertyPath,
-        o: &Term,
+        o: &Ref,
         span: SourceSpan,
     ) -> Result<Vec<Pattern>> {
         // Rewrite complex inverses (^(a/b), ^(a|b), ^(^x)) before dispatching.
@@ -123,11 +117,11 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 // Simple inverse: ^p → Triple with s/o swapped
                 _ => {
                     let iri = self.extract_simple_predicate_iri(inner, span)?;
-                    let p = Term::Iri(Arc::from(iri.as_str()));
+                    let p = Ref::Iri(Arc::from(iri.as_str()));
                     Ok(vec![Pattern::Triple(TriplePattern::new(
                         o.clone(),
                         p,
-                        s.clone(),
+                        s.clone().into(),
                     ))])
                 }
             },
@@ -233,9 +227,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     /// Alternative steps (`(a|b)`) are distributed into a `Union` of simple chains.
     fn lower_sequence_chain(
         &mut self,
-        s: &Term,
+        s: &Ref,
         steps: &[&SparqlPropertyPath],
-        o: &Term,
+        o: &Ref,
         span: SourceSpan,
     ) -> Result<Vec<Pattern>> {
         debug_assert!(
@@ -285,7 +279,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             } else {
                 let var_name = format!("?__pp{}", self.pp_counter);
                 self.pp_counter += 1;
-                Term::Var(self.vars.get_or_insert(&var_name))
+                Ref::Var(self.vars.get_or_insert(&var_name))
             };
 
             let triple = self.lower_sequence_step_triple(step, &prev, &next, span)?;
@@ -477,9 +471,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     /// each becoming a branch of a `Pattern::Union`.
     fn lower_distributed_sequence(
         &mut self,
-        s: &Term,
+        s: &Ref,
         step_choices: &[Vec<&SparqlPropertyPath>],
-        o: &Term,
+        o: &Ref,
         span: SourceSpan,
     ) -> Result<Vec<Pattern>> {
         let combos = Self::cartesian_product_sparql(step_choices);
@@ -508,9 +502,9 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     /// generated intermediate variables (`?__pp{n}`).
     fn lower_simple_sequence_chain(
         &mut self,
-        s: &Term,
+        s: &Ref,
         steps: &[&SparqlPropertyPath],
-        o: &Term,
+        o: &Ref,
         span: SourceSpan,
     ) -> Result<Vec<Pattern>> {
         let mut patterns = Vec::with_capacity(steps.len());
@@ -523,7 +517,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             } else {
                 let var_name = format!("?__pp{}", self.pp_counter);
                 self.pp_counter += 1;
-                Term::Var(self.vars.get_or_insert(&var_name))
+                Ref::Var(self.vars.get_or_insert(&var_name))
             };
 
             let triple = self.lower_sequence_step_triple(step, &prev, &next, span)?;
@@ -545,24 +539,24 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     fn lower_sequence_step_triple(
         &mut self,
         step: &SparqlPropertyPath,
-        prev: &Term,
-        next: &Term,
+        prev: &Ref,
+        next: &Ref,
         span: SourceSpan,
     ) -> Result<TriplePattern> {
         match step {
             SparqlPropertyPath::Iri(iri) => {
                 let expanded = self.expand_iri(iri)?;
-                let p = Term::Iri(Arc::from(expanded.as_str()));
-                Ok(TriplePattern::new(prev.clone(), p, next.clone()))
+                let p = Ref::Iri(Arc::from(expanded.as_str()));
+                Ok(TriplePattern::new(prev.clone(), p, next.clone().into()))
             }
             SparqlPropertyPath::A { .. } => {
-                let p = Term::Iri(Arc::from(TYPE));
-                Ok(TriplePattern::new(prev.clone(), p, next.clone()))
+                let p = Ref::Iri(Arc::from(TYPE));
+                Ok(TriplePattern::new(prev.clone(), p, next.clone().into()))
             }
             SparqlPropertyPath::Inverse { path: inner, .. } => {
                 let iri = self.extract_simple_predicate_iri(inner, span)?;
-                let p = Term::Iri(Arc::from(iri.as_str()));
-                Ok(TriplePattern::new(next.clone(), p, prev.clone()))
+                let p = Ref::Iri(Arc::from(iri.as_str()));
+                Ok(TriplePattern::new(next.clone(), p, prev.clone().into()))
             }
             other => Err(LowerError::invalid_property_path(
                 format!(
@@ -580,8 +574,8 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     fn lower_sequence_step(
         &mut self,
         step: &SparqlPropertyPath,
-        s: &Term,
-        o: &Term,
+        s: &Ref,
+        o: &Ref,
         span: SourceSpan,
     ) -> Result<Vec<Pattern>> {
         let triple = self.lower_sequence_step_triple(step, s, o, span)?;
@@ -594,35 +588,35 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
     fn lower_alternative_branch(
         &mut self,
         leaf: &SparqlPropertyPath,
-        s: &Term,
-        o: &Term,
+        s: &Ref,
+        o: &Ref,
         span: SourceSpan,
     ) -> Result<Vec<Pattern>> {
         match leaf {
             SparqlPropertyPath::Iri(iri) => {
                 let expanded = self.expand_iri(iri)?;
-                let p = Term::Iri(Arc::from(expanded.as_str()));
+                let p = Ref::Iri(Arc::from(expanded.as_str()));
                 Ok(vec![Pattern::Triple(TriplePattern::new(
                     s.clone(),
                     p,
-                    o.clone(),
+                    o.clone().into(),
                 ))])
             }
             SparqlPropertyPath::A { .. } => {
-                let p = Term::Iri(Arc::from(TYPE));
+                let p = Ref::Iri(Arc::from(TYPE));
                 Ok(vec![Pattern::Triple(TriplePattern::new(
                     s.clone(),
                     p,
-                    o.clone(),
+                    o.clone().into(),
                 ))])
             }
             SparqlPropertyPath::Inverse { path: inner, .. } => {
                 let iri = self.extract_simple_predicate_iri(inner, span)?;
-                let p = Term::Iri(Arc::from(iri.as_str()));
+                let p = Ref::Iri(Arc::from(iri.as_str()));
                 Ok(vec![Pattern::Triple(TriplePattern::new(
                     o.clone(),
                     p,
-                    s.clone(),
+                    s.clone().into(),
                 ))])
             }
             SparqlPropertyPath::Sequence { .. } => {

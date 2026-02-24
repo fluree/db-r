@@ -62,7 +62,7 @@ use crate::dataset::DataSet;
 use crate::error::Result;
 use crate::ir::Pattern;
 use crate::parse::ParsedQuery;
-use crate::triple::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarRegistry;
 use fluree_db_core::{Db, StatsView, Tracker};
 use std::sync::Arc;
@@ -173,6 +173,16 @@ pub async fn execute(db: &Db, vars: &VarRegistry, query: &ExecutableQuery) -> Re
         };
 
         // Apply pattern rewriting for reasoning (RDFS/OWL expansion)
+        fn encode_ref(db: &Db, r: &Ref) -> Ref {
+            match r {
+                Ref::Iri(iri) => match db.encode_iri(iri) {
+                    Some(sid) => Ref::Sid(sid),
+                    None => r.clone(),
+                },
+                other => other.clone(),
+            }
+        }
+
         fn encode_term(db: &Db, t: &Term) -> Term {
             match t {
                 Term::Iri(iri) => db
@@ -188,8 +198,8 @@ pub async fn execute(db: &Db, vars: &VarRegistry, query: &ExecutableQuery) -> Re
                 .iter()
                 .map(|p| match p {
                     Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                        s: encode_term(db, &tp.s),
-                        p: encode_term(db, &tp.p),
+                        s: encode_ref(db, &tp.s),
+                        p: encode_ref(db, &tp.p),
                         o: encode_term(db, &tp.o),
                         dt: tp.dt.clone(),
                         lang: tp.lang.clone(),
@@ -524,7 +534,7 @@ mod tests {
     use crate::parse::SelectMode;
     use crate::planner::reorder_patterns;
     use crate::sort::SortSpec;
-    use crate::triple::{Term, TriplePattern};
+    use crate::triple::{Ref, Term, TriplePattern};
     use crate::var_registry::VarId;
     use fluree_db_core::{Db, FlakeValue, PropertyStatData, Sid, StatsView};
     use fluree_graph_json_ld::ParsedContext;
@@ -537,8 +547,8 @@ mod tests {
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
         TriplePattern::new(
-            Term::Var(s_var),
-            Term::Sid(Sid::new(100, p_name)),
+            Ref::Var(s_var),
+            Ref::Sid(Sid::new(100, p_name)),
             Term::Var(o_var),
         )
     }
@@ -671,13 +681,13 @@ mod tests {
                 Expression::Const(FilterValue::Double(0.4)),
             )),
             Pattern::Triple(TriplePattern::new(
-                Term::Var(score),
-                Term::Sid(Sid::new(100, "refersInstance")),
+                Ref::Var(score),
+                Ref::Sid(Sid::new(100, "refersInstance")),
                 Term::Var(concept),
             )),
             Pattern::Triple(TriplePattern::new(
-                Term::Var(concept),
-                Term::Sid(Sid::new(100, "notation")),
+                Ref::Var(concept),
+                Ref::Sid(Sid::new(100, "notation")),
                 Term::Value(FlakeValue::String("LVL1".to_string())),
             )),
         ];

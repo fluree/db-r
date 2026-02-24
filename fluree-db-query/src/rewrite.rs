@@ -9,7 +9,7 @@
 //! Use `rewrite_patterns` with a `PlanContext` to expand query patterns according to the active entailment mode.
 
 use crate::ir::Pattern;
-use crate::triple::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use fluree_db_core::{is_rdf_type, SchemaHierarchy, Sid};
 
 /// Reasoning modes that can be enabled for query execution
@@ -688,7 +688,7 @@ fn rewrite_triple_pattern(
     // requires either:
     // - Single-ledger mode with Term::Sid predicates, or
     // - A future enhancement to support IRI-based hierarchy lookups
-    if let (Term::Sid(predicate), Term::Sid(class)) = (&tp.p, &tp.o) {
+    if let (Ref::Sid(predicate), Term::Sid(class)) = (&tp.p, &tp.o) {
         if is_rdf_type(predicate) {
             return expand_type_pattern(tp, class, hierarchy, ctx, diag, total_expansions);
         }
@@ -697,7 +697,7 @@ fn rewrite_triple_pattern(
     // Expand predicate hierarchies (subPropertyOf)
     // When predicate is a constant SID with subproperties, expand to union of
     // predicate + all subproperties
-    if let Term::Sid(predicate) = &tp.p {
+    if let Ref::Sid(predicate) = &tp.p {
         // Don't expand rdf:type (handled above) or variables
         if !is_rdf_type(predicate) {
             return expand_predicate_pattern(tp, predicate, hierarchy, ctx, diag, total_expansions);
@@ -838,7 +838,7 @@ fn expand_predicate_pattern(
     for subprop in subproperties {
         pred_patterns.push(TriplePattern::new(
             tp.s.clone(),
-            Term::Sid(subprop.clone()),
+            Ref::Sid(subprop.clone()),
             tp.o.clone(),
         ));
     }
@@ -900,6 +900,7 @@ fn expand_predicate_pattern(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::triple::Ref;
     use crate::var_registry::VarId;
     use fluree_db_core::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
     use fluree_db_core::{Sid, SidInterner};
@@ -952,8 +953,8 @@ mod tests {
     #[test]
     fn test_no_expansion_when_disabled() {
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(Sid::new(100, "Animal")),
         ));
 
@@ -972,8 +973,8 @@ mod tests {
     #[test]
     fn test_no_expansion_without_hierarchy() {
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(Sid::new(100, "Animal")),
         ));
 
@@ -996,8 +997,8 @@ mod tests {
         let animal = interner.intern(100, "Animal");
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(animal),
         ));
 
@@ -1025,8 +1026,8 @@ mod tests {
     #[test]
     fn test_no_expansion_for_variable_object() {
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Var(VarId(1)), // Variable object - cannot expand
         ));
 
@@ -1048,8 +1049,8 @@ mod tests {
         let interner = SidInterner::new();
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(interner.intern(100, "name")), // Not rdf:type
+            Ref::Var(VarId(0)),
+            Ref::Sid(interner.intern(100, "name")), // Not rdf:type
             Term::Sid(interner.intern(100, "Animal")),
         ));
 
@@ -1098,8 +1099,8 @@ mod tests {
         let hierarchy = SchemaHierarchy::from_db_root_schema(&schema);
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(animal),
         ));
 
@@ -1133,8 +1134,8 @@ mod tests {
         let animal = interner.intern(100, "Animal");
 
         let inner_pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(animal),
         ));
 
@@ -1208,13 +1209,13 @@ mod tests {
 
         // Query with type pattern for ClassA in main, and ClassB in OPTIONAL
         let main_pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(class_a),
         ));
         let optional_pattern = Pattern::Optional(vec![Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(class_b),
         ))]);
 
@@ -1248,8 +1249,8 @@ mod tests {
         let animal = interner.intern(100, "Animal");
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(animal),
         ));
 
@@ -1314,8 +1315,8 @@ mod tests {
         let has_color = interner.intern(100, "hasColor");
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(has_color),
+            Ref::Var(VarId(0)),
+            Ref::Sid(has_color),
             Term::Var(VarId(1)),
         ));
 
@@ -1344,8 +1345,8 @@ mod tests {
     #[test]
     fn test_no_predicate_expansion_for_variable() {
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Var(VarId(1)), // Variable predicate - cannot expand
+            Ref::Var(VarId(0)),
+            Ref::Var(VarId(1)), // Variable predicate - cannot expand
             Term::Var(VarId(2)),
         ));
 
@@ -1368,8 +1369,8 @@ mod tests {
         let interner = SidInterner::new();
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(interner.intern(100, "unknownProp")), // No subproperties
+            Ref::Var(VarId(0)),
+            Ref::Sid(interner.intern(100, "unknownProp")), // No subproperties
             Term::Var(VarId(1)),
         ));
 
@@ -1419,8 +1420,8 @@ mod tests {
         let hierarchy = SchemaHierarchy::from_db_root_schema(&schema);
 
         let pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(has_attr),
+            Ref::Var(VarId(0)),
+            Ref::Sid(has_attr),
             Term::Var(VarId(1)),
         ));
 
@@ -1491,15 +1492,15 @@ mod tests {
 
         // Type pattern: ?s rdf:type :Animal
         let type_pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(make_rdf_type()),
+            Ref::Var(VarId(0)),
+            Ref::Sid(make_rdf_type()),
             Term::Sid(animal),
         ));
 
         // Predicate pattern: ?s :hasColor ?o
         let pred_pattern = Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(has_color),
+            Ref::Var(VarId(0)),
+            Ref::Sid(has_color),
             Term::Var(VarId(1)),
         ));
 

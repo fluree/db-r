@@ -191,15 +191,15 @@ pub fn merge_upper_bound(
 mod tests {
     use super::*;
     use crate::ir::FilterValue;
-    use crate::triple::Term;
+    use crate::triple::{Ref, Term};
     use fluree_db_core::Sid;
 
     use crate::ir::Function;
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
         TriplePattern::new(
-            Term::Var(s_var),
-            Term::Sid(Sid::new(100, p_name)),
+            Ref::Var(s_var),
+            Ref::Sid(Sid::new(100, p_name)),
             Term::Var(o_var),
         )
     }

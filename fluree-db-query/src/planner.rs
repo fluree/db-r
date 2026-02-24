@@ -8,7 +8,7 @@
 //! `build_where_operators_seeded` in `execute/where_plan.rs`.
 
 use crate::ir::{CompareOp, Function, Pattern};
-use crate::triple::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::{FlakeValue, PropertyStatData, StatsView};
 use std::collections::{HashMap, HashSet};
@@ -90,7 +90,7 @@ pub(crate) fn classify_pattern(
 }
 
 /// Look up property statistics by predicate term (SID or IRI).
-fn property_stats<'a>(stats: &'a StatsView, pred: &Term) -> Option<&'a PropertyStatData> {
+fn property_stats<'a>(stats: &'a StatsView, pred: &Ref) -> Option<&'a PropertyStatData> {
     if let Some(sid) = pred.as_sid() {
         return stats.get_property(sid);
     }
@@ -187,36 +187,34 @@ pub(crate) fn estimate_triple_row_count(
 /// Same ?s var, multiple distinct specified predicates, object vars.
 /// Used by the planner to choose PropertyJoinOperator.
 pub fn is_property_join(patterns: &[TriplePattern]) -> bool {
-    use crate::triple::Term;
-
     if patterns.len() < 2 {
         return false;
     }
 
     // All patterns share same subject var
     let first_s = match &patterns[0].s {
-        Term::Var(v) => *v,
+        Ref::Var(v) => *v,
         _ => return false,
     };
 
     let same_subject = patterns.iter().all(|p| match &p.s {
-        Term::Var(v) => *v == first_s,
+        Ref::Var(v) => *v == first_s,
         _ => false,
     });
 
-    // All predicates are bound (not vars) - can be Term::Sid or Term::Iri
+    // All predicates are bound (not vars) - can be Ref::Sid or Ref::Iri
     let predicates_bound = patterns.iter().all(|p| p.p_bound());
 
     // All objects are vars - not literal/SID constants
     let objects_are_vars = patterns.iter().all(|p| matches!(&p.o, Term::Var(_)));
 
     // Predicates are distinct (avoid weird duplicate shapes)
-    // Accept both Term::Sid and Term::Iri as distinct predicate keys
+    // Accept both Ref::Sid and Ref::Iri as distinct predicate keys
     let predicates: HashSet<String> = patterns
         .iter()
         .filter_map(|p| match &p.p {
-            Term::Sid(sid) => Some(format!("sid:{}", sid)),
-            Term::Iri(iri) => Some(format!("iri:{}", iri)),
+            Ref::Sid(sid) => Some(format!("sid:{}", sid)),
+            Ref::Iri(iri) => Some(format!("iri:{}", iri)),
             _ => None,
         })
         .collect();
@@ -1205,7 +1203,7 @@ mod tests {
     use std::sync::Arc;
 
     fn make_pattern(s: VarId, p_name: &str, o: VarId) -> TriplePattern {
-        TriplePattern::new(Term::Var(s), Term::Sid(Sid::new(100, p_name)), Term::Var(o))
+        TriplePattern::new(Ref::Var(s), Ref::Sid(Sid::new(100, p_name)), Term::Var(o))
     }
 
     /// Count top-level patterns matching a predicate.
@@ -1222,7 +1220,7 @@ mod tests {
             .expect("expected a UNION in the pattern list");
         if let Pattern::Union(branches) = union {
             for (i, branch) in branches.iter().enumerate() {
-                assert!(branch.iter().any(|p| pred(p)), "UNION branch {i}: {msg}");
+                assert!(branch.iter().any(&pred), "UNION branch {i}: {msg}");
             }
         }
     }
@@ -1284,18 +1282,12 @@ mod tests {
         let y = VarId(3);
 
         // Joinable with seed (?s)
-        let joinable = TriplePattern::new(
-            Term::Var(s),
-            Term::Sid(Sid::new(100, "wide")),
-            Term::Var(o1),
-        );
+        let joinable =
+            TriplePattern::new(Ref::Var(s), Ref::Sid(Sid::new(100, "wide")), Term::Var(o1));
 
         // Not joinable with seed, but extremely selective
-        let non_joining = TriplePattern::new(
-            Term::Var(x),
-            Term::Sid(Sid::new(100, "narrow")),
-            Term::Var(y),
-        );
+        let non_joining =
+            TriplePattern::new(Ref::Var(x), Ref::Sid(Sid::new(100, "narrow")), Term::Var(y));
 
         let mut stats = StatsView::default();
         stats.properties.insert(
@@ -1355,13 +1347,13 @@ mod tests {
 
         // Two property-scan patterns with IRI predicates.
         let p_a = TriplePattern::new(
-            Term::Var(s),
-            Term::Iri(Arc::from("http://example.org/a")),
+            Ref::Var(s),
+            Ref::Iri(Arc::from("http://example.org/a")),
             Term::Var(o1),
         );
         let p_z = TriplePattern::new(
-            Term::Var(s),
-            Term::Iri(Arc::from("http://example.org/z")),
+            Ref::Var(s),
+            Ref::Iri(Arc::from("http://example.org/z")),
             Term::Var(o2),
         );
 
@@ -1415,7 +1407,7 @@ mod tests {
             _ => panic!("expected Triple pattern"),
         };
         assert!(
-            matches!(&first.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/z"),
+            matches!(&first.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/z"),
             "expected stats-driven ordering to pick the most selective predicate first; got ordered[0]={:?}",
             ordered[0]
         );
@@ -1436,11 +1428,7 @@ mod tests {
         assert!(!is_property_join(std::slice::from_ref(&p1)));
 
         // Not property join: predicate is var
-        let p4 = TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Var(VarId(5)),
-            Term::Var(VarId(1)),
-        );
+        let p4 = TriplePattern::new(Ref::Var(VarId(0)), Ref::Var(VarId(5)), Term::Var(VarId(1)));
         assert!(!is_property_join(&[p1, p4]));
     }
 
@@ -2358,8 +2346,8 @@ mod tests {
 
         // Selective union: single small branch
         let union = Pattern::Union(vec![vec![Pattern::Triple(TriplePattern::new(
-            Term::Var(s),
-            Term::Sid(Sid::new(100, "rare")),
+            Ref::Var(s),
+            Ref::Sid(Sid::new(100, "rare")),
             Term::Value(FlakeValue::String("specific".to_string())),
         ))]]);
 
@@ -2554,7 +2542,7 @@ mod tests {
             .expect("Graph should be in result");
         if let Pattern::Graph { patterns, .. } = graph {
             assert!(
-                patterns.iter().any(|p| is_filter(p)),
+                patterns.iter().any(is_filter),
                 "Graph inner patterns should contain the filter"
             );
         }

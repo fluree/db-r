@@ -32,7 +32,7 @@ use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{PathModifier, PropertyPathPattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::triple::Term;
+use crate::triple::Ref;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::{
@@ -88,10 +88,10 @@ impl PropertyPathOperator {
     ) -> Self {
         // Build schema from pattern variables
         let mut schema_vec = Vec::with_capacity(2);
-        if let Term::Var(v) = &pattern.subject {
+        if let Ref::Var(v) = &pattern.subject {
             schema_vec.push(*v);
         }
-        if let Term::Var(v) = &pattern.object {
+        if let Ref::Var(v) = &pattern.object {
             schema_vec.push(*v);
         }
 
@@ -373,7 +373,7 @@ impl PropertyPathOperator {
     /// This is called once during open() to compute all results.
     async fn execute_unseeded(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         let results = match (&self.pattern.subject, &self.pattern.object) {
-            (Term::Sid(subj), Term::Var(_)) => {
+            (Ref::Sid(subj), Ref::Var(_)) => {
                 // Subject constant, object variable -> forward traversal
                 let reachable = self.traverse_forward(ctx, subj).await?;
                 reachable
@@ -381,7 +381,7 @@ impl PropertyPathOperator {
                     .map(|obj| (subj.clone(), obj))
                     .collect()
             }
-            (Term::Var(_), Term::Sid(obj)) => {
+            (Ref::Var(_), Ref::Sid(obj)) => {
                 // Subject variable, object constant -> backward traversal
                 let sources = self.traverse_backward(ctx, obj).await?;
                 sources
@@ -389,15 +389,15 @@ impl PropertyPathOperator {
                     .map(|subj| (subj, obj.clone()))
                     .collect()
             }
-            (Term::Var(_), Term::Var(_)) => self.compute_closure(ctx).await?,
-            (Term::Sid(_), Term::Sid(_)) => {
+            (Ref::Var(_), Ref::Var(_)) => self.compute_closure(ctx).await?,
+            (Ref::Sid(_), Ref::Sid(_)) => {
                 // Both constants: reachability check (0/1 rows). We use a dummy pair to indicate 1 row.
                 let subj = match &self.pattern.subject {
-                    Term::Sid(s) => s,
+                    Ref::Sid(s) => s,
                     _ => unreachable!(),
                 };
                 let obj = match &self.pattern.object {
-                    Term::Sid(s) => s,
+                    Ref::Sid(s) => s,
                     _ => unreachable!(),
                 };
                 if self.path_exists(ctx, subj, obj).await? {
@@ -427,11 +427,11 @@ impl PropertyPathOperator {
     ) -> Result<Vec<Vec<Binding>>> {
         // Determine what's bound from child
         let subj_var = match &self.pattern.subject {
-            Term::Var(v) => Some(*v),
+            Ref::Var(v) => Some(*v),
             _ => None,
         };
         let obj_var = match &self.pattern.object {
-            Term::Var(v) => Some(*v),
+            Ref::Var(v) => Some(*v),
             _ => None,
         };
 
@@ -444,20 +444,19 @@ impl PropertyPathOperator {
 
         // Extract SIDs from constants or child bindings (if bound).
         //
-        // Note: lowering may produce `Term::Iri` constants to support cross-ledger joins.
+        // Note: lowering may produce `Ref::Iri` constants to support cross-ledger joins.
         // For property paths we must traverse SIDs, so we opportunistically encode IRIs
         // against the selected active graph's namespace table.
-        let resolve_sid = |term: &Term, binding: Option<&Binding>| -> Option<Sid> {
+        let resolve_sid = |term: &Ref, binding: Option<&Binding>| -> Option<Sid> {
             match term {
-                Term::Sid(s) => Some(s.clone()),
-                Term::Iri(iri) => db_for_encode.encode_iri(iri),
-                Term::Var(_) => binding.and_then(|b| match b {
+                Ref::Sid(s) => Some(s.clone()),
+                Ref::Iri(iri) => db_for_encode.encode_iri(iri),
+                Ref::Var(_) => binding.and_then(|b| match b {
                     Binding::Sid(s) => Some(s.clone()),
                     Binding::IriMatch { iri, .. } => db_for_encode.encode_iri(iri),
                     Binding::Iri(iri) => db_for_encode.encode_iri(iri),
                     _ => None,
                 }),
-                _ => None,
             }
         };
 
@@ -611,11 +610,11 @@ impl Operator for PropertyPathOperator {
                 .collect();
 
             let subj_var = match &self.pattern.subject {
-                Term::Var(v) => Some(*v),
+                Ref::Var(v) => Some(*v),
                 _ => None,
             };
             let obj_var = match &self.pattern.object {
-                Term::Var(v) => Some(*v),
+                Ref::Var(v) => Some(*v),
                 _ => None,
             };
 
@@ -714,15 +713,10 @@ impl Operator for PropertyPathOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::triple::Term;
+    use crate::triple::Ref;
     use fluree_db_core::Sid;
 
-    fn make_pattern(
-        subj: Term,
-        pred: Sid,
-        modifier: PathModifier,
-        obj: Term,
-    ) -> PropertyPathPattern {
+    fn make_pattern(subj: Ref, pred: Sid, modifier: PathModifier, obj: Ref) -> PropertyPathPattern {
         PropertyPathPattern::new(subj, pred, modifier, obj)
     }
 
@@ -730,10 +724,10 @@ mod tests {
     fn test_property_path_schema_forward() {
         // Subject constant, object variable -> schema has only object var
         let pattern = make_pattern(
-            Term::Sid(Sid::new(1, "alice")),
+            Ref::Sid(Sid::new(1, "alice")),
             Sid::new(2, "knows"),
             PathModifier::OneOrMore,
-            Term::Var(VarId(0)),
+            Ref::Var(VarId(0)),
         );
 
         let op: PropertyPathOperator = PropertyPathOperator::with_defaults(None, pattern);
@@ -745,10 +739,10 @@ mod tests {
     fn test_property_path_schema_backward() {
         // Subject variable, object constant -> schema has only subject var
         let pattern = make_pattern(
-            Term::Var(VarId(0)),
+            Ref::Var(VarId(0)),
             Sid::new(2, "knows"),
             PathModifier::ZeroOrMore,
-            Term::Sid(Sid::new(1, "bob")),
+            Ref::Sid(Sid::new(1, "bob")),
         );
 
         let op: PropertyPathOperator = PropertyPathOperator::with_defaults(None, pattern);
@@ -760,10 +754,10 @@ mod tests {
     fn test_property_path_schema_both_vars() {
         // Both subject and object are variables
         let pattern = make_pattern(
-            Term::Var(VarId(0)),
+            Ref::Var(VarId(0)),
             Sid::new(2, "knows"),
             PathModifier::OneOrMore,
-            Term::Var(VarId(1)),
+            Ref::Var(VarId(1)),
         );
 
         let op: PropertyPathOperator = PropertyPathOperator::with_defaults(None, pattern);
@@ -774,10 +768,10 @@ mod tests {
     #[test]
     fn test_property_path_max_visited_configurable() {
         let pattern = make_pattern(
-            Term::Sid(Sid::new(1, "alice")),
+            Ref::Sid(Sid::new(1, "alice")),
             Sid::new(2, "knows"),
             PathModifier::OneOrMore,
-            Term::Var(VarId(0)),
+            Ref::Var(VarId(0)),
         );
 
         let op: PropertyPathOperator = PropertyPathOperator::new(None, pattern, 100);

@@ -21,7 +21,9 @@ use fluree_db_policy::{
     build_policy_set, PolicyAction, PolicyContext, PolicyQuery, PolicyRestriction, PolicyValue,
     PolicyWrapper, TargetMode,
 };
-use fluree_db_query::{execute_pattern_with_overlay_at, Binding, Term, TriplePattern, VarRegistry};
+use fluree_db_query::{
+    execute_pattern_with_overlay_at, Binding, Ref, Term, TriplePattern, VarRegistry,
+};
 use fluree_vocab::rdf::TYPE as RDF_TYPE_IRI;
 use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
@@ -266,8 +268,8 @@ async fn load_policies_by_identity(
 
     // Query: <identity> f:policyClass ?class
     let pattern = TriplePattern::new(
-        Term::Sid(identity_sid.clone()),
-        Term::Sid(policy_class_sid),
+        Ref::Sid(identity_sid.clone()),
+        Ref::Sid(policy_class_sid),
         Term::Var(class_var),
     );
 
@@ -341,8 +343,8 @@ async fn load_policies_of_classes(
     for class_sid in class_sids {
         // Query: ?policy a <class>
         let pattern = TriplePattern::new(
-            Term::Var(policy_var),
-            Term::Sid(rdf_type_sid.clone()),
+            Ref::Var(policy_var),
+            Ref::Sid(rdf_type_sid.clone()),
             Term::Sid(class_sid.clone()),
         );
 
@@ -610,8 +612,8 @@ async fn query_predicate(
     let obj_var = vars.get_or_insert("?obj");
 
     let pattern = TriplePattern::new(
-        Term::Sid(subject_sid.clone()),
-        Term::Sid(predicate_sid.clone()),
+        Ref::Sid(subject_sid.clone()),
+        Ref::Sid(predicate_sid.clone()),
         Term::Var(obj_var),
     );
 

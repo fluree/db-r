@@ -26,7 +26,7 @@ use fluree_db_api::{
 use fluree_db_core::{NoOverlay, Tracker};
 use fluree_db_query::ir::GraphName;
 use fluree_db_query::parse::{ParsedQuery, SelectMode};
-use fluree_db_query::triple::{Term, TriplePattern};
+use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use support::genesis_ledger;
 
 // =============================================================================
@@ -416,13 +416,13 @@ async fn e2e_r2rml_query_iceberg_table() {
 
     let inner_patterns = vec![
         Pattern::Triple(TriplePattern::new(
-            Term::Var(airline_var),
-            Term::Sid(ex_name_sid),
+            Ref::Var(airline_var),
+            Ref::Sid(ex_name_sid),
             Term::Var(name_var),
         )),
         Pattern::Triple(TriplePattern::new(
-            Term::Var(airline_var),
-            Term::Sid(ex_country_sid),
+            Ref::Var(airline_var),
+            Ref::Sid(ex_country_sid),
             Term::Var(country_var),
         )),
     ];
@@ -1075,8 +1075,8 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
         .encode_iri("http://example.org/name")
         .expect("example.org namespace should be registered for Sid encoding");
     let inner_patterns = vec![Pattern::Triple(TriplePattern::new(
-        Term::Var(subject_var),
-        Term::Sid(ex_name_sid),
+        Ref::Var(subject_var),
+        Ref::Sid(ex_name_sid),
         Term::Var(name_var),
     ))];
 
@@ -1205,8 +1205,8 @@ async fn engine_e2e_provider_method_calls() {
     let graph_pattern = Pattern::Graph {
         name: GraphName::Iri("airlines-gs:main".into()),
         patterns: vec![Pattern::Triple(TriplePattern::new(
-            Term::Var(subject_var),
-            Term::Var(vars.get_or_insert("?p")),
+            Ref::Var(subject_var),
+            Ref::Var(vars.get_or_insert("?p")),
             Term::Var(vars.get_or_insert("?o")),
         ))],
     };
@@ -1840,8 +1840,8 @@ async fn engine_e2e_ref_object_map_join_execution() {
         .expect("namespace should be registered");
 
     let inner_patterns = vec![Pattern::Triple(TriplePattern::new(
-        Term::Var(route_var),
-        Term::Sid(ex_operated_by_sid),
+        Ref::Var(route_var),
+        Ref::Sid(ex_operated_by_sid),
         Term::Var(airline_var),
     ))];
 

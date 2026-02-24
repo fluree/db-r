@@ -13,7 +13,7 @@ use crate::QueryResult;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::binding::Binding;
 use fluree_db_query::parse::ConstructTemplate;
-use fluree_db_query::triple::Term;
+use fluree_db_query::triple::{Ref, Term};
 use fluree_db_query::Batch;
 use fluree_graph_format::{format_jsonld, JsonLdFormatConfig};
 use fluree_graph_ir::{BlankId, Datatype, Graph, LiteralValue, Term as IrTerm, Triple};
@@ -108,19 +108,19 @@ fn instantiate_row(
     Ok(())
 }
 
-/// Resolve a Term to an IR Term for subject position
+/// Resolve a Ref to an IR Term for subject position
 ///
 /// Subjects must be IRIs or blank nodes, never literals.
 /// Returns expanded IRI (via decode_sid, not compact_sid).
 fn resolve_subject_term(
     result: &QueryResult,
-    term: &Term,
+    term: &Ref,
     batch: &Batch,
     row_idx: usize,
     compactor: &IriCompactor,
 ) -> Result<Option<IrTerm>> {
     match term {
-        Term::Var(var_id) => match batch.get(row_idx, *var_id) {
+        Ref::Var(var_id) => match batch.get(row_idx, *var_id) {
             Some(binding) => {
                 let materialized;
                 let binding = if binding.is_encoded() {
@@ -166,11 +166,11 @@ fn resolve_subject_term(
             }
             None => Ok(None),
         },
-        Term::Sid(sid) => {
+        Ref::Sid(sid) => {
             let expanded_iri = compactor.decode_sid(sid)?;
             Ok(Some(IrTerm::iri(expanded_iri)))
         }
-        Term::Iri(iri) => {
+        Ref::Iri(iri) => {
             // IRI term (from cross-ledger joins) - use directly
             if let Some(bnode_id) = iri.strip_prefix("_:") {
                 Ok(Some(IrTerm::BlankNode(BlankId::new(bnode_id))))
@@ -178,23 +178,22 @@ fn resolve_subject_term(
                 Ok(Some(IrTerm::iri(iri)))
             }
         }
-        Term::Value(_) => Ok(None), // Literal constants can't be subjects
     }
 }
 
-/// Resolve a Term to an IR Term for predicate position
+/// Resolve a Ref to an IR Term for predicate position
 ///
 /// Predicates must be IRIs, never literals or blank nodes.
 /// Returns expanded IRI (via decode_sid, not compact_sid).
 fn resolve_predicate_term(
     result: &QueryResult,
-    term: &Term,
+    term: &Ref,
     batch: &Batch,
     row_idx: usize,
     compactor: &IriCompactor,
 ) -> Result<Option<IrTerm>> {
     match term {
-        Term::Var(var_id) => match batch.get(row_idx, *var_id) {
+        Ref::Var(var_id) => match batch.get(row_idx, *var_id) {
             Some(binding) => {
                 let materialized;
                 let binding = if binding.is_encoded() {
@@ -240,11 +239,11 @@ fn resolve_predicate_term(
             }
             None => Ok(None),
         },
-        Term::Sid(sid) => {
+        Ref::Sid(sid) => {
             let expanded_iri = compactor.decode_sid(sid)?;
             Ok(Some(IrTerm::iri(expanded_iri)))
         }
-        Term::Iri(iri) => {
+        Ref::Iri(iri) => {
             // IRI term (from cross-ledger joins) - blank nodes not allowed as predicates
             if iri.starts_with("_:") {
                 Ok(None)
@@ -252,7 +251,6 @@ fn resolve_predicate_term(
                 Ok(Some(IrTerm::iri(iri)))
             }
         }
-        Term::Value(_) => Ok(None), // Literal constants can't be predicates
     }
 }
 

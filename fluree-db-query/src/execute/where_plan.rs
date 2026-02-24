@@ -924,13 +924,13 @@ pub fn build_triple_operators(
 mod tests {
     use super::*;
     use crate::ir::{Expression, FilterValue, Pattern};
-    use crate::triple::Term;
+    use crate::triple::{Ref, Term};
     use fluree_db_core::{FlakeValue, PropertyStatData, Sid, StatsView};
 
     fn make_pattern(s_var: VarId, p_name: &str, o_var: VarId) -> TriplePattern {
         TriplePattern::new(
-            Term::Var(s_var),
-            Term::Sid(Sid::new(100, p_name)),
+            Ref::Var(s_var),
+            Ref::Sid(Sid::new(100, p_name)),
             Term::Var(o_var),
         )
     }
@@ -1029,13 +1029,13 @@ mod tests {
                 Expression::Const(FilterValue::Double(0.4)),
             )),
             Pattern::Triple(TriplePattern::new(
-                Term::Var(score),
-                Term::Sid(Sid::new(100, "refersInstance")),
+                Ref::Var(score),
+                Ref::Sid(Sid::new(100, "refersInstance")),
                 Term::Var(concept),
             )),
             Pattern::Triple(TriplePattern::new(
-                Term::Var(concept),
-                Term::Sid(Sid::new(100, "notation")),
+                Ref::Var(concept),
+                Ref::Sid(Sid::new(100, "notation")),
                 Term::Value(FlakeValue::String("LVL1".to_string())),
             )),
         ];
@@ -1105,8 +1105,8 @@ mod tests {
                 Expression::Const(FilterValue::Long(1)),
             )),
             Pattern::Triple(TriplePattern::new(
-                Term::Var(VarId(1)),
-                Term::Sid(Sid::new(100, "p")),
+                Ref::Var(VarId(1)),
+                Ref::Sid(Sid::new(100, "p")),
                 Term::Var(VarId(0)),
             )),
         ];

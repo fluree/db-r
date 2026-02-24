@@ -130,7 +130,7 @@ pub use seed::{EmptyOperator, SeedOperator};
 pub use sort::{compare_bindings, compare_flake_values, SortDirection, SortOperator, SortSpec};
 pub use stats_query::StatsCountByPredicateOperator;
 pub use subquery::SubqueryOperator;
-pub use triple::{Term, TriplePattern};
+pub use triple::{Ref, Term, TriplePattern};
 pub use union::UnionOperator;
 pub use values::ValuesOperator;
 
@@ -379,8 +379,8 @@ mod tests {
         let o = vars.get_or_insert("?o");
 
         let _pattern = TriplePattern::new(
-            Term::Var(s),
-            Term::Sid(fluree_db_core::Sid::new(100, "name")),
+            Ref::Var(s),
+            Ref::Sid(fluree_db_core::Sid::new(100, "name")),
             Term::Var(o),
         );
     }

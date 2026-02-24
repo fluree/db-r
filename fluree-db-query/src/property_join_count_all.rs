@@ -30,7 +30,7 @@ use crate::binding::{Batch, Binding};
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
-use crate::triple::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use async_trait::async_trait;
 use fluree_db_core::FlakeValue;
 use fluree_db_indexer::run_index::run_record::RunSortOrder;
@@ -61,14 +61,14 @@ pub struct PropertyJoinCountAllOperator {
 impl PropertyJoinCountAllOperator {
     pub fn new(
         subject_var: crate::var_registry::VarId,
-        preds: Vec<(Term, crate::var_registry::VarId)>,
+        preds: Vec<(Ref, crate::var_registry::VarId)>,
         count_var: crate::var_registry::VarId,
     ) -> Self {
         let schema: Arc<[crate::var_registry::VarId]> =
             Arc::from(vec![count_var].into_boxed_slice());
         let patterns: Vec<TriplePattern> = preds
             .into_iter()
-            .map(|(p, o)| TriplePattern::new(Term::Var(subject_var), p, Term::Var(o)))
+            .map(|(p, o)| TriplePattern::new(Ref::Var(subject_var), p, Term::Var(o)))
             .collect();
         Self {
             patterns,
@@ -81,18 +81,18 @@ impl PropertyJoinCountAllOperator {
         }
     }
 
-    fn predicate_sid(store: &BinaryIndexStore, term: &Term) -> Option<fluree_db_core::Sid> {
-        match term {
-            Term::Sid(s) => Some(s.clone()),
-            Term::Iri(iri) => Some(store.encode_iri(iri)),
-            _ => None,
+    fn predicate_sid(store: &BinaryIndexStore, r: &Ref) -> Option<fluree_db_core::Sid> {
+        match r {
+            Ref::Sid(s) => Some(s.clone()),
+            Ref::Iri(iri) => Some(store.encode_iri(iri)),
+            Ref::Var(_) => None,
         }
     }
 
     fn build_cursor_for_predicate(
         ctx: &ExecutionContext<'_>,
         store: Arc<BinaryIndexStore>,
-        pred_term: &Term,
+        pred_term: &Ref,
     ) -> Result<Option<BinaryCursor>> {
         let order = RunSortOrder::Psot;
         let g_id = ctx.binary_g_id;
@@ -406,7 +406,7 @@ mod tests {
     use crate::ir::Pattern;
     use crate::options::QueryOptions;
     use crate::parse::{ParsedQuery, SelectMode};
-    use crate::triple::{Term, TriplePattern};
+    use crate::triple::{Ref, Term, TriplePattern};
     use crate::var_registry::VarRegistry;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
@@ -716,17 +716,13 @@ mod tests {
         let o3 = vars.get_or_insert("?o3");
         let count = vars.get_or_insert("?count");
 
-        let tp1 = TriplePattern::new(
-            Term::Var(s),
-            Term::Sid(Sid::new(0, p_has_sig)),
-            Term::Var(o1),
-        );
+        let tp1 = TriplePattern::new(Ref::Var(s), Ref::Sid(Sid::new(0, p_has_sig)), Term::Var(o1));
         let tp2 = TriplePattern::new(
-            Term::Var(s),
-            Term::Sid(Sid::new(0, p_created_by)),
+            Ref::Var(s),
+            Ref::Sid(Sid::new(0, p_created_by)),
             Term::Var(o2),
         );
-        let tp3 = TriplePattern::new(Term::Var(s), Term::Sid(Sid::new(0, p_title)), Term::Var(o3));
+        let tp3 = TriplePattern::new(Ref::Var(s), Ref::Sid(Sid::new(0, p_title)), Term::Var(o3));
 
         let query = ParsedQuery {
             context: ParsedContext::default(),

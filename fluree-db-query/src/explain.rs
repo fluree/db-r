@@ -6,7 +6,7 @@
 //! Call `explain_patterns` with a set of patterns and optional stats to get an `ExplainPlan`.
 
 use crate::planner::{classify_pattern, estimate_triple_row_count, PatternType};
-use crate::triple::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_db_core::StatsView;
 use std::collections::HashSet;
@@ -224,10 +224,19 @@ fn capture_selectivity_inputs(
 pub fn format_pattern(pattern: &TriplePattern) -> String {
     format!(
         "{} {} {}",
-        format_term(&pattern.s),
-        format_term(&pattern.p),
+        format_ref(&pattern.s),
+        format_ref(&pattern.p),
         format_term(&pattern.o)
     )
+}
+
+/// Format a ref (subject or predicate position) as a human-readable string
+fn format_ref(r: &Ref) -> String {
+    match r {
+        Ref::Var(v) => format!("?v{}", v.0),
+        Ref::Sid(sid) => format!("<{}:{}>", sid.namespace_code, &sid.name),
+        Ref::Iri(iri) => format!("<{}>", iri),
+    }
 }
 
 /// Format a term as a human-readable string
@@ -532,7 +541,7 @@ pub fn format_general_pattern(pattern: &Pattern) -> String {
         }
         Pattern::PropertyPath(pp) => format!(
             "PROPERTY PATH {} {:?}",
-            format_term(&pp.subject),
+            format_ref(&pp.subject),
             pp.modifier
         ),
         Pattern::IndexSearch(isp) => {
@@ -635,16 +644,16 @@ mod tests {
 
     fn make_pattern(s: VarId, pred_name: &str, o: VarId) -> TriplePattern {
         TriplePattern::new(
-            Term::Var(s),
-            Term::Sid(Sid::new(100, pred_name)),
+            Ref::Var(s),
+            Ref::Sid(Sid::new(100, pred_name)),
             Term::Var(o),
         )
     }
 
     fn make_bound_subject_pattern(s_sid: Sid, pred_name: &str, o: VarId) -> TriplePattern {
         TriplePattern::new(
-            Term::Sid(s_sid),
-            Term::Sid(Sid::new(100, pred_name)),
+            Ref::Sid(s_sid),
+            Ref::Sid(Sid::new(100, pred_name)),
             Term::Var(o),
         )
     }
@@ -776,8 +785,8 @@ mod tests {
 
         // BoundObject: ?s :p o
         let p3 = TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(Sid::new(100, "name")),
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "name")),
             Term::Value(fluree_db_core::FlakeValue::String("Alice".into())),
         );
         assert_eq!(
@@ -787,8 +796,8 @@ mod tests {
 
         // ExactMatch: s :p o
         let p4 = TriplePattern::new(
-            Term::Sid(Sid::new(50, "person1")),
-            Term::Sid(Sid::new(100, "name")),
+            Ref::Sid(Sid::new(50, "person1")),
+            Ref::Sid(Sid::new(100, "name")),
             Term::Value(fluree_db_core::FlakeValue::String("Alice".into())),
         );
         assert_eq!(

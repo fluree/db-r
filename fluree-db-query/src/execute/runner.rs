@@ -14,7 +14,7 @@ use crate::options::QueryOptions;
 use crate::parse::ParsedQuery;
 use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
-use crate::triple::{Term, TriplePattern};
+use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarRegistry;
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{Db, GraphId, StatsView, Tracker};
@@ -167,6 +167,16 @@ pub async fn prepare_execution(
         // OWL2-QL rewriting (and current RDFS expansion) require SIDs for ontology/hierarchy lookup.
         // Lowering may produce `Term::Iri` to support cross-ledger joins; for single-ledger execution
         // we can safely encode IRIs to SIDs here.
+        fn encode_ref(db: &Db, r: &Ref) -> Ref {
+            match r {
+                Ref::Iri(iri) => match db.encode_iri(iri) {
+                    Some(sid) => Ref::Sid(sid),
+                    None => r.clone(),
+                },
+                other => other.clone(),
+            }
+        }
+
         fn encode_term(db: &Db, t: &Term) -> Term {
             match t {
                 Term::Iri(iri) => db
@@ -182,8 +192,8 @@ pub async fn prepare_execution(
                 .iter()
                 .map(|p| match p {
                     Pattern::Triple(tp) => Pattern::Triple(TriplePattern {
-                        s: encode_term(db, &tp.s),
-                        p: encode_term(db, &tp.p),
+                        s: encode_ref(db, &tp.s),
+                        p: encode_ref(db, &tp.p),
                         o: encode_term(db, &tp.o),
                         dt: tp.dt.clone(),
                         lang: tp.lang.clone(),

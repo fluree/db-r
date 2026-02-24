@@ -236,7 +236,7 @@ impl Operator for ExistsOperator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::triple::{Term, TriplePattern};
+    use crate::triple::{Ref, Term, TriplePattern};
     use fluree_db_core::Sid;
 
     #[test]
@@ -260,8 +260,8 @@ mod tests {
         });
 
         let patterns = vec![Pattern::Triple(TriplePattern::new(
-            Term::Var(VarId(0)),
-            Term::Sid(Sid::new(100, "age")),
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "age")),
             Term::Var(VarId(1)),
         ))];
 

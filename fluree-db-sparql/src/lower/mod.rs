@@ -253,7 +253,7 @@ mod tests {
     use fluree_db_query::ir::{PathModifier, Pattern};
     use fluree_db_query::parse::encode::MemoryEncoder;
     use fluree_db_query::sort::SortDirection;
-    use fluree_db_query::triple::Term;
+    use fluree_db_query::triple::{Ref, Term};
 
     fn test_encoder() -> MemoryEncoder {
         let mut encoder = MemoryEncoder::with_common_namespaces();
@@ -470,7 +470,7 @@ mod tests {
         // Should successfully resolve foaf prefix
         assert_eq!(query.patterns.len(), 1);
         if let Pattern::Triple(tp) = &query.patterns[0] {
-            if let Term::Sid(sid) = &tp.p {
+            if let Ref::Sid(sid) = &tp.p {
                 assert_eq!(sid.namespace_code, 102); // foaf namespace
                 assert_eq!(sid.name.as_ref(), "name");
             } else {
@@ -1499,7 +1499,7 @@ mod tests {
             // ^ex:parent swaps: triple is (?parent, ex:parent, ?child)
             assert!(tp.o.is_var()); // ?child in object position
             assert!(tp.s.is_var()); // ?parent in subject position
-            assert!(matches!(tp.p, Term::Iri(_)));
+            assert!(matches!(tp.p, Ref::Iri(_)));
         } else {
             panic!(
                 "Expected Triple pattern for inverse path, got {:?}",
@@ -1583,13 +1583,13 @@ mod tests {
         // First triple: ?s → ?__pp0
         if let Pattern::Triple(tp) = &query.patterns[0] {
             assert!(tp.s.is_var()); // ?s
-            assert!(matches!(tp.p, Term::Iri(_)));
+            assert!(matches!(tp.p, Ref::Iri(_)));
             assert!(tp.o.is_var()); // ?__pp0
         }
         // Second triple: ?__pp0 → ?grandchild
         if let Pattern::Triple(tp) = &query.patterns[1] {
             assert!(tp.s.is_var()); // ?__pp0
-            assert!(matches!(tp.p, Term::Iri(_)));
+            assert!(matches!(tp.p, Ref::Iri(_)));
             assert!(tp.o.is_var()); // ?grandchild
         }
     }
@@ -2236,13 +2236,13 @@ mod tests {
         // First triple: inverse means (?__pp0, ex:friend, ?s)
         if let Pattern::Triple(tp) = &query.patterns[0] {
             assert!(tp.s.is_var()); // ?__pp0
-            assert!(matches!(tp.p, Term::Iri(_)));
+            assert!(matches!(tp.p, Ref::Iri(_)));
             assert!(tp.o.is_var()); // ?s
         }
         // Second triple: forward (?__pp0, ex:name, ?name)
         if let Pattern::Triple(tp) = &query.patterns[1] {
             assert!(tp.s.is_var()); // ?__pp0
-            assert!(matches!(tp.p, Term::Iri(_)));
+            assert!(matches!(tp.p, Ref::Iri(_)));
             assert!(tp.o.is_var()); // ?name
         }
     }
@@ -2516,11 +2516,11 @@ mod tests {
             // Branch 0 first triple: forward — subject is a var (the ?s)
             if let Pattern::Triple(t0) = &branches[0][0] {
                 assert!(
-                    matches!(&t0.s, Term::Var(_)),
+                    matches!(&t0.s, Ref::Var(_)),
                     "Branch 0 first triple subject should be a var"
                 );
                 // Predicate should be ex:a
-                assert!(matches!(&t0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"));
+                assert!(matches!(&t0.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/a"));
             }
 
             // Branch 1 first triple: inverse — object is the ?s var (swapped)
@@ -2530,7 +2530,7 @@ mod tests {
                     "Branch 1 first triple object should be a var (inverse)"
                 );
                 // Predicate should be ex:b
-                assert!(matches!(&t1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"));
+                assert!(matches!(&t1.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/b"));
             }
         } else {
             panic!("Expected Pattern::Union, got {:?}", query.patterns[0]);
@@ -2584,14 +2584,14 @@ mod tests {
         // Predicates in reversed order: b, a
         if let Pattern::Triple(tp0) = &query.patterns[0] {
             assert!(
-                matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"),
+                matches!(&tp0.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/b"),
                 "First predicate should be ex:b (reversed), got {:?}",
                 tp0.p
             );
         }
         if let Pattern::Triple(tp1) = &query.patterns[1] {
             assert!(
-                matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"),
+                matches!(&tp1.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/a"),
                 "Second predicate should be ex:a (reversed), got {:?}",
                 tp1.p
             );
@@ -2641,7 +2641,7 @@ mod tests {
         for (i, exp) in expected_preds.iter().enumerate() {
             if let Pattern::Triple(tp) = &query.patterns[i] {
                 assert!(
-                    matches!(&tp.p, Term::Iri(iri) if iri.as_ref() == *exp),
+                    matches!(&tp.p, Ref::Iri(iri) if iri.as_ref() == *exp),
                     "Step {}: expected predicate {}, got {:?}",
                     i,
                     exp,
@@ -2689,7 +2689,7 @@ mod tests {
         // Step 0: ^b (reversed, inverted) — inverse triple
         if let Pattern::Triple(tp0) = &query.patterns[0] {
             assert!(
-                matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"),
+                matches!(&tp0.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/b"),
                 "First predicate should be ex:b, got {:?}",
                 tp0.p
             );
@@ -2697,7 +2697,7 @@ mod tests {
         // Step 1: a (^(^a) cancelled to forward a)
         if let Pattern::Triple(tp1) = &query.patterns[1] {
             assert!(
-                matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"),
+                matches!(&tp1.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/a"),
                 "Second predicate should be ex:a, got {:?}",
                 tp1.p
             );
@@ -2720,7 +2720,7 @@ mod tests {
             // Branch 0: ^a — inverse triple (?x, a, ?s)
             if let Pattern::Triple(tp0) = &branches[0][0] {
                 assert!(
-                    matches!(&tp0.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/a"),
+                    matches!(&tp0.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/a"),
                     "Branch 0 predicate should be ex:a, got {:?}",
                     tp0.p
                 );
@@ -2730,7 +2730,7 @@ mod tests {
             // Branch 1: b — forward triple (?s, b, ?x)
             if let Pattern::Triple(tp1) = &branches[1][0] {
                 assert!(
-                    matches!(&tp1.p, Term::Iri(iri) if iri.as_ref() == "http://example.org/b"),
+                    matches!(&tp1.p, Ref::Iri(iri) if iri.as_ref() == "http://example.org/b"),
                     "Branch 1 predicate should be ex:b, got {:?}",
                     tp1.p
                 );
