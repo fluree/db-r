@@ -268,6 +268,19 @@ impl DictTreeReader {
     pub fn cache_hits(&self) -> u64 {
         self.cache_hits.load(Ordering::Relaxed)
     }
+
+    /// Preload all leaves into the global cache (or just read them into OS page cache).
+    ///
+    /// Returns the number of leaves loaded. This is useful for warming caches
+    /// at server startup so the first query doesn't pay cold-start I/O penalties.
+    pub fn preload_all_leaves(&self) -> io::Result<usize> {
+        let mut loaded = 0;
+        for entry in &self.branch.leaves {
+            let _ = self.load_leaf(&entry.address)?;
+            loaded += 1;
+        }
+        Ok(loaded)
+    }
 }
 
 impl std::fmt::Debug for DictTreeReader {

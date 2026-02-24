@@ -6,9 +6,16 @@ use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_nameservice::NameService;
 
-pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>) -> CliResult<()> {
+pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>, direct: bool) -> CliResult<()> {
     if let Some(remote_name) = remote_flag {
         return run_remote(remote_name, dirs).await;
+    }
+
+    // Auto-route to local server for listing if available
+    if !direct {
+        if let Some(client) = context::try_server_route_client(dirs) {
+            return run_remote_with_client(&client, dirs).await;
+        }
     }
 
     let fluree = context::build_fluree(dirs)?;
@@ -92,7 +99,26 @@ async fn run_remote(remote_name: &str, dirs: &FlureeDir) -> CliResult<()> {
 
     context::persist_refreshed_tokens(&client, remote_name, dirs).await;
 
-    // Response should be a JSON array of ledger objects
+    print_ledger_list(&result, Some(remote_name))
+}
+
+/// List ledgers via a pre-built client (used for local server auto-routing).
+async fn run_remote_with_client(
+    client: &crate::remote_client::RemoteLedgerClient,
+    dirs: &FlureeDir,
+) -> CliResult<()> {
+    let result = client
+        .list_ledgers()
+        .await
+        .map_err(|e| CliError::Remote(format!("failed to list ledgers on local server: {}", e)))?;
+
+    context::persist_refreshed_tokens(client, context::LOCAL_SERVER_REMOTE, dirs).await;
+
+    print_ledger_list(&result, None)
+}
+
+/// Print a ledger list from a JSON response.
+fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> CliResult<()> {
     let ledgers = match result.as_array() {
         Some(arr) => arr,
         None => {
@@ -103,11 +129,16 @@ async fn run_remote(remote_name: &str, dirs: &FlureeDir) -> CliResult<()> {
     };
 
     if ledgers.is_empty() {
-        println!("No ledgers on remote '{}'.", remote_name);
+        match remote_label {
+            Some(name) => println!("No ledgers on remote '{}'.", name),
+            None => println!("No ledgers found."),
+        }
         return Ok(());
     }
 
-    println!("Ledgers on remote '{}':", remote_name.green());
+    if let Some(name) = remote_label {
+        println!("Ledgers on remote '{}':", name.green());
+    }
 
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
