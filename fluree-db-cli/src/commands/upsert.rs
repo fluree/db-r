@@ -13,6 +13,7 @@ pub async fn run(
     format_flag: Option<&str>,
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
+    direct: bool,
 ) -> CliResult<()> {
     let (explicit_ledger, file_path) = resolve_positional_args(args);
 
@@ -23,12 +24,17 @@ pub async fn run(
     // Detect format
     let data_format = detect::detect_data_format(file_path.as_deref(), &content, format_flag)?;
 
-    // Resolve ledger mode: --remote flag, local, or tracked
+    // Resolve ledger mode: --remote flag, local, tracked, or auto-route to local server
     let mode = if let Some(remote_name) = remote_flag {
         let alias = context::resolve_ledger(explicit_ledger, dirs)?;
         context::build_remote_mode(remote_name, &alias, dirs).await?
     } else {
-        context::resolve_ledger_mode(explicit_ledger, dirs).await?
+        let mode = context::resolve_ledger_mode(explicit_ledger, dirs).await?;
+        if direct {
+            mode
+        } else {
+            context::try_server_route(mode, dirs)
+        }
     };
 
     match mode {
